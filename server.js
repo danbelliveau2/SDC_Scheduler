@@ -14,7 +14,7 @@ app.use((req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false }));
 
-const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key'];
+const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date'];
 
 // ---------- Schedule auto-computation (FS/SS/FF/SF + lag) ----------
 // All scheduling is done in BUSINESS DAYS (Mon–Fri). Weekends are skipped: a task
@@ -356,6 +356,37 @@ app.post('/api/tasks/reorder', (req, res) => {
     throw err;
   }
   res.json({ ok: true });
+});
+
+// ---------- Baseline snapshot ----------
+// "Setting a baseline" copies every task's current start_date + end_date into
+// baseline_start_date + baseline_end_date for that project. Clearing wipes them
+// back to null. The client overlays a dashed ghost at the baseline position on
+// the Gantt and shows a drift chip so the user can see how much each bar has
+// moved relative to the snapshot.
+
+app.post('/api/baseline/set', (req, res) => {
+  const project = (req.body.project || '').toString().trim();
+  if (!project) return res.status(400).json({ error: 'project required' });
+  const result = db.prepare(`
+    UPDATE tasks SET
+      baseline_start_date = start_date,
+      baseline_end_date   = end_date
+    WHERE project = ?
+  `).run(project);
+  res.json({ ok: true, baselined: result.changes });
+});
+
+app.post('/api/baseline/clear', (req, res) => {
+  const project = (req.body.project || '').toString().trim();
+  if (!project) return res.status(400).json({ error: 'project required' });
+  const result = db.prepare(`
+    UPDATE tasks SET
+      baseline_start_date = NULL,
+      baseline_end_date   = NULL
+    WHERE project = ?
+  `).run(project);
+  res.json({ ok: true, cleared: result.changes });
 });
 
 // ---------- Project financial milestones ----------

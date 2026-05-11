@@ -203,7 +203,13 @@ const migrations = [
   // anchor_key: when set, this task is a project-level anchor milestone (e.g.
   // 'receipt_of_po', 'fat'). Auto-created per project; rendered as a bigger diamond
   // outside the section hierarchy. Null for ordinary tasks.
-  { col: 'anchor_key',     sql: 'ALTER TABLE tasks ADD COLUMN anchor_key TEXT' },
+  { col: 'anchor_key',          sql: 'ALTER TABLE tasks ADD COLUMN anchor_key TEXT' },
+  // Baseline snapshot — when set, the task remembers its original planned start
+  // and end. Used by the Baseline overlay to show a dashed "ghost" at the prior
+  // dates so the user can see drift as they reschedule. Null when no baseline
+  // has been set, or after the project's baseline is cleared.
+  { col: 'baseline_start_date', sql: 'ALTER TABLE tasks ADD COLUMN baseline_start_date TEXT' },
+  { col: 'baseline_end_date',   sql: 'ALTER TABLE tasks ADD COLUMN baseline_end_date TEXT' },
 ];
 for (const m of migrations) {
   if (!columnExists('tasks', m.col)) db.exec(m.sql);

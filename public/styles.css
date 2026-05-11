@@ -33,6 +33,10 @@ html, body {
   font-size: 13px;
   color: var(--text);
   background: var(--bg);
+  /* Pin the document at 100% — no page-level scrollbar. Every internal scroll
+     happens inside the schedule grid/gantt panels, which have their bars hidden
+     too. The user navigates with drag-pan + mouse wheel. */
+  overflow: hidden;
 }
 
 /* ---------- Project tab bar (open schedules) ---------- */
@@ -745,7 +749,13 @@ html, body {
 .modal .btn-primary { color: var(--sdc-dark); }
 
 /* ---------- Layout ---------- */
-main { padding: 0; }
+main {
+  padding: 0;
+  /* Lock page-level scroll: only the inner grid/gantt panels should accept
+     drag-pan scroll. Without this, the overscroll padding inside the panels
+     leaks into the body and dragging "moves the whole page". */
+  overflow: hidden;
+}
 .view { display: none; }
 .view.active { display: block; }
 
@@ -754,6 +764,7 @@ main { padding: 0; }
   display: none;
   flex-direction: column;
   height: calc(100vh - 90px);
+  overflow: hidden;
 }
 #view-schedule.active { display: flex; }
 
@@ -978,17 +989,42 @@ body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-sel
 }
 .schedule-gantt #gantt-container { min-width: 100%; }
 
-/* Overscroll padding — lets you drag past the last row so the bottom rows aren't
-   pinned to the viewport edge. Each scroll container gets a 50vh pseudo-element
-   sibling at the end of its content; the trick works because ::after lives in CSS
-   and survives frappe-gantt's container.innerHTML wipe. The grid and gantt panels
-   are vertical-scroll-synced (setupScrollSync), so they need matching overscroll
-   so both can land at the same row position when scrolled to the bottom. */
-.schedule-gantt::after,
+/* Hide every scrollbar inside the schedule split — drag-pan handles both axes.
+   Scrolling itself still works via overflow:auto, the bars just aren't drawn.
+   Universal `* ` selector inside the split catches anything frappe-gantt creates
+   without us having to enumerate it. Targets WebKit + Firefox. */
+.schedule-split,
+.schedule-split * {
+  scrollbar-width: none;          /* Firefox */
+}
+.schedule-split::-webkit-scrollbar,
+.schedule-split *::-webkit-scrollbar {
+  display: none;                  /* Chromium / Edge / Safari */
+  width: 0;
+  height: 0;
+}
+
+/* Bottom-of-schedule treatment — one row of empty space below the last task
+   plus a thin divider line, so the bottom doesn't read as "the chart is cut
+   off". The grid has the yellow "+ Add task" button between the last row and
+   its ::after, so the Gantt's ::after needs an EXTRA margin-top equal to the
+   button's height (~49px = 8 + 8 + 17 + 8 + 8 margin/padding/text) so the
+   divider lines align across both panels. */
 .schedule-grid::after {
   content: '';
   display: block;
-  height: 50vh;
+  height: 56px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border-strong);
+  pointer-events: none;
+}
+.schedule-gantt::after {
+  content: '';
+  display: block;
+  height: 56px;
+  /* 8px grid baseline margin + ~49px button = ~57px */
+  margin-top: 57px;
+  border-top: 1px solid var(--border-strong);
   pointer-events: none;
 }
 .schedule-gantt .legend {
@@ -1451,6 +1487,19 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 }
 .gantt .bar-wrapper.is-milestone .bar-label {
   font-weight: 600;
+}
+
+/* Baseline ghost — dashed outline painted BEHIND each task's current bar at
+   the baseline's date range, in the task's own color. The drift-label is a
+   bare "+Nd" / "−Nd" in the task's dark shade with a white halo for legibility
+   over any background. No pill, no "baseline" wording. */
+.gantt .baseline-ghost,
+.gantt .baseline-drift-label {
+  pointer-events: none;
+}
+.gantt .baseline-drift-label {
+  user-select: none;
+  font-family: inherit;
 }
 
 /* Financial overlay — vertical lines through the full chart at each financial

@@ -4,6 +4,97 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '2.2',
+    date: '2026-05-11',
+    notes: [
+      'Repo snapshot pushed to GitHub — everything from rev 1.7 through 2.1 is now on origin/main. Major chunks rolled up:',
+      '   • Financial milestones — predecessor-triggered, full editor modal, vertical-line Gantt overlay, anchor-date sync.',
+      '   • Gantt UX — drag-pan in both axes, no scrollbars, no page-level scroll, cross-panel row highlight on grid hover, 56px bottom-of-chart divider.',
+      '   • Filters — popover reduced to quick chips (behind / ahead / milestones / assigned / over-allocated).',
+      '   • Baseline — set / reset / clear, dashed-outline ghost in task colors, bare +Nd / −Nd drift labels, segmented toolbar control with dynamic Set / Reset label.',
+      '   • Row-height toolbar control (− rows +), 14px minimum for very dense schedules.',
+      '   • Anchor expansion to four (PO / Power-Up / FAT / Ship) with lime-green default.',
+    ],
+  },
+  {
+    version: '2.1',
+    date: '2026-05-11',
+    notes: [
+      'Baseline toolbar control split into a segmented pair (like Critical / Only):',
+      '   • LEFT button — labels itself "Set baseline" when no baseline exists for the active project, or "Reset baseline" when one is already set. So you can SEE at a glance whether the active project has been baselined.',
+      '   • RIGHT button — "Baseline" toggle. Shows / hides the dashed overlay on the Gantt. Right-click → Clear baseline.',
+      'Pin icon dropped — text-only labels.',
+      'Set/Reset now prompts with a confirmation message tailored to whether you\'re snapshotting fresh or overwriting an existing baseline. First-time Set auto-enables the overlay so you immediately see the result.',
+    ],
+  },
+  {
+    version: '2.0.3',
+    date: '2026-05-11',
+    notes: [
+      'Grid + Gantt bottom divider lines now align: the grid has the yellow "+ Add task" button between the last row and its bottom strip, so the Gantt\'s bottom strip gets a matching 57px of extra top margin to compensate. Both panels\' lines now sit at the same Y.',
+    ],
+  },
+  {
+    version: '2.0.2',
+    date: '2026-05-11',
+    notes: [
+      'Baseline ghost outline now uses the SAME color family as the task itself — light fill shade for the dashed stroke. The overlay reads as a ghost of THAT specific task, not a generic purple bar.',
+      'Drift display restored as a bare "+Nd" / "−Nd" label (no pill, no "vs baseline" wording) in the task\'s dark color with a white halo for legibility. Sits adjacent to the bar — late tasks have the label at the left edge of the bar, early tasks at the right edge.',
+    ],
+  },
+  {
+    version: '2.0.1',
+    date: '2026-05-11',
+    notes: [
+      'Baseline overlay simplified — dropped the noisy per-task "+Nd vs baseline" chips. Fixed the off-by-one in the business-day drift math (a task at its baseline now correctly reads 0d, not 1d).',
+    ],
+  },
+  {
+    version: '2.0',
+    date: '2026-05-11',
+    notes: [
+      'BASELINE FEATURE — snapshot a project\'s plan-of-record dates so subsequent edits can be compared against the original.',
+      'New toolbar button: 📍 Baseline. Click to toggle the overlay on/off. Right-click for Set / Clear actions on the active project.',
+      'Setting a baseline copies every task\'s current start/end dates into baseline_start_date / baseline_end_date. As you reschedule, the original positions stay put.',
+      'When the overlay is on, each task that has drifted shows a DASHED PURPLE OUTLINE at its baseline date range, painted behind the live bar — so the visible parts of the ghost are exactly the portions the bar has shifted away from.',
+      'A "+Nd vs baseline" / "−Nd vs baseline" chip (purple) floats just below each drifted bar so the magnitude of the slip is obvious at a glance.',
+      'Re-set baseline (from the right-click menu) overwrites the existing snapshot — useful when you replan and want a fresh comparison point.',
+      '',
+      'Bottom of the schedule no longer reads as "cut off" — added 56px of empty space + a thin divider line below the last task on both the grid and Gantt panels. Aligned on both panels so they share a single visible bottom line.',
+    ],
+  },
+  {
+    version: '1.9.11',
+    date: '2026-05-11',
+    notes: [
+      'Page-level (html/body) scrollbar removed — the document is pinned at 100% so no outer bar appears on the right edge.',
+      'Scrollbar-hiding broadened with a universal selector inside the schedule split so every internal scrollable element (frappe-gantt\'s nested containers included) has its bars suppressed.',
+      'Navigation now goes through drag-pan + mouse wheel only.',
+    ],
+  },
+  {
+    version: '1.9.10',
+    date: '2026-05-11',
+    notes: [
+      'All scrollbars hidden on the grid + Gantt panels — drag-pan handles both axes.',
+    ],
+  },
+  {
+    version: '1.9.9',
+    date: '2026-05-11',
+    notes: [
+      'Removed the vertical overscroll padding entirely — felt like too much empty space below the schedule.',
+    ],
+  },
+  {
+    version: '1.9.8',
+    date: '2026-05-11',
+    notes: [
+      'Drag-pan no longer "moves the whole page" — main / #view-schedule now have overflow: hidden so drag stays contained to the inner panels.',
+      'Horizontal scrollbar removed from the Gantt — drag-pan replaces it.',
+    ],
+  },
+  {
     version: '1.9.7',
     date: '2026-05-11',
     notes: [

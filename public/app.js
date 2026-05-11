@@ -11,6 +11,12 @@ const api = {
     update: (id, data) => fetch(`/api/team/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
     remove: (id) => fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json()),
   },
+  // Baseline snapshot — captures the current start/end dates on every task in a
+  // project so subsequent edits can be compared against the original plan.
+  baseline: {
+    set:   (project) => fetch('/api/baseline/set',   { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ project }) }).then(r => r.json()),
+    clear: (project) => fetch('/api/baseline/clear', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ project }) }).then(r => r.json()),
+  },
   // Per-project financial milestones. Independent from tasks: they're not in the grid,
   // don't have predecessors, and render as a Gantt overlay when the $ Financial toggle
   // is on. Auto-seeded from the default_financial_milestones setting via api.financials.seed.
@@ -109,6 +115,9 @@ const state = {
   // Toggle for the $ Financial Gantt overlay. Persisted to localStorage via
   // saveScheduleView so it sticks across reloads.
   showFinancials: false,
+  // Toggle for the Baseline ghost overlay — dashed outline at each task's
+  // baseline date range + a drift chip showing days moved vs. baseline.
+  showBaseline: false,
 };
 
 const ROW_H_MIN = 14;
@@ -1372,11 +1381,120 @@ function renderGantt() {
   if (!state.scheduleView?.ganttOnly) alignGanttToGrid();
   // Arrows render FIRST (behind everything) — bars and labels cover them visually.
   drawCustomArrows();
+  drawBaselineGhosts();
   drawMilestoneDiamonds();
   drawMilestoneLabels();
   clipBarLabels();
   drawScheduleStatus();
   drawFinancialOverlay();
+}
+
+// ---------- Baseline ghosts ----------
+// For every task with baseline_start_date + baseline_end_date set, draw a dashed
+// outline at the baseline's date range, behind the current bar. The outline
+// uses the SAME color family as the task itself (fill for the dashed stroke,
+// stroke shade for the drift label) so it reads as a ghost of THAT specific
+// task, not a generic purple overlay. A bare "+Nd" / "−Nd" label sits adjacent
+// to the bar — no pill background, no "vs baseline" wording.
+function drawBaselineGhosts() {
+  const svg = document.querySelector('#gantt-container .gantt');
+  if (!svg) return;
+  svg.querySelectorAll('.baseline-ghost, .baseline-drift-label').forEach(el => el.remove());
+  if (!state.showBaseline) return;
+  if (!state.gantt || !state.gantt.gantt_start) return;
+
+  const g = state.gantt;
+  const startMs = new Date(g.gantt_start).getTime();
+  const cw = g.options.column_width;
+  const mode = g.options.view_mode || 'Week';
+  const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+  const pxPerDay = cw / step;
+
+  // Signed business-day offset between two ISO dates. Returns 0 for same-day
+  // (businessDaysBetween itself is inclusive, hence the -1 correction).
+  const driftDays = (fromISO, toISO) => {
+    if (!fromISO || !toISO || fromISO === toISO) return 0;
+    const sign = toISO > fromISO ? 1 : -1;
+    const days = businessDaysBetween(
+      sign > 0 ? fromISO : toISO,
+      sign > 0 ? toISO   : fromISO,
+    );
+    return sign * Math.max(0, days - 1);
+  };
+
+  for (const task of state.tasks) {
+    if (!task.baseline_start_date || !task.baseline_end_date) continue;
+    if (!task.start_date || !task.end_date) continue;
+    const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
+    if (!wrap) continue;
+    const bar = wrap.querySelector('.bar');
+    if (!bar) continue;
+
+    const barY = +bar.getAttribute('y');
+    const barH = +bar.getAttribute('height');
+    const barX = +bar.getAttribute('x');
+    const barW = +bar.getAttribute('width');
+
+    const bsMs = new Date(task.baseline_start_date + 'T00:00:00').getTime();
+    const beMs = new Date(task.baseline_end_date + 'T00:00:00').getTime();
+    if (Number.isNaN(bsMs) || Number.isNaN(beMs)) continue;
+
+    const ghostX = ((bsMs - startMs) / 86400000) * pxPerDay;
+    const ghostW = Math.max(2, ((beMs - bsMs) / 86400000 + 1) * pxPerDay);
+
+    const startDrift = driftDays(task.baseline_start_date, task.start_date);
+    const endDrift   = driftDays(task.baseline_end_date,   task.end_date);
+    if (startDrift === 0 && endDrift === 0) continue;
+
+    // Pull live colors off the bar so the ghost matches THIS task's hue. Fill
+    // = the light shade (used as the dashed stroke); stroke = the dark shade
+    // (used as the drift-label text). Falls back to neutral slate if the bar
+    // somehow doesn't have computed colors.
+    const cs = window.getComputedStyle(bar);
+    const ghostStroke = (cs.fill && cs.fill !== 'none' && cs.fill !== 'rgb(0, 0, 0)')
+      ? cs.fill : '#64748b';
+    const labelFill = (cs.stroke && cs.stroke !== 'none' && cs.stroke !== 'rgb(0, 0, 0)')
+      ? cs.stroke : '#334155';
+
+    const ghost = document.createElementNS(SVG_NS, 'rect');
+    ghost.setAttribute('class', 'baseline-ghost');
+    ghost.setAttribute('x', ghostX);
+    ghost.setAttribute('y', barY);
+    ghost.setAttribute('width', ghostW);
+    ghost.setAttribute('height', barH);
+    ghost.setAttribute('rx', 3);
+    ghost.setAttribute('ry', 3);
+    ghost.setAttribute('fill', 'none');
+    ghost.setAttribute('stroke', ghostStroke);
+    ghost.setAttribute('stroke-width', '1.5');
+    ghost.setAttribute('stroke-dasharray', '5 3');
+    ghost.setAttribute('pointer-events', 'none');
+    wrap.insertBefore(ghost, wrap.firstChild);
+
+    // Drift label — bare "+Nd" / "−Nd" in the task's dark color. No pill, no
+    // "baseline" wording. Sits in the gap between the ghost and the live bar:
+    //   - Late (+): bar moved right → label hugs the left edge of the bar
+    //   - Early (−): bar moved left → label hugs the right edge of the bar
+    const driftMag = Math.abs(startDrift);
+    if (driftMag > 0) {
+      const isLate = startDrift > 0;
+      const labelText = `${isLate ? '+' : '−'}${driftMag}d`;
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('class', 'baseline-drift-label');
+      text.setAttribute('x', isLate ? (barX - 4) : (barX + barW + 4));
+      text.setAttribute('y', barY + barH / 2 + 3);
+      text.setAttribute('text-anchor', isLate ? 'end' : 'start');
+      text.setAttribute('font-size', '10');
+      text.setAttribute('font-weight', '700');
+      text.setAttribute('fill', labelFill);
+      text.setAttribute('stroke', '#ffffff');
+      text.setAttribute('stroke-width', '3');
+      text.setAttribute('paint-order', 'stroke');
+      text.setAttribute('pointer-events', 'none');
+      text.textContent = labelText;
+      svg.appendChild(text);
+    }
+  }
 }
 
 // ---------- Financial overlay ----------
@@ -2342,6 +2460,41 @@ function isTemplateProject(p) {
   return !!p && Array.isArray(state.templateProjects) && state.templateProjects.includes(p);
 }
 
+// Has the given project had a baseline set? "Set" = at least one task carries
+// baseline_start_date. Used by the Baseline toolbar buttons to label the left
+// half "Set baseline" vs "Reset baseline" and to enable/disable the visibility
+// toggle on the right half.
+function projectHasBaseline(p) {
+  if (!p) return false;
+  return state.tasks.some(t => t.project === p && t.baseline_start_date);
+}
+
+// Refresh both Baseline toolbar buttons to reflect the active project's
+// baseline state + the current overlay-visibility flag. Called after every
+// loadTasks() so a re-set in one tab is visible across all controls.
+function syncBaselineButtons() {
+  const setBtn = document.getElementById('btn-baseline-set');
+  const showBtn = document.getElementById('btn-baseline');
+  if (!setBtn || !showBtn) return;
+  const project = state.filters.project;
+  const has = projectHasBaseline(project);
+  setBtn.textContent = has ? 'Reset baseline' : 'Set baseline';
+  // "is-active" on the Set button is just a visual hint that a baseline EXISTS.
+  // The right toggle "is-active" means the overlay is currently drawn.
+  setBtn.classList.toggle('is-active', has);
+  setBtn.disabled = !project;
+  setBtn.title = !project
+    ? 'Open a specific project tab first — baselines are per-project.'
+    : (has
+        ? `Re-set baseline for "${project}" — overwrite the snapshot with today's dates.`
+        : `Set baseline for "${project}" — snapshot today's start/end dates as the plan-of-record.`);
+  showBtn.classList.toggle('is-active', !!state.showBaseline);
+  showBtn.classList.toggle('is-disabled', !has);
+  showBtn.title = has
+    ? 'Toggle the baseline overlay. Right-click to clear the baseline.'
+    : 'No baseline set yet — use "Set baseline" on the left first.';
+}
+
 function renderProjectTabs() {
   const wrap = document.getElementById('project-tabs');
   if (!wrap) return;
@@ -2923,6 +3076,10 @@ function showProjectAddPicker() {
 function render() {
   renderProjectTabs();
   renderFilters();
+  // Keep the Baseline buttons' labels (Set/Reset) and disabled state aligned
+  // with the active project after every render — covers project-tab switches
+  // as well as data reloads.
+  syncBaselineButtons();
   if (state.view === 'schedule') {
     renderTable();
     renderGantt();
@@ -5295,10 +5452,11 @@ const SCHED_VIEW_KEY = 'sdcSchedulerScheduleView';
 function loadScheduleView() {
   try {
     const saved = JSON.parse(localStorage.getItem(SCHED_VIEW_KEY) || '{}');
-    // showFinancials is persisted alongside the schedule-view flags but lives on
-    // state.showFinancials (not state.scheduleView) since the overlay isn't a
-    // section-rendering mode — it's an extra layer. Hydrate it as a side effect.
+    // showFinancials / showBaseline are persisted alongside the schedule-view
+    // flags but live on state.show* (not state.scheduleView) since the overlays
+    // aren't section-rendering modes — they're extra layers. Hydrate as side effects.
     state.showFinancials = !!saved.showFinancials;
+    state.showBaseline   = !!saved.showBaseline;
     return {
       flatten:      !!saved.flatten,
       sortByStart:  !!saved.sortByStart,
@@ -5311,7 +5469,13 @@ function loadScheduleView() {
   }
 }
 function saveScheduleView() {
-  try { localStorage.setItem(SCHED_VIEW_KEY, JSON.stringify({ ...state.scheduleView, showFinancials: state.showFinancials })); } catch {}
+  try {
+    localStorage.setItem(SCHED_VIEW_KEY, JSON.stringify({
+      ...state.scheduleView,
+      showFinancials: state.showFinancials,
+      showBaseline:   state.showBaseline,
+    }));
+  } catch {}
 }
 function applyScheduleView() {
   const setActive = (id, on) => {
@@ -5762,6 +5926,68 @@ async function init() {
       saveScheduleView();
       if (state.showFinancials) await loadFinancialsForAllOpenProjects();
       renderGantt();
+    });
+  }
+
+  // Baseline — segmented pair. Left button sets/re-sets the snapshot for the
+  // active project; its label flips between "Set baseline" and "Reset baseline"
+  // so the user can SEE at a glance whether a baseline exists. Right button
+  // toggles the dashed-outline overlay on the Gantt; right-click clears the
+  // baseline entirely.
+  const baseSetBtn = document.getElementById('btn-baseline-set');
+  const baseBtn    = document.getElementById('btn-baseline');
+  if (baseSetBtn && baseBtn) {
+    syncBaselineButtons();
+    baseSetBtn.addEventListener('click', async () => {
+      const project = state.filters.project;
+      if (!project) {
+        alert('Open a specific project tab first — baselines are per-project.');
+        return;
+      }
+      const has = projectHasBaseline(project);
+      const msg = has
+        ? `Reset the baseline for "${project}"? Today's start/end dates become the new plan-of-record.`
+        : `Set a baseline for "${project}" — snapshot today's start/end dates as the plan-of-record?`;
+      if (!confirm(msg)) return;
+      await api.baseline.set(project);
+      await loadTasks();
+      // Auto-enable the overlay when setting for the first time so the user
+      // immediately sees the result of their action. Re-sets leave the toggle
+      // wherever it was.
+      if (!has && !state.showBaseline) {
+        state.showBaseline = true;
+        saveScheduleView();
+      }
+      syncBaselineButtons();
+      renderGantt();
+    });
+    baseBtn.addEventListener('click', async () => {
+      const project = state.filters.project;
+      const turningOn = !state.showBaseline;
+      if (turningOn && project && !projectHasBaseline(project)) {
+        if (!confirm(`No baseline has been set for "${project}". Set one now?`)) return;
+        await api.baseline.set(project);
+        await loadTasks();
+      }
+      state.showBaseline = !state.showBaseline;
+      saveScheduleView();
+      syncBaselineButtons();
+      renderGantt();
+    });
+    baseBtn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const project = state.filters.project;
+      if (!project) return;
+      if (!projectHasBaseline(project)) return;
+      showContextMenu(e.clientX, e.clientY, [
+        { label: 'Clear baseline', danger: true, onClick: async () => {
+            if (!confirm(`Clear the baseline for "${project}"? Drift comparisons will no longer be available.`)) return;
+            await api.baseline.clear(project);
+            await loadTasks();
+            syncBaselineButtons();
+            renderGantt();
+          } },
+      ]);
     });
   }
 
