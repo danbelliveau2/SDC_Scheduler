@@ -41,6 +41,7 @@ db.exec(`
     discipline TEXT NOT NULL,
     active INTEGER DEFAULT 1,
     sort_order INTEGER DEFAULT 0,
+    is_lead INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -190,6 +191,14 @@ function columnExists(table, col) {
   const rows = db.prepare(`PRAGMA table_info(${table})`).all();
   return rows.some(r => r.name === col);
 }
+
+// team_members migrations — add columns to existing tables without dropping data.
+if (!columnExists('team_members', 'is_lead')) {
+  db.exec('ALTER TABLE team_members ADD COLUMN is_lead INTEGER DEFAULT 0');
+}
+if (!columnExists('team_members', 'specialty')) {
+  db.exec('ALTER TABLE team_members ADD COLUMN specialty TEXT');
+}
 const migrations = [
   { col: 'project',        sql: 'ALTER TABLE tasks ADD COLUMN project TEXT' },
   { col: 'phase',          sql: 'ALTER TABLE tasks ADD COLUMN phase TEXT' },
@@ -228,6 +237,9 @@ if (columnExists('tasks', 'category')) {
 db.exec(`
   UPDATE tasks SET anchor_key = 'receipt_of_po'
     WHERE LOWER(TRIM(name)) = 'receipt of po' AND (anchor_key IS NULL OR anchor_key = '');
+  UPDATE tasks SET anchor_key = 'mech_release_1'
+    WHERE LOWER(TRIM(name)) IN ('mech 1 release', 'mech release 1', 'mech1 release')
+      AND (anchor_key IS NULL OR anchor_key = '');
   UPDATE tasks SET anchor_key = 'machine_power_up'
     WHERE LOWER(TRIM(name)) IN ('machine power-up', 'machine powerup', 'machine power up')
       AND (anchor_key IS NULL OR anchor_key = '');
@@ -246,6 +258,16 @@ db.exec(`
         department     = 'shop',
         sub_department = 'wire'
     WHERE anchor_key = 'machine_power_up'
+      AND (phase_group IS NULL OR phase_group = '');
+
+  -- Mech 1 Release lives inside section 10 → Engineering → Mechanical (it's the
+  -- mechanical drawing release that gates procurement + shop start). Same idea
+  -- as Machine Power-Up — anchor that flows inside a hierarchy bucket.
+  UPDATE tasks
+    SET phase_group    = 'design_build',
+        department     = 'engineering',
+        sub_department = 'mech'
+    WHERE anchor_key = 'mech_release_1'
       AND (phase_group IS NULL OR phase_group = '');
 
   -- Spine-floater anchors (Receipt of PO / FAT / Ship Machine) must NOT have a
@@ -395,6 +417,43 @@ if (!someoneHasPriority) {
   for (const r of all) {
     counter[r.assignee] = (counter[r.assignee] || 0) + 1;
     upd.run(counter[r.assignee], r.id);
+  }
+}
+
+// Every-startup compaction: rewrite each assignee's priority list as a dense
+// 1, 2, 3 ... sequence in their current priority/id order. Heals gaps left by
+// historical deletes / reassigns (which is why a freshly-added task could
+// otherwise inherit a priority like 13 even when the person only had 2 tasks).
+// Idempotent: once compacted, repeated runs are no-ops.
+{
+  const assignees = db.prepare(
+    "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND assignee <> ''"
+  ).all();
+  const upd = db.prepare('UPDATE tasks SET priority = ? WHERE id = ?');
+  for (const a of assignees) {
+    const rows = db.prepare(
+      'SELECT id, priority FROM tasks WHERE assignee = ? ORDER BY priority IS NULL, priority ASC, id ASC'
+    ).all(a.assignee);
+    rows.forEach((r, i) => {
+      const target = i + 1;
+      if (r.priority !== target) upd.run(target, r.id);
+    });
+  }
+}
+
+// One-time migration: Backlog tasks created before the phase_group=null fix
+// still live inside section 10 (design_build). Move them above section 10 so
+// they render right under Receipt of PO like the new ones do. Safe to run on
+// every startup — only matches tasks that are still in the old shape.
+{
+  const r = db.prepare(`
+    UPDATE tasks
+       SET phase_group = NULL, department = NULL, sub_department = NULL
+     WHERE LOWER(name) = 'backlog'
+       AND phase_group = 'design_build'
+  `).run();
+  if (r.changes > 0) {
+    console.log(`Migrated ${r.changes} Backlog task(s) out of section 10 → above-section spine.`);
   }
 }
 

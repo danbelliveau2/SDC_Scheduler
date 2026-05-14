@@ -17,7 +17,13 @@ Thumbs.db
 
 # Logs
 *.log
+*.err
 npm-debug.log*
+
+# Local data / private assets
+Estimate Sheet/
+Smartsheet Schedules/
+*.pdf
 
 # Environment
 .env

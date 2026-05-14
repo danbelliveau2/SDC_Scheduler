@@ -60,6 +60,7 @@ const api = {
 // TEAM_DISCIPLINES set. The bar color used in the Resources timeline is per-PROJECT, not per-
 // discipline, so the discipline color/text below is only used for chips and headers.
 const DISCIPLINES = [
+  { key: 'pm',       label: 'Project Management',   short: 'PM',       color: '#e9d5ff', text: '#581c87' },
   { key: 'mech',     label: 'Mechanical Engineers', short: 'Mech',     color: '#bfdbfe', text: '#1e3a8a' },
   { key: 'controls', label: 'Controls Engineers',   short: 'Controls', color: '#bbf7d0', text: '#14532d' },
   { key: 'build',    label: 'Builders',             short: 'Build',    color: '#fed7aa', text: '#7c2d12' },
@@ -94,7 +95,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -118,6 +119,18 @@ const state = {
   // Toggle for the Baseline ghost overlay — dashed outline at each task's
   // baseline date range + a drift chip showing days moved vs. baseline.
   showBaseline: false,
+  // Undo / Redo history. Capped at UNDO_STACK_MAX entries (see pushUndoSnapshot).
+  // Each entry: { taskId, before: { field: value, ... }, description }.
+  // - Undo pops from undoStack, captures the CURRENT field values as a redo
+  //   entry, then re-applies the `before` snapshot via api.update.
+  // - Redo pops from redoStack, captures the CURRENT field values as an undo
+  //   entry, then re-applies the redo entry's `before` (which holds the
+  //   "after" state of the original edit).
+  // - A NEW edit (via pushUndoSnapshot) clears redoStack so history stays
+  //   linear and doesn't desync.
+  // Cleared at page reload (no localStorage persistence).
+  undoStack: [],
+  redoStack: [],
 };
 
 const ROW_H_MIN = 14;
@@ -173,13 +186,12 @@ function predParse(displayString) {
 function buildCanonicalTaskOrder() {
   const filtered = applyFilters(state.tasks);
   const buckets = {};
+  // Mech 1 Release + Machine Power-Up flow through their hierarchy bucket; all
+  // other anchors render at fixed spine positions outside the walk.
+  const INLINE_ANCHORS = new Set(['mech_release_1', 'machine_power_up']);
   for (const t of filtered) {
-    // Anchors render at fixed spine positions outside the bucket walk. Machine
-    // Power-Up is the one exception — it lives inside section 10 Wire and flows
-    // through its bucket. Match by anchor_key (not phase_group presence) so stale
-    // data on the spine anchors can't sneak them into a bucket.
     const k = inferredAnchorKey(t);
-    if (k && k !== 'machine_power_up') continue;
+    if (k && !INLINE_ANCHORS.has(k)) continue;
     const path = groupPath(t.phase_group, t.department, t.sub_department);
     (buckets[path] ||= []).push(t);
   }
@@ -205,14 +217,20 @@ function buildCanonicalTaskOrder() {
 
   const order = [];
   if (receiptAnchor) order.push(receiptAnchor.id);
+  // Backlog sits BETWEEN Receipt of PO and section 10 in the rendered grid
+  // (anchorRowHtml renders it right after PO). Include it in the canonical
+  // line order so it gets a stable line number — without this, predecessors
+  // that point at backlog (Mechanical Design starts with backlogFS) display
+  // as "?id" because lineByTaskId[backlogId] is undefined.
+  const backlogTask = filtered.find(t => isBacklogTask(t));
+  if (backlogTask) order.push(backlogTask.id);
   for (const group of HIERARCHY) {
     if (state.scheduleView?.flatten) {
-      // Same bucket rule as the table walk: keep Machine Power-Up, drop the other
-      // anchors regardless of their stored phase_group.
+      // Same INLINE_ANCHORS rule as the table walk.
       const sectionTasks = filtered.filter(t => {
         if (t.phase_group !== group.key) return false;
         const k = inferredAnchorKey(t);
-        return !k || k === 'machine_power_up';
+        return !k || INLINE_ANCHORS.has(k);
       });
       sortBucket(sectionTasks);
       let shipDropped = false;
@@ -337,6 +355,83 @@ function isPlaceholder(name) {
   return /\bplaceholder\b/i.test(String(name || ''));
 }
 
+// Capacity snapshot for one discipline:
+//   - realCount:     number of active, non-placeholder team members in that discipline
+//   - scheduledHrs:  total scheduled hours = SUM(duration_days × 8 × allocation%)
+//                    across every task currently assigned to someone in that discipline
+//                    (placeholders included, since templated work is still "sold")
+//   - weeksAhead:    scheduledHrs ÷ (realCount × 40 × 0.9). null when realCount is 0
+//                    (no real people → infinite weeks, not meaningful).
+// Drives the "X hrs scheduled · Y wks at 90%" line under each discipline's card.
+function computeDisciplineCapacity(discKey, members) {
+  const memberNames = new Set(members.map(m => m.name));
+  const realCount = members.filter(m => !isPlaceholder(m.name) && m.active !== 0).length;
+  let hrs = 0;
+  for (const t of state.tasks) {
+    if (t.is_milestone) continue;
+    if (!t.assignee || !memberNames.has(t.assignee)) continue;
+    const dur = Number(t.duration_days);
+    if (!dur || dur <= 0) continue;
+    const alloc = t.allocation == null ? 90 : Math.max(0, Math.min(100, Number(t.allocation)));
+    hrs += dur * 8 * (alloc / 100);
+  }
+  const scheduledHrs = Math.round(hrs);
+  const weeklyCapacity = realCount * 40 * 0.9;
+  const weeksAhead = weeklyCapacity > 0 ? Math.round((scheduledHrs / weeklyCapacity) * 10) / 10 : null;
+  const tooltip = realCount > 0
+    ? `${scheduledHrs.toLocaleString()} hrs total ÷ (${realCount} × 40 × 90%) = ${weeksAhead} weeks of work.`
+    : `${scheduledHrs.toLocaleString()} hrs scheduled. Add real team members (non-placeholders) to see capacity in weeks.`;
+  return { realCount, scheduledHrs, weeksAhead, tooltip };
+}
+
+// Which team disciplines plausibly own this task? Drives the filtered assignee
+// dropdown so e.g. a CONTROLS ENGINEERING task only surfaces controls engineers.
+// Ambiguous buckets (General Engineering, Section 40/50 dept-level rows where
+// either engineers OR shop could own it) return multiple disciplines. Unknown
+// or missing classification returns ALL disciplines so the dropdown still shows
+// every option as a safe default.
+function relevantDisciplinesForTask(task) {
+  if (!task) return ['mech', 'controls', 'build', 'wire'];
+  const pg  = task.phase_group;
+  const dep = task.department;
+  const sub = task.sub_department;
+
+  // Section 10 — Design & Build: sub-department is highly specific where set.
+  if (pg === 'design_build') {
+    if (sub === 'mech')     return ['mech'];
+    if (sub === 'controls') return ['controls'];
+    if (sub === 'build')    return ['build'];
+    if (sub === 'wire')     return ['wire'];
+    if (sub === 'general')  return ['mech', 'controls'];   // any engineer
+    // Department-level rows (no sub) — engineering = either engineer,
+    // shop = either trade, procurement = anyone.
+    if (dep === 'engineering') return ['mech', 'controls'];
+    if (dep === 'shop')        return ['build', 'wire'];
+    if (dep === 'procurement') return ['mech', 'controls', 'build', 'wire'];
+  }
+
+  // Section 40 — Machine Testing: dept-only, both disciplines under each.
+  if (pg === 'machine_testing') {
+    if (dep === 'engineering') return ['mech', 'controls'];
+    if (dep === 'shop')        return ['build', 'wire'];
+  }
+
+  // Section 50 — Teardown & Install. Teardown is shop-only; Install has both.
+  if (pg === 'teardown_install') {
+    if (dep === 'teardown') return ['build', 'wire'];
+    if (dep === 'install') {
+      if (sub === 'engineering') return ['mech', 'controls'];
+      if (sub === 'shop')        return ['build', 'wire'];
+      // Install at the dept level — anyone.
+      return ['mech', 'controls', 'build', 'wire'];
+    }
+  }
+
+  // Anything else (no classification, anchors before they're given a section,
+  // etc.) — return all four so the dropdown is unconstrained.
+  return ['mech', 'controls', 'build', 'wire'];
+}
+
 function isWeekendDate(d) {
   const day = d.getUTCDay();
   return day === 0 || day === 6;
@@ -393,7 +488,17 @@ function durationLabel(task) {
   if (d == null) d = businessDaysBetween(task.start_date, task.end_date);
   if (d == null) return '';
   if (d === 0) return '0';
+  // Whole weeks: 5, 10, 15, ... → "Nw"
   if (d % 5 === 0 && d >= 5) return `${d / 5}w`;
+  // Half-week buckets — every duration generated by the estimate-create
+  // pipeline lands on one of these: ceil(n × 2.5) for integer n ≥ 1
+  // → 3 (0.5w), 8 (1.5w), 13 (2.5w), 18 (3.5w), 23 (4.5w), 28 (5.5w), 33, 38, 43, 48, 53, 58 (11.5w), ...
+  // Detect that pattern and label as half-week: 3 → "0.5w", 13 → "2.5w", etc.
+  const nHalfWeeks = Math.round(d / 2.5);
+  if (nHalfWeeks >= 1 && Math.ceil(nHalfWeeks * 2.5) === d) {
+    return `${nHalfWeeks / 2}w`;
+  }
+  // Fallback for arbitrary day counts: decimal weeks if ≥ 10 days, else "Nd".
   if (d >= 10) return `${(d / 5).toFixed(1)}w`;
   return `${d}d`;
 }
@@ -423,8 +528,122 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// In-app confirm / alert dialogs that match the SDC app styling instead of the
+// browser-native white box. Both return a Promise so callers can `await` them.
+// Caller passes plain text (which we escape) — line breaks turn into <br>.
+function _formatDialogMessage(msg) {
+  if (msg == null) return '';
+  return escapeHtml(msg).replace(/\n/g, '<br>');
+}
+function showConfirmDialog(opts = {}) {
+  return new Promise(resolve => {
+    document.getElementById('app-confirm-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'app-confirm-dialog';
+    overlay.className = 'modal-overlay app-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card app-dialog ${opts.danger ? 'app-dialog-danger' : ''}">
+        ${opts.title ? `<div class="modal-head"><h2>${escapeHtml(opts.title)}</h2></div>` : ''}
+        <div class="modal-body">
+          <div class="app-dialog-message">${_formatDialogMessage(opts.message)}</div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost" data-action="cancel">${escapeHtml(opts.cancelLabel || 'Cancel')}</button>
+          <button type="button" class="${opts.danger ? 'btn-danger' : 'btn-primary'}" data-action="ok">${escapeHtml(opts.okLabel || 'OK')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = (result) => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(result);
+    };
+    overlay.querySelector('[data-action="cancel"]').onclick = () => done(false);
+    overlay.querySelector('[data-action="ok"]').onclick     = () => done(true);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(false); }
+      else if (e.key === 'Enter')  { e.preventDefault(); done(true);  }
+    };
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => overlay.querySelector('[data-action="ok"]')?.focus(), 0);
+  });
+}
+function showAlertDialog(opts = {}) {
+  // Accept either an opts object or a plain string. String form mirrors window.alert.
+  if (typeof opts === 'string') opts = { message: opts };
+  return new Promise(resolve => {
+    document.getElementById('app-alert-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'app-alert-dialog';
+    overlay.className = 'modal-overlay app-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card app-dialog">
+        ${opts.title ? `<div class="modal-head"><h2>${escapeHtml(opts.title)}</h2></div>` : ''}
+        <div class="modal-body">
+          <div class="app-dialog-message">${_formatDialogMessage(opts.message)}</div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-primary" data-action="ok">${escapeHtml(opts.okLabel || 'OK')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = () => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve();
+    };
+    overlay.querySelector('[data-action="ok"]').onclick = done;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(); });
+    const onKey = (e) => {
+      if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); done(); }
+    };
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => overlay.querySelector('[data-action="ok"]')?.focus(), 0);
+  });
+}
+
 function uniqueValues(field) {
   return [...new Set(state.tasks.map(t => t[field]).filter(Boolean))].sort();
+}
+
+// Roll up per-project stats for the schedule header pills:
+//   - percentComplete: labor-weighted % done = SUM(duration × progress) /
+//     SUM(duration) across non-milestone tasks. Returns null when no tasks have
+//     durations yet (fresh project).
+//   - fatVariance: business-day signed offset between current FAT anchor's
+//     start_date and its baseline_start_date. null when no baseline is set.
+function computeProjectStats(project) {
+  if (!project) return { percentComplete: null, fatVariance: null };
+  const tasks = state.tasks.filter(t => t.project === project);
+  // % complete (labor-weighted)
+  let weighted = 0, total = 0;
+  for (const t of tasks) {
+    if (t.is_milestone) continue;
+    if (inferredAnchorKey(t)) continue;
+    const d = Number(t.duration_days);
+    if (!d || d <= 0) continue;
+    const p = Math.max(0, Math.min(100, Number(t.progress) || 0));
+    total += d;
+    weighted += d * p;
+  }
+  const percentComplete = total > 0 ? Math.round(weighted / total) : null;
+  // FAT variance — current FAT vs baseline FAT, in business days.
+  const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
+  let fatVariance = null;
+  if (fat && fat.baseline_start_date && fat.start_date) {
+    if (fat.baseline_start_date === fat.start_date) {
+      fatVariance = 0;
+    } else {
+      const sign = fat.start_date > fat.baseline_start_date ? 1 : -1;
+      const days = businessDaysBetween(
+        sign > 0 ? fat.baseline_start_date : fat.start_date,
+        sign > 0 ? fat.start_date           : fat.baseline_start_date,
+      );
+      fatVariance = sign * Math.max(0, days - 1);
+    }
+  }
+  return { percentComplete, fatVariance };
 }
 
 // Compute how far ahead/behind a task is at today's date. Returns business-day
@@ -433,6 +652,7 @@ function uniqueValues(field) {
 function taskScheduleDelta(task) {
   if (!task || task.is_milestone || !task.start_date || !task.end_date) return 0;
   if (inferredAnchorKey(task)) return 0;
+  if (isBacklogTask(task)) return 0;
   const totalDays = businessDaysBetween(task.start_date, task.end_date);
   if (!totalDays || totalDays <= 0) return 0;
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -457,10 +677,14 @@ function applyFilters(tasks) {
       const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''} ${t.phase||''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    // Anchors are always kept — they're the project spine, not "tasks" the user
-    // is asking to focus on. The quick filters target real work rows below.
+    // Milestones — anchors (PO / Mech 1 / Power-Up / FAT / Ship) AND the
+    // smaller non-anchor milestones (Mech 2 Release, BOM Review, etc.) — are
+    // always kept regardless of which quick filter is on. They're spine /
+    // schedule markers, not "tasks" the user is asking to focus on. So
+    // clicking "Behind schedule" doesn't hide your project anchors, clicking
+    // "Assigned" doesn't hide unassigned milestone markers, etc.
     const isAnchor = !!inferredAnchorKey(t);
-    if (isAnchor) return true;
+    if (isAnchor || t.is_milestone) return true;
     if (qf.milestones && !t.is_milestone) return false;
     if (qf.assigned && !t.assignee) return false;
     if (qf.behind && taskScheduleDelta(t) >= 0) return false;
@@ -484,7 +708,59 @@ function cellHtml(t, key) {
   const cls = colClass(key);
   switch (key) {
     case 'line':     return `<td class="${cls}" data-col="line"><span class="row-drag" draggable="true" title="Drag to move">⋮⋮</span><span class="line-num"></span></td>`;
-    case 'name':     return `<td class="${cls}" data-col="name">${escapeHtml(t.name)}</td>`;
+    case 'name': {
+      // Task column layout:
+      //   LEFT:  [✓] name [drift chip]
+      //   RIGHT: [% complete pill] for duration tasks, [checkbox] for milestones
+      //          (NOTHING for Backlog — it's a duration-only spine task)
+      const done = (t.progress || 0) >= 100;
+      const isAnchor = !!inferredAnchorKey(t);
+      const isBacklog = isBacklogTask(t);
+      const drift = taskScheduleDelta(t);
+      let driftChip = '';
+      // Drift chip is for IN-PROGRESS work only — once a task is 100% done,
+      // there's no "ahead" or "behind" anymore, it's just complete. So skip
+      // the chip when done (the green name + checkmark pill already say "done").
+      if (drift !== 0 && !t.is_milestone && !isAnchor && !isBacklog && !done) {
+        const ahead = drift > 0;
+        driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
+      }
+      const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
+      let rightWidget = '';
+      if (isBacklog) {
+        // Backlog: no widget. It's a calendar block, not a work task.
+        rightWidget = '';
+      } else if (!t.is_milestone && !isAnchor) {
+        // Duration task: pill shows % complete in colored bg (slate/red/green).
+        // At 100% the pill collapses to a green ✓ — same visual treatment as
+        // the milestone-check.is-done — instead of "100%" text + green name.
+        // Keeps "done" rows quiet (just a ✓ on the right) while in-progress
+        // rows still call out their %.
+        let pctClass = 'is-zero';
+        let pctText = `${pct}%`;
+        if (pct >= 100) {
+          pctClass = 'is-done';
+          pctText = '✓';
+        } else if (pct > 0) {
+          pctClass = drift < 0 ? 'is-behind' : 'is-ontrack';
+        }
+        rightWidget = `<span class="name-edit-pill name-pct-pill ${pctClass}" data-edit-pill data-edit-col="progress" data-task-id="${t.id}" title="% complete — click to edit">${pctText}</span>`;
+      } else {
+        // Milestones / anchors get a click-to-toggle checkbox. Progress is
+        // binary (0 or 100). Anchors already render via anchorRowHtml with a
+        // green chip, but non-anchor milestones (Mech 2 Release, BOM Review,
+        // Order Long Lead, etc.) need a way to mark them complete.
+        rightWidget = `<button type="button" class="name-milestone-check ${done ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${done ? 'Mark not complete' : 'Mark complete'}">${done ? '✓' : ''}</button>`;
+      }
+      const classes = [cls];
+      if (isBacklog) classes.push('name-backlog');
+      // Note: completed duration tasks deliberately do NOT get a "name-done"
+      // class — the task name stays black/normal, same as a completed milestone.
+      // The green ✓ pill on the right is the sole signal that the row is done,
+      // so duration tasks and milestones read consistently when complete.
+      if (rightWidget) classes.push('has-pills');
+      return `<td class="${classes.join(' ')}" data-col="name">${escapeHtml(t.name)}${driftChip}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
+    }
     case 'assignee': {
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
       // running daily total over 100% somewhere in its span — flag the cell so the user
@@ -519,6 +795,13 @@ function cellHtml(t, key) {
       // primary editor (drag/click pills there); this column is mostly for visibility.
       const p = t.priority == null ? '—' : t.priority;
       return `<td class="${cls}" data-col="priority">${p}</td>`;
+    }
+    case 'notes': {
+      // Free-text comments. Truncated visually via CSS so long notes don't
+      // blow up the row; full content shown on hover via title attribute.
+      const text = t.notes || '';
+      const safe = escapeHtml(text);
+      return `<td class="${cls}" data-col="notes" title="${safe}">${safe}</td>`;
     }
   }
   return `<td data-col="${key}"></td>`;
@@ -557,7 +840,12 @@ function rowHtml(t, depth = 0) {
   const stripe = (hier && hier.fill) || PHASE_BY_KEY[t.phase]?.color || 'transparent';
   // Row itself is NOT draggable — only the .row-drag handle in the line column is, so the
   // rest of the row is free for click-drag horizontal panning of the grid panel.
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  // Non-anchor milestones (e.g. Mech 2 Release, BOM Review) also get the "done"
+  // treatment so all 0-duration rows read consistently — green check on the row
+  // chip + a diamond fill that matches anchors. Anchors take their own path via
+  // anchorRowHtml above; this is for the regular bucket-resident milestones.
+  const milestoneDone = t.is_milestone && (t.progress || 0) >= 100 ? ' milestone-done' : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -598,19 +886,17 @@ function renderTable() {
   }
   empty.classList.add('hidden');
 
-  // Bucket tasks by hierarchy path. Anchor milestones render as fixed rows outside
-  // the section walk (Receipt of PO above 10, FAT between 40/50, Ship Machine
-  // between teardown and install). The ONE exception is Machine Power-Up: it lives
-  // inside section 10 → Shop → Wire and flows naturally with the wire team's work,
-  // so it stays in the bucket walk (with anchor styling layered on at render time).
-  // We match by anchor_key explicitly — checking phase_group alone would let stale
-  // data on the other three anchors (e.g. a legacy Receipt of PO row with phase_group
-  // = teardown_install from an old migration) double-render: once on the spine, once
-  // in whichever bucket the stale phase_group points to.
+  // Bucket tasks by hierarchy path. Most anchor milestones render as fixed rows
+  // outside the section walk (Receipt of PO above 10, FAT between 40/50, Ship
+  // Machine between teardown and install). Mech 1 Release and Machine Power-Up
+  // are the exceptions — they live INSIDE the hierarchy buckets (10 → Mech Eng
+  // and 10 → Shop → Wire respectively) so they flow with their team's work.
+  // Anchor styling is layered on at render time via renderTaskRow's branching.
+  const INLINE_ANCHORS = new Set(['mech_release_1', 'machine_power_up']);
   const buckets = {};
   for (const t of filtered) {
     const k = inferredAnchorKey(t);
-    if (k && k !== 'machine_power_up') continue;
+    if (k && !INLINE_ANCHORS.has(k)) continue;
     const path = groupPath(t.phase_group, t.department, t.sub_department);
     (buckets[path] ||= []).push(t);
   }
@@ -629,14 +915,14 @@ function renderTable() {
 
   // Flatten mode collects every task under each section into one ordered list and
   // skips dept / sub-dept walks. Built once so it's cheap to look up per section.
-  // Same anchor-keep rule as the bucketed walk: only Machine Power-Up flows into
-  // its section's flat list; the other anchors render outside the walk regardless
-  // of what their stored phase_group says.
+  // Same INLINE_ANCHORS rule as the bucketed walk: Mech 1 Release and Machine
+  // Power-Up flow into their section's flat list; the other anchors render
+  // outside the walk regardless of what their stored phase_group says.
   const flatBySection = {};
   if (state.scheduleView.flatten) {
     for (const t of filtered) {
       const k = inferredAnchorKey(t);
-      if (k && k !== 'machine_power_up') continue;
+      if (k && !INLINE_ANCHORS.has(k)) continue;
       if (!t.phase_group) continue;
       (flatBySection[t.phase_group] ||= []).push(t);
     }
@@ -650,15 +936,26 @@ function renderTable() {
   // inside section 50. EXACTLY ONE of each is rendered (oldest wins on duplicates).
   // The row stays plain white — only the task NAME gets the configured anchor color
   // as a small chip, so the marker stands out without flooding the row.
-  const anchorRowHtml = (t) => {
+  const anchorRowHtml = (t, opts = {}) => {
     const order = state.layout.columnOrder;
+    const isDone = (t.progress || 0) >= 100;
+    const isBacklog = !!opts.backlog;
     const cells = order.map(k => {
       if (k === 'name') {
-        return `<td data-col="name"><span class="anchor-name-chip">${escapeHtml(t.name || '')}</span></td>`;
+        const check = (isDone && !isBacklog) ? '<span class="anchor-done-check">✓</span> ' : '';
+        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}`;
+        return `<td data-col="name"><span class="${chipCls}">${check}${escapeHtml(t.name || '')}</span></td>`;
       }
       return cellHtml(t, k);
     }).join('');
-    return `<tr data-id="${t.id}" class="depth-1 anchor-row" data-anchor-key="${escapeHtml(inferredAnchorKey(t) || '')}">${cells}</tr>`;
+    // groupTop: black border ABOVE the row (default true for unrelated anchors)
+    // groupBottom: black border BELOW the row (default true for unrelated anchors)
+    // When PO + Backlog are stacked, PO gets groupTop only and Backlog gets
+    // groupBottom only — they read as one continuous spine block.
+    const groupTop    = opts.groupTop    !== false;
+    const groupBottom = opts.groupBottom !== false;
+    const cls = `depth-1 anchor-row${isDone && !isBacklog ? ' is-done' : ''}${isBacklog ? ' backlog-row' : ''}${!groupTop ? ' no-top-border' : ''}${!groupBottom ? ' no-bottom-border' : ''}`;
+    return `<tr data-id="${t.id}" class="${cls}" data-anchor-key="${escapeHtml(inferredAnchorKey(t) || '')}">${cells}</tr>`;
   };
   const candidates = filtered
     .map(t => [t, inferredAnchorKey(t)])
@@ -672,7 +969,12 @@ function renderTable() {
   const fatAnchor     = pickOldest('fat');
   const shipAnchor    = pickOldest('ship_machine');
   // Receipt of PO — top of the schedule, above section 10.
-  if (receiptAnchor) html += anchorRowHtml(receiptAnchor);
+  const backlogTask = filtered.find(t => isBacklogTask(t));
+  // If Backlog is present, suppress PO's BOTTOM border so PO + Backlog read as
+  // one continuous spine block (border only at the very top of PO and very
+  // bottom of Backlog).
+  if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: !backlogTask });
+  if (backlogTask)   html += anchorRowHtml(backlogTask,   { backlog: true, groupTop: false });
 
   // Walk the full canonical hierarchy. Every level renders its header even when empty —
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
@@ -891,6 +1193,27 @@ function handleCellClick(e) {
     deleteTaskById(Number(delBtn.dataset.taskId));
     return;
   }
+  // Editable pill inside the Task column (allocation / % complete). Intercept first
+  // so the broader name-cell edit handler doesn't try to edit the task name.
+  const pill = e.target.closest('[data-edit-pill]');
+  if (pill) {
+    e.stopPropagation();
+    const taskId = Number(pill.dataset.taskId);
+    const col = pill.dataset.editCol;
+    enterPillEdit(pill, taskId, col);
+    return;
+  }
+  // Milestone / anchor checkbox — toggle progress between 0 and 100.
+  const mcheck = e.target.closest('[data-toggle-milestone]');
+  if (mcheck) {
+    e.stopPropagation();
+    const taskId = Number(mcheck.dataset.taskId);
+    const task = state.tasks.find(t => t.id === taskId);
+    if (!task) return;
+    const newProgress = (task.progress || 0) >= 100 ? 0 : 100;
+    api.update(taskId, { progress: newProgress }).then(() => loadTasks());
+    return;
+  }
   const td = e.target.closest('td[data-col]');
   if (!td) return;
   const tr = td.closest('tr[data-id]');
@@ -899,6 +1222,39 @@ function handleCellClick(e) {
   const col = td.dataset.col;
   if (col === 'line') return; // auto-computed, not editable
   enterCellEdit(td, id, col);
+}
+
+// Mini-editor for the right-side pills inside the Task column. Same machinery as
+// enterCellEdit (uses createEditInput + saveCellEdit) but contained inside the
+// pill so the surrounding name cell layout doesn't reflow.
+function enterPillEdit(pill, taskId, col) {
+  if (pill.querySelector('input, select')) return;
+  const task = state.tasks.find(t => t.id === taskId);
+  if (!task) return;
+  const original = currentCellValue(task, col);
+  const input = createEditInput(col, original, task);
+  input.classList.add('name-pill-input');
+  pill.classList.add('editing');
+  pill.innerHTML = '';
+  pill.appendChild(input);
+  input.focus();
+  if (typeof input.select === 'function') input.select();
+
+  let done = false;
+  const finalize = async (commit) => {
+    if (done) return;
+    done = true;
+    if (commit && input.value !== original) {
+      try { await saveCellEdit(taskId, col, input.value, task); }
+      catch (err) { console.error(err); }
+    }
+    await loadTasks();
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finalize(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finalize(false); }
+  });
+  input.addEventListener('blur', () => finalize(true));
 }
 
 
@@ -968,24 +1324,35 @@ function currentCellValue(task, col) {
     case 'progress': return String(task.progress || 0);
     case 'allocation': return String(task.allocation == null ? 90 : task.allocation);
     case 'priority': return String(task.priority == null ? 1 : task.priority);
+    case 'notes':    return task.notes || '';
   }
   return '';
 }
 
-function createEditInput(col, value) {
+function createEditInput(col, value, task) {
   if (col === 'assignee') {
-    // Constrained to active team members. Names are grouped by discipline so the user can
-    // tell at a glance who's a mech engineer vs. an electrician. Existing assignees that
-    // aren't on the team list show up as a "(not on team)" option so legacy data stays
-    // visible — saving picks any one of these and stores the name string verbatim.
+    // Constrained to active team members in the disciplines that plausibly own
+    // this task. CONTROLS ENGINEERING task → only controls engineers. BUILD task
+    // → only builders. Ambiguous buckets (General Engineering, Section 40/50
+    // dept-level) widen to every relevant discipline. Cross-discipline
+    // assignment isn't offered here — use the Resources view if you really need
+    // to assign across boundaries.
+    //
+    // One nuance: if the task is ALREADY assigned to someone from a discipline
+    // outside the filter, we expand the filter just enough to include them so
+    // they don't disappear from the dropdown when the user opens it.
     const sel = document.createElement('select');
     sel.className = 'cell-edit-input';
     const blank = document.createElement('option');
     blank.value = '';
     blank.textContent = '— unassigned —';
     sel.appendChild(blank);
+    const relevant = new Set(relevantDisciplinesForTask(task));
+    const currentMember = value ? state.team.find(m => m.name === value && m.active !== 0) : null;
+    if (currentMember) relevant.add(currentMember.discipline);
     const seen = new Set();
     for (const disc of DISCIPLINES) {
+      if (!relevant.has(disc.key)) continue;
       const members = state.team.filter(m => m.discipline === disc.key && m.active !== 0);
       if (members.length === 0) continue;
       const og = document.createElement('optgroup');
@@ -999,6 +1366,8 @@ function createEditInput(col, value) {
       }
       sel.appendChild(og);
     }
+    // Legacy assignees that aren't on the team list at all — show them so old
+    // data is still editable, but flag the row clearly.
     if (value && !seen.has(value)) {
       const og = document.createElement('optgroup');
       og.label = 'Not on team';
@@ -1085,8 +1454,130 @@ async function saveCellEdit(id, col, value, task) {
     case 'progress':   data.progress   = Math.max(0, Math.min(100, Number(value) || 0)); break;
     case 'allocation': data.allocation = Math.max(0, Math.min(100, Number(value) || 0)); break;
     case 'priority':   data.priority   = Math.max(1, Math.min(99, Number(value) || 1)); break;
+    case 'notes':      data.notes      = (value || '').trim() || null; break;
   }
-  if (Object.keys(data).length > 0) await api.update(id, data);
+  if (Object.keys(data).length > 0) {
+    // Snapshot the task BEFORE the change so the toolbar Undo button can roll
+    // it back. We snapshot just the fields we know we might write, so undo
+    // restores precisely what the edit changed — not unrelated columns.
+    pushUndoSnapshot(task, Object.keys(data), `Edit ${col} on "${task.name || 'task'}"`);
+    await api.update(id, data);
+  }
+}
+
+// ---------- Undo ----------
+// Simple undo stack — records the BEFORE-state of any task field the user
+// edits via the grid (cell edits, pill edits) or the lag editor on the Gantt
+// arrows. Click the Undo button in the toolbar to pop the top entry and
+// restore that task's snapshot.
+// Stack is capped at 20 entries; older edits drop off the bottom.
+const UNDO_STACK_MAX = 20;
+function pushUndoSnapshot(task, fields, description) {
+  if (!task || !Array.isArray(fields) || fields.length === 0) return;
+  // Capture only the fields we're about to overwrite — keeps undo precise.
+  const before = {};
+  for (const f of fields) {
+    // Map saveCellEdit's `col` keys to actual task fields.
+    const mapped = ({
+      'name': 'name',
+      'start_date': 'start_date',
+      'end_date': 'end_date',
+      'duration_days': 'duration_days',
+      'progress': 'progress',
+      'allocation': 'allocation',
+      'priority': 'priority',
+      'predecessors': 'predecessors',
+      'assignee': 'assignee',
+      'notes': 'notes',
+    })[f] || f;
+    if (mapped in task) before[mapped] = task[mapped];
+  }
+  if (Object.keys(before).length === 0) return;
+  state.undoStack.push({ taskId: task.id, before, description });
+  while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+  // A new edit invalidates the redo history — otherwise redo would re-apply
+  // a "future" state that conflicts with what the user just did.
+  state.redoStack = [];
+  syncUndoButton();
+  syncRedoButton();
+}
+
+async function performUndo() {
+  const entry = state.undoStack.pop();
+  if (!entry) { syncUndoButton(); return; }
+  // Capture current state of the changed fields BEFORE we revert so redo can
+  // re-apply them. Look up the task fresh from state.tasks (entry only holds
+  // taskId + the original `before` snapshot, not the post-edit values).
+  const task = state.tasks.find(t => t.id === entry.taskId);
+  if (task) {
+    const after = {};
+    for (const f of Object.keys(entry.before)) {
+      if (f in task) after[f] = task[f];
+    }
+    if (Object.keys(after).length > 0) {
+      state.redoStack.push({ taskId: entry.taskId, before: after, description: entry.description });
+      while (state.redoStack.length > UNDO_STACK_MAX) state.redoStack.shift();
+    }
+  }
+  try {
+    await api.update(entry.taskId, entry.before);
+    await loadTasks();
+  } catch (err) {
+    console.error('undo failed', err);
+  }
+  syncUndoButton();
+  syncRedoButton();
+}
+
+async function performRedo() {
+  const entry = state.redoStack.pop();
+  if (!entry) { syncRedoButton(); return; }
+  // Capture current state as a new undo entry, then apply the redo snapshot.
+  const task = state.tasks.find(t => t.id === entry.taskId);
+  if (task) {
+    const before = {};
+    for (const f of Object.keys(entry.before)) {
+      if (f in task) before[f] = task[f];
+    }
+    if (Object.keys(before).length > 0) {
+      state.undoStack.push({ taskId: entry.taskId, before, description: entry.description });
+      while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+    }
+  }
+  try {
+    await api.update(entry.taskId, entry.before);
+    await loadTasks();
+  } catch (err) {
+    console.error('redo failed', err);
+  }
+  syncUndoButton();
+  syncRedoButton();
+}
+
+function syncUndoButton() {
+  const btn = document.getElementById('btn-undo');
+  if (!btn) return;
+  const stack = state.undoStack || [];
+  const last = stack[stack.length - 1];
+  btn.disabled = !last;
+  if (last) {
+    btn.title = `Undo: ${last.description}\n(${stack.length} change${stack.length === 1 ? '' : 's'} in history)`;
+  } else {
+    btn.title = 'Nothing to undo — no edits in this session yet.';
+  }
+}
+
+function syncRedoButton() {
+  const btn = document.getElementById('btn-redo');
+  if (!btn) return;
+  const stack = state.redoStack || [];
+  const last = stack[stack.length - 1];
+  btn.disabled = !last;
+  if (last) {
+    btn.title = `Redo: ${last.description}\n(${stack.length} change${stack.length === 1 ? '' : 's'} ready to re-apply)`;
+  } else {
+    btn.title = 'Nothing to redo — undo something first.';
+  }
 }
 
 function parseDurationInput(s) {
@@ -1264,7 +1755,7 @@ function renderGantt() {
   const filtered = ordered
     .filter(t => t.start_date && t.end_date)
     .filter(t => !isTaskInCollapsedGroup(t))
-    .filter(t => inferredAnchorKey(t) || (t.phase_group && validSectionKeys.has(t.phase_group)))
+    .filter(t => inferredAnchorKey(t) || isBacklogTask(t) || (t.phase_group && validSectionKeys.has(t.phase_group)))
     .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t));
 
   renderGanttLegend();
@@ -1290,6 +1781,11 @@ function renderGantt() {
     const colorKey = rowColorKey(t);
     if (colorKey) classes.push(`bar-color-${colorKey}`);
     if (t.is_milestone) classes.push('is-milestone');
+    if (isBacklogTask(t)) classes.push('is-backlog');
+    // Completed milestone (progress = 100%) gets a distinct "done" diamond — solid
+    // green fill + checkmark — so you can see at a glance which spine markers
+    // you've hit vs which are still ahead. Applies to anchor + non-anchor milestones.
+    if (t.is_milestone && (t.progress || 0) >= 100) classes.push('milestone-done');
     if (state.overAllocatedTaskIds.has(t.id)) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
@@ -1303,11 +1799,14 @@ function renderGantt() {
     };
   });
 
-  // Invisible phantom tasks ~30 days before the earliest task and ~30 days after the latest,
-  // so the user can pan past either edge enough to put a corner task near the middle.
+  // Invisible phantom tasks 6 months before the earliest task and 6 months after
+  // the latest. Symmetric padding lets the user scroll equally past either edge —
+  // previously the pre-task pad was 30 days, which meant on a project starting in
+  // May you couldn't scroll back to April. 6 months is enough to comfortably
+  // bring any edge bar into the center of the viewport.
   const minStart = Math.min(...filtered.map(t => new Date(t.start_date).getTime()));
   const maxEnd   = Math.max(...filtered.map(t => new Date(t.end_date).getTime()));
-  const PAD_MS = 30 * 86400000;
+  const PAD_MS = 183 * 86400000; // ~6 months
   const padBefore = new Date(minStart - PAD_MS).toISOString().slice(0, 10);
   const padAfter  = new Date(maxEnd   + PAD_MS).toISOString().slice(0, 10);
   ganttTasks.unshift({ id: '_pad_before', name: '', start: padBefore, end: padBefore, progress: 0, dependencies: '', custom_class: 'phantom-pad' });
@@ -1382,11 +1881,294 @@ function renderGantt() {
   // Arrows render FIRST (behind everything) — bars and labels cover them visually.
   drawCustomArrows();
   drawBaselineGhosts();
+  drawTodayLine();
   drawMilestoneDiamonds();
   drawMilestoneLabels();
   clipBarLabels();
   drawScheduleStatus();
   drawFinancialOverlay();
+  drawBarMeta();
+  renderProjectStatsPopup();
+}
+
+// Per-bar allocation + duration labels on the Gantt. Renders ONE compact label
+// per task bar — combining allocation % and duration (in weeks) — placed
+// BELOW the bar by default, but flipped ABOVE when an arrow passes through
+// the below-bar gap (otherwise the label sits right on top of the arrow line
+// and you can't read it).
+//
+// Format: "50% · 3w"  (middle-dot separator; either side is omitted when
+// that value is 0 or missing).
+//
+// Placement priority:
+//   1. Below the bar — preferred, sits in its own row's below-gap so
+//      adjacent rows never collide.
+//   2. Above the bar — fallback when an arrow would cross the below position.
+//   3. Skip — last resort, when both above and below would collide with
+//      arrows (rare; only happens when the bar has an arrow entering its top
+//      AND an arrow exiting its bottom).
+//
+// Skipped for milestones, anchors, and backlog. Runs AFTER drawCustomArrows
+// so the arrow <path> elements exist in the DOM and we can query their bboxes
+// for collision detection.
+function drawBarMeta() {
+  const svg = document.querySelector('#gantt-container .gantt');
+  if (!svg) return;
+  // Tear down any prior labels so toggling off cleanly removes them.
+  svg.querySelectorAll('.sdc-bar-meta').forEach(el => el.remove());
+  if (state.scheduleView?.showBarMeta !== true) return;
+
+  const group = document.createElementNS(SVG_NS, 'g');
+  group.setAttribute('class', 'sdc-bar-meta');
+  group.style.pointerEvents = 'none';
+  svg.appendChild(group);
+
+  // Parse each arrow line into axis-aligned segments and collision-check
+  // labels against the SEGMENTS, not the path's bounding box. Why: an L-shape
+  // arrow's getBBox() encloses both legs PLUS the L's empty corner area, which
+  // wrongly marks most bars sitting INSIDE that corner zone as colliding even
+  // though the arrow line is on the edges only (v3.56 had this issue — 2/3 of
+  // labels ended up suppressed because every bar near a long L-shape looked
+  // "occupied"). Per-segment intersection is exact for axis-aligned arrows
+  // (all our arrow segments are pure horizontal or vertical by construction
+  // in computeArrowPath).
+  const arrowSegments = [];
+  svg.querySelectorAll('.sdc-arrows path.arrow').forEach(p => {
+    const d = p.getAttribute('d');
+    if (!d || /Z/i.test(d)) return;  // skip arrowhead triangles (closed with Z)
+    const nums = d.match(/-?\d+(\.\d+)?/g);
+    if (!nums || nums.length < 4) return;
+    // Path is "M x y L x y [L x y]" — pair consecutive points to form segments.
+    for (let i = 0; i + 3 < nums.length; i += 2) {
+      arrowSegments.push({
+        x1: +nums[i],   y1: +nums[i+1],
+        x2: +nums[i+2], y2: +nums[i+3],
+      });
+    }
+  });
+  // Rect-vs-segment intersection. Each segment is axis-aligned, so its bbox
+  // is the segment itself; bbox-overlap therefore exactly equals "the
+  // segment passes through the rect". A small pad (2px) is added around the
+  // rect so labels don't sit flush against an arrow line.
+  const overlapsArrow = (rect, pad = 2) => {
+    const rx1 = rect.x - pad, rx2 = rect.x + rect.w + pad;
+    const ry1 = rect.y - pad, ry2 = rect.y + rect.h + pad;
+    return arrowSegments.some(s => {
+      const sx1 = Math.min(s.x1, s.x2), sx2 = Math.max(s.x1, s.x2);
+      const sy1 = Math.min(s.y1, s.y2), sy2 = Math.max(s.y1, s.y2);
+      return !(sx2 < rx1 || sx1 > rx2 || sy2 < ry1 || sy1 > ry2);
+    });
+  };
+
+  const LABEL_H = 11;  // 9px font + small descent / breathing room
+  const GAP     = 2;   // bar → label vertical offset
+
+  for (const task of state.tasks) {
+    if (task.is_milestone) continue;
+    if (inferredAnchorKey(task)) continue;
+    if (isBacklogTask(task)) continue;
+    if (!task.start_date || !task.end_date) continue;
+
+    const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
+    if (!wrap) continue;
+    const bar = wrap.querySelector('.bar');
+    if (!bar) continue;
+
+    const barX = +bar.getAttribute('x');
+    const barY = +bar.getAttribute('y');
+    const barW = +bar.getAttribute('width');
+    const barH = +bar.getAttribute('height');
+    const cx = barX + barW / 2;
+
+    const alloc = Math.max(0, Math.min(100, Number(task.allocation) || 0));
+    const durDays = Number(task.duration_days) || 0;
+    const wks = Math.round(durDays / 5);  // 5 business days = 1 week (matches FAT variance rounding)
+
+    // Build the combined label. Skip the whole row if both values are zero.
+    const parts = [];
+    if (alloc > 0) parts.push(`${alloc}%`);
+    if (wks > 0)   parts.push(`${wks}w`);
+    if (parts.length === 0) continue;
+    const labelText = parts.join(' · ');
+    // Estimate label width — 6.5px per char at 9px / 700 weight is close enough
+    // for collision detection. The text element is centered on cx anyway, so
+    // ± a couple pixels of error doesn't change which side we pick.
+    const labelW = labelText.length * 6.5 + 4;
+
+    // Build candidate rectangles for BELOW and ABOVE placements. y is the
+    // TOP of the candidate rect (matches our dominant-baseline:hanging text
+    // anchor for below, and we offset accordingly for above).
+    const belowRect = { x: cx - labelW / 2, y: barY + barH + GAP, w: labelW, h: LABEL_H };
+    const aboveRect = { x: cx - labelW / 2, y: barY - GAP - LABEL_H,         w: labelW, h: LABEL_H };
+
+    let placement; // 'below' | 'above' | null
+    if (!overlapsArrow(belowRect))      placement = 'below';
+    else if (!overlapsArrow(aboveRect)) placement = 'above';
+    // else: both sides occupied — skip the label rather than draw it where
+    // it can't be read. Rare; user can disable the toggle if it bites.
+    if (!placement) continue;
+
+    const text = document.createElementNS(SVG_NS, 'text');
+    text.setAttribute('x', cx);
+    if (placement === 'below') {
+      text.setAttribute('y', barY + barH + GAP);
+      text.setAttribute('dominant-baseline', 'hanging');  // top of text sits at y
+    } else {
+      text.setAttribute('y', barY - GAP);
+      text.setAttribute('dominant-baseline', 'alphabetic');  // baseline of text sits at y → text rises above
+    }
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('font-size', '9');
+    text.setAttribute('font-weight', '700');
+    text.setAttribute('fill', '#1e293b');
+    text.textContent = labelText;
+    group.appendChild(text);
+  }
+}
+
+// Floating stat card in the top-right of the Gantt area. Shows project stats:
+// Duration (PO→FAT in calendar weeks), labor-weighted % Complete, and FAT
+// date with an optional baseline-variance chip. Hidden on All-projects since
+// these are per-project.
+//
+// (View options used to live here too — moved to the View pill in the toolbar
+// in v3.50 so this popup stays focused on read-only project stats.)
+function renderProjectStatsPopup() {
+  const split = document.getElementById('schedule-split');
+  if (!split) return;
+  let popup = split.querySelector('#project-stats-popup');
+  const project = state.filters.project;
+  if (!project) {
+    if (popup) popup.remove();
+    return;
+  }
+  if (!popup) {
+    popup = document.createElement('div');
+    popup.id = 'project-stats-popup';
+    popup.className = 'project-stats-popup';
+    split.appendChild(popup);
+  }
+  const stats = computeProjectStats(project);
+  // Duration: PO → FAT (calendar weeks, rounded). Falls back to "—" if either
+  // anchor doesn't have a date yet.
+  const tasks = state.tasks.filter(t => t.project === project);
+  const po  = tasks.find(t => inferredAnchorKey(t) === 'receipt_of_po');
+  const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
+  let durationLabel = '—';
+  if (po && fat && po.start_date && fat.start_date) {
+    const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
+    const weeks = Math.max(0, Math.round(days / 7));
+    durationLabel = `${weeks} wk${weeks === 1 ? '' : 's'}`;
+  }
+  const pctLabel = stats.percentComplete != null ? `${stats.percentComplete}%` : '—';
+  // FAT row: show the actual date plus an optional variance chip when a
+  // baseline is set. Variance rounds DAYS → WEEKS (5 business days per week)
+  // so the chip reads as "+1 wk / -2 wks / 0 wks" instead of "+3d late /
+  // -7d early" — matches how everything else in this app talks about time
+  // (estimate sheets, durations, etc. are all weekly). Rounding is to-nearest:
+  //   0 days → 0 wks
+  //   1-2 days → 0 wks (rounds down)
+  //   3-7 days → 1 wk
+  //   8-12 days → 2 wks
+  //   ...
+  let fatDateLabel = fat?.start_date ? fmtDate(fat.start_date) : '—';
+  let fatVarChip = '';
+  if (stats.fatVariance != null) {
+    const wks = Math.round(stats.fatVariance / 5);  // 5 business days = 1 week
+    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok">0 wks</span>';
+    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late">+${wks} wk${wks === 1 ? '' : 's'}</span>`;
+    else                  fatVarChip = `<span class="popup-fat-var stat-early">${wks} wk${wks === -1 ? '' : 's'}</span>`;
+  }
+
+  popup.innerHTML = `
+    <div class="popup-row">
+      <span class="popup-label">Duration</span>
+      <span class="popup-value" title="Receipt of PO → FAT, in calendar weeks (rounded).">${durationLabel}</span>
+    </div>
+    <div class="popup-row">
+      <span class="popup-label">Complete</span>
+      <span class="popup-value" title="Labor-weighted: SUM(duration × progress) ÷ SUM(duration) across non-milestone tasks.">${pctLabel}</span>
+    </div>
+    <div class="popup-row">
+      <span class="popup-label">FAT</span>
+      <span class="popup-value" title="FAT anchor start date (M/D/YY). The chip on the right shows baseline variance in business days, if a baseline is set.">
+        ${fatDateLabel}${fatVarChip}
+      </span>
+    </div>
+  `;
+}
+
+// ---------- Today line ----------
+// Vertical dotted red line at today's date, spanning from the date header to the
+// bottom of the chart. Lets the user see at a glance "where are we right now?"
+// vs every bar. Hidden when today falls outside the rendered date range (e.g.
+// archived projects far in the past).
+function drawTodayLine() {
+  const svg = document.querySelector('#gantt-container .gantt');
+  if (!svg) return;
+  svg.querySelectorAll('.today-line, .today-line-label').forEach(el => el.remove());
+  if (!state.gantt || !state.gantt.gantt_start) return;
+
+  const g = state.gantt;
+  const startMs = new Date(g.gantt_start).getTime();
+  const cw = g.options.column_width;
+  const mode = g.options.view_mode || 'Week';
+  const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+  const pxPerDay = cw / step;
+
+  // Snap "today" to the same UTC start-of-day frappe-gantt uses internally so
+  // the line lands at the same X position the date-axis ticks are anchored to.
+  const todayMs = Date.UTC(
+    new Date().getUTCFullYear(),
+    new Date().getUTCMonth(),
+    new Date().getUTCDate(),
+  );
+  const days = (todayMs - startMs) / 86400000;
+  if (days < 0) return; // today is BEFORE the chart's earliest date
+  const x = days * pxPerDay;
+  const svgW = +svg.getAttribute('width') || 8000;
+  if (x > svgW) return;  // today is past the right edge of the chart
+
+  // Find the topmost bar to determine where the chart content starts. yTop sits
+  // just below the date header — same approach the financial overlay uses.
+  let firstBarY = Infinity;
+  for (const bar of svg.querySelectorAll('.bar-wrapper:not(.phantom-pad) .bar')) {
+    const y = +bar.getAttribute('y');
+    if (y < firstBarY) firstBarY = y;
+  }
+  const yTop = Number.isFinite(firstBarY) ? Math.max(40, firstBarY - 16) : 50;
+  const svgH = +svg.getAttribute('height') || 600;
+
+  const line = document.createElementNS(SVG_NS, 'line');
+  line.setAttribute('class', 'today-line');
+  line.setAttribute('x1', x);
+  line.setAttribute('x2', x);
+  line.setAttribute('y1', yTop);
+  line.setAttribute('y2', svgH);
+  // SDC blue — primary brand color. Distinct from the lime anchor diamonds
+  // and the green financial overlay lines.
+  line.setAttribute('stroke', '#1574c4');
+  line.setAttribute('stroke-width', '1.4');
+  line.setAttribute('stroke-dasharray', '3 3');
+  line.setAttribute('opacity', '0.85');
+  line.setAttribute('pointer-events', 'none');
+  svg.appendChild(line);
+
+  // Tiny "Today" label at the top of the line. SDC navy text on a white halo
+  // so it stays readable wherever it lands.
+  const label = document.createElementNS(SVG_NS, 'text');
+  label.setAttribute('class', 'today-line-label');
+  label.setAttribute('x', x + 4);
+  label.setAttribute('y', yTop + 11);
+  label.setAttribute('font-size', '10');
+  label.setAttribute('font-weight', '700');
+  label.setAttribute('fill', '#061d39');     // SDC navy
+  label.setAttribute('stroke', '#ffffff');
+  label.setAttribute('stroke-width', '3');
+  label.setAttribute('paint-order', 'stroke');
+  label.setAttribute('pointer-events', 'none');
+  label.textContent = 'Today';
+  svg.appendChild(label);
 }
 
 // ---------- Baseline ghosts ----------
@@ -1472,18 +2254,20 @@ function drawBaselineGhosts() {
     wrap.insertBefore(ghost, wrap.firstChild);
 
     // Drift label — bare "+Nd" / "−Nd" in the task's dark color. No pill, no
-    // "baseline" wording. Sits in the gap between the ghost and the live bar:
-    //   - Late (+): bar moved right → label hugs the left edge of the bar
-    //   - Early (−): bar moved left → label hugs the right edge of the bar
+    // "baseline" wording. ALWAYS placed to the LEFT of the bar (anchored to the
+    // bar's left edge) so it never collides with the schedule-status chip on
+    // the right. SKIPPED for milestones (anchors + regular) because the diamond
+    // shape extends well past the bar's bbox — the label would land on top of
+    // the diamond. The ghost shape alone is enough to read the drift on those.
     const driftMag = Math.abs(startDrift);
-    if (driftMag > 0) {
+    if (driftMag > 0 && !task.is_milestone) {
       const isLate = startDrift > 0;
       const labelText = `${isLate ? '+' : '−'}${driftMag}d`;
       const text = document.createElementNS(SVG_NS, 'text');
       text.setAttribute('class', 'baseline-drift-label');
-      text.setAttribute('x', isLate ? (barX - 4) : (barX + barW + 4));
+      text.setAttribute('x', barX - 4);
       text.setAttribute('y', barY + barH / 2 + 3);
-      text.setAttribute('text-anchor', isLate ? 'end' : 'start');
+      text.setAttribute('text-anchor', 'end');
       text.setAttribute('font-size', '10');
       text.setAttribute('font-weight', '700');
       text.setAttribute('fill', labelFill);
@@ -1707,6 +2491,7 @@ function drawScheduleStatus() {
     if (task.is_milestone) continue;
     if (!task.start_date || !task.end_date) continue;
     if (inferredAnchorKey(task)) continue;
+    if (isBacklogTask(task)) continue; // backlog is not "behind", it's by design
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
     if (!wrap) continue;
     const bar = wrap.querySelector('.bar');
@@ -1873,6 +2658,13 @@ function shiftElementY(root, dy) {
 function cleanGanttHeaders() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
+  // In Month view, the lower-text IS the month name (Jan / Feb / etc.) and the
+  // upper-text is the year — we have to keep both. The de-duplication below was
+  // designed for Week view, where the upper-text is "January" and the lower-
+  // text used to repeat it ("Jan 12") creating noise; stripping months in
+  // Month view leaves the row blank, which is what the user just hit.
+  const mode = state.gantt?.options?.view_mode;
+  if (mode === 'Month') return;
   const monthRe = /\s*(?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s*/g;
   svg.querySelectorAll('.lower-text').forEach(t => {
     const cleaned = (t.textContent || '').replace(monthRe, ' ').trim();
@@ -1890,18 +2682,52 @@ function getGanttScroller() {
 function setZoom(percent) {
   const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, percent));
   if (Math.abs(next - state.zoomPercent) < 0.01) return;
-  const factor = next / state.zoomPercent;
 
+  // Capture the DATE under the viewport center BEFORE we re-render. We can't
+  // just scale pixel positions linearly (the old code did `factor * oldCenterPx`)
+  // because getZoomConfig may flip the view mode at certain zoom thresholds —
+  // and when the mode flips, the gantt's start date, column width formula, and
+  // px-per-day all change discontinuously. A pixel that meant "Aug 10" in Week
+  // mode might map to "Nov 3" in Month mode after the rebuild, which is what
+  // made the chart appear to jump way off to the side at the Week→Month
+  // boundary. Converting to a date and back is mode-independent.
+  let centerDateMs = null;
   const oldScroller = getGanttScroller();
-  const oldScrollLeft = oldScroller ? oldScroller.scrollLeft : 0;
   const viewW = oldScroller ? oldScroller.clientWidth : 0;
-  const oldCenterPx = oldScrollLeft + viewW / 2;
+  if (oldScroller && state.gantt?.gantt_start) {
+    const oldCenterPx = oldScroller.scrollLeft + viewW / 2;
+    const g = state.gantt;
+    const oldStartMs = new Date(g.gantt_start).getTime();
+    const cw = g.options.column_width;
+    const mode = g.options.view_mode || 'Week';
+    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+    const pxPerDay = cw / step;
+    if (pxPerDay > 0) {
+      const daysFromStart = oldCenterPx / pxPerDay;
+      centerDateMs = oldStartMs + daysFromStart * 86400000;
+    }
+  }
 
   state.zoomPercent = next;
   renderGantt();
 
+  // Now find that same date on the new chart and scroll so it sits at the
+  // viewport center. If gantt_start changed (mode flip can shift the padding
+  // boundary), the math still works because we re-derive everything from the
+  // new gantt's start + cw + step.
   const newScroller = getGanttScroller();
-  if (newScroller) newScroller.scrollLeft = factor * oldCenterPx - viewW / 2;
+  if (newScroller && centerDateMs != null && state.gantt?.gantt_start) {
+    const g = state.gantt;
+    const newStartMs = new Date(g.gantt_start).getTime();
+    const cw = g.options.column_width;
+    const mode = g.options.view_mode || 'Week';
+    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+    const pxPerDay = cw / step;
+    if (pxPerDay > 0) {
+      const targetPx = ((centerDateMs - newStartMs) / 86400000) * pxPerDay;
+      newScroller.scrollLeft = Math.max(0, targetPx - viewW / 2);
+    }
+  }
 }
 
 
@@ -1938,7 +2764,15 @@ function drawMilestoneDiamonds() {
   if (!svg) return;
 
   // Clear previous
-  svg.querySelectorAll('.milestone-diamond').forEach(d => d.remove());
+  svg.querySelectorAll('.milestone-diamond, .milestone-check').forEach(d => d.remove());
+
+  // "Done" palette — solid emerald + dark green stroke. Reserved exclusively for
+  // milestones with progress >= 100 so the chart immediately reads which spine
+  // markers you've hit vs which are still ahead. Same color for anchor and
+  // non-anchor milestones so a glance gives a binary "done / not done" signal.
+  const DONE_FILL   = '#16a34a';
+  const DONE_STROKE = '#14532d';
+  const CHECK_COLOR = '#ffffff';
 
   for (const task of state.tasks) {
     if (!task.is_milestone) continue;
@@ -1953,12 +2787,22 @@ function drawMilestoneDiamonds() {
     const h = +bar.getAttribute('height');
     const cx = x + Math.max(w / 2, 0); // milestones often have w≈step; center of bar
     const cy = y + h / 2;
-    // Anchor milestones (Receipt of PO, FAT) render as a CONCENTRIC double-diamond:
-    // a larger outline ring around a smaller filled diamond, with a clear gap between
-    // them. Distinct shape AND color (red) so they read as project-spine markers from
-    // across the chart.
+    // Anchor milestones (Receipt of PO, Mech 1 Release, Machine Power-Up, FAT,
+    // Ship Machine) render as a CONCENTRIC double-diamond: a smaller filled
+    // inner diamond INSIDE an outline ring that matches the size of a regular
+    // non-anchor milestone. So anchors and non-anchors have the same total
+    // visual footprint — what distinguishes them is the ring (anchor only) and
+    // the color (lime-green fill vs slate).
+    //
+    // Sizing:
+    //   - Non-anchor diamond:   h × 1.20 wide.
+    //   - Anchor OUTER ring:    h × 1.20 wide (same as non-anchor → consistent
+    //                           total size; no overlap with adjacent task rows).
+    //   - Anchor INNER diamond: h × 0.75 wide (much smaller than the outer
+    //                           ring, leaving a clear ring of negative space).
     const isAnchor = !!inferredAnchorKey(task);
-    const size = h * (isAnchor ? 1.05 : 0.85);
+    const isDone   = (task.progress || 0) >= 100;
+    const size = isAnchor ? h * 0.75 : h * 1.20;
 
     bar.style.opacity = '0';
     wrap.querySelectorAll('.bar-progress').forEach(el => el.style.opacity = '0');
@@ -1972,16 +2816,20 @@ function drawMilestoneDiamonds() {
     const ac = state.settings?.anchor_color || ANCHOR_COLOR_DEFAULTS;
 
     if (isAnchor) {
-      // Outer ring — pure outline, ~75% larger than the inner diamond, in the anchor
-      // text/stroke shade. The gap between inner and outer diamonds is what makes the
-      // icon distinct.
-      const outerSize = size * 1.75;
+      // Outer ring — pure outline at h × 1.20 (same size as a non-anchor
+      // diamond), in the anchor text/stroke shade. The clear gap between this
+      // outer ring and the smaller inner diamond is what makes the anchor
+      // visually distinct without making it any larger than other milestones.
+      const outerSize = h * 1.20;
       const outerPts = `${cx},${cy - outerSize/2} ${cx + outerSize/2},${cy} ${cx},${cy + outerSize/2} ${cx - outerSize/2},${cy}`;
       const outer = document.createElementNS(SVG_NS, 'polygon');
       outer.setAttribute('points', outerPts);
       outer.setAttribute('class', 'milestone-diamond anchor-outer');
       outer.setAttribute('fill', 'none');
-      outer.setAttribute('stroke', ac.text);
+      // Outer ring on a "done" anchor uses the dark-green stroke so the whole
+      // double-diamond reads as completed (otherwise the outer ring still looks
+      // "pending" while the inner is filled green).
+      outer.setAttribute('stroke', isDone ? DONE_STROKE : ac.text);
       outer.setAttribute('stroke-width', '1.75');
       outer.setAttribute('stroke-linejoin', 'miter');
       wrap.appendChild(outer);
@@ -1990,14 +2838,32 @@ function drawMilestoneDiamonds() {
     const points = `${cx},${cy - size/2} ${cx + size/2},${cy} ${cx},${cy + size/2} ${cx - size/2},${cy}`;
     const diamond = document.createElementNS(SVG_NS, 'polygon');
     diamond.setAttribute('points', points);
-    diamond.setAttribute('class', 'milestone-diamond' + (isAnchor ? ' anchor-inner' : ''));
-    // Non-anchor milestones render as a solid slate-500 diamond — distinct from the
-    // lime concentric anchors, neutral enough that it reads as "this is a milestone,
-    // but it's NOT one of the four spine markers."
-    diamond.setAttribute('fill',   isAnchor ? ac.fill : '#475569');
-    diamond.setAttribute('stroke', isAnchor ? ac.text : '#334155');
-    diamond.setAttribute('stroke-width', isAnchor ? '1.5' : '1');
+    diamond.setAttribute('class', 'milestone-diamond' + (isAnchor ? ' anchor-inner' : '') + (isDone ? ' done' : ''));
+    // Done milestones override both the anchor-color and the slate non-anchor color
+    // with a solid emerald — clear "this is checked off" signal independent of which
+    // anchor it is. Non-done milestones keep their existing color treatment.
+    diamond.setAttribute('fill',   isDone ? DONE_FILL   : (isAnchor ? ac.fill : '#475569'));
+    diamond.setAttribute('stroke', isDone ? DONE_STROKE : (isAnchor ? ac.text : '#334155'));
+    diamond.setAttribute('stroke-width', isAnchor || isDone ? '1.5' : '1');
     wrap.appendChild(diamond);
+
+    // Checkmark glyph rendered on top of the diamond for done milestones. Sized to
+    // fit comfortably inside the inner shape, centered, in white so it pops against
+    // the emerald fill regardless of which anchor it is.
+    if (isDone) {
+      const check = document.createElementNS(SVG_NS, 'text');
+      check.setAttribute('x', cx);
+      check.setAttribute('y', cy);
+      check.setAttribute('class', 'milestone-check');
+      check.setAttribute('text-anchor', 'middle');
+      check.setAttribute('dominant-baseline', 'central');
+      check.setAttribute('fill', CHECK_COLOR);
+      check.setAttribute('font-size', String(Math.round(size * 0.9)));
+      check.setAttribute('font-weight', '900');
+      check.setAttribute('pointer-events', 'none');
+      check.textContent = '✓';
+      wrap.appendChild(check);
+    }
   }
 }
 
@@ -2020,13 +2886,29 @@ function clipBarLabels() {
     const barW = +bar.getAttribute('width');
     const barY = +bar.getAttribute('y');
     const barH = +bar.getAttribute('height');
+    // Scale font down for short bars so descenders (g, y, p, S) don't clip below
+    // the bar. Visible text-with-descender height ≈ font-size, so cap font-size
+    // at barH - 2 to leave 1px breathing room top + bottom.
+    //  - barH=10 → 8px  (smallest legible)
+    //  - barH=12 → 10px
+    //  - barH=14 → 12px
+    //  - barH≥14 → 12px (capped to match grid font)
+    // IMPORTANT: set via style.fontSize (inline style), NOT setAttribute. The
+    // frappe-gantt CDN CSS rule `.gantt .bar-label { font-size: 12px }` has
+    // higher CSS specificity than a presentation attribute, so attribute-based
+    // font-size gets ignored. Inline style wins.
+    const fontSize = Math.max(8, Math.min(12, barH - 2));
+    label.style.fontSize = fontSize + 'px';
+
     // Always center the label inside the bar — frappe-gantt repositions it OUTSIDE
     // (text-anchor=start at bar.right + 5) when the original text was too wide. We
-    // override that so labels live inside the bar exclusively.
+    // override that so labels live inside the bar exclusively. dominant-baseline
+    // 'central' centers around the font's geometric middle (cap-height + descender),
+    // which keeps descenders inside the bar instead of dropping below it.
     label.setAttribute('x', barX + barW / 2);
     label.setAttribute('y', barY + barH / 2);
     label.setAttribute('text-anchor', 'middle');
-    label.setAttribute('dominant-baseline', 'middle');
+    label.setAttribute('dominant-baseline', 'central');
 
     const fullText = task.name || '';
     // Measure unconstrained.
@@ -2072,8 +2954,12 @@ function drawMilestoneLabels() {
   group.setAttribute('class', 'milestone-labels');
   svg.appendChild(group);
 
-  // Milestone labels: always plain text to the right of the diamond. No pill, no
-  // alternate-side heuristic — arrows pass underneath via z-order if they overlap.
+  // Milestone labels: name text to the right of the diamond. For ANCHOR
+  // milestones (Receipt of PO, Mech 1 Release, Machine Power-Up, FAT, Ship
+  // Machine) also paint the date on the OPPOSITE side (left of the diamond)
+  // so the spine dates are always visible in Both view without scrolling.
+  // Anchor diamonds have a concentric outer ring (~75% larger than inner);
+  // labels must clear THAT outer edge, not just the inner diamond.
   for (const task of state.tasks) {
     if (!task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
@@ -2086,8 +2972,12 @@ function drawMilestoneLabels() {
     const h = +bar.getAttribute('height');
     const cx = x + Math.max(w / 2, 0);
     const cy = y + h / 2;
-    const r = h * 0.425;
-    const labelOffset = 6; // gap between diamond's right vertex and label
+    const isAnchor = !!inferredAnchorKey(task);
+    // Anchor outer ring and non-anchor diamond both have the same outer
+    // radius (h × 1.20 / 2), so labels sit at the same offset for either
+    // milestone type.
+    const r = h * 1.20 / 2;
+    const labelOffset = 6;
     const lbl = document.createElementNS(SVG_NS, 'text');
     lbl.setAttribute('x', cx + r + labelOffset);
     lbl.setAttribute('y', cy);
@@ -2099,6 +2989,20 @@ function drawMilestoneLabels() {
     lbl.style.pointerEvents = 'none';
     lbl.textContent = task.name || '';
     group.appendChild(lbl);
+    // Date label on the LEFT side of the diamond for the 5 spine anchors.
+    if (inferredAnchorKey(task) && task.start_date) {
+      const dateLbl = document.createElementNS(SVG_NS, 'text');
+      dateLbl.setAttribute('x', cx - r - labelOffset);
+      dateLbl.setAttribute('y', cy);
+      dateLbl.setAttribute('dominant-baseline', 'middle');
+      dateLbl.setAttribute('text-anchor', 'end');
+      dateLbl.setAttribute('font-size', '11');
+      dateLbl.setAttribute('font-weight', '700');
+      dateLbl.setAttribute('fill', '#061d39');
+      dateLbl.style.pointerEvents = 'none';
+      dateLbl.textContent = fmtDate(task.start_date);
+      group.appendChild(dateLbl);
+    }
   }
 }
 
@@ -2233,16 +3137,33 @@ function computeArrowPath(pred, succ, type, opts = {}) {
   })();
 
   let linePath;
+  // labelAnchor: where a lag label (e.g., "+2 wks") should sit on the arrow.
+  // For single-segment arrows it's the midpoint. For L-shape arrows we pick
+  // the midpoint of the LONGER segment so the label sits on the visually
+  // dominant leg of the route, which is usually the most readable spot.
+  let labelAnchor;
   if (Math.abs(exitX - adj.x) < 0.5) {
     linePath = `M ${exitX} ${exitY} L ${exitX} ${adj.y}`;
+    labelAnchor = { x: exitX, y: (exitY + adj.y) / 2 };
   } else if (Math.abs(exitY - adj.y) < 0.5) {
     linePath = `M ${exitX} ${exitY} L ${adj.x} ${exitY}`;
+    labelAnchor = { x: (exitX + adj.x) / 2, y: exitY };
   } else if (headDir === 'DOWN' || headDir === 'UP') {
     // Final segment is vertical → corner at (entryX, exitY): horizontal then vertical.
     linePath = `M ${exitX} ${exitY} L ${entryX} ${exitY} L ${entryX} ${adj.y}`;
+    const horizLen = Math.abs(entryX - exitX);
+    const vertLen  = Math.abs(adj.y - exitY);
+    labelAnchor = horizLen >= vertLen
+      ? { x: (exitX + entryX) / 2, y: exitY }
+      : { x: entryX, y: (exitY + adj.y) / 2 };
   } else {
     // Final segment is horizontal → corner at (exitX, entryY): vertical then horizontal.
     linePath = `M ${exitX} ${exitY} L ${exitX} ${entryY} L ${adj.x} ${entryY}`;
+    const vertLen  = Math.abs(entryY - exitY);
+    const horizLen = Math.abs(adj.x - exitX);
+    labelAnchor = vertLen >= horizLen
+      ? { x: exitX, y: (exitY + entryY) / 2 }
+      : { x: (exitX + adj.x) / 2, y: entryY };
   }
 
   // ----- Arrowhead -----
@@ -2258,7 +3179,7 @@ function computeArrowPath(pred, succ, type, opts = {}) {
     headPath = `M ${entryX} ${entryY} L ${entryX + headSize} ${entryY - t} L ${entryX + headSize} ${entryY + t} Z`;
   }
 
-  return { linePath, headPath };
+  return { linePath, headPath, labelAnchor };
 }
 
 function drawCustomArrows() {
@@ -2278,9 +3199,11 @@ function drawCustomArrows() {
   if (firstBar && firstBar.parentNode) firstBar.parentNode.insertBefore(group, firstBar);
   else svg.appendChild(group);
 
-  // Index every bar's geometry. Milestones use the diamond bbox (smaller than the
-  // bar-wrapper rect frappe-gantt creates for them).
-  const isMilestone = (id) => !!state.tasks.find(t => String(t.id) === String(id))?.is_milestone;
+  // Index every bar's geometry. Milestones use the DIAMOND bbox so arrows
+  // terminate at the visible outer edge, not the underlying bar-wrapper rect.
+  // Anchor diamonds have an OUTER RING ~75% larger than the inner — arrows
+  // must terminate at that outer edge, otherwise they pierce the ring.
+  const taskById = Object.fromEntries(state.tasks.map(t => [String(t.id), t]));
   const bars = [...svg.querySelectorAll('.bar-wrapper')].map(w => {
     const rect = w.querySelector('.bar');
     const id = String(w.getAttribute('data-id'));
@@ -2288,10 +3211,15 @@ function drawCustomArrows() {
     const y = +rect.getAttribute('y');
     const ww = +rect.getAttribute('width');
     const hh = +rect.getAttribute('height');
-    if (isMilestone(id)) {
+    const task = taskById[id];
+    if (task?.is_milestone) {
       const cx = x + ww / 2;
-      const r = hh * 0.425;
-      return { id, x: cx - r, y, w: 2 * r, h: hh, milestone: true };
+      const cy = y + hh / 2;
+      // Anchor outer ring and non-anchor diamond both have outer radius
+      // h × 1.20 / 2, so arrows terminate at the same boundary for either
+      // milestone type.
+      const r = hh * 1.20 / 2;
+      return { id, x: cx - r, y: cy - r, w: 2 * r, h: 2 * r, milestone: true };
     }
     return { id, x, y, w: ww, h: hh, milestone: false };
   });
@@ -2303,6 +3231,10 @@ function drawCustomArrows() {
   // Build the job list, then group by pred + direction so successors leaving the same
   // side of one pred can stagger their exit y values.
   const arrowJobs = [];
+  // Lag-label rendering deferred to a second pass after all arrows are drawn —
+  // see end of this function. Collecting jobs here avoids a per-arrow forward
+  // declaration.
+  const lagLabelJobs = [];
   for (const task of state.tasks) {
     if (!task.predecessors) continue;
     const succ = barById[String(task.id)];
@@ -2334,7 +3266,7 @@ function drawCustomArrows() {
   }
 
   for (const job of arrowJobs) {
-    const { linePath, headPath } = computeArrowPath(job.pred, job.succ, job.parsed.type, {
+    const { linePath, headPath, labelAnchor } = computeArrowPath(job.pred, job.succ, job.parsed.type, {
       headSize,
       outgoingIdx: job.outgoingIdx,
       outgoingTotal: job.outgoingTotal,
@@ -2367,7 +3299,207 @@ function drawCustomArrows() {
     head.setAttribute('fill', onCritical ? '#b91c1c' : arrowColor);
     if (onCritical) head.setAttribute('data-on-critical', '1');
     group.appendChild(head);
+
+    // Collect lag-label data for this arrow if it carries a non-zero lag and
+    // the user has lag labels enabled. We render labels AFTER all arrows are
+    // drawn, in a separate group on top of bars, so they don't get covered.
+    const lagDays = Number(job.parsed.lagDays) || 0;
+    if (state.scheduleView?.showArrowLags !== false && Math.abs(lagDays) >= 7 && labelAnchor) {
+      const wks = Math.round(lagDays / 7);
+      if (wks !== 0) {
+        lagLabelJobs.push({
+          job,
+          wks,
+          onCritical,
+          anchor: { x: labelAnchor.x, y: labelAnchor.y },
+        });
+      }
+    }
   }
+
+  // ----- Render lag labels in a separate group ABOVE bars -----
+  // Two reasons to render here, after the arrows loop, rather than inline:
+  //   1. Z-order: the .sdc-arrows group sits BEHIND bars on purpose (so
+  //      arrows duck under bars when routes overlap). Lag labels need to sit
+  //      ABOVE bars so the user can read them — bars covered the labels
+  //      otherwise (user feedback: "−2 weeks from designer view is underneath
+  //      mechanical design").
+  //   2. Overlap avoidance: once we have ALL label positions, we can detect
+  //      colliding labels and shift them along the segment so they don't sit
+  //      directly on top of each other (user feedback: "robot vision and
+  //      robot programming labels are on top of each other").
+  if (lagLabelJobs.length > 0) renderArrowLagLabels(svg, lagLabelJobs);
+}
+
+// Render the lag labels for every arrow that has a non-zero lag, in a group
+// that paints ABOVE bars (so labels are always visible). Also runs an
+// overlap-resolution pass: any label whose pill bbox would collide with a
+// previously-placed label gets shifted vertically by one pill-height (with a
+// small gap) until it no longer collides. We keep the original anchor.x so
+// the label still reads as belonging to its arrow segment.
+function renderArrowLagLabels(svg, jobs) {
+  // Tear down any previous labels group so we start clean each render.
+  svg.querySelectorAll(':scope > .sdc-arrow-labels').forEach(el => el.remove());
+  const group = document.createElementNS(SVG_NS, 'g');
+  group.setAttribute('class', 'sdc-arrow-labels');
+  // Append AT THE END of the SVG's children so we paint over bars/labels.
+  svg.appendChild(group);
+
+  // Precompute the placed bboxes so we can avoid overlap as we lay each one
+  // out. Pills are roughly the same size, so a simple AABB collision check
+  // is enough.
+  const placed = [];
+  const PILL_H = 14;
+  const GAP    = 2;
+  const overlaps = (a, b) =>
+    !(a.x + a.w + GAP <= b.x || b.x + b.w + GAP <= a.x ||
+      a.y + a.h + GAP <= b.y || b.y + b.h + GAP <= a.y);
+
+  for (const { job, wks, onCritical, anchor } of jobs) {
+    const labelText = (wks > 0 ? '+' : '−') + Math.abs(wks) + ' wk' + (Math.abs(wks) === 1 ? '' : 's');
+    const pillW = labelText.length * 6 + 10;
+
+    // Shift the label vertically until it no longer collides with any
+    // previously-placed pill. Max ~10 shifts (so a worst-case label still
+    // lands within a couple of rows of its anchor). Alternate up/down to
+    // keep the label as close to its arrow as possible.
+    let cy = anchor.y;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const candX = anchor.x - pillW / 2;
+      const candY = cy - PILL_H / 2;
+      const cand = { x: candX, y: candY, w: pillW, h: PILL_H };
+      const hit = placed.some(p => overlaps(cand, p));
+      if (!hit) {
+        // Place here.
+        placePill({
+          group, job, wks, onCritical, labelText, pillW,
+          x: anchor.x, y: cy,
+        });
+        placed.push(cand);
+        break;
+      }
+      // Try one slot up, then one slot down, expanding outward.
+      const slot = Math.ceil((attempt + 1) / 2);
+      const dir  = attempt % 2 === 0 ? -1 : 1;
+      cy = anchor.y + dir * slot * (PILL_H + GAP);
+    }
+  }
+}
+
+// Actually paint one pill + text into the labels group, with a click handler
+// that opens the inline lag editor.
+function placePill({ group, job, wks, onCritical, labelText, pillW, x, y }) {
+  const pillH = 14;
+  const pill = document.createElementNS(SVG_NS, 'rect');
+  pill.setAttribute('x', x - pillW / 2);
+  pill.setAttribute('y', y - pillH / 2);
+  pill.setAttribute('width',  pillW);
+  pill.setAttribute('height', pillH);
+  pill.setAttribute('rx', 3);
+  pill.setAttribute('ry', 3);
+  pill.setAttribute('class', 'arrow-lag-pill');
+  pill.setAttribute('fill', '#ffffff');
+  pill.setAttribute('stroke', onCritical ? '#b91c1c' : '#475569');
+  pill.setAttribute('stroke-width', '1');
+  pill.style.cursor = 'pointer';
+  pill.dataset.taskId = String(job.succ.id);
+  pill.dataset.predIdx = String(job.parsed.id);
+  group.appendChild(pill);
+
+  const label = document.createElementNS(SVG_NS, 'text');
+  label.setAttribute('x', x);
+  label.setAttribute('y', y);
+  label.setAttribute('text-anchor', 'middle');
+  label.setAttribute('dominant-baseline', 'central');
+  label.setAttribute('font-size', '10');
+  label.setAttribute('font-weight', '700');
+  label.setAttribute('fill', onCritical ? '#b91c1c' : '#1e293b');
+  label.setAttribute('class', 'arrow-lag-label');
+  label.style.pointerEvents = 'none';
+  label.textContent = labelText;
+  group.appendChild(label);
+
+  pill.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    editArrowLag({
+      taskId: Number(job.succ.id),
+      predId: Number(job.parsed.id),
+      currentWks: wks,
+      clientX: ev.clientX,
+      clientY: ev.clientY,
+    });
+  });
+}
+
+// Inline editor for an arrow lag. Pops a tiny number input near the click point,
+// reads a new weeks value, rewrites the predecessor string on the successor task,
+// and reloads. Empty input or "0" removes the lag entirely (predecessor becomes
+// the base form like "5FS").
+function editArrowLag({ taskId, predId, currentWks, clientX, clientY }) {
+  const task = state.tasks.find(t => t.id === taskId);
+  if (!task) return;
+  // Tear down any previous editor.
+  document.getElementById('arrow-lag-edit')?.remove();
+  const box = document.createElement('div');
+  box.id = 'arrow-lag-edit';
+  box.className = 'arrow-lag-edit';
+  box.innerHTML = `
+    <label>Lag (wks)</label>
+    <input type="number" step="1" value="${currentWks}" />
+    <button type="button" class="confirm-popup-cancel">Cancel</button>
+    <button type="button" class="confirm-popup-ok">Save</button>
+  `;
+  document.body.appendChild(box);
+  const w = box.offsetWidth || 220;
+  const h = box.offsetHeight || 56;
+  box.style.left = Math.min(window.innerWidth - w - 8, Math.max(8, clientX - w / 2)) + 'px';
+  box.style.top  = Math.min(window.innerHeight - h - 8, Math.max(8, clientY + 12)) + 'px';
+  const input = box.querySelector('input');
+  input.focus();
+  input.select();
+
+  const close = () => {
+    box.remove();
+    document.removeEventListener('mousedown', onOutside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const save = async () => {
+    const v = input.value.trim();
+    const newWks = v === '' ? 0 : Math.round(Number(v));
+    if (!Number.isFinite(newWks)) { close(); return; }
+    // Rewrite the predecessor segment that points at predId. Preserve the
+    // FS/SS/FF/SF type; replace any existing [+-]Nw/d lag suffix with the
+    // new weeks value (or remove the suffix entirely when newWks === 0).
+    const parts = String(task.predecessors || '').split(',').map(s => s.trim()).filter(Boolean);
+    let changed = false;
+    const updated = parts.map(p => {
+      const m = p.match(/^(\d+)(FS|SS|FF|SF)?(\s*[+-]\s*\d+\s*[wd]?)?$/i);
+      if (!m) return p;
+      if (Number(m[1]) !== predId) return p;
+      changed = true;
+      const id = m[1];
+      const type = (m[2] || 'FS').toUpperCase();
+      if (newWks === 0) return `${id}${type}`;
+      const sign = newWks > 0 ? '+' : '-';
+      return `${id}${type} ${sign}${Math.abs(newWks)}w`;
+    });
+    close();
+    if (!changed) return;
+    pushUndoSnapshot(task, ['predecessors'], `Edit lag on "${task.name || 'task'}"`);
+    await api.update(taskId, { predecessors: updated.join(', ') });
+    await loadTasks();
+  };
+  const onOutside = (ev) => { if (!box.contains(ev.target)) close(); };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); close(); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); save(); }
+  };
+  box.querySelector('.confirm-popup-cancel').addEventListener('click', close);
+  box.querySelector('.confirm-popup-ok').addEventListener('click', save);
+  setTimeout(() => {
+    document.addEventListener('mousedown', onOutside, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
 }
 
 
@@ -2391,38 +3523,80 @@ function renderFilters() {
   const pop = document.getElementById('filters-popover');
   if (!pop) return;
   // Quick-chip filters — single-click toggles that focus the schedule on a state
-  // ("behind", "ahead", "milestones only", etc.). Anchors are always exempt so
-  // the schedule spine stays visible regardless of which chips are on.
+  // ("behind", "ahead", "milestones only", etc.). Anchors AND non-anchor
+  // milestones are always exempt so the schedule spine stays visible
+  // regardless of which chips are on.
+  //
+  // Critical Path lives here too (alongside other quick filters):
+  //   - "Critical path"     = highlight mode (red bars + arrows on the chain)
+  //   - "Critical path only" = filter mode (hide everything not on the chain;
+  //                             auto-enables highlight too).
+  const sv = state.scheduleView || {};
   const chipDefs = [
-    { key: 'behind',        label: 'Behind schedule' },
-    { key: 'ahead',         label: 'Ahead of schedule' },
-    { key: 'milestones',    label: 'Milestones only' },
-    { key: 'assigned',      label: 'Assigned (real work)' },
-    { key: 'overallocated', label: 'Over-allocated' },
+    { key: 'behind',        label: 'Behind schedule',   source: 'quick' },
+    { key: 'ahead',         label: 'Ahead of schedule', source: 'quick' },
+    { key: 'milestones',    label: 'Milestones only',   source: 'quick' },
+    { key: 'assigned',      label: 'Assigned (real work)', source: 'quick' },
+    { key: 'overallocated', label: 'Over-allocated',    source: 'quick' },
+    { key: 'criticalPath',  label: 'Critical path',     source: 'view',  active: !!sv.criticalPath },
+    { key: 'criticalOnly',  label: 'Critical path only', source: 'view', active: !!sv.criticalOnly },
   ];
   pop.innerHTML = `
     <div class="filters-popover-title">Quick filters</div>
     <div class="filters-quick-chips">
-      ${chipDefs.map(c => `
-        <button type="button" class="filter-chip ${qf[c.key] ? 'is-active' : ''}" data-quick="${c.key}">
-          ${escapeHtml(c.label)}
-        </button>
-      `).join('')}
+      ${chipDefs.map(c => {
+        const active = c.source === 'view' ? !!c.active : !!qf[c.key];
+        return `
+          <button type="button" class="filter-chip ${active ? 'is-active' : ''}" data-quick="${c.key}" data-source="${c.source}">
+            ${escapeHtml(c.label)}
+          </button>
+        `;
+      }).join('')}
     </div>
     <div class="filters-popover-actions">
       <button type="button" id="btn-clear-filters" class="btn-ghost btn-tight">Clear all</button>
     </div>
   `;
+  // Stop propagation on every click inside the popover so the document-level
+  // close handler doesn't see "click outside" and dismiss the popover. Users
+  // want to toggle multiple filters in one session without re-opening.
   pop.querySelectorAll('.filter-chip').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
       const k = btn.dataset.quick;
-      if (!state.filters.quick) state.filters.quick = {};
-      state.filters.quick[k] = !state.filters.quick[k];
+      const src = btn.dataset.source;
+      if (src === 'view' && k === 'criticalPath') {
+        // Toggling Critical path: if turning OFF, also drop Critical-only
+        // since "only" without "highlight" doesn't make sense.
+        const turningOff = state.scheduleView.criticalPath;
+        state.scheduleView.criticalPath = !turningOff;
+        if (turningOff) state.scheduleView.criticalOnly = false;
+        saveScheduleView();
+        applyScheduleView();
+      } else if (src === 'view' && k === 'criticalOnly') {
+        // Toggling Critical-only: turning ON auto-enables Critical path too
+        // (the only-filter relies on the highlight chain being computed).
+        // Turning OFF leaves the highlight alone.
+        const turningOn = !state.scheduleView.criticalOnly;
+        state.scheduleView.criticalOnly = turningOn;
+        if (turningOn) state.scheduleView.criticalPath = true;
+        saveScheduleView();
+        applyScheduleView();
+      } else {
+        if (!state.filters.quick) state.filters.quick = {};
+        state.filters.quick[k] = !state.filters.quick[k];
+      }
       render();
     });
   });
-  pop.querySelector('#btn-clear-filters').addEventListener('click', () => {
+  pop.querySelector('#btn-clear-filters').addEventListener('click', (e) => {
+    e.stopPropagation();
     state.filters.quick = { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false };
+    // Also clear Critical path since it lives among quick filters now.
+    state.scheduleView.criticalPath = false;
+    state.scheduleView.criticalOnly = false;
+    saveScheduleView();
+    applyScheduleView();
     render();
   });
 }
@@ -2469,30 +3643,27 @@ function projectHasBaseline(p) {
   return state.tasks.some(t => t.project === p && t.baseline_start_date);
 }
 
-// Refresh both Baseline toolbar buttons to reflect the active project's
-// baseline state + the current overlay-visibility flag. Called after every
-// loadTasks() so a re-set in one tab is visible across all controls.
+// Refresh the Baseline dropdown button's label + tooltip to reflect the active
+// project's baseline state. The button shows the overall state at a glance;
+// clicking opens a dropdown with the specific actions (Turn on / Reset / Show
+// or Hide / Turn off).
 function syncBaselineButtons() {
-  const setBtn = document.getElementById('btn-baseline-set');
-  const showBtn = document.getElementById('btn-baseline');
-  if (!setBtn || !showBtn) return;
+  const btn = document.getElementById('btn-baseline-menu');
+  if (!btn) return;
   const project = state.filters.project;
   const has = projectHasBaseline(project);
-  setBtn.textContent = has ? 'Reset baseline' : 'Set baseline';
-  // "is-active" on the Set button is just a visual hint that a baseline EXISTS.
-  // The right toggle "is-active" means the overlay is currently drawn.
-  setBtn.classList.toggle('is-active', has);
-  setBtn.disabled = !project;
-  setBtn.title = !project
+  // Compact label keeps the button width consistent regardless of state — the
+  // is-active highlight tells you whether the overlay is currently visible.
+  btn.textContent = '◎ Baseline ▾';
+  btn.classList.toggle('is-active', !!state.showBaseline);
+  btn.disabled = !project;
+  btn.title = !project
     ? 'Open a specific project tab first — baselines are per-project.'
     : (has
-        ? `Re-set baseline for "${project}" — overwrite the snapshot with today's dates.`
-        : `Set baseline for "${project}" — snapshot today's start/end dates as the plan-of-record.`);
-  showBtn.classList.toggle('is-active', !!state.showBaseline);
-  showBtn.classList.toggle('is-disabled', !has);
-  showBtn.title = has
-    ? 'Toggle the baseline overlay. Right-click to clear the baseline.'
-    : 'No baseline set yet — use "Set baseline" on the left first.';
+        ? (state.showBaseline
+            ? `Baseline is ON (overlay visible). Click for actions: Reset / Hide / Turn off.`
+            : `Baseline is set but HIDDEN. Click for actions: Show / Reset / Turn off.`)
+        : `No baseline set for "${project}". Click to turn one on.`);
 }
 
 function renderProjectTabs() {
@@ -2546,35 +3717,27 @@ function renderProjectTabs() {
     });
   });
 
-  // Schedule view's project header: name + task count for the active project. The
-  // info strip lives at the LEFT of the toolbar row (alongside layout / zoom / fit
-  // controls on the right), so we only replace its INNER text spans, not the row.
-  const info = document.querySelector('.schedule-project-info');
-  if (info) {
+  // Project name banner — short pill with SDC-lime outline sitting BETWEEN
+  // the toolbar and the schedule split. Replaces the old centered-name row
+  // above the toolbar (which only made sense when grid + Gantt were both
+  // visible; the banner placement reads correctly for grid-only and
+  // gantt-only pane modes too). On the All-projects pseudo-tab we keep the
+  // "Save all tasks as one project" rescue button alongside the label.
+  const banner = document.getElementById('schedule-project-banner');
+  if (banner) {
     if (!state.filters.project) {
-      // On All-projects: offer a one-click "save EVERYTHING as one project" action.
-      // Re-tags every task in the database (regardless of whatever project field
-      // each one currently carries) to a single new name. Solves "my data is split
-      // across two tabs and I just want one project".
       const total = state.tasks.length;
       const distinctProjects = new Set(state.tasks.map(t => t.project || '__null__')).size;
       const showSaveAll = total > 0 && distinctProjects > 0;
       const saveAllBtn = showSaveAll
         ? `<button id="btn-save-all-as-one" class="orphan-save-btn" type="button" title="Take every task in the database (across every project) and re-tag them under one new project name. The All-projects view becomes a true aggregate.">Save all ${total} task${total === 1 ? '' : 's'} as one project →</button>`
         : '';
-      info.innerHTML = '<span class="schedule-project-label">All projects</span>'
-        + '<span class="schedule-project-meta">Tasks across every open schedule</span>'
-        + saveAllBtn;
+      banner.innerHTML = '<span class="schedule-project-name-pill schedule-project-label">All projects</span>' + saveAllBtn;
       const sb = document.getElementById('btn-save-all-as-one');
       if (sb) sb.addEventListener('click', saveAllAsOneProject);
     } else {
       const p = state.filters.project;
-      const n = state.tasks.filter(t => t.project === p).length;
-      info.innerHTML = `<span class="schedule-project-label">${escapeHtml(p)}</span>`
-        + `<span class="schedule-project-meta">${n} task${n === 1 ? '' : 's'}</span>`
-        + `<button type="button" class="project-header-financials" id="btn-header-financials" title="Edit financial milestones for ${escapeHtml(p)}">$ Financials</button>`;
-      const finBtn = document.getElementById('btn-header-financials');
-      if (finBtn) finBtn.addEventListener('click', () => openFinancialsModal(p));
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
     }
   }
 
@@ -2589,6 +3752,16 @@ function renderProjectTabs() {
       ? 'Pick a project tab first — new tasks attach to the active project.'
       : `Add a new task to ${state.filters.project}`;
   }
+  // ⚖ Quote vs Schedule toolbar button — disabled when there's no active
+  // project tab (no single project to compare). Tooltip explains.
+  const quoteBtn = document.getElementById('btn-toolbar-quote');
+  if (quoteBtn) {
+    const onAllProjects = !state.filters.project;
+    quoteBtn.disabled = onAllProjects;
+    quoteBtn.title = onAllProjects
+      ? 'Pick a project tab first — quote vs schedule is per-project.'
+      : `Compare quoted vs scheduled hours for ${state.filters.project}. Also exposes the financial milestones editor.`;
+  }
 }
 
 // Right-click menu on a project tab. Lets the user rename, duplicate, merge, mark
@@ -2600,6 +3773,7 @@ function showProjectTabMenu(x, y, project) {
     { label: 'Duplicate to new project…', onClick: () => duplicateProject(project) },
     { label: 'Merge another project into this…', onClick: () => mergeAnotherProjectInto(project, x, y) },
     { label: 'Financial milestones…',     onClick: () => openFinancialsModal(project) },
+    { label: '⚖ Quote vs Schedule…',      onClick: () => openQuoteCompareModal(project) },
     { label: isTemplate ? 'Unmark as template' : 'Mark as template ★', onClick: () => toggleTemplate(project) },
   ];
   if (!isTemplate) {
@@ -2618,15 +3792,9 @@ function showProjectTabMenu(x, y, project) {
 async function deleteProject(project) {
   if (!project) return;
   const tasks = state.tasks.filter(t => t.project === project);
-  if (tasks.length === 0) {
-    alert(`"${project}" has no tasks to delete.`);
-    return;
-  }
-  const ok = confirm(
-    `Delete EVERY task in "${project}"?\n\n`
-    + `${tasks.length} task${tasks.length === 1 ? '' : 's'} will be permanently removed, `
-    + `including its anchor milestones. This can't be undone.`);
-  if (!ok) return;
+  if (tasks.length === 0) return; // nothing to delete; silent
+  // No confirmation popup — right-click → Delete is already 2 intentional clicks.
+  // User explicitly requested this.
   // Bypass the anchor-protection in the regular DELETE handler by clearing
   // anchor_key first on those rows.
   for (const t of tasks) {
@@ -2995,13 +4163,16 @@ function showProjectAddPicker() {
   const btn = document.getElementById('btn-add-project');
   const r = btn.getBoundingClientRect();
   const all = uniqueValues('project');
-  const unopened = all.filter(p => !state.openProjects.includes(p));
+  // Show ALL projects in the picker. Open ones get a small "(open)" badge so
+  // the user can see what's already a tab vs what they can newly open. Clicking
+  // an already-open project just switches to its tab.
+  const openSet = new Set(state.openProjects);
   const pop = document.createElement('div');
   pop.id = 'project-add-picker';
   pop.className = 'project-add-picker';
   // Anchor the popup to the button's RIGHT edge so it can never run off the right
   // side of the screen. Falls back to button.left if the popup would clip the left.
-  const POPUP_W = 320;
+  const POPUP_W = 380;
   const desiredLeft = r.right - POPUP_W;
   const safeLeft = Math.max(8, Math.min(desiredLeft, window.innerWidth - POPUP_W - 8));
   pop.style.left = safeLeft + 'px';
@@ -3009,14 +4180,33 @@ function showProjectAddPicker() {
   pop.style.width = POPUP_W + 'px';
   pop.innerHTML = `
     <div class="picker-section-title">Open existing schedule <span class="picker-section-hint">(right-click to delete)</span></div>
-    ${unopened.length === 0 ? '<div class="picker-empty">No other projects yet.</div>' :
-      unopened.map(p => `<button class="picker-row" data-project="${escapeHtml(p)}" type="button">${escapeHtml(p)}</button>`).join('')}
+    ${all.length === 0 ? '<div class="picker-empty">No projects yet.</div>' :
+      all.map(p => {
+        const isOpen = openSet.has(p);
+        return `<button class="picker-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">${escapeHtml(p)}${isOpen ? '<span class="picker-row-badge">open</span>' : ''}</button>`;
+      }).join('')}
     <div class="picker-divider"></div>
     <div class="picker-section-title">Or start a new schedule</div>
     <div class="picker-new-row">
       <input type="text" class="picker-new-input" placeholder="e.g. Job 2026-015 — Sample Project" />
       <button class="btn-primary picker-new-btn" type="button">Open</button>
-    </div>`;
+    </div>
+    <div class="picker-divider"></div>
+    <div class="picker-section-title">Or build a schedule from an SDC estimate sheet (.xlsx)</div>
+    <div class="picker-new-row picker-estimate-row">
+      <input type="file" class="picker-estimate-file" accept=".xlsx" />
+      <button class="btn-primary picker-estimate-btn" type="button" disabled>Analyze →</button>
+    </div>
+    <div class="picker-estimate-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Pulls hours from "SUMMARY FOR RELEASE", then asks for a PO date + quoted FAT date to lay out a schedule from the SDC_Template.</div>
+    <div class="picker-divider"></div>
+    <div class="picker-section-title">Or import from Smartsheet (.xlsx)</div>
+    <div class="picker-new-row picker-import-row">
+      <input type="text" class="picker-import-name" placeholder="Project name (auto-fills from file)" />
+      <input type="file" class="picker-import-file" accept=".xlsx" multiple />
+      <button class="btn-primary picker-import-btn" type="button" disabled>Import</button>
+    </div>
+    <div class="picker-import-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Tip: pick multiple .xlsx files at once to bulk-import — each file becomes a project named after its filename.</div>
+    <div class="picker-import-status" id="picker-import-status"></div>`;
   document.body.appendChild(pop);
   pop.querySelectorAll('.picker-row').forEach(row => {
     row.addEventListener('click', () => {
@@ -3030,11 +4220,14 @@ function showProjectAddPicker() {
     // Right-click any closed-project row to delete it permanently. Skips templates
     // (they're protected from accidental loss). Shares the same deleteProject path
     // as the project tab's right-click delete, so one cleanup story.
-    row.addEventListener('contextmenu', (e) => {
+    row.addEventListener('contextmenu', async (e) => {
       e.preventDefault();
       const p = row.dataset.project;
       if (isTemplateProject(p)) {
-        alert(`"${p}" is marked as a template. Open it, right-click the tab, and unmark it before deleting.`);
+        await showAlertDialog({
+          title: 'Template projects are protected',
+          message: `"${p}" is marked as a template. Open it, right-click the tab, and unmark it before deleting.`,
+        });
         return;
       }
       pop.remove();
@@ -3060,6 +4253,152 @@ function showProjectAddPicker() {
   };
   pop.querySelector('.picker-new-btn').addEventListener('click', create);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
+
+  // ---- Smartsheet (Excel) import ----------------------------------------
+  // The user picks an .xlsx (exported from Smartsheet → File → Export → Excel).
+  // We auto-fill the project name from the file's basename, then POST the file
+  // (base64) to /api/import/smartsheet. The server parses it and creates a new
+  // project with all the tasks + auto-adds new team members.
+  const importNameEl = pop.querySelector('.picker-import-name');
+  const importFileEl = pop.querySelector('.picker-import-file');
+  const importBtnEl  = pop.querySelector('.picker-import-btn');
+  const importStatus = pop.querySelector('#picker-import-status');
+  let pickedFiles = []; // array — supports single or bulk import
+  // Project name derived from a filename: strip ".xlsx" extension.
+  const nameFromFile = (f) => f.name.replace(/\.xlsx$/i, '');
+  importFileEl.addEventListener('change', () => {
+    pickedFiles = Array.from(importFileEl.files || []);
+    importBtnEl.disabled = pickedFiles.length === 0;
+    if (pickedFiles.length === 1) {
+      // Single file — name input is editable, seeded from filename.
+      importNameEl.disabled = false;
+      if (!importNameEl.value.trim()) importNameEl.value = nameFromFile(pickedFiles[0]);
+    } else if (pickedFiles.length > 1) {
+      // Bulk — name input is ignored, each project is named after its file.
+      importNameEl.disabled = true;
+      importNameEl.value = `(bulk: ${pickedFiles.length} files — names from filenames)`;
+    }
+  });
+  const importOne = async (file, projectName) => {
+    const buf = await file.arrayBuffer();
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    const r = await fetch('/api/import/smartsheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: projectName, file: b64 }),
+    });
+    const result = await r.json();
+    return { ok: r.ok, result, projectName };
+  };
+  const runImport = async () => {
+    if (pickedFiles.length === 0) return;
+    importBtnEl.disabled = true;
+
+    // Single-file path keeps the existing one-project-name UX.
+    if (pickedFiles.length === 1) {
+      const projectName = importNameEl.value.trim();
+      if (!projectName) { importStatus.textContent = 'Enter a project name first.'; importBtnEl.disabled = false; return; }
+      importStatus.textContent = 'Reading file…';
+      try {
+        importStatus.textContent = 'Uploading & parsing…';
+        const { ok, result } = await importOne(pickedFiles[0], projectName);
+        if (!ok) { importStatus.textContent = `Import failed: ${result.error || 'unknown error'}`; importBtnEl.disabled = false; return; }
+        if (!state.openProjects.includes(result.project)) state.openProjects.push(result.project);
+        state.filters.project = result.project;
+        saveProjectTabs();
+        pop.remove();
+        await loadTeam();
+        await loadTasks();
+        const teamMsg = (result.addedMembers || []).length
+          ? ` Added ${result.addedMembers.length} new team member${result.addedMembers.length === 1 ? '' : 's'}: ${result.addedMembers.map(m => m.name).join(', ')}.`
+          : '';
+        alert(`Imported ${result.tasksCreated} tasks under "${result.project}".${teamMsg}`);
+      } catch (err) {
+        importStatus.textContent = `Import failed: ${err.message || err}`;
+        importBtnEl.disabled = false;
+      }
+      return;
+    }
+
+    // Bulk path — sequential so we don't hammer the server and so errors are easy
+    // to attribute to a single file. Each file gets its own project; failures don't
+    // block the rest. Summary alert at the end lists what worked and what didn't.
+    const successes = [];
+    const failures = [];
+    const newMembers = new Set();
+    for (let i = 0; i < pickedFiles.length; i++) {
+      const f = pickedFiles[i];
+      const projectName = nameFromFile(f);
+      importStatus.textContent = `Importing ${i + 1}/${pickedFiles.length}: ${projectName}…`;
+      try {
+        const { ok, result } = await importOne(f, projectName);
+        if (ok) {
+          successes.push({ project: result.project, tasks: result.tasksCreated });
+          (result.addedMembers || []).forEach(m => newMembers.add(m.name));
+        } else {
+          failures.push({ project: projectName, error: result.error || 'unknown error' });
+        }
+      } catch (err) {
+        failures.push({ project: projectName, error: err.message || String(err) });
+      }
+    }
+    // Reload everything and open the last successful import so the user sees something.
+    await loadTeam();
+    await loadTasks();
+    if (successes.length) {
+      const lastProject = successes[successes.length - 1].project;
+      successes.forEach(s => { if (!state.openProjects.includes(s.project)) state.openProjects.push(s.project); });
+      state.filters.project = lastProject;
+      saveProjectTabs();
+    }
+    pop.remove();
+    const lines = [];
+    lines.push(`Imported ${successes.length}/${pickedFiles.length} files.`);
+    if (successes.length) lines.push('', 'Created:', ...successes.map(s => `  • ${s.project} (${s.tasks} tasks)`));
+    if (failures.length)  lines.push('', 'Failed:',  ...failures .map(f => `  • ${f.project}: ${f.error}`));
+    if (newMembers.size)  lines.push('', `New team members added: ${[...newMembers].join(', ')}`);
+    alert(lines.join('\n'));
+  };
+  importBtnEl.addEventListener('click', runImport);
+
+  // ---- Estimate sheet → new schedule from SDC_Template ---------------------
+  // Two-step flow: (1) user picks an estimate xlsx and clicks Analyze, which
+  // parses the workbook and opens a feasibility modal showing hours per
+  // discipline + recommended headcount; (2) user enters PO date + FAT date in
+  // that modal and clicks Create, which clones SDC_Template into a fresh
+  // project with anchors shifted to the quoted dates.
+  const estFileEl = pop.querySelector('.picker-estimate-file');
+  const estBtnEl  = pop.querySelector('.picker-estimate-btn');
+  let estPickedFile = null;
+  estFileEl.addEventListener('change', () => {
+    estPickedFile = estFileEl.files?.[0] || null;
+    estBtnEl.disabled = !estPickedFile;
+  });
+  estBtnEl.addEventListener('click', async () => {
+    if (!estPickedFile) return;
+    estBtnEl.disabled = true;
+    try {
+      const buf = await estPickedFile.arrayBuffer();
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+      const r = await fetch('/api/estimate/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: b64 }),
+      });
+      const result = await r.json();
+      if (!r.ok) {
+        await showAlertDialog({ title: "Couldn't parse estimate", message: result.error || 'Unknown error.' });
+        estBtnEl.disabled = false;
+        return;
+      }
+      pop.remove();
+      showEstimateFeasibilityModal(result);
+    } catch (err) {
+      await showAlertDialog({ title: "Couldn't read file", message: err.message || String(err) });
+      estBtnEl.disabled = false;
+    }
+  });
+
   setTimeout(() => input.focus(), 0);
 
   setTimeout(() => {
@@ -3071,6 +4410,585 @@ function showProjectAddPicker() {
     };
     document.addEventListener('mousedown', onDoc);
   }, 0);
+}
+
+// ---- Estimate-sheet feasibility modal -------------------------------------
+// Flow:
+//   1. /api/estimate/parse returns hours per SECTION per discipline.
+//   2. User enters PO date + delivery weeks + efficiency.
+//   3. Modal computes a SUGGESTED critical path:
+//      - Builds backwards from FAT (= PO + delivery_weeks)
+//      - Determines Mech 1 Release date so Build can fit before testing
+//      - Iterates headcount up from minimums (1/1/1/2/1) until every phase fits
+//   4. User can override headcount and watch the schedule recompute.
+//   5. "Create project" calls /api/estimate/create which clones SDC_Template
+//      and shifts dates to fit. Mech 1 Release gets pinned to the computed week.
+function showEstimateFeasibilityModal(parsed) {
+  document.getElementById('estimate-feasibility-modal')?.remove();
+
+  // Break out the raw estimate columns into per-TASK hours so the user can edit
+  // each bucket independently. Defaults for split columns:
+  //   ce_design column → Controls Design (50%) + Controls Drawings (50%)
+  //   elec_build column → Wire Panel (25%) + Wire Machine (75%)
+  // Section 40 has its own column structure (testing engineers only); we keep
+  // ce_des as the combined debug bucket and let drawings/software be 0 there.
+  const r10 = parsed.hours_per_section.section_10 || {};
+  const r40 = parsed.hours_per_section.section_40 || {};
+  const r50 = parsed.hours_per_section.section_50 || {};
+  const safe = (v) => Math.round(v || 0);
+  const buildSection = (s) => ({
+    mech:         safe(s.mech_eng),
+    ce_des:       Math.round(safe(s.ce_design) * 0.5),
+    ce_drw:       safe(s.ce_design) - Math.round(safe(s.ce_design) * 0.5),
+    ce_sw:        safe(s.ce_software),
+    hmi:          safe(s.gen_hmi),
+    robot:        safe(s.gen_robot),
+    vision:       safe(s.gen_vision),
+    build:        safe(s.mech_build),
+    wire_panel:   Math.round(safe(s.elec_build) * 0.25),
+    wire_machine: safe(s.elec_build) - Math.round(safe(s.elec_build) * 0.25),
+  });
+  // `hours` is the editable model — user can mutate any cell in the grid below.
+  const hours = {
+    section_10: buildSection(r10),
+    section_40: buildSection(r40),
+    section_50: buildSection(r50),
+  };
+  const HOURS_COLS = ['mech', 'ce_des', 'ce_drw', 'ce_sw', 'hmi', 'robot', 'vision', 'build', 'wire_panel', 'wire_machine'];
+  const sumCol = (col) => hours.section_10[col] + hours.section_40[col] + hours.section_50[col];
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Staffing rules per user direction:
+  //   Default: 1 of EVERYTHING (user said "use as few resources as possible").
+  //     Auto-bump headcount only if the minimum critical path exceeds delivery.
+  //   Section 40 testing = ALWAYS 1 lead + 1 secondary controls debugger.
+  //   Configure Machine = ~5% of section-40 engineering debug hours.
+  //   Test/Debug 1 + 2 share the remaining 95% (run in parallel).
+  //   Shop Debug duration = engineering debug duration (parallel); headcount
+  //     auto-scales with hours.
+  //   Mech 1 Release lands at the END of mech eng (latest possible) — only
+  //     pulled earlier if needed to fit. If schedule has slack, mech eng
+  //     STRETCHES (lower allocation) to push M1R later.
+  //   Section 50 teardown + install fixed at 1 week each.
+  const DEFAULT_HEADCOUNT = { mech_eng: 1, controls_eng: 1, general_eng: 1, build: 1, wire: 1 };
+  const MECH_RELEASE_TO_BUILD_WEEKS = 6;
+  const SECTION_50_WEEKS = 1;
+  const SECTION_40_CONTROLS_HEADCOUNT = 2;
+
+  const weeksFor = (hrs, count, eff) => count > 0 ? hrs / (count * 40 * eff) : 0;
+  const peopleNeededInOneWeek = (hrs, eff) => Math.max(1, Math.ceil(hrs / (1 * 40 * eff)));
+  // Roll up the editable per-cell hours into the totals the critical-path math
+  // expects. Cell layout: each section has mech / ce_des / ce_drw / ce_sw /
+  // hmi / robot / vision / build / wire_panel / wire_machine.
+  const sectionTotals = () => ({
+    section_10: {
+      mech_eng:     hours.section_10.mech,
+      controls_eng: hours.section_10.ce_des + hours.section_10.ce_drw + hours.section_10.ce_sw,
+      general_eng:  hours.section_10.hmi + hours.section_10.robot + hours.section_10.vision,
+      build:        hours.section_10.build,
+      wire:         hours.section_10.wire_panel + hours.section_10.wire_machine,
+    },
+    section_40: {
+      // Section 40 testing engineering = mech + controls debug (Design column
+      // here represents debug hours, not split design/drawings — but we treat
+      // ce_des + ce_drw as the testing-engineer hours).
+      testing:      hours.section_40.mech + hours.section_40.ce_des + hours.section_40.ce_drw + hours.section_40.ce_sw,
+      shop_debug:   hours.section_40.build + hours.section_40.wire_panel + hours.section_40.wire_machine,
+      general:      hours.section_40.hmi + hours.section_40.robot + hours.section_40.vision,
+    },
+    section_50: {
+      teardown:     hours.section_50.build + hours.section_50.wire_panel + hours.section_50.wire_machine,
+      install:      hours.section_50.mech + hours.section_50.ce_des + hours.section_50.ce_drw + hours.section_50.ce_sw
+                  + hours.section_50.hmi + hours.section_50.robot + hours.section_50.vision,
+    },
+  });
+  // Forward placement (matches server logic):
+  //   1. Compute MINIMUM weeks per phase at user's headcount.
+  //   2. Mech eng STRETCHES to absorb any slack so M1R lands as late as possible.
+  //   3. Build + Wire run in parallel; wire ends 1 week after build.
+  //   4. Section 40 Configure Machine = 5% of testing hours; Test/Debug 1+2
+  //      share remaining 95% (parallel). Shop Debug runs parallel to debug.
+  //   5. Total = mech_stretched + 6w buffer + buildWireDur + testingDur. Should
+  //      land at FAT.
+  const computeCriticalPath = (hc, deliveryWeeks, eff) => {
+    const t = sectionTotals();
+    const mechMin     = weeksFor(t.section_10.mech_eng,     hc.mech_eng,     eff);
+    const controlsMin = weeksFor(t.section_10.controls_eng, hc.controls_eng, eff);
+    const generalMin  = weeksFor(t.section_10.general_eng,  hc.general_eng,  eff);
+    const buildMin    = weeksFor(t.section_10.build,        hc.build,        eff);
+    const wireMin     = weeksFor(t.section_10.wire,         hc.wire,         eff);
+    const buildWireMin = Math.max(buildMin, wireMin) + 1;
+
+    const engDebugHrs    = t.section_40.testing;
+    const configureHrs   = engDebugHrs * 0.05;
+    const debugPerTester = (engDebugHrs * 0.95) / 2;
+    const configureWeeks = weeksFor(configureHrs,   1, eff);
+    const debugWeeks     = weeksFor(debugPerTester, 1, eff);
+    const testDur        = configureWeeks + debugWeeks;
+
+    const shopDebugHrs   = t.section_40.shop_debug;
+    const shopDebugCount = debugWeeks > 0 ? Math.max(1, Math.ceil(shopDebugHrs / (debugWeeks * 40 * eff))) : 1;
+
+    // Total min span (everything at minimum durations). Add a 2-week template
+    // overhead allowance because the SDC_Template wires Build → 2-week-gap →
+    // Wire Machine sequentially (procurement lag between panel and machine).
+    // Plus 1 week handoff buffers between phases. Without this, the math
+    // underestimates the real cascade span and "fits" projects that actually
+    // overrun in the generated schedule.
+    const TEMPLATE_OVERHEAD_WEEKS = 3;
+    const totalMin = mechMin + MECH_RELEASE_TO_BUILD_WEEKS + buildWireMin + testDur + TEMPLATE_OVERHEAD_WEEKS;
+    const slack    = Math.max(0, deliveryWeeks - totalMin);
+    // Mech eng STRETCHES to absorb slack (M1R goes later).
+    const mechStretched = mechMin + slack;
+
+    const buildStartWeek = mechStretched + MECH_RELEASE_TO_BUILD_WEEKS;
+    const buildEndWeek   = buildStartWeek + buildWireMin;
+    const testStartWeek  = buildEndWeek;
+    const fatWeek        = testStartWeek + testDur;
+    const m1rWeek        = mechStretched;
+
+    // Section 50 (post-FAT) — sized by 1-week rule, headcount = hrs / week.
+    const teardownPeopleNeeded = peopleNeededInOneWeek(t.section_50.teardown, eff);
+    const installPeopleNeeded  = peopleNeededInOneWeek(t.section_50.install + t.section_50.teardown, eff);
+
+    const fits = totalMin <= deliveryWeeks;
+    // Controls + General must also fit before testing starts (run pre-test).
+    const controlsFits = controlsMin <= testStartWeek;
+    const generalFits  = generalMin  <= testStartWeek;
+
+    return {
+      fatWeek, testStartWeek, buildEndWeek, buildStartWeek, m1rWeek,
+      testDur, buildWireDur: buildWireMin, buildDur: buildMin, wireDur: wireMin,
+      mechReqWeeks: mechStretched, controlsReqWeeks: controlsMin, generalReqWeeks: generalMin,
+      configureWeeks, debugWeeks,
+      teardownPeopleNeeded, installPeopleNeeded, shopDebugCount,
+      slack, totalMin,
+      mechFits: fits, controlsFits, generalFits,
+      feasible: fits && controlsFits && generalFits,
+    };
+  };
+
+  // Auto-bump strategy: when the minimum critical path overruns the delivery
+  // window, identify the LONGEST phase contributing to the overrun and bump
+  // that discipline's headcount. Repeat until fit or hitting a cap. User said
+  // "use as few resources as possible" so we start at 1 everywhere and only
+  // grow on demand.
+  const suggestHeadcount = (deliveryWeeks, eff) => {
+    const hc = { ...DEFAULT_HEADCOUNT };
+    for (let iter = 0; iter < 25; iter++) {
+      const cp = computeCriticalPath(hc, deliveryWeeks, eff);
+      if (cp.feasible) return hc;
+      const t = sectionTotals();
+      const candidates = [
+        { k: 'mech_eng', weeks: weeksFor(t.section_10.mech_eng, hc.mech_eng, eff) },
+        { k: 'build',    weeks: weeksFor(t.section_10.build,    hc.build,    eff) },
+        { k: 'wire',     weeks: weeksFor(t.section_10.wire,     hc.wire,     eff) },
+      ];
+      if (!cp.controlsFits) candidates.push({ k: 'controls_eng', weeks: weeksFor(t.section_10.controls_eng, hc.controls_eng, eff) });
+      if (!cp.generalFits)  candidates.push({ k: 'general_eng',  weeks: weeksFor(t.section_10.general_eng,  hc.general_eng,  eff) });
+      candidates.sort((a, b) => b.weeks - a.weeks);
+      const bumped = candidates.find(c => hc[c.k] < 5);
+      if (!bumped) break;
+      hc[bumped.k]++;
+    }
+    return hc;
+  };
+
+  const overlay = document.createElement('div');
+  overlay.id = 'estimate-feasibility-modal';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width: 1080px;">
+      <div class="modal-head">
+        <h2 style="margin: 0;">New schedule from estimate</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="est-meta">
+          <div><span class="est-meta-label">Quote</span> <strong>${escapeHtml(parsed.quote_number || '—')}</strong></div>
+          <div><span class="est-meta-label">Customer</span> <strong>${escapeHtml(parsed.customer || '—')}</strong></div>
+          <div><span class="est-meta-label">Machine</span> <strong>${escapeHtml(parsed.machine_title || '—')}</strong></div>
+        </div>
+
+        <div class="est-form">
+          <label>Project name
+            <input type="text" id="est-project-name" value="${escapeHtml(parsed.suggested_project_name)}" />
+          </label>
+          <label>Receipt of PO
+            <input type="date" id="est-po-date" value="${today}" />
+          </label>
+          <label>Delivery (weeks)
+            <input type="number" id="est-delivery-weeks" min="1" max="200" step="1" value="30" />
+          </label>
+          <label>Backlog (weeks)
+            <input type="number" id="est-backlog-weeks" min="0" max="20" step="1" value="2" title="Time between Receipt of PO and the start of engineering — accounts for handoff, kickoff, contract paperwork." />
+          </label>
+          <label>Efficiency
+            <span class="est-pct-wrap"><input type="number" id="est-efficiency" min="10" max="100" step="1" value="90" />%</span>
+          </label>
+          <label>Quoted FAT
+            <span class="est-readout" id="est-fat-readout">—</span>
+          </label>
+        </div>
+
+        <h3 style="margin: 16px 0 6px;">Estimate hours — editable</h3>
+        <p class="est-help" style="margin: 0 0 6px; font-size: 12px; color: #6b7280;">
+          Mirrors the SUMMARY FOR RELEASE tab. Section 10's <strong>Design + Drawings</strong> cell splits into Design | Drawings (default 50/50). Section 10's <strong>Electrical Build</strong> splits into Panel | Machine (default 25/75). Click any value to edit.
+        </p>
+        <div class="est-hours-scroll">
+          <table class="est-hours-table summary-mirror">
+            <colgroup>
+              <col class="col-section">
+              <col class="col-mech">
+              <col class="col-ce-des"><col class="col-ce-sw"><col class="col-ce-db">
+              <col class="col-gen"><col class="col-gen"><col class="col-gen"><col class="col-gen">
+              <col class="col-mb">
+              <col class="col-eb">
+            </colgroup>
+            <thead>
+              <tr class="grp-row">
+                <th rowspan="2" class="sticky-col">Section</th>
+                <th class="grp grp-mech">Mech<br>Eng</th>
+                <th colspan="3" class="grp grp-ce">Controls<br>Eng</th>
+                <th colspan="4" class="grp grp-gen">General<br>Eng</th>
+                <th class="grp grp-mb">Mech<br>Build</th>
+                <th class="grp grp-eb">Elec<br>Build</th>
+              </tr>
+              <tr class="sub-row">
+                <th class="num grp-mech">General</th>
+                <th class="num grp-ce">Design<br>+ Drawings</th>
+                <th class="num grp-ce">Software</th>
+                <th class="num grp-ce">Database</th>
+                <th class="num grp-gen">HMI</th>
+                <th class="num grp-gen">Robot</th>
+                <th class="num grp-gen">Vision</th>
+                <th class="num grp-gen">Device</th>
+                <th class="num grp-mb">General</th>
+                <th class="num grp-eb">General</th>
+              </tr>
+            </thead>
+            <tbody id="est-hours-body"></tbody>
+            <tfoot id="est-hours-foot"></tfoot>
+          </table>
+        </div>
+
+        <h3 style="margin: 16px 0 6px;">Staffing</h3>
+        <p class="est-help" style="margin: 0 0 6px; font-size: 12px; color: #6b7280;">
+          Edit people-per-role. Mech 1 Release pinned ${MECH_RELEASE_TO_BUILD_WEEKS} weeks before Build start. Section 40 always staffs 2 controls (lead + secondary). Section 50 teardown + install fixed at 1 week — more hours = more people.
+        </p>
+        <table class="est-staff-table">
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th class="num">Hours</th>
+              <th class="num">People</th>
+              <th class="num">Weeks</th>
+            </tr>
+          </thead>
+          <tbody id="est-hc-body"></tbody>
+        </table>
+
+        <div class="est-summary" id="est-summary"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn-ghost" id="est-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="est-create">Create project</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector('.modal-close').onclick = close;
+  overlay.querySelector('#est-cancel').onclick = close;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  // Mutable headcount the user can override. Seeded from suggestHeadcount on
+  // first render then locked unless the user clicks +/− or changes the delivery
+  // weeks (which re-suggests).
+  let userHeadcount = null;
+  let userOverrode = false;
+
+  const computeFatDate = (poIso, weeks) => {
+    const t = new Date(poIso).getTime();
+    if (isNaN(t) || !weeks) return null;
+    // Approximate: 1 business week = 7 calendar days (we're rough on this).
+    return new Date(t + weeks * 7 * 86400000).toISOString().slice(0, 10);
+  };
+
+  // Render the editable hours table that mirrors SUMMARY FOR RELEASE.
+  // Section 10 gets two-cell splits on the Design+Drawings and Electrical Build
+  // cells (hash-mark divider between sub-inputs). Sections 40 and 50 show a
+  // single value for those same columns (combined ce_design and elec_build).
+  const renderHoursTable = () => {
+    const body = document.getElementById('est-hours-body');
+    const foot = document.getElementById('est-hours-foot');
+    const inp = (sec, col, val) => `<input type="number" min="0" step="1" class="est-hours-input" data-section="${sec}" data-col="${col}" value="${val}">`;
+    const singleCell = (sec, col, val, cls) => `<td class="num ${cls || ''}">${inp(sec, col, val)}</td>`;
+    // For Section 10: ce_des|ce_drw split with hash; wire_panel|wire_machine split with hash.
+    const splitCell = (sec, colA, colB, valA, valB, cls) =>
+      `<td class="num split-cell ${cls || ''}">
+        ${inp(sec, colA, valA)}<span class="hash-divider">/</span>${inp(sec, colB, valB)}
+      </td>`;
+    // For Sections 40 + 50: ce_design lump = ce_des + ce_drw; elec_build lump = wire_panel + wire_machine.
+    // We render these as ONE input that, when edited, distributes back into ce_des / ce_drw (50/50)
+    // or wire_panel / wire_machine (25/75) so the underlying data model stays consistent.
+    const lumpCell = (sec, kind, total, cls) =>
+      `<td class="num ${cls || ''}"><input type="number" min="0" step="1" class="est-hours-input est-hours-lump" data-section="${sec}" data-lump="${kind}" value="${total}"></td>`;
+
+    const s10 = hours.section_10, s40 = hours.section_40, s50 = hours.section_50;
+    const ce40 = s40.ce_des + s40.ce_drw;
+    const ce50 = s50.ce_des + s50.ce_drw;
+    const eb40 = s40.wire_panel + s40.wire_machine;
+    const eb50 = s50.wire_panel + s50.wire_machine;
+
+    body.innerHTML = `
+      <tr data-section="section_10">
+        <td class="sticky-col">10 Design &amp; Build</td>
+        ${singleCell('section_10', 'mech',         s10.mech,        'grp-mech')}
+        ${splitCell ('section_10', 'ce_des', 'ce_drw', s10.ce_des, s10.ce_drw, 'grp-ce')}
+        ${singleCell('section_10', 'ce_sw',        s10.ce_sw,       'grp-ce')}
+        <td class="num grp-ce">0</td>
+        ${singleCell('section_10', 'hmi',          s10.hmi,         'grp-gen')}
+        ${singleCell('section_10', 'robot',        s10.robot,       'grp-gen')}
+        ${singleCell('section_10', 'vision',       s10.vision,      'grp-gen')}
+        <td class="num grp-gen">0</td>
+        ${singleCell('section_10', 'build',        s10.build,       'grp-mb')}
+        ${splitCell ('section_10', 'wire_panel', 'wire_machine', s10.wire_panel, s10.wire_machine, 'grp-eb')}
+      </tr>
+      <tr data-section="section_40">
+        <td class="sticky-col">40 Machine Testing/Debug</td>
+        ${singleCell('section_40', 'mech',  s40.mech,  'grp-mech')}
+        ${lumpCell  ('section_40', 'ce',    ce40,      'grp-ce')}
+        ${singleCell('section_40', 'ce_sw', s40.ce_sw, 'grp-ce')}
+        <td class="num grp-ce">0</td>
+        ${singleCell('section_40', 'hmi',    s40.hmi,    'grp-gen')}
+        ${singleCell('section_40', 'robot',  s40.robot,  'grp-gen')}
+        ${singleCell('section_40', 'vision', s40.vision, 'grp-gen')}
+        <td class="num grp-gen">0</td>
+        ${singleCell('section_40', 'build', s40.build, 'grp-mb')}
+        ${lumpCell  ('section_40', 'eb',    eb40,      'grp-eb')}
+      </tr>
+      <tr data-section="section_50">
+        <td class="sticky-col">50 Teardown &amp; Install</td>
+        ${singleCell('section_50', 'mech',  s50.mech,  'grp-mech')}
+        ${lumpCell  ('section_50', 'ce',    ce50,      'grp-ce')}
+        ${singleCell('section_50', 'ce_sw', s50.ce_sw, 'grp-ce')}
+        <td class="num grp-ce">0</td>
+        ${singleCell('section_50', 'hmi',    s50.hmi,    'grp-gen')}
+        ${singleCell('section_50', 'robot',  s50.robot,  'grp-gen')}
+        ${singleCell('section_50', 'vision', s50.vision, 'grp-gen')}
+        <td class="num grp-gen">0</td>
+        ${singleCell('section_50', 'build', s50.build, 'grp-mb')}
+        ${lumpCell  ('section_50', 'eb',    eb50,      'grp-eb')}
+      </tr>`;
+
+    // Footer totals — single cell per column (sums Design+Drawings and Panel+Machine
+    // because the SUMMARY tab shows them as one number).
+    const total = (col) => sumCol(col);
+    const totalCe  = total('ce_des') + total('ce_drw');
+    const totalEb  = total('wire_panel') + total('wire_machine');
+    foot.innerHTML = `
+      <tr class="totals-row">
+        <td class="sticky-col">Department Totals</td>
+        <td class="num grp-mech" data-total="mech">${total('mech')}</td>
+        <td class="num grp-ce"   data-total="ce">${totalCe}</td>
+        <td class="num grp-ce"   data-total="ce_sw">${total('ce_sw')}</td>
+        <td class="num grp-ce">0</td>
+        <td class="num grp-gen"  data-total="hmi">${total('hmi')}</td>
+        <td class="num grp-gen"  data-total="robot">${total('robot')}</td>
+        <td class="num grp-gen"  data-total="vision">${total('vision')}</td>
+        <td class="num grp-gen">0</td>
+        <td class="num grp-mb"   data-total="build">${total('build')}</td>
+        <td class="num grp-eb"   data-total="eb">${totalEb}</td>
+      </tr>`;
+
+    const refreshTotals = () => {
+      const set = (sel, v) => {
+        const el = foot.querySelector(sel);
+        if (el) el.textContent = v;
+      };
+      set('[data-total="mech"]',   sumCol('mech'));
+      set('[data-total="ce"]',     sumCol('ce_des') + sumCol('ce_drw'));
+      set('[data-total="ce_sw"]',  sumCol('ce_sw'));
+      set('[data-total="hmi"]',    sumCol('hmi'));
+      set('[data-total="robot"]',  sumCol('robot'));
+      set('[data-total="vision"]', sumCol('vision'));
+      set('[data-total="build"]',  sumCol('build'));
+      set('[data-total="eb"]',     sumCol('wire_panel') + sumCol('wire_machine'));
+    };
+
+    body.querySelectorAll('.est-hours-input').forEach(el => {
+      el.addEventListener('input', (e) => {
+        const sec = e.target.dataset.section;
+        const v = Math.max(0, Number(e.target.value) || 0);
+        if (e.target.classList.contains('est-hours-lump')) {
+          // Lump cell — distribute into the underlying split: ce → 50/50, eb → 25/75.
+          const kind = e.target.dataset.lump;
+          if (kind === 'ce') {
+            hours[sec].ce_des = Math.round(v * 0.5);
+            hours[sec].ce_drw = v - hours[sec].ce_des;
+          } else if (kind === 'eb') {
+            hours[sec].wire_panel   = Math.round(v * 0.25);
+            hours[sec].wire_machine = v - hours[sec].wire_panel;
+          }
+        } else {
+          const col = e.target.dataset.col;
+          hours[sec][col] = v;
+        }
+        refreshTotals();
+        recompute();
+      });
+    });
+  };
+
+  // Staffing table rows — one per "role" that maps onto a placeholder in
+  // SDC_Template. Headcount is editable for Section 10 disciplines + Section
+  // 50 teardown/install (since those scale headcount to fit a fixed week);
+  // Section 40 controls is locked at 2 per user direction.
+  const renderHeadcountTable = (cp, deliveryWeeks, eff) => {
+    const body = document.getElementById('est-hc-body');
+    const t = sectionTotals();
+    const fmt = (n) => Math.round(n || 0).toLocaleString();
+    // Format weeks rounded UP to the nearest half — 9.7 → 10w, 3.9 → 4w,
+    // 5.3 → 5.5w, 5.7 → 6w. Matches the half-week duration grid the schedule
+    // generator uses everywhere else.
+    const fmtW = (n) => {
+      if (!(n > 0)) return '—';
+      const halves = Math.ceil(n * 2) / 2;
+      return halves + 'w';
+    };
+
+    // Compact one-section staffing table — single column for total hours and
+    // editable People count. Locked rows (Section 40 debug at 2, Section 50
+    // teardown/install auto from hours) show their value with no buttons.
+    const rows = [
+      { key: 'mech_eng',     label: 'Mech Engineer',  hrs: t.section_10.mech_eng,     people: userHeadcount.mech_eng,     editable: true,  weeks: cp.mechReqWeeks },
+      { key: 'controls_eng', label: 'Controls Eng',   hrs: t.section_10.controls_eng, people: userHeadcount.controls_eng, editable: true,  weeks: cp.controlsReqWeeks },
+      { key: 'general_eng',  label: 'General Eng',    hrs: t.section_10.general_eng,  people: userHeadcount.general_eng,  editable: true,  weeks: cp.generalReqWeeks },
+      { key: 'build',        label: 'Builder',        hrs: t.section_10.build,        people: userHeadcount.build,        editable: true,  weeks: cp.buildDur },
+      { key: 'wire',         label: 'Electrician',    hrs: t.section_10.wire,         people: userHeadcount.wire,         editable: true,  weeks: cp.wireDur },
+      { key: '_t40',         label: 'Test Debugger (lead + secondary)', hrs: t.section_40.testing, people: SECTION_40_CONTROLS_HEADCOUNT, editable: false, weeks: cp.testDur, peopleLabel: '2 (fixed)' },
+    ];
+    if (t.section_40.shop_debug > 0) rows.push({ key: '_s40shop', label: 'Shop Debug crew', hrs: t.section_40.shop_debug, people: cp.shopDebugCount || 1, editable: false, weeks: cp.testDur, peopleLabel: `${cp.shopDebugCount || 1} (auto)` });
+    if (t.section_50.teardown > 0)   rows.push({ key: '_s50td',   label: 'Teardown crew (1-week fixed)', hrs: t.section_50.teardown, people: cp.teardownPeopleNeeded, editable: false, weeks: 1, peopleLabel: `${cp.teardownPeopleNeeded} (auto)` });
+    if (t.section_50.install > 0)    rows.push({ key: '_s50in',   label: 'Install crew (1-week fixed)',  hrs: t.section_50.install,  people: cp.installPeopleNeeded,  editable: false, weeks: 1, peopleLabel: `${cp.installPeopleNeeded} (auto)` });
+
+    body.innerHTML = rows.map(r => `
+      <tr data-key="${r.key}">
+        <td>${escapeHtml(r.label)}</td>
+        <td class="num">${fmt(r.hrs)}</td>
+        <td class="num">${r.editable
+          ? `<button type="button" class="est-hc-btn" data-action="dec">−</button> <span class="est-hc">${r.people}</span> <button type="button" class="est-hc-btn" data-action="inc">+</button>`
+          : `<span class="est-hc-fixed">${r.peopleLabel || r.people}</span>`}</td>
+        <td class="num">${fmtW(r.weeks)}</td>
+      </tr>`).join('');
+    body.querySelectorAll('.est-hc-btn').forEach(btn => {
+      btn.onclick = () => {
+        const tr = btn.closest('tr');
+        const k = tr.dataset.key;
+        if (btn.dataset.action === 'inc') userHeadcount[k]++;
+        else                              userHeadcount[k] = Math.max(1, userHeadcount[k] - 1);
+        userOverrode = true;
+        recompute();
+      };
+    });
+  };
+
+  const recompute = () => {
+    const po = document.getElementById('est-po-date').value;
+    const deliveryWeeks = Math.max(1, Number(document.getElementById('est-delivery-weeks').value) || 30);
+    const eff = Math.max(0.1, Math.min(1, (Number(document.getElementById('est-efficiency').value) || 90) / 100));
+    document.getElementById('est-fat-readout').textContent = computeFatDate(po, deliveryWeeks) || '—';
+    if (!userHeadcount || !userOverrode) {
+      userHeadcount = suggestHeadcount(deliveryWeeks, eff);
+    }
+    const cp = computeCriticalPath(userHeadcount, deliveryWeeks, eff);
+    renderHeadcountTable(cp, deliveryWeeks, eff);
+    const m1rText = cp.m1rWeek > 0 ? `week ${cp.m1rWeek.toFixed(1)}` : 'BEFORE PO (infeasible)';
+    const summary = cp.feasible
+      ? `<div style="font-size:12px;color:#166534;">✓ Fits ${deliveryWeeks} weeks at ${Math.round(eff*100)}% efficiency. <strong>Mech 1 Release at ${m1rText}</strong> · Build/Wire weeks ${cp.buildStartWeek.toFixed(1)}–${cp.buildEndWeek.toFixed(1)} · Testing weeks ${cp.testStartWeek.toFixed(1)}–${cp.fatWeek}.</div>`
+      : `<div style="font-size:12px;color:#b91c1c;">✗ Doesn't fit ${deliveryWeeks} weeks. Bump headcount or extend delivery.</div>`;
+    document.getElementById('est-summary').innerHTML = summary;
+  };
+
+  // Reset to auto-suggested headcount when delivery weeks changes.
+  document.getElementById('est-delivery-weeks').oninput = () => { userOverrode = false; recompute(); };
+  document.getElementById('est-efficiency').oninput = () => { userOverrode = false; recompute(); };
+  document.getElementById('est-po-date').oninput = recompute;
+
+  renderHoursTable();
+  recompute();
+
+  document.getElementById('est-create').onclick = async () => {
+    const project = document.getElementById('est-project-name').value.trim();
+    const po_date = document.getElementById('est-po-date').value;
+    const deliveryWeeks = Math.max(1, Number(document.getElementById('est-delivery-weeks').value) || 30);
+    const fat_date = computeFatDate(po_date, deliveryWeeks);
+    const efficiency = Math.max(0.1, Math.min(1, (Number(document.getElementById('est-efficiency').value) || 90) / 100));
+    if (!project)                  { await showAlertDialog('Pick a project name.'); return; }
+    if (!po_date || !fat_date)     { await showAlertDialog('Pick a PO date and delivery weeks.'); return; }
+    const btn = document.getElementById('est-create');
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+    try {
+      // Convert the editable broken-out hours back into the column layout the
+      // backend expects (mech_eng / ce_design / ce_software / gen_* / mech_build
+      // / elec_build). User-edited values supersede the original estimate. The
+      // `hours_breakdown` field carries the per-task split (Controls Design vs
+      // Drawings, Wire Panel vs Machine) for backend use.
+      const sectionToCols = (s) => ({
+        mech_eng:    s.mech,
+        ce_design:   s.ce_des + s.ce_drw,
+        ce_software: s.ce_sw,
+        ce_database: 0,
+        gen_hmi:     s.hmi,
+        gen_robot:   s.robot,
+        gen_vision:  s.vision,
+        gen_device:  0,
+        mech_build:  s.build,
+        elec_build:  s.wire_panel + s.wire_machine,
+      });
+      const backlogWeeks = Math.max(0, Number(document.getElementById('est-backlog-weeks').value) || 0);
+      const r = await fetch('/api/estimate/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project, po_date, fat_date, efficiency,
+          headcount: userHeadcount,
+          backlog_weeks: backlogWeeks,
+          hours_per_section: {
+            section_10: sectionToCols(hours.section_10),
+            section_40: sectionToCols(hours.section_40),
+            section_50: sectionToCols(hours.section_50),
+          },
+          hours_breakdown: hours, // per-task split so backend uses edited values
+        }),
+      });
+      const result = await r.json();
+      if (!r.ok) {
+        await showAlertDialog({ title: 'Create failed', message: result.error || 'Unknown error.' });
+        btn.disabled = false;
+        btn.textContent = 'Create project';
+        return;
+      }
+      if (!state.openProjects.includes(result.project)) state.openProjects.push(result.project);
+      state.filters.project = result.project;
+      saveProjectTabs();
+      close();
+      await loadTeam();
+      await loadTasks();
+      await showAlertDialog({
+        title: `Created "${result.project}"`,
+        message: `${result.tasksCreated} tasks cloned from ${result.template}.\n\n${result.message || ''}`,
+      });
+    } catch (err) {
+      await showAlertDialog({ title: 'Create failed', message: err.message || String(err) });
+      btn.disabled = false;
+      btn.textContent = 'Create project';
+    }
+  };
 }
 
 function render() {
@@ -3118,10 +5036,14 @@ async function deleteTaskById(id) {
   // Anchor milestones (Receipt of PO, FAT) are project-spine markers and aren't deletable.
   const t = state.tasks.find(x => x.id === id);
   if (t && t.anchor_key) {
-    alert(`"${t.name}" is an anchor milestone and can't be deleted. You can edit its date, predecessors, and progress like any other task.`);
+    await showAlertDialog({
+      title: 'Anchor milestones are protected',
+      message: `"${t.name}" is an anchor milestone and can't be deleted. You can still edit its date, predecessors, and progress like any other task.`,
+    });
     return;
   }
-  if (!confirm('Delete this task? This cannot be undone.')) return;
+  // No confirmation popup — right-click → Delete is already 2 intentional clicks.
+  // User explicitly requested this.
   await api.remove(id);
   await loadTasks();
 }
@@ -3209,6 +5131,62 @@ function showContextMenu(x, y, items) {
     };
     document.addEventListener('mousedown', onDoc);
   }, 0);
+}
+
+// In-app confirmation popup anchored next to a click point. Replaces native
+// `confirm()` (which opens a centered browser-chrome dialog far from wherever
+// the user clicked — disorienting). Returns a Promise<boolean>: resolves true
+// if Confirm was clicked, false if Cancel or clicking outside.
+//
+// Usage:
+//   if (await showConfirmAt(e.clientX, e.clientY, { message: '...', confirmLabel: 'Yes', danger: true })) {
+//     // proceed
+//   }
+function showConfirmAt(x, y, opts = {}) {
+  return new Promise((resolve) => {
+    // Tear down any previous popup so back-to-back actions don't stack.
+    document.getElementById('confirm-popup')?.remove();
+    const pop = document.createElement('div');
+    pop.id = 'confirm-popup';
+    pop.className = 'confirm-popup';
+    pop.innerHTML = `
+      <div class="confirm-popup-message">${escapeHtml(opts.message || 'Are you sure?')}</div>
+      <div class="confirm-popup-actions">
+        <button type="button" class="confirm-popup-cancel">${escapeHtml(opts.cancelLabel || 'Cancel')}</button>
+        <button type="button" class="confirm-popup-ok ${opts.danger ? 'is-danger' : ''}">${escapeHtml(opts.confirmLabel || 'Confirm')}</button>
+      </div>
+    `;
+    document.body.appendChild(pop);
+    // Anchor near the click. Clamp into viewport so it doesn't render
+    // partially off-screen if you clicked near an edge.
+    const pad = 8;
+    const w = pop.offsetWidth || 260;
+    const h = pop.offsetHeight || 100;
+    let left = Math.min(window.innerWidth - w - pad, Math.max(pad, x));
+    let top  = Math.min(window.innerHeight - h - pad, Math.max(pad, y));
+    pop.style.left = left + 'px';
+    pop.style.top  = top  + 'px';
+
+    const cleanup = (result) => {
+      pop.remove();
+      document.removeEventListener('mousedown', onOutside, true);
+      document.removeEventListener('keydown', onKey, true);
+      resolve(!!result);
+    };
+    const onOutside = (ev) => { if (!pop.contains(ev.target)) cleanup(false); };
+    const onKey = (ev) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); cleanup(false); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); cleanup(true); }
+    };
+    pop.querySelector('.confirm-popup-cancel').addEventListener('click', () => cleanup(false));
+    pop.querySelector('.confirm-popup-ok').addEventListener('click', () => cleanup(true));
+    // Defer the outside-click listener by a tick so the click that opened the
+    // popup doesn't immediately close it via document-level bubbling.
+    setTimeout(() => {
+      document.addEventListener('mousedown', onOutside, true);
+      document.addEventListener('keydown', onKey, true);
+    }, 0);
+  });
 }
 
 // ---------- Financial milestones ----------
@@ -3330,6 +5308,250 @@ async function loadFinancialsForAllOpenProjects() {
 // a focused view instead of pushing the schedule grid down. Adding a new milestone
 // drops an empty row at the bottom of the table and focuses its Name cell — no
 // blocking JS prompt at the top of the window.
+// Quote vs Schedule comparison. Fetches the persisted quote (saved when the
+// project was created from an estimate sheet) and compares it to the live
+// scheduled hours. If no quote was saved (older project, manual creation,
+// Smartsheet import), offers an in-modal "Load estimate file…" button so the
+// user can pick the original xlsx and populate the comparison without
+// recreating the project.
+async function openQuoteCompareModal(project, providedQuote) {
+  if (!project) {
+    await showAlertDialog('Pick a project tab first.');
+    return;
+  }
+  document.getElementById('quote-compare-modal')?.remove();
+
+  // Fetch the persisted quote unless one was passed in (e.g. from the
+  // "Load estimate file…" flow).
+  let quote = providedQuote || null;
+  if (!quote) {
+    try {
+      const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+      if (r.ok) quote = await r.json();
+    } catch (_) {}
+  }
+
+  // Walk the project's tasks and sum hours per task-bucket.
+  // Bucket map: task name → key (matches the buckets in /api/estimate/create).
+  const TASK_BUCKET = (t) => {
+    const n = (t.name || '').toLowerCase();
+    const pg = t.phase_group, d = t.department, sd = t.sub_department;
+    if (/^configure machine$/i.test(t.name))      return 'configure';
+    if (/test\/?debug.*engineer/i.test(t.name))   return 'test_debug';
+    if (/^shop debug$/i.test(t.name))             return 'shop_debug';
+    if (/^controls software$/i.test(t.name))      return 'ce_software';
+    if (/^controls design$/i.test(t.name))        return 'ce_design';
+    if (/^controls drawings$/i.test(t.name))      return 'ce_drawings';
+    if (/^hmi/i.test(t.name))                     return 'gen_hmi';
+    if (/^robot/i.test(t.name))                   return 'gen_robot';
+    if (/^vision/i.test(t.name))                  return 'gen_vision';
+    if (/^build and wire panel$/i.test(t.name))   return 'wire_panel';
+    if (/^wire machine$/i.test(t.name))           return 'wire_machine';
+    if (pg === 'design_build' && sd === 'mech')     return 'mech_eng';
+    if (pg === 'design_build' && sd === 'build')    return 'build';
+    if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
+    if (pg === 'teardown_install' && d === 'teardown') return 'teardown';
+    if (pg === 'teardown_install' && d === 'install')  return 'install';
+    return null;
+  };
+  const scheduled = {};
+  for (const t of state.tasks) {
+    if (t.project !== project) continue;
+    if (t.is_milestone || t.anchor_key) continue;
+    const k = TASK_BUCKET(t);
+    if (!k) continue;
+    const hrs = (Number(t.duration_days) || 0) * 8 * ((Number(t.allocation) || 90) / 100);
+    scheduled[k] = (scheduled[k] || 0) + hrs;
+  }
+
+  // Pull the quoted hours by the same bucket. Quote stores hours_breakdown
+  // per section per task-aligned cell (mech, ce_des, ce_drw, ce_sw, hmi,
+  // robot, vision, build, wire_panel, wire_machine).
+  const safe = (v) => Math.round(v || 0);
+  const hb = quote?.hours_breakdown;
+  const s10 = hb?.section_10 || {}, s40 = hb?.section_40 || {}, s50 = hb?.section_50 || {};
+  const quoted = {
+    mech_eng:    safe(s10.mech) + safe(s50.mech),
+    ce_design:   safe(s10.ce_des),
+    ce_drawings: safe(s10.ce_drw),
+    ce_software: safe(s10.ce_sw),
+    gen_hmi:     safe(s10.hmi)    + safe(s40.hmi),
+    gen_robot:   safe(s10.robot)  + safe(s40.robot),
+    gen_vision:  safe(s10.vision) + safe(s40.vision),
+    build:       safe(s10.build),
+    wire_panel:  safe(s10.wire_panel),
+    wire_machine: safe(s10.wire_machine),
+    // Section 40 testing engineering — Configure (5%) + Test/Debug 1+2 (95%)
+    // split out. We compare totals to the sum of those tasks.
+    test_debug:  safe(s40.mech) + safe(s40.ce_des) + safe(s40.ce_drw) + safe(s40.ce_sw)
+                 + safe(s40.hmi) + safe(s40.robot) + safe(s40.vision),
+    configure:   0, // configure hours are part of the testing bucket (5% slice)
+    shop_debug:  safe(s40.build) + safe(s40.wire_panel) + safe(s40.wire_machine),
+    teardown:    safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine),
+    install:     safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
+                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision),
+  };
+  // Configure Machine = 5% of testing engineering hours.
+  quoted.configure = Math.round(quoted.test_debug * 0.05);
+  quoted.test_debug = quoted.test_debug - quoted.configure;
+
+  const ROWS = [
+    { k: 'mech_eng',     label: 'Mechanical Engineering' },
+    { k: 'ce_design',    label: 'Controls Design' },
+    { k: 'ce_drawings',  label: 'Controls Drawings' },
+    { k: 'ce_software',  label: 'Controls Software' },
+    { k: 'gen_hmi',      label: 'HMI Programming' },
+    { k: 'gen_robot',    label: 'Robot Programming' },
+    { k: 'gen_vision',   label: 'Vision Programming' },
+    { k: 'build',        label: 'Mechanical Build' },
+    { k: 'wire_panel',   label: 'Build and Wire Panel' },
+    { k: 'wire_machine', label: 'Wire Machine' },
+    { k: 'configure',    label: 'Configure Machine' },
+    { k: 'test_debug',   label: 'Test/Debug Engineer (lead + secondary)' },
+    { k: 'shop_debug',   label: 'Shop Debug' },
+    { k: 'teardown',     label: 'Teardown' },
+    { k: 'install',      label: 'Install' },
+  ];
+
+  let totalQ = 0, totalS = 0;
+  const rowsHtml = ROWS.map(r => {
+    const q = quoted[r.k] || 0;
+    const s = Math.round(scheduled[r.k] || 0);
+    const diff = s - q;
+    totalQ += q; totalS += s;
+    const cls = diff === 0 ? 'diff-zero' : (Math.abs(diff) > q * 0.10 ? 'diff-far' : 'diff-near');
+    const sign = diff > 0 ? '+' : '';
+    return `<tr>
+      <td>${escapeHtml(r.label)}</td>
+      <td class="num">${q.toLocaleString()}</td>
+      <td class="num">${s.toLocaleString()}</td>
+      <td class="num quote-diff ${cls}">${sign}${diff.toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+  const grandDiff = totalS - totalQ;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'quote-compare-modal';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width: 720px;">
+      <div class="modal-head">
+        <h2>Quote vs Schedule — ${escapeHtml(project)}</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        ${quote
+          ? `<div style="margin:0 0 12px;font-size:12px;color:#475569;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="flex:1 1 auto;min-width:240px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
+              <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor (billing events tied to anchors, e.g. 30% at PO / 60% at FAT / 10% at Ship). Stays open on top so you can confirm billing while the comparison is still in view.">$ Financial Milestones</button>
+              <label class="btn-ghost" style="cursor:pointer;border:1px solid #cbd5e1;color:#334155;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
+                Replace estimate…
+                <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
+              </label>
+            </div>`
+          : `<div style="margin:0 0 12px;font-size:12px;color:#b45309;background:#fef3c7;padding:10px 12px;border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="flex:1 1 auto;min-width:240px;">No estimate attached to this project. Load the estimate xlsx — it'll be saved on the project so future opens of this modal load it automatically.</span>
+              <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor. You can still edit billing milestones even without an estimate attached.">$ Financial Milestones</button>
+              <label class="btn-ghost" style="cursor:pointer;border:1px solid #d97706;color:#b45309;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
+                Attach estimate…
+                <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
+              </label>
+            </div>`}
+        <table class="quote-compare-table">
+          <thead>
+            <tr>
+              <th style="text-align:left;">Bucket</th>
+              <th class="num">Quoted hrs</th>
+              <th class="num">Scheduled hrs</th>
+              <th class="num">Δ (sched − quote)</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+          <tfoot>
+            <tr class="totals-row">
+              <td>Total</td>
+              <td class="num">${totalQ.toLocaleString()}</td>
+              <td class="num">${totalS.toLocaleString()}</td>
+              <td class="num quote-diff ${grandDiff === 0 ? 'diff-zero' : (Math.abs(grandDiff) > totalQ * 0.05 ? 'diff-far' : 'diff-near')}">${grandDiff > 0 ? '+' : ''}${grandDiff.toLocaleString()}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn-primary" data-action="close">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('.modal-close').onclick = close;
+  overlay.querySelector('[data-action="close"]').onclick = close;
+  // "$ Financial Milestones" button lives in the modal BODY (top banner row)
+  // instead of the footer — moved in v3.60 since users said they couldn't
+  // find it down at the bottom. Opens the per-project financials editor on
+  // top so they can confirm or tweak billing while still seeing the hours
+  // comparison.
+  overlay.querySelector('[data-action="financials"]').onclick = () => {
+    openFinancialsModal(project);
+  };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  // "Load estimate file…" — pick an xlsx, parse it, PERSIST the quote on the
+  // project so future opens of this modal show the comparison without
+  // re-loading. Reopens this modal with the saved quote.
+  const fileEl = overlay.querySelector('#quote-compare-file');
+  if (fileEl) {
+    fileEl.addEventListener('change', async () => {
+      const file = fileEl.files?.[0];
+      if (!file) return;
+      try {
+        const buf = await file.arrayBuffer();
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        const r = await fetch('/api/estimate/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: b64 }),
+        });
+        const parsed = await r.json();
+        if (!r.ok) { await showAlertDialog({ title: "Couldn't parse estimate", message: parsed.error || 'Unknown error.' }); return; }
+        const safe = (v) => Math.round(v || 0);
+        const buildSection = (s) => ({
+          mech:         safe(s.mech_eng),
+          ce_des:       Math.round(safe(s.ce_design) * 0.5),
+          ce_drw:       safe(s.ce_design) - Math.round(safe(s.ce_design) * 0.5),
+          ce_sw:        safe(s.ce_software),
+          hmi:          safe(s.gen_hmi),
+          robot:        safe(s.gen_robot),
+          vision:       safe(s.gen_vision),
+          build:        safe(s.mech_build),
+          wire_panel:   Math.round(safe(s.elec_build) * 0.25),
+          wire_machine: safe(s.elec_build) - Math.round(safe(s.elec_build) * 0.25),
+        });
+        const reloadedQuote = {
+          hours_per_section: parsed.hours_per_section,
+          hours_breakdown: {
+            section_10: buildSection(parsed.hours_per_section.section_10),
+            section_40: buildSection(parsed.hours_per_section.section_40),
+            section_50: buildSection(parsed.hours_per_section.section_50),
+          },
+        };
+        // Persist on the project so future opens of this modal load it
+        // automatically — no need to pick the file every time.
+        try {
+          await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(reloadedQuote),
+          });
+        } catch (_) {}
+        close();
+        openQuoteCompareModal(project, reloadedQuote);
+      } catch (err) {
+        await showAlertDialog({ title: "Couldn't read file", message: err.message || String(err) });
+      }
+    });
+  }
+}
+
 function openFinancialsModal(project) {
   if (!project) {
     alert('Pick a project tab first — financial milestones live on a specific project.');
@@ -3457,17 +5679,17 @@ function openFinancialsModal(project) {
     modal.querySelector('.modal-close').addEventListener('click', close);
     modal.querySelector('#financials-done').addEventListener('click', close);
 
-    // Show on Gantt checkbox — drives the same state.showFinancials flag the toolbar
-    // toggle uses. Re-renders the Gantt immediately so the user sees the overlay
-    // appear/disappear without closing the modal.
+    // Show on Gantt checkbox — drives the same state.showFinancials flag the
+    // Filters popover view-options toggle uses. Re-renders the Gantt immediately
+    // so the user sees the overlay appear/disappear without closing the modal.
+    // Also refresh the filters popover so its toggle reflects the new state.
     const showCb = modal.querySelector('#financials-show-on-gantt');
     if (showCb) {
       showCb.addEventListener('change', async () => {
         state.showFinancials = showCb.checked;
-        const finBtn = document.getElementById('btn-financial');
-        if (finBtn) finBtn.classList.toggle('is-active', state.showFinancials);
         saveScheduleView();
         if (state.showFinancials) await loadFinancialsForAllOpenProjects();
+        renderFilters();
         renderGantt();
       });
     }
@@ -3489,7 +5711,13 @@ function openFinancialsModal(project) {
       });
       tr.querySelector('[data-action="delete"]').addEventListener('click', async () => {
         const row = (state.financials[project] || []).find(r => r.id === id);
-        if (!confirm(`Delete "${row?.name || 'this milestone'}"?`)) return;
+        const ok = await showConfirmDialog({
+          title: 'Delete financial milestone?',
+          message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`,
+          okLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
         await api.financials.remove(id);
         await loadFinancialsForProject(project);
         await render();
@@ -3586,6 +5814,12 @@ function setupGridPan() {
       if (!panning && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
         panning = true;
         panel.classList.add('panning');
+        // Clear any selection the browser kicked off in the first 4px of mouse
+        // movement before we hit the panning threshold. Without this, headers /
+        // group rows get a blue highlight that persists until the user clicks
+        // somewhere else — especially obvious when the scroll hits the left edge
+        // and the drag has nowhere to go.
+        try { window.getSelection()?.removeAllRanges(); } catch (_) {}
       }
       if (panning) {
         ev.preventDefault();
@@ -3725,6 +5959,30 @@ const ANCHOR_COLOR_DEFAULTS = {
   text: '#0f172a', // slate-900 — contrasts the light lime for label/stroke
 };
 
+// % complete pill color scheme — four states, each just a background fill.
+// Text is always black for consistency; the fill is what changes between
+// states (slate / red / green / emerald by default). Drives the right-edge
+// pill inside the Task column on the Schedule grid.
+const PCT_COLOR_DEFAULTS = {
+  zero:    '#fafbfc', // near-white — 0%, not started (subtle, doesn't draw the eye)
+  behind:  '#fee2e2', // soft red — 1–99% AND behind schedule
+  ontrack: '#dcfce7', // soft green — 1–99% AND on/ahead
+  done:    '#16a34a', // deep green — 100% complete (white ✓ inside, matches milestone done)
+};
+const PCT_COLOR_KEYS = ['zero', 'behind', 'ontrack', 'done'];
+// Normalize the saved pct_colors value into the simple { key → hex } form. Earlier
+// builds saved { key → { fill, text } } objects; this absorbs either shape.
+function normalizePctColors(raw) {
+  const out = {};
+  for (const k of PCT_COLOR_KEYS) {
+    const v = raw?.[k];
+    if (typeof v === 'string') out[k] = v;
+    else if (v && typeof v === 'object' && v.fill) out[k] = v.fill;
+    else out[k] = PCT_COLOR_DEFAULTS[k];
+  }
+  return out;
+}
+
 function applyTheme(theme) {
   if (!theme) return;
   const root = document.documentElement.style;
@@ -3746,6 +6004,14 @@ function applyAnchorColor(anchorColor) {
   const root = document.documentElement.style;
   root.setProperty('--anchor-fill', c.fill);
   root.setProperty('--anchor-text', c.text);
+}
+
+function applyPctColors(pctColors) {
+  const norm = normalizePctColors(pctColors);
+  const root = document.documentElement.style;
+  for (const k of PCT_COLOR_KEYS) {
+    root.setProperty(`--pct-${k}-fill`, norm[k]);
+  }
 }
 
 // Apply the live hierarchy colors to BOTH the runtime store (so injectPhaseStyles uses
@@ -3775,10 +6041,14 @@ async function loadSettings() {
   if (!state.settings.section_colors)    state.settings.section_colors    = { ...SECTION_COLOR_DEFAULTS };
   if (!state.settings.hierarchy_colors)  state.settings.hierarchy_colors  = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   if (!state.settings.anchor_color)      state.settings.anchor_color      = { ...ANCHOR_COLOR_DEFAULTS };
+  // Always normalize — older builds saved { key → { fill, text } } objects;
+  // current shape is { key → "#hex" }. normalizePctColors handles both.
+  state.settings.pct_colors = normalizePctColors(state.settings.pct_colors);
   if (settings.theme) applyTheme(settings.theme);
   applySectionColors(state.settings.section_colors);
   applyHierarchyColors(state.settings.hierarchy_colors);
   applyAnchorColor(state.settings.anchor_color);
+  applyPctColors(state.settings.pct_colors);
   if (Array.isArray(settings.phases) && settings.phases.length) {
     window.PHASES = settings.phases;
     window.PHASE_BY_KEY = Object.fromEntries(settings.phases.map(p => [p.key, p]));
@@ -3786,36 +6056,66 @@ async function loadSettings() {
 }
 
 // ---------- Team view ----------
-// Four cards (one per discipline). Each card lists active members with an editable name
-// and a delete button, plus an "+ Add member" button at the bottom.
+// Five cards (one per discipline). Each card stacks: header (label + capacity
+// stats), regular members (lead first, then sort_order), then a placeholder
+// block pinned to the bottom of the card via flex:1 on the regular list. The
+// "+ Add member" button is always the last element. Rows are drag-reorderable
+// within a card so a manager can group their team by specialty / pod / etc.
 function renderTeam() {
   const grid = document.getElementById('team-grid');
   if (!grid) return;
-  grid.innerHTML = DISCIPLINES.map(disc => {
-    // Sort: real people first (by sort_order), placeholders to the BOTTOM. They're
-    // role markers, not staff, so they read as a separate group within each card.
-    const members = state.team.filter(m => m.discipline === disc.key)
-      .sort((a, b) => {
-        const aPh = isPlaceholder(a.name) ? 1 : 0;
-        const bPh = isPlaceholder(b.name) ? 1 : 0;
-        if (aPh !== bPh) return aPh - bPh;
-        return (a.sort_order || 0) - (b.sort_order || 0);
-      });
-    const rows = members.map(m => {
-      const ph = isPlaceholder(m.name);
-      return `
-      <li class="team-member${ph ? ' is-placeholder' : ''}" data-id="${m.id}">
+
+  // Build a member row. Used for both regular and placeholder lists.
+  const renderRow = (m) => {
+    const ph = isPlaceholder(m.name);
+    const leadStar = m.is_lead ? '<span class="team-member-lead" title="Department lead">★</span>' : '';
+    return `
+      <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
+        <span class="team-member-grip" title="Drag to reorder">⋮⋮</span>
+        ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
+        <input type="text" class="team-member-specialty" value="${escapeHtml(m.specialty || '')}" placeholder="Specialty" data-id="${m.id}" />
+        <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
       </li>`;
-    }).join('');
+  };
+
+  grid.innerHTML = DISCIPLINES.map(disc => {
+    // Split: real members (with lead-first sort) and placeholders (always
+    // pinned to the bottom of the card so the "+ Add member" buttons line
+    // up at the same Y across cards regardless of headcount).
+    const all = state.team.filter(m => m.discipline === disc.key);
+    const reals = all.filter(m => !isPlaceholder(m.name))
+      .sort((a, b) => {
+        const aLead = a.is_lead ? 0 : 1;
+        const bLead = b.is_lead ? 0 : 1;
+        if (aLead !== bLead) return aLead - bLead;
+        return (a.sort_order || 0) - (b.sort_order || 0);
+      });
+    const placeholders = all.filter(m => isPlaceholder(m.name))
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+    const realRows = reals.map(renderRow).join('');
+    const phRows   = placeholders.map(renderRow).join('');
+    const cap = computeDisciplineCapacity(disc.key, all);
+    const capStats = `
+      <div class="team-card-capacity" title="${escapeHtml(cap.tooltip)}">
+        <span class="cap-stat"><span class="cap-num">${cap.realCount}</span> people</span>
+        <span class="cap-sep">·</span>
+        <span class="cap-stat"><span class="cap-num">${cap.scheduledHrs.toLocaleString()}</span> hrs</span>
+        ${cap.weeksAhead != null ? `
+          <span class="cap-sep">·</span>
+          <span class="cap-stat"><span class="cap-num">${cap.weeksAhead}</span> wks @ 90%</span>
+        ` : ''}
+      </div>`;
     return `
       <section class="team-card" data-discipline="${disc.key}">
         <header class="team-card-head" style="background:${disc.color};color:${disc.text}">
           <h3>${escapeHtml(disc.label)}</h3>
-          <span class="team-count">${members.length}</span>
         </header>
-        <ul class="team-list">${rows}</ul>
+        ${capStats}
+        <ul class="team-placeholders">${phRows}</ul>
+        <ul class="team-list">${realRows}</ul>
         <button type="button" class="team-add-btn" data-action="add-member" data-discipline="${disc.key}">+ Add member</button>
       </section>`;
   }).join('');
@@ -3860,6 +6160,89 @@ function renderTeam() {
         : `Remove ${member.name}?`;
       if (!confirm(msg)) return;
       await api.team.remove(id);
+      await loadTeam();
+    });
+  });
+
+  // Toggle lead — star button next to each team member's name.
+  grid.querySelectorAll('[data-action="toggle-lead"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.dataset.id);
+      const member = state.team.find(m => m.id === id);
+      if (!member) return;
+      await api.team.update(id, { is_lead: !member.is_lead });
+      await loadTeam();
+    });
+  });
+
+  // Specialty — save on blur. Trim + treat empty as null so the placeholder
+  // text shows again instead of an empty value.
+  grid.querySelectorAll('.team-member-specialty').forEach(input => {
+    const id = Number(input.dataset.id);
+    const original = input.value;
+    input.addEventListener('blur', async () => {
+      const v = input.value.trim();
+      if (v === original) return;
+      await api.team.update(id, { specialty: v });
+      await loadTeam();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); input.value = original; input.blur(); }
+    });
+  });
+
+  // Drag-to-reorder within the same discipline. Placeholders are draggable=false
+  // in markup so they stay pinned to the bottom; this handler only fires on
+  // real members. Drop above or below a target row determines the new order.
+  let dragSourceId = null;
+  grid.querySelectorAll('.team-member[draggable="true"]').forEach(row => {
+    row.addEventListener('dragstart', (e) => {
+      dragSourceId = Number(row.dataset.id);
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(dragSourceId));
+      row.classList.add('is-dragging');
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('is-dragging');
+      grid.querySelectorAll('.team-member.drop-above, .team-member.drop-below')
+        .forEach(el => el.classList.remove('drop-above', 'drop-below'));
+    });
+    row.addEventListener('dragover', (e) => {
+      if (Number(row.dataset.id) === dragSourceId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = row.getBoundingClientRect();
+      const below = (e.clientY - rect.top) > rect.height / 2;
+      row.classList.toggle('drop-above', !below);
+      row.classList.toggle('drop-below',  below);
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop-above', 'drop-below'));
+    row.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      const targetId = Number(row.dataset.id);
+      const below = row.classList.contains('drop-below');
+      row.classList.remove('drop-above', 'drop-below');
+      if (!dragSourceId || dragSourceId === targetId) return;
+      const source = state.team.find(m => m.id === dragSourceId);
+      const target = state.team.find(m => m.id === targetId);
+      if (!source || !target || source.discipline !== target.discipline) return;
+      // Build the new order for the discipline's REAL (non-placeholder)
+      // members. Placeholders keep their order in a separate list and aren't
+      // affected by reordering real ones.
+      const reals = state.team
+        .filter(m => m.discipline === source.discipline && !isPlaceholder(m.name))
+        .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      const filtered = reals.filter(m => m.id !== dragSourceId);
+      const targetIdx = filtered.findIndex(m => m.id === targetId);
+      const insertAt = below ? targetIdx + 1 : targetIdx;
+      filtered.splice(insertAt, 0, source);
+      const order = filtered.map(m => m.id);
+      await fetch('/api/team/reorder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order }),
+      });
       await loadTeam();
     });
   });
@@ -3988,7 +6371,154 @@ function assignTaskLanes(tasks) {
   });
 }
 
+// ---------- Team dashboard ----------
+// Three cards rendered below the resources timeline on the Team page. They give
+// each discipline-manager a focused view of their team's workload across every
+// open project: what's running late, what's coming up, and (per discipline)
+// the key anchor dates that matter most to them.
+function renderTeamDashboard() {
+  const disc = state.resources?.discipline;
+  if (!disc) return;
+  const discDef = DISCIPLINE_BY_KEY[disc] || { label: disc };
+  // Names of every team member in this discipline — drives the "this discipline
+  // owns this task" filter for the first two cards. Includes placeholders too
+  // so unstaffed templated work surfaces.
+  const memberNames = new Set(
+    state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name)
+  );
+
+  // --- Behind schedule ----------------------------------------------------
+  // Every assigned task whose business-day drift is negative AND not a
+  // milestone (milestones use the +/-Nd math too but the schedule-status code
+  // skips them; mirror that here for consistency). Sorted most-behind first.
+  const behind = state.tasks
+    .filter(t => !t.is_milestone && t.assignee && memberNames.has(t.assignee))
+    .map(t => ({ task: t, drift: taskScheduleDelta(t) }))
+    .filter(x => x.drift < 0)
+    .sort((a, b) => a.drift - b.drift);
+  renderDashboardList('dashboard-behind-body', behind, ({ task, drift }) => ({
+    project: task.project,
+    name: task.name,
+    assignee: task.assignee,
+    rightChip: { text: `${drift}d`, tone: 'danger' },
+    onClick: () => jumpToTask(task),
+  }), 'No tasks behind schedule for this team.');
+
+  // --- Coming due ---------------------------------------------------------
+  // Tasks starting OR finishing within the next 14 business days (~3 weeks
+  // calendar). Helps a manager see "what's hitting the wire" for their crew.
+  const todayMs = new Date().setHours(0, 0, 0, 0);
+  const horizonMs = addBusinessDaysClient(new Date().toISOString().slice(0, 10), 14);
+  const horizonStop = horizonMs ? new Date(horizonMs + 'T23:59:59').getTime() : todayMs + 21 * 86400000;
+  const coming = state.tasks
+    .filter(t => t.assignee && memberNames.has(t.assignee) && t.start_date && t.end_date)
+    .map(t => {
+      const startMs = new Date(t.start_date + 'T00:00:00').getTime();
+      const endMs   = new Date(t.end_date   + 'T00:00:00').getTime();
+      const startingSoon = startMs >= todayMs && startMs <= horizonStop;
+      const finishingSoon = endMs >= todayMs && endMs <= horizonStop && !startingSoon;
+      if (!startingSoon && !finishingSoon) return null;
+      return { task: t, kind: startingSoon ? 'starts' : 'finishes', when: startingSoon ? t.start_date : t.end_date };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.when || '').localeCompare(b.when || ''));
+  renderDashboardList('dashboard-coming-body', coming, ({ task, kind, when }) => ({
+    project: task.project,
+    name: task.name,
+    assignee: task.assignee,
+    rightChip: { text: `${kind} ${fmtDate(when)}`, tone: 'info' },
+    onClick: () => jumpToTask(task),
+  }), 'Nothing starting or finishing in the next 2 weeks.');
+
+  // --- Key dates (discipline-specific) ------------------------------------
+  // For each discipline, the anchor type that matters most to its manager.
+  // Listed once per project so they can scan across the portfolio.
+  const KEY_ANCHOR_BY_DISCIPLINE = {
+    mech:     { anchor: 'mech_release_1',   title: 'Mech 1 Release across all projects' },
+    controls: { anchor: 'fat',              title: 'FAT across all projects' },
+    pm:       { anchor: 'ship_machine',     title: 'Ship Machine across all projects' },
+    build:    { anchor: 'ship_machine',     title: 'Ship Machine across all projects' },
+    wire:     { anchor: 'machine_power_up', title: 'Machine Power-Up across all projects' },
+  };
+  const keyDef = KEY_ANCHOR_BY_DISCIPLINE[disc];
+  const keyTitleEl = document.getElementById('dashboard-keydates-title');
+  const keySubEl   = document.getElementById('dashboard-keydates-sub');
+  if (keyTitleEl) keyTitleEl.textContent = keyDef ? keyDef.title : 'Key dates';
+  if (keySubEl)   keySubEl.textContent   = keyDef
+    ? `Anchor: ${anchorLabelFor(keyDef.anchor)}` : 'No discipline-specific anchor configured.';
+  let keyItems = [];
+  if (keyDef) {
+    keyItems = state.tasks
+      .filter(t => inferredAnchorKey(t) === keyDef.anchor)
+      .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
+  }
+  renderDashboardList('dashboard-keydates-body', keyItems, (task) => ({
+    project: task.project,
+    name: anchorLabelFor(inferredAnchorKey(task)),
+    assignee: '',
+    rightChip: { text: fmtDate(task.start_date || task.end_date) || '—', tone: 'neutral' },
+    onClick: () => jumpToTask(task),
+  }), keyDef
+    ? 'No projects have this anchor yet.'
+    : `No key-date summary configured for ${discDef.label}.`);
+}
+
+// Look up a friendly anchor name from its key.
+function anchorLabelFor(key) {
+  const def = ANCHOR_DEFS.find(a => a.key === key);
+  return def ? def.name : key;
+}
+
+// Switch to the Schedule view, activate the task's project tab, and scroll the
+// row into view. Used by every "View on schedule" link in the dashboard cards.
+function jumpToTask(task) {
+  if (!task) return;
+  if (task.project && !state.openProjects.includes(task.project)) {
+    state.openProjects.push(task.project);
+  }
+  state.filters.project = task.project || '';
+  saveProjectTabs();
+  setView('schedule');
+  setTimeout(() => {
+    const tr = document.querySelector(`tr[data-id="${task.id}"]`);
+    if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 50);
+}
+
+// Generic list renderer for the three dashboard cards. Each row gets a project
+// chip on the left, the task / anchor name in the middle, and a tone-colored
+// chip on the right (drift, date, or status). Clicking anywhere on the row
+// triggers the row's onClick (typically jumpToTask).
+function renderDashboardList(bodyId, items, mapper, emptyText) {
+  const body = document.getElementById(bodyId);
+  if (!body) return;
+  if (!items || items.length === 0) {
+    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
+    return;
+  }
+  const rows = items.map((item, i) => {
+    const r = mapper(item, i);
+    const toneCls = `chip-${r.rightChip?.tone || 'neutral'}`;
+    return `
+      <button type="button" class="dashboard-row" data-i="${i}">
+        <span class="dashboard-row-project">${escapeHtml(r.project || '—')}</span>
+        <span class="dashboard-row-name">${escapeHtml(r.name || '')}</span>
+        ${r.assignee ? `<span class="dashboard-row-assignee">${escapeHtml(r.assignee)}</span>` : ''}
+        ${r.rightChip ? `<span class="dashboard-chip ${toneCls}">${escapeHtml(r.rightChip.text)}</span>` : ''}
+      </button>
+    `;
+  }).join('');
+  body.innerHTML = rows;
+  body.querySelectorAll('.dashboard-row').forEach((row, idx) => {
+    row.addEventListener('click', () => items[idx] && mapper(items[idx], idx).onClick?.());
+  });
+}
+
 function renderResources() {
+  // Dashboard cards re-render alongside the resources timeline so they always
+  // reflect the currently selected discipline.
+  renderTeamDashboard();
+
   const body = document.getElementById('resources-body');
   const empty = document.getElementById('resources-empty');
   if (!body) return;
@@ -4046,10 +6576,21 @@ function renderResources() {
   }
   document.getElementById('resources-zoom-percent').textContent = `${Math.round(state.resources.zoomPercent)}%`;
 
-  // Build the active member list for the selected discipline.
+  // Build the active member list for the selected discipline. Same ordering as
+  // the team cards above: placeholders FIRST (they're the template-stage
+  // stand-ins, useful to see at the top when planning), then real members with
+  // the LEAD first, then everyone else by their dragged sort_order.
   const members = state.team
     .filter(m => m.discipline === state.resources.discipline && m.active !== 0)
-    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    .sort((a, b) => {
+      const aPh = isPlaceholder(a.name) ? 0 : 1;
+      const bPh = isPlaceholder(b.name) ? 0 : 1;
+      if (aPh !== bPh) return aPh - bPh;
+      const aLead = a.is_lead ? 0 : 1;
+      const bLead = b.is_lead ? 0 : 1;
+      if (aLead !== bLead) return aLead - bLead;
+      return (a.sort_order || 0) - (b.sort_order || 0);
+    });
 
   // Empty state — no members in this discipline OR no tasks anywhere yet
   if (members.length === 0) {
@@ -4178,7 +6719,6 @@ function renderResources() {
       const x = startOffset * pxPerDay;
       const w = Math.max(2, dur * pxPerDay);
       const y = ROW_PAD + lane * (BAR_H + LANE_GAP);
-      const c = projectColorFor(task.project);
       const alloc = task.is_milestone ? null : (task.allocation == null ? 90 : task.allocation);
       const labelDate = `${fmtDate(task.start_date)} – ${fmtDate(task.end_date)}`;
       const tip = `${task.project ? `[${task.project}] ` : ''}${task.name} · ${labelDate}${alloc != null ? ` · ${alloc}%` : ''}`;
@@ -4190,6 +6730,18 @@ function renderResources() {
       const labelText = (alloc != null && alloc !== 100) ? `${baseLabel} · ${alloc}%` : baseLabel;
       const lowAllocClass = (alloc != null && alloc < 100) ? ' low-alloc' : '';
       const overClass = state.overAllocatedTaskIds.has(task.id) ? ' over-allocated' : '';
+      // Bar color reflects SCHEDULE STATUS — same scheme as the % complete pill
+      // in the grid, just blown up to a full bar so you can scan the team page
+      // and see what's hot at a glance:
+      //   slate   = 0%, not started
+      //   red     = 1–99% AND behind schedule
+      //   green   = 1–99% AND on/ahead
+      //   emerald = 100% complete
+      const pct = Math.max(0, Math.min(100, Number(task.progress) || 0));
+      const drift = taskScheduleDelta(task);
+      let statusClass = 'status-zero';
+      if (pct >= 100) statusClass = 'status-done';
+      else if (pct > 0) statusClass = drift < 0 ? 'status-behind' : 'status-ontrack';
       const pri = task.priority == null ? 1 : task.priority;
       // Priority pill rules:
       //   - Placeholders never show one — placeholders are role-stand-ins, not
@@ -4202,7 +6754,7 @@ function renderResources() {
         ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="Priority ${pri} — click to change">${pri}</span>`
         : '';
       return `
-        <div class="res-bar${lowAllocClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;background:${c.fill};border-color:${c.stroke};color:${c.text};"
+        <div class="res-bar ${statusClass}${lowAllocClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;"
              title="${escapeHtml(tip)}"
              data-task-id="${task.id}">
           ${priPill}
@@ -4210,12 +6762,16 @@ function renderResources() {
         </div>`;
     }).join('');
     const totalDuration = tasks.reduce((sum, t) => sum + Math.max(1, Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) + 1), 0);
-    const peakLabel = peakLoad != null ? ` · <span class="res-overload-pill">peak ${peakLoad}%</span>` : '';
+    // Peak overload pill appears INLINE with the name only when the person is
+    // over-allocated (>100%). The previous "X tasks · Yd" meta line under the
+    // name was getting cut off at tight row heights — dropped per user request,
+    // the bars to the right convey the same info visually.
+    const peakInline = peakLoad != null
+      ? ` <span class="res-overload-pill">peak ${peakLoad}%</span>` : '';
     html += `
       <div class="resources-row${peakLoad != null ? ' has-overload' : ''}${ph ? ' is-placeholder' : ''}" style="height:${rowH}px">
         <div class="resources-name-cell">
-          <span class="resources-name">${escapeHtml(m.name)}</span>
-          <span class="resources-meta">${tasks.length} task${tasks.length === 1 ? '' : 's'}${tasks.length ? ` · ${totalDuration}d` : ''}${peakLabel}</span>
+          <span class="resources-name">${escapeHtml(m.name)}${peakInline}</span>
         </div>
         <div class="resources-track" style="width:${tlWidth}px">${overloadHtml}${bars}${loadHtml}</div>
       </div>`;
@@ -4223,13 +6779,18 @@ function renderResources() {
   html += `</div>`;
   body.innerHTML = html;
 
-  // Legend = unique projects currently shown
-  const projects = [...new Set(allTasks.map(t => t.project).filter(Boolean))].sort();
+  // Legend = the four status colors that drive every bar's fill. Replaces the
+  // older per-project color legend (bars haven't used project color since the
+  // schedule-status palette took over).
   const legend = document.getElementById('resources-legend');
-  legend.innerHTML = projects.map(p => {
-    const c = projectColorFor(p);
-    return `<span class="legend-item"><span class="legend-swatch" style="background:${c.fill};border:1px solid ${c.stroke}"></span>${escapeHtml(p)}</span>`;
-  }).join('');
+  legend.innerHTML = [
+    { cls: 'status-zero',    label: 'Not started' },
+    { cls: 'status-behind',  label: 'Behind schedule' },
+    { cls: 'status-ontrack', label: 'On track / ahead' },
+    { cls: 'status-done',    label: 'Done' },
+  ].map(({ cls, label }) =>
+    `<span class="legend-item"><span class="legend-swatch res-bar ${cls}" style="position:static;width:14px;height:14px;padding:0;display:inline-block;vertical-align:middle"></span>${escapeHtml(label)}</span>`
+  ).join('');
 
   // Click a priority pill → cycle through 1..N (where N is the number of this
   // person's tasks that overlap with at least one other). Wraps N → 1. Server-side
@@ -4521,6 +7082,16 @@ function renderSetup() {
   document.getElementById('anchor-fill-hex').value = d.anchor_color.fill.toUpperCase();
   document.getElementById('anchor-text').value     = d.anchor_color.text;
   document.getElementById('anchor-text-hex').value = d.anchor_color.text.toUpperCase();
+
+  // % complete pill colors — 4 states (zero / behind / ontrack / done). One
+  // color picker per state; text is always black so there's nothing to
+  // configure on that side.
+  d.pct_colors = normalizePctColors(d.pct_colors);
+  for (const k of PCT_COLOR_KEYS) {
+    const v = d.pct_colors[k];
+    document.getElementById(`pct-${k}-fill`).value     = v;
+    document.getElementById(`pct-${k}-fill-hex`).value = v.toUpperCase();
+  }
 
   // Hierarchy colors — one row per group. Each row has a fill picker, a text picker,
   // matching hex inputs, and a small live preview pill.
@@ -4952,6 +7523,23 @@ function bindSetupHandlers() {
     };
   }
 
+  // % complete pill colors — one picker per state. Live-apply via CSS custom
+  // properties so the grid's pills repaint instantly without a re-render.
+  for (const k of PCT_COLOR_KEYS) {
+    document.getElementById(`pct-${k}-fill`).oninput = (e) => {
+      state.setupDraft.pct_colors[k] = e.target.value;
+      document.getElementById(`pct-${k}-fill-hex`).value = e.target.value.toUpperCase();
+      applyPctColors(state.setupDraft.pct_colors);
+    };
+    document.getElementById(`pct-${k}-fill-hex`).oninput = (e) => {
+      const v = normalizeHex(e.target.value);
+      if (!v) return;
+      state.setupDraft.pct_colors[k] = v;
+      document.getElementById(`pct-${k}-fill`).value = v;
+      applyPctColors(state.setupDraft.pct_colors);
+    };
+  }
+
   // Hierarchy color edits — live-apply so the user can preview both the Gantt bars and
   // the grid header pills as they pick.
   document.getElementById('hierarchy-colors-list').oninput = (e) => {
@@ -5098,6 +7686,7 @@ async function saveSetup() {
       api.putSetting('section_colors',    state.setupDraft.section_colors),
       api.putSetting('hierarchy_colors',  state.setupDraft.hierarchy_colors),
       api.putSetting('anchor_color',      state.setupDraft.anchor_color),
+      api.putSetting('pct_colors',        state.setupDraft.pct_colors || PCT_COLOR_DEFAULTS),
       api.putSetting('default_financial_milestones', state.setupDraft.default_financial_milestones || []),
       api.putSetting('project_milestone_library',    state.setupDraft.project_milestone_library || []),
     ]);
@@ -5115,20 +7704,22 @@ function discardSetup() {
 }
 
 // ---------- Data ----------
-// Anchor milestones — hard-coded project-spine markers. Four of them, in order:
+// Anchor milestones — hard-coded project-spine markers. Five of them, in order:
 //   - Receipt of PO     → kicks the project off (above section 10 in the grid)
+//   - Mech 1 Release    → inside section 10 → Engineering → Mechanical. Gates the
+//                         shop's ability to start building — a key plan-of-record
+//                         date for everyone downstream.
 //   - Machine Power-Up  → inside section 10 → Shop → Wire (END of wire work — the
-//                         moment the panel turns on. Stays in the flow of work, not
-//                         hoisted to a separate row, but still rendered with anchor
-//                         styling: concentric diamond, name chip in grid).
+//                         moment the panel turns on).
 //   - FAT               → end of section 40 (gates teardown)
 //   - Ship Machine      → between teardown and install inside section 50
 // Auto-created per project; can't be deleted. They render as concentric diamonds
-// in the anchor color, separately from regular milestones. Machine Power-Up is the
-// only anchor that lives WITHIN a regular hierarchy bucket — the others sit above
-// or between sections as standalone rows.
+// in the anchor color. Mech 1 and Machine Power-Up live WITHIN regular hierarchy
+// buckets — the others sit above or between sections as standalone rows.
 const ANCHOR_DEFS = [
   { key: 'receipt_of_po',    name: 'Receipt of PO',    defaultOffsetDays: 0  },
+  { key: 'mech_release_1',   name: 'Mech 1 Release',   defaultOffsetDays: 20,
+    phaseGroup: 'design_build', department: 'engineering', subDepartment: 'mech' },
   { key: 'machine_power_up', name: 'Machine Power-Up', defaultOffsetDays: 45,
     phaseGroup: 'design_build', department: 'shop', subDepartment: 'wire' },
   { key: 'fat',              name: 'FAT',              defaultOffsetDays: 60 },
@@ -5149,10 +7740,23 @@ function inferredAnchorKey(t) {
   if (t.anchor_key) return t.anchor_key;
   const n = String(t.name || '').trim().toLowerCase();
   if (n === 'receipt of po')                              return 'receipt_of_po';
+  if (n === 'mech 1 release' || n === 'mech release 1' || n === 'mech1 release') return 'mech_release_1';
   if (n === 'machine power-up' || n === 'machine powerup' || n === 'machine power up') return 'machine_power_up';
   if (n === 'fat')                                        return 'fat';
   if (n === 'ship machine')                               return 'ship_machine';
   return null;
+}
+
+// Backlog is a "duration milestone" — a project-spine task with real calendar
+// duration but no work content (allocation 0). Lives above section 10 with the
+// PO anchor. Detected by anchor_key='backlog' (or name fallback for legacy
+// rows). No % complete pill, no drift chip, no allocation pill.
+function isBacklogTask(t) {
+  if (!t) return false;
+  // phase_group=null + exact name "Backlog" matches both new-format and any
+  // user-created equivalents. anchor_key was tried but conflicted with
+  // anchor row rendering — name-only detection is cleaner.
+  return String(t.name || '').trim().toLowerCase() === 'backlog' && !t.phase_group;
 }
 
 // Make sure each open project has a Receipt of PO + FAT anchor task. Anchors are real
@@ -5197,16 +7801,22 @@ async function ensureAnchorsForProject(project) {
 // restructures so the rest of the app sees clean, current-shape data even before the
 // server is restarted (which is when the persistent SQL migrations actually run).
 function dedupAnchors(all) {
-  const oldest = {};
+  // Dedup PER PROJECT — anchors are scoped to a project, so an "older" anchor in
+  // a different project doesn't outrank a fresh import in this one. Previously
+  // this was global, which meant imported projects lost their Receipt of PO / FAT
+  // / Ship Machine to the template's older anchors and showed up empty in the UI.
+  const oldest = {}; // key = `${project}::${anchor_key}` → lowest id
   for (const t of all) {
     const k = inferredAnchorKey(t);
     if (!k) continue;
-    if (!(k in oldest) || t.id < oldest[k]) oldest[k] = t.id;
+    const scope = `${t.project || ''}::${k}`;
+    if (!(scope in oldest) || t.id < oldest[scope]) oldest[scope] = t.id;
   }
   return all
     .filter(t => {
       const k = inferredAnchorKey(t);
-      return !k || t.id === oldest[k];
+      if (!k) return true;
+      return t.id === oldest[`${t.project || ''}::${k}`];
     })
     .map(t => {
       // Legacy section-50 split ('teardown' or 'install' as their own phase_group)
@@ -5348,11 +7958,11 @@ function setupScrollSync() {
 }
 
 // ---------- Layout (grid width, column widths, gantt visible) ----------
-const DEFAULT_COL_WIDTHS = { line: 36, id: 50, name: 280, assignee: 110, start: 90, finish: 90, duration: 80, pred: 110, progress: 110, allocation: 52, priority: 44 };
+const DEFAULT_COL_WIDTHS = { line: 36, id: 50, name: 340, assignee: 110, start: 90, finish: 90, duration: 80, pred: 110, progress: 110, allocation: 52, priority: 44, notes: 200 };
 // Per-column hard floors used by the resize handle. Line column is tight enough that
 // you can't drag below "the number is still legible". Allocation only ever holds "100%"
 // in the body and "ALLOC" in the header, so its floor is just-wider-than-the-header.
-const COL_MIN_WIDTHS = { line: 30, name: 80, assignee: 60, start: 70, finish: 70, duration: 50, pred: 60, progress: 60, allocation: 44, priority: 36 };
+const COL_MIN_WIDTHS = { line: 30, name: 80, assignee: 60, start: 70, finish: 70, duration: 50, pred: 60, progress: 60, allocation: 44, priority: 36, notes: 100 };
 const COLUMN_DEFS = [
   { key: 'line',     label: '#' },
   { key: 'name',     label: 'Task' },
@@ -5364,17 +7974,20 @@ const COLUMN_DEFS = [
   { key: 'pred',     label: 'Predecessors' },
   { key: 'allocation', label: 'Alloc' },
   { key: 'progress', label: '% Complete' },
+  { key: 'notes',    label: 'Comments' },
 ];
 // Columns we don't auto-show when introducing a column. The user can still toggle them
 // on from the columns menu — they just don't appear by default for fresh installs and
-// aren't force-shown for existing users on app load. Priority is hidden by default
-// because the Resources view's pill is the primary editor.
-const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority']);
+// aren't force-shown for existing users on app load. Priority is hidden because the
+// Resources view's pill is the primary editor. Progress is hidden because it lives as
+// a click-to-edit pill inside the Task name column now. Allocation stays VISIBLE as
+// its own column — it's a set-once-and-forget value, doesn't belong in the row card.
+const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority', 'progress']);
 
 // Bump LAYOUT_VERSION whenever we change a default column width that existing users have
 // already cached in localStorage. The migration block below resets only the affected
 // column so we don't blow away anything else they've customized.
-const LAYOUT_VERSION = 2;
+const LAYOUT_VERSION = 5;
 
 function loadLayout() {
   let saved = {};
@@ -5384,6 +7997,23 @@ function loadLayout() {
   // width so the merge below picks up DEFAULT_COL_WIDTHS.allocation instead.
   if ((saved.layoutVersion || 1) < 2) {
     if (saved.colWidths && 'allocation' in saved.colWidths) delete saved.colWidths.allocation;
+  }
+  // Migration v4: progress moved into the Task column as a click-to-edit pill.
+  if ((saved.layoutVersion || 1) < 4) {
+    if (Array.isArray(saved.visibleCols)) {
+      saved.visibleCols = saved.visibleCols.filter(k => k !== 'progress');
+    }
+    if (saved.colWidths && (saved.colWidths.name || 0) < 320) {
+      delete saved.colWidths.name;
+    }
+  }
+  // Migration v5: bring allocation BACK as its own column (we'd briefly merged it
+  // into the Task pill cluster in v4; turns out it's set-once-and-forget data that
+  // doesn't belong next to the dynamic % complete chip).
+  if ((saved.layoutVersion || 1) < 5) {
+    if (Array.isArray(saved.visibleCols) && !saved.visibleCols.includes('allocation')) {
+      saved.visibleCols.push('allocation');
+    }
   }
 
   const rh = Number(saved.rowHeight) || ROW_H_DEFAULT;
@@ -5458,14 +8088,22 @@ function loadScheduleView() {
     state.showFinancials = !!saved.showFinancials;
     state.showBaseline   = !!saved.showBaseline;
     return {
-      flatten:      !!saved.flatten,
-      sortByStart:  !!saved.sortByStart,
-      ganttOnly:    !!saved.ganttOnly,
-      criticalPath: !!saved.criticalPath,
-      criticalOnly: !!saved.criticalOnly,
+      flatten:       !!saved.flatten,
+      sortByStart:   !!saved.sortByStart,
+      ganttOnly:     !!saved.ganttOnly,
+      criticalPath:  !!saved.criticalPath,
+      criticalOnly:  !!saved.criticalOnly,
+      // Default ON when never saved before. Falsey-check would default to
+      // OFF on first load, which would surprise users who saw the labels
+      // in v3.52 and expect them on after upgrading.
+      showArrowLags: saved.showArrowLags === undefined ? true : !!saved.showArrowLags,
+      // Default OFF — opt-in feature, since it clutters the chart a bit. The
+      // user enables it when they want to see allocation/duration at a glance
+      // without having to read the grid.
+      showBarMeta:   !!saved.showBarMeta,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false };
   }
 }
 function saveScheduleView() {
@@ -5478,21 +8116,29 @@ function saveScheduleView() {
   } catch {}
 }
 function applyScheduleView() {
+  // Refresh the View pill in the toolbar so its three icons reflect the current
+  // toggle state. Critical path stays in the Quick filters popover (renderFilters).
+  syncViewPill();
+  // The pane class (.gantt-only) on schedule-split is owned by applyGanttVisibility
+  // — it knows about both showGantt and ganttOnly. Just delegate.
+  applyGanttVisibility();
+}
+
+// Update the .is-active class on each View pill icon to match the current
+// schedule-view state. Called whenever a toggle changes or the view re-renders.
+// The flatten icon represents the COMBINED flatten + sortByStart toggle —
+// active iff BOTH flags are on (so the icon doesn't look on when only half
+// the linked pair is active, e.g. from settings persisted before v3.58).
+function syncViewPill() {
   const setActive = (id, on) => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('is-active', !!on);
   };
-  setActive('btn-flatten',    state.scheduleView.flatten);
-  setActive('btn-sort-start', state.scheduleView.sortByStart);
-  setActive('btn-critical',   state.scheduleView.criticalPath);
-  setActive('btn-critical-only', state.scheduleView.criticalOnly);
-  // The "Only" half of the critical segmented pair is gated on critical being on.
-  // When critical is off, dim "Only" so it reads as a sub-mode of the left button.
-  const onlyBtn = document.getElementById('btn-critical-only');
-  if (onlyBtn) onlyBtn.classList.toggle('is-disabled', !state.scheduleView.criticalPath);
-  // The pane class (.gantt-only) on schedule-split is owned by applyGanttVisibility
-  // — it knows about both showGantt and ganttOnly. Just delegate.
-  applyGanttVisibility();
+  const sv = state.scheduleView || {};
+  setActive('btn-view-flatten',    sv.flatten && sv.sortByStart);
+  setActive('btn-view-financials', state.showFinancials);
+  setActive('btn-view-lags',       sv.showArrowLags !== false);
+  setActive('btn-view-bar-meta',   sv.showBarMeta);
 }
 function toggleScheduleView(key) {
   state.scheduleView[key] = !state.scheduleView[key];
@@ -5536,6 +8182,11 @@ function applyRowHeight() {
 }
 
 // Bar height tracks row height: bar fills ~half the row, the rest is padding.
+// We keep this at 0.5 (not larger) so that milestone diamonds — sized off
+// bar_height (outer radius = h × 1.20 / 2 = h × 0.60 for both anchor and
+// non-anchor) — stay compact and don't overlap adjacent task bars. Text fit
+// inside bars is handled separately in clipBarLabels by scaling font-size
+// to barH.
 function getGanttBarMetrics() {
   const rh = state.layout.rowHeight;
   // frappe-gantt total per-row = bar_height + padding, so we split rh between them.
@@ -5580,15 +8231,40 @@ function applyColumnVisibility() {
   });
 }
 
+// Render the Show/hide columns dropdown. Two responsibilities:
+//   1. Each row has a checkbox that toggles visibility (col-hidden class on
+//      the matching <col>/<th>/<td> elements).
+//   2. Each row has a drag-handle (⋮⋮) and is itself draggable. Reordering
+//      rows inside the menu reorders state.layout.columnOrder, which the
+//      grid headers + body + colgroup all read from on the next renderHeaders
+//      / renderTable cycle.
+// Rows render in current grid order (state.layout.columnOrder) so what you
+// see in the menu top-to-bottom matches what's in the grid left-to-right.
 function renderColumnsMenu() {
   const menu = document.getElementById('columns-menu');
   if (!menu) return;
   const visible = new Set(state.layout.visibleCols);
-  menu.innerHTML = COLUMN_DEFS.map(c => `
-    <label>
-      <input type="checkbox" data-col="${c.key}" ${visible.has(c.key) ? 'checked' : ''} ${c.key === 'name' ? 'disabled' : ''} />
-      ${escapeHtml(c.label)}
-    </label>`).join('');
+  // Use columnOrder for the row sequence; any COLUMN_DEFS entry not in
+  // columnOrder appears after, so newly-added columns still show up.
+  const orderedKeys = [
+    ...state.layout.columnOrder.filter(k => COLUMN_DEFS.find(d => d.key === k)),
+    ...COLUMN_DEFS.map(c => c.key).filter(k => !state.layout.columnOrder.includes(k)),
+  ];
+  menu.innerHTML = orderedKeys.map(key => {
+    const def = COLUMN_DEFS.find(d => d.key === key);
+    if (!def) return '';
+    const isName = def.key === 'name';
+    return `
+      <div class="col-menu-row ${isName ? 'is-locked' : ''}" data-col="${def.key}" draggable="${!isName}" title="${isName ? 'Task column is always shown and always first — can\'t reorder or hide.' : 'Drag to reorder. Checkbox toggles visibility.'}">
+        <span class="col-menu-drag">⋮⋮</span>
+        <label class="col-menu-label">
+          <input type="checkbox" data-col="${def.key}" ${visible.has(def.key) ? 'checked' : ''} ${isName ? 'disabled' : ''} />
+          ${escapeHtml(def.label)}
+        </label>
+      </div>`;
+  }).join('');
+
+  // Visibility checkboxes — same behavior as before.
   menu.addEventListener('change', (e) => {
     if (e.target.matches('input[type="checkbox"]')) {
       const key = e.target.dataset.col;
@@ -5600,6 +8276,50 @@ function renderColumnsMenu() {
       applyColumnVisibility();
       saveLayout();
     }
+  });
+
+  // Drag-and-drop reordering. Mirrors setupColumnReorder() on the table
+  // headers — same state.layout.columnOrder update, same renderHeaders +
+  // renderTable refresh. After dropping, also re-render the menu so the
+  // rows visually re-sort to match the new order.
+  menu.querySelectorAll('.col-menu-row[draggable="true"]').forEach(row => {
+    row.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', row.dataset.col);
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      menu.querySelectorAll('.col-menu-row.drag-over').forEach(r => r.classList.remove('drag-over'));
+    });
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      const fromKey = e.dataTransfer.getData('text/plain');
+      const toKey = row.dataset.col;
+      if (!fromKey || fromKey === toKey) return;
+      // The "name" column is locked at position 0 — refuse drops that would
+      // move anything to its slot or move name itself.
+      if (toKey === 'name' || fromKey === 'name') return;
+      const order = [...state.layout.columnOrder];
+      const fromIdx = order.indexOf(fromKey);
+      if (fromIdx === -1) return;
+      order.splice(fromIdx, 1);
+      const toIdx = order.indexOf(toKey);
+      order.splice(toIdx === -1 ? order.length : toIdx, 0, fromKey);
+      state.layout.columnOrder = order;
+      saveLayout();
+      // Re-render grid (headers + colgroup + rows) and the menu rows.
+      renderHeaders();
+      renderTable();
+      renderColumnsMenu();
+    });
   });
 }
 
@@ -5746,6 +8466,60 @@ function toggleGanttVisible(visible) {
   applyGanttVisibility();
   saveLayout();
   if (visible) renderGantt(); // it may need to re-render if hidden during prior render
+}
+
+// ---------- Customer view ----------
+// "👤 For Customer" toggles a clean view for showing the schedule to a
+// customer. Hides the toolbar / topbar / project tabs / extra grid columns
+// via the body.customer-view CSS class, forces pane=both so they see grid +
+// Gantt together, and zoom-to-fits the chart so the full project span is
+// visible. State (pane mode, zoom, scroll) is saved on entry and restored
+// on exit so toggling off returns the user to their exact editing layout.
+function enterCustomerView() {
+  if (document.body.classList.contains('customer-view')) return;
+  // Snapshot what we're about to change so exitCustomerView() can put it
+  // back. Pane mode is derived from the two flags that own pane state.
+  const ganttOnly = !!state.scheduleView?.ganttOnly;
+  const showGantt = state.layout?.showGantt !== false;
+  state._cvSavedPane = ganttOnly ? 'gantt' : (showGantt ? 'both' : 'grid');
+  state._cvSavedZoom = state.zoomPercent;
+  state._cvSavedScroll = getGanttScroller()?.scrollLeft ?? 0;
+
+  // Apply class first so the body width / panel widths reflow to the
+  // customer layout BEFORE zoomToFit measures the Gantt panel size.
+  document.body.classList.add('customer-view');
+  // Force both panes so the customer sees grid + Gantt.
+  setPaneMode('both');
+  // Defer zoomToFit two animation frames so the CSS reflow + setPaneMode's
+  // re-render have settled; otherwise zoomToFit measures the pre-class
+  // panel size and the chart ends up too wide for the (now-smaller) panel.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      try { zoomToFit(); } catch (_) {}
+    });
+  });
+}
+
+function exitCustomerView() {
+  if (!document.body.classList.contains('customer-view')) return;
+  document.body.classList.remove('customer-view');
+  // Restore pane mode (was forced to 'both' on entry).
+  if (state._cvSavedPane) {
+    setPaneMode(state._cvSavedPane);
+    state._cvSavedPane = null;
+  }
+  // Restore zoom + scroll. setZoom would re-render, so we set the state
+  // directly and call renderGantt once at the end.
+  if (state._cvSavedZoom != null) {
+    state.zoomPercent = state._cvSavedZoom;
+    state._cvSavedZoom = null;
+    if (state.view === 'schedule') renderGantt();
+    const scroller = getGanttScroller();
+    if (scroller && state._cvSavedScroll != null) {
+      scroller.scrollLeft = state._cvSavedScroll;
+    }
+    state._cvSavedScroll = null;
+  }
 }
 
 // Set the schedule pane layout. 'grid' = grid only (Gantt hidden). 'both' = split.
@@ -5895,99 +8669,209 @@ async function init() {
   document.querySelectorAll('.seg-btn[data-pane]').forEach(btn => {
     btn.addEventListener('click', () => setPaneMode(btn.dataset.pane));
   });
-  // View-mode toggles in the schedule toolbar — Flatten / By date / Critical / Only.
-  document.getElementById('btn-flatten')      .addEventListener('click', () => toggleScheduleView('flatten'));
-  document.getElementById('btn-sort-start')   .addEventListener('click', () => toggleScheduleView('sortByStart'));
-  // The Critical / Only pair are linked: turning Critical off also turns Only off,
-  // and clicking Only while Critical is dim auto-enables Critical first.
-  document.getElementById('btn-critical').addEventListener('click', () => {
-    const turningOff = state.scheduleView.criticalPath;
-    state.scheduleView.criticalPath = !turningOff;
-    if (turningOff) state.scheduleView.criticalOnly = false;
-    saveScheduleView();
-    applyScheduleView();
-    render();
-  });
-  document.getElementById('btn-critical-only').addEventListener('click', () => {
-    if (!state.scheduleView.criticalPath) state.scheduleView.criticalPath = true;
-    toggleScheduleView('criticalOnly');
-  });
-
-  // $ Financial — toggles the financial milestones overlay on the Gantt. Loads
-  // financial data for all open projects on first turn-on (seeds defaults for any
-  // project that has none yet via api.financials.seed). State is persisted via
-  // saveScheduleView so the toggle sticks across reloads.
-  const finBtn = document.getElementById('btn-financial');
-  if (finBtn) {
-    finBtn.classList.toggle('is-active', !!state.showFinancials);
-    finBtn.addEventListener('click', async () => {
-      state.showFinancials = !state.showFinancials;
-      finBtn.classList.toggle('is-active', state.showFinancials);
-      saveScheduleView();
-      if (state.showFinancials) await loadFinancialsForAllOpenProjects();
-      renderGantt();
-    });
-  }
-
-  // Baseline — segmented pair. Left button sets/re-sets the snapshot for the
-  // active project; its label flips between "Set baseline" and "Reset baseline"
-  // so the user can SEE at a glance whether a baseline exists. Right button
-  // toggles the dashed-outline overlay on the Gantt; right-click clears the
-  // baseline entirely.
-  const baseSetBtn = document.getElementById('btn-baseline-set');
-  const baseBtn    = document.getElementById('btn-baseline');
-  if (baseSetBtn && baseBtn) {
-    syncBaselineButtons();
-    baseSetBtn.addEventListener('click', async () => {
-      const project = state.filters.project;
-      if (!project) {
-        alert('Open a specific project tab first — baselines are per-project.');
-        return;
-      }
-      const has = projectHasBaseline(project);
-      const msg = has
-        ? `Reset the baseline for "${project}"? Today's start/end dates become the new plan-of-record.`
-        : `Set a baseline for "${project}" — snapshot today's start/end dates as the plan-of-record?`;
-      if (!confirm(msg)) return;
-      await api.baseline.set(project);
-      await loadTasks();
-      // Auto-enable the overlay when setting for the first time so the user
-      // immediately sees the result of their action. Re-sets leave the toggle
-      // wherever it was.
-      if (!has && !state.showBaseline) {
-        state.showBaseline = true;
+  // View pill — four icon-toggles in the toolbar:
+  //   ≡   Flatten sub-sections + sort by start date (linked toggle)
+  //   $   Show financial milestones overlay
+  //   ↔   Show arrow lag labels (±N wks)
+  //   %   Show bar allocation + duration meta
+  // Critical path stays as a Quick-filter chip (see renderFilters). The View
+  // pill state is reflected via .is-active classes maintained by syncViewPill.
+  const wireViewToggle = (id, key) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (key === 'financials') {
+        state.showFinancials = !state.showFinancials;
         saveScheduleView();
+        if (state.showFinancials) await loadFinancialsForAllOpenProjects();
+        syncViewPill();
+        renderGantt();
+      } else if (key === 'showArrowLags') {
+        // Arrow-lag labels only affect the Gantt overlay, not the grid — so
+        // skip the heavy render() and just re-render the Gantt to redraw
+        // arrows with or without labels.
+        state.scheduleView.showArrowLags = !state.scheduleView.showArrowLags;
+        saveScheduleView();
+        syncViewPill();
+        renderGantt();
+      } else if (key === 'showBarMeta') {
+        // Bar meta (allocation % above bars, duration wks below) only affects
+        // the Gantt — same fast path as the arrow lag toggle.
+        state.scheduleView.showBarMeta = !state.scheduleView.showBarMeta;
+        saveScheduleView();
+        syncViewPill();
+        renderGantt();
+      } else if (key === 'flatten+sort') {
+        // Single icon that toggles BOTH flatten AND sortByStart together —
+        // flatten without sort almost never makes sense (you flatten because
+        // you want a chronological view of section 10/40/50), so user
+        // requested they live behind one click.
+        const turningOn = !(state.scheduleView.flatten && state.scheduleView.sortByStart);
+        state.scheduleView.flatten     = turningOn;
+        state.scheduleView.sortByStart = turningOn;
+        saveScheduleView();
+        applyScheduleView();
+        syncViewPill();
+        render();
+      } else {
+        state.scheduleView[key] = !state.scheduleView[key];
+        saveScheduleView();
+        applyScheduleView();
+        syncViewPill();
+        render();
       }
-      syncBaselineButtons();
-      renderGantt();
     });
-    baseBtn.addEventListener('click', async () => {
+  };
+  wireViewToggle('btn-view-flatten',    'flatten+sort');
+  wireViewToggle('btn-view-financials', 'financials');
+  wireViewToggle('btn-view-lags',       'showArrowLags');
+  wireViewToggle('btn-view-bar-meta',   'showBarMeta');
+  syncViewPill();
+
+  // Baseline — dropdown menu. The menu rebuilds on every open so its items
+  // reflect the current state (turn-on vs reset, show vs hide, turn-off).
+  // Replaces the previous segmented pair (Set / Show) which didn't surface the
+  // "turn off completely" action — users had to right-click to find Clear.
+  //
+  // Implementation notes:
+  //   - Each item carries its own onClick. We render BOTH separators and item
+  //     buttons into the menu HTML and then wire click handlers by walking
+  //     element children paired with the items array — keeping the same index
+  //     for both arrays (previous code used querySelectorAll('.dropdown-item')
+  //     which skipped separators, throwing item indices off-by-one so the wrong
+  //     handler fired, or no handler at all). That's why "Turn off baseline"
+  //     looked like a no-op.
+  //   - All confirmations use the in-app showConfirmAt() anchored to the click
+  //     location, NOT native confirm().
+  const baseMenuBtn = document.getElementById('btn-baseline-menu');
+  const baseMenu    = document.getElementById('baseline-menu');
+  if (baseMenuBtn && baseMenu) {
+    syncBaselineButtons();
+    const closeBaselineMenu = () => baseMenu.classList.add('hidden');
+    const renderBaselineMenu = () => {
       const project = state.filters.project;
-      const turningOn = !state.showBaseline;
-      if (turningOn && project && !projectHasBaseline(project)) {
-        if (!confirm(`No baseline has been set for "${project}". Set one now?`)) return;
-        await api.baseline.set(project);
-        await loadTasks();
-      }
-      state.showBaseline = !state.showBaseline;
-      saveScheduleView();
-      syncBaselineButtons();
-      renderGantt();
-    });
-    baseBtn.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      const project = state.filters.project;
-      if (!project) return;
-      if (!projectHasBaseline(project)) return;
-      showContextMenu(e.clientX, e.clientY, [
-        { label: 'Clear baseline', danger: true, onClick: async () => {
-            if (!confirm(`Clear the baseline for "${project}"? Drift comparisons will no longer be available.`)) return;
-            await api.baseline.clear(project);
+      const has = projectHasBaseline(project);
+      const items = [];
+      if (!project) {
+        items.push({ label: '(Open a project tab first)', disabled: true });
+      } else if (!has) {
+        items.push({
+          label: '▷ Turn on baseline',
+          hint: `Snapshot today's start/end dates as the plan-of-record for "${project}".`,
+          onClick: async (clickX, clickY) => {
+            const ok = await showConfirmAt(clickX, clickY, {
+              message: `Set a baseline for "${project}"? Today's start/end dates become the plan-of-record.`,
+              confirmLabel: 'Turn on',
+            });
+            if (!ok) return;
+            await api.baseline.set(project);
+            await loadTasks();
+            state.showBaseline = true;
+            saveScheduleView();
+            syncBaselineButtons();
+            renderGantt();
+          },
+        });
+      } else {
+        items.push({
+          label: state.showBaseline ? '☑ Show overlay (on)' : '☐ Show overlay (off)',
+          hint: 'Toggle the dashed-outline overlay on the Gantt. The baseline snapshot stays saved either way.',
+          // No confirmation — purely visual toggle, no data is destroyed.
+          onClick: () => {
+            state.showBaseline = !state.showBaseline;
+            saveScheduleView();
+            syncBaselineButtons();
+            renderGantt();
+          },
+        });
+        items.push({
+          label: '↻ Reset baseline',
+          hint: 'Overwrite the snapshot with today\'s start/end dates as the new plan-of-record.',
+          onClick: async (clickX, clickY) => {
+            const ok = await showConfirmAt(clickX, clickY, {
+              message: `Reset the baseline for "${project}"? Today's dates become the new plan-of-record (the previous snapshot is overwritten).`,
+              confirmLabel: 'Reset',
+            });
+            if (!ok) return;
+            await api.baseline.set(project);
             await loadTasks();
             syncBaselineButtons();
             renderGantt();
-          } },
-      ]);
+          },
+        });
+        items.push({ separator: true });
+        items.push({
+          label: '✖ Turn off baseline',
+          danger: true,
+          hint: 'Clear the baseline snapshot entirely. Drift comparisons will no longer be available until you turn it back on.',
+          onClick: async (clickX, clickY) => {
+            const ok = await showConfirmAt(clickX, clickY, {
+              message: `Turn off the baseline for "${project}"? The saved snapshot will be cleared and drift comparisons will go away.`,
+              confirmLabel: 'Turn off',
+              danger: true,
+            });
+            if (!ok) return;
+            await api.baseline.clear(project);
+            await loadTasks();
+            state.showBaseline = false;
+            saveScheduleView();
+            syncBaselineButtons();
+            renderGantt();
+          },
+        });
+      }
+      // Render and wire in lock-step so separators keep their slot in BOTH the
+      // DOM and the items array — fixes the index-mismatch bug that made Turn
+      // off baseline behave like a no-op.
+      baseMenu.innerHTML = '';
+      items.forEach((it) => {
+        if (it.separator) {
+          const sep = document.createElement('div');
+          sep.className = 'dropdown-sep';
+          baseMenu.appendChild(sep);
+          return;
+        }
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'dropdown-item';
+        if (it.disabled) btn.classList.add('is-disabled');
+        if (it.danger)   btn.classList.add('is-danger');
+        if (it.disabled) btn.disabled = true;
+        if (it.hint)     btn.title = it.hint;
+        btn.textContent = it.label;
+        if (!it.disabled && it.onClick) {
+          btn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const x = ev.clientX, y = ev.clientY;
+            closeBaselineMenu();
+            await it.onClick(x, y);
+          });
+        }
+        baseMenu.appendChild(btn);
+      });
+    };
+    baseMenuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willShow = baseMenu.classList.contains('hidden');
+      if (willShow) {
+        renderBaselineMenu();
+        baseMenu.classList.remove('hidden');
+        // Position below the button, left-aligned.
+        const r = baseMenuBtn.getBoundingClientRect();
+        baseMenu.style.top  = (r.bottom + 4) + 'px';
+        baseMenu.style.left = Math.max(8, r.left) + 'px';
+      } else {
+        closeBaselineMenu();
+      }
+    });
+    // Reparent to body so the dropdown doesn't get clipped by the toolbar's
+    // overflow boundaries.
+    if (baseMenu.parentElement !== document.body) document.body.appendChild(baseMenu);
+    document.addEventListener('click', (e) => {
+      if (!baseMenu.contains(e.target) && e.target !== baseMenuBtn && !baseMenuBtn.contains(e.target)) {
+        closeBaselineMenu();
+      }
     });
   }
 
@@ -6051,9 +8935,69 @@ async function init() {
   // Project tab bar
   document.getElementById('btn-add-project').addEventListener('click', showProjectAddPicker);
 
+  // ⚖ Quote vs Schedule toolbar button — wires once at startup, then the
+  // enabled/disabled state + tooltip is refreshed every render() by
+  // syncToolbarProjectAction (so it reflects the active project tab).
+  const quoteToolbarBtn = document.getElementById('btn-toolbar-quote');
+  if (quoteToolbarBtn) {
+    quoteToolbarBtn.addEventListener('click', () => {
+      const p = state.filters.project;
+      if (!p) return;
+      openQuoteCompareModal(p);
+    });
+  }
+
   // Zoom-to-fit button — zoomToFit reads the visible task span and snaps the Gantt zoom
   // so it all fits in the viewport. Wheel-zoom still works for finer adjustments.
   document.getElementById('btn-zoom-fit').addEventListener('click', zoomToFit);
+
+  // Undo button — pops the top entry of state.undoStack and re-applies the
+  // BEFORE snapshot via api.update. Disabled when the stack is empty.
+  const undoBtn = document.getElementById('btn-undo');
+  if (undoBtn) {
+    undoBtn.addEventListener('click', performUndo);
+    syncUndoButton();  // start with the right disabled state
+  }
+  // Redo button — opposite direction. Pops state.redoStack and re-applies.
+  // A new edit (pushUndoSnapshot) clears the redo stack to keep history linear.
+  const redoBtn = document.getElementById('btn-redo');
+  if (redoBtn) {
+    redoBtn.addEventListener('click', performRedo);
+    syncRedoButton();
+  }
+  // "👤 For Customer" — toggles a clean customer-facing view by adding the
+  // body.customer-view class. CSS hides the toolbar / tabs / extra columns;
+  // JS forces pane=both and runs zoomToFit so the customer sees grid + Gantt
+  // fitted to the full project span. A floating "✕ Exit customer view"
+  // button appears top-right (visible only while the class is set) to get
+  // back to the editing view — the main toolbar is hidden so the original
+  // button isn't clickable anymore.
+  //
+  // Replaces the older Export-PDF flow which tried to drive the browser
+  // print dialog directly. That approach was fighting too many issues at
+  // once (panel size mismatch between screen and print, viewBox scaling,
+  // beforeprint timing). Far simpler to just put the on-screen app into a
+  // customer-friendly state and let the user screenshot / share / print it
+  // themselves — Ctrl+P from customer view still works, with the same
+  // hidden chrome.
+  const customerBtn = document.getElementById('btn-customer-view');
+  const customerExitBtn = document.getElementById('btn-customer-view-exit');
+  if (customerBtn) {
+    customerBtn.addEventListener('click', () => {
+      if (document.body.classList.contains('customer-view')) {
+        exitCustomerView();
+      } else {
+        if (!state.filters.project) {
+          showAlertDialog('Pick a project tab first — customer view is per-project.');
+          return;
+        }
+        enterCustomerView();
+      }
+    });
+  }
+  if (customerExitBtn) {
+    customerExitBtn.addEventListener('click', exitCustomerView);
+  }
 
   // Topbar zoom controls: − / mode / + . The mode picker jumps to a representative zoom
   // for that scale (Day=200%, Week=70%, Month=10%) so the user can switch directly.

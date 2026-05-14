@@ -38,6 +38,13 @@ html, body {
      too. The user navigates with drag-pan + mouse wheel. */
   overflow: hidden;
 }
+/* Body is the flex column root so the active <main> can claim flex:1 height
+   for its own internal scrolling. Without this, main's overflow:hidden has
+   no defined height and the team view can't scroll its contents. */
+body {
+  display: flex;
+  flex-direction: column;
+}
 
 /* ---------- Project tab bar (open schedules) ---------- */
 .project-tab-bar {
@@ -171,8 +178,23 @@ html, body {
   color: var(--text);
   cursor: pointer;
   font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 .project-add-picker .picker-row:hover { background: var(--row-hover); color: var(--sdc-primary); }
+.project-add-picker .picker-row.is-open { color: var(--text-muted, #64748b); }
+.project-add-picker .picker-row-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #dcfce7;
+  color: #166534;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .project-add-picker .picker-row-count {
   font-weight: 400;
   color: var(--text-muted);
@@ -208,6 +230,38 @@ html, body {
   margin: 6px 0;
 }
 .project-add-picker .picker-new-row { display: flex; gap: 6px; padding: 0 6px 4px; }
+.project-add-picker .picker-import-row,
+.project-add-picker .picker-estimate-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.project-add-picker .picker-estimate-file {
+  font-size: 11px;
+}
+.project-add-picker .picker-estimate-btn {
+  align-self: flex-end;
+  min-width: 120px;
+}
+.project-add-picker .picker-import-name {
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.project-add-picker .picker-import-file {
+  font-size: 11px;
+  padding: 2px 0;
+}
+.project-add-picker .picker-import-btn { align-self: flex-end; }
+.project-add-picker .picker-import-status {
+  padding: 4px 6px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  min-height: 14px;
+}
 .project-add-picker .picker-new-input {
   flex: 1;
   padding: 6px 8px;
@@ -218,59 +272,246 @@ html, body {
 }
 .project-add-picker .picker-new-btn { padding: 6px 10px; font-size: 12px; }
 
-/* Schedule view's project header — shows the active tab's number + name. */
+/* Schedule view's project header — just the toolbar row now. Project name
+   moved to its own banner below this (see .schedule-project-banner) so the
+   name reads correctly in any pane mode (grid-only / both / gantt-only).
+   Toolbar still flex-wraps so it spills onto a second visual line on narrow
+   windows. */
 .schedule-project-header {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  flex-direction: column;
+  align-items: stretch;
+  row-gap: 6px;
   padding: 8px 18px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-alt);
 }
 .schedule-project-info {
+  /* Legacy class kept only for the orphan rescue button on All-projects.
+     Real name rendering lives in .schedule-project-banner below. */
+  display: none;
+}
+/* Project name banner — short row below the toolbar, above the schedule
+   split. Contains a centered SDC-lime-outlined pill with the project name.
+   Pill is small / unobtrusive so it doesn't eat vertical space on the chart. */
+.schedule-project-banner {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 4px 18px 6px;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+}
+.schedule-project-name-pill {
+  display: inline-block;
+  padding: 3px 16px;
+  border: 2px solid var(--anchor-fill, #befa4f);
+  border-radius: 14px;
+  background: white;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sdc-dark, #061d39);
+  letter-spacing: 0.01em;
+}
+.schedule-project-filters {
+  display: flex;
+  align-items: center;
   flex: 0 0 auto;
+  position: relative;   /* anchor for the filters popover */
 }
 .schedule-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-left: auto;
-  flex-wrap: nowrap;
+  gap: 8px;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  width: 100%;
 }
-.schedule-project-label {
-  font-size: 15px;
+/* Flexible gap pushes content RIGHT of it toward the right edge while keeping
+   the Columns control flush LEFT. Used between Columns and the rest of the
+   toolbar so the layout reads as "primary action on the left, everything else
+   on the right" without a hard-coded margin. */
+.toolbar-flex-gap {
+  flex: 1 1 auto;
+}
+/* Legacy class — the project label visual now lives on .schedule-project-name-pill.
+   Kept as a no-op so any code still adding this class doesn't double-style. */
+.schedule-project-label { /* visual styling moved to .schedule-project-name-pill */ }
+
+/* =========================================================================
+   Customer view. Activated by clicking the "👤 For Customer" toolbar button
+   (toggle) — adds `customer-view` to <body>. Strips chrome (topbar / tabs /
+   toolbar / row handle), hides every grid column except Task/Start/Finish,
+   and removes editing affordances in the Task column. JS forces pane=both
+   and runs zoomToFit so the customer sees a clean grid + fitted Gantt.
+   ========================================================================= */
+body.customer-view .topbar,
+body.customer-view .project-tab-bar,
+body.customer-view .schedule-project-header,
+body.customer-view .row-height-bar,
+body.customer-view .schedule-divider,
+body.customer-view #btn-add,
+body.customer-view .legend,
+body.customer-view #project-stats-popup {
+  display: none !important;
+}
+/* Hide the % pill / milestone checkbox / drift chips inside Task column
+   cells — those are editing affordances, not info the customer needs. */
+body.customer-view .name-cell-pills,
+body.customer-view .name-pct-pill,
+body.customer-view .name-milestone-check,
+body.customer-view .name-drift-chip {
+  display: none !important;
+}
+/* Project name banner sits as the page header, slightly larger than usual. */
+body.customer-view .schedule-project-banner {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+}
+body.customer-view .schedule-project-name-pill {
+  font-size: 16px;
+  padding: 4px 18px;
+}
+/* Hide every grid column except Task / Start / Finish — same approach used
+   for the columns dropdown elsewhere. Both the colgroup <col> and the
+   <th>/<td> cells need display:none so the table truly collapses those
+   columns instead of leaving empty space.
+   IMPORTANT: scope to tr:not(.group-header) so the rule doesn't also hit
+   section-header rows. Section header TDs span all columns (no data-col
+   attribute) so they'd match every :not(data-col=...) and disappear,
+   which would kill the user's ability to collapse/expand sections in
+   customer view (and was the bug behind the "I can't toggle sections"
+   feedback). */
+body.customer-view #tasks-table col:not([data-col="name"]):not([data-col="start"]):not([data-col="finish"]),
+body.customer-view #tasks-table tr:not(.group-header) th:not([data-col="name"]):not([data-col="start"]):not([data-col="finish"]),
+body.customer-view #tasks-table tr:not(.group-header) td:not([data-col="name"]):not([data-col="start"]):not([data-col="finish"]) {
+  display: none !important;
+}
+/* Keep the grid as TIGHT as possible so the Gantt has every available pixel.
+   Task column hugs its text (~140px is enough for the longest task names
+   like "Build and Wire Panel"); Start/Finish hug their date strings (~64px
+   for "MM/DD/YY"). Total grid width: ~268px, leaving the rest of the body
+   for the Gantt. */
+body.customer-view #tasks-table th[data-col="name"],
+body.customer-view #tasks-table td[data-col="name"] { min-width: 140px; padding-left: 6px; padding-right: 6px; }
+body.customer-view #tasks-table th[data-col="start"],
+body.customer-view #tasks-table td[data-col="start"],
+body.customer-view #tasks-table th[data-col="finish"],
+body.customer-view #tasks-table td[data-col="finish"] { min-width: 64px; padding-left: 4px; padding-right: 4px; }
+body.customer-view #tasks-table {
+  width: auto !important;
+  table-layout: auto;
+}
+/* Grid auto-sizes; Gantt takes everything else. */
+body.customer-view .schedule-grid {
+  width: auto !important;
+  flex: 0 0 auto;
+}
+body.customer-view .schedule-gantt {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* Section headers in customer view — make the click affordance more obvious
+   since the customer-presenter may not realize the bars are clickable to
+   toggle collapse. Bigger caret + clearer hover state. The collapse / expand
+   behavior is the same as in normal view (toggles collapsedGroups on click),
+   no JS changes required — the existing click handler still fires. */
+body.customer-view tr.group-header .group-caret {
+  font-size: 13px;
+  font-weight: 800;
+  margin-right: 6px;
+}
+body.customer-view tr.group-header:hover td {
+  filter: brightness(0.95);
+}
+body.customer-view tr.group-header td {
+  cursor: pointer;
+}
+
+/* Floating "✕ Exit customer view" button. Hidden in normal mode, shown only
+   when body.customer-view is set. Positioned top-right with SDC-lime
+   outline so it pops as a clear "way out" affordance. */
+.customer-view-exit {
+  display: none;
+}
+body.customer-view .customer-view-exit {
+  display: block;
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 1000;
+  background: white;
+  border: 2px solid var(--anchor-fill, #befa4f);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12px;
   font-weight: 700;
-  color: var(--sdc-dark);
-  letter-spacing: 0.01em;
+  color: var(--sdc-dark, #061d39);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
+}
+body.customer-view .customer-view-exit:hover {
+  background: var(--surface-alt, #f1f5f9);
+}
+
+/* Ctrl+P / browser print from customer view picks up landscape + tight
+   margins automatically. The on-screen customer-view rules above already
+   strip the chrome, so the print preview matches what's on screen. */
+@media print {
+  @page { size: landscape; margin: 0.3in; }
+  body {
+    background: white !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }
 .schedule-project-meta {
   font-size: 12px;
   color: var(--text-muted);
 }
-/* Header-bar $ Financials entry point — sits alongside the project label/task count
-   on the schedule header row. Plain white pill matching the other toolbar buttons.
-   Single-click opens the per-project Financial Milestones modal. */
-.project-header-financials {
-  margin-left: 10px;
-  padding: 4px 10px;
-  background: var(--surface, #fff);
-  color: var(--text);
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
+/* Project-stat chips — % complete and FAT variance vs baseline. Sit between the
+   task count and the $ Financials button on the schedule header. Tone-colored
+   so the schedule's health reads at a glance: lime for on-track / complete,
+   red for late, blue for early, neutral for no-baseline. */
+.project-stat-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   white-space: nowrap;
-  transition: background 120ms ease, border-color 120ms ease;
+  font-variant-numeric: tabular-nums;
 }
-.project-header-financials:hover {
+.project-stat-chip.stat-pct {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+.project-stat-chip.stat-ok {
+  background: #dcfce7;
+  color: #14532d;
+}
+.project-stat-chip.stat-late {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.project-stat-chip.stat-early {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+.project-stat-chip.stat-neutral {
   background: var(--surface-alt);
-  border-color: var(--sdc-primary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
 }
+
+/* (Removed in v3.60: .project-header-action class — the ⚖ Quote vs Schedule
+   button moved from the project-name row into the toolbar (next to Filters),
+   so a separate visual style isn't needed; it uses .toolbar-toggle-btn now.) */
 .orphan-save-btn {
   margin-left: 14px;
   padding: 4px 10px;
@@ -369,17 +610,21 @@ html, body {
 }
 
 .toolbar-icon-btn {
-  width: 30px;
+  min-width: 30px;
   height: 30px;
   border: 1px solid var(--border);
   background: white;
   color: var(--text-muted);
   border-radius: 6px;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 13px;
   font-weight: 600;
   font-family: inherit;
-  padding: 0;
+  padding: 0 8px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .toolbar-icon-btn:hover { background: var(--surface-alt); color: var(--text); }
 
@@ -446,20 +691,23 @@ html, body {
 }
 .topbar .brand h1 { font-size: 17px; }
 .topbar .brand-logo { height: 36px; }
-.topbar-filters {
-  position: relative;
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* Filters live inside the project header now (project-scoped); styling matches
+   the light project-header background instead of the dark topbar that used to
+   host them. */
+.schedule-project-filters .btn-ghost {
+  background: white;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
 }
-.topbar-filters .btn-ghost {
-  background: rgba(255,255,255,0.12);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,0.25);
+.schedule-project-filters .btn-ghost:hover {
+  background: var(--surface-alt);
+  border-color: #94a3b8;
 }
-.topbar-filters .btn-ghost:hover { background: rgba(255,255,255,0.22); }
-.topbar-filters .filter-chip-count {
+.schedule-project-filters .filter-chip-count {
   display: inline-block;
   margin-left: 6px;
   padding: 1px 8px;
@@ -514,6 +762,74 @@ html, body {
   border-color: var(--sdc-primary);
   color: #fff;
 }
+/* View options section — second group inside the Filters popover. Each option
+   is a full-width row with a checkmark indicator on the left + label on the
+   right. Active rows get the SDC-primary tint so the on/off state is
+   unmistakable. Sub-options (like "Only critical") indent slightly so the
+   relationship to the parent above reads visually. */
+.filters-popover-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.filters-view-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.filter-view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.filter-view-toggle:hover {
+  background: var(--surface-alt);
+  border-color: var(--border);
+}
+.filter-view-toggle.is-active {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 14%, white);
+  border-color: color-mix(in srgb, var(--sdc-primary, #2563eb) 30%, white);
+  color: var(--sdc-dark);
+}
+.filter-view-toggle.is-sub {
+  padding-left: 24px;
+}
+.filter-view-check {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: white;
+  color: var(--sdc-primary);
+  font-weight: 900;
+  font-size: 12px;
+  text-align: center;
+  line-height: 14px;
+  flex-shrink: 0;
+}
+.filter-view-toggle.is-active .filter-view-check {
+  background: var(--sdc-primary);
+  border-color: var(--sdc-primary);
+  color: white;
+}
+.filter-view-label {
+  flex: 1 1 auto;
+}
+
 .filters-popover-row { margin-bottom: 10px; }
 .filters-popover-row label {
   display: flex;
@@ -753,19 +1069,26 @@ main {
   padding: 0;
   /* Lock page-level scroll: only the inner grid/gantt panels should accept
      drag-pan scroll. Without this, the overscroll padding inside the panels
-     leaks into the body and dragging "moves the whole page". */
+     leaks into the body and dragging "moves the whole page". Flex column so
+     active views can claim flex:1 height for their own internal scrolling. */
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 .view { display: none; }
-.view.active { display: block; }
+.view.active { display: block; flex: 1; min-height: 0; }
 
 /* ---------- Schedule view (combined grid + gantt) ---------- */
 #view-schedule {
   display: none;
   flex-direction: column;
-  height: calc(100vh - 90px);
   overflow: hidden;
 }
+/* Height comes from flex:1 (inherited from .view.active) inside main's flex
+   column — no hardcoded calc(100vh - 90px) so changes to topbar/tabs heights
+   automatically reflow without leaving a gap or overflow at the bottom. */
 #view-schedule.active { display: flex; }
 
 /* Schedule controls in the topbar (replaces the old schedule-toolbar). */
@@ -822,6 +1145,99 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .dropdown-menu label:hover { color: var(--sdc-primary); }
 
+/* Show/hide columns menu rows. Each row has:
+     [drag-handle ⋮⋮]  [checkbox] [column label]
+   Rows are draggable, drop reorders state.layout.columnOrder + the grid. */
+.col-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: grab;
+}
+.col-menu-row.is-locked {
+  cursor: default;
+  opacity: 0.7;
+}
+.col-menu-row:hover:not(.is-locked) {
+  background: var(--surface-alt);
+}
+.col-menu-row.dragging {
+  opacity: 0.5;
+}
+.col-menu-row.drag-over {
+  outline: 2px solid var(--sdc-primary);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 8%, white);
+}
+.col-menu-drag {
+  display: inline-block;
+  width: 14px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  cursor: grab;
+  user-select: none;
+}
+.col-menu-row.is-locked .col-menu-drag {
+  visibility: hidden;
+}
+.col-menu-label {
+  flex: 1 1 auto;
+  padding: 4px 0 !important;       /* override generic .dropdown-menu label padding */
+}
+
+/* Action-item style for dropdown menus (Baseline menu, etc.) — buttons not
+   checkbox labels. One row per action with hover highlight. */
+.dropdown-menu .dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.dropdown-menu .dropdown-item:hover {
+  background: var(--surface-alt);
+  color: var(--sdc-primary);
+}
+.dropdown-menu .dropdown-item.is-disabled {
+  color: var(--text-muted);
+  cursor: default;
+  font-weight: 600;
+  opacity: 0.7;
+}
+.dropdown-menu .dropdown-item.is-disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+.dropdown-menu .dropdown-item.is-danger { color: #b91c1c; }
+.dropdown-menu .dropdown-item.is-danger:hover { background: #fee2e2; color: #991b1b; }
+.dropdown-menu .dropdown-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+/* When the dropdown menu has been reparented to <body> for stacking-context
+   reasons (baseline-menu does this), it's positioned with fixed coords from JS
+   instead of relative to its original parent. */
+body > .dropdown-menu {
+  position: fixed;
+  top: auto;
+  left: auto;
+}
+
 /* Hide columns by class */
 [data-col].col-hidden { display: none; }
 
@@ -871,6 +1287,139 @@ input[type="number"] {
   display: flex;
   flex: 1;
   min-height: 0;
+  position: relative;  /* anchor point for the floating #project-stats-popup */
+}
+
+/* Project stats popup — floating card in the top-right of the Gantt area
+   showing Duration (PO → FAT in weeks), % Complete, and FAT variance vs
+   baseline. Doesn't scroll with the gantt content because it sits outside
+   the scroll containers. Top offset clears the upper+lower date header
+   (~50–60px depending on view mode) so the popup sits inside the chart
+   area, never over the day numbers. */
+.project-stats-popup {
+  position: absolute;
+  top: 68px;
+  right: 14px;
+  z-index: 8;
+  background: var(--surface, #fff);
+  /* 2px SDC lime outline so the popup pops against the Gantt — same color as
+     anchor milestones so the visual language is consistent ("important
+     project-level info"). Falls back to a neutral border if the anchor color
+     hasn't loaded from settings yet. */
+  border: 2px solid var(--anchor-fill, #befa4f);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+  padding: 8px 10px;
+  font-size: 11px;
+  min-width: 170px;
+}
+/* Hide the popup when only the grid is visible — there's no Gantt area
+   for it to anchor to and it would float over the grid. */
+.schedule-split.gantt-hidden .project-stats-popup { display: none; }
+.project-stats-popup .popup-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+.project-stats-popup .popup-row + .popup-row {
+  border-top: 1px solid var(--border);
+  margin-top: 2px;
+  padding-top: 4px;
+}
+.project-stats-popup .popup-label {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  font-size: 10px;
+}
+.project-stats-popup .popup-value {
+  font-weight: 700;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.project-stats-popup .popup-value.stat-late    { color: #991b1b; }
+.project-stats-popup .popup-value.stat-early   { color: #3730a3; }
+.project-stats-popup .popup-value.stat-ok      { color: #14532d; }
+.project-stats-popup .popup-value.stat-neutral { color: var(--text-muted); font-size: 11px; font-weight: 600; }
+/* FAT variance chip — sits next to the date (M/D/YY), giving a quick "how far
+   off baseline are we?" signal without taking over the row. */
+.project-stats-popup .popup-fat-var {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--surface-alt, #f1f5f9);
+}
+.project-stats-popup .popup-fat-var.stat-late  { background: #fee2e2; color: #991b1b; }
+.project-stats-popup .popup-fat-var.stat-early { background: #e0e7ff; color: #3730a3; }
+.project-stats-popup .popup-fat-var.stat-ok    { background: #dcfce7; color: #14532d; }
+
+/* View Options section inside the project stats popup. Three toggle rows
+   (Flatten / By date / $ Financials) — separated from the stats above by a
+   subtle divider. */
+.project-stats-popup .popup-section + .popup-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.project-stats-popup .popup-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.popup-view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.popup-view-toggle:hover {
+  background: var(--surface-alt);
+  border-color: var(--border);
+}
+.popup-view-toggle.is-active {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 14%, white);
+  border-color: color-mix(in srgb, var(--sdc-primary, #2563eb) 30%, white);
+  color: var(--sdc-dark);
+}
+.popup-view-check {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: white;
+  color: var(--sdc-primary);
+  font-weight: 900;
+  font-size: 10px;
+  line-height: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.popup-view-toggle.is-active .popup-view-check {
+  background: var(--sdc-primary);
+  border-color: var(--sdc-primary);
+  color: white;
 }
 .schedule-grid {
   flex-shrink: 0;
@@ -958,6 +1507,21 @@ input[type="number"] {
 /* Gantt panel is grabbable for click-and-drag pan; bars get their own cursor. */
 .schedule-gantt { cursor: grab; }
 .schedule-gantt.panning { cursor: grabbing; }
+/* While drag-panning the grid, lock out text selection across the whole panel so
+   headers / group rows don't pick up a blue highlight when the drag hits the
+   scroll edge. Inputs / textareas re-enable selection naturally so cell editing
+   isn't affected. */
+.schedule-grid.panning,
+.schedule-grid.panning * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.schedule-grid.panning input,
+.schedule-grid.panning textarea,
+.schedule-grid.panning [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
 .schedule-gantt .bar-wrapper,
 .schedule-gantt .milestone-diamond,
 .schedule-gantt .handle { cursor: pointer; }
@@ -1113,6 +1677,17 @@ tbody tr:hover { background: var(--row-hover); }
 .col-date { font-variant-numeric: tabular-nums; width: 88px; }
 .col-pred { width: 110px; font-variant-numeric: tabular-nums; }
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
+/* Comments column — free-text. Truncate with ellipsis so a long note doesn't
+   blow the row height; the full content stays accessible via the title tooltip
+   set in cellHtml. */
+.col-notes {
+  color: var(--text-muted);
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
 th.col-allocation { padding-left: 4px; padding-right: 6px; }
 .col-priority { width: 44px; text-align: center; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 4px; font-weight: 600; }
 th.col-priority { padding-left: 4px; padding-right: 4px; }
@@ -1229,6 +1804,262 @@ tbody tr.anchor-row td {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
 }
 
+/* Completed anchor (progress >= 100%) — richer forest green + bold checkmark.
+   The default anchor chip's lime green = "scheduled / upcoming"; this darker
+   solid green clearly reads as "hit, done, behind us". Applied to the chip in
+   the grid AND a matching solid diamond in the Gantt (.bar.milestone-done). */
+tbody tr.anchor-row.is-done .anchor-name-chip {
+  background: #16a34a;            /* solid emerald — pops against the lime "scheduled" green */
+  color: #f0fdf4;
+  box-shadow: 0 1px 2px rgba(20, 83, 45, 0.35);
+}
+.anchor-done-check {
+  display: inline-block;
+  margin-right: 2px;
+  font-weight: 900;
+  color: #f0fdf4;
+}
+
+/* Note: completed REGULAR tasks deliberately leave the name black. The green
+   ✓ pill on the right-side of the row is the sole "this task is done" signal,
+   matching the milestone done state where the name also stays normal. */
+
+/* Inline schedule-drift chip lives RIGHT inside the name cell — no separate column.
+   Picks up the same red/green palette as the Gantt's bar-edge pills so the grid
+   tells you "this task is N days behind/ahead of its planned %-complete" without
+   you having to look up to the bar. Anchors and milestones don't get one (drift
+   math only makes sense for duration tasks vs progress). */
+.name-drift-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.name-drift-chip.behind {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
+}
+.name-drift-chip.ahead {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+
+/* Task-name cell — single % complete pill pinned to the right edge of the column.
+   Every row's pill lands at the same x-position (`right: 8px` off the same-width td)
+   so they read as a vertical column when scanning down the grid. Text stays in the
+   td's natural flow with simple padding-right to reserve room for the pill. */
+td[data-col="name"] {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+td[data-col="name"].has-pills {
+  padding-right: 52px;
+}
+.name-cell-pills {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  pointer-events: auto;
+  line-height: 1;
+}
+
+/* % complete pill — color reflects SCHEDULE STATUS, not just progress:
+     is-zero    = 0%, not started (slate)
+     is-behind  = 1–99% AND behind schedule (light red)
+     is-ontrack = 1–99% AND on or ahead of schedule (green)
+     is-done    = 100% (emerald, white text) */
+.name-edit-pill {
+  display: inline-block;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  user-select: none;
+  min-width: 38px;
+  text-align: center;
+  line-height: 14px;
+  border: 1px solid;
+  box-sizing: border-box;
+}
+/* % complete pill colors — driven by CSS custom properties so the Setup page's
+   color picker can update them live without re-rendering. Text is always black
+   for readability across whatever fill the user picks; the border is a slight
+   darkening of the fill via color-mix. */
+.name-pct-pill {
+  color: #000;
+}
+/* Border is softened to 80% fill + 20% black (was 70/30) so the pill reads
+   as subtle rather than heavily outlined — especially important for the
+   is-zero state which appears on every task and shouldn't draw the eye. */
+.name-pct-pill.is-zero {
+  background: var(--pct-zero-fill, #fafbfc);
+  border-color: color-mix(in srgb, var(--pct-zero-fill, #fafbfc) 80%, #000);
+}
+.name-pct-pill.is-behind {
+  background: var(--pct-behind-fill, #fee2e2);
+  border-color: color-mix(in srgb, var(--pct-behind-fill, #fee2e2) 80%, #000);
+}
+.name-pct-pill.is-ontrack {
+  background: var(--pct-ontrack-fill, #dcfce7);
+  border-color: color-mix(in srgb, var(--pct-ontrack-fill, #dcfce7) 80%, #000);
+}
+/* Done state: deep green pill with white ✓ inside — matches the milestone-check
+   done style so 100% duration tasks and completed milestones read the same.
+   Hardcoded (no --pct-done-fill var) on purpose so that users who previously
+   saved a lighter custom done color in Setup still see this pill match the
+   milestone outline color. The Setup picker for "Done" still controls the
+   Gantt bar fill and the Team-page resource bar, but the in-grid pill is
+   fixed at the milestone-pair colors. */
+.name-pct-pill.is-done {
+  background: #16a34a;
+  border-color: #14532d;
+  color: white;
+  font-weight: 900;
+}
+
+/* Milestone / anchor checkbox in the Task column. Replaces the % pill for
+   0-duration rows since "% complete" on a milestone is conceptually binary.
+   Click toggles progress between 0 and 100.
+   Sized to MATCH the .name-edit-pill footprint (38×16) so the ✓ sits centered
+   in the same visual slot as the % pill on duration tasks — milestone and
+   duration rows line up vertically in the Task column. */
+.name-milestone-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 16px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  background: white;
+  color: #15803d;
+  font-weight: 900;
+  font-size: 11px;
+  cursor: pointer;
+  line-height: 1;
+}
+.name-milestone-check:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+.name-milestone-check.is-done {
+  background: #16a34a;
+  border-color: #14532d;
+  color: white;
+}
+.name-milestone-check.is-done:hover {
+  background: #15803d;
+}
+
+/* Backlog — duration-only spine task between Receipt of PO and section 10.
+   Rendered with anchor-chip styling so it reads as a spine marker. RED tint
+   to differentiate from the lime-green anchor markers. Grouped with PO above
+   it (no border in between) via the no-top-border class. */
+.anchor-name-chip.backlog-chip {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #dc2626;
+}
+tbody tr.anchor-row.backlog-row.no-top-border td {
+  border-top: none;
+}
+tbody tr.anchor-row.no-bottom-border td {
+  border-bottom: none;
+}
+/* Gantt bar for backlog — red fill with darker red stroke. */
+.gantt .bar-wrapper.is-backlog .bar {
+  fill: #fee2e2 !important;
+  stroke: #dc2626 !important;
+  stroke-width: 1.5 !important;
+}
+.gantt .bar-wrapper.is-backlog .bar-progress {
+  fill: transparent !important;
+}
+.gantt .bar-wrapper.is-backlog text,
+.gantt .bar-wrapper.is-backlog .bar-label {
+  fill: #991b1b !important;
+  font-weight: 700;
+}
+
+/* Setup → Estimate → Schedule Rules list. Read-only for now; intentionally
+   styled like compact docs so the user can scan the encoded logic. */
+.estimate-rules {
+  margin: 8px 0 0;
+  padding-left: 22px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text, #1e293b);
+}
+.estimate-rules li {
+  margin-bottom: 6px;
+}
+.estimate-rules strong {
+  color: var(--sdc-dark, #061d39);
+}
+.name-edit-pill:hover { filter: brightness(0.97); }
+
+/* Editing state — the pill swaps its text for a small number input. Keep the same
+   visual footprint so the row doesn't reflow.
+   The width: 38px / overflow: hidden are CRITICAL. The pill is display:inline-
+   block, which shrink-to-fits to its content's intrinsic width. When the child
+   becomes a default <input>, that intrinsic width is ~144px (size=20 chars at
+   our font size), which would balloon the pill to ~4× its normal width and
+   look like a separate editor card overlaying the column. Locking width here
+   forces the pill to stay 38px regardless of what the input's preferred
+   width is. */
+.name-edit-pill.editing {
+  padding: 0;
+  background: white;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18);
+  width: 38px;
+  max-width: 38px;
+  overflow: hidden;
+}
+/* Pill-editor input. The .cell-edit-input class (which we inherit) is designed
+   for FULL-CELL editing, so it applies negative margins (-3px / -8px) and
+   oversized width/height to make the input cover the whole td. That blows up
+   to roughly half the Task column inside the tiny 38×16 pill — wildly larger
+   than the pill itself. Override every relevant box-model property here so
+   the input stays exactly the pill's footprint. */
+.name-pill-input {
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 4px !important;
+  border: 0 !important;
+  outline: none !important;
+  background: transparent !important;
+  box-sizing: border-box !important;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  font-family: inherit;
+  color: #1e293b;
+}
+
+/* The actual Gantt diamonds (anchor + non-anchor) are custom SVG polygons drawn
+   in drawMilestoneDiamonds() — the milestone-done coloring is applied directly
+   to those <polygon> elements at draw time. No CSS override needed for the bar
+   itself (frappe-gantt's native .bar is hidden via inline opacity:0). */
+
 /* Header rows themselves stay white — the color is reserved for a small pill around
    just the label text so the row reads as more of a divider than a colored block. */
 tr.group-header td {
@@ -1338,6 +2169,113 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 .context-menu button:hover { background: var(--row-hover); }
 .context-menu button.danger { color: #dc2626; }
 .context-menu button.danger:hover { background: #fee2e2; }
+
+/* In-app confirmation popup. Anchored next to the click point that triggered
+   the action (vs. native confirm() which opens centered chrome dialogs far
+   from the click). Press Enter to confirm, Esc to cancel, click outside to
+   cancel. */
+.confirm-popup {
+  position: fixed;
+  z-index: 300;
+  background: white;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.22);
+  padding: 12px 14px;
+  width: 280px;
+  font-size: 13px;
+  color: var(--text);
+}
+.confirm-popup-message {
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+.confirm-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.confirm-popup-cancel,
+.confirm-popup-ok {
+  padding: 5px 12px;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 4px;
+  background: white;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.confirm-popup-cancel:hover { background: var(--surface-alt); }
+.confirm-popup-ok {
+  background: var(--sdc-primary, #2563eb);
+  border-color: var(--sdc-primary, #2563eb);
+  color: white;
+}
+.confirm-popup-ok:hover { filter: brightness(1.05); }
+.confirm-popup-ok.is-danger {
+  background: #dc2626;
+  border-color: #b91c1c;
+}
+.confirm-popup-ok.is-danger:hover { background: #b91c1c; }
+
+/* Arrow lag pill — small floating label on the Gantt that shows the lag
+   duration on an arrow when the predecessor carries one (e.g., "+2 wks" or
+   "−1 wk"). Hover lifts the pill so it's obvious it's clickable; click
+   opens the inline lag editor. */
+.gantt .arrow-lag-pill {
+  transition: filter 120ms ease;
+}
+.gantt .arrow-lag-pill:hover {
+  filter: brightness(0.95);
+}
+
+/* Inline lag editor — pops next to the clicked lag pill. Small horizontal
+   row: label / input / Cancel / Save. */
+.arrow-lag-edit {
+  position: fixed;
+  z-index: 300;
+  background: white;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 6px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.2);
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.arrow-lag-edit label {
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.arrow-lag-edit input {
+  width: 54px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+}
+.arrow-lag-edit button {
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 4px;
+  background: white;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.arrow-lag-edit .confirm-popup-ok {
+  background: var(--sdc-primary, #2563eb);
+  border-color: var(--sdc-primary, #2563eb);
+  color: white;
+}
 
 /* Grid click-drag pan: change cursor while panning, suppress text selection. */
 .schedule-grid.panning { cursor: grabbing; user-select: none; }
@@ -1502,6 +2440,17 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   font-family: inherit;
 }
 
+/* Today line — vertical dotted red line at today's date so you can see at a
+   glance how every bar lines up against now. Tiny "Today" label at the top. */
+.gantt .today-line,
+.gantt .today-line-label {
+  pointer-events: none;
+}
+.gantt .today-line-label {
+  user-select: none;
+  font-family: inherit;
+}
+
 /* Financial overlay — vertical lines through the full chart at each financial
    milestone's date. Dashed = invoice pending, solid = invoice sent. Bold enough
    to read clearly over busy task bars without being obnoxious. Layer sits above
@@ -1520,15 +2469,34 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   font-family: inherit;
 }
 
-/* Zoom controls */
-.zoom-controls {
+/* Legacy single-row zoom + row-height pills. The Schedule toolbar uses
+   .zoom-stack (below) which fuses them into one stacked pill. These rules
+   remain for the Team page resource-timeline zoom which is still a single
+   horizontal pill. */
+.zoom-controls,
+.row-height-controls {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px 4px;
-  border: 1px solid rgba(255,255,255,0.2);
+  gap: 0;
+  padding: 0 2px;
+  border: 1px solid var(--border-strong, #94a3b8);
   border-radius: 6px;
-  background: rgba(255,255,255,0.95);
+  background: white;
+  height: 30px;
+  box-sizing: border-box;
+}
+.zoom-controls .btn-icon,
+.row-height-controls .btn-icon {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.zoom-controls .btn-icon:hover,
+.row-height-controls .btn-icon:hover {
+  background: var(--surface-alt);
+  border-radius: 4px;
 }
 .zoom-controls .zoom-display {
   display: inline-flex;
@@ -1542,10 +2510,10 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 }
 .zoom-controls #zoom-percent,
 .zoom-controls #row-height-display {
-  font-size: 13px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--text);
-  font-weight: 600;
+  font-weight: 700;
 }
 .zoom-controls .zoom-mode {
   font-size: 9px;
@@ -1553,30 +2521,125 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-top: 1px;
+  font-weight: 700;
 }
-/* Row-height controls — compact variant of zoom-controls. Just two icon buttons
-   bracketing a tiny "rows" label so the whole control fits in ~80px of toolbar. */
-.row-height-controls {
+.row-height-controls-label {
+  font-size: 12px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 0 8px;
+  font-weight: 700;
+}
+
+/* Stacked Weeks/Rows pill — used on the Schedule toolbar to fuse the chart-
+   zoom controls (top row, Days/Weeks/Months) and the row-height controls
+   (bottom row, "rows") into a single visual unit. Reduces toolbar width and
+   makes it clear they're paired "zoom" controls (one zooms time, one zooms
+   row height). */
+.zoom-stack {
+  display: inline-flex;
+  flex-direction: column;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 6px;
+  background: white;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.zoom-stack-row {
   display: inline-flex;
   align-items: center;
-  gap: 0;
-  padding: 0 2px;
-  border: 1px solid rgba(255,255,255,0.2);
-  border-radius: 6px;
-  background: rgba(255,255,255,0.95);
+  height: 22px;
 }
-.row-height-controls .btn-icon {
+.zoom-stack-row + .zoom-stack-row {
+  border-top: 1px solid var(--border);
+}
+.zoom-stack .btn-icon {
   width: 22px;
   height: 22px;
   font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  border-radius: 0;
 }
-.row-height-controls-label {
-  font-size: 9px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.zoom-stack .btn-icon:hover {
+  background: var(--surface-alt);
+}
+.zoom-stack-select {
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  cursor: pointer;
   padding: 0 4px;
-  font-weight: 600;
+  min-width: 64px;
+  height: 100%;
+  text-align: center;
+  font-family: inherit;
+}
+.zoom-stack-select:hover {
+  background: var(--surface-alt);
+}
+.zoom-stack-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
+  min-width: 64px;
+  text-align: center;
+  padding: 0 4px;
+}
+
+/* View pill — title row on top, three icon-toggles below. Each icon is its
+   own clickable on/off button (Flatten ≡, Sort-by-date ↕, Financials $). The
+   pill is the same height as other toolbar buttons so the row reads evenly. */
+.view-pill {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 6px;
+  background: white;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.view-pill-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt, #f1f5f9);
+}
+.view-pill-icons {
+  display: inline-flex;
+  align-items: center;
+}
+.view-pill-icon {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.view-pill-icon + .view-pill-icon {
+  border-left: 1px solid var(--border);
+}
+.view-pill-icon:hover {
+  background: var(--surface-alt);
+  color: var(--sdc-primary);
+}
+.view-pill-icon.is-active {
+  background: var(--sdc-primary, #2563eb);
+  color: white;
 }
 .btn-icon {
   width: 28px;
@@ -1595,10 +2658,10 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   border: none;
   background: transparent;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text);
   cursor: pointer;
-  padding: 4px 4px;
+  padding: 0 4px;
   min-width: 70px;
   text-align: center;
 }
@@ -1946,6 +3009,375 @@ body[data-view="setup"] #btn-add { display: none; }
   justify-content: center;
   z-index: 100;
 }
+
+/* Estimate-sheet feasibility modal — separate class set from the older .modal
+   shell so the existing dialogs keep their styling. New shell uses card / head
+   / body / foot. */
+.modal-card {
+  background: var(--surface, #fff);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.modal-card .modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-card .modal-head h2 { font-size: 16px; color: var(--sdc-dark); }
+.modal-card .modal-body { padding: 16px 18px; overflow-y: auto; flex: 1 1 auto; }
+.modal-card .modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-alt, #f4f6f8);
+}
+
+.est-meta {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface-alt, #f4f6f8);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+.est-meta-label { color: var(--text-muted, #64748b); margin-right: 4px; }
+
+.est-form {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.est-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  gap: 4px;
+}
+.est-form input[type="text"],
+.est-form input[type="date"],
+.est-form input[type="number"] {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.est-pct-wrap { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+.est-pct-wrap input { flex: 1; min-width: 0; }
+
+.est-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+  font-size: 13px;
+}
+.est-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 8px;
+}
+.est-table th.num, .est-table td.num { text-align: right; }
+.est-table td { padding: 8px; border-bottom: 1px solid var(--border); }
+.est-hc { display: inline-block; min-width: 18px; text-align: center; font-weight: 700; }
+.est-hc-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 700;
+  line-height: 1;
+}
+.est-hc-btn:hover { background: var(--surface-alt); }
+
+.est-load {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 700;
+  font-size: 12px;
+}
+.est-load-ok    { background: #dcfce7; color: #166534; }
+.est-load-tight { background: #fef3c7; color: #92400e; }
+.est-load-over  { background: #fee2e2; color: #b91c1c; }
+.est-summary { margin-top: 10px; }
+.est-readout {
+  padding: 6px 8px;
+  background: var(--surface-alt, #f4f6f8);
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #0f172a);
+}
+
+/* Editable estimate hours grid — wide table with split sub-columns per
+   discipline. Horizontal scroll on narrow modals so we don't squish cells.
+   Inputs are inline-edit numbers. */
+.est-hours-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 6px;
+}
+.est-hours-table {
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+/* Per-column widths — tight to content. Group headers wrap to two lines
+   ("Mech / Eng", "Controls / Eng", etc.) so single-column groups don't need
+   to be wider than their numeric content. */
+.est-hours-table col.col-section { width: 170px; }
+.est-hours-table col.col-mech    { width: 54px; }
+.est-hours-table col.col-ce-des  { width: 92px; }  /* fits two split inputs + hash */
+.est-hours-table col.col-ce-sw   { width: 58px; }
+.est-hours-table col.col-ce-db   { width: 58px; }
+.est-hours-table col.col-gen     { width: 52px; }  /* HMI / Robot / Vision / Device */
+.est-hours-table col.col-mb      { width: 54px; }
+.est-hours-table col.col-eb      { width: 92px; }  /* fits two split inputs + hash */
+.est-hours-table th,
+.est-hours-table td { white-space: normal; }
+.est-hours-table tbody td.sticky-col,
+.est-hours-table tfoot td.sticky-col { white-space: nowrap; }
+.est-hours-table th,
+.est-hours-table td {
+  padding: 2px 2px;
+  text-align: center;
+  border-bottom: 1px solid #e2e8f0;
+  border-right: 1px solid #e2e8f0;
+}
+.est-hours-table th { background: var(--surface-alt, #f4f6f8); font-weight: 700; color: #475569; font-size: 11px; }
+.est-hours-table th.grp { text-align: center; border-bottom: 1px solid #cbd5e1; }
+
+/* Mirror the SUMMARY FOR RELEASE tab — color-coded column groups matching the
+   hierarchy palette on the Setup page (so the Estimate modal feels like part
+   of the same app). */
+.summary-mirror .grp-mech { background: #D4E8F7; } /* Mechanical Engineering */
+.summary-mirror .grp-ce   { background: #C5CDD8; } /* Controls Engineering */
+.summary-mirror .grp-gen  { background: #AACEE8; } /* General Engineering */
+.summary-mirror .grp-mb   { background: #D5F0A0; } /* Mech Build */
+.summary-mirror .grp-eb   { background: #BEFA4F; } /* Electrical Build (Wire palette) */
+
+.summary-mirror .grp-row th.grp {
+  text-align: center;
+  padding: 4px 2px;
+  font-size: 11px;
+  color: #061d39;
+  font-weight: 700;
+  line-height: 1.15;
+}
+.summary-mirror .sub-row th {
+  padding: 3px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #061d39;
+  text-align: center;
+  line-height: 1.15;
+}
+.summary-mirror tbody td {
+  padding: 4px 4px;
+  text-align: center;
+}
+.summary-mirror tbody td.sticky-col,
+.summary-mirror tfoot td.sticky-col {
+  background: white;
+  font-weight: 600;
+  text-align: left;
+}
+.summary-mirror tfoot .totals-row td.sticky-col { background: var(--surface-alt, #f4f6f8); }
+.summary-mirror tfoot .totals-row td {
+  font-weight: 700;
+  border-top: 2px solid #061d39;
+}
+.summary-mirror .est-hours-input {
+  width: 100%;
+  max-width: 44px;
+  text-align: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 2px;
+  font-size: 12px;
+  font-family: inherit;
+  color: #0f172a;
+  box-sizing: border-box;
+}
+.summary-mirror .est-hours-input:hover {
+  background: rgba(255,255,255,0.7);
+  border-color: rgba(6,29,57,0.25);
+}
+.summary-mirror .est-hours-input:focus {
+  outline: none;
+  background: white;
+  border-color: #2563eb;
+}
+
+/* Hash-mark split inside a single cell — two inputs side by side with a small
+   "/" divider. Used for Section 10's Design + Drawings and Electrical Build. */
+.summary-mirror .split-cell {
+  padding: 2px 2px;
+}
+.summary-mirror .split-cell .est-hours-input {
+  width: 30px;
+}
+.summary-mirror .hash-divider {
+  display: inline-block;
+  margin: 0 2px;
+  color: rgba(6,29,57,0.4);
+  font-weight: 700;
+}
+.est-hours-table th.sticky-col,
+.est-hours-table td.sticky-col {
+  position: sticky;
+  left: 0;
+  background: white;
+  text-align: left;
+  z-index: 1;
+}
+.est-hours-table th.sticky-col { background: var(--surface-alt, #f4f6f8); }
+.est-hours-table tfoot .totals-row td {
+  font-weight: 700;
+  background: var(--surface-alt, #f4f6f8);
+  border-top: 2px solid #cbd5e1;
+}
+.est-hours-input {
+  width: 50px;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: right;
+  font-size: 12px;
+  font-family: inherit;
+  border-radius: 3px;
+}
+.est-hours-input:hover { border-color: #cbd5e1; background: white; }
+.est-hours-input:focus { border-color: #2563eb; background: white; outline: none; }
+
+/* Compact staffing table — one row per role, columns: Role | Hours | People | Weeks */
+.est-staff-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+  font-size: 13px;
+}
+.est-staff-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  border-bottom: 1px solid var(--border, #cbd5e1);
+  padding: 6px 8px;
+}
+.est-staff-table th.num, .est-staff-table td.num { text-align: right; }
+.est-staff-table td { padding: 8px; border-bottom: 1px solid var(--border, #e2e8f0); }
+.est-hc-fixed {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  font-style: italic;
+}
+
+/* In-app confirm / alert dialogs — replace the browser-native window.confirm
+   and window.alert popups with something that matches the SDC app shell. Built
+   on the same .modal-card framework as the estimate-sheet modal. */
+.app-dialog-overlay {
+  z-index: 200;  /* above other dialogs */
+}
+.app-dialog {
+  max-width: 460px;
+  width: 100%;
+}
+.app-dialog .modal-head { padding: 14px 20px 10px; }
+.app-dialog .modal-head h2 { font-size: 15px; margin: 0; }
+.app-dialog .modal-body { padding: 8px 20px 16px; }
+.app-dialog-message {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text, #1e293b);
+}
+.app-dialog .modal-foot {
+  padding: 10px 20px 14px;
+  background: transparent;
+  border-top: 0;
+}
+.app-dialog-danger .modal-head h2 { color: #b91c1c; }
+
+/* "$ Financial Milestones" action button inside the Quote vs Schedule modal
+   header. Styled in SDC primary so it reads as "do this important thing" —
+   per-project financial milestones are usually set once at project creation
+   and edited rarely, so the button needs to be findable when the rare edit
+   is needed. */
+.quote-action-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--sdc-primary, #2563eb);
+  border-radius: 4px;
+  background: var(--sdc-primary, #2563eb);
+  color: white;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.quote-action-btn:hover { filter: brightness(1.08); }
+
+/* Quote vs Schedule comparison table. Shows quoted hours from the estimate
+   side-by-side with the live scheduled hours computed from task durations.
+   Δ column: green when on target (±10%), amber when off, slate when no quote. */
+.quote-compare-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.quote-compare-table th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  border-bottom: 1px solid var(--border, #cbd5e1);
+  padding: 6px 8px;
+}
+.quote-compare-table th.num { text-align: right; }
+.quote-compare-table td { padding: 6px 8px; border-bottom: 1px solid #f1f5f9; }
+.quote-compare-table td.num { text-align: right; }
+.quote-compare-table tfoot .totals-row td { font-weight: 700; border-top: 2px solid #cbd5e1; }
+.quote-diff.diff-zero { color: #475569; }
+.quote-diff.diff-near { color: #166534; background: #dcfce7; }
+.quote-diff.diff-far  { color: #b45309; background: #fef3c7; }
+.quote-diff           { font-weight: 700; border-radius: 3px; padding: 2px 6px; }
+.btn-danger {
+  background: #dc2626;
+  color: white;
+  border: 1px solid #b91c1c;
+  padding: 7px 14px;
+  border-radius: 5px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-danger:hover { background: #b91c1c; }
+.btn-danger:focus { outline: 2px solid #fca5a5; outline-offset: 2px; }
 .modal {
   background: var(--surface);
   border-radius: 10px;
@@ -2222,13 +3654,71 @@ body[data-view="setup"] #btn-add { display: none; }
 .financials-error strong { color: var(--sdc-dark); }
 
 /* ---------- Team view ---------- */
-#view-team .setup-pane { padding: 18px 22px; }
-.team-card-head { padding: 14px 18px; }
+/* Setup view scrolls vertically so the long list of cards (palette / theme /
+   section colors / anchor / estimate rules / pill colors / hierarchy / phases /
+   financial milestones / project milestones / reference) is fully reachable.
+   The body has overflow:hidden so without this the page just truncates. */
+#view-setup {
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
+/* view-team must scroll vertically so the dashboards + resources timeline
+   below the team cards stay reachable. main has overflow:hidden (locks page
+   scroll) so this view has to manage its own. */
+#view-team {
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  min-height: 0;
+}
+/* Team page needs the full window width — five discipline cards side by side
+   plus the dashboard cards below. The 1000px max from setup-pane is too narrow,
+   override it here. */
+#view-team .setup-pane {
+  max-width: none;
+  margin: 0;
+  padding: 14px 18px 8px;
+}
+.team-card-head {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+}
+.team-card-head h3 { margin: 0; font-size: 13px; }
+
+/* Capacity strip — sits directly below each discipline's colored header.
+   Shows real headcount, total scheduled hours, and weeks of work ahead at
+   90% effective capacity. */
+.team-card-capacity {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  padding: 6px 12px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt, #f8fafc);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.team-card-capacity .cap-num {
+  color: var(--text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.team-card-capacity .cap-sep {
+  color: var(--border-strong);
+  font-weight: 700;
+}
 
 .team-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+/* On narrower screens, drop to a 3-up grid so cards stay readable. */
+@media (max-width: 1400px) {
+  .team-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 .team-card {
   background: var(--surface);
@@ -2239,42 +3729,97 @@ body[data-view="setup"] #btn-add { display: none; }
   flex-direction: column;
   box-shadow: 0 1px 2px rgba(15,23,42,0.04);
 }
-.team-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.team-card-head h3 {
+/* Layout: placeholders sit at the TOP of each card right below the capacity
+   strip, visually separated from the real-member list by a dashed divider.
+   The lead floats to the top of the real-member list. */
+.team-placeholders {
+  list-style: none;
   margin: 0;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  padding: 4px 6px 6px;
+  border-bottom: 1px dashed var(--border-strong);
 }
-.team-count {
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(255,255,255,0.55);
-  padding: 2px 8px;
-  border-radius: 999px;
-  color: inherit;
+.team-placeholders:empty {
+  display: none;        /* no placeholders → no divider */
 }
 .team-list {
   list-style: none;
   margin: 0;
-  padding: 6px 8px;
+  padding: 6px;
   flex: 1;
 }
 .team-member {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-radius: 4px;
+  gap: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+  min-width: 0;
+}
+.team-member-grip {
+  flex: 0 0 12px;
+  color: var(--border-strong);
+  cursor: grab;
+  font-size: 9px;
+  line-height: 1;
+  user-select: none;
+  text-align: center;
+}
+.team-member.is-placeholder .team-member-grip { visibility: hidden; }
+.team-member.is-dragging { opacity: 0.4; }
+.team-member.drop-above { box-shadow: 0 -2px 0 0 var(--sdc-primary); }
+.team-member.drop-below { box-shadow: 0  2px 0 0 var(--sdc-primary); }
+/* Name takes most of the row's flex space; specialty takes a fixed slice. */
+.team-member-name {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.team-member-specialty {
+  flex: 0 1 90px;
+  min-width: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+  border-radius: 3px;
+}
+.team-member-specialty:hover { border-color: var(--border); background: var(--surface-alt); }
+.team-member-specialty:focus {
+  outline: none;
+  border-color: var(--sdc-primary);
+  background: var(--surface);
+  color: var(--text);
+  font-style: normal;
 }
 .team-member:hover { background: var(--row-hover); }
+/* Department lead — star inline with the name + slightly bolder text so the
+   lead row pops at the top of each discipline card. */
+.team-member.is-lead .team-member-name { font-weight: 700; }
+.team-member-lead {
+  color: var(--sdc-accent, #ffde51);
+  font-size: 12px;
+  margin-right: 2px;
+}
+.team-member-lead-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.team-member:hover .team-member-lead-toggle,
+.team-member.is-lead .team-member-lead-toggle {
+  opacity: 1;
+}
+.team-member-lead-toggle:hover { color: var(--sdc-accent, #ffde51); }
+.team-member.is-lead .team-member-lead-toggle { color: var(--sdc-accent, #ffde51); }
 /* Placeholders — role-stand-ins on templates. Ghost styling so they read as
    "stand-in seat", not real staff: dashed left border, italic name, light fill. */
 .team-member.is-placeholder {
@@ -2297,14 +3842,14 @@ td[data-col="assignee"].placeholder-assignee {
   color: #64748b;
 }
 .team-member-name {
-  flex: 1;
-  padding: 5px 8px;
+  padding: 2px 4px;
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 3px;
   font-size: 12px;
   font-family: inherit;
   background: transparent;
   color: var(--text);
+  min-width: 0;
 }
 .team-member-name:focus {
   outline: none;
@@ -2316,8 +3861,8 @@ td[data-col="assignee"].placeholder-assignee {
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 16px;
-  padding: 2px 6px;
+  font-size: 14px;
+  padding: 0;
   border-radius: 4px;
 }
 .team-member .remove-btn:hover { color: var(--danger); background: #fee2e2; }
@@ -2333,6 +3878,125 @@ td[data-col="assignee"].placeholder-assignee {
   font-family: inherit;
 }
 .team-add-btn:hover { color: var(--sdc-primary); border-color: var(--sdc-primary); background: var(--row-hover); }
+
+/* ---------- Team dashboard (below the Resources timeline) ---------- */
+.team-dashboard {
+  margin: 0 22px 22px;
+}
+.team-dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1100px) {
+  .team-dashboard-cards { grid-template-columns: 1fr; }
+}
+.dashboard-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  min-height: 180px;
+  box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+}
+.dashboard-card-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+  border-radius: 8px 8px 0 0;
+}
+.dashboard-card-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sdc-dark);
+  letter-spacing: 0.01em;
+}
+.dashboard-card-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.dashboard-card-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  max-height: 280px;
+}
+.dashboard-empty {
+  margin: 0;
+  padding: 22px 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.dashboard-row {
+  display: grid;
+  grid-template-columns: 90px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+}
+.dashboard-row:last-child { border-bottom: none; }
+.dashboard-row:hover { background: var(--row-hover); }
+.dashboard-row-project {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dashboard-row-name {
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dashboard-row-assignee {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+.dashboard-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-chip.chip-danger {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.dashboard-chip.chip-info {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.dashboard-chip.chip-neutral {
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
 
 /* ---------- Resources section (lives below the Team grid) ---------- */
 .resources-section {
@@ -2542,8 +4206,33 @@ td[data-col="assignee"].placeholder-assignee {
   box-shadow: 0 1px 1px rgba(15,23,42,0.06);
   transition: filter 0.1s;
   z-index: 1;
+  color: #000;
 }
 .res-bar:hover { filter: brightness(1.05); box-shadow: 0 2px 4px rgba(15,23,42,0.12); z-index: 2; }
+
+/* Resource-timeline bars share the SAME color scheme as the % complete pill in
+   the grid — slate / red / green / emerald — so a glance at the team page tells
+   you which tasks are not started, behind, on track, or done without having to
+   open a schedule. Driven by the same --pct-*-fill CSS vars set from Setup. */
+.res-bar.status-zero {
+  background: var(--pct-zero-fill, #fafbfc);
+  border-color: color-mix(in srgb, var(--pct-zero-fill, #fafbfc) 80%, #000);
+}
+.res-bar.status-behind {
+  background: var(--pct-behind-fill, #fee2e2);
+  border-color: color-mix(in srgb, var(--pct-behind-fill, #fee2e2) 80%, #000);
+}
+.res-bar.status-ontrack {
+  background: var(--pct-ontrack-fill, #dcfce7);
+  border-color: color-mix(in srgb, var(--pct-ontrack-fill, #dcfce7) 80%, #000);
+}
+/* Done resource bars get white text since the default --pct-done-fill is now
+   a deep green (#16a34a) that doesn't have enough contrast with black. */
+.res-bar.status-done {
+  background: var(--pct-done-fill, #16a34a);
+  border-color: color-mix(in srgb, var(--pct-done-fill, #16a34a) 80%, #000);
+  color: white;
+}
 .res-bar-label {
   text-overflow: ellipsis;
   overflow: hidden;
