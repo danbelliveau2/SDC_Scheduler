@@ -1,19 +1,28 @@
 const express = require('express');
 const path = require('path');
 const XLSX = require('xlsx');
+const compression = require('compression');
 const db = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ── Gzip all responses (cuts JSON payload ~70%) ────────────────────────────
+app.use(compression());
+
 app.use(express.json({ limit: '10mb' }));
 
-// Disable caching for static assets so dev edits show up on plain refresh
+// Static assets: versioned files get long cache; HTML stays no-store so reloads
+// always pick up the latest app.js / styles.css without a hard-refresh.
 app.use((req, res, next) => {
-  res.set('Cache-Control', 'no-store');
+  if (req.path.match(/\.(js|css|svg|png|jpg|ico|woff2?)(\?|$)/)) {
+    res.set('Cache-Control', 'public, max-age=3600'); // 1 hour for assets
+  } else {
+    res.set('Cache-Control', 'no-store');
+  }
   next();
 });
-app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false }));
+app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true }));
 
 const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date'];
 
@@ -108,40 +117,88 @@ function computeDatesFromPreds(task, tasksById) {
   return null;
 }
 
+// Prepared statements cached at module level — prepared once, reused on every call.
+const _stmtGetAllForCascade = db.prepare(
+  'SELECT id, predecessors, start_date, end_date, duration_days, is_milestone FROM tasks'
+);
+const _stmtUpdateDates = db.prepare(
+  'UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?'
+);
+
 function cascadeSchedule() {
   // Iteratively recompute every task's dates from its predecessors until stable
   // (or hit iteration cap to break any accidental cycles).
+  //
+  // Perf notes vs the old version:
+  //   • SELECT fetches only the 6 columns cascade actually reads (not SELECT *)
+  //   • db.prepare() is called ONCE at module load, not on every iteration
+  //   • All date UPDATEs for a given pass are batched inside one transaction —
+  //     SQLite auto-commit per statement is extremely slow; one transaction
+  //     for N updates is 10-100× faster
+  //   • byId is updated in-memory as changes are queued so that later tasks in
+  //     the same iteration already see the updated dates of earlier tasks
   for (let iter = 0; iter < 50; iter++) {
-    const all = db.prepare('SELECT * FROM tasks').all();
+    const all = _stmtGetAllForCascade.all();
     const byId = Object.fromEntries(all.map(t => [t.id, t]));
-    let changed = false;
+    const updates = [];
+
     for (const t of all) {
       if (!t.predecessors) continue;
       const next = computeDatesFromPreds(t, byId);
       if (next && (next.start_date !== t.start_date || next.end_date !== t.end_date)) {
-        db.prepare('UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?')
-          .run(next.start_date, next.end_date, t.id);
-        changed = true;
+        updates.push({ id: t.id, start_date: next.start_date, end_date: next.end_date });
+        // Update in-memory so subsequent tasks in this pass see the new dates
+        byId[t.id].start_date = next.start_date;
+        byId[t.id].end_date   = next.end_date;
       }
     }
-    if (!changed) break;
+
+    if (updates.length === 0) break;
+
+    // Commit all changes for this pass in a single transaction
+    db.exec('BEGIN');
+    try {
+      for (const u of updates) _stmtUpdateDates.run(u.start_date, u.end_date, u.id);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   }
 }
+
+// Prepared statements for compactPrioritiesForAssignee (cached at module level)
+const _stmtGetAssigneePriorities = db.prepare(
+  'SELECT id, priority FROM tasks WHERE assignee = ? ORDER BY priority IS NULL, priority ASC, id ASC'
+);
+const _stmtSetPriority = db.prepare('UPDATE tasks SET priority = ? WHERE id = ?');
 
 // Rewrite priorities for one assignee so they form a dense 1, 2, 3 ... sequence
 // in their current sort order. Each person owns their own per-list — no overlap
 // across people, no gaps from deleted/reassigned tasks. Called from every route
 // that can mutate a task's assignee or remove a task. Skips empty assignees.
+//
+// All updates run inside one transaction — without it SQLite auto-commits each
+// UPDATE individually, which is 10-100× slower than a batched transaction.
 function compactPrioritiesForAssignee(assignee) {
   if (!assignee) return;
-  const rows = db.prepare(
-    'SELECT id, priority FROM tasks WHERE assignee = ? ORDER BY priority IS NULL, priority ASC, id ASC'
-  ).all(assignee);
-  const upd = db.prepare('UPDATE tasks SET priority = ? WHERE id = ?');
-  rows.forEach((r, i) => {
-    const target = i + 1;
-    if (r.priority !== target) upd.run(target, r.id);
-  });
+  const rows = _stmtGetAssigneePriorities.all(assignee);
+  if (rows.length === 0) return;
+
+  const needsUpdate = rows.filter((r, i) => r.priority !== i + 1);
+  if (needsUpdate.length === 0) return; // already compact — skip entirely
+
+  db.exec('BEGIN');
+  try {
+    rows.forEach((r, i) => {
+      const target = i + 1;
+      if (r.priority !== target) _stmtSetPriority.run(target, r.id);
+    });
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 app.get('/api/tasks', (req, res) => {

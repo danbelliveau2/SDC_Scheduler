@@ -4,6 +4,13 @@ const path = require('path');
 const db = new DatabaseSync(path.join(__dirname, 'scheduler.db'));
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
+// Performance tuning:
+//   synchronous=NORMAL  — safe with WAL, skips unnecessary fsyncs (~2× faster writes)
+//   cache_size          — keep 10 000 pages (~40 MB) in memory; avoids re-reading hot rows
+//   busy_timeout        — wait up to 5 s for a write lock instead of failing immediately
+db.exec('PRAGMA synchronous = NORMAL');
+db.exec('PRAGMA cache_size = 10000');
+db.exec('PRAGMA busy_timeout = 5000');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS tasks (
@@ -28,6 +35,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_tasks_phase ON tasks(phase);
   CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project);
   CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee);
+  -- Compound index used by compactPrioritiesForAssignee (ORDER BY assignee + priority)
+  CREATE INDEX IF NOT EXISTS idx_tasks_assignee_priority ON tasks(assignee, priority);
+  -- Partial-style filter for cascadeSchedule (tasks that have predecessors)
+  CREATE INDEX IF NOT EXISTS idx_tasks_predecessors ON tasks(predecessors);
 
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
