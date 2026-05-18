@@ -1,0 +1,13 @@
+{
+  "name": "sdc-scheduler",
+  "version": "0.1.0",
+  "description": "SDC project scheduler — tasks, predecessors, Gantt",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.1"
+  }
+}

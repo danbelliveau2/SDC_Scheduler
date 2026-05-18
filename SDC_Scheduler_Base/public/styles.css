@@ -514,26 +514,6 @@ html, body {
   border-color: var(--sdc-primary);
   color: #fff;
 }
-.saved-filter-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.filter-chip-del {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  font-size: 14px;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.filter-chip-del:hover {
-  background: var(--danger);
-  color: white;
-}
 .filters-popover-row { margin-bottom: 10px; }
 .filters-popover-row label {
   display: flex;
@@ -2060,35 +2040,6 @@ body[data-view="setup"] #btn-add { display: none; }
   justify-content: center;
   z-index: 300;
 }
-.modal {
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 10px 40px rgba(0,0,0,0.25);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  background: var(--surface-alt);
-  border-bottom: 1px solid var(--border);
-}
-.modal-header h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-}
-.modal-close {
-  background: transparent;
-  border: none;
-  font-size: 20px;
-  cursor: pointer;
-  color: var(--text-muted);
-}
-.modal-close:hover { color: var(--text); }
 .financials-modal {
   background: var(--surface, #fff);
   border-radius: 10px;
@@ -2742,94 +2693,4 @@ td[data-col="assignee"].placeholder-assignee {
   height: 12px;
   border-radius: 2px;
   display: inline-block;
-}
-
-/* ---------- Print Styles ---------- */
-@media print {
-  @page {
-    size: landscape;
-    margin: 0.5cm;
-  }
-
-  body {
-    overflow: visible !important;
-    background: white !important;
-  }
-
-  /* Hide UI chrome */
-  .topbar, 
-  .project-tab-bar, 
-  .schedule-project-header, 
-  .grid-add-task-btn,
-  .schedule-divider,
-  .dropdown,
-  #btn-add,
-  .revision-pill,
-  #empty-state,
-  #gantt-empty {
-    display: none !important;
-  }
-
-  main {
-    overflow: visible !important;
-    height: auto !important;
-  }
-
-  #view-schedule {
-    display: block !important;
-    height: auto !important;
-    overflow: visible !important;
-  }
-
-  .schedule-split {
-    display: block !important; /* Stack grid and gantt or let them flow */
-    height: auto !important;
-    overflow: visible !important;
-  }
-
-  #schedule-grid, #schedule-gantt {
-    width: 100% !important;
-    flex: none !important;
-    height: auto !important;
-    overflow: visible !important;
-    position: static !important;
-  }
-
-  /* Ensure grid renders cleanly */
-  #tasks-table {
-    width: 100% !important;
-    border-collapse: collapse !important;
-  }
-  
-  #tasks-table td, #tasks-table th {
-    border: 1px solid #ddd !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  /* Force Gantt colors and widths */
-  .gantt-container {
-    overflow: visible !important;
-    height: auto !important;
-    width: 100% !important;
-  }
-  
-  .gantt .bar {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-  
-  .gantt .arrow {
-    stroke-opacity: 1 !important;
-  }
-
-  /* Show the project name on print */
-  body::before {
-    content: "SDC Project Schedule: " attr(data-active-project);
-    display: block;
-    font-size: 18px;
-    font-weight: bold;
-    margin-bottom: 10px;
-    color: #061d39;
-  }
 }
