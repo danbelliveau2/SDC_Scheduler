@@ -3,12 +3,35 @@ const path = require('path');
 const XLSX = require('xlsx');
 const compression = require('compression');
 const db = require('./db');
+const azureSync = require('./azureSync');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ── Gzip all responses (cuts JSON payload ~70%) ────────────────────────────
 app.use(compression());
+
+// ── Azure SQL sync — fire-and-forget after every successful mutation ──────────
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    res.on('finish', () => {
+      if (res.statusCode < 400) {
+        const p = req.path;
+        if (p.startsWith('/api/tasks') || p.startsWith('/api/import') ||
+            p.startsWith('/api/baseline') || p.startsWith('/api/estimate/create')) {
+          azureSync.syncTable('tasks').catch(() => {});
+        } else if (p.startsWith('/api/team')) {
+          azureSync.syncTable('team_members').catch(() => {});
+        } else if (p.startsWith('/api/settings')) {
+          azureSync.syncTable('settings').catch(() => {});
+        } else if (p.startsWith('/api/financials') || p.startsWith('/api/project')) {
+          azureSync.syncTable('project_financials').catch(() => {});
+        }
+      }
+    });
+  }
+  next();
+});
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -1674,6 +1697,8 @@ function startServer({ port } = {}) {
   const p = port || PORT;
   const server = app.listen(p, '0.0.0.0', () => {
     console.log(`[scheduler] Running at http://localhost:${p}`);
+    // Connect to Azure SQL and sync data (fire-and-forget — local DB already ready)
+    azureSync.init(db).catch(err => console.warn('[scheduler] Azure sync init failed:', err.message));
   });
   server.on('error', err => console.error('[scheduler] Server error:', err.message));
   return server;
