@@ -1,0 +1,31 @@
+# Node
+node_modules/
+
+# SQLite database files — runtime data, schema is in db.js
+scheduler.db
+scheduler.db-shm
+scheduler.db-wal
+
+# Local IDE / tooling
+.claude/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+*.err
+npm-debug.log*
+
+# Local data / private assets
+Estimate Sheet/
+Smartsheet Schedules/
+*.pdf
+
+# Environment
+.env
+.env.local
+.env.*.local

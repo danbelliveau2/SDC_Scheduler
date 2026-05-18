@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SDC Scheduler</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Reusable inline SVG symbols (icon accents on setup cards, brand mark, empty illus) -->
+  <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute">
+    <defs>
+      <symbol id="i-palette" viewBox="0 0 24 24">
+        <path d="M12 3a9 9 0 1 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.3-.5-.8-.5-1.2 0-.8.7-1.5 1.5-1.5H17a4 4 0 0 0 4-4c0-4.4-4-8-9-8z"/>
+        <circle cx="7" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7" r="1"/><circle cx="18" cy="11" r="1"/>
+      </symbol>
+      <symbol id="i-paint" viewBox="0 0 24 24">
+        <path d="M3 9h14a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2h-2v3a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3h-7a2 2 0 0 1-2-2v-1a2 2 0 0 1 2-2z"/>
+        <path d="M7 9V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v4"/>
+      </symbol>
+      <symbol id="i-layers" viewBox="0 0 24 24">
+        <path d="M12 3 3 8l9 5 9-5-9-5z"/><path d="m3 13 9 5 9-5"/><path d="m3 18 9 5 9-5"/>
+      </symbol>
+      <symbol id="i-anchor" viewBox="0 0 24 24">
+        <circle cx="12" cy="5" r="2"/><path d="M12 7v15"/><path d="M5 15a7 7 0 0 0 14 0"/><path d="M8 12H4"/><path d="M20 12h-4"/>
+      </symbol>
+      <symbol id="i-tree" viewBox="0 0 24 24">
+        <path d="M3 5h6v4H3z"/><path d="M9 7h6"/><path d="M15 5h6v4h-6z"/><path d="M12 9v4"/><path d="M9 13h6v4H9z"/><path d="M12 17v3h-3v-2"/><path d="M12 17v3h3v-2"/>
+      </symbol>
+      <symbol id="i-phases" viewBox="0 0 24 24">
+        <rect x="3" y="7" width="6" height="4" rx="1"/><rect x="9" y="13" width="8" height="4" rx="1"/><rect x="15" y="7" width="6" height="4" rx="1"/>
+      </symbol>
+      <symbol id="i-money" viewBox="0 0 24 24">
+        <rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 9v6"/><path d="M18 9v6"/>
+      </symbol>
+      <symbol id="i-flag" viewBox="0 0 24 24">
+        <path d="M4 4v17"/><path d="M4 4h12l-2 4 2 4H4"/>
+      </symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24">
+        <path d="M3 12h14"/><path d="m13 6 6 6-6 6"/>
+      </symbol>
+      <symbol id="i-team" viewBox="0 0 24 24">
+        <circle cx="9" cy="8" r="3"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7"/><circle cx="17" cy="7" r="2.5"/><path d="M22 21c0-3-2-5.5-5-5.5"/>
+      </symbol>
+      <symbol id="i-empty" viewBox="0 0 64 64">
+        <rect x="10" y="14" width="44" height="38" rx="3"/>
+        <path d="M10 24h44"/>
+        <rect x="16" y="30" width="18" height="3" rx="1.5"/>
+        <rect x="16" y="38" width="28" height="3" rx="1.5"/>
+        <rect x="16" y="46" width="12" height="3" rx="1.5"/>
+        <circle cx="48" cy="46" r="6"/><path d="m44 50 8-8"/>
+      </symbol>
+      <symbol id="i-gantt-empty" viewBox="0 0 64 64">
+        <rect x="6" y="12" width="52" height="40" rx="3"/>
+        <path d="M6 22h52"/>
+        <rect x="12" y="28" width="22" height="4" rx="2"/>
+        <rect x="22" y="36" width="30" height="4" rx="2"/>
+        <rect x="16" y="44" width="18" height="4" rx="2"/>
+      </symbol>
+      <symbol id="i-cloud" viewBox="0 0 24 24">
+        <path d="M7 18a5 5 0 0 1-1-9.9 7 7 0 0 1 13.5 1.4A4 4 0 0 1 18 18z"/>
+        <path d="M12 13v6"/><path d="m9 16 3 3 3-3"/>
+      </symbol>
+    </defs>
+  </svg>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <!-- Inline brand mark — geometric "S" knot on a navy chip. Replaces the
+           previously-broken <img> tag; the original <img> stays in the DOM but
+           is hidden via CSS (.brand-logo { display: none }). -->
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+          <rect x="0" y="0" width="40" height="40" rx="8" fill="#061d39"/>
+          <path d="M27 14c-1.6-2-4.2-3-7-3-3.4 0-6 1.6-6 4.2 0 2.4 1.8 3.6 5.6 4.4l2 .4c2 .4 2.8 1 2.8 2 0 1.4-1.4 2.2-3.6 2.2-2.4 0-4-.8-5.4-2.4L13 24.2c1.8 2.2 4.4 3.4 7.6 3.4 4.2 0 6.8-1.8 6.8-4.8 0-2.4-1.6-3.8-5.4-4.6l-2-.4c-2-.4-3-.8-3-1.8 0-1.2 1.2-2 3-2 1.8 0 3.4.6 4.6 1.8z" fill="#1574c4"/>
+          <circle cx="32" cy="32" r="3" fill="#74c415"/>
+        </svg>
+      </span>
+      <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=" alt="SDC" class="brand-logo" />
+      <span class="brand-wordmark">
+        <h1>Project Scheduler</h1>
+        <span class="brand-tagline">SDC Automation</span>
+      </span>
+    </div>
+    <div class="view-tabs">
+      <button class="tab active" data-view="schedule">Schedule</button>
+      <button class="tab" data-view="team">Team</button>
+      <button class="tab" data-view="setup">Setup</button>
+    </div>
+    <div class="topbar-filters">
+      <button id="btn-filters" class="btn-ghost btn-tight" type="button" title="Filter tasks by section, assignee, or save your own filter">⌕ Filters <span class="filter-chip-count" id="filter-chip-count" hidden></span></button>
+      <div id="filters-popover" class="filters-popover hidden"></div>
+    </div>
+    <button id="btn-revision" class="revision-pill" type="button" title="Click to see what changed in each revision">
+      <span class="revision-pill-label">Rev <span id="revision-version">—</span></span>
+      <span class="revision-pill-icon">📋</span>
+    </button>
+    <div id="revision-popover" class="revision-popover hidden"></div>
+    <button id="btn-logout" class="btn-ghost btn-tight" type="button" style="margin-left: 10px;">Logout</button>
+  </header>
+
+  <div class="project-tab-bar" id="project-tab-bar">
+    <div class="project-tabs" id="project-tabs"></div>
+    <button id="btn-smartsheet-sync" class="project-add-btn" type="button" title="Sync current project from Smartsheet" style="margin-right: 8px; background: #00703c; border-color: #005a30;">☁ Sync Smartsheet</button>
+    <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule">+ Open project</button>
+  </div>
+
+  <main>
+    <section id="view-schedule" class="view active">
+      <div class="schedule-project-header" id="schedule-project-header">
+        <div class="schedule-project-info">
+          <span class="schedule-project-label">All projects</span>
+          <span class="schedule-project-meta">Tasks across every open schedule</span>
+        </div>
+        <div class="schedule-toolbar">
+          <div class="seg-control" role="tablist" title="Pane layout">
+            <button id="btn-pane-grid"     class="seg-btn" type="button" data-pane="grid"  title="Show only the grid (hide Gantt)">Grid</button>
+            <button id="btn-pane-both"     class="seg-btn is-active" type="button" data-pane="both"  title="Show both the grid and the Gantt">Both</button>
+            <button id="btn-pane-gantt"    class="seg-btn" type="button" data-pane="gantt" title="Show only the Gantt (hide grid)">Gantt</button>
+          </div>
+          <div class="seg-divider"></div>
+          <button id="btn-flatten"    class="toolbar-toggle-btn" type="button" title="Flatten — hide sub-section headers and render tasks directly under section 10 / 40 / 50.">≡ Flatten</button>
+          <button id="btn-sort-start" class="toolbar-toggle-btn" type="button" title="Sort tasks by start date within each section.">↕ By date</button>
+          <span class="toolbar-segmented" title="Critical path — left half highlights the chain, right half hides everything but the chain.">
+            <button id="btn-critical"      class="toolbar-toggle-btn" type="button">◆ Critical</button>
+            <button id="btn-critical-only" class="toolbar-toggle-btn" type="button">Only</button>
+          </span>
+          <button id="btn-financial" class="toolbar-toggle-btn" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$ Financial</button>
+          <span class="toolbar-segmented" title="Baseline — left button sets/re-sets the snapshot, right toggles the overlay on the Gantt. Right-click the right button to clear the baseline.">
+            <button id="btn-baseline-set" class="toolbar-toggle-btn" type="button">Set baseline</button>
+            <button id="btn-baseline"     class="toolbar-toggle-btn" type="button">Baseline</button>
+          </span>
+          <div class="seg-divider"></div>
+          <div class="dropdown">
+            <button id="btn-columns" class="toolbar-icon-btn" type="button" title="Show or hide columns">⋮</button>
+            <div id="columns-menu" class="dropdown-menu hidden"></div>
+          </div>
+          <div class="row-height-controls" title="Row height — minus shrinks, plus grows">
+            <button id="btn-row-h-down" class="btn-icon" type="button" title="Shorter rows">−</button>
+            <span class="row-height-controls-label">rows</span>
+            <button id="btn-row-h-up"   class="btn-icon" type="button" title="Taller rows">+</button>
+          </div>
+          <div class="zoom-controls" title="Zoom — mouse wheel inside the Gantt also zooms">
+            <button id="btn-zoom-out" class="btn-icon" type="button" title="Zoom out">−</button>
+            <select id="zoom-mode" title="Time scale">
+              <option value="Day">Days</option>
+              <option value="Week" selected>Weeks</option>
+              <option value="Month">Months</option>
+            </select>
+            <button id="btn-zoom-in"  class="btn-icon" type="button" title="Zoom in">+</button>
+          </div>
+          <button id="btn-zoom-fit" class="btn-primary btn-fit" type="button" title="Zoom the Gantt to fit the project span in the viewport">⛶ Zoom to fit</button>
+          <button id="btn-export" class="btn-ghost btn-tight" type="button" title="Export the active project to Excel">⤓ Export</button>
+          <button id="btn-print"  class="btn-ghost btn-tight" type="button" title="Print the current view to PDF">⎙ Print</button>
+        </div>
+      </div>
+      <div class="schedule-split" id="schedule-split">
+        <div id="schedule-grid" class="schedule-grid">
+          <table id="tasks-table">
+            <colgroup id="tasks-colgroup"></colgroup>
+            <thead><tr id="tasks-thead-row"></tr></thead>
+            <tbody id="tasks-tbody"></tbody>
+          </table>
+          <!-- Loading skeleton — surfaced by app.js between data fetches. Hidden by default. -->
+          <div id="grid-loading" class="grid-loading hidden" aria-hidden="true">
+            <div class="skeleton-row"><span class="skeleton skeleton-cell w-12"></span><span class="skeleton skeleton-cell w-40"></span><span class="skeleton skeleton-cell w-20"></span><span class="skeleton skeleton-cell w-15"></span></div>
+            <div class="skeleton-row"><span class="skeleton skeleton-cell w-12"></span><span class="skeleton skeleton-cell w-40"></span><span class="skeleton skeleton-cell w-20"></span><span class="skeleton skeleton-cell w-15"></span></div>
+            <div class="skeleton-row"><span class="skeleton skeleton-cell w-12"></span><span class="skeleton skeleton-cell w-40"></span><span class="skeleton skeleton-cell w-20"></span><span class="skeleton skeleton-cell w-15"></span></div>
+            <div class="skeleton-row"><span class="skeleton skeleton-cell w-12"></span><span class="skeleton skeleton-cell w-40"></span><span class="skeleton skeleton-cell w-20"></span><span class="skeleton skeleton-cell w-15"></span></div>
+            <div class="skeleton-row"><span class="skeleton skeleton-cell w-12"></span><span class="skeleton skeleton-cell w-40"></span><span class="skeleton skeleton-cell w-20"></span><span class="skeleton skeleton-cell w-15"></span></div>
+          </div>
+          <button id="btn-add" class="grid-add-task-btn" type="button" title="Add a new task to the active schedule">+ Add task</button>
+          <div id="empty-state" class="empty-state hidden">
+            <span class="empty-state-illus"><svg><use href="#i-empty"/></svg></span>
+            <span class="empty-state-title">No tasks yet</span>
+            <span class="empty-state-body">Click <strong>+ Add task</strong> to lay out the first phase, or sync this project from Smartsheet to pull in an existing schedule.</span>
+          </div>
+        </div>
+        <div class="schedule-divider" id="schedule-divider" title="Drag to resize"></div>
+        <div id="schedule-gantt" class="schedule-gantt">
+          <div id="gantt-container"></div>
+          <div id="gantt-empty" class="empty-state hidden">
+            <span class="empty-state-illus"><svg><use href="#i-gantt-empty"/></svg></span>
+            <span class="empty-state-title">Nothing to plot yet</span>
+            <span class="empty-state-body">Add tasks with start and end dates and they'll appear here.</span>
+          </div>
+          <div class="legend" id="gantt-legend"></div>
+        </div>
+      </div>
+      <div class="row-height-bar" id="row-height-bar" title="Drag up/down to resize rows">
+        <span class="row-height-bar-grip"></span>
+        <span class="row-height-bar-hint">⇕ Drag to resize rows</span>
+      </div>
+    </section>
+
+    <section id="view-team" class="view">
+      <div class="setup-pane">
+        <section class="setup-card team-card-head">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-team"/></svg></span>
+            <span class="head-text">
+              <h2>SDC Team</h2>
+              <p>Add anyone who gets assigned to project work. Names listed here populate the <strong>Assigned To</strong> dropdown on the Schedule grid — anything not on this list won't save.</p>
+            </span>
+          </header>
+        </section>
+        <div class="team-grid" id="team-grid"></div>
+      </div>
+
+      <section class="resources-section">
+        <div class="resources-toolbar">
+          <div class="resources-disciplines" id="resources-disciplines"></div>
+          <div class="resources-controls">
+            <label class="toolbar-toggle inverted">
+              <select id="resources-project"><option value="">All projects</option></select>
+              <span>Project</span>
+            </label>
+            <div class="zoom-controls" title="Zoom timeline">
+              <button id="resources-zoom-out" class="btn-icon" type="button" title="Zoom out">−</button>
+              <span class="zoom-display"><span id="resources-zoom-percent">100%</span><span id="resources-mode-label" class="zoom-mode">weeks</span></span>
+              <button id="resources-zoom-in" class="btn-icon" type="button" title="Zoom in">+</button>
+            </div>
+            <button id="resources-zoom-fit" class="btn-ghost btn-tight" type="button">Fit</button>
+          </div>
+        </div>
+        <div class="resources-body" id="resources-body">
+          <p class="empty-state hidden" id="resources-empty">No team members in this discipline yet. Add them above.</p>
+        </div>
+        <div class="legend" id="resources-legend"></div>
+      </section>
+    </section>
+
+    <section id="view-setup" class="view">
+      <div class="setup-pane">
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-palette"/></svg></span>
+            <span class="head-text">
+              <h2>Brand Palette</h2>
+              <p>Standard SDC colors. These appear as suggestions when picking phase colors.</p>
+            </span>
+          </header>
+          <div id="palette-list" class="palette-grid"></div>
+          <button id="btn-add-color" type="button" class="btn-ghost btn-tight">+ Add color</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-paint"/></svg></span>
+            <span class="head-text">
+              <h2>Theme</h2>
+              <p>Top-bar, primary buttons, and accents. Pick from the palette or any color.</p>
+            </span>
+          </header>
+          <div class="theme-grid">
+            <label>Primary
+              <span class="color-pair">
+                <input type="color" id="theme-primary" />
+                <input type="text" id="theme-primary-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Dark (top bar)
+              <span class="color-pair">
+                <input type="color" id="theme-dark" />
+                <input type="text" id="theme-dark-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Accent
+              <span class="color-pair">
+                <input type="color" id="theme-accent" />
+                <input type="text" id="theme-accent-hex" maxlength="7" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-layers"/></svg></span>
+            <span class="head-text">
+              <h2>Section Colors</h2>
+              <p>Section label colors on the Schedule grid (10 / 40 / 50). All three default to gray so they read as dividers between the colored department pills, but you can give each section its own accent here.</p>
+            </span>
+          </header>
+          <div class="theme-grid">
+            <label>10 Design &amp; Build
+              <span class="color-pair">
+                <input type="color" id="section-design-build" />
+                <input type="text" id="section-design-build-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>40 Machine Testing
+              <span class="color-pair">
+                <input type="color" id="section-machine-testing" />
+                <input type="text" id="section-machine-testing-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>50 Teardown &amp; Install
+              <span class="color-pair">
+                <input type="color" id="section-teardown-install" />
+                <input type="text" id="section-teardown-install-hex" maxlength="7" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-anchor"/></svg></span>
+            <span class="head-text">
+              <h2>Anchor Color</h2>
+              <p>Color used for the three project-spine milestones (Receipt of PO, FAT, Ship Machine). Drives the diamond fill on the Gantt and the row tint / glyph in the grid.</p>
+            </span>
+          </header>
+          <div class="theme-grid">
+            <label>Fill
+              <span class="color-pair">
+                <input type="color" id="anchor-fill" />
+                <input type="text" id="anchor-fill-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Text / Stroke
+              <span class="color-pair">
+                <input type="color" id="anchor-text" />
+                <input type="text" id="anchor-text-hex" maxlength="7" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-tree"/></svg></span>
+            <span class="head-text">
+              <h2>Hierarchy Colors</h2>
+              <p>Drives both the Gantt bar colors and the pill backgrounds on department / sub-department header rows in the grid. Each color has a fill (background) and a text/stroke shade that pairs with it.</p>
+            </span>
+          </header>
+          <table class="setup-table" id="hierarchy-colors-table">
+            <thead>
+              <tr><th>Group</th><th>Fill</th><th>Text / Stroke</th><th>Preview</th></tr>
+            </thead>
+            <tbody id="hierarchy-colors-list"></tbody>
+          </table>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-phases"/></svg></span>
+            <span class="head-text">
+              <h2>Phases</h2>
+              <p>Edit names, colors, or order. Tasks already assigned to a phase keep their assignment as long as the key doesn't change.</p>
+            </span>
+          </header>
+          <table class="setup-table">
+            <thead>
+              <tr>
+                <th class="col-drag"></th>
+                <th>Label</th>
+                <th>Key</th>
+                <th>Background</th>
+                <th>Text</th>
+                <th>Preview</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="phases-list"></tbody>
+          </table>
+          <button id="btn-add-phase" type="button" class="btn-ghost btn-tight">+ Add phase</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-money"/></svg></span>
+            <span class="head-text">
+              <h2>Standard Financial Milestones</h2>
+              <p>Default list applied to every new project. Each project gets its own copy on first use — editing these here only affects future projects (or existing projects that don't have any financials yet). Per-project edits live on the project's Financials view (right-click project tab → Financial milestones…).</p>
+            </span>
+          </header>
+          <table class="setup-table" id="default-financials-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th class="num">%</th>
+                <th>Sync date to anchor</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="default-financials-list"></tbody>
+          </table>
+          <button id="btn-add-default-financial" type="button" class="btn-ghost btn-tight">+ Add default milestone</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-flag"/></svg></span>
+            <span class="head-text">
+              <h2>Standard Project Milestones</h2>
+              <p>Common in-flow milestones (Mech Release, Design Review, Order Long Lead, etc.) used as quick-pick suggestions when adding a new task. Anchors (Receipt of PO / Machine Power-Up / FAT / Ship Machine) are auto-managed and aren't listed here.</p>
+            </span>
+          </header>
+          <table class="setup-table" id="milestone-library-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Suggested section</th>
+                <th>Suggested department</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="milestone-library-list"></tbody>
+          </table>
+          <button id="btn-add-milestone-template" type="button" class="btn-ghost btn-tight">+ Add milestone template</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <span class="icon-accent" aria-hidden="true"><svg><use href="#i-arrow"/></svg></span>
+            <span class="head-text">
+              <h2>Predecessor &amp; Milestone Reference</h2>
+              <p>Every dependency type rendered with the same routing the live Gantt uses. Pick the milestone label style you want — the live Gantt will follow.</p>
+            </span>
+          </header>
+
+          <div class="arrow-style-controls">
+            <label>Milestone label position
+              <select id="ms-label-style">
+                <option value="right-pill" selected>Right (pill background)</option>
+                <option value="right">Right of diamond</option>
+                <option value="below">Below diamond</option>
+                <option value="above">Above diamond</option>
+              </select>
+            </label>
+            <label>Arrow color
+              <input type="color" id="arrow-color-pick" value="#334155" />
+            </label>
+            <label>Arrow stroke
+              <select id="arrow-stroke-pick">
+                <option value="1.2">Thin (1.2px)</option>
+                <option value="1.4" selected>Default (1.4px)</option>
+                <option value="1.8">Bold (1.8px)</option>
+              </select>
+            </label>
+          </div>
+
+          <h3 class="arrow-section-title">Bar → Bar</h3>
+          <div id="arrow-demo-bar-grid" class="arrow-demo-grid"></div>
+
+          <h3 class="arrow-section-title">Milestone connections</h3>
+          <div id="arrow-demo-ms-grid" class="arrow-demo-grid"></div>
+        </section>
+
+        <div class="setup-actions">
+          <button id="btn-save-setup" type="button" class="btn-primary">Save changes</button>
+          <button id="btn-reset-setup" type="button" class="btn-ghost">Discard</button>
+          <span id="setup-status" class="hint"></span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Hidden datalists used by inline cell editors for autocomplete -->
+  <datalist id="dl-projects"></datalist>
+  <datalist id="dl-assignees"></datalist>
+
+  <!-- ============================================================
+       MODALS (markup-only; app.js toggles .hidden to show/dismiss)
+       ============================================================ -->
+
+  <!-- Smartsheet sync modal -->
+  <div id="modal-smartsheet" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-smartsheet-title">
+    <div class="modal sync-modal">
+      <div class="modal-header">
+        <h2 id="modal-smartsheet-title"><svg width="20" height="20" style="vertical-align:-4px;color:var(--sdc-primary);stroke:currentColor;stroke-width:1.6;fill:none"><use href="#i-cloud"/></svg> Sync from Smartsheet</h2>
+        <button class="modal-close" type="button" data-close-modal aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 4px;color:var(--text-muted);font-size:12px">
+          Pulls the latest task list, assignees, and dates from the linked Smartsheet workbook and replaces the active project's grid.
+        </p>
+        <ol class="sync-step-list">
+          <li class="sync-step is-done">
+            <span class="sync-step-num">✓</span>
+            <span>
+              <div class="sync-step-title">Connection verified</div>
+              <div class="sync-step-meta">SDC Automation › Active Projects (workbook ID 4882-3917-2055)</div>
+            </span>
+          </li>
+          <li class="sync-step is-current">
+            <span class="sync-step-num">2</span>
+            <span>
+              <div class="sync-step-title">Fetching tasks</div>
+              <div class="sync-step-meta">218 rows, 7 sheets — 14 seconds elapsed</div>
+            </span>
+          </li>
+          <li class="sync-step">
+            <span class="sync-step-num">3</span>
+            <span>
+              <div class="sync-step-title">Resolve conflicts</div>
+              <div class="sync-step-meta">Local edits since last sync will be merged</div>
+            </span>
+          </li>
+          <li class="sync-step">
+            <span class="sync-step-num">4</span>
+            <span>
+              <div class="sync-step-title">Apply to project</div>
+              <div class="sync-step-meta">Replace current schedule, baseline preserved</div>
+            </span>
+          </li>
+        </ol>
+        <label class="checkbox-label" style="font-size:12px;padding-top:0">
+          <input type="checkbox" checked /> Preserve local baseline snapshot
+        </label>
+      </div>
+      <div class="modal-footer">
+        <span class="hint">Last synced 2 hours ago</span>
+        <span class="spacer"></span>
+        <button class="btn-ghost" type="button" data-close-modal>Cancel</button>
+        <button class="btn-primary" type="button" data-close-modal>Run sync</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard shortcuts help -->
+  <div id="modal-kbd" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-kbd-title">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 id="modal-kbd-title">Keyboard shortcuts</h2>
+        <button class="modal-close" type="button" data-close-modal aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px 28px;font-size:12px">
+          <div><kbd>?</kbd> &nbsp;Show this help</div>
+          <div><kbd>⌘</kbd> + <kbd>F</kbd> &nbsp;Filter tasks</div>
+          <div><kbd>⌘</kbd> + <kbd>N</kbd> &nbsp;Add task</div>
+          <div><kbd>⌘</kbd> + <kbd>S</kbd> &nbsp;Save changes</div>
+          <div><kbd>G</kbd> &nbsp;Toggle Gantt</div>
+          <div><kbd>F</kbd> &nbsp;Zoom to fit</div>
+          <div><kbd>+</kbd> / <kbd>−</kbd> &nbsp;Zoom in/out</div>
+          <div><kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> &nbsp;Switch views</div>
+          <div><kbd>Esc</kbd> &nbsp;Close popovers</div>
+          <div><kbd>Enter</kbd> &nbsp;Edit cell</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span class="spacer"></span>
+        <button class="btn-primary" type="button" data-close-modal>Got it</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+  <script src="phases.js"></script>
+  <script src="release-notes.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

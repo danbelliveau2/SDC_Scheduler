@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login | SDC Scheduler</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="login-page">
+  <div class="login-shell">
+
+    <!-- LEFT — brand panel. SDC Navy background with subtle radial accents and
+         a Gantt-evocative diagonal grid pattern (drawn via CSS in the brand
+         panel's ::before so no asset is required). -->
+    <aside class="login-brand">
+      <div class="login-brand-mark">
+        <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="0" y="0" width="48" height="48" rx="10" fill="#1574c4"/>
+          <path d="M33 17c-2-2.4-5-3.6-8.4-3.6-4 0-7.2 1.9-7.2 5 0 2.9 2.2 4.3 6.7 5.3l2.4.5c2.4.5 3.4 1.2 3.4 2.4 0 1.7-1.7 2.6-4.3 2.6-2.9 0-4.8-1-6.5-2.9L16 28.9c2.2 2.6 5.3 4.1 9.1 4.1 5 0 8.2-2.2 8.2-5.8 0-2.9-1.9-4.6-6.5-5.5l-2.4-.5c-2.4-.5-3.6-1-3.6-2.2 0-1.4 1.4-2.4 3.6-2.4 2.2 0 4.1.7 5.5 2.2z" fill="#ffde51"/>
+          <circle cx="38" cy="38" r="3.5" fill="#74c415"/>
+        </svg>
+        <span class="login-brand-mark-text">
+          <span class="login-brand-mark-name">SDC</span>
+          <span class="login-brand-mark-tag">Automation</span>
+        </span>
+      </div>
+
+      <div class="login-brand-hero">
+        <h1>Plan every machine<br/>from PO to <span class="accent">ship.</span></h1>
+        <p>One view across engineering, procurement, shop and install — wired to the same Smartsheet workbook your floor already uses.</p>
+        <ul class="login-brand-bullets">
+          <li>Combined grid + Gantt with phase-tinted bars</li>
+          <li>Resource allocation and over-load warnings</li>
+          <li>Financial milestones overlaid on the timeline</li>
+          <li>Critical-path highlighting and baseline ghosting</li>
+        </ul>
+      </div>
+
+      <footer class="login-brand-footer">
+        © 2026 SDC Automation · Internal use only
+      </footer>
+    </aside>
+
+    <!-- RIGHT — form panel. Clean white surface, single column. -->
+    <main class="login-form-panel">
+      <div class="login-card">
+        <!-- The old broken <img> still ships in the DOM, hidden via CSS. -->
+        <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=" alt="SDC" class="login-logo" />
+        <h2>Welcome back</h2>
+        <p class="login-card-sub">Sign in to view and edit project schedules.</p>
+
+        <div id="error" class="login-error" role="alert"></div>
+
+        <form id="login-form">
+          <div class="login-field">
+            <label for="username">Username</label>
+            <input type="text" id="username" name="username" required autofocus autocomplete="username" placeholder="firstname.lastname" />
+          </div>
+          <div class="login-field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="••••••••" />
+          </div>
+          <button type="submit" class="btn-primary btn-login">Sign in</button>
+        </form>
+
+        <div class="login-meta">
+          <span>v2.4.0 · build 2026.05.12</span>
+          <a href="#" tabindex="0">Forgot password?</a>
+        </div>
+      </div>
+    </main>
+
+  </div>
+
+  <script>
+    // ----------------------------------------------------------------------
+    //  Login form handler. Preserves the original /api/login flow and just
+    //  swaps the .is-visible class instead of inline display so the shake
+    //  animation can run.
+    // ----------------------------------------------------------------------
+    const form = document.getElementById('login-form');
+    const errDiv = document.getElementById('error');
+
+    function showError(msg) {
+      errDiv.textContent = msg;
+      errDiv.classList.remove('is-visible');
+      // force reflow so the shake replays
+      void errDiv.offsetWidth;
+      errDiv.classList.add('is-visible');
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errDiv.classList.remove('is-visible');
+
+      const username = form.username.value;
+      const password = form.password.value;
+
+      // Demo short-circuit: any non-empty credentials "succeed" without a backend.
+      if (!username || !password) {
+        showError('Enter your username and password.');
+        return;
+      }
+      // Real backend path — kept intact from the original.
+      try {
+        const r = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        if (r.ok) {
+          window.location.href = '/';
+        } else {
+          let data = {};
+          try { data = await r.json(); } catch (_) {}
+          showError(data.error || 'Login failed. Try again.');
+        }
+      } catch (err) {
+        // Offline / preview fallback — just navigate to the app demo.
+        window.location.href = 'index.html';
+      }
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SDC Scheduler</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/img/sdc-logo-white.svg" alt="SDC" class="brand-logo" />
+      <h1>Project Scheduler</h1>
+    </div>
+    <div class="view-tabs">
+      <button class="tab active" data-view="schedule">Schedule</button>
+      <button class="tab" data-view="team">Team</button>
+      <button class="tab" data-view="setup">Setup</button>
+    </div>
+    <button id="btn-revision" class="revision-pill" type="button" title="Click to see what changed in each revision">
+      <span class="revision-pill-label">Rev <span id="revision-version">—</span></span>
+      <span class="revision-pill-icon">📋</span>
+    </button>
+    <div id="revision-popover" class="revision-popover hidden"></div>
+  </header>
+
+  <div class="project-tab-bar" id="project-tab-bar">
+    <div class="project-tabs" id="project-tabs"></div>
+    <button id="btn-quick-jump" class="project-quick-jump-btn" type="button" title="Quick-jump to any project by number (Ctrl+K)">⌕ Jump to…</button>
+    <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule">+ Open project</button>
+  </div>
+
+  <main>
+    <section id="view-schedule" class="view active">
+      <!-- Toolbar lives at the top. Project name now sits in a separate banner
+           BELOW the toolbar (see schedule-project-banner) so it works for both
+           Grid-only and Gantt-only pane modes — the name reads as "what
+           project am I looking at?" regardless of which pane is visible. -->
+      <div class="schedule-project-header" id="schedule-project-header">
+        <div class="schedule-toolbar">
+          <!-- LEFT EDGE: Show/hide columns dropdown. Drag-handles inside the menu
+               let the user reorder columns; the grid reorders live to match. -->
+          <div class="dropdown">
+            <button id="btn-columns" class="toolbar-toggle-btn" type="button" title="Show, hide, or reorder grid columns. Drag rows in the menu to reorder them in the grid.">Show/hide columns ▾</button>
+            <div id="columns-menu" class="dropdown-menu hidden"></div>
+          </div>
+          <!-- Large flexible gap separates the Columns control on the far left
+               from the rest of the toolbar that's clustered together. -->
+          <div class="toolbar-flex-gap"></div>
+          <!-- Filters: dropdown of quick-filter chips (Behind / Ahead / Milestones
+               / Assigned / Over-allocated / Critical path). -->
+          <div class="schedule-project-filters">
+            <button id="btn-filters" class="toolbar-toggle-btn" type="button" title="Filter tasks by section, assignee, or save your own filter">⌕ Filters <span class="filter-chip-count" id="filter-chip-count" hidden></span></button>
+            <div id="filters-popover" class="filters-popover hidden"></div>
+          </div>
+          <!-- ⚖ Quote vs Schedule lives in the toolbar (next to Filters) as a
+               project-scoped action. Disabled on the All-projects pseudo-tab
+               since the comparison is per-project. -->
+          <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Compare quoted hours from the estimate sheet to what's actually scheduled. Also exposes the financial milestones editor.">⚖ Quote vs Schedule</button>
+          <div class="seg-control" role="tablist" title="Pane layout">
+            <button id="btn-pane-grid"     class="seg-btn" type="button" data-pane="grid"  title="Show only the grid (hide Gantt)">Grid</button>
+            <button id="btn-pane-both"     class="seg-btn is-active" type="button" data-pane="both"  title="Show both the grid and the Gantt">Both</button>
+            <button id="btn-pane-gantt"    class="seg-btn" type="button" data-pane="gantt" title="Show only the Gantt (hide grid)">Gantt</button>
+          </div>
+          <!-- View pill: "View" label on top, icon-toggles below.
+               Icons (left → right):
+                 ≡  Flatten + sort by start date  (combined; rarely useful apart)
+                 $  Financial milestones overlay
+                 ↔  Arrow lag labels (±N wks pills on Gantt arrows)
+                 %  Bar allocation + duration meta -->
+          <div class="view-pill" id="view-pill" title="View options — toggle Flatten (+ start-date sort), Financial milestones overlay, arrow-lag labels, and per-bar allocation + duration meta.">
+            <div class="view-pill-label">View</div>
+            <div class="view-pill-icons">
+              <button id="btn-view-flatten"    class="view-pill-icon" type="button" title="Flatten + sort by start date — hide sub-section headers, render tasks directly under section 10 / 40 / 50, AND sort within each section by start date. The two flags are toggled together since flatten without start-date sort almost never makes sense.">≡</button>
+              <button id="btn-view-financials" class="view-pill-icon" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$</button>
+              <button id="btn-view-lags"       class="view-pill-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
+              <button id="btn-view-bar-meta"   class="view-pill-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below — so you can see staffing at a glance without scanning the grid.">%</button>
+            </div>
+          </div>
+          <div class="dropdown">
+            <button id="btn-baseline-menu" class="toolbar-toggle-btn" type="button" title="Baseline — set, show, hide, or turn off the project baseline snapshot.">◎ Baseline ▾</button>
+            <div id="baseline-menu" class="dropdown-menu hidden"></div>
+          </div>
+          <!-- Stacked zoom pill: weeks/days/months on top, rows on the bottom.
+               Both rows live in the same pill so they read as paired zoom controls. -->
+          <div class="zoom-stack" title="Top row: zoom the Gantt time scale (Days/Weeks/Months). Bottom row: row height in the grid.">
+            <div class="zoom-stack-row">
+              <button id="btn-zoom-out" class="btn-icon" type="button" title="Zoom out">−</button>
+              <select id="zoom-mode" class="zoom-stack-select" title="Time scale">
+                <option value="Day">Days</option>
+                <option value="Week" selected>Weeks</option>
+                <option value="Month">Months</option>
+              </select>
+              <button id="btn-zoom-in"  class="btn-icon" type="button" title="Zoom in">+</button>
+            </div>
+            <div class="zoom-stack-row">
+              <button id="btn-row-h-down" class="btn-icon" type="button" title="Shorter rows">−</button>
+              <span class="zoom-stack-label">rows</span>
+              <button id="btn-row-h-up"   class="btn-icon" type="button" title="Taller rows">+</button>
+            </div>
+          </div>
+          <button id="btn-undo" class="toolbar-toggle-btn" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↶ Undo</button>
+          <button id="btn-redo" class="toolbar-toggle-btn" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↷ Redo</button>
+          <button id="btn-customer-view" class="toolbar-toggle-btn" type="button" title="Switch to a clean customer view: hide the toolbar / tabs / extra columns, show just Task / Start / Finish + a zoomed-to-fit Gantt. Click again (or the floating Exit button) to return to the normal editing view.">👤 For Customer</button>
+          <button id="btn-zoom-fit" class="btn-primary btn-fit" type="button" title="Zoom the Gantt to fit the project span in the viewport">⛶ Zoom to fit</button>
+        </div>
+      </div>
+      <!-- Project name banner — short pill with SDC-lime outline, centered.
+           Sits between the toolbar and the schedule split so you can see the
+           project name in any pane mode (Grid-only / Both / Gantt-only). -->
+      <div class="schedule-project-banner" id="schedule-project-banner">
+        <span class="schedule-project-name-pill schedule-project-label">All projects</span>
+      </div>
+      <div class="schedule-split" id="schedule-split">
+        <div id="schedule-grid" class="schedule-grid">
+          <table id="tasks-table">
+            <colgroup id="tasks-colgroup"></colgroup>
+            <thead><tr id="tasks-thead-row"></tr></thead>
+            <tbody id="tasks-tbody"></tbody>
+          </table>
+          <button id="btn-add" class="grid-add-task-btn" type="button" title="Add a new task to the active schedule">+ Add task</button>
+          <p id="empty-state" class="empty-state hidden">No tasks yet. Click <strong>+ Add task</strong> to add one.</p>
+        </div>
+        <div class="schedule-divider" id="schedule-divider" title="Drag to resize"></div>
+        <div id="schedule-gantt" class="schedule-gantt">
+          <div id="gantt-container"></div>
+          <p id="gantt-empty" class="empty-state hidden">Add tasks with start/end dates to see them here.</p>
+          <div class="legend" id="gantt-legend"></div>
+        </div>
+      </div>
+      <div class="row-height-bar" id="row-height-bar" title="Drag up/down to resize rows">
+        <span class="row-height-bar-grip"></span>
+        <span class="row-height-bar-hint">⇕ Drag to resize rows</span>
+      </div>
+    </section>
+
+    <section id="view-team" class="view">
+      <div class="setup-pane">
+        <section class="setup-card team-card-head">
+          <header class="setup-card-head">
+            <h2>SDC Team</h2>
+            <p>Add anyone who gets assigned to project work. Names listed here populate the <strong>Assigned To</strong> dropdown on the Schedule grid — anything not on this list won't save.</p>
+          </header>
+        </section>
+        <div class="team-grid" id="team-grid"></div>
+      </div>
+
+      <section class="resources-section">
+        <div class="resources-toolbar">
+          <div class="resources-disciplines" id="resources-disciplines"></div>
+          <div class="resources-controls">
+            <label class="toolbar-toggle inverted">
+              <select id="resources-project"><option value="">All projects</option></select>
+              <span>Project</span>
+            </label>
+            <div class="zoom-controls" title="Zoom timeline">
+              <button id="resources-zoom-out" class="btn-icon" type="button" title="Zoom out">−</button>
+              <span class="zoom-display"><span id="resources-zoom-percent">100%</span><span id="resources-mode-label" class="zoom-mode">weeks</span></span>
+              <button id="resources-zoom-in" class="btn-icon" type="button" title="Zoom in">+</button>
+            </div>
+            <button id="resources-zoom-fit" class="btn-ghost btn-tight" type="button">Fit</button>
+          </div>
+        </div>
+        <div class="resources-body" id="resources-body">
+          <p class="empty-state hidden" id="resources-empty">No team members in this discipline yet. Add them above.</p>
+        </div>
+        <div class="legend" id="resources-legend"></div>
+      </section>
+
+      <!-- Discipline dashboard — three cards below the resources timeline.
+           Cards are populated by renderTeamDashboard() based on the currently
+           selected discipline tab. -->
+      <section class="team-dashboard" id="team-dashboard">
+        <div class="team-dashboard-cards">
+          <article class="dashboard-card" id="dashboard-card-behind">
+            <header class="dashboard-card-head">
+              <h3>Behind schedule</h3>
+              <span class="dashboard-card-sub">Tasks past their expected progress</span>
+            </header>
+            <div class="dashboard-card-body" id="dashboard-behind-body"></div>
+          </article>
+          <article class="dashboard-card" id="dashboard-card-coming">
+            <header class="dashboard-card-head">
+              <h3>Coming due</h3>
+              <span class="dashboard-card-sub">Starting or finishing in the next 2 weeks</span>
+            </header>
+            <div class="dashboard-card-body" id="dashboard-coming-body"></div>
+          </article>
+          <article class="dashboard-card" id="dashboard-card-keydates">
+            <header class="dashboard-card-head">
+              <h3 id="dashboard-keydates-title">Key dates</h3>
+              <span class="dashboard-card-sub" id="dashboard-keydates-sub">Discipline-specific anchors across every project</span>
+            </header>
+            <div class="dashboard-card-body" id="dashboard-keydates-body"></div>
+          </article>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-setup" class="view">
+      <div class="setup-pane">
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Brand Palette</h2>
+            <p>Standard SDC colors. These appear as suggestions when picking phase colors.</p>
+          </header>
+          <div id="palette-list" class="palette-grid"></div>
+          <button id="btn-add-color" type="button" class="btn-ghost btn-tight">+ Add color</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Theme</h2>
+            <p>Top-bar, primary buttons, and accents. Pick from the palette or any color.</p>
+          </header>
+          <div class="theme-grid">
+            <label>Primary
+              <span class="color-pair">
+                <input type="color" id="theme-primary" />
+                <input type="text" id="theme-primary-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Dark (top bar)
+              <span class="color-pair">
+                <input type="color" id="theme-dark" />
+                <input type="text" id="theme-dark-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Accent
+              <span class="color-pair">
+                <input type="color" id="theme-accent" />
+                <input type="text" id="theme-accent-hex" maxlength="7" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Section Colors</h2>
+            <p>Section label colors on the Schedule grid (10 / 40 / 50). All three default to gray so they read as dividers between the colored department pills, but you can give each section its own accent here.</p>
+          </header>
+          <div class="theme-grid">
+            <label>10 Design &amp; Build
+              <span class="color-pair">
+                <input type="color" id="section-design-build" />
+                <input type="text" id="section-design-build-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>40 Machine Testing
+              <span class="color-pair">
+                <input type="color" id="section-machine-testing" />
+                <input type="text" id="section-machine-testing-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>50 Teardown &amp; Install
+              <span class="color-pair">
+                <input type="color" id="section-teardown-install" />
+                <input type="text" id="section-teardown-install-hex" maxlength="7" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Anchor Color</h2>
+            <p>Color used for the three project-spine milestones (Receipt of PO, FAT, Ship Machine). Drives the diamond fill on the Gantt and the row tint / glyph in the grid.</p>
+          </header>
+          <div class="theme-grid">
+            <label>Fill
+              <span class="color-pair">
+                <input type="color" id="anchor-fill" />
+                <input type="text" id="anchor-fill-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Text / Stroke
+              <span class="color-pair">
+                <input type="color" id="anchor-text" />
+                <input type="text" id="anchor-text-hex" maxlength="7" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Estimate → Schedule Rules</h2>
+            <p>Logic the auto-generator uses when you click <strong>+ Open project → Analyze</strong> on an SDC estimate xlsx. These are read-only for now; tell me which ones need to become editable.</p>
+          </header>
+          <ol class="estimate-rules">
+            <li><strong>Default headcount = 1</strong> per discipline (Mech Eng / Controls Eng / General Eng / Build / Wire). Auto-bumps only when the minimum critical path overruns delivery.</li>
+            <li><strong>Backlog = 2 weeks</strong> (editable) — kickoff / paperwork / ramp-up time between Receipt of PO and the actual start of engineering. Rendered as a 0% allocation task above Mechanical Design.</li>
+            <li><strong>Allocation tiers: 25%, 50%, or 90%</strong> — never anything else. Tasks snap to the nearest tier, erring toward more time when between tiers.</li>
+            <li><strong>Mech 1 Release = end of mechanical engineering</strong> (FF the latest mech-eng task with no lag).</li>
+            <li><strong>Build start = Mech 1 Release + 6 weeks</strong> (procurement lag for mechanical parts).</li>
+            <li><strong>Wire ends ~1 week after Build</strong> (FF + 1 week for small jobs, more for larger).</li>
+            <li><strong>Wire bucket split 1:3</strong> — Build and Wire Panel gets 25% of total wire hours, Wire Machine gets 75%.</li>
+            <li><strong>Section 40 testing = 2 controls fixed</strong> (lead debugger + secondary, both CE Placeholder tasks).</li>
+            <li><strong>Configure Machine = 5% of section-40 engineering hours</strong> (half a week small / 1 week large).</li>
+            <li><strong>Test/Debug 1 + 2 share remaining 95%</strong> running in parallel.</li>
+            <li><strong>Shop Debug duration = engineering debug duration</strong> (parallel; headcount auto-scales with hours).</li>
+            <li><strong>FAT = Test/Debug Engineer 1 FF − 1 week</strong> (FAT happens 1 week before main test/debug ends — that final week is finishing-up work).</li>
+            <li><strong>Section 50 Teardown + Install: 1 week each (fixed)</strong>. More hours = more people, not more days.</li>
+            <li><strong>Mech Eng STRETCHES to absorb schedule slack</strong> — allocation drops from 90 → 50 → 25 as the delivery window grows past the minimum critical path, pushing Mech 1 Release as late as possible.</li>
+            <li><strong>Duplicate template tasks collapse when headcount = 1</strong>: ME 2 disappears when 1 mech engineer; Builder 2 disappears when 1 builder. One person, full time.</li>
+            <li><strong>Hours per task come from the SUMMARY FOR RELEASE tab</strong>, broken out by column: Mech Eng → Mechanical Design, ce_design → Controls Design + Drawings, ce_software → Controls Software, gen_hmi → HMI Programming, gen_robot → Robot Programming, gen_vision → Vision Programming, etc. Each template task gets the estimate hours for its specific column.</li>
+          </ol>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>% Complete Pill Colors</h2>
+            <p>Background color of the small % complete pill on the right edge of every task row. Text stays black — pick a fill for each of the four states. Live preview updates the grid as you change them.</p>
+          </header>
+          <div class="theme-grid pct-color-grid">
+            <label>Not Started (0%)
+              <span class="color-pair">
+                <input type="color" id="pct-zero-fill" />
+                <input type="text" id="pct-zero-fill-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Behind Schedule
+              <span class="color-pair">
+                <input type="color" id="pct-behind-fill" />
+                <input type="text" id="pct-behind-fill-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>On Track / Ahead
+              <span class="color-pair">
+                <input type="color" id="pct-ontrack-fill" />
+                <input type="text" id="pct-ontrack-fill-hex" maxlength="7" />
+              </span>
+            </label>
+            <label>Done (100%)
+              <span class="color-pair">
+                <input type="color" id="pct-done-fill" />
+                <input type="text" id="pct-done-fill-hex" maxlength="7" />
+              </span>
+            </label>
+          </div>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Hierarchy Colors</h2>
+            <p>Drives both the Gantt bar colors and the pill backgrounds on department / sub-department header rows in the grid. Each color has a fill (background) and a text/stroke shade that pairs with it.</p>
+          </header>
+          <table class="setup-table" id="hierarchy-colors-table">
+            <thead>
+              <tr><th>Group</th><th>Fill</th><th>Text / Stroke</th><th>Preview</th></tr>
+            </thead>
+            <tbody id="hierarchy-colors-list"></tbody>
+          </table>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Phases</h2>
+            <p>Edit names, colors, or order. Tasks already assigned to a phase keep their assignment as long as the key doesn't change.</p>
+          </header>
+          <table class="setup-table">
+            <thead>
+              <tr>
+                <th class="col-drag"></th>
+                <th>Label</th>
+                <th>Key</th>
+                <th>Background</th>
+                <th>Text</th>
+                <th>Preview</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="phases-list"></tbody>
+          </table>
+          <button id="btn-add-phase" type="button" class="btn-ghost btn-tight">+ Add phase</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Standard Financial Milestones</h2>
+            <p>Default list applied to every new project. Each project gets its own copy on first use — editing these here only affects future projects (or existing projects that don't have any financials yet). Per-project edits live on the project's Financials view (right-click project tab → Financial milestones…).</p>
+          </header>
+          <table class="setup-table" id="default-financials-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th class="num">%</th>
+                <th>Sync date to anchor</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="default-financials-list"></tbody>
+          </table>
+          <button id="btn-add-default-financial" type="button" class="btn-ghost btn-tight">+ Add default milestone</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Standard Project Milestones</h2>
+            <p>Common in-flow milestones (Mech Release, Design Review, Order Long Lead, etc.) used as quick-pick suggestions when adding a new task. Anchors (Receipt of PO / Machine Power-Up / FAT / Ship Machine) are auto-managed and aren't listed here.</p>
+          </header>
+          <table class="setup-table" id="milestone-library-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Suggested section</th>
+                <th>Suggested department</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="milestone-library-list"></tbody>
+          </table>
+          <button id="btn-add-milestone-template" type="button" class="btn-ghost btn-tight">+ Add milestone template</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Predecessor &amp; Milestone Reference</h2>
+            <p>Every dependency type rendered with the same routing the live Gantt uses. Pick the milestone label style you want — the live Gantt will follow.</p>
+          </header>
+
+          <div class="arrow-style-controls">
+            <label>Milestone label position
+              <select id="ms-label-style">
+                <option value="right-pill" selected>Right (pill background)</option>
+                <option value="right">Right of diamond</option>
+                <option value="below">Below diamond</option>
+                <option value="above">Above diamond</option>
+              </select>
+            </label>
+            <label>Arrow color
+              <input type="color" id="arrow-color-pick" value="#334155" />
+            </label>
+            <label>Arrow stroke
+              <select id="arrow-stroke-pick">
+                <option value="1.2">Thin (1.2px)</option>
+                <option value="1.4" selected>Default (1.4px)</option>
+                <option value="1.8">Bold (1.8px)</option>
+              </select>
+            </label>
+          </div>
+
+          <h3 class="arrow-section-title">Bar → Bar</h3>
+          <div id="arrow-demo-bar-grid" class="arrow-demo-grid"></div>
+
+          <h3 class="arrow-section-title">Milestone connections</h3>
+          <div id="arrow-demo-ms-grid" class="arrow-demo-grid"></div>
+        </section>
+
+        <div class="setup-actions">
+          <button id="btn-save-setup" type="button" class="btn-primary">Save changes</button>
+          <button id="btn-reset-setup" type="button" class="btn-ghost">Discard</button>
+          <span id="setup-status" class="hint"></span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Hidden datalists used by inline cell editors for autocomplete -->
+  <datalist id="dl-projects"></datalist>
+  <datalist id="dl-assignees"></datalist>
+
+  <!-- Floating exit button for customer view. Hidden by default; CSS makes
+       it visible only when body.customer-view is set. Sits top-right with
+       an SDC-lime outline so it stands out against the cleaned view. -->
+  <button id="btn-customer-view-exit" class="customer-view-exit" type="button" title="Exit customer view and return to the full editing layout.">✕ Exit customer view</button>
+
+  <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+  <script src="phases.js"></script>
+  <script src="release-notes.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
