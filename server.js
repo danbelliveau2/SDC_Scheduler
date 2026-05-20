@@ -15,7 +15,7 @@ app.use((req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false }));
 
-const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id'];
+const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action'];
 
 // ---------- Schedule auto-computation (FS/SS/FF/SF + lag) ----------
 // All scheduling is done in BUSINESS DAYS (Mon–Fri). Weekends are skipped: a task
@@ -216,7 +216,10 @@ app.post('/api/tasks', (req, res) => {
     const peek = db.prepare('SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ?').get(req.body.assignee);
     nextPriority = (peek?.m || 0) + 1;
   }
-  const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key'];
+  // v4.46: include is_action in the INSERT columns so + Add action can
+  // flag a row as an action item at creation time. Defaults to 0 (regular
+  // scheduled task) for everything else.
+  const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action'];
   const values = [
     name,
     req.body.project || null,
@@ -236,6 +239,7 @@ app.post('/api/tasks', (req, res) => {
     req.body.notes || null,
     insertSortOrder,
     req.body.anchor_key || null,
+    req.body.is_action ? 1 : 0,
   ];
   const placeholders = cols.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders})`);
@@ -1135,6 +1139,16 @@ app.post('/api/estimate/create', (req, res) => {
     //   8. Section 50 teardown + install fixed at 1 week each.
     const SECTION_50_DAYS = 5;
     const fullAllocPct = Math.round(efficiency * 100); // = 90 by default
+    // v4.55: discipline-aware allocation. Engineering tasks at 85%, shop
+    // tasks at 90% — matches the SDC standard baked into the template
+    // (v4.20 release notes). Shop = build, wire, shop_debug, teardown,
+    // install (physical labor). Engineering = everything else (mech eng,
+    // controls design/software/drawings, gen hmi/robot/vision/device,
+    // configure machine, test/debug engineer 1+2).
+    const ENG_ALLOC_PCT = 85;
+    const SHOP_ALLOC_PCT = 90;
+    const allocForBucket = (bucketKey) =>
+      /\.(build|wire|shop_debug|teardown|install)$/.test(bucketKey) ? SHOP_ALLOC_PCT : ENG_ALLOC_PCT;
 
     // Allocation snap — used for ancillary tasks. Tasks should never run at
     // anything other than 25/50/90 per user direction.
@@ -1208,11 +1222,12 @@ app.post('/api/estimate/create', (req, res) => {
     const setStandardBucket = (bucketKey, totalHrs) => {
       const tasks = bucketTasks[bucketKey] || [];
       if (tasks.length === 0) return;
+      const alloc = allocForBucket(bucketKey);
       const perTaskHrs = totalHrs / tasks.length;
-      const days = ceilWeekDays(perTaskHrs, fullAllocPct);
+      const days = ceilWeekDays(perTaskHrs, alloc);
       for (const t of tasks) {
         taskDurations[t.id]   = days;
-        taskAllocations[t.id] = fullAllocPct;
+        taskAllocations[t.id] = alloc;
       }
     };
 
@@ -1238,8 +1253,8 @@ app.post('/api/estimate/create', (req, res) => {
         const panelHrs   = hbd?.section_10?.wire_panel   ?? totalHrs * 0.25;
         const machineHrs = hbd?.section_10?.wire_machine ?? totalHrs * 0.75;
         for (const [task, hrs] of [[panel, panelHrs], [machine, machineHrs]]) {
-          taskDurations[task.id]   = ceilWeekDays(hrs, fullAllocPct);
-          taskAllocations[task.id] = fullAllocPct;
+          taskDurations[task.id]   = ceilWeekDays(hrs, SHOP_ALLOC_PCT);
+          taskAllocations[task.id] = SHOP_ALLOC_PCT;
         }
       } else {
         setStandardBucket('section_10.wire', totalHrs);
@@ -1256,8 +1271,8 @@ app.post('/api/estimate/create', (req, res) => {
         const designHrs   = hbd?.section_10?.ce_des ?? totalHrs * 0.5;
         const drawingsHrs = hbd?.section_10?.ce_drw ?? totalHrs * 0.5;
         for (const [task, hrs] of [[designTask, designHrs], [drawingsTask, drawingsHrs]]) {
-          taskDurations[task.id]   = ceilWeekDays(hrs, fullAllocPct);
-          taskAllocations[task.id] = fullAllocPct;
+          taskDurations[task.id]   = ceilWeekDays(hrs, ENG_ALLOC_PCT);
+          taskAllocations[task.id] = ENG_ALLOC_PCT;
         }
       }
     }
@@ -1274,32 +1289,34 @@ app.post('/api/estimate/create', (req, res) => {
     const td1Task = debugTasks.find(t => /test\/?debug.*engineer.*1/i.test(t.name)) || debugTasks[0];
     const td2Tasks = debugTasks.filter(t => t !== td1Task);
     if (configureTask) {
-      taskDurations[configureTask.id]   = ceilWeekDays(configureHrs, fullAllocPct);
-      taskAllocations[configureTask.id] = fullAllocPct;
+      taskDurations[configureTask.id]   = ceilWeekDays(configureHrs, ENG_ALLOC_PCT);
+      taskAllocations[configureTask.id] = ENG_ALLOC_PCT;
     }
     if (td1Task) {
-      // T/D 1 lead — full 90% allocation, hour-based duration.
-      const td1Hrs = debugPerTesterHrs; // initial sizing; testing-extension may stretch
-      taskDurations[td1Task.id]   = ceilWeekDays(td1Hrs, fullAllocPct);
-      taskAllocations[td1Task.id] = fullAllocPct;
+      // T/D 1 lead — engineering at 85%, hour-based duration.
+      const td1Hrs = debugPerTesterHrs;
+      taskDurations[td1Task.id]   = ceilWeekDays(td1Hrs, ENG_ALLOC_PCT);
+      taskAllocations[td1Task.id] = ENG_ALLOC_PCT;
     }
     for (const t of td2Tasks) {
-      // T/D 2 secondary — duration MATCHES T/D 1's. Allocation set after
-      // testing-extension so we know the final stretched duration.
-      taskDurations[t.id]   = td1Task ? taskDurations[td1Task.id] : ceilWeekDays(debugPerTesterHrs, fullAllocPct);
-      taskAllocations[t.id] = fullAllocPct; // placeholder — recomputed below
+      // T/D 2 secondary engineering. Duration MATCHES T/D 1's. Allocation
+      // recomputed below from remaining quoted hours.
+      taskDurations[t.id]   = td1Task ? taskDurations[td1Task.id] : ceilWeekDays(debugPerTesterHrs, ENG_ALLOC_PCT);
+      taskAllocations[t.id] = ENG_ALLOC_PCT; // placeholder — recomputed below
     }
     // Shop Debug — duration matches debug duration; allocation set below.
     const shopDebugTasks = bucketTasks['section_40.shop_debug'] || [];
-    const debugDurationDays = td1Task ? taskDurations[td1Task.id] : ceilWeekDays(debugPerTesterHrs, fullAllocPct);
+    const debugDurationDays = td1Task ? taskDurations[td1Task.id] : ceilWeekDays(debugPerTesterHrs, ENG_ALLOC_PCT);
     for (const t of shopDebugTasks) {
       taskDurations[t.id]   = debugDurationDays;
-      taskAllocations[t.id] = fullAllocPct; // placeholder — recomputed below
+      taskAllocations[t.id] = SHOP_ALLOC_PCT; // placeholder — recomputed below
     }
     // Compute T/D 2 + Shop Debug allocations from QUOTED hours so the schedule
-    // doesn't over-allocate during the stretched testing phase.
+    // doesn't over-allocate during the stretched testing phase. T/D 1 lead
+    // sets the baseline coverage at the engineering allocation (85%); the
+    // remainder is split across T/D 2 and Shop Debug.
     const recomputeSupportAllocs = (durationDays) => {
-      const td1HrsCovered = durationDays * 8 * (fullAllocPct / 100); // T/D 1 at 90%
+      const td1HrsCovered = durationDays * 8 * (ENG_ALLOC_PCT / 100);
       for (const t of td2Tasks) {
         const remainingHrs = Math.max(0, engDebugHrs - configureHrs - td1HrsCovered);
         const rawPct = (remainingHrs / (durationDays * 8)) * 100;
@@ -1312,23 +1329,23 @@ app.post('/api/estimate/create', (req, res) => {
     };
     recomputeSupportAllocs(debugDurationDays);
 
-    // Section 50 — 1 week fixed each. 90% alloc.
+    // Section 50 — shop work (teardown + install), 1 week fixed each, 90%.
     for (const t of bucketTasks['section_50.teardown'] || []) {
       taskDurations[t.id]   = SECTION_50_DAYS;
-      taskAllocations[t.id] = fullAllocPct;
+      taskAllocations[t.id] = SHOP_ALLOC_PCT;
     }
     for (const t of bucketTasks['section_50.install'] || []) {
       taskDurations[t.id]   = SECTION_50_DAYS;
-      taskAllocations[t.id] = fullAllocPct;
+      taskAllocations[t.id] = SHOP_ALLOC_PCT;
     }
 
     // Fallback — anything we didn't classify (procurement milestones, etc.)
-    // keeps template duration and uses 90% allocation.
+    // keeps template duration and uses the engineering default (85%).
     for (const t of tplTasks) {
       if (taskDurations[t.id] != null) continue;
       if (t.is_milestone || t.anchor_key) continue;
       taskDurations[t.id]   = t.duration_days || 1;
-      taskAllocations[t.id] = fullAllocPct;
+      taskAllocations[t.id] = ENG_ALLOC_PCT;
     }
 
     // ---- Insert tasks ----
@@ -1345,7 +1362,7 @@ app.post('/api/estimate/create', (req, res) => {
     let sortOrder = 0;
     for (const t of tplTasks) {
       const newDur = taskDurations[t.id] != null ? taskDurations[t.id] : (t.duration_days || 5);
-      const newAlloc = taskAllocations[t.id] != null ? taskAllocations[t.id] : fullAllocPct;
+      const newAlloc = taskAllocations[t.id] != null ? taskAllocations[t.id] : ENG_ALLOC_PCT;
       const r = insertStmt.run(
         t.name, projectName,
         t.phase_group, t.department, t.sub_department,
@@ -1475,10 +1492,10 @@ app.post('/api/estimate/create', (req, res) => {
             db.prepare('UPDATE tasks SET duration_days = ? WHERE id = ?').run(newDur, id);
           }
           // RECOMPUTE allocations now that we know the final stretched
-          // duration. T/D 1 stays at 90% (lead, full time). T/D 2 drops to
-          // match remaining quoted hours. Shop Debug drops to match its quoted
-          // shop hours. Both snap to {25, 50, 90} — no in-between values.
-          const td1HrsCovered = newDur * 8 * (fullAllocPct / 100);
+          // duration. T/D 1 stays at ENG_ALLOC_PCT (lead, full time). T/D 2
+          // drops to match remaining quoted hours. Shop Debug drops to match
+          // its quoted shop hours. Both snap to {25, 50, 90}.
+          const td1HrsCovered = newDur * 8 * (ENG_ALLOC_PCT / 100);
           for (const t of td2Tasks) {
             const remainingHrs = Math.max(0, engDebugHrs - configureHrs - td1HrsCovered);
             const rawPct = (remainingHrs / (newDur * 8)) * 100;

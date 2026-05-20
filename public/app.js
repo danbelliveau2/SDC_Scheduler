@@ -95,7 +95,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'schedule' },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -151,12 +151,15 @@ const state = {
   redoStack: [],
 };
 
-// v4.30: ROW_H_MIN dropped back to 18 now that the Task column is SINGLE-LINE
-// (alloc + name + duration inline). Single line of 9px-min text + 2px
-// breathing room fits comfortably in 18px. v4.27 bumped this to 22 to fit
-// the stacked layout; the stacked layout is gone again as of v4.30.
-const ROW_H_MIN = 18;
+// v4.54: ROW_H_MIN = 16 (was 12 in v4.52-v4.53; was 18 before that). User
+// feedback: even friendly 10 = 12px was too small to be readable. New
+// friendly scale goes 0–100 (not 10–100), mapping 0=16px → 100=30px in
+// increments of 10 = 1.4px each. The previous "you'd never go smaller
+// than 30 (= 16px in v4.53 friendly)" gets renamed to 0 in the new scale.
+const ROW_H_MIN = 16;
 const ROW_H_MAX = 120;
+const ROW_H_FRIENDLY_MIN_PX = 16;
+const ROW_H_FRIENDLY_MAX_PX = 30;
 const ROW_H_DEFAULT = 26;
 const BAR_H_MIN = 10;
 // Row-height +/- step. Fixed 2px/click is fine-grained enough for the typical 14–60
@@ -881,7 +884,7 @@ function cellHtml(t, key) {
       // schedule risks accidentally communicating who'll own the work
       // before the deal is signed.
       if (isSalesProjectTask(t)) {
-        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry assignees — staff after the project moves to Active."></td>`;
+        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry Assigned To — staff after the project moves to Active."></td>`;
       }
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
       // running daily total over 100% somewhere in its span — flag the cell so the user
@@ -976,7 +979,18 @@ function rowHtml(t, depth = 0) {
   // diagonal hash pattern. The Filters popover's "Show completed" toggle
   // controls whether these rows are filtered out entirely.
   const taskDone = !t.is_milestone && (t.progress || 0) >= 100 ? ' task-done' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  // v4.46: action items get is-action so CSS can italicize the task name
+  // and (in Combined view) tint the row subtly to differentiate from
+  // scheduled work.
+  const actionCls = t.is_action ? ' is-action' : '';
+  // v4.49: actions past their due date but not marked complete paint
+  // RED in both the grid row and (for milestone-style actions) the Gantt
+  // diamond. Limited to actions for now — regular scheduled work has its
+  // own drift chip system. Today is computed once at render time so we
+  // don't re-evaluate per row.
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const overdueCls = (t.is_action && (t.progress || 0) < 100 && t.end_date && t.end_date < todayISO) ? ' is-overdue' : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -1005,6 +1019,16 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
 function renderTable() {
   const tbody = document.getElementById('tasks-tbody');
   let filtered = applyFilters(state.tasks);
+  // v4.46: Actions mode filter. Default 'schedule' hides action items
+  // entirely; 'actions' shows ONLY actions; 'combined' shows both.
+  // Anchor rows (Receipt of PO, FAT, Ship Machine, etc.) are always kept
+  // because they're project-spine markers, not work items.
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  if (am === 'schedule') {
+    filtered = filtered.filter(t => !t.is_action || inferredAnchorKey(t));
+  } else if (am === 'actions') {
+    filtered = filtered.filter(t => t.is_action || inferredAnchorKey(t));
+  }
   // Only-critical mode: restrict the visible set to tasks on the critical-path
   // chain. Anchor milestones are always kept (Receipt of PO / FAT / Ship Machine)
   // since they're the spine markers — Ship Machine sits outside the path but is
@@ -1041,14 +1065,20 @@ function renderTable() {
     (buckets[path] ||= []).push(t);
   }
   // Sort each bucket — by start_date when the user has flipped the "By date" toggle,
-  // otherwise by their manual sort_order so drag-reordering sticks.
+  // otherwise by their manual sort_order so drag-reordering sticks. In BOTH cases,
+  // action items (is_action = 1) sort to the BOTTOM of their bucket so scheduled
+  // work appears first and actions read as "extras tucked under their section."
+  // v4.46 added the is_action secondary sort.
   const sortBucket = (arr) => {
     if (state.scheduleView.sortByStart) {
       arr.sort((a, b) =>
-        (a.start_date || '￿').localeCompare(b.start_date || '￿')
+        ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0))
+        || (a.start_date || '￿').localeCompare(b.start_date || '￿')
         || (a.sort_order || 0) - (b.sort_order || 0));
     } else {
-      arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      arr.sort((a, b) =>
+        ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0))
+        || (a.sort_order || 0) - (b.sort_order || 0));
     }
   };
   for (const k in buckets) sortBucket(buckets[k]);
@@ -2069,20 +2099,50 @@ function renderGantt() {
   // dropped — those are leftovers from old data structures that the grid hides;
   // the Gantt should hide them too so no ghost bars appear.
   const validSectionKeys = new Set(HIERARCHY.map(g => g.key));
-  const ordered = state.scheduleView?.sortByStart
-    ? [...applyFilters(state.tasks)].sort((a, b) =>
-        (a.start_date || '￿').localeCompare(b.start_date || '￿')
-        || (a.sort_order || 0) - (b.sort_order || 0))
-    : sortByPhaseThenOrder(applyFilters(state.tasks));
+  // v4.50: when NOT in sortByStart mode, use the GRID's canonical order
+  // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
+  // grid rows do — Receipt of PO at top, Backlog under it, section 10
+  // bucket walk, FAT closing section 40, Ship Machine inside section 50.
+  // The previous sortByPhaseThenOrder ranked anchors / orphans by their
+  // `phase` field, which has anchors phase=null → rank 99 → bottom of
+  // chart. That's why FAT appeared above PO and Ship above Power-Up in
+  // Gantt-only view.
+  // buildCanonicalTaskOrder() ALREADY applies filters internally, so we
+  // don't call applyFilters again.
+  let ordered;
+  if (state.scheduleView?.sortByStart) {
+    ordered = [...applyFilters(state.tasks)].sort((a, b) =>
+      (a.start_date || '￿').localeCompare(b.start_date || '￿')
+      || (a.sort_order || 0) - (b.sort_order || 0));
+  } else {
+    const canonicalIds = buildCanonicalTaskOrder();
+    const byId = Object.fromEntries(state.tasks.map(t => [t.id, t]));
+    ordered = canonicalIds.map(id => byId[id]).filter(Boolean);
+  }
   // Same Only-critical filter renderTable applies, mirrored here so the Gantt only
   // shows the critical bars + anchor markers when the toggle is on.
   const onlyCrit = state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath;
   const critForFilter = onlyCrit ? computeCriticalPath() : null;
+  // v4.47: mirror the Schedule/Combined/Actions filter from renderTable —
+  // the Gantt must always show the SAME row set as the grid. Without this
+  // filter, the Gantt drew every task regardless of actionsMode, so "Actions
+  // only" in the grid still showed scheduled bars on the chart.
+  const am = state.scheduleView?.actionsMode || 'schedule';
   const filtered = ordered
     .filter(t => t.start_date && t.end_date)
     .filter(t => !isTaskInCollapsedGroup(t))
     .filter(t => inferredAnchorKey(t) || isBacklogTask(t) || (t.phase_group && validSectionKeys.has(t.phase_group)))
-    .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t));
+    .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t))
+    .filter(t => {
+      // Anchors always render. Otherwise honor the actionsMode toggle:
+      //   schedule → drop is_action tasks
+      //   actions  → drop non-action tasks
+      //   combined → keep both
+      if (inferredAnchorKey(t)) return true;
+      if (am === 'schedule') return !t.is_action;
+      if (am === 'actions')  return !!t.is_action;
+      return true; // combined
+    });
 
   renderGanttLegend();
 
@@ -2312,54 +2372,97 @@ function drawBarMeta() {
     const barH = +bar.getAttribute('height');
     const cx = barX + barW / 2;
 
-    const alloc = Math.max(0, Math.min(100, Number(task.allocation) || 0));
+    const alloc = Math.max(0, Math.min(100, Number(task.allocation == null ? 90 : task.allocation)));
     const durDays = Number(task.duration_days) || 0;
-    const wks = Math.round(durDays / 5);  // 5 business days = 1 week (matches FAT variance rounding)
-    // Sales-workspace tasks hide allocation everywhere — same reasoning as
-    // the grid meta row / Assignee + Allocation columns (v4.22): pre-quote
-    // work shouldn't surface staffing commitments. Bar meta still shows the
-    // duration label so the bar's length is annotated.
-    const salesTask = isSalesProjectTask(task);
+    const wks = Math.round(durDays / 5);
 
-    // Build the combined label. Skip the whole row if both values are zero.
-    const parts = [];
-    if (!salesTask && alloc > 0) parts.push(`${alloc}%`);
-    if (wks > 0)   parts.push(`${wks}w`);
-    if (parts.length === 0) continue;
-    const labelText = parts.join(' · ');
-    // Estimate label width — 6.5px per char at 9px / 700 weight is close enough
-    // for collision detection. The text element is centered on cx anyway, so
-    // ± a couple pixels of error doesn't change which side we pick.
+    // v4.58: SINGLE COMBINED LABEL — "85% · 8w" — feels like one pill.
+    // Placement priority changed to match user feedback:
+    //   1. INSIDE the bar at the right end (halo so it reads on any color).
+    //   2. JUST OUTSIDE on the LEFT of the bar — preferred outside slot
+    //      because frappe-gantt drops the bar's NAME outside-right when
+    //      the bar is too narrow. Putting our label to the right would
+    //      collide with the name; putting it to the left is clear.
+    //   3. BELOW the bar at the right end (right-aligned).
+    //   4. ABOVE the bar at the right end (right-aligned).
+    // For OUTSIDE placements we draw a white "occluder" rect behind the
+    // text so any arrow segment passing through the label visually
+    // disappears under it. Reads cleanly even when an arrow enters the
+    // bar from the left right where our left-label sits.
+    const allocText = (alloc > 0) ? `${alloc}%` : '';
+    const durText   = (wks > 0)   ? `${wks}w`   : '';
+    if (!allocText && !durText) continue;
+    const labelText = [allocText, durText].filter(Boolean).join(' · ');
     const labelW = labelText.length * 6.5 + 4;
 
-    // Build candidate rectangles for BELOW and ABOVE placements. y is the
-    // TOP of the candidate rect (matches our dominant-baseline:hanging text
-    // anchor for below, and we offset accordingly for above).
-    const belowRect = { x: cx - labelW / 2, y: barY + barH + GAP, w: labelW, h: LABEL_H };
-    const aboveRect = { x: cx - labelW / 2, y: barY - GAP - LABEL_H,         w: labelW, h: LABEL_H };
+    const INSIDE_PADDING = 4;
+    const SAME_ROW_GAP   = 4;
 
-    let placement; // 'below' | 'above' | null
-    if (!overlapsArrow(belowRect))      placement = 'below';
-    else if (!overlapsArrow(aboveRect)) placement = 'above';
-    // else: both sides occupied — skip the label rather than draw it where
-    // it can't be read. Rare; user can disable the toggle if it bites.
+    // Inside fits when the bar is comfortably wider than the label plus
+    // padding on both sides. 2× ensures the centered task name still gets
+    // room in the middle without the label butting against it.
+    const fitsInside = barW >= (labelW + INSIDE_PADDING * 2) * 2;
+    // Left fits when there's enough room to the left of the bar inside
+    // the chart's drawable area. We approximate "drawable area" as x >= 0.
+    const fitsLeft = (barX - SAME_ROW_GAP - labelW) >= 0;
+
+    // Candidate rectangles for arrow-collision checks on the top/bottom
+    // fallbacks. Inside + left don't need a collision check (inside is
+    // bar-own territory; left uses the pill occluder for arrows).
+    const belowRect = { x: barX + barW - labelW, y: barY + barH + GAP,    w: labelW, h: LABEL_H };
+    const aboveRect = { x: barX + barW - labelW, y: barY - GAP - LABEL_H, w: labelW, h: LABEL_H };
+
+    let placement = null;
+    if (fitsInside)                      placement = 'inside';
+    else if (fitsLeft)                   placement = 'left';
+    else if (!overlapsArrow(belowRect))  placement = 'below';
+    else if (!overlapsArrow(aboveRect))  placement = 'above';
     if (!placement) continue;
 
-    const text = document.createElementNS(SVG_NS, 'text');
-    text.setAttribute('x', cx);
-    if (placement === 'below') {
-      text.setAttribute('y', barY + barH + GAP);
-      text.setAttribute('dominant-baseline', 'hanging');  // top of text sits at y
-    } else {
-      text.setAttribute('y', barY - GAP);
-      text.setAttribute('dominant-baseline', 'alphabetic');  // baseline of text sits at y → text rises above
+    // v4.59: label is ALWAYS LEFT-ALIGNED regardless of placement.
+    // Inside  → left end inside the bar (halo, no rect).
+    // Left    → just outside the bar's left edge (right-edge of text touches
+    //           barX − GAP) with the white pill occluder behind it.
+    // Below   → bar's left edge (left-aligned) with pill occluder.
+    // Above   → bar's left edge (left-aligned) with pill occluder.
+    if (placement !== 'inside') {
+      const txtAttrs = {
+        left:  { x: barX - SAME_ROW_GAP, y: barY + barH / 2,   anchor: 'end',   baseline: 'central'    },
+        below: { x: barX,                y: barY + barH + GAP, anchor: 'start', baseline: 'hanging'    },
+        above: { x: barX,                y: barY - GAP,        anchor: 'start', baseline: 'alphabetic' },
+      }[placement];
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('x', txtAttrs.x);
+      text.setAttribute('y', txtAttrs.y);
+      text.setAttribute('text-anchor', txtAttrs.anchor);
+      text.setAttribute('dominant-baseline', txtAttrs.baseline);
+      text.setAttribute('font-size', '9');
+      text.setAttribute('font-weight', '700');
+      text.setAttribute('fill', '#1e293b');
+      text.style.pointerEvents = 'none';
+      text.textContent = labelText;
+      group.appendChild(text);
+      addPillOccluder(group, text);
+      continue;
     }
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('font-size', '9');
-    text.setAttribute('font-weight', '700');
-    text.setAttribute('fill', '#1e293b');
-    text.textContent = labelText;
-    group.appendChild(text);
+
+    // Inside placement — left-aligned at the bar's left edge with a halo
+    // so the text reads on any phase fill color.
+    const el = document.createElementNS(SVG_NS, 'text');
+    el.setAttribute('x', barX + INSIDE_PADDING);
+    el.setAttribute('y', barY + barH / 2);
+    el.setAttribute('text-anchor', 'start');
+    el.setAttribute('dominant-baseline', 'central');
+    el.setAttribute('font-size', '9');
+    el.setAttribute('font-weight', '700');
+    el.setAttribute('paint-order', 'stroke');
+    el.setAttribute('stroke', 'rgba(255,255,255,0.9)');
+    el.setAttribute('stroke-width', '2.5');
+    el.setAttribute('stroke-linejoin', 'round');
+    el.setAttribute('fill', '#0f172a');
+    el.style.pointerEvents = 'none';
+    el.textContent = labelText;
+    group.appendChild(el);
   }
 }
 
@@ -3065,6 +3168,11 @@ function setZoom(percent) {
       newScroller.scrollLeft = Math.max(0, targetPx - viewW / 2);
     }
   }
+  // v4.55: Keep the Zoom dropdown's displayed value in sync with any zoom
+  // change — wheel zoom, Zoom-to-fit, time-scale switch, and the dropdown's
+  // own +/− buttons all flow through here. renderZoomMenu bails if the
+  // menu element isn't in the DOM yet, so this is safe on init.
+  if (typeof renderZoomMenu === 'function') renderZoomMenu();
 }
 
 
@@ -3187,15 +3295,35 @@ function drawMilestoneDiamonds() {
     const points = `${cx},${cy - size/2} ${cx + size/2},${cy} ${cx},${cy + size/2} ${cx - size/2},${cy}`;
     const diamond = document.createElementNS(SVG_NS, 'polygon');
     diamond.setAttribute('points', points);
-    diamond.setAttribute('class', 'milestone-diamond' + (isAnchor ? ' anchor-inner' : '') + (isDone ? ' done' : ''));
-    // Milestones keep their NORMAL color whether done or not:
+    diamond.setAttribute('class', 'milestone-diamond' + (isAnchor ? ' anchor-inner' : '') + (isDone ? ' done' : '') + (task.is_action ? ' action-milestone' : ''));
+    // v4.47/v4.49: action-item milestones get SDC blue (default) or RED
+    // (overdue + not done). Grid + Gantt paint the same red so the user
+    // immediately sees overdue actions without applying a filter.
     //   - Anchors: lime fill + dark green stroke (from anchor_color settings)
-    //   - Non-anchors: slate fill + darker slate stroke
-    // The ✓ overlay (added below) is the only visual difference between done
-    // and undone — consistent color = consistent identity, easy to scan.
-    diamond.setAttribute('fill',   isAnchor ? ac.fill : '#475569');
-    diamond.setAttribute('stroke', isAnchor ? ac.text : '#334155');
-    diamond.setAttribute('stroke-width', isAnchor ? '1.5' : '1');
+    //   - Action milestones overdue: red-300 fill + red-600 stroke
+    //   - Action milestones normal: SDC primary blue
+    //   - Regular non-anchor milestones: slate fill + darker slate stroke
+    let dFill = '#475569';
+    let dStroke = '#334155';
+    let dStrokeW = '1';
+    const todayISOForDiamond = new Date().toISOString().slice(0, 10);
+    const isOverdueAction = task.is_action && !isDone && task.end_date && task.end_date < todayISOForDiamond;
+    if (isAnchor) {
+      dFill = ac.fill;
+      dStroke = ac.text;
+      dStrokeW = '1.5';
+    } else if (isOverdueAction) {
+      dFill = '#fca5a5';  // red-300
+      dStroke = '#dc2626'; // red-600
+      dStrokeW = '1.5';
+    } else if (task.is_action) {
+      dFill = '#3a8edc';  // SDC primary lighter
+      dStroke = '#1574c4'; // SDC primary
+      dStrokeW = '1.5';
+    }
+    diamond.setAttribute('fill',   dFill);
+    diamond.setAttribute('stroke', dStroke);
+    diamond.setAttribute('stroke-width', dStrokeW);
     wrap.appendChild(diamond);
 
     // Checkmark glyph rendered on top of the diamond for done milestones.
@@ -3363,6 +3491,9 @@ function drawMilestoneLabels() {
     lbl.style.pointerEvents = 'none';
     lbl.textContent = task.name || '';
     group.appendChild(lbl);
+    // v4.60: milestone labels NO LONGER get the pill occluder — user
+    // prefers seeing the arrow pass through the text. Bar-meta keeps the
+    // pill (arrows can't otherwise be distinguished from the meta text).
     // Date label on the LEFT side of the diamond for the 5 spine anchors.
     if (inferredAnchorKey(task) && task.start_date) {
       const dateLbl = document.createElementNS(SVG_NS, 'text');
@@ -3378,6 +3509,30 @@ function drawMilestoneLabels() {
       group.appendChild(dateLbl);
     }
   }
+}
+
+// v4.58: insert an invisible white "occluder" rect behind a freshly-appended
+// SVG text element so any arrow line passing through that area visually
+// disappears under it. The rect has no stroke and matches the chart
+// background (white), so it reads as if the arrow naturally stops at the
+// label edge and continues out the other side. Reused by drawBarMeta and
+// drawMilestoneLabels. Caller must have already appended the text element
+// to the group — we use getBBox to measure the actual rendered glyph box.
+function addPillOccluder(parent, textEl, pad = 2) {
+  try {
+    const bbox = textEl.getBBox();
+    if (!bbox || bbox.width <= 0) return;
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', bbox.x - pad);
+    rect.setAttribute('y', bbox.y - pad);
+    rect.setAttribute('width',  bbox.width + pad * 2);
+    rect.setAttribute('height', bbox.height + pad * 2);
+    rect.setAttribute('fill', 'white');
+    rect.setAttribute('stroke', 'none');
+    rect.setAttribute('rx', '2');
+    rect.style.pointerEvents = 'none';
+    parent.insertBefore(rect, textEl);
+  } catch (_) { /* getBBox can throw if not laid out; safe to skip */ }
 }
 
 function parsePredecessor(s) {
@@ -3407,7 +3562,11 @@ function parsePredecessor(s) {
 //         pred's bottom/top edge at the target x.
 //       * Otherwise, exit horizontally from pred's left/right side at center y.
 //   - Final segment direction sets the arrowhead orientation (LEFT, RIGHT, UP, DOWN).
-const ARROW_DEFAULTS = { headSize: 6 };
+// v4.56: arrow head shrunk from 6 → 3 (half size) per user feedback —
+// the previous head filled the whole vertical gap between adjacent rows
+// at default row heights, which looked clunky. Now it's a small marker
+// that points without dominating.
+const ARROW_DEFAULTS = { headSize: 3 };
 function computeArrowPath(pred, succ, type, opts = {}) {
   const headSize = opts.headSize ?? ARROW_DEFAULTS.headSize;
 
@@ -3602,7 +3761,7 @@ function drawCustomArrows() {
   const barById = Object.fromEntries(bars.map(b => [b.id, b]));
 
   const arrowColor = '#334155';
-  const headSize = 6;
+  const headSize = 3; // v4.56: half size (was 6)
 
   // Build the job list, then group by pred + direction so successors leaving the same
   // side of one pred can stagger their exit y values.
@@ -3918,18 +4077,29 @@ function renderFilters() {
     { key: 'criticalPath',  label: 'Critical path',     source: 'view',  active: !!sv.criticalPath },
     { key: 'criticalOnly',  label: 'Critical path only', source: 'view', active: !!sv.criticalOnly },
   ];
+  // v4.54: Filters popover uses CHECKBOXES (not pills). Each filter is a
+  // row with checkbox + label. Easier to scan as a list. For Customer mode
+  // is just another checkbox in the same list under a VIEW section.
+  const inCustomerView = document.body.classList.contains('customer-view');
   pop.innerHTML = `
     <div class="filters-popover-title">Quick filters</div>
-    <div class="filters-quick-chips">
+    <div class="filters-check-list">
       ${chipDefs.map(c => {
         const active = c.source === 'view' ? !!c.active : !!qf[c.key];
         return `
-          <button type="button" class="filter-chip ${active ? 'is-active' : ''}" data-quick="${c.key}" data-source="${c.source}">
-            ${escapeHtml(c.label)}
-          </button>
+          <label class="filters-check-row">
+            <input type="checkbox" data-quick="${c.key}" data-source="${c.source}" ${active ? 'checked' : ''}>
+            <span>${escapeHtml(c.label)}</span>
+          </label>
         `;
       }).join('')}
     </div>
+    <div class="filters-popover-sep"></div>
+    <div class="filters-popover-title">View</div>
+    <label class="filters-check-row">
+      <input type="checkbox" id="filters-customer-view-toggle" ${inCustomerView ? 'checked' : ''}>
+      <span>For Customer mode</span>
+    </label>
     <div class="filters-popover-actions">
       <button type="button" id="btn-clear-filters" class="btn-ghost btn-tight">Clear all</button>
     </div>
@@ -3937,23 +4107,18 @@ function renderFilters() {
   // Stop propagation on every click inside the popover so the document-level
   // close handler doesn't see "click outside" and dismiss the popover. Users
   // want to toggle multiple filters in one session without re-opening.
-  pop.querySelectorAll('.filter-chip').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+  pop.querySelectorAll('input[type="checkbox"][data-quick]').forEach(cb => {
+    cb.addEventListener('change', (e) => {
       e.stopPropagation();
-      const k = btn.dataset.quick;
-      const src = btn.dataset.source;
+      const k = cb.dataset.quick;
+      const src = cb.dataset.source;
       if (src === 'view' && k === 'criticalPath') {
-        // Toggling Critical path: if turning OFF, also drop Critical-only
-        // since "only" without "highlight" doesn't make sense.
         const turningOff = state.scheduleView.criticalPath;
         state.scheduleView.criticalPath = !turningOff;
         if (turningOff) state.scheduleView.criticalOnly = false;
         saveScheduleView();
         applyScheduleView();
       } else if (src === 'view' && k === 'criticalOnly') {
-        // Toggling Critical-only: turning ON auto-enables Critical path too
-        // (the only-filter relies on the highlight chain being computed).
-        // Turning OFF leaves the highlight alone.
         const turningOn = !state.scheduleView.criticalOnly;
         state.scheduleView.criticalOnly = turningOn;
         if (turningOn) state.scheduleView.criticalPath = true;
@@ -3966,6 +4131,10 @@ function renderFilters() {
       render();
     });
   });
+  // Stop propagation on label clicks so the popover doesn't auto-close.
+  pop.querySelectorAll('.filters-check-row').forEach(row => {
+    row.addEventListener('click', (e) => e.stopPropagation());
+  });
   pop.querySelector('#btn-clear-filters').addEventListener('click', (e) => {
     e.stopPropagation();
     state.filters.quick = { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false };
@@ -3976,6 +4145,26 @@ function renderFilters() {
     applyScheduleView();
     render();
   });
+  // v4.51: For Customer mode toggle (moved out of toolbar into Filters).
+  // Drives the existing enterCustomerView / exitCustomerView flow so the
+  // flatten + zoom-to-fit side effects still fire. Falls back to a no-op
+  // alert if no project is selected (the customer view is per-project).
+  const cvToggle = pop.querySelector('#filters-customer-view-toggle');
+  if (cvToggle) {
+    cvToggle.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (cvToggle.checked) {
+        if (!state.filters.project) {
+          cvToggle.checked = false;
+          showAlertDialog('Pick a project tab first — customer view is per-project.');
+          return;
+        }
+        enterCustomerView();
+      } else {
+        exitCustomerView();
+      }
+    });
+  }
 }
 
 // ---------- Project tabs (open schedules) ----------
@@ -6280,6 +6469,50 @@ function newTaskInline() {
   });
 }
 
+// v4.46: + Add action — same flow as newTaskInline but with is_action = 1
+// and milestone defaults (duration 0). If the user is currently in
+// 'schedule' actions-mode, the new action would be filtered out of view
+// after the save, so we auto-switch to 'combined' so they can see it.
+function newActionInline() {
+  if (!state.filters.project) {
+    alert('Pick a specific project tab first — actions attach to the active project. "All projects" is an aggregate view.');
+    return;
+  }
+  const btn = document.getElementById('btn-add-action');
+  const r = btn.getBoundingClientRect();
+  showSectionPicker(r.right - 280, r.bottom + 6, async (g, d, s) => {
+    const project = state.filters.project;
+    const created = await api.create({
+      name: 'New action',
+      phase_group: g,
+      department: d,
+      sub_department: s,
+      project,
+      is_action: 1,
+      duration_days: 0,
+      is_milestone: 1,
+    });
+    // If we're in Schedule mode (actions hidden), bump to Combined so
+    // the user can actually see what they just created. Don't override
+    // an explicit Actions-only choice.
+    if (state.scheduleView.actionsMode === 'schedule') {
+      state.scheduleView.actionsMode = 'combined';
+      saveScheduleView();
+      syncActionsModeButtons();
+    }
+    await loadTasks();
+    const tr = document.querySelector(`tr[data-id="${created.id}"]`);
+    if (!tr) return;
+    tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const nameCell = tr.querySelector('td[data-col="name"]');
+    if (nameCell) {
+      enterCellEdit(nameCell, created.id, 'name');
+      const input = nameCell.querySelector('input');
+      if (input) input.select();
+    }
+  });
+}
+
 async function deleteTaskById(id) {
   // Anchor milestones (Receipt of PO, FAT) are project-spine markers and aren't deletable.
   const t = state.tasks.find(x => x.id === id);
@@ -7477,33 +7710,45 @@ function renderTeam() {
   const renderRow = (m) => {
     const ph = isPlaceholder(m.name);
     const leadStar = m.is_lead ? '<span class="team-member-lead" title="Department lead">★</span>' : '';
+    // v4.56: specialty is now an input + datalist with suggested levels
+    // (Level 1 / 2 / 3). Datalist is type-ahead-only — the user can still
+    // type any custom value (e.g. "Robot", "Vision", "HMI") if a level
+    // doesn't fit. Keeps the data model identical (single string field).
     return `
       <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
         <span class="team-member-grip" title="Drag to reorder">⋮⋮</span>
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
-        <input type="text" class="team-member-specialty" value="${escapeHtml(m.specialty || '')}" placeholder="Specialty" data-id="${m.id}" />
+        <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
       </li>`;
   };
 
   grid.innerHTML = DISCIPLINES.map(disc => {
-    // Hide placeholders from the Departments view — they're template-only
-    // role markers (e.g. "ME Placeholder", "Build Placeholder") that the
-    // user manually fills with real names when staffing a project, and they
-    // shouldn't pollute the live Departments dashboard.
-    const all = state.team.filter(m => m.discipline === disc.key && !isPlaceholder(m.name));
-    const reals = all
+    // v4.56: placeholders are now SHOWN at the bottom of each card (per
+    // user request). Reals on top (sorted lead-first then sort_order),
+    // placeholders below in a separate visual stripe so the user can see
+    // role markers like "ME Placeholder" / "Build Placeholder" are still
+    // around to absorb action-item assignments before staffing locks.
+    const allInDisc = state.team.filter(m => m.discipline === disc.key);
+    const reals = allInDisc
+      .filter(m => !isPlaceholder(m.name))
       .sort((a, b) => {
         const aLead = a.is_lead ? 0 : 1;
         const bLead = b.is_lead ? 0 : 1;
         if (aLead !== bLead) return aLead - bLead;
         return (a.sort_order || 0) - (b.sort_order || 0);
       });
+    const placeholders = allInDisc
+      .filter(m => isPlaceholder(m.name))
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    // Capacity math still only counts reals (the cap helper internally
+    // filters placeholders), so passing allInDisc here is fine.
+    const all = allInDisc.filter(m => !isPlaceholder(m.name));
 
     const realRows = reals.map(renderRow).join('');
-    const phRows   = '';
+    const phRows   = placeholders.map(renderRow).join('');
     const cap = computeDisciplineCapacity(disc.key, all);
     const capStats = `
       <div class="team-card-capacity" title="${escapeHtml(cap.tooltip)}">
@@ -7521,8 +7766,8 @@ function renderTeam() {
           <h3>${escapeHtml(disc.label)}</h3>
         </header>
         ${capStats}
-        <ul class="team-placeholders">${phRows}</ul>
         <ul class="team-list">${realRows}</ul>
+        ${phRows ? `<div class="team-placeholders-label">Placeholders</div><ul class="team-placeholders">${phRows}</ul>` : ''}
         <button type="button" class="team-add-btn" data-action="add-member" data-discipline="${disc.key}">+ Add member</button>
       </section>`;
   }).join('');
@@ -9567,9 +9812,17 @@ function loadScheduleView() {
       // α icon turns it off when presenting to a customer or anyone else
       // who shouldn't see the staffing percentages.
       showInlineAlloc: saved.showInlineAlloc === undefined ? true : !!saved.showInlineAlloc,
+      // v4.46: 3-way toggle for action items rendering:
+      //   'schedule' — only scheduled work (is_action = 0). Default.
+      //   'combined' — schedule rows AND action rows. Actions sort to the
+      //                bottom of their sub-dep bucket.
+      //   'actions'  — only action items (is_action = 1).
+      actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
+        ? saved.actionsMode
+        : 'schedule'),
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'schedule' };
   }
 }
 function saveScheduleView() {
@@ -10019,6 +10272,296 @@ function exitCustomerView() {
 // Set the schedule pane layout. 'grid' = grid only (Gantt hidden). 'both' = split.
 // 'gantt' = Gantt full-width (grid hidden). The two existing flags drive everything;
 // this just keeps them in sync and re-applies styles + re-renders the Gantt.
+// v4.52: the schedule/combined/actions toggle is a visible seg-control
+// again. Keep the original function name (existing callers like + Add
+// action's auto-switch Schedule → Combined still call this) and sync
+// both the seg-control AND the hidden v4.51 dropdown helper.
+function syncActionsModeButtons() {
+  syncModeSegControl();
+  syncViewModeButton();
+  renderViewModeMenu();
+}
+
+// v4.51: View dropdown — Smartsheet-style picker holding both pane mode
+// (Grid / Both / Gantt) and content mode (Schedule / Combined / Actions)
+// in one popover divided by a line. The button label reflects both
+// current values ("Both · Schedule") so the user can see state without
+// opening the menu.
+function getCurrentPaneMode() {
+  if (state.scheduleView?.ganttOnly) return 'gantt';
+  if (state.layout?.showGantt === false) return 'grid';
+  return 'both';
+}
+function paneLabel(mode) {
+  return mode === 'grid' ? 'Grid' : mode === 'gantt' ? 'Gantt' : 'Both';
+}
+function actionsLabel(mode) {
+  return mode === 'combined' ? 'Combined' : mode === 'actions' ? 'Actions' : 'Schedule';
+}
+function syncViewModeButton() {
+  const label = document.getElementById('view-mode-label');
+  if (!label) return;
+  const pane = getCurrentPaneMode();
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  label.textContent = `${paneLabel(pane)} · ${actionsLabel(am)}`;
+}
+function renderViewModeMenu() {
+  const menu = document.getElementById('view-mode-menu');
+  if (!menu) return;
+  const pane = getCurrentPaneMode();
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  const item = (active, value, label, group) =>
+    `<button type="button" class="dropdown-item ${active ? 'is-active' : ''}" data-${group}="${value}">
+       <span class="dropdown-item-check">${active ? '✓' : ''}</span>
+       <span>${label}</span>
+     </button>`;
+  menu.innerHTML = `
+    <div class="view-mode-section">
+      ${item(pane === 'grid',  'grid',  'Grid only',  'pane')}
+      ${item(pane === 'both',  'both',  'Both',       'pane')}
+      ${item(pane === 'gantt', 'gantt', 'Gantt only', 'pane')}
+    </div>
+    <div class="dropdown-sep"></div>
+    <div class="view-mode-section">
+      ${item(am === 'schedule', 'schedule', 'Schedule (duration tasks only)',         'actions')}
+      ${item(am === 'combined', 'combined', 'Combined (scheduled + action items)',    'actions')}
+      ${item(am === 'actions',  'actions',  'Actions (ad-hoc to-do items only)',      'actions')}
+    </div>`;
+  menu.querySelectorAll('[data-pane]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // setPaneMode now calls syncViewModeButton + renderViewModeMenu at
+      // the end on its own — no extra sync needed here.
+      setPaneMode(btn.dataset.pane);
+    });
+  });
+  menu.querySelectorAll('[data-actions]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const m = btn.dataset.actions;
+      if (state.scheduleView.actionsMode !== m) {
+        state.scheduleView.actionsMode = m;
+        saveScheduleView();
+        render();
+        // render() doesn't touch the dropdown — sync the button label and
+        // re-render the menu so the new active row gets its checkmark + tint.
+        syncViewModeButton();
+        renderViewModeMenu();
+      }
+    });
+  });
+}
+function setupViewModeDropdown() {
+  const btn = document.getElementById('btn-view-mode');
+  const menu = document.getElementById('view-mode-menu');
+  if (!btn || !menu) return;
+  syncViewModeButton();
+  renderViewModeMenu();
+  const closeMenu = () => menu.classList.add('hidden');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = menu.classList.contains('hidden');
+    // Close any other dropdown menus that might be open.
+    document.querySelectorAll('.dropdown-menu').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
+    if (opening) {
+      renderViewModeMenu(); // refresh checkmarks against current state
+      menu.classList.remove('hidden');
+    } else {
+      menu.classList.add('hidden');
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.contains(e.target) && e.target !== btn) closeMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeMenu();
+  });
+}
+
+// ----------------------------------------------------------------------------
+// v4.51 — Zoom dropdown. Single toolbar button that opens a popover holding
+// three controls:
+//   • TIME SCALE — radio rows: Days / Weeks / Months. Picks the Gantt's
+//     view_mode (the existing #zoom-mode select is the underlying control).
+//   • ZOOM       — minus / current % / plus. Drives setZoom() at the same
+//     1.25x step the legacy + / − buttons used.
+//   • ROW HEIGHT — minus / friendly value (10-100, increments of 10) / plus.
+//     The internal layout.rowHeight value still tracks pixels (18-120) so
+//     setRowHeight() doesn't need to change; the friendly value is a UI-only
+//     projection mapped via px-to-friendly / friendly-to-px helpers below.
+// The popover uses the standard .dropdown-menu chrome so styling matches
+// the other dropdowns (Columns, View, Baseline).
+// ----------------------------------------------------------------------------
+// v4.55 friendly scales for the Zoom dropdown.
+// ROW HEIGHT: 0 → 16px (smallest), 100 → 30px (largest). Step of 10 friendly
+//   units = 1.4px. Note the friendly minimum is 0 (not 10).
+// ZOOM: 1-10 EXPONENTIAL — each click multiplies zoomPercent by ~1.527 (the
+//   9th root of 50, since friendly 1 = 5% and friendly 10 = 250% covers a
+//   50× range). Levels:
+//     1 → 5%    (Month, very far out)
+//     2 → 7.6%
+//     3 → 11.7%
+//     4 → 17.8%
+//     5 → 27.2%  (Week kicks in around here)
+//     6 → 41.5%
+//     7 → 63.4%
+//     8 → 96.8%
+//     9 → 147.8% (Day kicks in around here)
+//     10 → 225.6%
+//   getZoomConfig auto-switches Month/Week/Day based on pct, so the time
+//   scale follows the zoom level automatically without a separate selector.
+const ZOOM_FRIENDLY_MIN_PCT = 5;
+const ZOOM_FRIENDLY_MAX_PCT = 250;
+const ZOOM_FRIENDLY_MAX_LEVEL = 10;
+const ZOOM_FRIENDLY_MULTIPLIER = Math.pow(
+  ZOOM_FRIENDLY_MAX_PCT / ZOOM_FRIENDLY_MIN_PCT,
+  1 / (ZOOM_FRIENDLY_MAX_LEVEL - 1)
+); // ≈ 1.527
+function pxToFriendlyRowH(px) {
+  const t = (px - ROW_H_FRIENDLY_MIN_PX) / (ROW_H_FRIENDLY_MAX_PX - ROW_H_FRIENDLY_MIN_PX); // 0..1
+  return Math.max(0, Math.min(100, Math.round((t * 100) / 10) * 10));
+}
+function friendlyRowHToPx(friendly) {
+  const t = friendly / 100; // 0..1
+  return Math.round(ROW_H_FRIENDLY_MIN_PX + t * (ROW_H_FRIENDLY_MAX_PX - ROW_H_FRIENDLY_MIN_PX));
+}
+function zoomToFriendly(pct) {
+  // Exponential mapping: friendly = 1 + log(pct / 5) / log(multiplier).
+  // Round to nearest integer + clamp to 1-10.
+  if (pct <= ZOOM_FRIENDLY_MIN_PCT) return 1;
+  const f = 1 + Math.log(pct / ZOOM_FRIENDLY_MIN_PCT) / Math.log(ZOOM_FRIENDLY_MULTIPLIER);
+  return Math.max(1, Math.min(ZOOM_FRIENDLY_MAX_LEVEL, Math.round(f)));
+}
+function friendlyToZoom(friendly) {
+  return ZOOM_FRIENDLY_MIN_PCT * Math.pow(ZOOM_FRIENDLY_MULTIPLIER, friendly - 1);
+}
+function renderZoomMenu() {
+  const menu = document.getElementById('zoom-menu');
+  if (!menu) return;
+  const friendlyZoom = zoomToFriendly(state.zoomPercent);
+  const friendlyRow  = pxToFriendlyRowH(state.layout?.rowHeight || ROW_H_FRIENDLY_MIN_PX);
+  // v4.54: Time scale section dropped from the popover. Each zoom level (1-5)
+  // now carries its own time-scale preset, so getZoomConfig auto-switches
+  // Month → Week → Day as you step +/-. No need for a manual selector.
+  menu.innerHTML = `
+    <div class="zoom-menu-section">
+      <div class="zoom-menu-title">Zoom</div>
+      <div class="zoom-menu-row">
+        <button type="button" class="btn-icon" data-zoom="out" ${friendlyZoom <= 1 ? 'disabled' : ''} title="Zoom out — small step (~1.5× per click). Mouse-wheel inside the Gantt is finer (~1.06× per tick).">−</button>
+        <span class="zoom-menu-value">${friendlyZoom}</span>
+        <button type="button" class="btn-icon" data-zoom="in"  ${friendlyZoom >= ZOOM_FRIENDLY_MAX_LEVEL ? 'disabled' : ''} title="Zoom in — small step (~1.5× per click). Mouse-wheel inside the Gantt is finer (~1.06× per tick).">+</button>
+      </div>
+    </div>
+    <div class="dropdown-sep"></div>
+    <div class="zoom-menu-section">
+      <div class="zoom-menu-title">Row height</div>
+      <div class="zoom-menu-row">
+        <button type="button" class="btn-icon" data-row="down" ${friendlyRow <= 0   ? 'disabled' : ''} title="Shorter rows">−</button>
+        <span class="zoom-menu-value">${friendlyRow}</span>
+        <button type="button" class="btn-icon" data-row="up"   ${friendlyRow >= 100 ? 'disabled' : ''} title="Taller rows">+</button>
+      </div>
+    </div>`;
+  // Zoom +/− — step by exactly 1 friendly unit (1-10). Each level is
+  // ~1.527× the previous, so the displayed value moves reliably one step
+  // per click. Mouse-wheel inside the Gantt stays finer (~1.06× per tick).
+  menu.querySelectorAll('[data-zoom]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dir = btn.dataset.zoom;
+      const shown = zoomToFriendly(state.zoomPercent);
+      const target = dir === 'in'
+        ? Math.min(ZOOM_FRIENDLY_MAX_LEVEL, shown + 1)
+        : Math.max(1, shown - 1);
+      setZoom(friendlyToZoom(target));
+      renderZoomMenu();
+    });
+  });
+  // Row +/− — steps in friendly increments of 10. setRowHeight clamps to the
+  // px range so we never escape ROW_H_MIN/ROW_H_MAX.
+  menu.querySelectorAll('[data-row]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dir = btn.dataset.row;
+      const current = pxToFriendlyRowH(state.layout.rowHeight);
+      const next = dir === 'up' ? Math.min(100, current + 10) : Math.max(10, current - 10);
+      setRowHeight(friendlyRowHToPx(next));
+      renderZoomMenu();
+    });
+  });
+}
+function setupZoomDropdown() {
+  const btn = document.getElementById('btn-zoom-menu');
+  const menu = document.getElementById('zoom-menu');
+  if (!btn || !menu) return;
+  renderZoomMenu();
+  const closeMenu = () => menu.classList.add('hidden');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = menu.classList.contains('hidden');
+    document.querySelectorAll('.dropdown-menu').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
+    if (opening) {
+      renderZoomMenu();
+      menu.classList.remove('hidden');
+    } else {
+      menu.classList.add('hidden');
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.contains(e.target) && e.target !== btn) closeMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeMenu();
+  });
+}
+
+// ----------------------------------------------------------------------------
+// v4.52 — Pane + Mode seg-controls on the toolbar (replaces the v4.51
+// combined View dropdown). Two visible 3-button seg-controls: pane layout
+// (Grid/Both/Gantt) and content mode (Schedule/Combined/Actions). Each
+// button has its own is-active state synced to the underlying state via
+// syncPaneSegControl / syncModeSegControl.
+// ----------------------------------------------------------------------------
+function syncPaneSegControl() {
+  const mode = getCurrentPaneMode(); // 'grid' | 'both' | 'gantt'
+  document.querySelectorAll('#pane-seg .seg-btn').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.pane === mode);
+  });
+}
+function setupPaneSegControl() {
+  const seg = document.getElementById('pane-seg');
+  if (!seg) return;
+  seg.querySelectorAll('.seg-btn[data-pane]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setPaneMode(btn.dataset.pane);
+    });
+  });
+  syncPaneSegControl();
+}
+function syncModeSegControl() {
+  const mode = state.scheduleView?.actionsMode || 'schedule';
+  document.querySelectorAll('#mode-seg .seg-btn').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.actionsMode === mode);
+  });
+}
+function setupModeSegControl() {
+  const seg = document.getElementById('mode-seg');
+  if (!seg) return;
+  seg.querySelectorAll('.seg-btn[data-actions-mode]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const m = btn.dataset.actionsMode;
+      if (!['schedule', 'combined', 'actions'].includes(m)) return;
+      if (state.scheduleView.actionsMode === m) return;
+      state.scheduleView.actionsMode = m;
+      saveScheduleView();
+      syncModeSegControl();
+      render();
+    });
+  });
+  syncModeSegControl();
+}
+
 function setPaneMode(mode) {
   if (!['grid', 'both', 'gantt'].includes(mode)) return;
   const becomingVisible = !state.layout.showGantt && mode !== 'grid';
@@ -10042,6 +10585,13 @@ function setPaneMode(mode) {
   } else if (mode !== 'grid') {
     renderGantt();
   }
+  // v4.52: keep the pane seg-control's is-active states in sync no matter
+  // where setPaneMode was called from (seg-btn click, customer-view exit,
+  // future keyboard shortcuts, etc.). Also pings the hidden v4.51 dropdown
+  // helper so it stays consistent if anything still references it.
+  syncPaneSegControl();
+  syncViewModeButton();
+  renderViewModeMenu();
 }
 
 // ----------------------------------------------------------------------------
@@ -10159,10 +10709,18 @@ async function init() {
   setupSplitDivider();
   setupRowHeightHandle();
   setupGanttPan();
-  // Pane mode segmented control — Grid / Both / Gantt. Mutually exclusive.
-  document.querySelectorAll('.seg-btn[data-pane]').forEach(btn => {
-    btn.addEventListener('click', () => setPaneMode(btn.dataset.pane));
-  });
+  // v4.52: Two visible seg-controls on the toolbar row replace the v4.51
+  // combined dropdown. Pane (Grid/Both/Gantt) + Actions mode (Schedule/
+  // Combined/Actions) are now direct click-to-select buttons. The hidden
+  // legacy #btn-view-mode is still wired by setupViewModeDropdown() but
+  // nobody can open it — its menu element exists just so the helper
+  // functions don't bail. The seg-controls are the visible UI.
+  setupViewModeDropdown();
+  setupPaneSegControl();
+  setupModeSegControl();
+  // v4.51: Zoom dropdown — single toolbar button popover with Time scale /
+  // Zoom (1-10) / Row height (10-100). Drives the legacy zoom/row controls.
+  setupZoomDropdown();
   // View pill — four icon-toggles in the toolbar:
   //   ≡   Flatten sub-sections + sort by start date (linked toggle)
   //   $   Show financial milestones overlay
@@ -10386,6 +10944,8 @@ async function init() {
   // + New Task button creates an empty task in UNASSIGNED and focuses its name cell for
   // inline rename. The user drags it into a section after.
   document.getElementById('btn-add').addEventListener('click', newTaskInline);
+  const addActionBtn = document.getElementById('btn-add-action');
+  if (addActionBtn) addActionBtn.addEventListener('click', newActionInline);
   // Cell-edit handler is attached once here — renderTable rebuilds tbody.innerHTML so the
   // tbody element survives across renders and accumulating listeners is wasteful.
   const tbodyEl = document.getElementById('tasks-tbody');
@@ -10409,6 +10969,11 @@ async function init() {
       const willShow = filtersPop.classList.contains('hidden');
       filtersPop.classList.toggle('hidden', !willShow);
       if (willShow) {
+        // v4.51: re-render the popover content before showing so the For
+        // Customer checkbox (and any other live state) reflects current
+        // values. exitCustomerView etc. don't trigger a full render() so
+        // without this the checkbox could go stale.
+        renderFilters();
         // Anchor the popover to the button's bottom-left so it always opens on screen.
         const r = filtersBtn.getBoundingClientRect();
         filtersPop.style.top  = (r.bottom + 4) + 'px';

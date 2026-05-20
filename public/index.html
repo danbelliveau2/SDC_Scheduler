@@ -108,79 +108,113 @@
            Grid-only and Gantt-only pane modes — the name reads as "what
            project am I looking at?" regardless of which pane is visible. -->
       <div class="schedule-project-header" id="schedule-project-header">
+        <!-- v4.52 toolbar — everything on ONE row.
+             Layout (left → right):
+               [Show/hide cols] | [↺][↻]
+                                | [Grid|Both|Gantt] (visible seg-control, pane layout)
+                                | [Sched|Comb|Acts] (visible seg-control, content mode)
+                                | [view bracket]
+                                | [Filters ▾]
+                                — flex gap —
+               [◎ Baseline ▾] | [🔍 Zoom ▾] | [⛶ Zoom to fit]
+             Vertical dividers between every adjacent group.
+             Quote vs Schedule lives in the bottom footer. -->
         <div class="schedule-toolbar">
-          <!-- LEFT EDGE: Show/hide columns dropdown. Drag-handles inside the menu
-               let the user reorder columns; the grid reorders live to match. -->
           <div class="dropdown">
             <button id="btn-columns" class="toolbar-toggle-btn" type="button" title="Show, hide, or reorder grid columns. Drag rows in the menu to reorder them in the grid.">Show/hide columns ▾</button>
             <div id="columns-menu" class="dropdown-menu hidden"></div>
           </div>
-          <!-- Large flexible gap separates the Columns control on the far left
-               from the rest of the toolbar that's clustered together. -->
-          <div class="toolbar-flex-gap"></div>
-          <!-- Filters: dropdown of quick-filter chips (Behind / Ahead / Milestones
-               / Assigned / Over-allocated / Critical path). -->
+
+          <div class="toolbar-divider"></div>
+
+          <button id="btn-undo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↺</button>
+          <button id="btn-redo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↻</button>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- Pane layout seg-control: Grid / Both / Gantt. Visible buttons,
+               click directly (no dropdown). -->
+          <div class="seg-control" id="pane-seg" title="Pick which panes are visible: Grid only, Both, or Gantt only.">
+            <button class="seg-btn" type="button" data-pane="grid"  title="Grid only — hide the Gantt, show the editable table at full width.">Grid</button>
+            <button class="seg-btn" type="button" data-pane="both"  title="Both panes — grid on the left, Gantt on the right (draggable divider).">Both</button>
+            <button class="seg-btn" type="button" data-pane="gantt" title="Gantt only — hide the grid, show the chart at full width.">Gantt</button>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- Content mode seg-control: Schedule / Combined / Actions. -->
+          <div class="seg-control" id="mode-seg" title="Pick what kind of rows show: Schedule (duration tasks), Combined (both), or Actions (ad-hoc to-dos).">
+            <button class="seg-btn" type="button" data-actions-mode="schedule" title="Schedule — only the duration-based scheduled tasks.">Schedule</button>
+            <button class="seg-btn" type="button" data-actions-mode="combined" title="Combined — scheduled tasks AND action items together.">Combined</button>
+            <button class="seg-btn" type="button" data-actions-mode="actions"  title="Actions — only the ad-hoc to-do action items.">Actions</button>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- View toggle bracket — Smartsheet-style. Thick outer borders frame the
+               group; thin inner dividers separate each toggle. Tooltips on every
+               button explain what each one does. -->
+          <div class="view-bracket" id="view-pill">
+            <button id="btn-view-flatten"    class="view-bracket-icon" type="button" title="Flatten + sort by start date — hide sub-section headers, render tasks directly under section 10 / 40 / 50, AND sort within each section by start date.">≡</button>
+            <button id="btn-view-alloc-pre"  class="view-bracket-icon" type="button" title="Show the allocation % before each task name in the grid (e.g. '85%  Configure Machine - 1w').">α</button>
+            <button id="btn-view-financials" class="view-bracket-icon" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$</button>
+            <button id="btn-view-lags"       class="view-bracket-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
+            <button id="btn-view-bar-meta"   class="view-bracket-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below.">%</button>
+          </div>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- Filters dropdown — restored as a dropdown with text labels.
+               Hover the button to see the active-count chip; click to open the
+               popover with all filters as labelled chips. -->
           <div class="schedule-project-filters">
-            <button id="btn-filters" class="toolbar-toggle-btn" type="button" title="Filter tasks by section, assignee, or save your own filter">⌕ Filters <span class="filter-chip-count" id="filter-chip-count" hidden></span></button>
+            <button id="btn-filters" class="toolbar-toggle-btn" type="button" title="Filter the schedule. For Customer mode also lives here.">⌕ Filters <span class="filter-chip-count" id="filter-chip-count" hidden></span> ▾</button>
             <div id="filters-popover" class="filters-popover hidden"></div>
           </div>
-          <!-- ⚖ Quote vs Schedule lives in the toolbar (next to Filters) as a
-               project-scoped action. Disabled on the All-projects pseudo-tab
-               since the comparison is per-project. -->
-          <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Compare quoted hours from the estimate sheet to what's actually scheduled. Also exposes the financial milestones editor.">⚖ Quote vs Schedule</button>
-          <div class="seg-control" role="tablist" title="Pane layout">
-            <button id="btn-pane-grid"     class="seg-btn" type="button" data-pane="grid"  title="Show only the grid (hide Gantt)">Grid</button>
-            <button id="btn-pane-both"     class="seg-btn is-active" type="button" data-pane="both"  title="Show both the grid and the Gantt">Both</button>
-            <button id="btn-pane-gantt"    class="seg-btn" type="button" data-pane="gantt" title="Show only the Gantt (hide grid)">Gantt</button>
-          </div>
-          <!-- View pill: "View" label on top, icon-toggles below.
-               Icons (left → right):
-                 ≡  Flatten + sort by start date  (combined; rarely useful apart)
-                 α  Inline allocation prefix in the Task column (NN% before name)
-                 $  Financial milestones overlay
-                 ↔  Arrow lag labels (±N wks pills on Gantt arrows)
-                 %  Bar allocation + duration meta -->
-          <div class="view-pill" id="view-pill" title="View options — toggle Flatten (+ start-date sort), Inline allocation prefix, Financial milestones overlay, arrow-lag labels, and per-bar allocation + duration meta.">
-            <div class="view-pill-label">View</div>
-            <div class="view-pill-icons">
-              <button id="btn-view-flatten"    class="view-pill-icon" type="button" title="Flatten + sort by start date — hide sub-section headers, render tasks directly under section 10 / 40 / 50, AND sort within each section by start date. The two flags are toggled together since flatten without start-date sort almost never makes sense.">≡</button>
-              <button id="btn-view-alloc-pre"  class="view-pill-icon" type="button" title="Show the allocation % before each task name in the grid (e.g. '85%  Configure Machine - 1w'). Turn off to hide just the allocation prefix.">α</button>
-              <button id="btn-view-financials" class="view-pill-icon" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$</button>
-              <button id="btn-view-lags"       class="view-pill-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
-              <button id="btn-view-bar-meta"   class="view-pill-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below — so you can see staffing at a glance without scanning the grid.">%</button>
-            </div>
-          </div>
+
+          <!-- Flex gap pushes the right-edge tools to the far right. -->
+          <div class="toolbar-flex-gap"></div>
+
           <div class="dropdown">
             <button id="btn-baseline-menu" class="toolbar-toggle-btn" type="button" title="Baseline — set, show, hide, or turn off the project baseline snapshot.">◎ Baseline ▾</button>
             <div id="baseline-menu" class="dropdown-menu hidden"></div>
           </div>
-          <!-- Stacked zoom pill: weeks/days/months on top, rows on the bottom.
-               Both rows live in the same pill so they read as paired zoom controls. -->
-          <div class="zoom-stack" title="Top row: zoom the Gantt time scale (Days/Weeks/Months). Bottom row: row height in the grid.">
-            <div class="zoom-stack-row">
-              <button id="btn-zoom-out" class="btn-icon" type="button" title="Zoom out">−</button>
-              <select id="zoom-mode" class="zoom-stack-select" title="Time scale">
-                <option value="Day">Days</option>
-                <option value="Week" selected>Weeks</option>
-                <option value="Month">Months</option>
-              </select>
-              <button id="btn-zoom-in"  class="btn-icon" type="button" title="Zoom in">+</button>
-            </div>
-            <div class="zoom-stack-row">
-              <button id="btn-row-h-down" class="btn-icon" type="button" title="Shorter rows">−</button>
-              <span class="zoom-stack-label">rows</span>
-              <button id="btn-row-h-up"   class="btn-icon" type="button" title="Taller rows">+</button>
-            </div>
+
+          <div class="toolbar-divider"></div>
+
+          <div class="dropdown">
+            <button id="btn-zoom-menu" class="toolbar-toggle-btn" type="button" title="Zoom controls — change the Gantt time scale (Days/Weeks/Months), Gantt zoom (1-10), and grid row height (10-100).">🔍 Zoom ▾</button>
+            <div id="zoom-menu" class="dropdown-menu hidden"></div>
           </div>
-          <button id="btn-undo" class="toolbar-toggle-btn" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↶ Undo</button>
-          <button id="btn-redo" class="toolbar-toggle-btn" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↷ Redo</button>
-          <button id="btn-customer-view" class="toolbar-toggle-btn" type="button" title="Switch to a clean customer view: hide the toolbar / tabs / extra columns, show just Task / Start / Finish + a zoomed-to-fit Gantt. Click again (or the floating Exit button) to return to the normal editing view.">👤 For Customer</button>
+
+          <div class="toolbar-divider"></div>
+
           <button id="btn-zoom-fit" class="btn-primary btn-fit" type="button" title="Zoom the Gantt to fit the project span in the viewport">⛶ Zoom to fit</button>
+
+          <!-- Hidden legacy controls. The Zoom dropdown drives these under
+               the hood so existing handlers (#zoom-mode, #btn-zoom-in/out,
+               #btn-row-h-up/down, #btn-customer-view) still work. The View
+               dropdown button (#btn-view-mode / #view-mode-menu) is also
+               kept hidden so setupViewModeDropdown() and renderViewModeMenu()
+               can still target it — they no-op safely when the menu element
+               is present but never opened. -->
+          <div class="legacy-zoom-controls" hidden>
+            <button id="btn-zoom-out" type="button">−</button>
+            <select id="zoom-mode">
+              <option value="Day">Days</option>
+              <option value="Week" selected>Weeks</option>
+              <option value="Month">Months</option>
+            </select>
+            <button id="btn-zoom-in" type="button">+</button>
+            <button id="btn-row-h-down" type="button">−</button>
+            <button id="btn-row-h-up" type="button">+</button>
+            <button id="btn-customer-view" type="button">For Customer</button>
+            <button id="btn-view-mode" type="button"><span id="view-mode-label">Both · Schedule</span></button>
+            <div id="view-mode-menu" class="dropdown-menu hidden"></div>
+          </div>
         </div>
       </div>
-      <!-- Project name banner — short pill with SDC-lime outline, centered.
-           Sits between the toolbar and the schedule split so you can see the
-           project name in any pane mode (Grid-only / Both / Gantt-only). -->
+      <!-- Project name banner — short pill with SDC-lime outline, centered. -->
       <div class="schedule-project-banner" id="schedule-project-banner">
         <span class="schedule-project-name-pill schedule-project-label">All projects</span>
       </div>
@@ -192,6 +226,10 @@
             <tbody id="tasks-tbody"></tbody>
           </table>
           <button id="btn-add" class="grid-add-task-btn" type="button" title="Add a new task to the active schedule">+ Add task</button>
+          <!-- v4.46: + Add action sits next to + Add task. Creates a row
+               with is_action = 1, duration_days = 0, is_milestone = 1 by
+               default (most actions are date-only milestones). -->
+          <button id="btn-add-action" class="grid-add-task-btn grid-add-action-btn" type="button" title="Add an action item — a date-anchored to-do tied to this project. Lives in the same section/dept hierarchy as scheduled work; defaults to a milestone-style 0-duration row with Assigned To blank.">+ Add action</button>
           <p id="empty-state" class="empty-state hidden">No tasks yet. Click <strong>+ Add task</strong> to add one.</p>
         </div>
         <div class="schedule-divider" id="schedule-divider" title="Drag to resize"></div>
@@ -203,9 +241,11 @@
                assignments obvious; the legend was redundant noise at the bottom. -->
         </div>
       </div>
-      <!-- v4.38: row-height drag handle removed. The zoom-stack +/- buttons
-           in the toolbar give the same control without taking up vertical
-           space below the Gantt. -->
+      <!-- v4.51: Quote vs Schedule moved out of the toolbar to its own
+           bottom footer strip. Right-aligned, sits below the schedule split. -->
+      <div class="schedule-footer" id="schedule-footer">
+        <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Compare quoted hours from the estimate sheet to what's actually scheduled. Also exposes the financial milestones editor.">⚖ Quote vs Schedule</button>
+      </div>
     </section>
 
     <section id="view-team" class="view">
@@ -535,6 +575,13 @@
   <!-- Hidden datalists used by inline cell editors for autocomplete -->
   <datalist id="dl-projects"></datalist>
   <datalist id="dl-assignees"></datalist>
+  <!-- v4.56: experience-level suggestions for the team-member specialty
+       input. User can still type anything (datalist is type-ahead only). -->
+  <datalist id="dl-specialty-levels">
+    <option value="Level 1"></option>
+    <option value="Level 2"></option>
+    <option value="Level 3"></option>
+  </datalist>
 
   <!-- Floating controls for customer view. Hidden by default; CSS makes
        them visible only when body.customer-view is set. Sit top-right

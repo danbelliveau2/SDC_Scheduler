@@ -1028,17 +1028,21 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .orphan-save-btn:hover { filter: brightness(0.95); }
 
-/* Segmented control: Grid / Both / Gantt — mutually exclusive pane modes. */
+/* v4.52: seg-controls restored. Two visible seg-controls now live on the
+   toolbar row — Grid/Both/Gantt for pane layout, Schedule/Combined/Actions
+   for content mode. The v4.51 combined dropdown is gone; user prefers
+   click-to-select buttons over the two-section popover. */
 .seg-control {
   display: inline-flex;
   background: #e2e8f0;
   border-radius: 8px;
   padding: 2px;
+  flex: 0 0 auto;
 }
 .seg-btn {
   border: none;
   background: transparent;
-  padding: 6px 14px;
+  padding: 6px 12px;
   font-size: 12px;
   font-weight: 600;
   font-family: inherit;
@@ -1046,18 +1050,13 @@ body.customer-view .customer-view-flatten.is-active {
   border-radius: 6px;
   cursor: pointer;
   letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 .seg-btn:hover { color: var(--text); }
 .seg-btn.is-active {
   background: white;
   color: var(--sdc-primary);
   box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-}
-.seg-divider {
-  width: 1px;
-  height: 22px;
-  background: var(--border);
-  margin: 0 4px;
 }
 
 /* Toolbar toggle buttons — Flatten / By date. Outlined when off, filled blue when on. */
@@ -1152,8 +1151,8 @@ body.customer-view .customer-view-flatten.is-active {
 
 /* "+ Add task" inline button at the bottom of the grid. Targets the active project. */
 .grid-add-task-btn {
-  display: block;
-  margin: 8px 12px;
+  display: inline-block;
+  margin: 8px 6px 8px 12px;
   padding: 8px 14px;
   background: var(--sdc-accent, #ffde51);
   color: #061d39;
@@ -1172,6 +1171,13 @@ body.customer-view .customer-view-flatten.is-active {
   color: #94a3b8;
   cursor: not-allowed;
   filter: none;
+}
+/* v4.46: + Add action gets the SDC lime variant (vs Add task's yellow)
+   so the two buttons sit side-by-side but visually distinct. Italic
+   font hints at the action-item visual language used in the grid. */
+.grid-add-action-btn {
+  background: var(--anchor-fill, #befa4f);
+  font-style: italic;
 }
 
 /* ---------- Topbar ---------- */
@@ -1356,6 +1362,38 @@ body.customer-view .customer-view-flatten.is-active {
   margin-top: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+}
+/* v4.51 / v4.54: divider + sections inside the Filters popover. */
+.filters-popover-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0;
+}
+/* v4.54: filter rows are checkboxes (not pills). One row per filter, list
+   reads top-to-bottom. Hovering a row highlights the whole stripe so the
+   click target is obvious. */
+.filters-check-list {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+}
+.filters-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+.filters-check-row:hover {
+  background: var(--surface-alt);
+  color: var(--sdc-primary);
+}
+.filters-check-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Revision pill — sits on the far right of the topbar. */
@@ -1736,6 +1774,42 @@ body > .dropdown-menu {
   position: fixed;
   top: auto;
   left: auto;
+}
+
+/* v4.51: View dropdown (Smartsheet-style combined picker).
+   The popover holds two sections divided by a line:
+     • Top:    Grid only / Both / Gantt only     (pane layout)
+     • Bottom: Schedule / Combined / Actions     (content mode)
+   Each row has a checkmark column on the left so the active option
+   reads at a glance. Sections share the standard .dropdown-menu chrome
+   (border, shadow, radius); only the internal layout changes. */
+.view-mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0;
+  min-width: 240px;
+}
+/* Checkmark column. Fixed width so the labels line up regardless of
+   whether the row is the active selection. Uses SDC blue to match the
+   rest of the active-state language. */
+.dropdown-item-check {
+  display: inline-block;
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  color: var(--sdc-primary);
+  font-weight: 700;
+  font-size: 12px;
+}
+/* The active row gets a soft tinted background so it reads as the
+   current selection even before the user scans the checkmark column. */
+.dropdown-menu .dropdown-item.is-active {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 8%, white);
+  color: var(--sdc-primary);
+}
+.dropdown-menu .dropdown-item.is-active:hover {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 14%, white);
 }
 
 /* Hide columns by class */
@@ -2579,6 +2653,26 @@ tbody tr.task-done td:last-child {
 /* The matching Gantt bar gets the lime outline + hash pattern too —
    see drawScheduleStatus / clipBarLabels for the corresponding paint
    when the bar has class .is-done (frappe-gantt adds it). */
+
+/* v4.46/v4.47: action items render with an italic + SDC-BLUE task name
+   so they pop visibly against the scheduled rows (regular black, upright).
+   The blue color matches the alloc pill + the Gantt action-milestone
+   diamond — visual continuity across grid and chart for the same data. */
+tbody tr.is-action .name-cell-main {
+  font-style: italic;
+  font-weight: 600;
+  color: var(--sdc-primary, #1574c4);
+}
+/* v4.49: overdue actions — past their due date, not marked complete —
+   flip the task name + duration to RED to demand attention. Visible
+   without needing the user to apply the "Behind" filter. Gantt diamond
+   gets the same red treatment in drawMilestoneDiamonds. */
+tbody tr.is-action.is-overdue .name-cell-main {
+  color: #dc2626;
+}
+tbody tr.is-action.is-overdue .name-cell-dur {
+  color: #dc2626;
+}
 /* α icon OFF — hides the inline allocation prefix AND its dash separator.
    Task name and bold duration suffix stay. Header ALOC + its dash spacer
    hide too. Toggling is a CSS class swap (set in applyScheduleView) — no
@@ -3369,115 +3463,180 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   font-weight: 700;
 }
 
-/* Stacked Weeks/Rows pill — used on the Schedule toolbar to fuse the chart-
-   zoom controls (top row, Days/Weeks/Months) and the row-height controls
-   (bottom row, "rows") into a single visual unit. Reduces toolbar width and
-   makes it clear they're paired "zoom" controls (one zooms time, one zooms
-   row height). */
-.zoom-stack {
+/* v4.51: .zoom-stack (the stacked Weeks/Rows pill) and .view-pill (the icon
+   row with the "View" label) were replaced by:
+     • .view-bracket — Smartsheet-style bracketed icon row with thick outer
+       borders and thin inner dividers, no "View" label.
+     • #zoom-menu — a dropdown popover containing Time scale (Days/Weeks/
+       Months), Gantt zoom %, and row height (10-100). The button is a
+       standard .toolbar-toggle-btn.
+   The legacy .zoom-controls / .row-height-controls rules above STAY — the
+   Team page resource-timeline still uses those single-row pills.
+   The .legacy-zoom-controls div in index.html keeps the original DOM IDs
+   (#btn-zoom-out, #btn-zoom-in, #zoom-mode, #btn-row-h-up, #btn-row-h-down,
+   #btn-customer-view) alive so the existing event handlers don't need to be
+   rewritten — the new Zoom dropdown + Filters popover drive these directly. */
+.legacy-zoom-controls[hidden] { display: none !important; }
+
+/* v4.52: View toggle bracket — Smartsheet-style framing.
+   Thick outer borders (2px SDC-dark) frame the group on left + right.
+   Thin 1px inner dividers separate each icon. Tooltips on every button
+   explain what they do. (The v4.51 filter-bracket twin is gone — filters
+   are back to a labelled dropdown.) */
+.view-bracket {
   display: inline-flex;
-  flex-direction: column;
-  border: 1px solid var(--border-strong, #94a3b8);
-  border-radius: 6px;
+  align-items: stretch;
+  height: 30px;
   background: white;
-  overflow: hidden;
+  border-top: 1px solid var(--border-strong, #94a3b8);
+  border-bottom: 1px solid var(--border-strong, #94a3b8);
+  border-left: 2px solid var(--sdc-dark, #061d39);
+  border-right: 2px solid var(--sdc-dark, #061d39);
+  border-radius: 4px;
   box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
+  flex: 0 0 auto;
 }
-.zoom-stack-row {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-}
-.zoom-stack-row + .zoom-stack-row {
-  border-top: 1px solid var(--border);
-}
-.zoom-stack .btn-icon {
-  width: 22px;
-  height: 22px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  border-radius: 0;
-}
-.zoom-stack .btn-icon:hover {
-  background: var(--surface-alt);
-}
-.zoom-stack-select {
+.view-bracket-icon {
+  min-width: 32px;
+  padding: 0 8px;
   border: 0;
   background: transparent;
-  font-size: 11px;
-  font-weight: 700;
   color: var(--text);
-  cursor: pointer;
-  padding: 0 4px;
-  min-width: 64px;
-  height: 100%;
-  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
   font-family: inherit;
+  cursor: pointer;
+  line-height: 1;
 }
-.zoom-stack-select:hover {
+.view-bracket-icon + .view-bracket-icon {
+  border-left: 1px solid var(--border);
+}
+.view-bracket-icon:hover {
   background: var(--surface-alt);
+  color: var(--sdc-primary);
 }
-.zoom-stack-label {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text);
-  min-width: 64px;
-  text-align: center;
-  padding: 0 4px;
+.view-bracket-icon.is-active {
+  background: var(--sdc-primary, #2563eb);
+  color: white;
 }
 
-/* View pill — title row on top, three icon-toggles below. Each icon is its
-   own clickable on/off button (Flatten ≡, Sort-by-date ↕, Financials $). The
-   pill is the same height as other toolbar buttons so the row reads evenly. */
-.view-pill {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: stretch;
-  border: 1px solid var(--border-strong, #94a3b8);
-  border-radius: 6px;
-  background: white;
-  overflow: hidden;
-  box-sizing: border-box;
+/* v4.51: Vertical divider between toolbar groups.
+   Sits inside the .schedule-toolbar flex row. Thin 1px line, centered
+   vertically with a little margin so groups breathe. */
+.toolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  margin: 0 6px;
+  align-self: center;
+  flex: 0 0 auto;
 }
-.view-pill-label {
-  font-size: 9px;
+
+/* v4.51: Rounded icon-only Undo/Redo. Variant of .toolbar-icon-btn that goes
+   fully round (border-radius: 50%) and drops the inline-flex gap since the
+   glyph is the only content. Disabled state dims the button + kills hover. */
+.toolbar-icon-round {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+  border-radius: 50%;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+.toolbar-icon-round:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.toolbar-icon-round:disabled:hover {
+  background: white;
+  color: var(--text-muted);
+}
+
+/* v4.51: Zoom dropdown popover content.
+   Three sections divided by .dropdown-sep:
+     1) TIME SCALE — Days/Weeks/Months as radio-style items
+     2) ZOOM       — Gantt zoom % with − [value] +
+     3) ROW HEIGHT — 10-100 scale with − [value] +
+   Each section title is small all-caps muted text; the controls below sit
+   in a single row with the value centered between the two ± buttons. */
+.zoom-menu-section {
+  padding: 6px 4px;
+}
+.zoom-menu-title {
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  text-align: center;
-  padding: 2px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-alt, #f1f5f9);
+  padding: 0 4px 4px;
 }
-.view-pill-icons {
-  display: inline-flex;
+.zoom-menu-row {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px;
 }
-.view-pill-icon {
-  width: 24px;
-  height: 24px;
-  border: 0;
-  background: transparent;
+.zoom-menu-row .zoom-menu-value {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
   color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.zoom-menu-row .btn-icon {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: white;
   font-size: 14px;
   font-weight: 700;
-  font-family: inherit;
+  color: var(--text);
   cursor: pointer;
-  padding: 0;
+  flex: 0 0 26px;
 }
-.view-pill-icon + .view-pill-icon {
-  border-left: 1px solid var(--border);
-}
-.view-pill-icon:hover {
+.zoom-menu-row .btn-icon:hover {
   background: var(--surface-alt);
   color: var(--sdc-primary);
 }
-.view-pill-icon.is-active {
-  background: var(--sdc-primary, #2563eb);
-  color: white;
+.zoom-menu-row .btn-icon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
+.zoom-menu-row .btn-icon:disabled:hover {
+  background: white;
+  color: var(--text);
+}
+/* Time scale section — radio rows. Each row is the full menu width so the
+   active row's tinted background reads as a bar, not a chip. */
+.zoom-menu-scale {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.zoom-menu-scale .dropdown-item {
+  padding: 6px 8px;
+}
+
+/* v4.51: Bottom footer of the schedule view. Holds the Quote vs Schedule
+   button (moved out of the toolbar). Right-aligned in a thin strip so it
+   doesn't steal vertical space from the grid + Gantt. */
+.schedule-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 6px 18px;
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  gap: 8px;
+}
+.schedule-footer .toolbar-toggle-btn { font-size: 12px; }
+body.customer-view .schedule-footer { display: none; }
 .btn-icon {
   width: 28px;
   height: 28px;
@@ -4593,14 +4752,22 @@ body[data-view="setup"] #btn-add { display: none; }
   flex-direction: column;
   box-shadow: 0 1px 2px rgba(15,23,42,0.04);
 }
-/* Layout: placeholders sit at the TOP of each card right below the capacity
-   strip, visually separated from the real-member list by a dashed divider.
-   The lead floats to the top of the real-member list. */
+/* v4.56: placeholders moved to the BOTTOM of each card (below the real
+   members), with a "Placeholders" label so they read as role markers
+   rather than active staff. Was at the top of the card pre-v4.56. */
+.team-placeholders-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 8px 12px 2px;
+  border-top: 1px dashed var(--border-strong);
+}
 .team-placeholders {
   list-style: none;
   margin: 0;
   padding: 4px 6px 6px;
-  border-bottom: 1px dashed var(--border-strong);
 }
 .team-placeholders:empty {
   display: none;        /* no placeholders → no divider */

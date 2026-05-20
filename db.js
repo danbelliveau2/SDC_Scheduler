@@ -226,6 +226,15 @@ const migrations = [
   // duration to every dependent row that points back to it.
   // Typing a duration WITHOUT a leading "=" clears the link.
   { col: 'duration_link_task_id', sql: 'ALTER TABLE tasks ADD COLUMN duration_link_task_id INTEGER' },
+  // v4.46: actions live in the same tasks table as scheduled work but
+  // are flagged by is_action = 1. Defaults set client-side when "+ Add
+  // action" is used: duration_days = 0, is_milestone = 1, due date = the
+  // user's pick. They render italic in the grid + Gantt and sort to the
+  // bottom of their sub-dept bucket in Combined view (so duration tasks
+  // appear first, action items underneath). 0 / NULL means "this is a
+  // regular scheduled task" — i.e. the default for everything that
+  // existed pre-v4.46.
+  { col: 'is_action', sql: 'ALTER TABLE tasks ADD COLUMN is_action INTEGER DEFAULT 0' },
 ];
 for (const m of migrations) {
   if (!columnExists('tasks', m.col)) db.exec(m.sql);
