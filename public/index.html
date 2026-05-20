@@ -64,6 +64,22 @@
       </span>
       <span class="app-sidebar-label">Departments</span>
     </button>
+    <button class="app-sidebar-icon" data-view="actions" type="button" title="Action Items — cross-project to-do list. Add ad-hoc actions; default assignee is the section's Placeholder for the manager to triage.">
+      <!-- v4.61: checklist icon — three lines with check marks. Reads as
+           "task list" on the rail without competing with the Projects
+           Gantt-bar icon at the top. Inline SVG, currentColor for white. -->
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="4,7 6,9 9,5"/>
+          <polyline points="4,13 6,15 9,11"/>
+          <polyline points="4,19 6,21 9,17"/>
+          <line x1="12" y1="7"  x2="20" y2="7"/>
+          <line x1="12" y1="13" x2="20" y2="13"/>
+          <line x1="12" y1="19" x2="20" y2="19"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Actions</span>
+    </button>
     <button class="app-sidebar-icon" data-view="setup" type="button" title="Setup — colors, defaults, estimate rules">
       <span class="app-sidebar-glyph">⚙</span>
       <span class="app-sidebar-label">Setup</span>
@@ -245,6 +261,53 @@
            bottom footer strip. Right-aligned, sits below the schedule split. -->
       <div class="schedule-footer" id="schedule-footer">
         <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Compare quoted hours from the estimate sheet to what's actually scheduled. Also exposes the financial milestones editor.">⚖ Quote vs Schedule</button>
+      </div>
+    </section>
+
+    <!-- v4.61: Action Items — cross-project to-do list. Lists every action
+         (is_action = 1) across every project. Active by default; toggle
+         Closed for completed ones. Quick-add bar at top, filter chips,
+         flat / grouped list. Clicking a row jumps to the parent project
+         schedule with that action highlighted. -->
+    <section id="view-actions" class="view">
+      <div class="actions-page">
+        <div class="actions-page-header">
+          <h1 class="actions-page-title">Action Items</h1>
+          <div class="actions-page-tabs" id="actions-page-tabs">
+            <button type="button" class="actions-tab is-active" data-bucket="active" title="Show open action items (not 100% done).">Active</button>
+            <button type="button" class="actions-tab"           data-bucket="closed" title="Show completed action items.">Closed</button>
+          </div>
+        </div>
+
+        <!-- Quick-add bar: title + project + section + due date + create.
+             Assignee is auto-set to the section's discipline Placeholder. -->
+        <div class="actions-quickadd" id="actions-quickadd">
+          <input type="text" class="actions-qa-title" id="actions-qa-title" placeholder="What needs doing? (Enter to add)" maxlength="240" />
+          <select class="actions-qa-project" id="actions-qa-project" title="Which project does this action belong to?"></select>
+          <button type="button" class="toolbar-toggle-btn actions-qa-section" id="actions-qa-section" title="Pick the section — determines which Placeholder gets the action by default.">Section ▾</button>
+          <input type="date" class="actions-qa-due" id="actions-qa-due" title="Due date (optional)" />
+          <button type="button" class="btn-primary actions-qa-create" id="actions-qa-create">+ Add action</button>
+        </div>
+
+        <!-- Filter row mirrors the Schedule view's quick chips. -->
+        <div class="actions-filters" id="actions-filters">
+          <button type="button" class="filter-chip" data-filter="behind"       title="Action items past their due date.">Behind</button>
+          <button type="button" class="filter-chip" data-filter="overdue-week" title="Due in the next 7 days.">Due this week</button>
+          <button type="button" class="filter-chip" data-filter="unassigned"   title="Still assigned to a Placeholder — needs triage.">Unassigned</button>
+          <select class="actions-filter-select" id="actions-filter-project" title="Filter by project."></select>
+          <select class="actions-filter-select" id="actions-filter-assignee" title="Filter by assignee."></select>
+          <select class="actions-filter-select" id="actions-filter-discipline" title="Filter by department.">
+            <option value="">All departments</option>
+            <option value="mech">Mech Eng</option>
+            <option value="controls">Controls Eng</option>
+            <option value="build">Build</option>
+            <option value="wire">Wire</option>
+          </select>
+        </div>
+
+        <div class="actions-list" id="actions-list">
+          <p class="empty-state" id="actions-empty">No action items yet. Add one above.</p>
+        </div>
       </div>
     </section>
 

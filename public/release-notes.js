@@ -4,6 +4,37 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.61',
+    date: '2026-05-20',
+    notes: [
+      'Action items — three new pieces.',
+      '',
+      'PHASE 1 — ACTION ITEMS PAGE (sidebar > Actions):',
+      '   ▸ New left-rail icon (checklist glyph) between Departments and Setup. Opens a master list of every action item (is_action = 1) across every project.',
+      '   ▸ Active / Closed tabs at top — Active hides completed (progress = 100), Closed shows them. Default is Active.',
+      '   ▸ Quick-add bar: title + project + section picker + due date + create. Pressing Enter in the title box creates the action.',
+      '   ▸ Filter chips: Behind, Due this week, Unassigned (still on a Placeholder). Plus project / assignee / department selects.',
+      '   ▸ Row layout: [✓] [name] [project] [assignee] [dept pill] [due] [×]. Overdue rows get a red left border + red due date. Done rows strike-through the name.',
+      '   ▸ Clicking a row opens that project\'s schedule. Clicking the checkbox toggles done. Clicking × confirms-and-deletes.',
+      '',
+      'PHASE 2 — + ADD ACTION DEFAULTS TO THE DEPARTMENT PLACEHOLDER:',
+      '   ▸ When you click + Add action in the schedule view and pick a section, the new action is automatically assigned to the discipline\'s Placeholder (ME Placeholder / CE Placeholder / Build Placeholder / Wire Placeholder). User can still edit the assignee inline after creation.',
+      '   ▸ New helpers: disciplineForSection(dept, sub) + placeholderNameForDiscipline(disc). Same mapping powers the Action Items quick-add bar.',
+      '   ▸ Sub-department wins when present (mech / controls / build / wire). Department fallbacks: teardown→build, install→build, engineering→mech, shop→build. Procurement / cross-cutting sections leave the assignee blank.',
+      '',
+      'PHASE 3 — PER-PERSON DASHBOARD PANEL:',
+      '   ▸ Click any team member row on the Departments tab → a side panel slides in from the right showing their assigned scheduled tasks + action items.',
+      '   ▸ Stats strip: Open count, Overdue count (red when > 0), Avg overrun (days past due for closed actions — naive but useful).',
+      '   ▸ Filter chips: All / Tasks / Actions — same axis as the Schedule view\'s Schedule/Combined/Actions toggle.',
+      '   ▸ Each row shows a Task or Action tag, name, project, and due date. Overdue rows get the red border + red date. Click a row → opens that project\'s schedule + closes the panel.',
+      '   ▸ Closes on outside click, the × button, or Escape.',
+      '',
+      'WIRING NOTES:',
+      '   ▸ Wired-once handlers on the actions page tabs / filter row / quick-add use a marker dataset attribute so renderActionsPage() can safely re-run.',
+      '   ▸ Placeholder rows on the Departments tab were added in v4.56 specifically to make this workflow possible (manager sees the queue building up against the placeholder).',
+    ],
+  },
+  {
     version: '4.60',
     date: '2026-05-20',
     notes: [

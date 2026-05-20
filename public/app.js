@@ -6469,10 +6469,45 @@ function newTaskInline() {
   });
 }
 
+// v4.61: map a (department, sub_department) section to the team discipline
+// that owns it. Used by the action-creation flow to auto-assign a new
+// action to that discipline's Placeholder member so the manager can see
+// the action in their queue and reassign to a real person later.
+function disciplineForSection(deptKey, subKey) {
+  // Sub-department wins when present (most specific).
+  if (subKey === 'mech')     return 'mech';
+  if (subKey === 'controls') return 'controls';
+  if (subKey === 'build')    return 'build';
+  if (subKey === 'wire')     return 'wire';
+  // General engineering (HMI / Robot / Vision crosses mech + controls) —
+  // default to controls since most general engineering work is software.
+  if (subKey === 'general')  return 'controls';
+  // Section 50 install sub-departments.
+  if (subKey === 'shop')        return 'build';
+  if (subKey === 'engineering') return 'mech';
+  // Department-level fallbacks (no sub picked).
+  if (deptKey === 'teardown')    return 'build';
+  if (deptKey === 'install')     return 'build';
+  if (deptKey === 'engineering') return 'mech';
+  if (deptKey === 'shop')        return 'build';
+  // Procurement / unknown sections: no auto-assign.
+  return null;
+}
+// v4.61: pick the Placeholder team member for a given discipline. Returns
+// the name string (e.g. "ME Placeholder") or null if no placeholder exists
+// in that discipline (in which case the caller leaves the assignee blank).
+function placeholderNameForDiscipline(discKey) {
+  if (!discKey) return null;
+  const ph = (state.team || []).find(m => m.discipline === discKey && isPlaceholder(m.name));
+  return ph ? ph.name : null;
+}
+
 // v4.46: + Add action — same flow as newTaskInline but with is_action = 1
 // and milestone defaults (duration 0). If the user is currently in
 // 'schedule' actions-mode, the new action would be filtered out of view
 // after the save, so we auto-switch to 'combined' so they can see it.
+// v4.61: auto-assign to the section's discipline Placeholder so the manager
+// can see + triage. User can still edit the assignee inline after creation.
 function newActionInline() {
   if (!state.filters.project) {
     alert('Pick a specific project tab first — actions attach to the active project. "All projects" is an aggregate view.');
@@ -6482,6 +6517,8 @@ function newActionInline() {
   const r = btn.getBoundingClientRect();
   showSectionPicker(r.right - 280, r.bottom + 6, async (g, d, s) => {
     const project = state.filters.project;
+    const discKey = disciplineForSection(d, s);
+    const placeholderName = placeholderNameForDiscipline(discKey);
     const created = await api.create({
       name: 'New action',
       phase_group: g,
@@ -6491,6 +6528,7 @@ function newActionInline() {
       is_action: 1,
       duration_days: 0,
       is_milestone: 1,
+      ...(placeholderName ? { assignee: placeholderName } : {}),
     });
     // If we're in Schedule mode (actions hidden), bump to Combined so
     // the user can actually see what they just created. Don't override
@@ -7702,6 +7740,449 @@ async function loadSettings() {
 // block pinned to the bottom of the card via flex:1 on the regular list. The
 // "+ Add member" button is always the last element. Rows are drag-reorderable
 // within a card so a manager can group their team by specialty / pod / etc.
+// ----------------------------------------------------------------------------
+// v4.61 — Action Items master page (left sidebar > Actions).
+// Lists every action item (is_action = 1) across every project. Two buckets:
+//   active = progress < 100 (default)
+//   closed = progress >= 100
+// Filters (chips + selects) narrow the list further. Quick-add bar at top
+// creates a new action and immediately appears in the list.
+// ----------------------------------------------------------------------------
+const _actionsPageState = {
+  bucket: 'active',        // 'active' | 'closed'
+  filters: {
+    behind: false,         // past due, not done
+    dueWeek: false,        // due in next 7 days
+    unassigned: false,     // assignee is a Placeholder
+    project: '',
+    assignee: '',
+    discipline: '',
+  },
+};
+
+// Map a task's section (dept + sub) to one of the 4 main discipline keys,
+// used for the colored department pill in the actions list + the filter
+// select. Falls back to '' for procurement / cross-cutting / section 40
+// engineering-shop generic cases. Mech eng / Controls eng / Build / Wire.
+function actionDisciplineKey(task) {
+  return disciplineForSection(task.department, task.sub_department) || '';
+}
+
+function renderActionsPage() {
+  const tabs = document.getElementById('actions-page-tabs');
+  if (!tabs) return;
+
+  // Tabs (Active / Closed) — wire once. Use a marker dataset attribute so
+  // we only attach the handler the first time renderActionsPage runs.
+  if (!tabs.dataset.wired) {
+    tabs.dataset.wired = '1';
+    tabs.querySelectorAll('.actions-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _actionsPageState.bucket = btn.dataset.bucket;
+        renderActionsPage();
+      });
+    });
+  }
+  tabs.querySelectorAll('.actions-tab').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
+  });
+
+  // Quick-add: project dropdown populated from existing projects.
+  const projSel = document.getElementById('actions-qa-project');
+  const filterProjSel  = document.getElementById('actions-filter-project');
+  const filterAsgSel   = document.getElementById('actions-filter-assignee');
+  const projects = uniqueValues('project').sort();
+  const assignees = Array.from(new Set((state.tasks || []).filter(t => t.is_action).map(t => t.assignee).filter(Boolean))).sort();
+  if (projSel)  projSel.innerHTML  = '<option value="">— pick project —</option>' + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  if (filterProjSel)  filterProjSel.innerHTML  = '<option value="">All projects</option>'  + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  if (filterAsgSel)   filterAsgSel.innerHTML   = '<option value="">All assignees</option>' + assignees.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+
+  // Quick-add handlers (wire once).
+  const qaCreate  = document.getElementById('actions-qa-create');
+  const qaTitle   = document.getElementById('actions-qa-title');
+  const qaSection = document.getElementById('actions-qa-section');
+  const qaDue     = document.getElementById('actions-qa-due');
+  if (qaCreate && !qaCreate.dataset.wired) {
+    qaCreate.dataset.wired = '1';
+    // Held-state for the chosen section. User clicks "Section ▾" to pick
+    // group/dept/sub; the choice is parked here until they hit Create.
+    qaCreate._pickedSection = null;
+
+    qaSection.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = qaSection.getBoundingClientRect();
+      showSectionPicker(r.left, r.bottom + 6, (g, d, s) => {
+        qaCreate._pickedSection = { g, d, s };
+        const dept = d ? (window.findDepartment(g, d)?.label || d) : '(no dept)';
+        const sub  = s ? (window.findSubDepartment(g, d, s)?.label || s) : '';
+        qaSection.textContent = `${dept}${sub ? ' · ' + sub : ''} ▾`;
+      });
+    });
+
+    const createNow = async () => {
+      const title = (qaTitle.value || '').trim();
+      const project = projSel.value;
+      const sect = qaCreate._pickedSection;
+      if (!title)   { qaTitle.focus(); return; }
+      if (!project) { projSel.focus(); alert('Pick a project for this action.'); return; }
+      if (!sect)    { qaSection.focus(); alert('Pick a section so we know which Placeholder to assign it to.'); return; }
+      const discKey = disciplineForSection(sect.d, sect.s);
+      const placeholderName = placeholderNameForDiscipline(discKey);
+      const due = qaDue.value || null;
+      await api.create({
+        name: title,
+        project,
+        phase_group: sect.g,
+        department: sect.d,
+        sub_department: sect.s,
+        is_action: 1,
+        duration_days: 0,
+        is_milestone: 1,
+        progress: 0,
+        ...(due ? { start_date: due, end_date: due } : {}),
+        ...(placeholderName ? { assignee: placeholderName } : {}),
+      });
+      // Reset the form, reload, and re-render.
+      qaTitle.value = '';
+      qaDue.value   = '';
+      qaCreate._pickedSection = null;
+      qaSection.textContent = 'Section ▾';
+      await loadTasks();
+      renderActionsPage();
+    };
+    qaCreate.addEventListener('click', createNow);
+    qaTitle.addEventListener('keydown', (e) => { if (e.key === 'Enter') createNow(); });
+  }
+
+  // Filter chips + selects (wire once).
+  const filtersRow = document.getElementById('actions-filters');
+  if (filtersRow && !filtersRow.dataset.wired) {
+    filtersRow.dataset.wired = '1';
+    filtersRow.querySelectorAll('.filter-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const k = chip.dataset.filter;
+        const map = { behind: 'behind', 'overdue-week': 'dueWeek', unassigned: 'unassigned' };
+        const key = map[k];
+        if (!key) return;
+        _actionsPageState.filters[key] = !_actionsPageState.filters[key];
+        renderActionsPage();
+      });
+    });
+    document.getElementById('actions-filter-project').addEventListener('change', (e) => {
+      _actionsPageState.filters.project = e.target.value;
+      renderActionsPage();
+    });
+    document.getElementById('actions-filter-assignee').addEventListener('change', (e) => {
+      _actionsPageState.filters.assignee = e.target.value;
+      renderActionsPage();
+    });
+    document.getElementById('actions-filter-discipline').addEventListener('change', (e) => {
+      _actionsPageState.filters.discipline = e.target.value;
+      renderActionsPage();
+    });
+  }
+  // Reflect filter state on chips + selects.
+  filtersRow?.querySelectorAll('.filter-chip').forEach(chip => {
+    const map = { behind: 'behind', 'overdue-week': 'dueWeek', unassigned: 'unassigned' };
+    const key = map[chip.dataset.filter];
+    chip.classList.toggle('is-active', !!_actionsPageState.filters[key]);
+  });
+  if (filterProjSel) filterProjSel.value = _actionsPageState.filters.project;
+  if (filterAsgSel)  filterAsgSel.value  = _actionsPageState.filters.assignee;
+  document.getElementById('actions-filter-discipline').value = _actionsPageState.filters.discipline;
+
+  // Compute the visible list.
+  const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const ONE_WEEK = 7 * 86400000;
+  let actions = (state.tasks || []).filter(t => !!t.is_action);
+  // Bucket
+  if (_actionsPageState.bucket === 'active') {
+    actions = actions.filter(t => (Number(t.progress) || 0) < 100);
+  } else {
+    actions = actions.filter(t => (Number(t.progress) || 0) >= 100);
+  }
+  // Filter chips
+  const f = _actionsPageState.filters;
+  if (f.behind) {
+    actions = actions.filter(t => {
+      if (!t.end_date) return false;
+      return new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
+    });
+  }
+  if (f.dueWeek) {
+    actions = actions.filter(t => {
+      if (!t.end_date) return false;
+      const due = new Date(t.end_date).getTime();
+      return due >= todayMs && due <= todayMs + ONE_WEEK;
+    });
+  }
+  if (f.unassigned) {
+    actions = actions.filter(t => !t.assignee || isPlaceholder(t.assignee));
+  }
+  if (f.project)  actions = actions.filter(t => t.project === f.project);
+  if (f.assignee) actions = actions.filter(t => t.assignee === f.assignee);
+  if (f.discipline) actions = actions.filter(t => actionDisciplineKey(t) === f.discipline);
+  // Sort: overdue first, then by due date asc, then by created order.
+  actions.sort((a, b) => {
+    const aOver = a.end_date && new Date(a.end_date).getTime() < todayMs && (Number(a.progress) || 0) < 100;
+    const bOver = b.end_date && new Date(b.end_date).getTime() < todayMs && (Number(b.progress) || 0) < 100;
+    if (aOver !== bOver) return aOver ? -1 : 1;
+    const aDue = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+    const bDue = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+    if (aDue !== bDue) return aDue - bDue;
+    return (a.id || 0) - (b.id || 0);
+  });
+
+  // Render rows.
+  const list = document.getElementById('actions-list');
+  const empty = document.getElementById('actions-empty');
+  if (!list) return;
+  if (actions.length === 0) {
+    list.innerHTML = '';
+    list.appendChild(empty);
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  const disciplineLabel = { mech: 'Mech', controls: 'Controls', build: 'Build', wire: 'Wire' };
+  const disciplineColor = {
+    mech:     { bg: '#bfdbfe', fg: '#1e3a8a' },
+    controls: { bg: '#bbf7d0', fg: '#14532d' },
+    build:    { bg: '#fed7aa', fg: '#7c2d12' },
+    wire:     { bg: '#fef08a', fg: '#713f12' },
+  };
+  list.innerHTML = actions.map(t => {
+    const overdue = t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
+    const done = (Number(t.progress) || 0) >= 100;
+    const dkey = actionDisciplineKey(t);
+    const dColor = disciplineColor[dkey] || { bg: '#f1f5f9', fg: '#475569' };
+    const dueLabel = t.end_date ? fmtDate(t.end_date) : '—';
+    return `
+      <div class="actions-row${overdue ? ' is-overdue' : ''}${done ? ' is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
+        <input type="checkbox" class="actions-row-check" data-id="${t.id}" ${done ? 'checked' : ''} title="Mark done / not done">
+        <span class="actions-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
+        <span class="actions-row-project" title="Project: ${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
+        <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || '—')}">${escapeHtml(t.assignee || '—')}</span>
+        <span class="actions-row-dept" style="background:${dColor.bg};color:${dColor.fg}" title="${escapeHtml(disciplineLabel[dkey] || 'Cross-cutting')}">${dkey ? disciplineLabel[dkey] : '—'}</span>
+        <span class="actions-row-due" title="Due date">${dueLabel}</span>
+        <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">×</button>
+      </div>`;
+  }).join('');
+
+  // Row click → open the parent project's schedule.
+  list.querySelectorAll('.actions-row').forEach(row => {
+    row.addEventListener('click', (e) => {
+      // Ignore clicks on the checkbox or delete button (they have their own handlers).
+      if (e.target.closest('.actions-row-check') || e.target.closest('.actions-row-delete')) return;
+      const project = row.dataset.project;
+      if (!project) return;
+      // Open the project tab (if not already) and switch to schedule view.
+      if (!state.openProjects.includes(project)) {
+        state.openProjects.push(project);
+        saveProjectTabs();
+      }
+      state.filters.project = project;
+      saveProjectTabs();
+      setView('schedule');
+    });
+  });
+  list.querySelectorAll('.actions-row-check').forEach(cb => {
+    cb.addEventListener('change', async (e) => {
+      e.stopPropagation();
+      const id = Number(cb.dataset.id);
+      const t = state.tasks.find(x => x.id === id);
+      if (!t) return;
+      await api.update(id, { progress: cb.checked ? 100 : 0 });
+      await loadTasks();
+      renderActionsPage();
+    });
+  });
+  list.querySelectorAll('.actions-row-delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const t = state.tasks.find(x => x.id === id);
+      if (!t) return;
+      if (!confirm(`Delete action "${t.name || '(untitled)'}"?`)) return;
+      await api.remove(id);
+      await loadTasks();
+      renderActionsPage();
+    });
+  });
+}
+
+// ----------------------------------------------------------------------------
+// v4.61 — Per-person dashboard. Click a team member row on the Departments
+// tab → a side panel slides in from the right with everything assigned to
+// that person (scheduled work + action items + upcoming milestones).
+// ----------------------------------------------------------------------------
+const _personDashState = {
+  memberId: null,
+  filter: 'all',  // 'all' | 'tasks' | 'actions'
+};
+
+function openPersonDashboard(memberId) {
+  _personDashState.memberId = memberId;
+  _personDashState.filter = 'all';
+  renderPersonDashboard();
+}
+
+function closePersonDashboard() {
+  _personDashState.memberId = null;
+  const panel = document.getElementById('person-dashboard');
+  if (panel) panel.classList.remove('is-open');
+}
+
+function renderPersonDashboard() {
+  const memberId = _personDashState.memberId;
+  if (memberId == null) return;
+  const member = (state.team || []).find(m => m.id === memberId);
+  if (!member) { closePersonDashboard(); return; }
+
+  // Ensure the panel exists in the DOM (we create it lazily on first open).
+  let panel = document.getElementById('person-dashboard');
+  if (!panel) {
+    panel = document.createElement('aside');
+    panel.id = 'person-dashboard';
+    panel.className = 'person-dashboard';
+    document.body.appendChild(panel);
+    // Close on outside click. We attach the listener once and gate on the
+    // panel being open so it doesn't run for every body click.
+    document.addEventListener('click', (e) => {
+      if (!panel.classList.contains('is-open')) return;
+      if (panel.contains(e.target)) return;
+      // Ignore clicks on team member rows (those open / re-open the panel).
+      if (e.target.closest('.team-member')) return;
+      closePersonDashboard();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && panel.classList.contains('is-open')) closePersonDashboard();
+    });
+  }
+
+  // Compute the assigned set.
+  const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const isAssignedTo = (t, name) => {
+    if (!name) return false;
+    return (t.assignee || '').trim().toLowerCase() === name.trim().toLowerCase();
+  };
+  const allAssigned = (state.tasks || []).filter(t => isAssignedTo(t, member.name));
+  const tasks   = allAssigned.filter(t => !t.is_action);
+  const actions = allAssigned.filter(t =>  t.is_action);
+  const open = (t) => (Number(t.progress) || 0) < 100;
+  const isOverdue = (t) => t.end_date && new Date(t.end_date).getTime() < todayMs && open(t);
+
+  // Stats strip.
+  const openCount    = allAssigned.filter(open).length;
+  const overdueCount = allAssigned.filter(isOverdue).length;
+  const doneActions  = actions.filter(t => !open(t) && t.end_date);
+  // Naive avg-close: difference between today and end_date for done actions.
+  // (No "completed_at" column — using end_date as a stand-in. Skips if no due date.)
+  let avgCloseDays = null;
+  if (doneActions.length > 0) {
+    const totalDays = doneActions.reduce((sum, t) => {
+      const due = new Date(t.end_date).getTime();
+      // Roughly: positive => closed BEFORE due, negative => closed AFTER.
+      return sum + Math.max(0, (todayMs - due) / 86400000);
+    }, 0);
+    avgCloseDays = Math.round(totalDays / doneActions.length);
+  }
+
+  // Apply filter.
+  const filter = _personDashState.filter;
+  let visible = allAssigned;
+  if (filter === 'tasks')   visible = tasks;
+  if (filter === 'actions') visible = actions;
+
+  // Sort: overdue first, then by due date, then by name.
+  visible = visible.slice().sort((a, b) => {
+    const ao = isOverdue(a) ? 0 : 1;
+    const bo = isOverdue(b) ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    const ad = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+    const bd = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+    if (ad !== bd) return ad - bd;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  // Render markup.
+  const disc = DISCIPLINE_BY_KEY[member.discipline];
+  panel.innerHTML = `
+    <header class="person-dashboard-head" style="background:${disc?.color || '#e2e8f0'};color:${disc?.text || '#0f172a'}">
+      <div class="person-dashboard-title">
+        <strong>${escapeHtml(member.name)}</strong>
+        <span class="person-dashboard-disc">${escapeHtml(disc?.label || member.discipline || '')}</span>
+        ${member.specialty ? `<span class="person-dashboard-spec">${escapeHtml(member.specialty)}</span>` : ''}
+      </div>
+      <button type="button" class="person-dashboard-close" title="Close (Esc)">×</button>
+    </header>
+    <div class="person-dashboard-stats">
+      <div class="pd-stat">
+        <div class="pd-stat-num">${openCount}</div>
+        <div class="pd-stat-lbl">Open</div>
+      </div>
+      <div class="pd-stat ${overdueCount > 0 ? 'is-warn' : ''}">
+        <div class="pd-stat-num">${overdueCount}</div>
+        <div class="pd-stat-lbl">Overdue</div>
+      </div>
+      <div class="pd-stat">
+        <div class="pd-stat-num">${avgCloseDays != null ? avgCloseDays + 'd' : '—'}</div>
+        <div class="pd-stat-lbl">Avg overrun</div>
+      </div>
+    </div>
+    <div class="person-dashboard-filters">
+      <button type="button" class="pd-filter ${filter === 'all'     ? 'is-active' : ''}" data-filter="all">All (${allAssigned.length})</button>
+      <button type="button" class="pd-filter ${filter === 'tasks'   ? 'is-active' : ''}" data-filter="tasks">Tasks (${tasks.length})</button>
+      <button type="button" class="pd-filter ${filter === 'actions' ? 'is-active' : ''}" data-filter="actions">Actions (${actions.length})</button>
+    </div>
+    <div class="person-dashboard-list">
+      ${visible.length === 0
+        ? '<p class="empty-state">Nothing assigned in this view.</p>'
+        : visible.map(t => {
+            const overdue = isOverdue(t);
+            const done = !open(t);
+            const due = t.end_date ? fmtDate(t.end_date) : '—';
+            const tag = t.is_action ? 'Action' : 'Task';
+            return `
+              <div class="pd-row ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
+                <span class="pd-row-tag pd-row-tag-${t.is_action ? 'action' : 'task'}">${tag}</span>
+                <span class="pd-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
+                <span class="pd-row-project" title="${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
+                <span class="pd-row-due">${due}</span>
+              </div>`;
+          }).join('')
+      }
+    </div>
+  `;
+
+  // Wire close button.
+  panel.querySelector('.person-dashboard-close').addEventListener('click', closePersonDashboard);
+  // Wire filter chips.
+  panel.querySelectorAll('.pd-filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _personDashState.filter = btn.dataset.filter;
+      renderPersonDashboard();
+    });
+  });
+  // Click a row → open that project's schedule.
+  panel.querySelectorAll('.pd-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const project = row.dataset.project;
+      if (!project) return;
+      if (!state.openProjects.includes(project)) {
+        state.openProjects.push(project);
+      }
+      state.filters.project = project;
+      saveProjectTabs();
+      closePersonDashboard();
+      setView('schedule');
+    });
+  });
+
+  // Show the panel (CSS handles the slide-in).
+  panel.classList.add('is-open');
+}
+
 function renderTeam() {
   const grid = document.getElementById('team-grid');
   if (!grid) return;
@@ -7841,6 +8322,20 @@ function renderTeam() {
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
       else if (e.key === 'Escape') { e.preventDefault(); input.value = original; input.blur(); }
+    });
+  });
+
+  // v4.61: click a row (anywhere except an input / button) to open the
+  // per-person dashboard panel. Filters click events on the form controls
+  // so the user can still edit name / specialty / remove inline.
+  grid.querySelectorAll('.team-member').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('input')) return;
+      if (e.target.closest('button')) return;
+      if (e.target.closest('.team-member-grip')) return;
+      const id = Number(row.dataset.id);
+      if (!Number.isFinite(id)) return;
+      openPersonDashboard(id);
     });
   });
 
@@ -9608,6 +10103,7 @@ function setView(view) {
   else if (view === 'projects')  renderProjectsPage();
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
+  else if (view === 'actions')   renderActionsPage();
   else render();
 }
 

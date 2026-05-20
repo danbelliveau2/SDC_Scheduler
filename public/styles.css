@@ -3663,6 +3663,356 @@ body.customer-view .schedule-footer { display: none; }
 }
 .zoom-controls #zoom-mode:hover { background: var(--surface-alt); border-radius: 4px; }
 
+/* ---------- v4.61: Per-person dashboard side panel ---------- */
+.person-dashboard {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 420px;
+  max-width: 90vw;
+  height: 100vh;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -10px 0 30px rgba(15, 23, 42, 0.18);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  transform: translateX(110%);
+  transition: transform 0.18s ease-out;
+}
+.person-dashboard.is-open { transform: translateX(0); }
+.person-dashboard-head {
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.person-dashboard-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+.person-dashboard-title strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+.person-dashboard-disc {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.8;
+}
+.person-dashboard-spec {
+  font-size: 11px;
+  opacity: 0.85;
+  font-style: italic;
+}
+.person-dashboard-close {
+  background: transparent;
+  border: 0;
+  font-size: 22px;
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.person-dashboard-close:hover { background: rgba(255,255,255,0.4); }
+.person-dashboard-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.pd-stat {
+  text-align: center;
+  background: var(--surface-alt);
+  border-radius: 8px;
+  padding: 10px 6px;
+}
+.pd-stat.is-warn { background: #fee2e2; }
+.pd-stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+}
+.pd-stat.is-warn .pd-stat-num { color: #991b1b; }
+.pd-stat-lbl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.person-dashboard-filters {
+  display: flex;
+  gap: 6px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+.pd-filter {
+  flex: 1 1 auto;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.pd-filter:hover { color: var(--text); }
+.pd-filter.is-active {
+  background: var(--sdc-primary);
+  color: white;
+  border-color: var(--sdc-primary);
+}
+.person-dashboard-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.person-dashboard-list .empty-state {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 30px 10px;
+}
+.pd-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 90px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.pd-row:hover {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white);
+  border-color: var(--sdc-primary);
+}
+.pd-row.is-overdue { border-left: 3px solid #dc2626; }
+.pd-row.is-done .pd-row-name { text-decoration: line-through; color: var(--text-muted); }
+.pd-row-tag {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-align: center;
+}
+.pd-row-tag-task   { background: #dbeafe; color: #1e3a8a; }
+.pd-row-tag-action { background: #fef3c7; color: #92400e; }
+.pd-row-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  grid-row: 1;
+}
+.pd-row-project {
+  font-size: 10px;
+  color: var(--text-muted);
+  grid-column: 2;
+  grid-row: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-row-due {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  text-align: right;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+.pd-row.is-overdue .pd-row-due { color: #dc2626; font-weight: 700; }
+/* Team member rows get a subtle hover cue indicating they're clickable for
+   the dashboard (v4.61 — previously rows did nothing on bare click). */
+.team-member { cursor: pointer; }
+.team-member input, .team-member button { cursor: auto; }
+.team-member input { cursor: text; }
+.team-member button { cursor: pointer; }
+
+/* ---------- v4.61: Action Items master page ---------- */
+.actions-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.actions-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.actions-page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--sdc-dark);
+}
+.actions-page-tabs {
+  display: inline-flex;
+  background: #e2e8f0;
+  border-radius: 8px;
+  padding: 2px;
+}
+.actions-tab {
+  border: 0;
+  background: transparent;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.actions-tab:hover { color: var(--text); }
+.actions-tab.is-active {
+  background: white;
+  color: var(--sdc-primary);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+/* Quick-add bar — one-row layout. Fields shrink/grow to fit. */
+.actions-quickadd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+.actions-qa-title {
+  flex: 1 1 240px;
+  min-width: 180px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.actions-qa-project, .actions-qa-due {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: white;
+  flex: 0 0 auto;
+}
+.actions-qa-section { white-space: nowrap; }
+.actions-qa-create { padding: 6px 14px; font-size: 12px; }
+/* Filter row — chip toggles + a few selects on the right. */
+.actions-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.actions-filter-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: white;
+  color: var(--text);
+}
+/* List rows. */
+.actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.actions-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 140px 140px 100px 92px 24px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.actions-row:hover {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white);
+  border-color: var(--sdc-primary);
+}
+.actions-row.is-overdue { border-left: 3px solid #dc2626; }
+.actions-row.is-done .actions-row-name { text-decoration: line-through; color: var(--text-muted); }
+.actions-row-check {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  margin: 0;
+}
+.actions-row-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions-row-project, .actions-row-assignee {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions-row-dept {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+.actions-row-due {
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.actions-row.is-overdue .actions-row-due { color: #dc2626; font-weight: 700; }
+.actions-row-delete {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0;
+}
+.actions-row:hover .actions-row-delete { opacity: 1; }
+.actions-row-delete:hover { color: #dc2626; }
+
 /* ---------- Setup view ---------- */
 .setup-pane {
   max-width: 1000px;
