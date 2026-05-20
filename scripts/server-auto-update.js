@@ -28,7 +28,7 @@ const { execSync }     = require('child_process');
 
 const GITHUB_REPO       = 'danbelliveau2/SDC_Scheduler';
 const GITHUB_BRANCH     = 'master';
-const CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const APP_DIR           = path.join(__dirname, '..');
 const PM2_APP_NAME      = 'sdc-scheduler';
 const SHA_FILE          = path.join(APP_DIR, '.update-sha');
