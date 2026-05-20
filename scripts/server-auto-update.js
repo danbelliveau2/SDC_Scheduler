@@ -209,3 +209,16 @@ async function main() {
 }
 
 main().catch(e => { log(`Fatal: ${e.message}`); process.exit(1); });
+
+// ─── manual trigger server ────────────────────────────────────────────────────
+// POST http://<host>:4013/trigger  →  runs checkAndUpdate() immediately
+const TRIGGER_PORT = 4013;
+http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/trigger') {
+    res.writeHead(202, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+    checkAndUpdate().catch(e => log(`Manual trigger error: ${e.message}`));
+  } else {
+    res.writeHead(404); res.end();
+  }
+}).listen(TRIGGER_PORT, '0.0.0.0', () => log(`Trigger server on port ${TRIGGER_PORT}`));
