@@ -76,7 +76,7 @@ const state = {
     search: '', project: '', phase: '', assignee: '',
     // Quick chip filters in the popover — each is a boolean toggle. Anchors are
     // exempt (always shown) so the schedule spine stays visible when filtering.
-    quick: { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false },
+    quick: { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false },
   },
   gantt: null,
   viewMode: 'Week',
@@ -95,7 +95,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -109,6 +109,24 @@ const state = {
   // Project names flagged as templates: protected from accidental close, marked with
   // a star in the tab. Stored in localStorage as a string array.
   templateProjects: [],
+  // Workspaces — projects can be grouped into one of a fixed set of workspaces
+  // so the "+ Open project" picker doesn't pile every sales schedule alongside
+  // active customer projects. Default workspaces: Active, Sales, Closed.
+  // projectWorkspaces is a map of project name → workspace name. Any project
+  // not in the map defaults to "Active". Persisted in localStorage so it
+  // survives reloads (per-browser; if you need shared workspaces across
+  // engineers, that\'s a future server-side move).
+  projectWorkspaces: {},
+  // activeWorkspace controls which workspace's project tabs are visible at the
+  // top. Switching workspaces only filters the tab list; the currently-active
+  // project tab stays visible (special "currently viewing" exemption) so you
+  // never get stranded with no tab to click. Persisted in localStorage.
+  activeWorkspace: 'Active',
+  // Favorites — per-browser list of starred project names. User clicks the ★
+  // next to a project in Projects / sidebar to toggle.
+  favoriteProjects: [],
+  // Recents — last N opened project names, newest first. Capped at 10.
+  recentProjects: [],
   // Project financial milestones, keyed by project name. Loaded on demand when the
   // Financials modal opens or the $ Financial overlay is enabled. Each value is the
   // full array from /api/financials?project=… in display order (sort_order, then id).
@@ -133,7 +151,11 @@ const state = {
   redoStack: [],
 };
 
-const ROW_H_MIN = 14;
+// v4.30: ROW_H_MIN dropped back to 18 now that the Task column is SINGLE-LINE
+// (alloc + name + duration inline). Single line of 9px-min text + 2px
+// breathing room fits comfortably in 18px. v4.27 bumped this to 22 to fit
+// the stacked layout; the stacked layout is gone again as of v4.30.
+const ROW_H_MIN = 18;
 const ROW_H_MAX = 120;
 const ROW_H_DEFAULT = 26;
 const BAR_H_MIN = 10;
@@ -298,6 +320,14 @@ function updateLineNumbersAndPreds() {
       cell.textContent = predDisplay(task?.predecessors || '');
     }
   });
+  // v4.39: fill in duration-link badges with a 🔗 emoji + source line.
+  // The link icon makes the relationship visible at a glance; the row
+  // number lets you trace which task it's tied to without hovering.
+  tbody.querySelectorAll('.name-cell-dur-link[data-link-target-id]').forEach(el => {
+    const srcId = Number(el.getAttribute('data-link-target-id'));
+    const line = lineByTaskId[srcId];
+    el.textContent = line != null ? `🔗${line}` : '🔗?';
+  });
 }
 
 // Frappe-gantt v0.6.1 hard-codes column_width inside update_view_scale based on view mode,
@@ -369,6 +399,13 @@ function computeDisciplineCapacity(discKey, members) {
   let hrs = 0;
   for (const t of state.tasks) {
     if (t.is_milestone) continue;
+    // Skip tasks from template projects AND Sales-workspace projects —
+    // templates are canonical scaffolding cloned into real projects (not
+    // real work); Sales schedules are pre-quote work that hasn't been
+    // staffed for real yet. Either would inflate the "X hrs scheduled"
+    // reading on every discipline.
+    if (isTemplateProject(t.project)) continue;
+    if (projectWorkspace(t.project) === 'Sales') continue;
     if (!t.assignee || !memberNames.has(t.assignee)) continue;
     const dur = Number(t.duration_days);
     if (!dur || dur <= 0) continue;
@@ -379,7 +416,7 @@ function computeDisciplineCapacity(discKey, members) {
   const weeklyCapacity = realCount * 40 * 0.9;
   const weeksAhead = weeklyCapacity > 0 ? Math.round((scheduledHrs / weeklyCapacity) * 10) / 10 : null;
   const tooltip = realCount > 0
-    ? `${scheduledHrs.toLocaleString()} hrs total ÷ (${realCount} × 40 × 90%) = ${weeksAhead} weeks of work.`
+    ? `${scheduledHrs.toLocaleString()} hrs total ÷ (${realCount} × 40 × 90%) = ${weeksAhead} weeks of work. (Template-project tasks excluded.)`
     : `${scheduledHrs.toLocaleString()} hrs scheduled. Add real team members (non-placeholders) to see capacity in weeks.`;
   return { realCount, scheduledHrs, weeksAhead, tooltip };
 }
@@ -677,6 +714,13 @@ function applyFilters(tasks) {
       const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''} ${t.phase||''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
+    // v4.45: completed tasks HIDE BY DEFAULT now. The Filters chip flipped
+    // polarity — "Show completed" (default off = hide) replaces the older
+    // "Not complete" (default off = show). Milestones included in the
+    // hide-by-default behavior: a done Receipt of PO / FAT / Mech 1 isn't
+    // remaining work, so it stays out of view unless the user wants it.
+    const isDone = (t.progress || 0) >= 100;
+    if (!qf.showCompleted && isDone) return false;
     // Milestones — anchors (PO / Mech 1 / Power-Up / FAT / Ship) AND the
     // smaller non-anchor milestones (Mech 2 Release, BOM Review, etc.) — are
     // always kept regardless of which quick filter is on. They're spine /
@@ -731,11 +775,15 @@ function cellHtml(t, key) {
         // Backlog: no widget. It's a calendar block, not a work task.
         rightWidget = '';
       } else if (!t.is_milestone && !isAnchor) {
-        // Duration task: pill shows % complete in colored bg (slate/red/green).
-        // At 100% the pill collapses to a green ✓ — same visual treatment as
-        // the milestone-check.is-done — instead of "100%" text + green name.
-        // Keeps "done" rows quiet (just a ✓ on the right) while in-progress
-        // rows still call out their %.
+        // Duration task: pill renders as a small PROGRESS BAR. The fill width
+        // tracks the percent (0–100%), color tracks the schedule status:
+        //   - is-zero    (0%):      empty pill outline, "0%" text in slate
+        //   - is-behind  (1–99% behind): red fill at pct% width, black text
+        //   - is-ontrack (1–99% on/ahead): green fill at pct% width, black text
+        //   - is-done    (100%):    full green fill, white ✓ text
+        // Was a flat solid-colored pill — that felt heavy (especially the
+        // dark green 100% state). The bar version visually answers "how far
+        // along is this?" without you having to read the number.
         let pctClass = 'is-zero';
         let pctText = `${pct}%`;
         if (pct >= 100) {
@@ -744,7 +792,14 @@ function cellHtml(t, key) {
         } else if (pct > 0) {
           pctClass = drift < 0 ? 'is-behind' : 'is-ontrack';
         }
-        rightWidget = `<span class="name-edit-pill name-pct-pill ${pctClass}" data-edit-pill data-edit-col="progress" data-task-id="${t.id}" title="% complete — click to edit">${pctText}</span>`;
+        // Fill width: clamp to 0–100. At 100% the .is-done rules cover the
+        // whole pill via CSS anyway, but we still set width here so 99 → 100
+        // transitions render correctly.
+        const fillW = Math.max(0, Math.min(100, pct));
+        rightWidget = `<span class="name-edit-pill name-pct-pill ${pctClass}" data-edit-pill data-edit-col="progress" data-task-id="${t.id}" title="% complete — click to edit">`
+          + `<span class="name-pct-fill" style="width:${fillW}%"></span>`
+          + `<span class="name-pct-text">${pctText}</span>`
+          + `</span>`;
       } else {
         // Milestones / anchors get a click-to-toggle checkbox. Progress is
         // binary (0 or 100). Anchors already render via anchorRowHtml with a
@@ -759,9 +814,75 @@ function cellHtml(t, key) {
       // The green ✓ pill on the right is the sole signal that the row is done,
       // so duration tasks and milestones read consistently when complete.
       if (rightWidget) classes.push('has-pills');
-      return `<td class="${classes.join(' ')}" data-col="name">${escapeHtml(t.name)}${driftChip}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
+      // v4.39: `has-meta` indicates the row will render the alloc + dash +
+      // dur spans (regular tasks only). CSS uses this class to reserve TD
+      // padding-left for the absolute-positioned alloc and dur — milestones
+      // and anchors that DON'T have meta keep their name flush at the left.
+      const hasMeta = !t.is_milestone && !isAnchor && !isBacklog;
+      if (hasMeta) classes.push('has-meta');
+      // v4.30: Single-line PLAIN-TEXT layout. No more stacked meta row, no
+      // more pill-styled allocation/duration. Just inline text:
+      //     85%  Task Name - 1w           [% complete pill]
+      //     \_/  \_______/ \__/            \_pinned right_/
+      //     pre   bold name  dur-post
+      //
+      // The pre-allocation text is hidden via .hide-alloc-pre on body
+      // (controlled by the α icon in the View pill). Both alloc + dur are
+      // still click-to-edit via data-edit-pill — they look like plain text
+      // but pick up an underline on hover. Skipped for milestones / anchors /
+      // backlog (no meaningful allocation × duration there).
+      let allocPre = '';
+      let dashSep = '';
+      let durEl = '';
+      if (!t.is_milestone && !isAnchor && !isBacklog) {
+        const allocVal = t.allocation == null ? null : Number(t.allocation);
+        const durDays  = Number(t.duration_days) || 0;
+        const wks = durDays > 0 ? Math.round(durDays / 5 * 10) / 10 : 0;  // 1 decimal week
+        const allocText = allocVal != null && allocVal > 0 ? `${allocVal}%` : '—%';
+        // v4.43: uppercase W in duration text per user request — "10W" not "10w".
+        const wksText   = wks > 0 ? `${wks}W` : '—W';
+        // v4.36: Sales-workspace tasks NO LONGER auto-hide allocation in
+        // the Task column meta. The α icon in the View pill is now the
+        // single authoritative control for alloc visibility — turn it off
+        // when presenting to a customer / sales rep (hides alloc across
+        // ALL projects regardless of workspace), turn it on otherwise.
+        // Earlier (v4.22) Sales tasks hid alloc unconditionally even with
+        // α on, which made the toggle look broken when the user was
+        // viewing the SDC_Sales_Template.
+        allocPre = `<span class="name-cell-alloc-pre" data-edit-pill data-edit-col="allocation" data-task-id="${t.id}" title="Allocation — click to edit">${allocText}</span>`;
+        dashSep  = `<span class="name-cell-dash">–</span>`;
+        // v4.43: link badge moved BEFORE the duration value so the dur
+        // value stays right-aligned at the column's right edge (consistent
+        // across all rows whether linked or not). Layout reads as
+        // "🔗24 10W" — badge on the left, duration on the right. Badge
+        // is still inside .name-cell-dur with pointer-events: none so
+        // clicks pass through to the dur for re-editing.
+        let linkBadge = '';
+        if (t.duration_link_task_id) {
+          const earlyLine = lineByTaskId[t.duration_link_task_id];
+          const earlyText = earlyLine != null ? `🔗${earlyLine}` : '🔗?';
+          linkBadge = `<span class="name-cell-dur-link" data-link-target-id="${t.duration_link_task_id}">${earlyText}</span> `;
+        }
+        durEl = `<span class="name-cell-dur" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to edit (e.g. 5d, 2w, or = then click another row to link)">${linkBadge}${wksText}</span>`;
+      }
+      // v4.39: dropped the .name-cell-row flex wrapper. alloc, dash, and
+      // dur are now ABSOLUTE-POSITIONED inside the TD (deterministic offsets
+      // from the column's left/right edges), and the task name flows in
+      // the TD's content area between them. CSS controls the TD's
+      // padding-left / padding-right so the name doesn't overlap the
+      // absolutely-placed siblings. This guarantees that body alloc lines
+      // up pixel-for-pixel with the header ALOC label, since both use the
+      // same absolute coordinates from the cell edge.
+      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
+      // SALES workspaces blank out the assignee — pre-quote work isn't
+      // staffed yet, and showing "ME Placeholder" or a real name on a sales
+      // schedule risks accidentally communicating who'll own the work
+      // before the deal is signed.
+      if (isSalesProjectTask(t)) {
+        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry assignees — staff after the project moves to Active."></td>`;
+      }
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
       // running daily total over 100% somewhere in its span — flag the cell so the user
       // sees in the Schedule view that this person can't actually accomplish all their
@@ -785,6 +906,11 @@ function cellHtml(t, key) {
       return `<td class="${cls}" data-col="progress"><span class="progress-bar"><span style="width:${p}%"></span></span> ${p}%</td>`;
     }
     case 'allocation': {
+      // SALES workspaces blank the allocation cell — see meta-row / assignee
+      // notes above. Sales work is pre-quote so allocation isn't meaningful.
+      if (isSalesProjectTask(t)) {
+        return `<td class="${cls} sales-suppressed" data-col="allocation" title="Sales schedules don't carry allocations — set after the project moves to Active."></td>`;
+      }
       // Default to 100 for tasks predating this column. Milestones shouldn't show an
       // allocation since they don't consume time — render a dash so they read as N/A.
       const a = t.is_milestone ? '—' : (t.allocation == null ? 90 : t.allocation);
@@ -845,7 +971,12 @@ function rowHtml(t, depth = 0) {
   // chip + a diamond fill that matches anchors. Anchors take their own path via
   // anchorRowHtml above; this is for the regular bucket-resident milestones.
   const milestoneDone = t.is_milestone && (t.progress || 0) >= 100 ? ' milestone-done' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  // v4.45: completed DURATION tasks (non-milestone, progress >= 100) get
+  // a task-done class so CSS can paint the row with the lime outline +
+  // diagonal hash pattern. The Filters popover's "Show completed" toggle
+  // controls whether these rows are filtered out entirely.
+  const taskDone = !t.is_milestone && (t.progress || 0) >= 100 ? ' task-done' : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -853,11 +984,20 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
   const caret = collapsed ? '▸' : '▾';
   const attrs = Object.entries(dataAttrs)
     .map(([k, v]) => ` data-${k}="${escapeHtml(String(v))}"`).join('');
+  // v4.29: wrap the leading "NN " section number (e.g. "10 DESIGN & BUILD")
+  // in its own <span> so customer-view CSS can hide just the number portion.
+  // SDC team uses the section numbers internally; customers don't care about
+  // "10 / 40 / 50" — they just see the section name.
+  const labelStr = String(label || '');
+  const m = labelStr.match(/^(\d+\s+)(.*)$/);
+  const labelHtml = m
+    ? `<span class="group-label-num">${escapeHtml(m[1])}</span>${escapeHtml(m[2])}`
+    : escapeHtml(labelStr);
   return `
     <tr class="group-header level-${level} ${collapsed ? 'collapsed' : ''}" data-path="${escapeHtml(path)}"${attrs}>
       <td colspan="${cols}">
         <span class="group-caret">${caret}</span>
-        <span class="group-label">${escapeHtml(label)}</span>
+        <span class="group-label">${labelHtml}</span>
       </td>
     </tr>`;
 }
@@ -1086,6 +1226,7 @@ function renderTable() {
     });
   });
 
+
   attachRowDragHandlers(tbody);
 }
 
@@ -1221,6 +1362,10 @@ function handleCellClick(e) {
   const id = Number(tr.dataset.id);
   const col = td.dataset.col;
   if (col === 'line') return; // auto-computed, not editable
+  // Sales-workspace tasks have allocation + assignee suppressed (v4.22).
+  // Clicking those blank cells should be a no-op — the tooltip on the cell
+  // explains why it's empty.
+  if (td.classList.contains('sales-suppressed')) return;
   enterCellEdit(td, id, col);
 }
 
@@ -1234,6 +1379,14 @@ function enterPillEdit(pill, taskId, col) {
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
   input.classList.add('name-pill-input');
+  // v4.32: pin the input's width to the column's expected content size.
+  // Without this, the browser-default <input> width (~150px) blows up the
+  // flex layout (alloc/dur) or the absolute-positioned % pill — the editor
+  // appears in a totally different spot than the text the user clicked.
+  // The three editable columns all have short values; 44px fits any of them.
+  if (col === 'allocation') input.style.width = '36px';
+  else if (col === 'duration') input.style.width = '44px';
+  else if (col === 'progress') input.style.width = '40px';
   pill.classList.add('editing');
   pill.innerHTML = '';
   pill.appendChild(input);
@@ -1241,9 +1394,20 @@ function enterPillEdit(pill, taskId, col) {
   if (typeof input.select === 'function') input.select();
 
   let done = false;
+  // v4.25: click-outside dismissal. blur() alone doesn't fire when the user
+  // clicks on the SVG Gantt (SVG elements aren't focusable by default), so
+  // the pill editor would just sit there even though the user clearly
+  // wanted to dismiss it. A document-level mousedown listener catches the
+  // click ANYWHERE outside the input and finalizes (commits) — same as if
+  // they'd hit Enter.
+  const onOutsideMousedown = (e) => {
+    if (input.contains(e.target)) return;
+    finalize(true);
+  };
   const finalize = async (commit) => {
     if (done) return;
     done = true;
+    document.removeEventListener('mousedown', onOutsideMousedown, true);
     if (commit && input.value !== original) {
       try { await saveCellEdit(taskId, col, input.value, task); }
       catch (err) { console.error(err); }
@@ -1253,8 +1417,88 @@ function enterPillEdit(pill, taskId, col) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); finalize(true); }
     else if (e.key === 'Escape') { e.preventDefault(); finalize(false); }
+    // v4.42: when editing a DURATION cell, pressing "=" enters CLICK-PICK
+    // mode — the editor closes WITHOUT saving and the user can click any
+    // OTHER row's duration cell to link to it. This is the UX the user
+    // asked for ("click the duration, hit equals, click another duration").
+    // Cancelable with Escape or by clicking somewhere that isn't a dur cell.
+    else if (col === 'duration' && e.key === '=') {
+      e.preventDefault();
+      // Discard the source-side edit — we're not saving a typed duration,
+      // we're starting a link pick.
+      finalize(false);
+      enterDurationLinkPickMode(taskId);
+    }
   });
   input.addEventListener('blur', () => finalize(true));
+  // Capture phase so we beat any stopPropagation that Gantt / other handlers
+  // might do on their own mousedowns.
+  document.addEventListener('mousedown', onOutsideMousedown, true);
+}
+
+// v4.42: Duration LINK click-pick mode.
+// Flow: user clicks dur on row A → editor opens → user hits "=" → editor
+// closes, app shows visual pick-mode hint → user clicks dur on row B →
+// row A links to row B (duration_link_task_id = B.id, duration_days copied
+// from B). Pressing Escape or clicking somewhere that isn't a dur cell
+// cancels without linking.
+function enterDurationLinkPickMode(sourceTaskId) {
+  const source = state.tasks.find(t => t.id === sourceTaskId);
+  if (!source) return;
+  document.body.classList.add('duration-link-pick-mode');
+
+  const cleanup = () => {
+    document.removeEventListener('mousedown', onPickMousedown, true);
+    document.removeEventListener('keydown', onPickKey);
+    document.body.classList.remove('duration-link-pick-mode');
+  };
+
+  const onPickMousedown = (e) => {
+    // Find the dur cell that was clicked (if any).
+    const dur = e.target.closest('.name-cell-dur[data-task-id]');
+    if (!dur) {
+      // Clicked outside any duration cell — cancel.
+      cleanup();
+      return;
+    }
+    const targetTaskId = Number(dur.getAttribute('data-task-id'));
+    if (!targetTaskId || targetTaskId === sourceTaskId) {
+      cleanup();
+      return;
+    }
+    const target = state.tasks.find(t => t.id === targetTaskId);
+    if (!target) {
+      cleanup();
+      return;
+    }
+    // Beat the regular click handler (which would open an editor on the
+    // target dur). Capture-phase + preventDefault + stopPropagation.
+    e.preventDefault();
+    e.stopPropagation();
+
+    const days = Number(target.duration_days) || 0;
+    const data = {
+      duration_link_task_id: targetTaskId,
+      duration_days: days,
+    };
+    const today = new Date().toISOString().slice(0, 10);
+    const startStr = snapToBusinessDay(source.start_date || today, 1);
+    if (startStr !== source.start_date) data.start_date = startStr;
+    if (days === 0) {
+      data.is_milestone = true;
+      data.end_date = startStr;
+    } else if (days > 0) {
+      if (source.is_milestone) data.is_milestone = false;
+      data.end_date = addBusinessDays(startStr, days - 1);
+    }
+    console.log('[duration link] click-pick: linking task', sourceTaskId, '→ task', targetTaskId, '(', days, 'days )');
+    api.update(sourceTaskId, data).then(() => loadTasks()).finally(cleanup);
+  };
+  const onPickKey = (e) => {
+    if (e.key === 'Escape') cleanup();
+  };
+  document.addEventListener('mousedown', onPickMousedown, true);
+  document.addEventListener('keydown', onPickKey);
 }
 
 
@@ -1271,15 +1515,24 @@ function enterCellEdit(td, taskId, col) {
   if (typeof input.select === 'function') input.select();
 
   let done = false;
+  // v4.25: same click-outside dismissal as enterPillEdit — blur misses
+  // clicks on non-focusable SVG Gantt elements, so we attach an explicit
+  // document-level mousedown listener that commits on any outside click.
+  const onOutsideMousedown = (e) => {
+    if (input.contains(e.target)) return;
+    finalize(true);
+  };
   const finalize = async (commit) => {
     if (done) return;
     done = true;
+    document.removeEventListener('mousedown', onOutsideMousedown, true);
     if (commit && input.value !== original) {
       try { await saveCellEdit(taskId, col, input.value, task); }
       catch (err) { console.error(err); }
     }
     await loadTasks();
   };
+  document.addEventListener('mousedown', onOutsideMousedown, true);
 
   // First printable keystroke after entering edit mode replaces the entire cell value
   // — so click-then-type overwrites without the user having to select-all first.
@@ -1319,7 +1572,17 @@ function currentCellValue(task, col) {
     case 'assignee': return task.assignee || '';
     case 'start':    return task.start_date || '';
     case 'finish':   return task.end_date || '';
-    case 'duration': return durationLabel(task);
+    case 'duration': {
+      // v4.37: pre-fill the editor with "=N" when the task is linked,
+      // so the user can see + edit the link target directly. Re-saving
+      // "=N" with the same N is a no-op; replacing with a duration like
+      // "2w" unlinks.
+      if (task.duration_link_task_id) {
+        const line = lineByTaskId[task.duration_link_task_id];
+        if (line) return `=${line}`;
+      }
+      return durationLabel(task);
+    }
     case 'pred':     return predDisplay(task.predecessors || '');
     case 'progress': return String(task.progress || 0);
     case 'allocation': return String(task.allocation == null ? 90 : task.allocation);
@@ -1432,11 +1695,56 @@ async function saveCellEdit(id, col, value, task) {
       break;
     }
     case 'duration': {
-      const days = parseDurationInput(value); // business days
+      // v4.41: "=N" LINKS this task's duration to the row on line N.
+      // Regex is permissive — accepts "=24", "=24w", "= 24", "=24 some text",
+      // anything starting with "=" followed by digits. We extract the
+      // digits and look up the line. If the line isn't found, log a
+      // warning and bail (saves nothing — leaves the task untouched).
+      // Typing a duration WITHOUT a leading "=" clears the link.
+      const trimmed = String(value || '').trim();
+      if (trimmed.startsWith('=')) {
+        const digitsMatch = trimmed.slice(1).match(/(\d+)/);
+        if (!digitsMatch) {
+          console.warn('[duration link] expected digits after "=", got:', trimmed);
+          break;
+        }
+        const targetLine = Number(digitsMatch[1]);
+        const targetTaskId = taskIdByLine[targetLine];
+        if (!targetTaskId) {
+          console.warn('[duration link] no task at line', targetLine, '(lineByTaskId keys:', Object.keys(taskIdByLine).slice(0, 10), '...)');
+          break;
+        }
+        if (targetTaskId === id) {
+          console.warn('[duration link] self-link ignored — task can\'t link to itself');
+          break;
+        }
+        const sourceTask = state.tasks.find(t => t.id === targetTaskId);
+        if (!sourceTask) {
+          console.warn('[duration link] source task id', targetTaskId, 'not found in state.tasks');
+          break;
+        }
+        const days = Number(sourceTask.duration_days) || 0;
+        data.duration_link_task_id = targetTaskId;
+        data.duration_days = days;
+        const today = new Date().toISOString().slice(0, 10);
+        let startStr = snapToBusinessDay(task.start_date || today, 1);
+        if (startStr !== task.start_date) data.start_date = startStr;
+        if (days === 0) {
+          data.is_milestone = true;
+          data.end_date = startStr;
+        } else if (days > 0) {
+          if (task.is_milestone) data.is_milestone = false;
+          data.end_date = addBusinessDays(startStr, days - 1);
+        }
+        console.log('[duration link] linking task', id, '→ task', targetTaskId, '(line', targetLine, ') duration', days, 'days');
+        break;
+      }
+      // No "=" prefix: standard duration parsing + UNLINK any prior link.
+      const days = parseDurationInput(trimmed); // business days
       if (days == null) break;
-      // Duration is the SOURCE OF TRUTH. Save it explicitly. End date is derived,
-      // so it'll shift by however many calendar days the working span needs.
       data.duration_days = days;
+      // Clear the link (idempotent — server treats null = "no link").
+      data.duration_link_task_id = null;
       const today = new Date().toISOString().slice(0, 10);
       let startStr = snapToBusinessDay(task.start_date || today, 1);
       if (startStr !== task.start_date) data.start_date = startStr;
@@ -1656,10 +1964,13 @@ function injectPhaseStyles() {
     el.id = id;
     document.head.appendChild(el);
   }
-  // Phase-based bar colors first (legacy / fallback for tasks without a hierarchy match).
+  // Phase-based bar colors (legacy / fallback for tasks without a hierarchy match).
+  // Progress fill is the bar's text/stroke color at 0.4 opacity — solid but not
+  // bold. The hierarchy/phase color always reflects WHAT the task is; the
+  // darker progress portion reflects HOW MUCH is done.
   const phaseRules = PHASES.map(p =>
     `.gantt .bar-wrapper.phase-${p.key} .bar { fill: ${p.color}; stroke: ${p.text}; stroke-width: 1; }
-     .gantt .bar-wrapper.phase-${p.key} .bar-progress { fill: ${p.text}; opacity: 0.55; }
+     .gantt .bar-wrapper.phase-${p.key} .bar-progress { fill: ${p.text}; opacity: 0.4; }
      .gantt .bar-wrapper.phase-${p.key} .bar-label { fill: ${p.text}; font-weight: 600; }`
   ).join('\n');
 
@@ -1667,7 +1978,7 @@ function injectPhaseStyles() {
   // Tasks pick the deepest match (sub-dept > combined dept > procurement).
   const hierarchyRules = Object.entries(HIERARCHY_BAR_COLORS).map(([key, c]) =>
     `.gantt .bar-wrapper.bar-color-${key} .bar { fill: ${c.fill}; stroke: ${c.text}; stroke-width: 1; }
-     .gantt .bar-wrapper.bar-color-${key} .bar-progress { fill: ${c.text}; opacity: 0.5; }
+     .gantt .bar-wrapper.bar-color-${key} .bar-progress { fill: ${c.text}; opacity: 0.4; }
      .gantt .bar-wrapper.bar-color-${key} .bar-label { fill: ${c.text}; font-weight: 600; }`
   ).join('\n');
 
@@ -1690,11 +2001,26 @@ function injectPhaseStyles() {
     .gantt .bar-wrapper.on-critical .milestone-diamond { stroke: #b91c1c; stroke-width: 2.5; }
   `;
 
-  el.textContent = phaseRules + '\n' + hierarchyRules + '\n' + overAlloc + '\n' + critical;
+  // 100% complete DURATION bars get a lime green border — preserves the
+  // hierarchy color underneath (so a finished Build task still reads as
+  // "Build") but adds an unmistakable visual cue that it's done. Lime matches
+  // the anchor-color palette so the "done" visual language is consistent
+  // across tasks and anchors. Critical-path red border still wins (it's
+  // declared after and uses the same selector specificity).
+  const doneRule = `
+    .gantt .bar-wrapper.is-done .bar { stroke: #befa4f !important; stroke-width: 2.5 !important; }
+  `;
+
+  el.textContent = phaseRules + '\n' + hierarchyRules + '\n' + doneRule + '\n' + overAlloc + '\n' + critical;
 }
 
 function renderGanttLegend() {
+  // v4.38: legend element removed from the DOM. Function kept as a no-op
+  // so existing call sites (renderGantt + a few others) don't need to be
+  // touched. If the legend ever needs to come back, restoring the markup
+  // in index.html is enough.
   const legend = document.getElementById('gantt-legend');
+  if (!legend) return;
   const present = new Set(state.tasks.map(t => t.phase).filter(Boolean));
   const items = PHASES.filter(p => present.has(p.key));
   legend.innerHTML = items.map(p => `
@@ -1782,10 +2108,16 @@ function renderGantt() {
     if (colorKey) classes.push(`bar-color-${colorKey}`);
     if (t.is_milestone) classes.push('is-milestone');
     if (isBacklogTask(t)) classes.push('is-backlog');
-    // Completed milestone (progress = 100%) gets a distinct "done" diamond — solid
-    // green fill + checkmark — so you can see at a glance which spine markers
-    // you've hit vs which are still ahead. Applies to anchor + non-anchor milestones.
+    // Milestones at 100%: still tagged milestone-done — drawMilestoneDiamonds
+    // uses it to paint the ✓ overlay glyph. As of v4.4 milestones keep their
+    // normal fill color (lime for anchors, slate for non-anchors) when done;
+    // only the ✓ overlay differs. Done is the EXTRA — color is consistent.
     if (t.is_milestone && (t.progress || 0) >= 100) classes.push('milestone-done');
+    // 100% complete DURATION task: tag .is-done. CSS adds a LIME BORDER around
+    // the bar — preserves the hierarchy color underneath (Build task stays
+    // Build-tan when done, etc.) and the lime stroke makes "complete" pop
+    // visually without recoloring the bar.
+    if (!t.is_milestone && !isBacklogTask(t) && (t.progress || 0) >= 100) classes.push('is-done');
     if (state.overAllocatedTaskIds.has(t.id)) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
@@ -1983,10 +2315,15 @@ function drawBarMeta() {
     const alloc = Math.max(0, Math.min(100, Number(task.allocation) || 0));
     const durDays = Number(task.duration_days) || 0;
     const wks = Math.round(durDays / 5);  // 5 business days = 1 week (matches FAT variance rounding)
+    // Sales-workspace tasks hide allocation everywhere — same reasoning as
+    // the grid meta row / Assignee + Allocation columns (v4.22): pre-quote
+    // work shouldn't surface staffing commitments. Bar meta still shows the
+    // duration label so the bar's length is annotated.
+    const salesTask = isSalesProjectTask(task);
 
     // Build the combined label. Skip the whole row if both values are zero.
     const parts = [];
-    if (alloc > 0) parts.push(`${alloc}%`);
+    if (!salesTask && alloc > 0) parts.push(`${alloc}%`);
     if (wks > 0)   parts.push(`${wks}w`);
     if (parts.length === 0) continue;
     const labelText = parts.join(' · ');
@@ -2766,13 +3103,13 @@ function drawMilestoneDiamonds() {
   // Clear previous
   svg.querySelectorAll('.milestone-diamond, .milestone-check').forEach(d => d.remove());
 
-  // "Done" palette — solid emerald + dark green stroke. Reserved exclusively for
-  // milestones with progress >= 100 so the chart immediately reads which spine
-  // markers you've hit vs which are still ahead. Same color for anchor and
-  // non-anchor milestones so a glance gives a binary "done / not done" signal.
-  const DONE_FILL   = '#16a34a';
-  const DONE_STROKE = '#14532d';
-  const CHECK_COLOR = '#ffffff';
+  // Checkmark color for done milestones. The diamond itself keeps its normal
+  // anchor / non-anchor fill — only the ✓ glyph overlay tells you it's done.
+  // (Earlier versions flipped the whole diamond to a deep-green "done" color;
+  // that made done anchors look completely different from undone ones, which
+  // was confusing when two anchors of the same type — e.g. Receipt of PO not
+  // done vs Mech 1 Release done — sat in the same view.)
+  const CHECK_COLOR = '#1e293b';   // slate-800; reads against both lime + slate diamonds
 
   for (const task of state.tasks) {
     if (!task.is_milestone) continue;
@@ -2794,15 +3131,21 @@ function drawMilestoneDiamonds() {
     // visual footprint — what distinguishes them is the ring (anchor only) and
     // the color (lime-green fill vs slate).
     //
-    // Sizing:
-    //   - Non-anchor diamond:   h × 1.20 wide.
-    //   - Anchor OUTER ring:    h × 1.20 wide (same as non-anchor → consistent
-    //                           total size; no overlap with adjacent task rows).
-    //   - Anchor INNER diamond: h × 0.75 wide (much smaller than the outer
-    //                           ring, leaving a clear ring of negative space).
+    // v4.23 hotfix: DECOUPLED milestone size from bar_height. The bar ratio
+    // bumped 0.5 → 0.7 in v4.23 (so task bars dominate their rows), which
+    // also blew up the diamond ~40% because it was sized off `h` directly
+    // and looked oversized for milestones. Now we compute a separate
+    // diamondRef at the OLD 0.5 ratio so diamonds stay the same size they
+    // always were even though task bars grew.
+    //
+    // Sizing (against diamondRef, not h):
+    //   - Non-anchor diamond:   diamondRef × 1.20 wide.
+    //   - Anchor OUTER ring:    diamondRef × 1.20 wide.
+    //   - Anchor INNER diamond: diamondRef × 0.75 wide.
+    const diamondRef = Math.max(BAR_H_MIN, Math.round(state.layout.rowHeight * 0.5));
     const isAnchor = !!inferredAnchorKey(task);
     const isDone   = (task.progress || 0) >= 100;
-    const size = isAnchor ? h * 0.75 : h * 1.20;
+    const size = isAnchor ? diamondRef * 0.75 : diamondRef * 1.20;
 
     bar.style.opacity = '0';
     wrap.querySelectorAll('.bar-progress').forEach(el => el.style.opacity = '0');
@@ -2816,11 +3159,13 @@ function drawMilestoneDiamonds() {
     const ac = state.settings?.anchor_color || ANCHOR_COLOR_DEFAULTS;
 
     if (isAnchor) {
-      // Outer ring — pure outline at h × 1.20 (same size as a non-anchor
+      // Outer ring — pure outline at diamondRef × 1.20 (same size as a non-anchor
       // diamond), in the anchor text/stroke shade. The clear gap between this
       // outer ring and the smaller inner diamond is what makes the anchor
       // visually distinct without making it any larger than other milestones.
-      const outerSize = h * 1.20;
+      // v4.23 hotfix: uses diamondRef (not h) so anchors stay sized off the
+      // OLD bar ratio even though task bars grew when ratio bumped to 0.7.
+      const outerSize = diamondRef * 1.20;
       const outerPts = `${cx},${cy - outerSize/2} ${cx + outerSize/2},${cy} ${cx},${cy + outerSize/2} ${cx - outerSize/2},${cy}`;
       const outer = document.createElementNS(SVG_NS, 'polygon');
       outer.setAttribute('points', outerPts);
@@ -2829,7 +3174,11 @@ function drawMilestoneDiamonds() {
       // Outer ring on a "done" anchor uses the dark-green stroke so the whole
       // double-diamond reads as completed (otherwise the outer ring still looks
       // "pending" while the inner is filled green).
-      outer.setAttribute('stroke', isDone ? DONE_STROKE : ac.text);
+      // Outer ring uses the same anchor text/stroke color whether or not the
+      // milestone is done. Done state is signaled by the ✓ overlay added below,
+      // not a color flip — so a done Receipt of PO and an undone Receipt of PO
+      // are unambiguously the same milestone, just one with a checkmark on top.
+      outer.setAttribute('stroke', ac.text);
       outer.setAttribute('stroke-width', '1.75');
       outer.setAttribute('stroke-linejoin', 'miter');
       wrap.appendChild(outer);
@@ -2839,17 +3188,20 @@ function drawMilestoneDiamonds() {
     const diamond = document.createElementNS(SVG_NS, 'polygon');
     diamond.setAttribute('points', points);
     diamond.setAttribute('class', 'milestone-diamond' + (isAnchor ? ' anchor-inner' : '') + (isDone ? ' done' : ''));
-    // Done milestones override both the anchor-color and the slate non-anchor color
-    // with a solid emerald — clear "this is checked off" signal independent of which
-    // anchor it is. Non-done milestones keep their existing color treatment.
-    diamond.setAttribute('fill',   isDone ? DONE_FILL   : (isAnchor ? ac.fill : '#475569'));
-    diamond.setAttribute('stroke', isDone ? DONE_STROKE : (isAnchor ? ac.text : '#334155'));
-    diamond.setAttribute('stroke-width', isAnchor || isDone ? '1.5' : '1');
+    // Milestones keep their NORMAL color whether done or not:
+    //   - Anchors: lime fill + dark green stroke (from anchor_color settings)
+    //   - Non-anchors: slate fill + darker slate stroke
+    // The ✓ overlay (added below) is the only visual difference between done
+    // and undone — consistent color = consistent identity, easy to scan.
+    diamond.setAttribute('fill',   isAnchor ? ac.fill : '#475569');
+    diamond.setAttribute('stroke', isAnchor ? ac.text : '#334155');
+    diamond.setAttribute('stroke-width', isAnchor ? '1.5' : '1');
     wrap.appendChild(diamond);
 
-    // Checkmark glyph rendered on top of the diamond for done milestones. Sized to
-    // fit comfortably inside the inner shape, centered, in white so it pops against
-    // the emerald fill regardless of which anchor it is.
+    // Checkmark glyph rendered on top of the diamond for done milestones.
+    // Sized to fit comfortably inside the inner shape, centered. Color is
+    // slate-800 — reads cleanly on both the lime anchor fill and the slate
+    // non-anchor fill (both have enough luminance difference from dark slate).
     if (isDone) {
       const check = document.createElementNS(SVG_NS, 'text');
       check.setAttribute('x', cx);
@@ -2857,7 +3209,7 @@ function drawMilestoneDiamonds() {
       check.setAttribute('class', 'milestone-check');
       check.setAttribute('text-anchor', 'middle');
       check.setAttribute('dominant-baseline', 'central');
-      check.setAttribute('fill', CHECK_COLOR);
+      check.setAttribute('fill', isAnchor ? CHECK_COLOR : '#ffffff');
       check.setAttribute('font-size', String(Math.round(size * 0.9)));
       check.setAttribute('font-weight', '900');
       check.setAttribute('pointer-events', 'none');
@@ -2875,6 +3227,15 @@ function drawMilestoneDiamonds() {
 function clipBarLabels() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
+  // v4.28: SVG width drives the "would this overflow label clip off the right
+  // edge?" check below. Fall back to clientWidth, then Infinity (always-right)
+  // if neither is set.
+  const svgWidth =
+    (svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width) ||
+    +svg.getAttribute('width') ||
+    svg.clientWidth ||
+    Infinity;
+
   for (const task of state.tasks) {
     if (task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
@@ -2900,48 +3261,60 @@ function clipBarLabels() {
     const fontSize = Math.max(8, Math.min(12, barH - 2));
     label.style.fontSize = fontSize + 'px';
 
-    // Always center the label inside the bar — frappe-gantt repositions it OUTSIDE
-    // (text-anchor=start at bar.right + 5) when the original text was too wide. We
-    // override that so labels live inside the bar exclusively. dominant-baseline
-    // 'central' centers around the font's geometric middle (cap-height + descender),
-    // which keeps descenders inside the bar instead of dropping below it.
-    label.setAttribute('x', barX + barW / 2);
-    label.setAttribute('y', barY + barH / 2);
-    label.setAttribute('text-anchor', 'middle');
-    label.setAttribute('dominant-baseline', 'central');
-
     const fullText = task.name || '';
     // Measure unconstrained.
     label.textContent = fullText;
+    label.classList.remove('bar-label-outside');
     let labelW;
     try { labelW = label.getBBox().width; }
     catch (_) { labelW = fullText.length * 6.5; }
     const PAD = 8; // breathing room inside the bar
+
     if (labelW + PAD <= barW) {
-      // Fits — make sure any previous title is cleared.
+      // Fits INSIDE — center label in bar (dominant-baseline 'central' keeps
+      // descenders inside the bar instead of dropping below).
+      label.setAttribute('x', barX + barW / 2);
+      label.setAttribute('y', barY + barH / 2);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('dominant-baseline', 'central');
+      // Drop any prior tooltip — full text is visible.
       const t = wrap.querySelector('title');
       if (t) t.remove();
       continue;
     }
-    // Doesn't fit. Binary-search for the longest prefix + ellipsis that fits.
-    let lo = 0, hi = fullText.length;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      label.textContent = fullText.slice(0, mid) + '…';
-      let w;
-      try { w = label.getBBox().width; }
-      catch (_) { w = (mid + 1) * 6.5; }
-      if (w + PAD <= barW) lo = mid;
-      else hi = mid - 1;
+
+    // v4.28: doesn't fit INSIDE — render OUTSIDE the bar (like milestone
+    // labels do). Default placement is to the RIGHT of the bar. If the
+    // right-side label would clip past the SVG edge AND there's room on
+    // the left, place LEFT instead. Otherwise stays right (still readable
+    // because the Gantt panel scrolls horizontally).
+    //
+    // Previously this branch ellipsis-truncated inside the bar ("Configure
+    // Mac…"), which for short bars like "Configure Machine" at Week zoom
+    // ended up rendering as just "…" or nothing — useless. Out-of-bar
+    // labels solve that the same way milestone labels do.
+    const labelOffset = 6;
+    const rightStartX = barX + barW + labelOffset;
+    const leftEndX    = barX - labelOffset;
+    const wouldClipRight = (rightStartX + labelW) > svgWidth;
+    const fitsLeft       = (leftEndX - labelW) > 0;
+    const placeLeft = wouldClipRight && fitsLeft;
+
+    label.textContent = fullText;
+    if (placeLeft) {
+      label.setAttribute('x', leftEndX);
+      label.setAttribute('text-anchor', 'end');
+    } else {
+      label.setAttribute('x', rightStartX);
+      label.setAttribute('text-anchor', 'start');
     }
-    label.textContent = lo > 0 ? fullText.slice(0, lo) + '…' : '';
-    // Hover tooltip with the full name.
-    let title = wrap.querySelector('title');
-    if (!title) {
-      title = document.createElementNS(SVG_NS, 'title');
-      wrap.insertBefore(title, wrap.firstChild);
-    }
-    title.textContent = fullText;
+    label.setAttribute('y', barY + barH / 2);
+    label.setAttribute('dominant-baseline', 'central');
+    label.classList.add('bar-label-outside');
+
+    // Outside labels render the full task name — no tooltip needed.
+    const t = wrap.querySelector('title');
+    if (t) t.remove();
   }
 }
 
@@ -2974,9 +3347,10 @@ function drawMilestoneLabels() {
     const cy = y + h / 2;
     const isAnchor = !!inferredAnchorKey(task);
     // Anchor outer ring and non-anchor diamond both have the same outer
-    // radius (h × 1.20 / 2), so labels sit at the same offset for either
-    // milestone type.
-    const r = h * 1.20 / 2;
+    // radius. v4.23 hotfix: sized off diamondRef (OLD bar ratio of 0.5×rh)
+    // not the current h, since bars grew but milestones stay the same.
+    const diamondRef = Math.max(BAR_H_MIN, Math.round(state.layout.rowHeight * 0.5));
+    const r = diamondRef * 1.20 / 2;
     const labelOffset = 6;
     const lbl = document.createElementNS(SVG_NS, 'text');
     lbl.setAttribute('x', cx + r + labelOffset);
@@ -3216,9 +3590,11 @@ function drawCustomArrows() {
       const cx = x + ww / 2;
       const cy = y + hh / 2;
       // Anchor outer ring and non-anchor diamond both have outer radius
-      // h × 1.20 / 2, so arrows terminate at the same boundary for either
-      // milestone type.
-      const r = hh * 1.20 / 2;
+      // diamondRef × 1.20 / 2 (v4.23 hotfix: decoupled from h). Arrows
+      // terminate at this exact boundary so they don't pierce or miss the
+      // diamond now that the diamond is smaller than the bar height.
+      const diamondRef = Math.max(BAR_H_MIN, Math.round(state.layout.rowHeight * 0.5));
+      const r = diamondRef * 1.20 / 2;
       return { id, x: cx - r, y: cy - r, w: 2 * r, h: 2 * r, milestone: true };
     }
     return { id, x, y, w: ww, h: hh, milestone: false };
@@ -3533,6 +3909,7 @@ function renderFilters() {
   //                             auto-enables highlight too).
   const sv = state.scheduleView || {};
   const chipDefs = [
+    { key: 'showCompleted', label: 'Show completed',    source: 'quick' },
     { key: 'behind',        label: 'Behind schedule',   source: 'quick' },
     { key: 'ahead',         label: 'Ahead of schedule', source: 'quick' },
     { key: 'milestones',    label: 'Milestones only',   source: 'quick' },
@@ -3591,7 +3968,7 @@ function renderFilters() {
   });
   pop.querySelector('#btn-clear-filters').addEventListener('click', (e) => {
     e.stopPropagation();
-    state.filters.quick = { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false };
+    state.filters.quick = { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false };
     // Also clear Critical path since it lives among quick filters now.
     state.scheduleView.criticalPath = false;
     state.scheduleView.criticalOnly = false;
@@ -3622,16 +3999,114 @@ function loadProjectTabs() {
   let savedTemplates = [];
   try { savedTemplates = JSON.parse(localStorage.getItem('sdcTemplateProjects') || '[]'); } catch {}
   state.templateProjects = Array.isArray(savedTemplates) ? savedTemplates : [];
+  let savedWorkspaces = {};
+  try { savedWorkspaces = JSON.parse(localStorage.getItem('sdcProjectWorkspaces') || '{}'); } catch {}
+  state.projectWorkspaces = (savedWorkspaces && typeof savedWorkspaces === 'object') ? savedWorkspaces : {};
+  const savedActiveWs = localStorage.getItem('sdcActiveWorkspace');
+  state.activeWorkspace = (savedActiveWs && ['Active', 'Sales', 'Closed'].includes(savedActiveWs)) ? savedActiveWs : 'Active';
+  // Projects-page expanded sections (per workspace). Defaults to all
+  // collapsed; user clicks a header to expand.
+  let savedExpanded = {};
+  try { savedExpanded = JSON.parse(localStorage.getItem('sdcProjectsExpanded') || '{}'); } catch {}
+  state._projectsExpanded = (savedExpanded && typeof savedExpanded === 'object') ? savedExpanded : {};
+  // Favorites + Recents are per-browser localStorage lists of project names.
+  let favs = [];
+  try { favs = JSON.parse(localStorage.getItem('sdcFavoriteProjects') || '[]'); } catch {}
+  state.favoriteProjects = Array.isArray(favs) ? favs : [];
+  let recents = [];
+  try { recents = JSON.parse(localStorage.getItem('sdcRecentProjects') || '[]'); } catch {}
+  state.recentProjects = Array.isArray(recents) ? recents.slice(0, 10) : [];
+  // If the active project belongs to a different workspace than the saved
+  // active workspace, sync the workspace to the project. Otherwise the user
+  // would load into a workspace where their last-viewed project doesn't appear.
+  if (state.filters.project) {
+    const ws = projectWorkspace(state.filters.project);
+    if (ws !== state.activeWorkspace) state.activeWorkspace = ws;
+  }
 }
 
 function saveProjectTabs() {
   localStorage.setItem('sdcOpenProjects', JSON.stringify(state.openProjects));
   localStorage.setItem('sdcActiveProject', state.filters.project || '');
   localStorage.setItem('sdcTemplateProjects', JSON.stringify(state.templateProjects || []));
+  localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces || {}));
+  localStorage.setItem('sdcActiveWorkspace', state.activeWorkspace || 'Active');
+  localStorage.setItem('sdcFavoriteProjects', JSON.stringify(state.favoriteProjects || []));
+  localStorage.setItem('sdcRecentProjects',   JSON.stringify(state.recentProjects   || []));
+}
+
+// Toggle a project's favorite flag. Updates state + localStorage + refreshes
+// any open Projects / Favorites / Recents page so the UI reflects the change.
+function toggleFavoriteProject(name) {
+  if (!name) return;
+  const i = state.favoriteProjects.indexOf(name);
+  if (i >= 0) state.favoriteProjects.splice(i, 1);
+  else        state.favoriteProjects.unshift(name);
+  saveProjectTabs();
+  // Re-render whichever view is showing so the star flips immediately.
+  if (state.view === 'projects')  renderProjectsPage();
+  if (state.view === 'favorites') renderFavoritesPage();
+  if (state.view === 'recents')   renderRecentsPage();
+}
+
+// Record a project open in the Recents list. Newest-first, deduped, capped at 10.
+function recordRecentProject(name) {
+  if (!name) return;
+  state.recentProjects = [name, ...(state.recentProjects || []).filter(p => p !== name)].slice(0, 10);
+  saveProjectTabs();
 }
 
 function isTemplateProject(p) {
   return !!p && Array.isArray(state.templateProjects) && state.templateProjects.includes(p);
+}
+
+// Fixed list of workspaces for v4.7. Order here is also the display order in
+// the picker. Adding a new workspace just means dropping its name into this
+// array — assignments live in state.projectWorkspaces keyed by project name.
+const WORKSPACES = ['Active', 'Sales', 'Closed'];
+const DEFAULT_WORKSPACE = 'Active';
+
+// Get the workspace a project belongs to. Falls back to the default for any
+// project that hasn't been explicitly assigned (i.e. everything from before
+// v4.7 is in "Active").
+function projectWorkspace(p) {
+  if (!p) return DEFAULT_WORKSPACE;
+  const ws = state.projectWorkspaces?.[p];
+  if (WORKSPACES.includes(ws)) return ws;
+  // Auto-detect workspace from project name when nothing's explicitly set.
+  // Keeps the SDC_Sales_Template (and any other *sales* / *closed* schedule)
+  // in the right workspace on first load without requiring manual right-click
+  // assignment per browser. The user can still override via right-click →
+  // Workspace: ___; that explicit choice persists in state.projectWorkspaces.
+  const lower = String(p).toLowerCase();
+  if (/\bsales?\b|_sales/.test(lower))  return 'Sales';
+  if (/\bclosed\b|_closed|_archive/.test(lower)) return 'Closed';
+  return DEFAULT_WORKSPACE;
+}
+
+// True iff the task lives in a Sales-workspace project. Used by the grid to
+// SUPPRESS the allocation pill, allocation column, and assignee column for
+// Sales schedules (per v4.22): Sales work is pre-quote, so showing "85% × 4
+// engineers" or "ME Placeholder" surfaces detail the customer / sales rep
+// doesn't need and risks accidentally communicating commitments. Anything
+// auto-detected as Sales (name match) OR explicitly assigned via right-click
+// → Workspace: Sales gets the suppression.
+function isSalesProjectTask(t) {
+  if (!t || !t.project) return false;
+  return projectWorkspace(t.project) === 'Sales';
+}
+
+function setProjectWorkspace(p, workspace) {
+  if (!p) return;
+  if (!WORKSPACES.includes(workspace)) return;
+  state.projectWorkspaces = state.projectWorkspaces || {};
+  if (workspace === DEFAULT_WORKSPACE) {
+    // Keep the map clean — default-workspace projects don\'t need an entry.
+    delete state.projectWorkspaces[p];
+  } else {
+    state.projectWorkspaces[p] = workspace;
+  }
+  saveProjectTabs();
 }
 
 // Has the given project had a baseline set? "Set" = at least one task carries
@@ -3666,26 +4141,653 @@ function syncBaselineButtons() {
         : `No baseline set for "${project}". Click to turn one on.`);
 }
 
+// Projects landing page — full-page view that the user navigates to by
+// clicking the Projects icon in the left sidebar. Single column with each
+// workspace as a collapsible section; click the header row to expand /
+// collapse. Project rows inside each section open as a tab on click.
+// "+ New schedule" button per workspace (disabled for Closed).
+function renderProjectsPage() {
+  const root = document.getElementById('projects-page');
+  if (!root) return;
+  const all = uniqueValues('project');
+  const openSet = new Set(state.openProjects);
+  const byWs = Object.fromEntries(WORKSPACES.map(ws => [ws, []]));
+  for (const p of all) byWs[projectWorkspace(p)].push(p);
+  for (const ws of WORKSPACES) {
+    byWs[ws].sort((a, b) => {
+      const ta = isTemplateProject(a) ? 0 : 1;
+      const tb = isTemplateProject(b) ? 0 : 1;
+      if (ta !== tb) return ta - tb;
+      return a.localeCompare(b);
+    });
+  }
+  const expanded = state._projectsExpanded || (state._projectsExpanded = {});
+
+  const favSet = new Set(state.favoriteProjects || []);
+  // Row is a <div role="button"> — NOT a <button> — so the favorite ★ button
+  // nested inside doesn't create invalid nested-button HTML (which Chrome
+  // renders as block-level, breaking the row onto two lines).
+  const rowHtml = (p, opts = {}) => {
+    const isOpen = openSet.has(p);
+    const isFav = favSet.has(p);
+    const isTmpl = isTemplateProject(p);
+    const star = isTmpl
+      ? '<span class="projects-row-star" title="Template">★</span>'
+      : '<span class="projects-row-star" style="visibility:hidden">★</span>';
+    const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? '★' : '☆'}</button>`;
+    return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
+      ${star}<span class="projects-row-name">${escapeHtml(p)}</span>
+      ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
+      ${favBtn}
+    </div>`;
+  };
+  const workspaceSection = (ws) => {
+    const projects = byWs[ws];
+    const templates = projects.filter(isTemplateProject);
+    const nonTemplates = projects.filter(p => !isTemplateProject(p));
+    const isExpanded = !!expanded[ws];
+    const allowsNew = ws !== 'Closed';
+    // Auto-pick the single template in this workspace for the "+ New" button.
+    // Multi-template workspaces still fall back to the legacy picker.
+    const wsTmpl = templates.length === 1 ? templates[0] : null;
+    const newBtnLabel = wsTmpl ? `＋ New from ${escapeHtml(wsTmpl)}` : '＋ New schedule';
+    return `
+      <div class="projects-workspace${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}">
+        <button class="projects-workspace-head" data-action="toggle" type="button">
+          <span class="projects-workspace-caret">▶</span>
+          <span class="projects-workspace-name">${escapeHtml(ws)}</span>
+          <span class="projects-workspace-count">${projects.length}</span>
+          <span class="projects-workspace-spacer"></span>
+          <button class="projects-workspace-newbtn${allowsNew ? '' : ' is-disabled'}" data-action="new" data-workspace="${escapeHtml(ws)}" ${allowsNew ? '' : 'disabled title="Closed workspace — no new schedules allowed."'} type="button">${newBtnLabel}</button>
+        </button>
+        <div class="projects-workspace-body">
+          ${templates.length > 0 ? `
+            <div class="projects-templates-row">
+              <div class="projects-templates-label">Templates</div>
+              ${templates.map(rowHtml).join('')}
+            </div>
+          ` : ''}
+          ${nonTemplates.length === 0 && templates.length === 0
+            ? '<div class="projects-workspace-empty">No schedules in this workspace yet.</div>'
+            : nonTemplates.length === 0
+              ? '<div class="projects-workspace-empty">No schedules yet — use the "+ New" button to start one.</div>'
+              : nonTemplates.map(rowHtml).join('')}
+        </div>
+      </div>
+    `;
+  };
+
+  root.innerHTML = `
+    <h1 class="projects-page-title">Projects</h1>
+    <div class="projects-page-sub">${all.length} schedule${all.length === 1 ? '' : 's'} across ${WORKSPACES.length} workspaces</div>
+    ${WORKSPACES.map(workspaceSection).join('')}
+  `;
+
+  // Toggle expand/collapse on the workspace header. The header is itself a
+  // button; the inner "+ New schedule" button shouldn't trigger the toggle,
+  // so we stop propagation on its click separately below.
+  root.querySelectorAll('.projects-workspace-head').forEach(head => {
+    head.addEventListener('click', (e) => {
+      // Bail if the click was on the inner New-schedule button.
+      if (e.target.closest('[data-action="new"]')) return;
+      const wsDiv = head.closest('.projects-workspace');
+      if (!wsDiv) return;
+      const ws = wsDiv.dataset.workspace;
+      expanded[ws] = !expanded[ws];
+      wsDiv.classList.toggle('is-expanded', expanded[ws]);
+      try { localStorage.setItem('sdcProjectsExpanded', JSON.stringify(expanded)); } catch {}
+    });
+  });
+  root.querySelectorAll('.projects-row').forEach(row => {
+    row.addEventListener('click', (e) => {
+      // Star button intercept — toggles favorite, doesn't open the project.
+      if (e.target.closest('[data-action="toggle-fav"]')) return;
+      const p = row.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      recordRecentProject(p);
+      saveProjectTabs();
+      setView('schedule');
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const p = row.dataset.project;
+      if (!p) return;
+      showProjectTabMenu(e.clientX, e.clientY, p);
+    });
+  });
+  root.querySelectorAll('[data-action="new"]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();  // don't toggle the section
+      const ws = btn.dataset.workspace;
+      if (!ws || ws === 'Closed') return;
+      state.activeWorkspace = ws;
+      saveProjectTabs();
+      // If the workspace has EXACTLY ONE template, prompt for a name and clone
+      // directly — no need to fight a dropdown. Other cases (no template,
+      // multiple templates) fall back to the legacy picker which still has
+      // estimate-sheet + Smartsheet flows.
+      const wsTemplates = (state.templateProjects || []).filter(t =>
+        state.tasks.some(x => x.project === t) && projectWorkspace(t) === ws
+      );
+      if (wsTemplates.length === 1) {
+        const tmpl = wsTemplates[0];
+        const name = prompt(`New ${ws} schedule from "${tmpl}":\n\nEnter the new project name.`);
+        if (!name || !name.trim()) return;
+        const trimmed = name.trim();
+        if (state.tasks.some(t => t.project === trimmed)) {
+          alert(`A project named "${trimmed}" already exists.`);
+          return;
+        }
+        await duplicateProject(tmpl, trimmed);
+        setProjectWorkspace(trimmed, ws);
+        recordRecentProject(trimmed);
+        saveProjectTabs();
+        setView('schedule');
+        return;
+      }
+      // 0 or >1 templates → fall back to the legacy picker.
+      showProjectAddPicker();
+    });
+  });
+  // Star toggle on each row (favorite / unfavorite).
+  root.querySelectorAll('[data-action="toggle-fav"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const p = btn.dataset.project;
+      if (p) toggleFavoriteProject(p);
+    });
+  });
+}
+
+// Favorites page — list of starred projects. Click to open like the Projects page.
+function renderFavoritesPage() {
+  const root = document.getElementById('favorites-page');
+  if (!root) return;
+  const favs = (state.favoriteProjects || []).filter(p => state.tasks.some(t => t.project === p));
+  root.innerHTML = `
+    <h1 class="projects-page-title">Favorites</h1>
+    <div class="projects-page-sub">${favs.length} starred schedule${favs.length === 1 ? '' : 's'}</div>
+    ${favs.length === 0
+      ? '<p class="projects-page-empty">No favorites yet. Click the ☆ next to any schedule on the Projects page to star it.</p>'
+      : `<div class="projects-workspace is-expanded"><div class="projects-workspace-body">${favs.map(p => {
+          const isOpen = state.openProjects.includes(p);
+          const isTmpl = isTemplateProject(p);
+          return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
+            <span class="projects-row-star">${isTmpl ? '★' : ''}</span>
+            <span class="projects-row-name">${escapeHtml(p)}</span>
+            ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
+            <button class="projects-row-favbtn is-fav" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="Unfavorite">★</button>
+          </div>`;
+        }).join('')}</div></div>`}
+  `;
+  root.querySelectorAll('.projects-row').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-action="toggle-fav"]')) return;
+      const p = row.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      recordRecentProject(p);
+      saveProjectTabs();
+      setView('schedule');
+    });
+  });
+  root.querySelectorAll('[data-action="toggle-fav"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const p = btn.dataset.project;
+      if (p) toggleFavoriteProject(p);
+    });
+  });
+}
+
+// Recents page — last 10 opened projects, newest first.
+function renderRecentsPage() {
+  const root = document.getElementById('recents-page');
+  if (!root) return;
+  const recents = (state.recentProjects || []).filter(p => state.tasks.some(t => t.project === p));
+  root.innerHTML = `
+    <h1 class="projects-page-title">Recents</h1>
+    <div class="projects-page-sub">Last ${recents.length} opened schedule${recents.length === 1 ? '' : 's'}</div>
+    ${recents.length === 0
+      ? '<p class="projects-page-empty">No recents yet. Open a schedule from the Projects page to start tracking.</p>'
+      : `<div class="projects-workspace is-expanded"><div class="projects-workspace-body">${recents.map(p => {
+          const isOpen = state.openProjects.includes(p);
+          const isTmpl = isTemplateProject(p);
+          const isFav = (state.favoriteProjects || []).includes(p);
+          return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
+            <span class="projects-row-star">${isTmpl ? '★' : ''}</span>
+            <span class="projects-row-name">${escapeHtml(p)}</span>
+            ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
+            <button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button">${isFav ? '★' : '☆'}</button>
+          </div>`;
+        }).join('')}</div></div>`}
+  `;
+  root.querySelectorAll('.projects-row').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-action="toggle-fav"]')) return;
+      const p = row.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      recordRecentProject(p);
+      saveProjectTabs();
+      setView('schedule');
+    });
+  });
+  root.querySelectorAll('[data-action="toggle-fav"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const p = btn.dataset.project;
+      if (p) toggleFavoriteProject(p);
+    });
+  });
+}
+
+// Left sidebar panel — DEPRECATED in v4.11. Pages are used now instead.
+// Kept as a no-op shim so any straggler callers don't blow up.
+function renderSidebarPanel(mode) {
+  const titleEl = document.getElementById('app-sidebar-panel-title');
+  const bodyEl  = document.getElementById('app-sidebar-panel-body');
+  if (!titleEl || !bodyEl) return;
+  // Highlight the active sidebar icon
+  document.querySelectorAll('.app-sidebar-icon').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.panel === mode);
+  });
+
+  if (mode === 'workspaces') {
+    titleEl.textContent = 'Workspaces';
+    bodyEl.innerHTML = renderWorkspacesPanelHtml();
+    wireWorkspacePanelHandlers(bodyEl);
+  } else if (mode === 'favorites') {
+    titleEl.textContent = 'Favorites';
+    bodyEl.innerHTML = `<div class="panel-workspace-empty">Favorites coming in v4.11 — for now use Workspaces to navigate.</div>`;
+  } else if (mode === 'recents') {
+    titleEl.textContent = 'Recents';
+    bodyEl.innerHTML = `<div class="panel-workspace-empty">Recents coming next — for now use Workspaces to navigate.</div>`;
+  } else if (mode === 'create') {
+    titleEl.textContent = 'Create New Schedule';
+    bodyEl.innerHTML = renderCreatePanelHtml();
+    wireCreatePanelHandlers(bodyEl);
+  }
+}
+
+// Build the HTML for the Workspaces tree panel. Lists every workspace and
+// the projects in it (templates pinned at top with ★). Click a project row
+// to open it as a tab + switch to schedule view.
+function renderWorkspacesPanelHtml() {
+  const all = uniqueValues('project');
+  const openSet = new Set(state.openProjects);
+  const byWs = Object.fromEntries(WORKSPACES.map(ws => [ws, []]));
+  for (const p of all) byWs[projectWorkspace(p)].push(p);
+  for (const ws of WORKSPACES) {
+    byWs[ws].sort((a, b) => {
+      const ta = isTemplateProject(a) ? 0 : 1;
+      const tb = isTemplateProject(b) ? 0 : 1;
+      if (ta !== tb) return ta - tb;
+      return a.localeCompare(b);
+    });
+  }
+  const rowHtml = (p) => {
+    const isOpen = openSet.has(p);
+    const isActive = (state.filters.project || '') === p;
+    const star = isTemplateProject(p) ? '<span class="panel-row-star" title="Template">★</span>' : '';
+    return `<button class="panel-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">
+      ${star}<span class="panel-row-name">${escapeHtml(p)}</span>
+      ${isActive ? '<span class="panel-row-badge">viewing</span>' : (isOpen ? '<span class="panel-row-badge">open</span>' : '')}
+    </button>`;
+  };
+  return WORKSPACES.map(ws => `
+    <div class="panel-workspace" data-workspace="${escapeHtml(ws)}">
+      <div class="panel-workspace-head">
+        <span>${escapeHtml(ws)}</span>
+        <span class="panel-workspace-count">${byWs[ws].length}</span>
+      </div>
+      ${byWs[ws].length === 0
+        ? `<div class="panel-workspace-empty">No schedules in this workspace.</div>`
+        : byWs[ws].map(rowHtml).join('')}
+    </div>
+  `).join('') + `<button class="panel-create-button" data-action="open-create" type="button">＋ New schedule…</button>`;
+}
+
+function wireWorkspacePanelHandlers(bodyEl) {
+  bodyEl.querySelectorAll('.panel-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const p = row.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      saveProjectTabs();
+      setView('schedule');
+      closeSidebarPanel();
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const p = row.dataset.project;
+      if (!p) return;
+      showProjectTabMenu(e.clientX, e.clientY, p);
+    });
+  });
+  const createBtn = bodyEl.querySelector('[data-action="open-create"]');
+  if (createBtn) createBtn.addEventListener('click', () => renderSidebarPanel('create'));
+}
+
+// Build the Create panel — three cards for new-schedule entry points.
+function renderCreatePanelHtml() {
+  const ws = state.activeWorkspace || 'Active';
+  const wsTemplates = (state.templateProjects || []).filter(t =>
+    state.tasks.some(x => x.project === t) && projectWorkspace(t) === ws
+  );
+  const onlyTemplate = wsTemplates.length === 1 ? wsTemplates[0] : null;
+  const allTemplates = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t));
+  return `
+    <div class="workspace-page-actions" style="padding: 12px 14px;">
+      <div class="workspace-action-card">
+        <h3>★ Build from template</h3>
+        ${allTemplates.length === 0
+          ? `<p>No templates yet. Mark an existing schedule as template (right-click its tab → Mark as template ★) to build new schedules from it.</p>`
+          : `<p>${onlyTemplate ? `Active workspace template: <strong>${escapeHtml(onlyTemplate)}</strong>.` : 'Pick a template below.'} Real-person assignees are blanked; placeholders carry through.</p>
+            <div class="workspace-action-row">
+              <input type="text" class="cv-tmpl-name" placeholder="New schedule name…" />
+              ${onlyTemplate
+                ? `<input type="hidden" class="cv-tmpl-source" value="${escapeHtml(onlyTemplate)}" />`
+                : `<select class="cv-tmpl-source"><option value="" disabled selected>Pick a template…</option>${allTemplates.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>`}
+              <button class="btn-primary cv-tmpl-btn" type="button" disabled>Build in ${escapeHtml(ws)}</button>
+            </div>`}
+      </div>
+      <div class="workspace-action-card">
+        <h3>📊 From SDC estimate sheet</h3>
+        <p>Upload the SDC estimate xlsx — we pull hours from "SUMMARY FOR RELEASE", ask for PO + FAT dates, and lay out a schedule from the standard template.</p>
+        <div class="workspace-action-row">
+          <button class="btn-primary cv-fallback" data-action="legacy-picker" type="button">Open legacy picker…</button>
+        </div>
+      </div>
+      <div class="workspace-action-card">
+        <h3>📥 Import from Smartsheet</h3>
+        <p>Already have a schedule in Smartsheet? Export → Excel, then pick the file in the legacy picker (will move here soon).</p>
+        <div class="workspace-action-row">
+          <button class="btn-primary cv-fallback" data-action="legacy-picker" type="button">Open legacy picker…</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireCreatePanelHandlers(bodyEl) {
+  const ws = state.activeWorkspace || 'Active';
+  const allTemplates = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t));
+  const wsTemplates  = allTemplates.filter(t => projectWorkspace(t) === ws);
+  const onlyTemplate = wsTemplates.length === 1 ? wsTemplates[0] : null;
+
+  const nameEl = bodyEl.querySelector('.cv-tmpl-name');
+  const sourceEl = bodyEl.querySelector('.cv-tmpl-source');
+  const btnEl = bodyEl.querySelector('.cv-tmpl-btn');
+  if (btnEl) {
+    const refresh = () => {
+      const v = nameEl?.value?.trim();
+      const src = (sourceEl?.value) || (onlyTemplate || '');
+      btnEl.disabled = !v || !src;
+    };
+    nameEl?.addEventListener('input', refresh);
+    sourceEl?.addEventListener('change', refresh);
+    btnEl.addEventListener('click', async () => {
+      const name = nameEl?.value?.trim();
+      const src  = (sourceEl?.value) || (onlyTemplate || '');
+      if (!name || !src) return;
+      if (state.tasks.some(t => t.project === name)) {
+        alert(`A project named "${name}" already exists. Pick a different name.`);
+        return;
+      }
+      await duplicateProject(src, name);
+      setProjectWorkspace(name, ws);
+      saveProjectTabs();
+      setView('schedule');
+      closeSidebarPanel();
+    });
+    nameEl?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !btnEl.disabled) { e.preventDefault(); btnEl.click(); } });
+  }
+  bodyEl.querySelectorAll('[data-action="legacy-picker"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      closeSidebarPanel();
+      showProjectAddPicker();
+    });
+  });
+}
+
+function openSidebarPanel(mode) {
+  const panel = document.getElementById('app-sidebar-panel');
+  if (!panel) return;
+  renderSidebarPanel(mode);
+  panel.classList.remove('hidden');
+  document.body.classList.add('sidebar-panel-open');
+}
+
+function closeSidebarPanel() {
+  const panel = document.getElementById('app-sidebar-panel');
+  if (!panel) return;
+  panel.classList.add('hidden');
+  document.body.classList.remove('sidebar-panel-open');
+  document.querySelectorAll('.app-sidebar-icon').forEach(btn => btn.classList.remove('is-active'));
+}
+
+// Legacy: kept as a no-op since the workspace landing page was removed.
+function renderWorkspacePage() {
+  const root = document.getElementById('workspace-page');
+  if (!root) return;
+  const ws = state.activeWorkspace || 'Active';
+  // Projects in this workspace, templates first, then alphabetical.
+  const all = uniqueValues('project').filter(p => projectWorkspace(p) === ws);
+  all.sort((a, b) => {
+    const ta = isTemplateProject(a) ? 0 : 1;
+    const tb = isTemplateProject(b) ? 0 : 1;
+    if (ta !== tb) return ta - tb;
+    return a.localeCompare(b);
+  });
+  const wsTemplates = all.filter(p => isTemplateProject(p));
+  const onlyTemplate = wsTemplates.length === 1 ? wsTemplates[0] : null;
+
+  const rowHtml = (p) => {
+    const isOpen = state.openProjects.includes(p);
+    const star = isTemplateProject(p) ? '<span class="ws-row-star" title="Template — protected">★</span>' : '';
+    return `<button class="ws-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">
+      ${star}<span class="ws-row-name">${escapeHtml(p)}</span>
+      ${isOpen ? '<span class="ws-row-badge">open</span>' : ''}
+    </button>`;
+  };
+
+  root.innerHTML = `
+    <div class="workspace-page-head">
+      <h1 class="workspace-page-title">${escapeHtml(ws)} Schedules</h1>
+      <div class="workspace-page-sub">${all.length} schedule${all.length === 1 ? '' : 's'} in this workspace</div>
+    </div>
+
+    <div class="workspace-page-list">
+      ${all.length === 0 ? '<div class="workspace-page-empty">No schedules yet in this workspace. Use one of the buttons below to build a new one.</div>'
+        : all.map(rowHtml).join('')}
+    </div>
+
+    <div class="workspace-page-actions">
+      <div class="workspace-action-card">
+        <h3>★ Build from template</h3>
+        ${wsTemplates.length === 0
+          ? `<p>No template in this workspace yet. Mark an existing schedule as template (right-click its tab → Mark as template ★), or build one from the standard template and move it here.</p>`
+          : `<p>${onlyTemplate ? `Clones <strong>${escapeHtml(onlyTemplate)}</strong> into a fresh project.` : 'Clones the chosen template into a fresh project.'} Real-person assignees are blanked; placeholders carry through.</p>
+            <div class="workspace-action-row">
+              <input type="text" class="ws-tmpl-name" placeholder="New schedule name…" />
+              ${onlyTemplate
+                ? `<input type="hidden" class="ws-tmpl-source" value="${escapeHtml(onlyTemplate)}" />`
+                : `<select class="ws-tmpl-source"><option value="" disabled selected>Pick a template…</option>${wsTemplates.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>`}
+              <button class="btn-primary ws-tmpl-btn" type="button" disabled>Build</button>
+            </div>`}
+      </div>
+
+      <div class="workspace-action-card">
+        <h3>📊 Build from SDC estimate sheet</h3>
+        <p>Upload the SDC estimate xlsx (with the "SUMMARY FOR RELEASE" tab). We pull the hours per discipline + section, ask for PO + FAT dates, and lay out a full schedule based on the standard template.</p>
+        <div class="workspace-action-row">
+          <input type="file" class="ws-estimate-file" accept=".xlsx" />
+          <button class="btn-primary ws-estimate-btn" type="button" disabled>Analyze →</button>
+        </div>
+      </div>
+
+      <div class="workspace-action-card">
+        <h3>📥 Import from Smartsheet</h3>
+        <p>Already have a schedule in Smartsheet? Export it from Smartsheet → File → Export → Excel, then pick the xlsx here. One file → one project. Bulk-pick multiple files to import all at once.</p>
+        <div class="workspace-action-row">
+          <input type="text" class="ws-import-name" placeholder="Project name (auto-fills from file)" />
+          <input type="file" class="ws-import-file" accept=".xlsx" multiple />
+          <button class="btn-primary ws-import-btn" type="button" disabled>Import</button>
+        </div>
+        <div class="ws-import-status"></div>
+      </div>
+    </div>
+  `;
+
+  // Wire row clicks — open the project as a tab + switch to schedule view.
+  root.querySelectorAll('.ws-row').forEach(row => {
+    row.addEventListener('click', async () => {
+      const p = row.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      saveProjectTabs();
+      setView('schedule');
+    });
+    row.addEventListener('contextmenu', async (e) => {
+      e.preventDefault();
+      const p = row.dataset.project;
+      if (isTemplateProject(p)) {
+        await showAlertDialog({ title: 'Template projects are protected', message: `"${p}" is marked as a template. Open it, right-click the tab, and unmark it before deleting.` });
+        return;
+      }
+      deleteProject(p);
+    });
+  });
+
+  // Wire Build from template
+  if (wsTemplates.length > 0) {
+    const nameEl = root.querySelector('.ws-tmpl-name');
+    const sourceEl = root.querySelector('.ws-tmpl-source');
+    const btnEl = root.querySelector('.ws-tmpl-btn');
+    const refreshBtn = () => {
+      const v = nameEl?.value?.trim();
+      const src = (sourceEl?.value) || (onlyTemplate || '');
+      btnEl.disabled = !v || !src;
+    };
+    nameEl?.addEventListener('input', refreshBtn);
+    sourceEl?.addEventListener('change', refreshBtn);
+    const buildFromTmpl = async () => {
+      const name = nameEl?.value?.trim();
+      const src  = (sourceEl?.value) || (onlyTemplate || '');
+      if (!name || !src) return;
+      if (state.tasks.some(t => t.project === name)) {
+        alert(`A project named "${name}" already exists. Pick a different name.`);
+        return;
+      }
+      await duplicateProject(src, name);
+      // New project starts in the current workspace, not the source's.
+      setProjectWorkspace(name, ws);
+      // duplicateProject already opens the tab + switches state.filters.project,
+      // but it doesn't change state.view. Switch now so the user lands on the
+      // schedule editor for the new project.
+      setView('schedule');
+    };
+    btnEl?.addEventListener('click', buildFromTmpl);
+    nameEl?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !btnEl.disabled) { e.preventDefault(); buildFromTmpl(); } });
+  }
+
+  // Wire Estimate sheet upload (reuses the existing flow from the picker —
+  // we set up the file input + button here and delegate to handleEstimateFile,
+  // which already opens the analyze modal etc.).
+  const estFile = root.querySelector('.ws-estimate-file');
+  const estBtn  = root.querySelector('.ws-estimate-btn');
+  if (estFile && estBtn) {
+    estFile.addEventListener('change', () => { estBtn.disabled = !estFile.files?.length; });
+    estBtn.addEventListener('click', async () => {
+      const f = estFile.files?.[0];
+      if (!f) return;
+      // The legacy picker code reads the file as base64 → POSTs to
+      // /api/estimate/analyze, opens a modal. We don't have that function
+      // factored out yet; for v4.9 the user can fall back to the existing
+      // "+ New tab" picker for now (which still has the estimate flow wired).
+      // Telegraph that in the meantime.
+      alert('Estimate-sheet upload from the workspace page is wired but the analyze flow still lives in the legacy + New tab picker for now — click "+ New tab" → "Build from SDC estimate sheet" to use it. Will wire here in the next iteration.');
+    });
+  }
+
+  // Same caveat for Smartsheet for now.
+  const impBtn = root.querySelector('.ws-import-btn');
+  const impFile = root.querySelector('.ws-import-file');
+  if (impFile && impBtn) {
+    impFile.addEventListener('change', () => { impBtn.disabled = !impFile.files?.length; });
+    impBtn.addEventListener('click', () => {
+      alert('Smartsheet import from the workspace page is wired but the parser still lives in the legacy + New tab picker for now — click "+ New tab" → "Import from Smartsheet" to use it. Will wire here in the next iteration.');
+    });
+  }
+}
+
+// (v4.10: renderWorkspaceBar removed — the workspace switcher moved from the
+// top of the page into the left sidebar PANEL. Click the 📁 Workspaces icon
+// in the sidebar to open the panel, which lists every workspace and its
+// projects as a tree.)
+function renderWorkspaceBar() { /* no-op — kept for callers that haven't been updated yet */ }
+
 function renderProjectTabs() {
   const wrap = document.getElementById('project-tabs');
   if (!wrap) return;
-  wrap.innerHTML = state.openProjects.map(p => {
+  // Show ALL open project tabs regardless of workspace. v4.18 dropped the
+  // workspace filter that v4.8 introduced — having tabs disappear when you
+  // navigate to a different workspace's project was disorienting. Now you
+  // can have an Active project, a Sales template, and a Closed schedule all
+  // open side-by-side; the workspace is conveyed via per-tab COLOR coding
+  // (see CSS .project-tab.workspace-*) instead of filtering tabs away.
+  // Templates pinned first; non-templates in their original openProjects order.
+  const visibleList = state.openProjects.slice();
+  const templatesFirst = [
+    visibleList.find(p => p === ''),
+    ...visibleList.filter(p => p !== '' && isTemplateProject(p)),
+    ...visibleList.filter(p => p !== '' && !isTemplateProject(p)),
+  ].filter(p => p !== undefined);
+  wrap.innerHTML = templatesFirst.map(p => {
     const isAll = p === '';
     const isActive = (state.filters.project || '') === p;
     const isTemplate = isTemplateProject(p);
     const label = isAll ? 'All projects' : p;
-    // Templates can't be closed via the × — they have to be unmarked first via
-    // right-click. The All-projects pseudo-tab also has no close button.
-    const close = (isAll || isTemplate) ? ''
-      : `<span class="project-tab-close" data-project="${escapeHtml(p)}" title="Close schedule">×</span>`;
+    // All-projects pseudo-tab has no close button (it's a special permanent
+    // tab). Everything else — including templates — can be closed via the ×;
+    // "close" only removes the tab from the open-tabs list, the underlying
+    // project (and template flag) stay in the DB.
+    const close = isAll ? ''
+      : `<span class="project-tab-close" data-project="${escapeHtml(p)}" title="Close tab (project stays in the database)">×</span>`;
     const star  = isTemplate ? '<span class="project-tab-star" title="Template — protected">★</span>' : '';
     const cls = ['project-tab'];
     if (isActive) cls.push('active');
     if (isAll)    cls.push('is-all');
     if (isTemplate) cls.push('is-template');
+    // Workspace class drives a SMALL colored DOT before the project name —
+    // not the full tab background. Inactive tabs share a neutral background
+    // so the SELECTED tab (lime border) is unmistakable. Dot colors:
+    //   workspace-active → SDC lime  (#befa4f)
+    //   workspace-sales  → SDC blue  (#AACEE8)
+    //   workspace-closed → SDC yellow (#FFDE51)
+    let wsDot = '';
+    if (!isAll) {
+      const ws = projectWorkspace(p).toLowerCase();
+      cls.push('workspace-' + ws);
+      wsDot = `<span class="project-tab-dot project-tab-dot-${ws}" title="${escapeHtml(projectWorkspace(p))} workspace"></span>`;
+    }
+    // All-projects pseudo-tab is NOT draggable (it's pinned at position 0).
+    // Every real project tab is draggable so the user can reorder them.
+    const draggable = isAll ? 'false' : 'true';
     return `
-      <button class="${cls.join(' ')}" data-project="${escapeHtml(p)}" type="button">
-        ${star}<span class="project-tab-label">${escapeHtml(label)}</span>
+      <button class="${cls.join(' ')}" data-project="${escapeHtml(p)}" type="button" draggable="${draggable}">
+        ${wsDot}${star}<span class="project-tab-label">${escapeHtml(label)}</span>
         ${close}
       </button>`;
   }).join('');
@@ -3695,7 +4797,11 @@ function renderProjectTabs() {
       if (e.target.closest('.project-tab-close')) return;
       state.filters.project = btn.dataset.project;
       saveProjectTabs();
-      render();
+      // Always switch to the schedule view when a project tab is clicked.
+      // Without this, clicking a tab while on the Projects page (or any other
+      // non-schedule view) would silently change the active project without
+      // navigating off the current view — which made the click feel broken.
+      setView('schedule');
     });
     // Right-click → context menu (Duplicate, Mark/Unmark template, Close).
     btn.addEventListener('contextmenu', (e) => {
@@ -3704,12 +4810,52 @@ function renderProjectTabs() {
       if (p === '') return; // No actions on the All-projects pseudo-tab.
       showProjectTabMenu(e.clientX, e.clientY, p);
     });
+    // Drag-to-reorder. The All-projects pseudo-tab is non-draggable (its
+    // draggable=false attribute prevents dragstart) and we explicitly skip
+    // drops on it too — it stays pinned at position 0.
+    if (btn.dataset.project === '') return;
+    btn.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', btn.dataset.project);
+      e.dataTransfer.effectAllowed = 'move';
+      btn.classList.add('dragging');
+    });
+    btn.addEventListener('dragend', () => {
+      btn.classList.remove('dragging');
+      wrap.querySelectorAll('.project-tab.drag-over').forEach(t => t.classList.remove('drag-over'));
+    });
+    btn.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      btn.classList.add('drag-over');
+    });
+    btn.addEventListener('dragleave', () => btn.classList.remove('drag-over'));
+    btn.addEventListener('drop', (e) => {
+      e.preventDefault();
+      btn.classList.remove('drag-over');
+      const fromP = e.dataTransfer.getData('text/plain');
+      const toP   = btn.dataset.project;
+      if (!fromP || fromP === toP || fromP === '' || toP === '') return;
+      const order = [...state.openProjects];
+      const fromIdx = order.indexOf(fromP);
+      if (fromIdx === -1) return;
+      order.splice(fromIdx, 1);
+      const toIdx = order.indexOf(toP);
+      // Drop AT the target's position (pushes target right). For drops on the
+      // last tab the target index is the new last, but we still want fromP to
+      // land there — so use toIdx, not toIdx+1.
+      order.splice(toIdx === -1 ? order.length : toIdx, 0, fromP);
+      state.openProjects = order;
+      saveProjectTabs();
+      renderProjectTabs();
+    });
   });
   wrap.querySelectorAll('.project-tab-close').forEach(x => {
     x.addEventListener('click', (e) => {
       e.stopPropagation();
       const p = x.dataset.project;
-      if (isTemplateProject(p)) return; // safety: shouldn't render but belt+suspenders
+      // Templates close just like any other tab — the project + template flag
+      // remain in the DB, the tab just goes away. Reopen anytime via the
+      // Projects page.
       state.openProjects = state.openProjects.filter(q => q !== p);
       if ((state.filters.project || '') === p) state.filters.project = '';
       saveProjectTabs();
@@ -3768,6 +4914,7 @@ function renderProjectTabs() {
 // as template, close the tab (UI-only), or fully delete the project's data.
 function showProjectTabMenu(x, y, project) {
   const isTemplate = isTemplateProject(project);
+  const currentWs = projectWorkspace(project);
   const items = [
     { label: 'Rename project…',          onClick: () => renameProject(project) },
     { label: 'Duplicate to new project…', onClick: () => duplicateProject(project) },
@@ -3776,6 +4923,20 @@ function showProjectTabMenu(x, y, project) {
     { label: '⚖ Quote vs Schedule…',      onClick: () => openQuoteCompareModal(project) },
     { label: isTemplate ? 'Unmark as template' : 'Mark as template ★', onClick: () => toggleTemplate(project) },
   ];
+  // Move-to-workspace entries — flat (no submenu) since we only have three.
+  // The current workspace shows a ✓ prefix; others move the project on click.
+  // Templates can be moved too, but their "Templates" group in the picker is
+  // driven by the template flag, not by workspace.
+  for (const ws of WORKSPACES) {
+    const isCurrent = ws === currentWs;
+    items.push({
+      label: (isCurrent ? '✓ ' : '   ') + `Workspace: ${ws}`,
+      onClick: isCurrent ? () => {} : () => {
+        setProjectWorkspace(project, ws);
+        renderProjectTabs();
+      },
+    });
+  }
   if (!isTemplate) {
     items.push({ label: 'Close tab', onClick: () => closeProjectTab(project) });
     items.push({ label: 'Delete project (and all its tasks)…', onClick: () => deleteProject(project) });
@@ -3809,6 +4970,7 @@ async function deleteProject(project) {
   state.openProjects = state.openProjects.filter(q => q !== project);
   if ((state.filters.project || '') === project) state.filters.project = '';
   state.templateProjects = (state.templateProjects || []).filter(q => q !== project);
+  if (state.projectWorkspaces) delete state.projectWorkspaces[project];
   saveProjectTabs();
   await loadTasks();
 }
@@ -3869,11 +5031,15 @@ async function renameProject(oldName) {
   for (const t of tasks) {
     await api.update(t.id, { project: trimmed });
   }
-  // Migrate the open-tabs list and the template flag so the new name keeps the
-  // exact same UI state the old one had.
+  // Migrate the open-tabs list, template flag, and workspace assignment so
+  // the new name keeps the exact same UI state the old one had.
   state.openProjects = state.openProjects.map(p => p === oldName ? trimmed : p);
   if (isTemplateProject(oldName)) {
     state.templateProjects = state.templateProjects.map(p => p === oldName ? trimmed : p);
+  }
+  if (state.projectWorkspaces && state.projectWorkspaces[oldName]) {
+    state.projectWorkspaces[trimmed] = state.projectWorkspaces[oldName];
+    delete state.projectWorkspaces[oldName];
   }
   if ((state.filters.project || '') === oldName) state.filters.project = trimmed;
   saveProjectTabs();
@@ -4092,8 +5258,12 @@ async function promptCreateNewOrphanProject(orphans) {
 // built on. Predecessor IDs are remapped to the new task IDs so the dependency
 // graph survives. Assignees are left blank in the copy: a duplicate with real
 // people on every row would double-book them and trip over-allocation warnings.
-async function duplicateProject(source) {
-  const newName = prompt(`Duplicate "${source}" to a new project named:`, `${source}_copy`);
+// Duplicate a project: clone every task into a new project name, remap
+// predecessors, open the new tab. Callers can pass `targetName` to skip the
+// prompt (used by the "Build from template" picker entry, which collects the
+// name in its own input field).
+async function duplicateProject(source, targetName = null) {
+  const newName = targetName != null ? targetName : prompt(`Duplicate "${source}" to a new project named:`, `${source}_copy`);
   if (newName == null) return;
   const trimmed = String(newName).trim();
   if (!trimmed) return;
@@ -4178,19 +5348,52 @@ function showProjectAddPicker() {
   pop.style.left = safeLeft + 'px';
   pop.style.top = (r.bottom + 4) + 'px';
   pop.style.width = POPUP_W + 'px';
+  // Group projects by workspace (Active / Sales / Closed). Templates appear
+  // within their workspace's group (marked with ★), pinned to the top of
+  // that group — no separate "Templates" group, since templates per workspace
+  // is the new mental model (each workspace can have its own template).
+  // Projects without an explicit workspace fall back to "Active".
+  const byWs = Object.fromEntries(WORKSPACES.map(ws => [ws, []]));
+  for (const p of all) byWs[projectWorkspace(p)].push(p);
+  // Sort each workspace: templates first (alphabetical), then non-templates (alphabetical).
+  for (const ws of WORKSPACES) {
+    byWs[ws].sort((a, b) => {
+      const ta = isTemplateProject(a) ? 0 : 1;
+      const tb = isTemplateProject(b) ? 0 : 1;
+      if (ta !== tb) return ta - tb;
+      return a.localeCompare(b);
+    });
+  }
+  const rowHtml = (p) => {
+    const isOpen = openSet.has(p);
+    const star = isTemplateProject(p) ? '<span class="picker-row-star" title="Template — protected">★</span>' : '';
+    return `<button class="picker-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">${star}${escapeHtml(p)}${isOpen ? '<span class="picker-row-badge">open</span>' : ''}</button>`;
+  };
+  const sectionHtml = (title, projects, hint = '') => projects.length === 0 ? '' :
+    `<div class="picker-section-title">${escapeHtml(title)}${hint ? ` <span class="picker-section-hint">${escapeHtml(hint)}</span>` : ''}</div>`
+    + projects.map(rowHtml).join('');
+
   pop.innerHTML = `
-    <div class="picker-section-title">Open existing schedule <span class="picker-section-hint">(right-click to delete)</span></div>
-    ${all.length === 0 ? '<div class="picker-empty">No projects yet.</div>' :
-      all.map(p => {
-        const isOpen = openSet.has(p);
-        return `<button class="picker-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">${escapeHtml(p)}${isOpen ? '<span class="picker-row-badge">open</span>' : ''}</button>`;
-      }).join('')}
+    ${all.length === 0 ? '<div class="picker-empty">No projects yet.</div>' : ''}
+    ${sectionHtml('Active', byWs.Active, '(★ = template; right-click a tab to move / delete)')}
+    ${sectionHtml('Sales', byWs.Sales)}
+    ${sectionHtml('Closed', byWs.Closed)}
     <div class="picker-divider"></div>
     <div class="picker-section-title">Or start a new schedule</div>
     <div class="picker-new-row">
       <input type="text" class="picker-new-input" placeholder="e.g. Job 2026-015 — Sample Project" />
       <button class="btn-primary picker-new-btn" type="button">Open</button>
     </div>
+    <div class="picker-divider"></div>
+    <div class="picker-section-title">Or build from a template ★</div>
+    <div class="picker-new-row picker-template-row">
+      <input type="text" class="picker-template-name" placeholder="New schedule name…" />
+      <select class="picker-template-source">
+        <option value="" disabled selected>Pick a template…</option>
+      </select>
+      <button class="btn-primary picker-template-btn" type="button" disabled>Build</button>
+    </div>
+    <div class="picker-template-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Clones every task, milestone, and predecessor from the template into a fresh project under the name you enter. Real-person assignees are blanked; placeholders carry through.</div>
     <div class="picker-divider"></div>
     <div class="picker-section-title">Or build a schedule from an SDC estimate sheet (.xlsx)</div>
     <div class="picker-new-row picker-estimate-row">
@@ -4213,6 +5416,11 @@ function showProjectAddPicker() {
       const p = row.dataset.project;
       if (!state.openProjects.includes(p)) state.openProjects.push(p);
       state.filters.project = p;
+      // Auto-switch the active workspace to match the opened project, so the
+      // user sees its tab in the project tab bar (instead of "where did my
+      // new tab go?" because it lives in a different workspace).
+      const ws = projectWorkspace(p);
+      if (ws !== state.activeWorkspace) state.activeWorkspace = ws;
       saveProjectTabs();
       pop.remove();
       render();
@@ -4253,6 +5461,46 @@ function showProjectAddPicker() {
   };
   pop.querySelector('.picker-new-btn').addEventListener('click', create);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
+
+  // ---- Build from template ----------------------------------------------
+  // Populate the template dropdown with every project marked as a template
+  // (★ in the project tab right-click menu → "Mark as template"). The user
+  // can have any number of templates — e.g., "SDC_Template" for full project
+  // schedules and "SDC_Sales_Template" for simplified sales schedules.
+  // Clicking Build clones the chosen template into the entered name via the
+  // existing duplicateProject() — same code path as the right-click → Duplicate.
+  const tmplSelect = pop.querySelector('.picker-template-source');
+  const tmplName   = pop.querySelector('.picker-template-name');
+  const tmplBtn    = pop.querySelector('.picker-template-btn');
+  // Note: `templates` is already declared earlier in this function for the
+  // picker grouping. Use a different name here to avoid the redeclaration.
+  const tmplOptions = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t));
+  if (tmplOptions.length === 0) {
+    tmplSelect.innerHTML = '<option value="" disabled selected>No templates yet — mark a project as template first.</option>';
+    tmplSelect.disabled = true;
+    tmplName.disabled   = true;
+  } else {
+    tmplSelect.innerHTML = '<option value="" disabled selected>Pick a template…</option>'
+      + tmplOptions.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+  }
+  const refreshTmplBtn = () => {
+    tmplBtn.disabled = !tmplName.value.trim() || !tmplSelect.value;
+  };
+  tmplName.addEventListener('input', refreshTmplBtn);
+  tmplSelect.addEventListener('change', refreshTmplBtn);
+  const buildFromTemplate = async () => {
+    const name = (tmplName.value || '').trim();
+    const src  = tmplSelect.value;
+    if (!name || !src) return;
+    if (state.tasks.some(t => t.project === name)) {
+      alert(`A project named "${name}" already exists. Pick a different name.`);
+      return;
+    }
+    pop.remove();
+    await duplicateProject(src, name);  // remapped predecessors + open tab handled there
+  };
+  tmplBtn.addEventListener('click', buildFromTemplate);
+  tmplName.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !tmplBtn.disabled) { e.preventDefault(); buildFromTemplate(); } });
 
   // ---- Smartsheet (Excel) import ----------------------------------------
   // The user picks an .xlsx (exported from Smartsheet → File → Export → Excel).
@@ -5077,10 +6325,105 @@ function handleRowContextMenu(e) {
   if (!tr) return;
   e.preventDefault();
   const id = Number(tr.dataset.id);
-  showContextMenu(e.clientX, e.clientY, [
+  const task = state.tasks.find(t => t.id === id);
+  const items = [
+    { label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) },
     { label: 'Move to section…', onClick: () => moveTaskInline(id, e.clientX, e.clientY) },
     { label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) },
-  ]);
+  ];
+  // Milestones / anchors / backlog rows aren't "resources" — duplicating
+  // them as additional resources doesn't make sense. Hide the option.
+  if (task && (task.is_milestone || inferredAnchorKey(task) || isBacklogTask(task))) {
+    items.shift();
+  }
+  showContextMenu(e.clientX, e.clientY, items);
+}
+
+// Right-click → "Add additional resource". Duplicates a task row as the
+// next-numbered resource of the same kind:
+//   - "Builder 1"        → "Builder 2"
+//   - "Builder"          → "Builder 2"
+//   - "Mechanical Design 2" → "Mechanical Design 3"
+// New task inherits department / sub_department / phase_group, duration,
+// allocation, priority, dates, and lands right below the source in
+// sort_order. Predecessor is set to "<source_id>FF" so the new resource
+// finishes alongside the original (typical "extra body on the same work"
+// pattern). Assignee is intentionally blank — caller staffs the new line
+// from the dropdown.
+async function addAdditionalResource(sourceId) {
+  const src = state.tasks.find(t => t.id === sourceId);
+  if (!src) return;
+  // Increment a trailing number, preserving the separator the user used. We
+  // recognize space, dash, or underscore before the number — so "Builder 1"
+  // → "Builder 2", "Machine Wiring-1" → "Machine Wiring-2",
+  // "Test_Engineer_3" → "Test_Engineer_4". If the name has no trailing
+  // number, append " 2".
+  const TRAILING_NUM = /^(.*?)([\s\-_])(\d+)\s*$/;
+  const m = String(src.name || '').match(TRAILING_NUM);
+  let newName;
+  if (m) {
+    newName = `${m[1]}${m[2]}${Number(m[3]) + 1}`;
+  } else {
+    newName = `${(src.name || 'Resource').trim()} 2`;
+  }
+  // Find next available number in case the next-step name already exists.
+  const siblingNames = new Set(
+    state.tasks
+      .filter(t => t.project === src.project)
+      .map(t => String(t.name || '').trim().toLowerCase())
+  );
+  let attempts = 0;
+  while (siblingNames.has(newName.trim().toLowerCase()) && attempts < 50) {
+    const mm = newName.match(TRAILING_NUM);
+    if (mm) newName = `${mm[1]}${mm[2]}${Number(mm[3]) + 1}`;
+    else    newName = `${newName.trim()} 2`;
+    attempts++;
+  }
+  // Drop the new row at the MIDPOINT between the source's sort_order and the
+  // next task in the project (sorted by sort_order). Using a fractional
+  // midpoint sidesteps the need to bump every downstream row, AND
+  // sidesteps the "everything else in this bucket has weird sort_orders"
+  // problem we saw on real projects (where Machine Power-Up's sort_order
+  // was sandwiched between wire-section tasks and the new row ended up at
+  // the bottom). The server stores fractional values as-is in the
+  // INTEGER-affinity column (SQLite's type system is flexible).
+  const projectTasks = state.tasks
+    .filter(t => t.project === src.project)
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  const idx = projectTasks.findIndex(t => t.id === src.id);
+  const next = idx >= 0 ? projectTasks[idx + 1] : null;
+  const srcOrder = Number(src.sort_order) || 0;
+  const nextOrder = next ? Number(next.sort_order) : null;
+  const newOrder = (nextOrder != null && nextOrder > srcOrder)
+    ? (srcOrder + nextOrder) / 2
+    : srcOrder + 0.5;
+
+  const payload = {
+    name: newName,
+    project: src.project,
+    phase: src.phase || null,
+    phase_group: src.phase_group || null,
+    department: src.department || null,
+    sub_department: src.sub_department || null,
+    assignee: null,
+    start_date: src.start_date || null,
+    end_date: src.end_date || null,
+    duration_days: src.duration_days != null ? src.duration_days : null,
+    predecessors: `${src.id}FF`,
+    is_milestone: 0,
+    progress: 0,
+    allocation: src.allocation == null ? 90 : src.allocation,
+    priority: 1,
+    notes: null,
+    sort_order: newOrder,
+  };
+  const created = await api.create(payload);
+  pushUndoSnapshot(src, ['name'], `Add additional resource (${newName})`);
+  await loadTasks();
+  // Scroll the new row into view + focus its name cell so the user can
+  // immediately rename if the auto-increment isn't quite right.
+  const tr = document.querySelector(`tr[data-id="${created.id}"]`);
+  if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function createTaskInSection(g, d, s) {
@@ -5334,19 +6677,37 @@ async function openQuoteCompareModal(project, providedQuote) {
   // Walk the project's tasks and sum hours per task-bucket.
   // Bucket map: task name → key (matches the buckets in /api/estimate/create).
   const TASK_BUCKET = (t) => {
-    const n = (t.name || '').toLowerCase();
+    // Strip a trailing " N", "-N", or "_N" before matching so duplicated
+    // resources (e.g. "Wire Machine 2", "Builder-3", "Mechanical Design 2"
+    // created via "+ Add additional resource") still bucket into their
+    // original category instead of falling through to the generic
+    // sub-department fallback. Match against both raw name and base name.
+    const raw = String(t.name || '').trim();
+    const base = raw.replace(/[\s\-_]\d+\s*$/, '').trim();
+    // Test either form — covers schedules where the user typed names that
+    // don't match the SDC_Template naming convention (e.g. "CE Design"
+    // instead of "Controls Design", "Machine Wiring" vs "Wire Machine").
+    const test = (re) => re.test(base) || re.test(raw);
     const pg = t.phase_group, d = t.department, sd = t.sub_department;
-    if (/^configure machine$/i.test(t.name))      return 'configure';
-    if (/test\/?debug.*engineer/i.test(t.name))   return 'test_debug';
-    if (/^shop debug$/i.test(t.name))             return 'shop_debug';
-    if (/^controls software$/i.test(t.name))      return 'ce_software';
-    if (/^controls design$/i.test(t.name))        return 'ce_design';
-    if (/^controls drawings$/i.test(t.name))      return 'ce_drawings';
-    if (/^hmi/i.test(t.name))                     return 'gen_hmi';
-    if (/^robot/i.test(t.name))                   return 'gen_robot';
-    if (/^vision/i.test(t.name))                  return 'gen_vision';
-    if (/^build and wire panel$/i.test(t.name))   return 'wire_panel';
-    if (/^wire machine$/i.test(t.name))           return 'wire_machine';
+    if (test(/^configure machine/i))                return 'configure';
+    if (test(/test\/?debug.*engineer/i))            return 'test_debug';
+    if (test(/^shop debug/i))                       return 'shop_debug';
+    if (test(/^(controls|ce)[\s\-_]?software/i))    return 'ce_software';
+    if (test(/^(controls|ce)[\s\-_]?design/i))      return 'ce_design';
+    if (test(/^(controls|ce)[\s\-_]?drawings?/i))   return 'ce_drawings';
+    if (test(/^hmi/i))                              return 'gen_hmi';
+    if (test(/^robot/i))                            return 'gen_robot';
+    if (test(/^vision/i))                           return 'gen_vision';
+    // Wire panel — both word orders ("Build and Wire Panel", "Wire Panel",
+    // "Panel Build", "Panel Wiring") roll into wire_panel.
+    if (test(/wire[\s\-_]?panel|panel[\s\-_]?(build|wir)/i)) return 'wire_panel';
+    // Wire machine — both orders ("Wire Machine", "Machine Wiring") roll
+    // into wire_machine.
+    if (test(/wire[\s\-_]?machine|machine[\s\-_]?wir/i))    return 'wire_machine';
+    // Build / Mechanical build / Builder / Build Machine
+    if (test(/^(build|builder)\b/i) && pg === 'design_build')                  return 'build';
+    if (test(/^(mech|mechanical)[\s\-_]?(design|eng)/i) && pg === 'design_build') return 'mech_eng';
+    // Sub-department fallbacks for anything that didn't match by name.
     if (pg === 'design_build' && sd === 'mech')     return 'mech_eng';
     if (pg === 'design_build' && sd === 'build')    return 'build';
     if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
@@ -5354,14 +6715,21 @@ async function openQuoteCompareModal(project, providedQuote) {
     if (pg === 'teardown_install' && d === 'install')  return 'install';
     return null;
   };
+  // Per-bucket: scheduled hours + remaining hours (scheduled × (1 - progress/100)
+  // summed per task, so partial-completion across multiple tasks rolls up cleanly).
   const scheduled = {};
+  const remaining = {};
   for (const t of state.tasks) {
     if (t.project !== project) continue;
     if (t.is_milestone || t.anchor_key) continue;
+    if (isBacklogTask(t)) continue;
     const k = TASK_BUCKET(t);
     if (!k) continue;
     const hrs = (Number(t.duration_days) || 0) * 8 * ((Number(t.allocation) || 90) / 100);
+    const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
+    const remHrs = hrs * (1 - pct / 100);
     scheduled[k] = (scheduled[k] || 0) + hrs;
+    remaining[k] = (remaining[k] || 0) + remHrs;
   }
 
   // Pull the quoted hours by the same bucket. Quote stores hours_breakdown
@@ -5395,40 +6763,76 @@ async function openQuoteCompareModal(project, providedQuote) {
   quoted.configure = Math.round(quoted.test_debug * 0.05);
   quoted.test_debug = quoted.test_debug - quoted.configure;
 
-  const ROWS = [
-    { k: 'mech_eng',     label: 'Mechanical Engineering' },
-    { k: 'ce_design',    label: 'Controls Design' },
-    { k: 'ce_drawings',  label: 'Controls Drawings' },
-    { k: 'ce_software',  label: 'Controls Software' },
-    { k: 'gen_hmi',      label: 'HMI Programming' },
-    { k: 'gen_robot',    label: 'Robot Programming' },
-    { k: 'gen_vision',   label: 'Vision Programming' },
-    { k: 'build',        label: 'Mechanical Build' },
-    { k: 'wire_panel',   label: 'Build and Wire Panel' },
-    { k: 'wire_machine', label: 'Wire Machine' },
-    { k: 'configure',    label: 'Configure Machine' },
-    { k: 'test_debug',   label: 'Test/Debug Engineer (lead + secondary)' },
-    { k: 'shop_debug',   label: 'Shop Debug' },
-    { k: 'teardown',     label: 'Teardown' },
-    { k: 'install',      label: 'Install' },
+  // Rows grouped by section (matches the SDC_Template + estimate-sheet
+  // hierarchy: 10 → Design & Build, 40 → Machine Testing/Debug, 50 →
+  // Teardown & Install). Each section is a header row; the bucket rows live
+  // underneath it. Same bucket model as before — totals across all sections
+  // for that discipline — just organized for reading.
+  const SECTIONS = [
+    {
+      title: 'Section 10 — Design & Build',
+      rows: [
+        { k: 'mech_eng',     label: 'Mechanical Engineering' },
+        { k: 'ce_design',    label: 'Controls Design' },
+        { k: 'ce_drawings',  label: 'Controls Drawings' },
+        { k: 'ce_software',  label: 'Controls Software' },
+        { k: 'gen_hmi',      label: 'HMI Programming' },
+        { k: 'gen_robot',    label: 'Robot Programming' },
+        { k: 'gen_vision',   label: 'Vision Programming' },
+        { k: 'build',        label: 'Mechanical Build' },
+        { k: 'wire_panel',   label: 'Build and Wire Panel' },
+        { k: 'wire_machine', label: 'Wire Machine' },
+      ],
+    },
+    {
+      title: 'Section 40 — Machine Testing / Debug',
+      rows: [
+        { k: 'configure',  label: 'Configure Machine' },
+        { k: 'test_debug', label: 'Test/Debug Engineer (lead + secondary)' },
+        { k: 'shop_debug', label: 'Shop Debug' },
+      ],
+    },
+    {
+      title: 'Section 50 — Teardown & Install',
+      rows: [
+        { k: 'teardown', label: 'Teardown' },
+        { k: 'install',  label: 'Install' },
+      ],
+    },
   ];
 
-  let totalQ = 0, totalS = 0;
-  const rowsHtml = ROWS.map(r => {
+  let totalQ = 0, totalS = 0, totalR = 0;
+  const rowHtml = (r) => {
     const q = quoted[r.k] || 0;
     const s = Math.round(scheduled[r.k] || 0);
-    const diff = s - q;
-    totalQ += q; totalS += s;
-    const cls = diff === 0 ? 'diff-zero' : (Math.abs(diff) > q * 0.10 ? 'diff-far' : 'diff-near');
-    const sign = diff > 0 ? '+' : '';
+    const rem = Math.round(remaining[r.k] || 0);
+    totalQ += q; totalS += s; totalR += rem;
+    const variance = s - q;
+    // Color the variance: green when scheduled is below quote (under-budget),
+    // amber when within 10% over quote, red when more than 10% over.
+    let varCls = 'var-zero';
+    if (q > 0) {
+      if (variance < 0) varCls = 'var-under';
+      else if (variance > q * 0.10) varCls = 'var-over';
+      else if (variance > 0) varCls = 'var-near';
+    }
+    const varText = q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
     return `<tr>
       <td>${escapeHtml(r.label)}</td>
-      <td class="num">${q.toLocaleString()}</td>
-      <td class="num">${s.toLocaleString()}</td>
-      <td class="num quote-diff ${cls}">${sign}${diff.toLocaleString()}</td>
+      <td class="num quote-sched-cell">
+        <span class="quote-sched-q">${q ? q.toLocaleString() : '—'}</span>
+        <span class="quote-sched-slash">/</span>
+        <span class="quote-sched-s">${s.toLocaleString()}</span>
+      </td>
+      <td class="num quote-variance ${varCls}">${varText}</td>
+      <td class="num">${rem.toLocaleString()}</td>
     </tr>`;
-  }).join('');
-  const grandDiff = totalS - totalQ;
+  };
+  const rowsHtml = SECTIONS.map(section => `
+    <tr class="section-head"><td colspan="4">${escapeHtml(section.title)}</td></tr>
+    ${section.rows.map(rowHtml).join('')}
+  `).join('');
+  const totalV = totalS - totalQ;
 
   const overlay = document.createElement('div');
   overlay.id = 'quote-compare-modal';
@@ -5460,19 +6864,23 @@ async function openQuoteCompareModal(project, providedQuote) {
         <table class="quote-compare-table">
           <thead>
             <tr>
-              <th style="text-align:left;">Bucket</th>
-              <th class="num">Quoted hrs</th>
-              <th class="num">Scheduled hrs</th>
-              <th class="num">Δ (sched − quote)</th>
+              <th style="text-align:left;">Discipline</th>
+              <th class="num" title="Quoted (from estimate sheet) / Scheduled (live SUM of duration_days × 8 × allocation% per task in this bucket). — means no quote attached.">Quoted / Scheduled</th>
+              <th class="num" title="Scheduled minus Quoted. Negative = under budget. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
+              <th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs × (1 − task_progress%/100)) per bucket.">Remaining</th>
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
           <tfoot>
             <tr class="totals-row">
               <td>Total</td>
-              <td class="num">${totalQ.toLocaleString()}</td>
-              <td class="num">${totalS.toLocaleString()}</td>
-              <td class="num quote-diff ${grandDiff === 0 ? 'diff-zero' : (Math.abs(grandDiff) > totalQ * 0.05 ? 'diff-far' : 'diff-near')}">${grandDiff > 0 ? '+' : ''}${grandDiff.toLocaleString()}</td>
+              <td class="num quote-sched-cell">
+                <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
+                <span class="quote-sched-slash">/</span>
+                <span class="quote-sched-s">${totalS.toLocaleString()}</span>
+              </td>
+              <td class="num quote-variance ${totalQ === 0 ? 'var-zero' : (totalV < 0 ? 'var-under' : (totalV > totalQ * 0.10 ? 'var-over' : (totalV > 0 ? 'var-near' : 'var-zero')))}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
+              <td class="num">${totalR.toLocaleString()}</td>
             </tr>
           </tfoot>
         </table>
@@ -6081,22 +7489,21 @@ function renderTeam() {
   };
 
   grid.innerHTML = DISCIPLINES.map(disc => {
-    // Split: real members (with lead-first sort) and placeholders (always
-    // pinned to the bottom of the card so the "+ Add member" buttons line
-    // up at the same Y across cards regardless of headcount).
-    const all = state.team.filter(m => m.discipline === disc.key);
-    const reals = all.filter(m => !isPlaceholder(m.name))
+    // Hide placeholders from the Departments view — they're template-only
+    // role markers (e.g. "ME Placeholder", "Build Placeholder") that the
+    // user manually fills with real names when staffing a project, and they
+    // shouldn't pollute the live Departments dashboard.
+    const all = state.team.filter(m => m.discipline === disc.key && !isPlaceholder(m.name));
+    const reals = all
       .sort((a, b) => {
         const aLead = a.is_lead ? 0 : 1;
         const bLead = b.is_lead ? 0 : 1;
         if (aLead !== bLead) return aLead - bLead;
         return (a.sort_order || 0) - (b.sort_order || 0);
       });
-    const placeholders = all.filter(m => isPlaceholder(m.name))
-      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
     const realRows = reals.map(renderRow).join('');
-    const phRows   = placeholders.map(renderRow).join('');
+    const phRows   = '';
     const cap = computeDisciplineCapacity(disc.key, all);
     const capStats = `
       <div class="team-card-capacity" title="${escapeHtml(cap.tooltip)}">
@@ -6275,10 +7682,16 @@ function projectColorFor(projectName) {
 function resourcesTasksFor(memberName) {
   // All tasks (across all projects) currently assigned to this person, that have valid
   // dates so they can be plotted on the timeline.
+  // Excluded:
+  //   - Template projects (canonical scaffolding, not real work)
+  //   - Sales workspace projects (pre-quote schedules; resourcing isn't real
+  //     until they roll into Active)
   const projFilter = state.resources.project;
   return state.tasks.filter(t =>
     t.assignee === memberName &&
     t.start_date && t.end_date &&
+    !isTemplateProject(t.project) &&
+    projectWorkspace(t.project) !== 'Sales' &&
     (!projFilter || t.project === projFilter)
   );
 }
@@ -6386,13 +7799,20 @@ function renderTeamDashboard() {
   const memberNames = new Set(
     state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name)
   );
+  // Departments dashboard skips:
+  //   - Template projects (SDC_StandardProject_Template, SDC_Sales_Template, …)
+  //     — they're scaffolding, not real work to surface as behind/coming-due.
+  //   - Sales-workspace projects — sales schedules are pre-quote work that
+  //     hasn't been staffed yet, so they shouldn't show up in engineering
+  //     resource management.
+  const isProjectExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
 
   // --- Behind schedule ----------------------------------------------------
   // Every assigned task whose business-day drift is negative AND not a
   // milestone (milestones use the +/-Nd math too but the schedule-status code
   // skips them; mirror that here for consistency). Sorted most-behind first.
   const behind = state.tasks
-    .filter(t => !t.is_milestone && t.assignee && memberNames.has(t.assignee))
+    .filter(t => !t.is_milestone && t.assignee && memberNames.has(t.assignee) && !isProjectExcluded(t.project))
     .map(t => ({ task: t, drift: taskScheduleDelta(t) }))
     .filter(x => x.drift < 0)
     .sort((a, b) => a.drift - b.drift);
@@ -6411,7 +7831,7 @@ function renderTeamDashboard() {
   const horizonMs = addBusinessDaysClient(new Date().toISOString().slice(0, 10), 14);
   const horizonStop = horizonMs ? new Date(horizonMs + 'T23:59:59').getTime() : todayMs + 21 * 86400000;
   const coming = state.tasks
-    .filter(t => t.assignee && memberNames.has(t.assignee) && t.start_date && t.end_date)
+    .filter(t => t.assignee && memberNames.has(t.assignee) && t.start_date && t.end_date && !isProjectExcluded(t.project))
     .map(t => {
       const startMs = new Date(t.start_date + 'T00:00:00').getTime();
       const endMs   = new Date(t.end_date   + 'T00:00:00').getTime();
@@ -6449,7 +7869,7 @@ function renderTeamDashboard() {
   let keyItems = [];
   if (keyDef) {
     keyItems = state.tasks
-      .filter(t => inferredAnchorKey(t) === keyDef.anchor)
+      .filter(t => inferredAnchorKey(t) === keyDef.anchor && !isProjectExcluded(t.project))
       .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
   }
   renderDashboardList('dashboard-keydates-body', keyItems, (task) => ({
@@ -7930,10 +9350,19 @@ async function loadTeam() {
 function setView(view) {
   state.view = view;
   document.body.dataset.view = view;
+  // Update the legacy .tab buttons (if any still exist) and the sidebar
+  // icons — both share the data-view attribute, so a single CSS active
+  // class works for both. .tab was the old topbar nav, replaced in v4.11
+  // by the sidebar, but the selector is harmless if no .tab elements
+  // remain in the DOM.
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
+  document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(t => t.classList.toggle('is-active', t.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
   if (view === 'setup') renderSetup();
   else if (view === 'team') renderTeam();
+  else if (view === 'projects')  renderProjectsPage();
+  else if (view === 'favorites') renderFavoritesPage();
+  else if (view === 'recents')   renderRecentsPage();
   else render();
 }
 
@@ -7979,15 +9408,15 @@ const COLUMN_DEFS = [
 // Columns we don't auto-show when introducing a column. The user can still toggle them
 // on from the columns menu — they just don't appear by default for fresh installs and
 // aren't force-shown for existing users on app load. Priority is hidden because the
-// Resources view's pill is the primary editor. Progress is hidden because it lives as
-// a click-to-edit pill inside the Task name column now. Allocation stays VISIBLE as
-// its own column — it's a set-once-and-forget value, doesn't belong in the row card.
-const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority', 'progress']);
+// Resources view's pill is the primary editor. Progress / allocation / duration are
+// hidden because they all live as click-to-edit pills inside the Task name column now
+// (v4.27) — the dedicated columns are redundant and just eat horizontal space.
+const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority', 'progress', 'allocation', 'duration']);
 
 // Bump LAYOUT_VERSION whenever we change a default column width that existing users have
 // already cached in localStorage. The migration block below resets only the affected
 // column so we don't blow away anything else they've customized.
-const LAYOUT_VERSION = 5;
+const LAYOUT_VERSION = 6;
 
 function loadLayout() {
   let saved = {};
@@ -8013,6 +9442,16 @@ function loadLayout() {
   if ((saved.layoutVersion || 1) < 5) {
     if (Array.isArray(saved.visibleCols) && !saved.visibleCols.includes('allocation')) {
       saved.visibleCols.push('allocation');
+    }
+  }
+  // Migration v6: hide allocation + duration columns by default. Both values
+  // now live as click-to-edit pills inside the Task name column's meta row
+  // (alloc · duration underneath the task name), so the dedicated columns
+  // are redundant and just eat horizontal space. Users who want them back
+  // can still toggle them on from the columns menu.
+  if ((saved.layoutVersion || 1) < 6) {
+    if (Array.isArray(saved.visibleCols)) {
+      saved.visibleCols = saved.visibleCols.filter(k => k !== 'allocation' && k !== 'duration');
     }
   }
 
@@ -8059,8 +9498,30 @@ function renderHeaders() {
   colgroup.innerHTML = order.map(k => `<col data-col="${k}" />`).join('');
   theadRow.innerHTML = order.map(k => {
     const def = COLUMN_DEFS.find(d => d.key === k);
+    // v4.34: Task column header shows multi-label "ALOC | TASK | DUR | %COM"
+    // matching the body cell layout. Since the body cell packs all four
+    // pieces inline (alloc, name, dur, % pill), the header labels each
+    // sub-region so the user can read which value is which.
+    // v4.37: header mirrors the body cell's flex skeleton EXACTLY —
+    // alloc + dash + task + dur + %com — so labels land directly above
+    // their corresponding body values. The dash placeholder ensures the
+    // TASK label sits where the body's task name does (the body has a
+    // dash element between alloc and name).
+    // v4.44: TASK banner on top (not bold — other column headers like
+    // "ASSIGNED TO" aren't bold either). Below it the four sub-labels:
+    // ALOC | DESCRIPTION | DUR | %COM. DESCRIPTION sits centered above
+    // the body name area (matching TASK's range from left: 64 to right: 110).
+    const labelHtml = (k === 'name')
+      ? `<span class="th-label th-label-name">
+           <span class="th-label-task">${escapeHtml(def.label).toUpperCase()}</span>
+           <span class="th-label-alloc">ALOC</span>
+           <span class="th-label-desc">DESCRIPTION</span>
+           <span class="th-label-dur">DUR</span>
+           <span class="th-label-pct">%COM</span>
+         </span>`
+      : `<span class="th-label">${escapeHtml(def.label)}</span>`;
     return `<th class="${colClass(k)}" data-col="${k}" draggable="true">
-              <span class="th-label">${escapeHtml(def.label)}</span><span class="col-resize-handle" draggable="false"></span>
+              ${labelHtml}<span class="col-resize-handle" draggable="false"></span>
             </th>`;
   }).join('');
 
@@ -8101,9 +9562,14 @@ function loadScheduleView() {
       // user enables it when they want to see allocation/duration at a glance
       // without having to read the grid.
       showBarMeta:   !!saved.showBarMeta,
+      // v4.30: inline allocation prefix in the Task column ("85%  Task Name").
+      // Defaults to ON since the user explicitly asked for it; the View pill's
+      // α icon turns it off when presenting to a customer or anyone else
+      // who shouldn't see the staffing percentages.
+      showInlineAlloc: saved.showInlineAlloc === undefined ? true : !!saved.showInlineAlloc,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true };
   }
 }
 function saveScheduleView() {
@@ -8122,6 +9588,10 @@ function applyScheduleView() {
   // The pane class (.gantt-only) on schedule-split is owned by applyGanttVisibility
   // — it knows about both showGantt and ganttOnly. Just delegate.
   applyGanttVisibility();
+  // v4.30: body.hide-alloc-pre hides the inline "85% " prefix in the Task
+  // column when the user turns the α View pill icon off. Pure CSS swap, no
+  // re-render needed since the span is always in the DOM.
+  document.body.classList.toggle('hide-alloc-pre', state.scheduleView && state.scheduleView.showInlineAlloc === false);
 }
 
 // Update the .is-active class on each View pill icon to match the current
@@ -8136,6 +9606,7 @@ function syncViewPill() {
   };
   const sv = state.scheduleView || {};
   setActive('btn-view-flatten',    sv.flatten && sv.sortByStart);
+  setActive('btn-view-alloc-pre',  sv.showInlineAlloc !== false);
   setActive('btn-view-financials', state.showFinancials);
   setActive('btn-view-lags',       sv.showArrowLags !== false);
   setActive('btn-view-bar-meta',   sv.showBarMeta);
@@ -8179,19 +9650,28 @@ function applyRowHeight() {
   document.documentElement.style.setProperty('--row-h', rh + 'px');
   const display = document.getElementById('row-height-display');
   if (display) display.textContent = rh;
+  // v4.27: no more row-h-compact toggle. The Task column's stacked layout
+  // (name + meta row) STAYS visible at every row height. Instead, the name
+  // font scales down with --row-h via CSS clamp (see .name-cell-main) so
+  // smaller rows just have smaller text. The meta row pills are already at
+  // their minimum readable size (9px) and don't shrink further. ROW_H_MIN
+  // bumped to fit the stacked content at the floor.
+  document.body.classList.remove('row-h-compact');
 }
 
-// Bar height tracks row height: bar fills ~half the row, the rest is padding.
-// We keep this at 0.5 (not larger) so that milestone diamonds — sized off
-// bar_height (outer radius = h × 1.20 / 2 = h × 0.60 for both anchor and
-// non-anchor) — stay compact and don't overlap adjacent task bars. Text fit
-// inside bars is handled separately in clipBarLabels by scaling font-size
-// to barH.
+// Bar height tracks row height. v4.23 bumped the ratio from 0.5 → 0.7 so the
+// bar dominates each row visually (was leaving big empty bands above + below
+// short bars in compact mode). Milestone diamonds — sized off bar_height
+// (outer radius = h × 1.20 / 2 = h × 0.60) — still fit because the floor of
+// 4px padding keeps adjacent rows from touching, and we don't allow padding
+// below 4px even when row height is at the floor of 14px (14 × 0.7 = 9.8 →
+// 10 bar, 4 padding). Text fit inside bars is handled separately in
+// clipBarLabels by scaling font-size to barH.
 function getGanttBarMetrics() {
   const rh = state.layout.rowHeight;
   // frappe-gantt total per-row = bar_height + padding, so we split rh between them.
-  const bar_height = Math.max(BAR_H_MIN, Math.round(rh * 0.5));
-  const padding = Math.max(8, rh - bar_height);
+  const bar_height = Math.max(BAR_H_MIN, Math.round(rh * 0.7));
+  const padding = Math.max(4, rh - bar_height);
   return { bar_height, padding };
 }
 
@@ -8475,6 +9955,16 @@ function toggleGanttVisible(visible) {
 // Gantt together, and zoom-to-fits the chart so the full project span is
 // visible. State (pane mode, zoom, scroll) is saved on entry and restored
 // on exit so toggling off returns the user to their exact editing layout.
+// Keep the floating "≡ Flatten" button in customer view in sync with the
+// flatten + sortByStart toggle. Same is-active class the toolbar's ≡ View-
+// pill icon uses (so both buttons read consistent at a glance).
+function syncCustomerViewFlattenBtn() {
+  const btn = document.getElementById('btn-customer-view-flatten');
+  if (!btn) return;
+  const sv = state.scheduleView || {};
+  btn.classList.toggle('is-active', !!(sv.flatten && sv.sortByStart));
+}
+
 function enterCustomerView() {
   if (document.body.classList.contains('customer-view')) return;
   // Snapshot what we're about to change so exitCustomerView() can put it
@@ -8490,6 +9980,10 @@ function enterCustomerView() {
   document.body.classList.add('customer-view');
   // Force both panes so the customer sees grid + Gantt.
   setPaneMode('both');
+  // Reflect the current flatten state on the floating button — flatten may
+  // already be on (carried over from the editing view) and we want the
+  // button to show as active immediately, not only after the user clicks it.
+  syncCustomerViewFlattenBtn();
   // Defer zoomToFit two animation frames so the CSS reflow + setPaneMode's
   // re-render have settled; otherwise zoomToFit measures the pre-class
   // panel size and the chart ends up too wide for the (now-smaller) panel.
@@ -8724,6 +10218,7 @@ async function init() {
     });
   };
   wireViewToggle('btn-view-flatten',    'flatten+sort');
+  wireViewToggle('btn-view-alloc-pre',  'showInlineAlloc');
   wireViewToggle('btn-view-financials', 'financials');
   wireViewToggle('btn-view-lags',       'showArrowLags');
   wireViewToggle('btn-view-bar-meta',   'showBarMeta');
@@ -8933,7 +10428,28 @@ async function init() {
   setupRevisionPill();
 
   // Project tab bar
-  document.getElementById('btn-add-project').addEventListener('click', showProjectAddPicker);
+  // + New tab — opens the Workspaces side panel so the user can pick or build
+  // a schedule. Right-click → legacy picker fallback (the estimate +
+  // Smartsheet flows still live there until they're migrated to the panel).
+  document.getElementById('btn-add-project').addEventListener('click', () => {
+    openSidebarPanel('workspaces');
+  });
+  document.getElementById('btn-add-project').addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showProjectAddPicker();
+  });
+
+  // Left sidebar icons — each navigates to a top-level view. The
+  // [data-view] attribute matches the view's section id (#view-<view>) so we
+  // just call setView() and let the standard view-switching machinery handle
+  // it. Revision pill (📌) opens the revision popover via its own existing
+  // handler below — not handled here.
+  document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const v = btn.dataset.view;
+      if (v) setView(v);
+    });
+  });
 
   // ⚖ Quote vs Schedule toolbar button — wires once at startup, then the
   // enabled/disabled state + tooltip is refreshed every render() by
@@ -8982,6 +10498,7 @@ async function init() {
   // hidden chrome.
   const customerBtn = document.getElementById('btn-customer-view');
   const customerExitBtn = document.getElementById('btn-customer-view-exit');
+  const customerFlattenBtn = document.getElementById('btn-customer-view-flatten');
   if (customerBtn) {
     customerBtn.addEventListener('click', () => {
       if (document.body.classList.contains('customer-view')) {
@@ -8997,6 +10514,24 @@ async function init() {
   }
   if (customerExitBtn) {
     customerExitBtn.addEventListener('click', exitCustomerView);
+  }
+  // The Flatten button in customer view is a slim mirror of the toolbar's
+  // ≡ View pill — both toggle flatten + sortByStart in lockstep (the same
+  // linked pair used everywhere else in the app; flatten without start-date
+  // sort almost never makes sense, per v3.58). After flipping the flag we
+  // call render() to redraw the grid + Gantt under the new layout and
+  // syncCustomerViewFlattenBtn() to update the button's is-active fill.
+  if (customerFlattenBtn) {
+    customerFlattenBtn.addEventListener('click', () => {
+      const turningOn = !(state.scheduleView.flatten && state.scheduleView.sortByStart);
+      state.scheduleView.flatten     = turningOn;
+      state.scheduleView.sortByStart = turningOn;
+      saveScheduleView();
+      applyScheduleView();
+      syncViewPill();
+      syncCustomerViewFlattenBtn();
+      render();
+    });
   }
 
   // Topbar zoom controls: − / mode / + . The mode picker jumps to a representative zoom

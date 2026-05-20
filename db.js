@@ -219,6 +219,13 @@ const migrations = [
   // has been set, or after the project's baseline is cleared.
   { col: 'baseline_start_date', sql: 'ALTER TABLE tasks ADD COLUMN baseline_start_date TEXT' },
   { col: 'baseline_end_date',   sql: 'ALTER TABLE tasks ADD COLUMN baseline_end_date TEXT' },
+  // v4.37: when set, this task's duration is LINKED to another task's
+  // duration. Typing "=N" in the duration cell (where N is the target's
+  // line number) sets this column. Duration_days is still stored locally
+  // and kept in sync — on save of the source task we cascade the new
+  // duration to every dependent row that points back to it.
+  // Typing a duration WITHOUT a leading "=" clears the link.
+  { col: 'duration_link_task_id', sql: 'ALTER TABLE tasks ADD COLUMN duration_link_task_id INTEGER' },
 ];
 for (const m of migrations) {
   if (!columnExists('tasks', m.col)) db.exec(m.sql);

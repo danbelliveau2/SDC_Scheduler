@@ -15,7 +15,7 @@ app.use((req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false }));
 
-const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date'];
+const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id'];
 
 // ---------- Schedule auto-computation (FS/SS/FF/SF + lag) ----------
 // All scheduling is done in BUSINESS DAYS (Mon–Fri). Weekends are skipped: a task
@@ -108,6 +108,43 @@ function computeDatesFromPreds(task, tasksById) {
   return null;
 }
 
+// v4.37: duration linking. When a task carries duration_link_task_id, its
+// duration_days mirrors the source task's. v4.38 fix: also recompute the
+// dependent's END_DATE from its current start_date + new duration_days,
+// otherwise the dependent's bar on the Gantt stayed at the old length even
+// though duration_days had updated. Chained links (A → B → C) resolve over
+// multiple iterations until stable.
+function cascadeDurationLinks() {
+  for (let iter = 0; iter < 20; iter++) {
+    const linked = db.prepare(
+      'SELECT id, duration_days, duration_link_task_id, start_date, end_date FROM tasks WHERE duration_link_task_id IS NOT NULL'
+    ).all();
+    let changed = false;
+    const upd = db.prepare(
+      'UPDATE tasks SET duration_days = ?, end_date = ?, is_milestone = ? WHERE id = ?'
+    );
+    for (const dep of linked) {
+      const src = db.prepare('SELECT duration_days FROM tasks WHERE id = ?').get(dep.duration_link_task_id);
+      // If the source row was deleted, drop the link silently and leave
+      // duration_days alone. Self-link is also a no-op.
+      if (!src || dep.duration_link_task_id === dep.id) continue;
+      const newDur = Number(src.duration_days) || 0;
+      if (newDur === dep.duration_days) continue;
+      const newMilestone = newDur === 0 ? 1 : 0;
+      let newEnd = dep.end_date;
+      if (newDur === 0) {
+        newEnd = dep.start_date;
+      } else if (dep.start_date) {
+        // N business days INCLUSIVE → end = start + (N - 1) business days.
+        newEnd = addBusinessDaysISO(dep.start_date, newDur - 1);
+      }
+      upd.run(newDur, newEnd, newMilestone, dep.id);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+}
+
 function cascadeSchedule() {
   // Iteratively recompute every task's dates from its predecessors until stable
   // (or hit iteration cap to break any accidental cycles).
@@ -154,6 +191,21 @@ app.post('/api/tasks', (req, res) => {
   if (!name) return res.status(400).json({ error: 'name required' });
 
   const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks').get().m;
+  // If the client passed a specific sort_order, use it verbatim (no rounding).
+  // The sort_order column is declared INTEGER but SQLite's type affinity is
+  // flexible — REAL values are stored as-is, so callers like "Add additional
+  // resource" can pass fractional values (e.g. 18.5) to slot the new row
+  // BETWEEN two existing integer-sort_order tasks without having to shift
+  // every downstream row. Sequential adds keep halving the gap (18.5, 18.25,
+  // 18.125 …) — 52 bits of double-precision mantissa gives plenty of headroom
+  // for realistic per-task insertion counts.
+  // Append-style callers (no sort_order) still default to MAX + 1.
+  let insertSortOrder;
+  if (req.body.sort_order != null) {
+    insertSortOrder = Number(req.body.sort_order);
+  } else {
+    insertSortOrder = maxOrder + 1;
+  }
   // If a priority isn't supplied, auto-assign the next slot for this assignee so newly
   // created tasks fall to the bottom of that person's stack until reranked. Tasks with
   // no assignee just get priority 1 (it's irrelevant until they're assigned anyway).
@@ -182,7 +234,7 @@ app.post('/api/tasks', (req, res) => {
     req.body.allocation == null ? 90 : Math.max(0, Math.min(100, Number(req.body.allocation) || 0)),
     nextPriority,
     req.body.notes || null,
-    maxOrder + 1,
+    insertSortOrder,
     req.body.anchor_key || null,
   ];
   const placeholders = cols.map(() => '?').join(', ');
@@ -266,6 +318,12 @@ app.put('/api/tasks/:id', (req, res) => {
   if (assigneeChanged && existing.assignee && existing.assignee !== finalAssignee) {
     compactPrioritiesForAssignee(existing.assignee);
   }
+
+  // v4.37: propagate duration changes to linked dependents BEFORE the
+  // schedule cascade runs. cascadeSchedule recomputes start/end based on
+  // the (now-updated) duration_days, so the dependent's end_date shifts
+  // automatically without a separate code path.
+  if ('duration_days' in updates) cascadeDurationLinks();
 
   cascadeSchedule();
 

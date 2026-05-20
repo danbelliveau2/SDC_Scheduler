@@ -8,29 +8,100 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <img src="/img/sdc-logo-white.svg" alt="SDC" class="brand-logo" />
-      <h1>Project Scheduler</h1>
+  <!-- Left sidebar — icon rail with section labels. Each icon navigates to
+       a top-level view (Projects / Favorites / Recents / Departments / Setup).
+       Wider than v4.10's 56px rail so the labels under each icon fit cleanly. -->
+  <aside class="app-sidebar" id="app-sidebar">
+    <div class="app-sidebar-top">
+      <img src="/img/sdc-logo-white.svg" alt="SDC" class="app-sidebar-logo" />
     </div>
-    <div class="view-tabs">
-      <button class="tab active" data-view="schedule">Schedule</button>
-      <button class="tab" data-view="team">Team</button>
-      <button class="tab" data-view="setup">Setup</button>
-    </div>
-    <button id="btn-revision" class="revision-pill" type="button" title="Click to see what changed in each revision">
-      <span class="revision-pill-label">Rev <span id="revision-version">—</span></span>
-      <span class="revision-pill-icon">📋</span>
+    <button class="app-sidebar-icon" data-view="projects" type="button" title="Projects — browse schedules by Active / Sales / Closed">
+      <!-- Automation/scheduling icon: stacked Gantt-style timeline bars.
+           Inline SVG so it picks up sidebar text color (white) via currentColor
+           and scales cleanly at any DPR, unlike the previous 📋 emoji. -->
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <rect x="3"  y="5"    width="11" height="3" rx="1"/>
+          <rect x="7"  y="10.5" width="11" height="3" rx="1"/>
+          <rect x="5"  y="16"   width="11" height="3" rx="1"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Projects</span>
+    </button>
+    <button class="app-sidebar-icon" data-view="favorites" type="button" title="Favorites — quick access to your starred schedules">
+      <!-- Text-style star (not the emoji ⭐) so it renders WHITE to match the
+           rest of the sidebar text instead of the bright orange-yellow emoji
+           fill that fought everything else on the rail. -->
+      <span class="app-sidebar-glyph app-sidebar-glyph-star">★</span>
+      <span class="app-sidebar-label">Favorites</span>
+    </button>
+    <button class="app-sidebar-icon" data-view="recents" type="button" title="Recently opened schedules">
+      <!-- Simple clock outline — just a circle + hour + minute hand. Replaces
+           the 🕒 emoji which renders with colored hands on most platforms. -->
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"/>
+          <polyline points="12,7 12,12 16,14"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Recents</span>
+    </button>
+    <button class="app-sidebar-icon" data-view="team" type="button" title="Departments — team members + resource scheduling">
+      <!-- v4.45: org-chart icon (one node up top, two nodes underneath
+           connected by lines) reads as "departments / team structure"
+           more clearly than the 👥 emoji. Inline SVG so it picks up the
+           sidebar text color via currentColor. -->
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="3" width="6" height="4" rx="1"/>
+          <rect x="3" y="15" width="6" height="4" rx="1"/>
+          <rect x="15" y="15" width="6" height="4" rx="1"/>
+          <line x1="12" y1="7" x2="12" y2="11"/>
+          <line x1="6" y1="15" x2="6" y2="11"/>
+          <line x1="18" y1="15" x2="18" y2="11"/>
+          <line x1="6" y1="11" x2="18" y2="11"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Departments</span>
+    </button>
+    <button class="app-sidebar-icon" data-view="setup" type="button" title="Setup — colors, defaults, estimate rules">
+      <span class="app-sidebar-glyph">⚙</span>
+      <span class="app-sidebar-label">Setup</span>
+    </button>
+    <div class="app-sidebar-spacer"></div>
+    <button id="btn-revision" class="app-sidebar-icon app-sidebar-revision" type="button" title="Click to see what changed in each revision">
+      <span class="app-sidebar-glyph">📌</span>
+      <span class="app-sidebar-label">Rev <span id="revision-version">—</span></span>
     </button>
     <div id="revision-popover" class="revision-popover hidden"></div>
-  </header>
+  </aside>
 
   <div class="project-tab-bar" id="project-tab-bar">
     <div class="project-tabs" id="project-tabs"></div>
-    <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule">+ Open project</button>
+    <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule in a new tab">+ New tab</button>
   </div>
 
   <main>
+    <!-- Projects landing page — list of every workspace with collapsible
+         sections. Click a workspace header to expand / collapse its projects.
+         Click a project row to open it as a tab + switch to the schedule view. -->
+    <section id="view-projects" class="view">
+      <div id="projects-page" class="projects-page"></div>
+    </section>
+    <!-- Favorites landing page — list of starred schedules. v4.11 placeholder. -->
+    <section id="view-favorites" class="view">
+      <div id="favorites-page" class="projects-page">
+        <h1 class="projects-page-title">Favorites</h1>
+        <p class="projects-page-empty">Favorites coming soon — for now use Projects to navigate.</p>
+      </div>
+    </section>
+    <!-- Recents landing page — last N opened schedules. v4.11 placeholder. -->
+    <section id="view-recents" class="view">
+      <div id="recents-page" class="projects-page">
+        <h1 class="projects-page-title">Recents</h1>
+        <p class="projects-page-empty">Recents coming soon — for now use Projects to navigate.</p>
+      </div>
+    </section>
     <section id="view-schedule" class="view active">
       <!-- Toolbar lives at the top. Project name now sits in a separate banner
            BELOW the toolbar (see schedule-project-banner) so it works for both
@@ -65,13 +136,15 @@
           <!-- View pill: "View" label on top, icon-toggles below.
                Icons (left → right):
                  ≡  Flatten + sort by start date  (combined; rarely useful apart)
+                 α  Inline allocation prefix in the Task column (NN% before name)
                  $  Financial milestones overlay
                  ↔  Arrow lag labels (±N wks pills on Gantt arrows)
                  %  Bar allocation + duration meta -->
-          <div class="view-pill" id="view-pill" title="View options — toggle Flatten (+ start-date sort), Financial milestones overlay, arrow-lag labels, and per-bar allocation + duration meta.">
+          <div class="view-pill" id="view-pill" title="View options — toggle Flatten (+ start-date sort), Inline allocation prefix, Financial milestones overlay, arrow-lag labels, and per-bar allocation + duration meta.">
             <div class="view-pill-label">View</div>
             <div class="view-pill-icons">
               <button id="btn-view-flatten"    class="view-pill-icon" type="button" title="Flatten + sort by start date — hide sub-section headers, render tasks directly under section 10 / 40 / 50, AND sort within each section by start date. The two flags are toggled together since flatten without start-date sort almost never makes sense.">≡</button>
+              <button id="btn-view-alloc-pre"  class="view-pill-icon" type="button" title="Show the allocation % before each task name in the grid (e.g. '85%  Configure Machine - 1w'). Turn off to hide just the allocation prefix.">α</button>
               <button id="btn-view-financials" class="view-pill-icon" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$</button>
               <button id="btn-view-lags"       class="view-pill-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
               <button id="btn-view-bar-meta"   class="view-pill-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below — so you can see staffing at a glance without scanning the grid.">%</button>
@@ -125,13 +198,14 @@
         <div id="schedule-gantt" class="schedule-gantt">
           <div id="gantt-container"></div>
           <p id="gantt-empty" class="empty-state hidden">Add tasks with start/end dates to see them here.</p>
-          <div class="legend" id="gantt-legend"></div>
+          <!-- v4.38: Gantt phase legend removed at user request. Hierarchy colors
+               on bars + the band-cell-style sub-dep grouping already make the
+               assignments obvious; the legend was redundant noise at the bottom. -->
         </div>
       </div>
-      <div class="row-height-bar" id="row-height-bar" title="Drag up/down to resize rows">
-        <span class="row-height-bar-grip"></span>
-        <span class="row-height-bar-hint">⇕ Drag to resize rows</span>
-      </div>
+      <!-- v4.38: row-height drag handle removed. The zoom-stack +/- buttons
+           in the toolbar give the same control without taking up vertical
+           space below the Gantt. -->
     </section>
 
     <section id="view-team" class="view">
@@ -462,9 +536,14 @@
   <datalist id="dl-projects"></datalist>
   <datalist id="dl-assignees"></datalist>
 
-  <!-- Floating exit button for customer view. Hidden by default; CSS makes
-       it visible only when body.customer-view is set. Sits top-right with
-       an SDC-lime outline so it stands out against the cleaned view. -->
+  <!-- Floating controls for customer view. Hidden by default; CSS makes
+       them visible only when body.customer-view is set. Sit top-right
+       so they're easy to find against the cleaned view.
+       The Flatten toggle is the only view option exposed in customer view
+       (per user feedback in v4.21) — flatten + sort-by-start is the one
+       view tweak that still matters when you're presenting the schedule
+       chronologically to a customer. -->
+  <button id="btn-customer-view-flatten" class="customer-view-flatten" type="button" title="Flatten the schedule for the customer view — hide sub-section headers and sort tasks within each section by start date so the schedule reads chronologically. Click again to restore the grouped layout.">≡ Flatten</button>
   <button id="btn-customer-view-exit" class="customer-view-exit" type="button" title="Exit customer view and return to the full editing layout.">✕ Exit customer view</button>
 
   <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
