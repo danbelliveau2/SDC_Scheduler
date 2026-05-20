@@ -39,14 +39,429 @@ html, body {
   overflow: hidden;
 }
 /* Body is the flex column root so the active <main> can claim flex:1 height
-   for its own internal scrolling. Without this, main's overflow:hidden has
-   no defined height and the team view can't scroll its contents. */
+   for its own internal scrolling. The left sidebar is fixed-position
+   (separate from this flex flow), so body content gets a left margin equal
+   to the sidebar width. */
 body {
   display: flex;
   flex-direction: column;
+  margin-left: 76px;       /* matches .app-sidebar width */
 }
 
+/* ==========================================================================
+   Left sidebar — icon rail with section labels. Each icon navigates to a
+   top-level view (Projects / Favorites / Recents / Departments / Setup).
+   ========================================================================== */
+.app-sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 76px;
+  background: var(--sdc-dark, #061d39);
+  border-right: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 8px 0;
+  z-index: 20;
+}
+.app-sidebar-top {
+  padding: 6px 8px 12px;
+  display: flex;
+  justify-content: center;
+}
+.app-sidebar-logo {
+  width: 44px;
+  height: auto;
+  opacity: 0.95;
+}
+.app-sidebar-spacer {
+  flex: 1 1 auto;
+}
+.app-sidebar-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 4px;
+  margin: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(255,255,255,0.7);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.app-sidebar-icon:hover {
+  background: rgba(255,255,255,0.08);
+  color: white;
+}
+.app-sidebar-icon.is-active {
+  background: rgba(255,255,255,0.14);
+  color: white;
+  border-color: var(--sdc-accent, #ffde51);
+}
+.app-sidebar-glyph {
+  font-size: 20px;
+  line-height: 1;
+}
+/* Inline-SVG variants (Projects / Recents). The <svg> picks up sidebar
+   text color via currentColor — so it dims to muted-white normally and
+   goes solid white on hover / when is-active. Sized to match the 20px
+   emoji glyphs above so the rail rhythm stays consistent. */
+.app-sidebar-glyph-svg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+.app-sidebar-glyph-svg svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* Text-style star (Favorites). Rendered as a regular character so it
+   stays WHITE like the labels — the ⭐ emoji was forcing an
+   orange-yellow fill regardless of color rules. Slightly larger than
+   the emoji glyphs to compensate for the thinner shape. */
+.app-sidebar-glyph-star {
+  font-size: 22px;
+  line-height: 1;
+  color: white;
+}
+.app-sidebar-label {
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.app-sidebar-revision {
+  margin-bottom: 8px;
+}
+
+/* ==========================================================================
+   Projects page — full-page list of workspaces with collapsible sections.
+   ========================================================================== */
+.projects-page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 24px 80px;
+}
+.projects-page-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--sdc-dark, #061d39);
+  margin: 0 0 6px;
+}
+.projects-page-sub {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+.projects-page-empty {
+  font-size: 13px;
+  color: var(--text-muted, #64748b);
+  font-style: italic;
+}
+.projects-workspace {
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  background: var(--surface, #fff);
+}
+.projects-workspace-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--surface-alt, #f1f5f9);
+  cursor: pointer;
+  user-select: none;
+  border: 0;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+}
+.projects-workspace-head:hover {
+  background: var(--row-hover, #eef5fb);
+}
+.projects-workspace-caret {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  transition: transform 120ms ease;
+  width: 12px;
+  display: inline-block;
+}
+.projects-workspace.is-expanded .projects-workspace-caret {
+  transform: rotate(90deg);
+}
+.projects-workspace-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sdc-dark, #061d39);
+  flex: 0 0 auto;
+}
+.projects-workspace-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  background: white;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.projects-workspace-spacer { flex: 1 1 auto; }
+.projects-workspace-newbtn {
+  padding: 5px 12px;
+  border: 1px solid var(--sdc-primary, #2563eb);
+  border-radius: 4px;
+  background: var(--sdc-primary, #2563eb);
+  color: white;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.projects-workspace-newbtn:hover { filter: brightness(1.08); }
+.projects-workspace-newbtn.is-disabled {
+  background: transparent;
+  border-color: var(--border, #cbd5e1);
+  color: var(--text-muted, #64748b);
+  cursor: not-allowed;
+}
+.projects-workspace-body { display: none; }
+.projects-workspace.is-expanded .projects-workspace-body { display: block; }
+.projects-workspace-empty {
+  padding: 14px 18px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--text-muted, #64748b);
+}
+.projects-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 18px;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border, #cbd5e1);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #1e293b);
+  cursor: pointer;
+}
+.projects-row:hover {
+  background: var(--row-hover, #eef5fb);
+}
+.projects-row.is-open { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 5%, white); }
+.projects-row-star {
+  color: var(--sdc-green, #74c415);
+  font-size: 14px;
+  width: 14px;
+}
+.projects-row-name { flex: 1 1 auto; }
+.projects-row-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--sdc-primary, #2563eb);
+  border: 1px solid var(--sdc-primary, #2563eb);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+/* Templates row inside each workspace — visually distinct from regular
+   schedules so a "Templates" group reads as the head of the workspace
+   (heavy left border + tinted background). Templates are starred (★) and
+   protected from accidental deletion. */
+.projects-templates-row {
+  border-bottom: 1px solid var(--border, #cbd5e1);
+  background: color-mix(in srgb, var(--anchor-fill, #befa4f) 14%, white);
+  border-left: 4px solid var(--anchor-fill, #befa4f);
+}
+.projects-templates-label {
+  padding: 6px 14px 0;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #15803d;
+}
+.projects-templates-row .projects-row {
+  background: transparent;
+  border-top: none;
+  font-weight: 700;
+}
+.projects-row.is-template {
+  font-weight: 700;
+}
+/* Favorite ★ button on each row — light + outlined when unfavorited,
+   solid gold when favorited. Sits at the right edge of the row. */
+.projects-row-favbtn {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--text-muted, #94a3b8);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.projects-row-favbtn:hover { color: #ca8a04; background: rgba(0,0,0,0.04); }
+.projects-row-favbtn.is-fav { color: #eab308; }
+
 /* ---------- Project tab bar (open schedules) ---------- */
+/* ==========================================================================
+   Workspace landing page (#view-workspace). Shown when the user clicks a
+   workspace tab in the workspace bar, or when they click "+ New tab".
+   Lists the projects in the workspace + exposes the three "new schedule"
+   creation entry points.
+   ========================================================================== */
+.workspace-page {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px 24px 60px;
+}
+.workspace-page-head {
+  margin-bottom: 20px;
+}
+.workspace-page-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--sdc-dark, #061d39);
+  letter-spacing: 0.01em;
+  margin: 0 0 4px;
+}
+.workspace-page-sub {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+.workspace-page-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 32px;
+}
+.workspace-page-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-muted, #64748b);
+  border: 1px dashed var(--border, #cbd5e1);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 6px;
+  background: white;
+  color: var(--text, #1e293b);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.ws-row:hover {
+  background: var(--surface-alt, #f1f5f9);
+  border-color: var(--sdc-primary, #2563eb);
+}
+.ws-row.is-open {
+  border-color: color-mix(in srgb, var(--sdc-primary, #2563eb) 40%, white);
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 6%, white);
+}
+.ws-row-star {
+  color: var(--anchor-fill, #befa4f);
+  font-size: 16px;
+  width: 16px;
+  text-shadow: 0 0 1px #14532d;
+}
+.ws-row-name {
+  flex: 1 1 auto;
+}
+.ws-row-badge {
+  background: var(--sdc-primary, #2563eb);
+  color: white;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+/* Three action cards across the bottom — Build from template / Estimate
+   sheet / Smartsheet import. Each is a self-contained mini-form with title,
+   one-line description, and a horizontal input + button row. */
+.workspace-page-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+.workspace-action-card {
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--surface-alt, #f1f5f9);
+}
+.workspace-action-card h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sdc-dark, #061d39);
+}
+.workspace-action-card p {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  line-height: 1.4;
+}
+.workspace-action-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.workspace-action-row input[type="text"],
+.workspace-action-row select {
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  background: white;
+}
+.workspace-action-row input[type="file"] {
+  font-size: 11px;
+}
+.workspace-action-row button {
+  align-self: flex-end;
+  min-width: 110px;
+}
+
+/* (Removed in v4.10: top workspace bar — workspace navigation moved into
+   the left sidebar panel. Click the 📁 Workspaces icon in the left rail. */
+
 .project-tab-bar {
   display: flex;
   align-items: stretch;
@@ -86,12 +501,48 @@ body {
   max-width: 280px;
 }
 .project-tab:hover { background: rgba(255,255,255,0.12); color: white; }
+/* SELECTED tab — strong LIME border + brighter background so it's instantly
+   obvious which tab is active. Workspace identification is via the small
+   colored dot before the name (see .project-tab-dot below), NOT via the tab
+   background — having three different background colors on inactive tabs +
+   different active backgrounds per workspace got visually overwhelming. */
 .project-tab.active {
-  background: var(--sdc-primary);
+  background: rgba(255,255,255,0.20);
   color: white;
-  border-bottom-color: var(--sdc-accent, #ffde51);
+  border: 2px solid var(--anchor-fill, #befa4f);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  /* Border adds 2px on each side so compensate with negative margin to keep
+     the tab in line with its siblings. */
+  margin: 0 -1px;
+  padding: 5px 11px;     /* slight reduction to offset the 2px border */
 }
+/* Workspace dot — small 8px circle prefix before the project name. Carries
+   the workspace color so you can scan the tab bar and see which workspace
+   each open tab belongs to without the heavy background tints. */
+.project-tab-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: 1px;
+  flex-shrink: 0;
+}
+.project-tab-dot-active { background: #befa4f; }   /* SDC lime */
+.project-tab-dot-sales  { background: #AACEE8; }   /* SDC light blue */
+.project-tab-dot-closed { background: #FFDE51; }   /* SDC yellow */
 .project-tab.is-all { font-style: italic; }
+/* Drag-to-reorder states. The All-projects pseudo-tab is non-draggable so
+   these never apply to it. */
+.project-tab[draggable="true"] { cursor: grab; }
+.project-tab.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+.project-tab.drag-over {
+  box-shadow: inset 3px 0 0 var(--sdc-accent, #ffde51);
+}
 .project-tab-label {
   text-overflow: ellipsis;
   overflow: hidden;
@@ -135,94 +586,6 @@ body {
   align-self: center;
 }
 .project-add-btn:hover { background: rgba(255,255,255,0.22); }
-
-/* ── Quick-jump button & dropdown ─────────────────────────────── */
-.project-quick-jump-btn {
-  flex: 0 0 auto;
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.9);
-  border: 1px solid rgba(255,255,255,0.2);
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  border-radius: 6px;
-  font-family: inherit;
-  align-self: center;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-right: 4px;
-  transition: background 0.15s;
-}
-.project-quick-jump-btn:hover { background: rgba(255,255,255,0.18); color: white; }
-
-.quick-jump-popup {
-  position: fixed;
-  z-index: 300;
-  background: white;
-  border: 1px solid var(--border, #e2e8f0);
-  border-radius: 8px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-  width: 340px;
-  padding: 8px 0 4px;
-  display: flex;
-  flex-direction: column;
-}
-.quick-jump-input-wrap {
-  padding: 0 10px 8px;
-  border-bottom: 1px solid var(--border, #e2e8f0);
-}
-.quick-jump-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 7px 10px;
-  font-size: 13px;
-  border: 1px solid var(--border, #e2e8f0);
-  border-radius: 5px;
-  outline: none;
-  font-family: inherit;
-}
-.quick-jump-input:focus { border-color: var(--sdc-primary, #1e4fa0); box-shadow: 0 0 0 2px rgba(30,79,160,0.15); }
-.quick-jump-list {
-  max-height: 280px;
-  overflow-y: auto;
-  padding: 4px 0;
-}
-.quick-jump-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 14px;
-  font-size: 13px;
-  cursor: pointer;
-  border: none;
-  background: none;
-  width: 100%;
-  text-align: left;
-  font-family: inherit;
-  color: var(--text, #1e293b);
-  gap: 8px;
-}
-.quick-jump-row:hover,
-.quick-jump-row.is-focused { background: var(--row-hover, #f1f5f9); color: var(--sdc-primary, #1e4fa0); }
-.quick-jump-row-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.quick-jump-row-badge {
-  flex: 0 0 auto;
-  font-size: 10px;
-  font-weight: 700;
-  background: var(--sdc-accent, #ffde51);
-  color: #333;
-  border-radius: 4px;
-  padding: 1px 5px;
-  letter-spacing: 0.03em;
-}
-.quick-jump-empty {
-  padding: 14px;
-  font-size: 12px;
-  color: var(--text-muted, #64748b);
-  text-align: center;
-}
 
 /* The picker that opens when you click the + project button. */
 .project-add-picker {
@@ -319,10 +682,30 @@ body {
 }
 .project-add-picker .picker-new-row { display: flex; gap: 6px; padding: 0 6px 4px; }
 .project-add-picker .picker-import-row,
-.project-add-picker .picker-estimate-row {
+.project-add-picker .picker-estimate-row,
+.project-add-picker .picker-template-row {
   flex-direction: column;
   align-items: stretch;
   gap: 4px;
+}
+.project-add-picker .picker-template-source {
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  background: white;
+}
+.project-add-picker .picker-template-name {
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.project-add-picker .picker-template-btn {
+  align-self: flex-end;
+  min-width: 120px;
 }
 .project-add-picker .picker-estimate-file {
   font-size: 11px;
@@ -445,11 +828,21 @@ body.customer-view #project-stats-popup {
   display: none !important;
 }
 /* Hide the % pill / milestone checkbox / drift chips inside Task column
-   cells — those are editing affordances, not info the customer needs. */
+   cells — those are editing affordances, not info the customer needs.
+   The meta row (alloc · dur) hides too since customers shouldn't see
+   internal staffing numbers.
+   v4.29: also hides the section number prefix ("10 " / "40 " / "50 ") on
+   section header rows — those numbers are an SDC-internal convention and
+   read as clutter to a customer. The section name itself ("DESIGN &
+   BUILD", "MACHINE TESTING", "TEARDOWN & INSTALL") still shows. */
 body.customer-view .name-cell-pills,
+body.customer-view .name-cell-alloc-pre,
+body.customer-view .name-cell-dash,
+body.customer-view .name-cell-dur,
 body.customer-view .name-pct-pill,
 body.customer-view .name-milestone-check,
-body.customer-view .name-drift-chip {
+body.customer-view .name-drift-chip,
+body.customer-view .group-label-num {
   display: none !important;
 }
 /* Project name banner sits as the page header, slightly larger than usual. */
@@ -517,17 +910,24 @@ body.customer-view tr.group-header td {
   cursor: pointer;
 }
 
-/* Floating "✕ Exit customer view" button. Hidden in normal mode, shown only
-   when body.customer-view is set. Positioned top-right with SDC-lime
-   outline so it pops as a clear "way out" affordance. */
-.customer-view-exit {
+/* Floating "✕ Exit customer view" + "≡ Flatten" buttons. Hidden in normal
+   mode, shown only when body.customer-view is set. Positioned top-right
+   with SDC-lime outline so they pop as clear affordances against the
+   stripped-down customer layout.
+   The Flatten button is the only view option exposed in customer view
+   (per user feedback in v4.21) — clicking it toggles flatten + sort-by-
+   start together (same combined toggle the editing-view ≡ pill icon uses).
+   When ACTIVE, the button fills with SDC lime so the user can see at a
+   glance that the customer view is currently flattened. */
+.customer-view-exit,
+.customer-view-flatten {
   display: none;
 }
-body.customer-view .customer-view-exit {
+body.customer-view .customer-view-exit,
+body.customer-view .customer-view-flatten {
   display: block;
   position: fixed;
   top: 10px;
-  right: 12px;
   z-index: 1000;
   background: white;
   border: 2px solid var(--anchor-fill, #befa4f);
@@ -540,8 +940,20 @@ body.customer-view .customer-view-exit {
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
 }
-body.customer-view .customer-view-exit:hover {
+body.customer-view .customer-view-exit { right: 12px; }
+/* Flatten sits to the LEFT of Exit so the eye still lands on Exit first
+   (it's the more destructive action — leaving the customer view). */
+body.customer-view .customer-view-flatten { right: 168px; }
+body.customer-view .customer-view-exit:hover,
+body.customer-view .customer-view-flatten:hover {
   background: var(--surface-alt, #f1f5f9);
+}
+/* Active state — solid SDC lime fill so the user knows flatten is on
+   without having to scan the grid. */
+body.customer-view .customer-view-flatten.is-active {
+  background: var(--anchor-fill, #befa4f);
+  color: var(--sdc-dark, #061d39);
+  border-color: var(--anchor-fill, #befa4f);
 }
 
 /* Ctrl+P / browser print from customer view picks up landscape + tight
@@ -1867,6 +2279,27 @@ tr.group-header td {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+
+/* v4.24 — slim horizontal sub-dep / dept headers.
+   The v4.23 vertical-band experiment was reverted; horizontal headers came
+   back, but PADDED DOWN to ~12px tall (was ~24px) so they take half the
+   vertical space while still reading as clear grouping dividers. Below the
+   "Hierarchy group headers" base rules — these overrides win because of
+   selector specificity (.level-2 / .level-3 vs the bare tr.group-header). */
+tr.group-header.level-2 td,
+tr.group-header.level-3 td {
+  height: 14px;
+  padding: 1px 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  line-height: 1.1;
+}
+tr.group-header.level-2 .group-caret,
+tr.group-header.level-3 .group-caret {
+  font-size: 8px;
+  width: 10px;
+}
+
 /* Anchor rows — Receipt of PO, Machine Power-Up, FAT, Ship Machine. Each one is a
    project-spine gate, NOT a regular task or dept row. Heavy top/bottom borders +
    slight tint pop them off the rows above/below so they read as section-level
@@ -1876,19 +2309,32 @@ tr.group-header td {
 tbody tr.anchor-row td {
   background: var(--surface-alt, #f4f6f8);
   font-weight: 600;
+  /* v4.33: restored 2px borders for the strong spine-marker emphasis the
+     user wants on Receipt of PO / FAT / Ship Machine / Backlog. Earlier
+     v4.32 dropped to 1px because the row was growing taller than its
+     siblings — but the real culprit was the chip's inline-block padding +
+     inherited line-height pushing content past var(--row-h). We now zero
+     out the TD's vertical padding (was 4+4) AND scale the chip's font +
+     trim its vertical padding so the chip fits inside the bordered box
+     even at the row-h floor. Net: 2px-thick borders, uniform row height. */
   border-top: 2px solid var(--anchor-text, #0f172a);
   border-bottom: 2px solid var(--anchor-text, #0f172a);
-  padding-top: 4px;
-  padding-bottom: 4px;
+  padding-top: 0;
+  padding-bottom: 0;
 }
 .anchor-name-chip {
+  /* v4.32: no vertical padding + scaled font + tight line-height so the
+     chip's vertical footprint matches plain text in normal rows. */
   display: inline-block;
-  padding: 2px 12px;
+  padding: 0 8px;
   border-radius: 3px;
   background: var(--anchor-fill, #befa4f);
   color: var(--anchor-text, #0f172a);
   font-weight: 700;
+  font-size: clamp(9px, calc(var(--row-h, 26px) * 0.42), 13px);
+  line-height: 1.1;
   letter-spacing: 0.02em;
+  vertical-align: middle;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
 }
 
@@ -1963,6 +2409,265 @@ td[data-col="name"].has-pills {
   line-height: 1;
 }
 
+/* v4.39: ABSOLUTE-POSITIONED Task column layout. No flex wrapper anymore.
+   alloc, dash, and dur are absolute children of the TD itself; the task
+   name flows in the TD's content area (between padding-left and
+   padding-right). All offsets are pixel-exact from the cell edge so body
+   alloc lines up directly under the header ALOC label.
+
+   For tasks WITH alloc + dur (has-meta class on the TD):
+     - alloc-pre at left: 8px (the TD's natural padding-left position)
+     - dash at left: 50px (after alloc's ~36px + a small gap)
+     - name flows starting at TD padding-left: 64px (after alloc + dash)
+     - dur at right: 60px (just left of the % pill at right: 8)
+     - % pill at right: 8px (existing)
+
+   For tasks WITHOUT alloc/dur (milestones / anchors / backlog — no
+   has-meta): name flows from padding-left: 8px (flush with column edge),
+   no absolute siblings to clear room for. */
+/* v4.42: padding-left: 64 on ALL col-name TDs (not just has-meta) so
+   milestones, anchors (Receipt of PO / Mech 1 Release / Machine Power-Up /
+   etc.) AND regular tasks all start at the same X position. The 0-64
+   area is empty for non-has-meta rows (no alloc/dash to render there).
+   When alloc is toggled off (body.hide-alloc-pre), all rows drop to
+   padding-left: 8 since the alloc reservation is gone. */
+td[data-col="name"] {
+  padding-left: 64px;
+  padding-right: 64px;
+}
+body.hide-alloc-pre td[data-col="name"] {
+  padding-left: 8px;
+}
+.name-cell-alloc-pre {
+  /* v4.40: pixel-identical to .th-label-alloc — both at left: 8px, no
+     padding, no margin. The hover background uses border-radius alone;
+     since text sits exactly at left: 8 (no padding shift), it lines up
+     perfectly under the header ALOC label. */
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--sdc-primary, #2563eb);
+  font-weight: 600;
+  font-size: clamp(8px, calc(var(--row-h, 26px) * 0.36), 11px);
+  cursor: pointer;
+  white-space: nowrap;
+  border-radius: 3px;
+  padding: 1px 3px;
+  transition: background-color 80ms ease;
+  z-index: 1;
+}
+.name-cell-alloc-pre:hover {
+  background: rgba(15, 23, 42, 0.08);
+}
+.name-cell-dash {
+  position: absolute;
+  left: 46px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted, #64748b);
+  font-weight: 500;
+  font-size: clamp(8px, calc(var(--row-h, 26px) * 0.36), 11px);
+  user-select: none;
+  pointer-events: none;
+  z-index: 1;
+}
+.name-cell-main {
+  /* v4.43: ALL task names line up at left: 64 / right: 110, whether the
+     row has alloc/dash/dur or not. This way milestones, anchors, and
+     regular tasks all share the same name area — AND the TASK header
+     centers above this exact range. Descenders stay inside the cell via
+     vertical centering + line-height: 1.2. */
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  left: 64px;
+  right: 110px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: clamp(9px, calc(var(--row-h, 26px) * 0.55), 18px);
+  line-height: 1.2;
+}
+body.hide-alloc-pre .name-cell-main {
+  left: 8px;
+}
+.name-cell-dur {
+  position: absolute;
+  right: 60px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--sdc-dark, #061d39);
+  font-weight: 700;
+  font-size: clamp(9px, calc(var(--row-h, 26px) * 0.42), 13px);
+  white-space: nowrap;
+  cursor: pointer;
+  min-width: 44px;
+  text-align: right;
+  border-radius: 3px;
+  padding: 1px 4px;
+  transition: background-color 80ms ease;
+  z-index: 1;
+}
+.name-cell-dur:hover {
+  background: rgba(15, 23, 42, 0.08);
+}
+/* v4.45: link indicator — tiny inline 🔗N text BEFORE the duration value.
+   Transparent background, baseline-aligned so the bottom of "🔗23" sits
+   exactly on the bottom of "8W". No padding so it doesn't add box
+   height. pointer-events: none keeps clicks falling through to the dur. */
+.name-cell-dur-link {
+  display: inline;
+  margin-right: 4px;
+  padding: 0;
+  background: transparent;
+  color: var(--sdc-primary, #2563eb);
+  font-size: 0.7em;
+  font-weight: 700;
+  letter-spacing: 0;
+  user-select: none;
+  pointer-events: none;
+  vertical-align: baseline;
+}
+/* v4.43: duration link pick mode. While active (after the user typed "="
+   in a duration editor), every duration cell becomes a click target for
+   the link. Visual: SDC-lime outline + pointer (hand) cursor so it reads
+   as "click this to select" — the v4.42 crosshair felt like "place a
+   marker" which wasn't the intent. */
+body.duration-link-pick-mode .name-cell-dur {
+  outline: 2px solid var(--anchor-fill, #befa4f);
+  outline-offset: 1px;
+  cursor: pointer;
+}
+body.duration-link-pick-mode .name-cell-dur:hover {
+  background: rgba(190, 250, 79, 0.25);
+}
+
+/* v4.45: completed (progress >= 100) DURATION tasks render with the
+   SDC-lime outline + diagonal hash pattern across every cell so the
+   entire row reads as "done" at a glance. The Filters popover "Show
+   completed" toggle controls whether they're filtered out entirely;
+   when shown, this styling makes them visually distinct from active
+   work. */
+tbody tr.task-done td {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 6px,
+    rgba(190, 250, 79, 0.22) 6px,
+    rgba(190, 250, 79, 0.22) 10px
+  );
+  box-shadow:
+    inset 0 1px 0 var(--anchor-fill, #befa4f),
+    inset 0 -1px 0 var(--anchor-fill, #befa4f);
+}
+/* First and last TDs in the row get the side lime borders too so the
+   outline wraps the whole row uniformly. */
+tbody tr.task-done td:first-child {
+  box-shadow:
+    inset 0 1px 0 var(--anchor-fill, #befa4f),
+    inset 0 -1px 0 var(--anchor-fill, #befa4f),
+    inset 1px 0 0 var(--anchor-fill, #befa4f);
+}
+tbody tr.task-done td:last-child {
+  box-shadow:
+    inset 0 1px 0 var(--anchor-fill, #befa4f),
+    inset 0 -1px 0 var(--anchor-fill, #befa4f),
+    inset -1px 0 0 var(--anchor-fill, #befa4f);
+}
+/* The matching Gantt bar gets the lime outline + hash pattern too —
+   see drawScheduleStatus / clipBarLabels for the corresponding paint
+   when the bar has class .is-done (frappe-gantt adds it). */
+/* α icon OFF — hides the inline allocation prefix AND its dash separator.
+   Task name and bold duration suffix stay. Header ALOC + its dash spacer
+   hide too. Toggling is a CSS class swap (set in applyScheduleView) — no
+   re-render. */
+body.hide-alloc-pre .name-cell-alloc-pre,
+body.hide-alloc-pre .name-cell-dash,
+body.hide-alloc-pre .th-label-alloc,
+body.hide-alloc-pre .th-label-dash { display: none; }
+
+/* v4.43: Task column HEADER — TWO-ROW layout, anchored to the TH directly
+   (NOT to a padded inner wrapper, so absolute child positions match the
+   body cell's TD coordinate system).
+
+     ─────────────────────────────────
+       TASK  (bold, centered, above body name area: left 64 - right 110)
+     ─────────────────────────────────
+     ALOC                  DUR    %COM   (light gray, positioned directly
+     (left: 8)    (right: 60) (right: 8)  above their body counterparts)
+
+   TH padding set to 0 so .th-label-name spans the full TH width — that
+   makes absolute children inside it use TH's outer-edge coordinates,
+   same as body absolute children use TD's outer-edge coordinates. */
+th[data-col="name"] {
+  padding: 0;
+}
+th[data-col="name"] .th-label-name {
+  display: block;
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+/* TOP HALF — TASK banner spanning the body NAME range (left: 64 to
+   right: 110), centered with a separator line below. v4.44: dropped
+   bold weight to match other column headers like "ASSIGNED TO" / "START"
+   which use the standard 600 weight from `.th-label`. */
+.th-label-task {
+  position: absolute;
+  top: 0;
+  bottom: 50%;
+  left: 64px;
+  right: 110px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: var(--sdc-dark, #061d39);
+  letter-spacing: 0.05em;
+  font-size: 11px;
+}
+/* Separator line between TASK and the ALOC/DUR/%COM row. Spans the full
+   TH width regardless of TH padding. */
+th[data-col="name"] .th-label-name::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border-strong, #cbd5e1);
+}
+/* BOTTOM HALF — light-gray sub-labels at the EXACT same horizontal
+   positions as the body values they describe. v4.44 adds DESCRIPTION
+   centered above the body task-name area (left: 64 to right: 110). */
+.th-label-alloc,
+.th-label-desc,
+.th-label-dur,
+.th-label-pct {
+  position: absolute;
+  top: 50%;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  color: var(--text-muted, #94a3b8);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.th-label-alloc { left: 8px; }
+.th-label-desc {
+  left: 64px;
+  right: 110px;
+  justify-content: center;
+}
+.th-label-dur   { right: 60px; }
+.th-label-pct   { right: 8px; }
+.th-label-dash  { display: none; }
+/* When alloc is hidden globally, also hide the ALOC header label. */
+body.hide-alloc-pre .th-label-alloc { display: none; }
+
 /* % complete pill — color reflects SCHEDULE STATUS, not just progress:
      is-zero    = 0%, not started (slate)
      is-behind  = 1–99% AND behind schedule (light red)
@@ -1988,36 +2693,55 @@ td[data-col="name"].has-pills {
    color picker can update them live without re-rendering. Text is always black
    for readability across whatever fill the user picks; the border is a slight
    darkening of the fill via color-mix. */
+/* % complete pill — restyled as a small PROGRESS BAR in v4.1. The pill is
+   always a neutral light container; an inner .name-pct-fill div grows from
+   left → right to visually answer "how done is this task?" without you
+   having to read the number. The color of the fill tracks schedule status
+   (red when behind, green when on-track, deep green when complete). */
 .name-pct-pill {
-  color: #000;
+  color: var(--text, #1e293b);
+  position: relative;
+  overflow: hidden;
+  background: #fafbfc;
+  border-color: #cbd5e1;
+  padding: 0;     /* the fill needs to extend to the pill's inner edge */
 }
-/* Border is softened to 80% fill + 20% black (was 70/30) so the pill reads
-   as subtle rather than heavily outlined — especially important for the
-   is-zero state which appears on every task and shouldn't draw the eye. */
-.name-pct-pill.is-zero {
-  background: var(--pct-zero-fill, #fafbfc);
-  border-color: color-mix(in srgb, var(--pct-zero-fill, #fafbfc) 80%, #000);
+.name-pct-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 0;
+  transition: width 120ms ease, background-color 120ms ease;
+  pointer-events: none;     /* clicks pass through to the pill (edit) */
 }
-.name-pct-pill.is-behind {
-  background: var(--pct-behind-fill, #fee2e2);
-  border-color: color-mix(in srgb, var(--pct-behind-fill, #fee2e2) 80%, #000);
+.name-pct-text {
+  position: relative;       /* sits above .name-pct-fill */
+  z-index: 1;
+  display: block;
+  width: 100%;
+  text-align: center;
+  letter-spacing: 0.01em;
+  padding: 0 4px;
+  box-sizing: border-box;
 }
-.name-pct-pill.is-ontrack {
-  background: var(--pct-ontrack-fill, #dcfce7);
-  border-color: color-mix(in srgb, var(--pct-ontrack-fill, #dcfce7) 80%, #000);
-}
-/* Done state: deep green pill with white ✓ inside — matches the milestone-check
-   done style so 100% duration tasks and completed milestones read the same.
-   Hardcoded (no --pct-done-fill var) on purpose so that users who previously
-   saved a lighter custom done color in Setup still see this pill match the
-   milestone outline color. The Setup picker for "Done" still controls the
-   Gantt bar fill and the Team-page resource bar, but the in-grid pill is
-   fixed at the milestone-pair colors. */
+/* Fill colors per status. Light enough that the black text on top stays
+   readable when the fill is full-ish; the colors still telegraph status
+   at a glance. */
+.name-pct-pill.is-zero .name-pct-fill    { background: transparent; }
+.name-pct-pill.is-behind .name-pct-fill  { background: #fca5a5; }
+.name-pct-pill.is-ontrack .name-pct-fill { background: #86efac; }
+/* 100% complete state — full green bar + white ✓. Border deepens to the
+   same dark green that the milestone-check uses when done, so duration
+   tasks and milestones look the same when complete. */
 .name-pct-pill.is-done {
-  background: #16a34a;
   border-color: #14532d;
   color: white;
   font-weight: 900;
+}
+.name-pct-pill.is-done .name-pct-fill {
+  background: #16a34a;
+  width: 100% !important;
 }
 
 /* Milestone / anchor checkbox in the Task column. Replaces the % pill for
@@ -2128,7 +2852,10 @@ tbody tr.anchor-row.no-bottom-border td {
    than the pill itself. Override every relevant box-model property here so
    the input stays exactly the pill's footprint. */
 .name-pill-input {
-  width: 100% !important;
+  /* Default styling — designed for the right-edge % complete pill (38×16,
+     centered 10px font). Width is set inline by enterPillEdit per column
+     type. */
+  width: 100%;
   height: 100% !important;
   margin: 0 !important;
   padding: 0 4px !important;
@@ -2141,6 +2868,22 @@ tbody tr.anchor-row.no-bottom-border td {
   text-align: center;
   font-family: inherit;
   color: #1e293b;
+}
+/* v4.33: alloc / dur inline editors use INHERITED font + color + alignment
+   so the input renders at the EXACT same size as the original text — no
+   vertical or horizontal jump when the user clicks to edit. Earlier the
+   input was forced to 10px center-aligned with its own height, which made
+   alloc shift down (different baseline + height than surrounding text)
+   and dur shift left (text-align: center vs the natural left alignment). */
+.name-cell-alloc-pre .name-pill-input,
+.name-cell-dur .name-pill-input {
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  color: inherit !important;
+  text-align: inherit !important;
+  height: auto !important;
+  padding: 0 !important;
+  line-height: inherit !important;
 }
 
 /* The actual Gantt diamonds (anchor + non-anchor) are custom SVG polygons drawn
@@ -2388,10 +3131,16 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 .section-picker-hint { font-size: 11px; color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
 .section-picker-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
 
-/* Indent the name column by depth (not the first cell — the line column is leftmost now). */
-tr.depth-2 > td.col-name { padding-left: 22px; }
-tr.depth-3 > td.col-name { padding-left: 36px; }
-tr.depth-4 > td.col-name { padding-left: 50px; }
+/* v4.40: depth-N indentation removed for the Task column. Reasons:
+   (a) Section + sub-dep headers already telegraph hierarchy visually so
+       per-row indentation is redundant.
+   (b) Crucially, depth-N's padding-left was overriding the has-meta
+       padding-left (specificity 0,2,2 vs 0,2,1), so body alloc absolute
+       offsets didn't align with the header — and in browsers that
+       anchor absolute children to TD content-box (not padding-box),
+       the body alloc ended up pushed right by the depth padding.
+   If we ever want depth indent back, apply it to .name-cell-main (inside
+   the cell), not the TD itself, so TD padding-left stays consistent. */
 
 /* Cascading group picker in the task editor — three selects on one line. */
 .group-picker { grid-column: 1 / -1; }
@@ -3449,10 +4198,37 @@ body[data-view="setup"] #btn-add { display: none; }
 .quote-compare-table td { padding: 6px 8px; border-bottom: 1px solid #f1f5f9; }
 .quote-compare-table td.num { text-align: right; }
 .quote-compare-table tfoot .totals-row td { font-weight: 700; border-top: 2px solid #cbd5e1; }
+/* Section header rows grouping discipline rows by SDC section (10 / 40 / 50). */
+.quote-compare-table tr.section-head td {
+  background: var(--sdc-dark, #061d39);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-bottom: none;
+}
+/* Combined Quoted/Scheduled column — slash divider styling. */
+.quote-sched-cell { font-variant-numeric: tabular-nums; }
+.quote-sched-q { color: var(--text-muted, #64748b); }
+.quote-sched-slash { color: var(--text-muted, #cbd5e1); margin: 0 4px; }
+.quote-sched-s { color: var(--text, #1e293b); font-weight: 700; }
+/* Variance cell — color reflects how scheduled compares to quoted.
+   under-budget = green, near = neutral, slightly over = amber, well over = red. */
+.quote-variance           { font-weight: 700; border-radius: 3px; padding: 2px 6px; font-variant-numeric: tabular-nums; }
+.quote-variance.var-zero  { color: var(--text-muted, #475569); }
+.quote-variance.var-under { color: #166534; background: #dcfce7; }
+.quote-variance.var-near  { color: #475569; background: #f1f5f9; }
+.quote-variance.var-over  { color: #b45309; background: #fef3c7; }
+/* Legacy v4.15 classes — kept inert so old transcripts/code paths don't 404. */
+.quote-diff           { font-weight: 700; border-radius: 3px; padding: 2px 6px; }
 .quote-diff.diff-zero { color: #475569; }
 .quote-diff.diff-near { color: #166534; background: #dcfce7; }
 .quote-diff.diff-far  { color: #b45309; background: #fef3c7; }
-.quote-diff           { font-weight: 700; border-radius: 3px; padding: 2px 6px; }
+.quote-sched.diff-zero { background: transparent; }
+.quote-sched.diff-near { background: #ecfdf5; }
+.quote-sched.diff-far  { background: #fef3c7; }
 .btn-danger {
   background: #dc2626;
   color: white;
@@ -3929,6 +4705,19 @@ td[data-col="assignee"].placeholder-assignee {
   font-style: italic;
   color: #64748b;
 }
+/* Sales-workspace cells (Assigned To + Allocation) — intentionally empty
+   (v4.22). Slightly muted background reads as "intentionally blank, not
+   missing data". Hover does not invite editing. */
+td.sales-suppressed {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0,
+    transparent 4px,
+    rgba(15, 23, 42, 0.04) 4px,
+    rgba(15, 23, 42, 0.04) 8px
+  );
+  cursor: default;
+}
 .team-member-name {
   padding: 2px 4px;
   border: 1px solid transparent;
@@ -4022,7 +4811,11 @@ td[data-col="assignee"].placeholder-assignee {
 }
 .dashboard-row {
   display: grid;
-  grid-template-columns: 90px 1fr auto auto;
+  /* Two-column layout: left side stacks project name (full, wrapping) over
+     task name; right side is the date / drift chip. The old 90px first
+     column truncated project names like "1129_Schneider_Electric_Cartoner"
+     down to "1129_Schne…" which made the cards basically useless. */
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -4040,21 +4833,23 @@ td[data-col="assignee"].placeholder-assignee {
 .dashboard-row:last-child { border-bottom: none; }
 .dashboard-row:hover { background: var(--row-hover); }
 .dashboard-row-project {
+  display: block;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wrap full project name across multiple lines rather than truncating. */
+  white-space: normal;
+  word-break: break-word;
+  margin-bottom: 1px;
 }
 .dashboard-row-name {
+  display: block;
   font-weight: 600;
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
 }
 .dashboard-row-assignee {
   font-size: 11px;
