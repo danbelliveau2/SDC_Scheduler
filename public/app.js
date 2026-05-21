@@ -2536,37 +2536,43 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.82 STRICT LAYOUT CASCADE (per user spec, ZERO tolerance):
+    // v4.85 LAYOUT CASCADE (per user spec):
     //
-    //   Measure bar width (barW), meta width (metaW), name width (nameW).
+    //   Terminology:
+    //     meta = alloc/duration pill ("85% · 8w")
+    //     name = task description
+    //     bar  = Gantt bar
     //
-    //   A. NAME DOESN'T EVEN FIT in the bar alone (nameW + 2·PAD > barW):
-    //      → name goes outside-right (clipBarLabels' default), meta outside-left.
+    //   Gaps (all 3 px; configurable later via Setup):
+    //     INSIDE_PADDING = 3   gap between bar's left edge and inside-left meta
+    //     INSIDE_GAP     = 3   gap between meta and name, and name and bar's right edge
+    //     OUTSIDE_GAP    = 3   gap between outside-left meta PILL right edge and bar's left edge
     //
-    //   B. META + NAME TOGETHER DON'T FIT in the bar
-    //      (metaW + GAP + nameW + 2·PAD > barW):
-    //      → meta goes outside-left, name stays centered (already by clipBarLabels).
+    //   PRINCIPLE: "Only move the name when you need to."
     //
-    //   C. BOTH FIT IN BAR. Two sub-cases for where to put the name:
-    //      C1. Centered name doesn't overlap meta → keep centered.
-    //      C2. Centered would overlap → shift name right to just clear meta.
-    //
-    //   NO TOLERANCE. Either it fits exactly or it doesn't.
-    //   NO double-render code path. ONE meta text element per task, period.
-    // v4.84: gaps reverted to a uniform 1px. The user explicitly rejected
-    // the "bump the gap to fix overlap" approach — fit them as tightly as
-    // possible; if they overlap, fix it by moving meta outside, not by
-    // padding them apart.
-    const INSIDE_PADDING = 1;
-    const SAME_ROW_GAP   = 1;
-    const META_NAME_GAP  = 1;
-    const METAR_DASH_SUFFIX = ' -';
+    //   Step 1: meta INSIDE-left,  name CENTERED in bar
+    //     when barW >= nameW + 2*metaW + 4*INSIDE_GAP   (lots of room — name centers as
+    //                                                    if meta weren't there)
+    //   Step 2: meta INSIDE-left,  name centered in AVAILABLE SPACE
+    //     when nameW + metaW + 3*INSIDE_GAP <= barW < Step 1 threshold
+    //     (equal gaps between meta-right and name, and between name and bar's right edge)
+    //   Step 3: meta OUTSIDE-left, name CENTERED in bar
+    //     when nameW + 2*INSIDE_GAP <= barW < Step 2 threshold
+    //   Step 4: BOTH outside (meta outside-left, name FORCED outside-RIGHT —
+    //     never outside-LEFT even if frappe-gantt's viewport-clip wanted it there)
+    //     when barW < nameW + 2*INSIDE_GAP
+    const INSIDE_PADDING = 3;
+    const INSIDE_GAP     = 3;
+    const OUTSIDE_GAP    = 3;
+    const PILL_PAD       = 2;
+    // text right edge = barX - SAME_ROW_GAP, pill right edge = barX - OUTSIDE_GAP.
+    const SAME_ROW_GAP   = OUTSIDE_GAP + PILL_PAD;
 
     const barLabel = wrap.querySelector('.bar-label');
     if (!barLabel) continue;
 
-    // Render meta inside-left with trailing dash + halo. We measure here, then
-    // either keep it inside or move it outside based on what fits.
+    // Render meta inside-left with halo. We measure here, then decide which
+    // cascade step applies and either keep it inside or pop it outside.
     const metaEl = document.createElementNS(SVG_NS, 'text');
     metaEl.setAttribute('class', 'sdc-bar-meta');
     metaEl.setAttribute('x', String(barX + INSIDE_PADDING));
@@ -2581,71 +2587,79 @@ function drawBarMeta() {
     metaEl.setAttribute('stroke-width', '2.5');
     metaEl.setAttribute('stroke-linejoin', 'round');
     metaEl.style.pointerEvents = 'none';
-    metaEl.textContent = metaText + METAR_DASH_SUFFIX;
+    metaEl.textContent = metaText;
     group.appendChild(metaEl);
 
     let metaW = 0;
-    try { metaW = metaEl.getBBox().width; } catch (_) { metaW = (metaText.length + 2) * 6; }
+    try { metaW = metaEl.getBBox().width; } catch (_) { metaW = metaText.length * 6; }
 
     let nameW = 0;
     try { nameW = barLabel.getBBox().width; } catch (_) { nameW = (task.name || '').length * 7; }
 
-    const barInsideLeft  = barX + INSIDE_PADDING;
-    const barInsideRight = barX + barW - INSIDE_PADDING;
-    const barInsideW     = barInsideRight - barInsideLeft;
+    // Helper: center name inside the bar (frappe-gantt's natural placement).
+    // clipBarLabels may have pushed it outside if the bar was narrower than
+    // its PAD=8 threshold but wider than our INSIDE_GAP=3 threshold — force
+    // it back inside here.
+    const centerNameInBar = () => {
+      barLabel.setAttribute('x', String(barX + barW / 2));
+      barLabel.setAttribute('text-anchor', 'middle');
+      barLabel.style.textAnchor = '';
+      barLabel.classList.remove('bar-label-outside');
+    };
 
-    // Helper: move metaEl from inside-left to outside-left + drop the trailing
-    // dash + swap the halo for a pill occluder.
+    // Helper: move metaEl from inside-left to outside-left + swap halo for
+    // pill occluder. Pill right edge ends OUTSIDE_GAP px from bar's left.
     const moveMetaOutside = () => {
       metaEl.setAttribute('x', String(barX - SAME_ROW_GAP));
       metaEl.setAttribute('text-anchor', 'end');
-      metaEl.textContent = metaText;
       metaEl.removeAttribute('paint-order');
       metaEl.removeAttribute('stroke');
       metaEl.removeAttribute('stroke-width');
       metaEl.removeAttribute('stroke-linejoin');
-      addPillOccluder(group, metaEl);
-      // Clear any leftover inline-style shift on the bar-label from a previous render.
-      barLabel.style.textAnchor = '';
+      addPillOccluder(group, metaEl, PILL_PAD);
     };
 
-    // CASE A: name doesn't fit in the bar alone — both outside.
-    if (nameW > barInsideW) {
-      moveMetaOutside();
+    // Cascade thresholds.
+    const step1Threshold = nameW + 2 * metaW + 4 * INSIDE_GAP;       // Step 1 fit
+    const step2Threshold = nameW + metaW + 3 * INSIDE_GAP;            // Step 2 fit
+    const step3Threshold = nameW + 2 * INSIDE_GAP;                    // Step 3 fit
+
+    // STEP 1: lots of room. Meta inside-left at barX + INSIDE_PADDING,
+    // name CENTERED in bar (asymmetric gaps from meta vs bar's right edge
+    // are intentional — "only move the name when you need to").
+    if (barW >= step1Threshold) {
+      centerNameInBar();
       continue;
     }
 
-    // CASE B: meta + GAP + name don't both fit inside the bar — meta outside, name centered.
-    if (metaW + META_NAME_GAP + nameW > barInsideW) {
-      moveMetaOutside();
-      continue;
-    }
-
-    // CASE C: both fit inside the bar. Decide name position.
-    const metaRight = barInsideLeft + metaW;
-    const centeredNameLeft = barX + barW / 2 - nameW / 2;
-    if (metaRight + META_NAME_GAP <= centeredNameLeft) {
-      // C1. Centered name clears the meta. Keep centered (clipBarLabels already did).
-      continue;
-    }
-    // C2. Centered overlaps. RIGHT-align the name to the bar's right edge
-    // (text-anchor='end', x=barInsideRight). This pushes the name as far
-    // right as possible — the user wants the description "almost all the
-    // way to the right side of the bar" before the meta pops outside.
-    barLabel.setAttribute('x', String(barInsideRight));
-    barLabel.setAttribute('text-anchor', 'end');
-    barLabel.style.textAnchor = 'end';
-
-    // Defensive: if the right-aligned name somehow still extends past the
-    // bar (font-metric weirdness), revert and move meta outside.
-    let postShiftBBox = null;
-    try { postShiftBBox = barLabel.getBBox(); } catch (_) {}
-    if (postShiftBBox && (postShiftBBox.x + postShiftBBox.width) > barInsideRight) {
-      barLabel.style.textAnchor = '';
-      barLabel.setAttribute('x', String(barX + barW / 2));
+    // STEP 2: running out. Meta inside-left, name centered between meta's
+    // right edge and bar's right edge (equal gaps on both sides of the name).
+    //   nameCenterX = midpoint of (meta right edge) and (bar right edge)
+    //               = barX + (INSIDE_PADDING + metaW + barW) / 2
+    if (barW >= step2Threshold) {
+      const nameCenterX = barX + (INSIDE_PADDING + metaW + barW) / 2;
+      barLabel.setAttribute('x', String(nameCenterX));
       barLabel.setAttribute('text-anchor', 'middle');
-      moveMetaOutside();
+      barLabel.style.textAnchor = '';
+      barLabel.classList.remove('bar-label-outside');
+      continue;
     }
+
+    // STEP 3: meta pops outside-left, name centered in bar.
+    if (barW >= step3Threshold) {
+      moveMetaOutside();
+      centerNameInBar();
+      continue;
+    }
+
+    // STEP 4: BOTH outside. Meta outside-left, name ALWAYS outside-RIGHT
+    // (override clipBarLabels' viewport-clip-to-left decision if it kicked in —
+    // user wants the name to NEVER appear on the left).
+    moveMetaOutside();
+    barLabel.setAttribute('x', String(barX + barW + 6));
+    barLabel.setAttribute('text-anchor', 'start');
+    barLabel.style.textAnchor = '';
+    barLabel.classList.add('bar-label-outside');
   }
 }
 

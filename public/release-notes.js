@@ -4,6 +4,34 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.85',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — 4-step cascade. "Only move the name when you need to."',
+      '',
+      'NEW CASCADE per approved spec. Gaps all 3 px (INSIDE_PADDING / INSIDE_GAP / OUTSIDE_GAP — configurable later via Setup).',
+      '',
+      '   STEP 1 — lots of room. Meta INSIDE-left at barX+3, name CENTERED in the bar.',
+      '       Trigger: barW ≥ nameW + 2·metaW + 4·INSIDE_GAP.',
+      '       Asymmetric gaps (more space on the right than between meta and name) are intentional. The principle is: as long as the centered name clears the meta by ≥ 3 px, leave the name alone.',
+      '',
+      '   STEP 2 — running out. Meta INSIDE-left at barX+3, name centered in the AVAILABLE SPACE (equal gaps from meta-right and bar-right).',
+      '       Trigger: nameW + metaW + 3·INSIDE_GAP ≤ barW < Step 1 threshold.',
+      '       nameCenterX = barX + (INSIDE_PADDING + metaW + barW) / 2. The name slides right as the bar shrinks, keeping gap-from-meta = gap-from-bar-right.',
+      '',
+      '   STEP 3 — meta pops OUTSIDE-left, name CENTERED in bar.',
+      '       Trigger: nameW + 2·INSIDE_GAP ≤ barW < Step 2 threshold.',
+      '       Meta\'s pill right edge ends 3 px from bar\'s left edge (OUTSIDE_GAP=3, PILL_PAD=2, so text right edge at barX-5 with text-anchor="end").',
+      '       Note: clipBarLabels may have pushed the name outside (its PAD=8 threshold is stricter than ours). We FORCE the name back to centered-in-bar via setAttribute + classList.remove("bar-label-outside").',
+      '',
+      '   STEP 4 — BOTH outside. Meta outside-left, name ALWAYS outside-RIGHT.',
+      '       Trigger: barW < nameW + 2·INSIDE_GAP.',
+      '       Override clipBarLabels\' viewport-clip-to-left decision if it kicked in. The name should never end up on the left of the bar even when frappe-gantt thinks the right would clip the SVG edge.',
+      '',
+      'TRAILING-DASH SUFFIX REMOVED: the v4.84 " -" appended to inside meta is gone. With explicit gaps in the cascade, the dash is visual noise. Cleaner read.',
+    ],
+  },
+  {
     version: '4.84',
     date: '2026-05-21',
     notes: [
