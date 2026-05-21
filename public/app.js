@@ -8310,19 +8310,15 @@ function renderActionsPersonGantt() {
   const maxMs = Math.max(maxTaskMs, todayMs) + PAD_DAYS * 86400000;
   const totalDays = Math.max(1, (maxMs - minMs) / 86400000);
 
-  // Stable color per project name. Hash-based hue so the same project gets
-  // the same bar color session over session. Soft pastels (S=55%, L=72%).
-  const projectColor = (() => {
-    const cache = {};
-    const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; };
-    return (proj) => {
-      if (!proj) return '#cbd5e1';
-      if (cache[proj]) return cache[proj];
-      const hue = hash(proj) % 360;
-      cache[proj] = `hsl(${hue} 55% 72%)`;
-      return cache[proj];
-    };
-  })();
+  // v4.67: colors come from the SAME hierarchy palette the main Schedule
+  // Gantt uses (rowColorKey → HIERARCHY_BAR_COLORS). Mech tasks read blue,
+  // Controls green, Build orange, Wire yellow — consistent with the rest
+  // of the app. Falls back to procurement grey for anything unclassified.
+  const colorsForTask = (t) => {
+    const key = rowColorKey(t);
+    const palette = HIERARCHY_BAR_COLORS[key] || HIERARCHY_BAR_COLORS.procurement || { fill: '#cbd5e1', text: '#334155' };
+    return palette;
+  };
 
   // Build week ticks across the axis.
   const ticks = [];
@@ -8347,19 +8343,28 @@ function renderActionsPersonGantt() {
     const endMs    = new Date(t.end_date   + 'T00:00:00').getTime();
     const startPct = ((startMs - minMs) / 86400000 / totalDays) * 100;
     const widthPct = Math.max(0.4, ((endMs - startMs) / 86400000 / totalDays) * 100);
-    const color    = projectColor(t.project);
+    const palette  = colorsForTask(t);
     const progress = Math.max(0, Math.min(100, Number(t.progress) || 0));
     const overdue  = endMs < todayMs && progress < 100;
     const done     = progress >= 100;
     const isAction = !!t.is_action;
-    const tip      = `${t.project ? `[${t.project}] ` : ''}${t.name}\n${fmtDate(t.start_date)} → ${fmtDate(t.end_date)}${progress > 0 ? ` · ${progress}%` : ''}`;
-    // Diamond marker for milestones / zero-duration actions; bar otherwise.
-    const isMilestone = (t.is_milestone || t.duration_days === 0) && (endMs - startMs) <= 86400000;
+    const alloc    = t.is_milestone ? null : (t.allocation == null ? 90 : Math.max(0, Math.min(100, Number(t.allocation))));
+    const durDays  = Number(t.duration_days) || 0;
+    const wks      = Math.round(durDays / 5);
+    // Combined meta label like the main Gantt: "85% · 2w · 50%" (alloc · dur · progress).
+    // Progress is only included once a task is started so unstarted bars stay clean.
+    const metaParts = [];
+    if (alloc != null && alloc > 0)            metaParts.push(`${alloc}%`);
+    if (wks > 0)                               metaParts.push(`${wks}w`);
+    if (progress > 0 && progress < 100)        metaParts.push(`${progress}% done`);
+    const metaLabel = metaParts.join(' · ');
+    const tip = `${t.project ? `[${t.project}] ` : ''}${t.name}\n${fmtDate(t.start_date)} → ${fmtDate(t.end_date)}${alloc != null ? ` · ${alloc}%` : ''}${wks > 0 ? ` · ${wks}w` : ''}${progress > 0 ? ` · ${progress}% done` : ''}`;
+    const isMilestone = (t.is_milestone || durDays === 0) && (endMs - startMs) <= 86400000;
     const barOrDot = isMilestone
-      ? `<div class="apg-diamond ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''} ${isAction ? 'is-action' : ''}" style="left:${startPct}%;background:${color}" title="${escapeHtml(tip)}"></div>`
-      : `<div class="apg-bar ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" style="left:${startPct}%;width:${widthPct}%;background:${color}" title="${escapeHtml(tip)}">
-          ${progress > 0 && progress < 100 ? `<div class="apg-bar-fill" style="width:${progress}%"></div>` : ''}
-          <span class="apg-bar-label">${escapeHtml(t.name)}</span>
+      ? `<div class="apg-diamond ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''} ${isAction ? 'is-action' : ''}" style="left:${startPct}%;background:${isAction ? 'var(--sdc-primary, #2563eb)' : palette.fill};border-color:${palette.text}" title="${escapeHtml(tip)}"></div>`
+      : `<div class="apg-bar ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" style="left:${startPct}%;width:${widthPct}%;background:${palette.fill};border-color:${palette.text};color:${palette.text}" title="${escapeHtml(tip)}">
+          ${progress > 0 ? `<div class="apg-bar-fill" style="width:${progress}%;background:${palette.text}"></div>` : ''}
+          ${metaLabel ? `<span class="apg-bar-meta">${escapeHtml(metaLabel)}</span>` : ''}
         </div>`;
     return `
       <div class="apg-row" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">

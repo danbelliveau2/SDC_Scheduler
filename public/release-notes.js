@@ -4,6 +4,22 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.67',
+    date: '2026-05-21',
+    notes: [
+      'Personal Gantt — matches the main Schedule Gantt look.',
+      '',
+      '   ▸ COLORS FIXED: bars now use the same HIERARCHY palette as the main Schedule view (rowColorKey → HIERARCHY_BAR_COLORS). Mech tasks are BLUE (not green), Controls green, Build orange, Wire yellow — same everywhere in the app.',
+      '   ▸ BAR META: each bar now shows the standard "85% · 2w · 50% done" label inline — allocation, duration in weeks, and percent-done when started — matching the main Gantt\'s % toggle.',
+      '   ▸ PROGRESS FILL: tasks with progress > 0 get a darker overlay on the bar at width = % done, exactly like the main Gantt\'s bar-progress styling.',
+      '   ▸ OVERDUE: bars past their end date with progress < 100 get a 2px red inset shadow + red border so they pop visually.',
+      '   ▸ SPACING: row height bumped 26 → 32, padding around the chart bumped 12 → 18+22 so the chart breathes instead of feeling crammed.',
+      '   ▸ Action item diamonds keep the SDC-blue paint they had in v4.66.',
+      '',
+      'NOTE — DRAGGING: this is currently a read-only preview. Click any row to jump to that project\'s schedule, where the bars are fully draggable + editable via frappe-gantt. Inline drag on this per-person chart is a follow-up — frappe-gantt is project-scoped today and would need to be rewired to feed it a cross-project task list.',
+    ],
+  },
+  {
     version: '4.66',
     date: '2026-05-21',
     notes: [
