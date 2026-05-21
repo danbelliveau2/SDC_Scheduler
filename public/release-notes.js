@@ -4,6 +4,25 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.88',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — getComputedTextLength + arithmetic checks (fixes overlap).',
+      '',
+      'ROOT CAUSE of v4.86/v4.87 overlap bug: getBBox().width sometimes returns 0 or under-sized values immediately after appendChild, before the SVG has fully laid out. When the meta\'s measured width was smaller than its actual rendered width, the cascade thought Step 2 fit when it didn\'t — placing the name centered "between meta-right and bar-right" but using the WRONG meta-right value. Result: name landed too far left and overlapped the meta. The visible overlap is what was making "Robot" render as "wRobot" with the "R" jammed against the meta\'s "w".',
+      '',
+      'FIX: switched width measurement to getComputedTextLength(), which is the SVG API specifically designed for text run length and is reliable immediately after setting textContent. Added a +1 px safety margin to absorb sub-pixel rendering variance (kerning, antialiasing) so the visible gap stays ≥ INSIDE_GAP=3 even when the API under-reports by a fraction.',
+      '',
+      'ALSO: switched from post-render measure-and-check to upfront arithmetic. We measure widths ONCE, then compute whether each cascade step fits and apply only the first one that does. Cleaner and avoids the multiple getBBox passes that were the source of timing-dependent measurement errors.',
+      '',
+      'CASCADE (now arithmetic-driven, but using accurate measured widths):',
+      '   STEP 1 — barW lets centered name clear meta + 3 AND bar-right - 3. Apply: meta inside-left, name centered IN BAR.',
+      '   STEP 2 — (barRight - metaInsideRight) ≥ nameW + 6. Apply: meta inside-left, name centered between meta-right and bar-right.',
+      '   STEP 3 — barW ≥ nameW + 6. Apply: meta OUTSIDE-left, name centered in bar.',
+      '   STEP 4 — none of the above. Apply: meta outside-left, name outside-right.',
+    ],
+  },
+  {
     version: '4.87',
     date: '2026-05-21',
     notes: [
