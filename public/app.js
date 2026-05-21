@@ -2556,9 +2556,12 @@ function drawBarMeta() {
     //   Step 1: meta INSIDE-left at barX+3, name CENTERED in bar.
     //           Keep IF: (a) name's left edge is ≥ INSIDE_GAP from meta's right edge,
     //                   AND (b) name's right edge is ≥ INSIDE_GAP from bar's right edge.
-    //   Step 2: meta INSIDE-left, name SHIFTED RIGHT to anchor at meta_right + INSIDE_GAP
-    //           (gap between meta and name is ALWAYS exactly INSIDE_GAP).
-    //           Keep IF: name's right edge is ≥ INSIDE_GAP from bar's right edge.
+    //   Step 2: meta INSIDE-left, name CENTERED between meta-right and bar-right
+    //           (symmetric gaps from meta-right and from bar-right).
+    //           Keep IF: name fits centered in that available space with ≥ INSIDE_GAP
+    //                    on each side. Per user: "It should be in the dead center of
+    //                    the bar, OR centered between the meta and the bar's right
+    //                    edge. Those are the only two options."
     //   Step 3: meta OUTSIDE-left, name CENTERED in bar.
     //           Keep IF: name fits centered in bar with INSIDE_GAP on each side.
     //   Step 4: BOTH outside. Meta outside-left, name ALWAYS outside-RIGHT
@@ -2638,16 +2641,24 @@ function drawBarMeta() {
       continue;  // Step 1 works.
     }
 
-    // STEP 2: meta stays inside-left; shift name's LEFT edge to
-    // meta_right + INSIDE_GAP. Uses text-anchor='start' so x == name's left.
-    barLabel.setAttribute('x', String(step1MetaRight + INSIDE_GAP));
-    barLabel.setAttribute('text-anchor', 'start');
-    barLabel.style.textAnchor = 'start';
+    // STEP 2: meta stays inside-left; CENTER the name between meta's right
+    // edge and bar's right edge (symmetric gaps on both sides of the name).
+    //   nameCenterX = midpoint of (meta right edge) and (bar right edge)
+    // Use the MEASURED meta right edge (step1MetaRight), not a computed one,
+    // so the math matches what's actually on screen.
+    const step2NameCenterX = (step1MetaRight + barRight) / 2;
+    barLabel.setAttribute('x', String(step2NameCenterX));
+    barLabel.setAttribute('text-anchor', 'middle');
+    barLabel.style.textAnchor = 'middle';
     barLabel.classList.remove('bar-label-outside');
 
     ({ mb, nb } = measure());
-    const step2Spills = (nb.x + nb.width + INSIDE_GAP) > barRight;
-    if (!step2Spills) {
+    // Centered placement gives symmetric gaps, so checking either side is
+    // sufficient — but check both in case rendered widths diverge slightly
+    // from layout math.
+    const step2Overlaps = nb.x < (step1MetaRight + INSIDE_GAP);
+    const step2Spills   = (nb.x + nb.width + INSIDE_GAP) > barRight;
+    if (!step2Overlaps && !step2Spills) {
       continue;  // Step 2 works.
     }
 

@@ -4,6 +4,25 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.87',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — Step 2 reverted to CENTERED between meta and bar-right.',
+      '',
+      'BUG: v4.86 anchored Step 2 at meta_right + 3 px (text-anchor="start"). The name ended up jammed against the meta with a huge dead space on the right side of the bar — visibly off-center. User: "It should be in the dead center of the bar, OR centered between the meta and the bar\'s right edge. Those are the only two options."',
+      '',
+      'FIX: Step 2 now centers the name at the midpoint of (meta\'s rendered right edge) and (bar\'s right edge). Symmetric gaps on both sides of the name. Same formula as v4.85, but using the MEASURED meta right edge from getBBox instead of the computed-from-assumed-width one — so the math matches what\'s actually on screen.',
+      '',
+      'KEPT FROM v4.86: overlap-driven cascade transitions. We still place → measure → check actual rendered overlap to decide whether to advance to the next step. Only Step 2\'s POSITIONING changed back to symmetric-center.',
+      '',
+      'CASCADE (now correct):',
+      '   STEP 1 — meta inside-left, name CENTERED IN BAR (dead center).',
+      '   STEP 2 — meta inside-left, name CENTERED between meta-right and bar-right (symmetric gaps).',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar.',
+      '   STEP 4 — both outside (meta outside-left, name always outside-right).',
+    ],
+  },
+  {
     version: '4.86',
     date: '2026-05-21',
     notes: [
