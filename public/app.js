@@ -2523,6 +2523,16 @@ function drawBarMeta() {
     el.style.pointerEvents = 'none';
     el.textContent = labelText;
     group.appendChild(el);
+
+    // v4.69: shift the frappe-gantt bar-LABEL (the task name) to the RIGHT
+    // end of the bar so it doesn't overlap our left-aligned alloc/dur meta.
+    // Only when the meta lands INSIDE the bar (placement === 'inside') —
+    // outside placements don't conflict with the centered name.
+    const barLabel = wrap.querySelector('.bar-label');
+    if (barLabel) {
+      barLabel.setAttribute('x', String(barX + barW - INSIDE_PADDING));
+      barLabel.setAttribute('text-anchor', 'end');
+    }
   }
 }
 
@@ -10470,9 +10480,14 @@ function inferredAnchorKey(t) {
 // rows). No % complete pill, no drift chip, no allocation pill.
 function isBacklogTask(t) {
   if (!t) return false;
-  // phase_group=null + exact name "Backlog" matches both new-format and any
-  // user-created equivalents. anchor_key was tried but conflicted with
-  // anchor row rendering — name-only detection is cleaner.
+  // v4.69: also match on anchor_key='backlog' — the server's estimate-create
+  // INSERT was supposed to stamp it but the actual SQL leaves anchor_key
+  // NULL (legacy oversight). Either signal counts now, so a Backlog row
+  // shows in the special spine slot even if its phase_group got set or its
+  // name was tweaked. Detection order:
+  //   1. anchor_key === 'backlog'
+  //   2. name === 'backlog' AND phase_group is null
+  if (String(t.anchor_key || '').toLowerCase() === 'backlog') return true;
   return String(t.name || '').trim().toLowerCase() === 'backlog' && !t.phase_group;
 }
 
@@ -10505,6 +10520,33 @@ async function ensureAnchorsForProject(project) {
       sub_department: a.subDepartment || null,
     });
     created = true;
+  }
+  // v4.69: also ensure a Backlog row exists. The estimate-create flow stamps
+  // one, but template projects (and any project where the user deleted the
+  // backlog) end up without it — and the user expects to see Backlog right
+  // under Receipt of PO. Default duration: 10 business days = 2 weeks,
+  // matching the estimate-create default. Allocation 0 (no real work).
+  const hasBacklog = state.tasks.some(t => t.project === project && isBacklogTask(t));
+  if (!hasBacklog) {
+    const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
+    if (po && po.start_date) {
+      await api.create({
+        name: 'Backlog',
+        project,
+        anchor_key: 'backlog',
+        is_milestone: false,
+        phase_group: null,
+        department: null,
+        sub_department: null,
+        duration_days: 10,
+        progress: 0,
+        allocation: 0,
+        start_date: po.start_date,
+        end_date: po.start_date,           // server cascade will set end from duration_days
+        predecessors: `${po.id}FS`,
+      });
+      created = true;
+    }
   }
   return created;
 }

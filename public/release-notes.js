@@ -4,6 +4,22 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.69',
+    date: '2026-05-21',
+    notes: [
+      'Backlog auto-restore + bar-label shifts right when % toggle is on.',
+      '',
+      'BACKLOG ROW IS BACK:',
+      '   ▸ Templates and any project where the Backlog had been deleted now auto-recreate it on the next refresh. ensureAnchorsForProject() checks if a Backlog exists; if not, it inserts one anchored to the project\'s Receipt of PO with a 10-business-day (2-week) default duration, allocation 0, and anchor_key="backlog".',
+      '   ▸ isBacklogTask() now ALSO matches on anchor_key="backlog" (not just name + null phase_group), so a Backlog row with custom phase_group or a slightly renamed task still gets the special spine treatment.',
+      '',
+      'BAR LABEL SHIFTS RIGHT WHEN % IS ON:',
+      '   ▸ When the % bar-meta toggle is enabled and the alloc/dur label fits INSIDE the bar (left-aligned), the task NAME now slides to the right end of the bar — text-anchor: end, x: barX + barW - 4. The two labels claim opposite ends of the bar so neither overlaps the other on long task names.',
+      '   ▸ When % is off, the name stays in frappe-gantt\'s default centered position — no behavior change for the common read-only view.',
+      '   ▸ When the meta lands OUTSIDE the bar (small bars), the name stays centered too — the conflict only existed for the inside-meta case.',
+    ],
+  },
+  {
     version: '4.68',
     date: '2026-05-21',
     notes: [
