@@ -2536,27 +2536,27 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.90 LAYOUT CASCADE — canvas measureText (font-metric source of truth).
+    // v4.91 LAYOUT CASCADE — match meta's font-family to bar-label's.
     //
-    //   v4.85-v4.89 all tried various SVG-layout APIs (getBBox,
-    //   getComputedTextLength, getBoundingClientRect) and EVERY ONE of them
-    //   was returning sizes smaller than the actual rendered text on at
-    //   least some bars — making the overlap check fire "no overlap" when
-    //   there clearly was one.
+    //   The persistent overlap bug across v4.85-v4.90: canvas measureText
+    //   was measuring widths in one font, but the SVG was rendering the meta
+    //   in a different (wider) font. The SVG <text> default font in some
+    //   browsers is a serif face (Times-like), while canvas's "sans-serif"
+    //   resolves to Arial/Helvetica — much narrower at the same point size.
+    //   So canvas under-reported meta widths by 15-20 px, and Step 1 fired
+    //   on bars where the centered name overlapped the meta.
     //
-    //   FINAL approach: use canvas measureText() with the element's computed
-    //   font. Canvas measureText works directly off the browser's font
-    //   metrics — it doesn't depend on SVG layout being complete, doesn't
-    //   need the element to be in the DOM, and returns synchronously with
-    //   sub-pixel precision. Take the MAX of canvas-measured and DOM-rect
-    //   width so we never underestimate.
+    //   FIX: force the meta's font-family to match the bar-label's actual
+    //   computed font-family (the one frappe-gantt's CSS sets, inherited
+    //   from the document). Now SVG and canvas use the same font, so
+    //   canvas measureText returns the true rendered width.
     //
-    //   Cascade applied via arithmetic with the conservative widths:
-    //     Step 1 — meta inside-left, name centered in bar.
+    //   Cascade arithmetic with these accurate widths:
+    //     Step 1 — meta inside-left, name centered IN BAR.
     //              Trigger: centered name has ≥3 px from meta-right AND ≥3 px from bar-right.
     //     Step 2 — meta inside-left, name centered between meta-right and bar-right.
-    //              Trigger: (barRight - metaRight) ≥ nameW + 6.
-    //     Step 3 — meta outside-left, name centered in bar.
+    //              Trigger: (barRight - metaInsideRight) ≥ nameW + 6.
+    //     Step 3 — meta OUTSIDE-left, name centered in bar.
     //              Trigger: barW ≥ nameW + 6.
     //     Step 4 — both outside.
     const INSIDE_PADDING = 3;
@@ -2569,6 +2569,14 @@ function drawBarMeta() {
     const barLabel = wrap.querySelector('.bar-label');
     if (!barLabel) continue;
 
+    // Read the bar-label's actual computed font so we render and measure the
+    // meta in the SAME font family. This eliminates the canvas vs SVG font
+    // mismatch that was the source of the bad-width measurements in v4.85-v4.90.
+    const barLabelStyle = window.getComputedStyle(barLabel);
+    const labelFontFamily = barLabelStyle.fontFamily || 'sans-serif';
+    const labelFontSize   = barLabelStyle.fontSize   || '12px';
+    const labelFontWeight = barLabelStyle.fontWeight || '400';
+
     // Render meta inside-left with halo. We may move it outside below.
     const metaEl = document.createElementNS(SVG_NS, 'text');
     metaEl.setAttribute('class', 'sdc-bar-meta');
@@ -2578,6 +2586,9 @@ function drawBarMeta() {
     metaEl.setAttribute('dominant-baseline', 'central');
     metaEl.setAttribute('font-size', '9');
     metaEl.setAttribute('font-weight', '700');
+    // Force same font-family as the bar-label so canvas measureText and SVG
+    // render in identical font (was a source of width-measurement skew).
+    metaEl.setAttribute('font-family', labelFontFamily);
     metaEl.setAttribute('fill', '#1e293b');
     metaEl.setAttribute('paint-order', 'stroke');
     metaEl.setAttribute('stroke', 'rgba(255,255,255,0.9)');
@@ -2606,37 +2617,33 @@ function drawBarMeta() {
       addPillOccluder(group, metaEl, PILL_PAD);
     };
 
-    // Width measurement — use canvas measureText for reliable results
-    // independent of SVG layout state.
-    const measureWidth = (el, text, fallbackCharPx) => {
+    // Width measurement via canvas measureText. Use the same font family as
+    // the SVG element, so canvas font metrics match what's actually rendered.
+    const measureCanvasW = (text, font) => {
       if (!text) return 0;
-      let canvasW = 0;
-      let rectW = 0;
-      // Canvas measureText with the element's computed font.
       try {
-        const cs = window.getComputedStyle(el);
-        const font = `${cs.fontStyle || 'normal'} ${cs.fontWeight || 'normal'} ${cs.fontSize || '10px'} ${cs.fontFamily || 'sans-serif'}`;
         const ctx = ensureMetaCanvasCtx();
         ctx.font = font;
-        canvasW = ctx.measureText(text).width;
-      } catch (_) { canvasW = 0; }
-      // Bounding-rect width as a secondary signal.
-      try {
-        const r = el.getBoundingClientRect();
-        if (r && r.width > 0.5) rectW = r.width;
-      } catch (_) { rectW = 0; }
-      // Take the MAX of the two methods. Never underestimate — better to
-      // overshoot and have an extra-large visible gap than to overlap.
-      let w = Math.max(canvasW, rectW);
-      if (!w || w < 1) w = Math.max(1, text.length) * fallbackCharPx;
-      return w;
+        return ctx.measureText(text).width;
+      } catch (_) { return 0; }
     };
 
-    // +2 px safety margin absorbs sub-pixel rendering variance (antialiasing,
-    // kerning), the meta's stroke padding, and any minor canvas/SVG metric
-    // discrepancy. Keeps the visible gap ≥ INSIDE_GAP every time.
-    const metaW = measureWidth(metaEl, metaText, 7) + 2;
-    const nameW = measureWidth(barLabel, task.name, 7) + 2;
+    // Build font strings using the same family for both meta (bold 9px) and
+    // name (the bar-label's actual computed font).
+    const metaFont = `bold 9px ${labelFontFamily}`;
+    const nameFont = `${labelFontWeight} ${labelFontSize} ${labelFontFamily}`;
+
+    let metaW = measureCanvasW(metaText, metaFont);
+    let nameW = measureCanvasW(task.name, nameFont);
+    // Char-count fallback if canvas fails (very rare).
+    if (!metaW) metaW = Math.max(1, metaText.length) * 7;
+    if (!nameW) nameW = Math.max(1, (task.name || '').length) * 7;
+    // +5 px safety margin (was +2 in v4.90). Big enough to absorb the meta's
+    // 2.5 px stroke halo + sub-pixel antialiasing + any tiny canvas/SVG font
+    // metric drift, even on systems where the font stack picks a wider face.
+    // Better an extra-wide gap than another overlap report.
+    metaW += 5;
+    nameW += 5;
 
     const metaInsideRight = barX + INSIDE_PADDING + metaW;
     const barRightEdge    = barX + barW;

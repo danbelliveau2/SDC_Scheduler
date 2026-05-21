@@ -4,6 +4,29 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.91',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — meta now renders in the SAME FONT as the bar-label.',
+      '',
+      'ROOT CAUSE finally identified: across v4.85-v4.90, canvas measureText was measuring widths in ONE font, but the SVG was rendering the meta in a DIFFERENT (wider) font. The SVG <text> default font is a serif face in some browsers (Times-like) while canvas\'s "sans-serif" resolves to Arial/Helvetica (much narrower at the same point size). Canvas under-reported meta widths by 15-20 px, so Step 1 (centered name) fired on bars where the centered name was actually landing on top of the meta.',
+      '',
+      'FIX:',
+      '   ▸ Read the bar-label\'s computed font-family (via window.getComputedStyle).',
+      '   ▸ Force the meta\'s font-family attribute to the SAME value. Now both SVG <text> elements render in the same font.',
+      '   ▸ Canvas measureText uses that same font-family. Widths now match what\'s rendered.',
+      '   ▸ Safety margin bumped from +2 to +5 px to absorb any final font-metric drift, stroke padding, antialiasing.',
+      '',
+      'CASCADE (unchanged — was correct, just had bad inputs):',
+      '   STEP 1 — meta inside-left, name centered IN BAR.',
+      '   STEP 2 — meta inside-left, name centered between meta-right and bar-right.',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar.',
+      '   STEP 4 — both outside.',
+      '',
+      'If it overlaps now, the font/measurement assumptions need yet another rethink — but the math is sound, and the measurements should finally be too.',
+    ],
+  },
+  {
     version: '4.90',
     date: '2026-05-21',
     notes: [
