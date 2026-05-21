@@ -63,7 +63,8 @@ const api = {
 // keeps regular engineers from accidentally opening the manager view. The
 // password caches in sessionStorage so it's prompted once per browser
 // session, not on every click. Change here when you need to rotate it.
-const TEAM_PASSWORD = 'sdc';
+// v4.64: password updated to 'sdcautomation' (all lowercase).
+const TEAM_PASSWORD = 'sdcautomation';
 
 const DISCIPLINES = [
   { key: 'pm',       label: 'Project Management',   short: 'PM',       color: '#e9d5ff', text: '#581c87' },
@@ -105,7 +106,7 @@ const state = {
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
-  resources: { discipline: 'mech', project: '', zoomPercent: 100 },
+  resources: { discipline: 'mech', project: '', zoomPercent: 100, focusMemberId: null },
   overAllocatedTaskIds: new Set(),
   // Open project schedules — like browser tabs. The empty string acts as the "All
   // projects" pseudo-tab so the user can always step back to the global view. Persisted
@@ -646,6 +647,59 @@ function showAlertDialog(opts = {}) {
     };
     document.addEventListener('keydown', onKey);
     setTimeout(() => overlay.querySelector('[data-action="ok"]')?.focus(), 0);
+  });
+}
+
+// v4.64: SDC-themed password prompt (replaces the browser-native prompt()).
+// Renders an in-app modal with the SDC blue + lime branding, returns a
+// Promise that resolves to the entered string or null on cancel.
+function showPasswordDialog(opts = {}) {
+  const title = opts.title || 'Manager password';
+  const message = opts.message || 'Enter the team password to continue.';
+  return new Promise(resolve => {
+    document.getElementById('app-password-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'app-password-dialog';
+    overlay.className = 'modal-overlay app-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card app-password-card">
+        <div class="app-password-head">
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <div class="app-password-body">
+          <p class="app-password-msg">${escapeHtml(message)}</p>
+          <input type="password" class="app-password-input" autocomplete="off" placeholder="Password" />
+          <p class="app-password-error hidden">Wrong password.</p>
+        </div>
+        <div class="app-password-foot">
+          <button type="button" class="btn-ghost" data-action="cancel">Cancel</button>
+          <button type="button" class="btn-primary" data-action="ok">Unlock</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input  = overlay.querySelector('.app-password-input');
+    const errEl  = overlay.querySelector('.app-password-error');
+    const done = (value) => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(value);
+    };
+    overlay.querySelector('[data-action="cancel"]').onclick = () => done(null);
+    overlay.querySelector('[data-action="ok"]').onclick = () => done(input.value);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      else if (e.key === 'Enter') { e.preventDefault(); done(input.value); }
+    };
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => input.focus(), 0);
+    // expose for the caller in case they want to surface a "wrong password"
+    // shake without reopening — currently unused, kept for future polish.
+    overlay._showError = (msg) => {
+      errEl.textContent = msg || 'Wrong password.';
+      errEl.classList.remove('hidden');
+      input.select();
+    };
   });
 }
 
@@ -8389,18 +8443,18 @@ function renderTeam() {
   // Build a member row. Used for both regular and placeholder lists.
   const renderRow = (m) => {
     const ph = isPlaceholder(m.name);
+    const focused = state.resources?.focusMemberId === m.id;
     const leadStar = m.is_lead ? '<span class="team-member-lead" title="Department lead">★</span>' : '';
-    // v4.63: explicit "View" button on each row opens the per-person
-    // dashboard. The row click handler was falling through because the
-    // name + specialty inputs take 100% of the row's flex space, leaving
-    // no bare row pixels to click. Dedicated button is unambiguous.
+    // v4.64: View button removed. Clicking ANYWHERE on the row focuses that
+    // person — the resources timeline + dashboard cards below filter to
+    // just their work. Clicks on the action buttons (lead toggle / remove)
+    // bypass via stopPropagation in their own handlers.
     return `
-      <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
+      <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}${focused ? ' is-focused' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
         <span class="team-member-grip" title="Drag to reorder">⋮⋮</span>
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
-        <button type="button" class="team-member-view" data-action="view-dashboard" data-id="${m.id}" title="See ${escapeHtml(m.name)}'s tasks + action items">👁</button>
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
       </li>`;
@@ -8525,16 +8579,27 @@ function renderTeam() {
     });
   });
 
-  // v4.63: explicit View button on each row opens the per-person dashboard.
-  // (v4.61's "click anywhere on the row" handler never fired in practice
-  // because the name + specialty inputs took 100% of the row's flex space.)
-  grid.querySelectorAll('[data-action="view-dashboard"]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = Number(btn.dataset.id);
+  // v4.64: click anywhere on the row to FOCUS that person. The resources
+  // timeline + dashboard cards below filter to just their assignments.
+  // Click handlers on the row's buttons stopPropagation so they don't
+  // accidentally trigger this. Inputs are exempt — clicking the name to
+  // edit it shouldn't kick off a re-render that yanks input focus.
+  grid.querySelectorAll('.team-member').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (e.target.closest('input'))  return;
+      if (e.target.closest('.team-member-grip')) return;
+      const id = Number(row.dataset.id);
       if (!Number.isFinite(id)) return;
-      openPersonDashboard(id);
+      // Toggle: clicking the already-focused row clears focus.
+      const newFocus = (state.resources.focusMemberId === id) ? null : id;
+      setFocusedMember(newFocus);
     });
+  });
+  // Lead-toggle + remove buttons get explicit stopPropagation so their
+  // existing async handlers run without also triggering setFocusedMember.
+  grid.querySelectorAll('[data-action="toggle-lead"], [data-action="remove-member"]').forEach(btn => {
+    btn.addEventListener('click', (e) => e.stopPropagation());
   });
 
   // Drag-to-reorder within the same discipline. Placeholders are draggable=false
@@ -8731,12 +8796,13 @@ function renderTeamDashboard() {
   const disc = state.resources?.discipline;
   if (!disc) return;
   const discDef = DISCIPLINE_BY_KEY[disc] || { label: disc };
-  // Names of every team member in this discipline — drives the "this discipline
-  // owns this task" filter for the first two cards. Includes placeholders too
-  // so unstaffed templated work surfaces.
-  const memberNames = new Set(
-    state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name)
-  );
+  // v4.64: if a single member is focused, the dashboard cards narrow to just
+  // that person's name. Otherwise we use every name in the discipline.
+  const focusId = state.resources.focusMemberId;
+  const focusedMember = focusId != null ? state.team.find(m => m.id === focusId) : null;
+  const memberNames = focusedMember
+    ? new Set([focusedMember.name])
+    : new Set(state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name));
   // Departments dashboard skips:
   //   - Template projects (SDC_StandardProject_Template, SDC_Sales_Template, …)
   //     — they're scaffolding, not real work to surface as behind/coming-due.
@@ -8746,11 +8812,11 @@ function renderTeamDashboard() {
   const isProjectExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
 
   // --- Behind schedule ----------------------------------------------------
-  // Every assigned task whose business-day drift is negative AND not a
-  // milestone (milestones use the +/-Nd math too but the schedule-status code
-  // skips them; mirror that here for consistency). Sorted most-behind first.
+  // Every assigned task whose business-day drift is negative AND not a true
+  // milestone (anchor / spine). v4.64: action items (is_milestone = 1 +
+  // is_action = 1) are INCLUDED so the dashboard shows overdue actions too.
   const behind = state.tasks
-    .filter(t => !t.is_milestone && t.assignee && memberNames.has(t.assignee) && !isProjectExcluded(t.project))
+    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && !isProjectExcluded(t.project))
     .map(t => ({ task: t, drift: taskScheduleDelta(t) }))
     .filter(x => x.drift < 0)
     .sort((a, b) => a.drift - b.drift);
@@ -8872,6 +8938,62 @@ function renderDashboardList(bodyId, items, mapper, emptyText) {
   });
 }
 
+// v4.64: persist focus on a specific team member on the Departments tab.
+// When set, the resources timeline + dashboard cards both filter to just
+// that person's assignments. Toggling the same row again clears focus
+// (back to "whole discipline" view).
+function setFocusedMember(memberId) {
+  state.resources.focusMemberId = memberId;
+  // Update the .is-focused class on the team-member rows without a full
+  // grid re-render — re-rendering would tear down input edits in progress.
+  document.querySelectorAll('.team-member').forEach(row => {
+    row.classList.toggle('is-focused', Number(row.dataset.id) === memberId);
+  });
+  // If the focused person belongs to a different discipline than the one
+  // currently shown in the Resources tab, swap to their discipline so the
+  // bars actually render.
+  if (memberId != null) {
+    const m = (state.team || []).find(x => x.id === memberId);
+    if (m && m.discipline && m.discipline !== state.resources.discipline) {
+      state.resources.discipline = m.discipline;
+    }
+  }
+  renderResources();
+  renderTeamDashboard();
+  renderTeamFocusBanner();
+}
+
+// v4.64: small strip above the Resources timeline that names the focused
+// person + offers a Clear button. Hidden when no one is focused.
+function renderTeamFocusBanner() {
+  let banner = document.getElementById('team-focus-banner');
+  const resourcesSection = document.querySelector('#view-team .resources-section');
+  if (!resourcesSection) return;
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'team-focus-banner';
+    banner.className = 'team-focus-banner hidden';
+    resourcesSection.parentNode.insertBefore(banner, resourcesSection);
+  }
+  const id = state.resources.focusMemberId;
+  if (id == null) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === id);
+  if (!member) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
+  const disc = DISCIPLINE_BY_KEY[member.discipline];
+  banner.classList.remove('hidden');
+  banner.style.background = disc?.color || '#e2e8f0';
+  banner.style.color      = disc?.text  || '#0f172a';
+  banner.innerHTML = `
+    <span class="team-focus-banner-label">Focused on</span>
+    <strong>${escapeHtml(member.name)}</strong>
+    ${disc ? `<span class="team-focus-banner-disc">${escapeHtml(disc.label)}</span>` : ''}
+    <button type="button" class="team-focus-banner-clear" title="Show the whole discipline again">× Clear focus</button>
+  `;
+  banner.querySelector('.team-focus-banner-clear').addEventListener('click', () => {
+    setFocusedMember(null);
+  });
+}
+
 function renderResources() {
   // Dashboard cards re-render alongside the resources timeline so they always
   // reflect the currently selected discipline.
@@ -8938,7 +9060,9 @@ function renderResources() {
   // the team cards above: placeholders FIRST (they're the template-stage
   // stand-ins, useful to see at the top when planning), then real members with
   // the LEAD first, then everyone else by their dragged sort_order.
-  const members = state.team
+  // v4.64: when a member is focused (clicked on the team panel above), narrow
+  // to just that person regardless of discipline.
+  let members = state.team
     .filter(m => m.discipline === state.resources.discipline && m.active !== 0)
     .sort((a, b) => {
       const aPh = isPlaceholder(a.name) ? 0 : 1;
@@ -8949,6 +9073,9 @@ function renderResources() {
       if (aLead !== bLead) return aLead - bLead;
       return (a.sort_order || 0) - (b.sort_order || 0);
     });
+  if (state.resources.focusMemberId != null) {
+    members = members.filter(m => m.id === state.resources.focusMemberId);
+  }
 
   // Empty state — no members in this discipline OR no tasks anywhere yet
   if (members.length === 0) {
@@ -11704,19 +11831,21 @@ async function init() {
   // it. Revision pill (📌) opens the revision popover via its own existing
   // handler below — not handled here.
   document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const v = btn.dataset.view;
       if (!v) return;
-      // v4.63: Departments tab is now password-gated. Manager-level only.
-      // Auth caches in sessionStorage so the prompt fires once per browser
-      // session, not on every click. Default password is "sdc" — change in
-      // the TEAM_PASSWORD constant below. (No real security; just keeps
-      // regular engineers out of the manager view by accident.)
+      // v4.64: Departments tab is password-gated via the SDC-themed modal
+      // (was a browser prompt() in v4.63). Auth caches in sessionStorage so
+      // the prompt fires once per browser session, not on every click.
+      // Change TEAM_PASSWORD at the top of this file to rotate the password.
       if (v === 'team' && !sessionStorage.getItem('sdcTeamAuth')) {
-        const pwd = prompt('Departments is manager-only. Enter the team password:');
+        const pwd = await showPasswordDialog({
+          title: 'Departments',
+          message: 'Manager-only area. Enter the team password to continue.',
+        });
         if (pwd == null) return; // cancelled
         if (pwd !== TEAM_PASSWORD) {
-          alert('Wrong password.');
+          await showAlertDialog({ title: 'Wrong password', message: "That doesn't match. Ask a manager for the password if you need access." });
           return;
         }
         sessionStorage.setItem('sdcTeamAuth', '1');

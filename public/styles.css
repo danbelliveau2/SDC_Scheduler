@@ -3841,23 +3841,52 @@ body.customer-view .schedule-footer { display: none; }
   align-self: center;
 }
 .pd-row.is-overdue .pd-row-due { color: #dc2626; font-weight: 700; }
-/* v4.63: View button on each team member row opens the per-person dashboard.
-   Sized like the lead-toggle / remove buttons next to it. */
-.team-member-view {
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--text-muted);
-  cursor: pointer;
+/* v4.64: focused team member row + banner. Clicking a row highlights it
+   here, sets state.resources.focusMemberId, then renders the banner +
+   filters the resources timeline + dashboard cards. */
+.team-member.is-focused {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 14%, white);
+  outline: 2px solid var(--sdc-primary, #2563eb);
+  outline-offset: -2px;
+}
+.team-focus-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 16px 0;
+  padding: 8px 16px;
+  border-radius: 8px;
   font-size: 13px;
-  line-height: 1;
-  padding: 2px 6px;
-  border-radius: 4px;
 }
-.team-member-view:hover {
-  background: var(--surface-alt);
-  color: var(--sdc-primary);
-  border-color: var(--border);
+.team-focus-banner.hidden { display: none; }
+.team-focus-banner-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
 }
+.team-focus-banner strong { font-size: 15px; }
+.team-focus-banner-disc {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+.team-focus-banner-clear {
+  margin-left: auto;
+  background: rgba(255,255,255,0.5);
+  border: 1px solid currentColor;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.team-focus-banner-clear:hover { background: white; }
 
 /* ---------- v4.61: Action Items master page ---------- */
 .actions-page {
@@ -4859,6 +4888,93 @@ body[data-view="setup"] #btn-add { display: none; }
   border-top: 0;
 }
 .app-dialog-danger .modal-head h2 { color: #b91c1c; }
+
+/* v4.64: Password dialog. SDC-blue background, SDC-lime border so it reads
+   as an in-app credential prompt and not a generic browser thing. */
+.app-password-card {
+  max-width: 380px;
+  width: 100%;
+  background: var(--sdc-primary, #2563eb);
+  color: white;
+  border: 3px solid var(--sdc-accent, #c1f53e);
+  border-radius: 10px;
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.35);
+}
+.app-password-head {
+  padding: 16px 22px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.18);
+}
+.app-password-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+  letter-spacing: 0.01em;
+}
+.app-password-body {
+  padding: 14px 22px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.app-password-msg {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(255,255,255,0.92);
+}
+.app-password-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,0.35);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.12);
+  color: white;
+  font-size: 14px;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  box-sizing: border-box;
+}
+.app-password-input::placeholder { color: rgba(255,255,255,0.55); }
+.app-password-input:focus {
+  outline: none;
+  border-color: var(--sdc-accent, #c1f53e);
+  background: rgba(255,255,255,0.2);
+}
+.app-password-error {
+  margin: 0;
+  font-size: 12px;
+  color: #fecaca;
+  font-weight: 600;
+}
+.app-password-error.hidden { display: none; }
+.app-password-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 22px 16px;
+  background: rgba(0,0,0,0.10);
+  border-top: 1px solid rgba(255,255,255,0.10);
+}
+.app-password-foot .btn-ghost {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.4);
+  color: white;
+}
+.app-password-foot .btn-ghost:hover {
+  background: rgba(255,255,255,0.12);
+}
+.app-password-foot .btn-primary {
+  background: var(--sdc-accent, #c1f53e);
+  color: var(--sdc-dark, #061d39);
+  border: 1px solid var(--sdc-accent, #c1f53e);
+  font-weight: 700;
+}
+.app-password-foot .btn-primary:hover {
+  filter: brightness(1.05);
+}
 
 /* "$ Financial Milestones" action button inside the Quote vs Schedule modal
    header. Styled in SDC primary so it reads as "do this important thing" —

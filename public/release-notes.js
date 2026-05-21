@@ -4,6 +4,34 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.64',
+    date: '2026-05-21',
+    notes: [
+      'Departments UX + SDC-themed password dialog.',
+      '',
+      'PASSWORD CHANGED + IN-APP DIALOG:',
+      '   ▸ TEAM_PASSWORD bumped from "sdc" to "sdcautomation" (all lowercase).',
+      '   ▸ Browser-native prompt() replaced by an SDC-themed modal — SDC-blue background, SDC-lime green border, white text, lime "Unlock" button. Lives inside the app shell instead of feeling like a generic website popup.',
+      '   ▸ Wrong-password shows the in-app alert dialog (same theme) instead of an OS alert.',
+      '',
+      'CLICK A PERSON → FOCUS THE WHOLE DEPARTMENTS PAGE ON THEM:',
+      '   ▸ Removed: the v4.63 👁 View button + the v4.61 side-panel popup. Replaced by a much simpler interaction.',
+      '   ▸ NEW: clicking anywhere on a team-member row (except inputs and the lead/remove buttons) FOCUSES that person. The row highlights with an SDC-blue outline.',
+      '   ▸ When focused:',
+      '       • A colored banner appears above the Resources timeline naming the person + their discipline, with a "× Clear focus" button.',
+      '       • The Resources timeline filters to just their bars.',
+      '       • The Behind / Coming Due / Key Dates dashboard cards filter to just their tasks.',
+      '   ▸ If the focused person belongs to a different discipline than the one currently shown, the Resources tab auto-switches to their discipline so the bars actually render.',
+      '   ▸ Clicking the same row again clears focus.',
+      '',
+      'ACTION ITEMS INCLUDED IN THE BEHIND CARD:',
+      '   ▸ The Behind-schedule dashboard card was excluding milestones (which dropped all action items along with them). Updated filter: still excludes spine milestones (Receipt of PO / FAT / etc.) but INCLUDES action items, so an overdue action shows up alongside an overdue scheduled task.',
+      '',
+      'OTHER:',
+      '   ▸ Team-member rows no longer have a separate cursor:pointer / cursor:text override — the row click only fires off blank space + the buttons stop propagation. Inputs still focus and edit normally without triggering a re-render.',
+    ],
+  },
+  {
     version: '4.63',
     date: '2026-05-21',
     notes: [
