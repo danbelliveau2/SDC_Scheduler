@@ -4,6 +4,18 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.78',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — always try inline first, getBBox decides, with 4px slack.',
+      '',
+      '   ▸ v4.77 had a char-count estimate gate ("does the estimated width fit?"). Even when optimistic, the estimate was wrong on bars with obvious room (e.g. "Panel" at 3w) and the meta got pushed outside.',
+      '   ▸ Dropped the estimate gate entirely. Now: build the combined inline element, append to the DOM, measure with getBBox, decide.',
+      '   ▸ Added 4px slack to the bbox check. Fits-or-close-enough → keep inline. Only when the actual text is more than 4px wider than the available bar room (barW − 8px padding) do we fall back to outside-left.',
+      '   ▸ Browser font metrics can disagree by a px or two on the same string; the slack absorbs that without making borderline bars flicker to outside.',
+    ],
+  },
+  {
     version: '4.77',
     date: '2026-05-21',
     notes: [
