@@ -7605,7 +7605,14 @@ function setupGridPan() {
   });
 }
 
-function showSectionPicker(x, y, onPick) {
+// v4.72: showSectionPicker accepts an opts.okLabel override (and an opts.title).
+// Default "Create" still works for the schedule's + Add task / + Add action
+// flows where the picker DOES commit the new task. The Actions page quick-add
+// passes okLabel:"Done" because that picker is just stashing the section —
+// the actual create happens later when the user hits + Add action.
+function showSectionPicker(x, y, onPick, opts = {}) {
+  const okLabel = opts.okLabel || 'Create';
+  const title   = opts.title   || 'Where should this task go?';
   const existing = document.getElementById('section-picker');
   if (existing) existing.remove();
   const pop = document.createElement('div');
@@ -7616,7 +7623,7 @@ function showSectionPicker(x, y, onPick) {
   pop.style.left = '-9999px';
   pop.style.top  = '-9999px';
   pop.innerHTML = `
-    <div class="section-picker-title">Where should this task go?</div>
+    <div class="section-picker-title">${escapeHtml(title)}</div>
     <select class="sp-group">
       <option value="">— phase group —</option>
       ${HIERARCHY.map(g => `<option value="${g.key}">${escapeHtml(g.label)}</option>`).join('')}
@@ -7626,7 +7633,7 @@ function showSectionPicker(x, y, onPick) {
     <div class="section-picker-hint">Leave department blank for a cross-cutting task (e.g. FAT) that spans the whole phase.</div>
     <div class="section-picker-actions">
       <button type="button" class="btn-ghost sp-cancel">Cancel</button>
-      <button type="button" class="btn-primary sp-create">Create</button>
+      <button type="button" class="btn-primary sp-create">${escapeHtml(okLabel)}</button>
     </div>
   `;
   document.body.appendChild(pop);
@@ -7929,6 +7936,10 @@ function renderActionsPage() {
     qaSection.addEventListener('click', (e) => {
       e.stopPropagation();
       const r = qaSection.getBoundingClientRect();
+      // v4.72: this picker just STASHES the section — the action gets created
+      // later when the user fills in dept/due and clicks "+ Add action".
+      // Override the picker's default "Create" button to "Done" so the user
+      // doesn't think clicking it commits the action.
       showSectionPicker(r.left, r.bottom + 6, (g, d, s) => {
         qaCreate._pickedSection = { g, d, s };
         const dept = d ? (window.findDepartment(g, d)?.label || d) : '(no dept)';
@@ -7939,7 +7950,7 @@ function renderActionsPage() {
         // engineering → could be Mech or Controls).
         const auto = disciplineForSection(d, s);
         if (auto && qaDept) qaDept.value = auto;
-      });
+      }, { okLabel: 'Done', title: 'Pick the section' });
     });
 
     const createNow = async () => {

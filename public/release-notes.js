@@ -4,6 +4,24 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.72',
+    date: '2026-05-21',
+    notes: [
+      'Actions quick-add — labels above every field + "Done" not "Create" on the section picker.',
+      '',
+      'SECTION PICKER — BUTTON SAYS "DONE" (not "Create"):',
+      '   ▸ The picker that opens when you click "Section ▾" in the Actions quick-add now has a "Done" button instead of "Create" — because the picker only STASHES the section. The real create happens later when the user clicks "+ Add action" at the end of the row. "Create" was misleading: users clicked it expecting the action to be saved, then lost their fields.',
+      '   ▸ Picker title changed from "Where should this task go?" → "Pick the section" to match the simpler one-shot intent.',
+      '   ▸ The schedule\'s + Add task and + Add action flows still see the picker labelled "Create" — those flows DO commit immediately when the picker closes. Different intent, different label.',
+      '   ▸ Implementation: showSectionPicker now accepts opts.okLabel + opts.title overrides. Default still "Create" / "Where should this task go?".',
+      '',
+      'QUICK-ADD BAR — LABELED FIELDS:',
+      '   ▸ Each field is now wrapped in .actions-qa-field with a small uppercase label up top: TASK / PROJECT / SECTION / DEPARTMENT / DUE. Reads as "filling out a new row" instead of an unlabeled soup of inputs.',
+      '   ▸ Labels are the same typography (10px / 700 / uppercase / muted) as the action list\'s column headers below, so the user can scan top-to-bottom and see the column meanings match the input meanings.',
+      '   ▸ Field widths preserved — Task is the wide one, the rest are auto-sized.',
+    ],
+  },
+  {
     version: '4.71',
     date: '2026-05-21',
     notes: [

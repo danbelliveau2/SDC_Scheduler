@@ -3934,10 +3934,13 @@ body.customer-view .schedule-footer { display: none; }
   color: var(--sdc-primary);
   box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
-/* Quick-add bar — one-row layout. Fields shrink/grow to fit. */
+/* v4.72: Quick-add bar — labelled fields that match the action list's
+   column headers below. Each field is a vertical stack: label up top,
+   input/select/button underneath. The whole bar is a flex row of these
+   field-stacks so the inputs line up with the list columns visually. */
 .actions-quickadd {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -3945,9 +3948,27 @@ body.customer-view .schedule-footer { display: none; }
   padding: 8px 12px;
   flex-wrap: wrap;
 }
-.actions-qa-title {
+.actions-qa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+.actions-qa-field-title {
   flex: 1 1 240px;
   min-width: 180px;
+}
+.actions-qa-field-submit { justify-content: flex-end; }
+.actions-qa-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding-left: 2px;
+}
+.actions-qa-title {
+  width: 100%;
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -3961,7 +3982,6 @@ body.customer-view .schedule-footer { display: none; }
   font-size: 12px;
   font-family: inherit;
   background: white;
-  flex: 0 0 auto;
 }
 .actions-qa-section { white-space: nowrap; }
 .actions-qa-create { padding: 6px 14px; font-size: 12px; }

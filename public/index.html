@@ -297,23 +297,40 @@
              Reads as "stuff above is YOU, stuff below is the WORK". -->
         <div class="actions-section-divider"></div>
 
-        <!-- Quick-add bar: title + project + section + department + due date + create.
-             Department auto-fills from the section pick but the user can override
-             when the section is ambiguous (e.g. section 40 engineering could be
-             Mech OR Controls — pick the discipline explicitly). -->
+        <!-- v4.72: Quick-add bar reorganized with column headers above each
+             field, matching the action list's column headers below. Reads
+             as "filling out a new row" instead of a soup of inputs. Each
+             field is wrapped in .actions-qa-field with its label up top. -->
         <div class="actions-quickadd" id="actions-quickadd">
-          <input type="text" class="actions-qa-title" id="actions-qa-title" placeholder="Title…" maxlength="240" />
-          <select class="actions-qa-project" id="actions-qa-project" title="Which project does this action belong to?"></select>
-          <button type="button" class="toolbar-toggle-btn actions-qa-section" id="actions-qa-section" title="Pick the section (phase group / department / sub-department) the action belongs to.">Section ▾</button>
-          <select class="actions-qa-dept" id="actions-qa-dept" title="Which team owns this action? Auto-fills from the section; override if needed.">
-            <option value="">— department —</option>
-            <option value="mech">Mech Eng</option>
-            <option value="controls">Controls Eng</option>
-            <option value="build">Build</option>
-            <option value="wire">Wire</option>
-          </select>
-          <input type="date" class="actions-qa-due" id="actions-qa-due" title="Due date (optional)" />
-          <button type="button" class="btn-primary actions-qa-create" id="actions-qa-create">+ Add action</button>
+          <div class="actions-qa-field actions-qa-field-title">
+            <label class="actions-qa-label">Task</label>
+            <input type="text" class="actions-qa-title" id="actions-qa-title" placeholder="What needs doing?" maxlength="240" />
+          </div>
+          <div class="actions-qa-field">
+            <label class="actions-qa-label">Project</label>
+            <select class="actions-qa-project" id="actions-qa-project" title="Which project does this action belong to?"></select>
+          </div>
+          <div class="actions-qa-field">
+            <label class="actions-qa-label">Section</label>
+            <button type="button" class="toolbar-toggle-btn actions-qa-section" id="actions-qa-section" title="Pick the section (phase group / department / sub-department) the action belongs to.">Section ▾</button>
+          </div>
+          <div class="actions-qa-field">
+            <label class="actions-qa-label">Department</label>
+            <select class="actions-qa-dept" id="actions-qa-dept" title="Which team owns this action? Auto-fills from the section; override if needed.">
+              <option value="">— department —</option>
+              <option value="mech">Mech Eng</option>
+              <option value="controls">Controls Eng</option>
+              <option value="build">Build</option>
+              <option value="wire">Wire</option>
+            </select>
+          </div>
+          <div class="actions-qa-field">
+            <label class="actions-qa-label">Due</label>
+            <input type="date" class="actions-qa-due" id="actions-qa-due" title="Due date (optional)" />
+          </div>
+          <div class="actions-qa-field actions-qa-field-submit">
+            <button type="button" class="btn-primary actions-qa-create" id="actions-qa-create">+ Add action</button>
+          </div>
         </div>
 
         <!-- Filter row mirrors the Schedule view's quick chips. -->
