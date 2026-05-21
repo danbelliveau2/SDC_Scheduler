@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.82',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta cascade — strict fit check, no tolerance, no double-render bug.',
+      '',
+      'THREE FIXES IN ONE:',
+      '',
+      '   1. STRICT FIT CHECK — NO TOLERANCE: the 6 px shift-overflow tolerance is gone. Either meta + gap + name fits inside the bar, or it doesn\'t. As soon as the math says it fits, the layout stays inside; as soon as it doesn\'t fit, meta pops outside. No "should have fit" pixel-jitter cases.',
+      '',
+      '   2. LEGACY DOUBLE-RENDER BUG GONE: after Step 4 called moveMetaOutside(), the function used to fall through to a leftover block that created a SECOND outside meta text on top of the first. Both block deleted. One meta element per bar, period.',
+      '',
+      '   3. CLEAN THREE-CASE CASCADE per your spec:',
+      '       A. nameW > bar inside width → name outside-right (clipBarLabels default), meta outside-left.',
+      '       B. metaW + 6 + nameW > bar inside width → meta outside-left, name stays centered.',
+      '       C. Both fit inside → name centered if it clears the meta, otherwise shifted right just enough to clear meta + 6 px gap.',
+      '',
+      'EFFECT: as the bar gets narrower, the description gradually moves right from center toward the right edge of the bar (because shifted-name x = meta_right + 6 stays fixed while the bar\'s right edge moves leftward). When the description hits the right edge and there\'s no more room, meta pops outside-left and the description goes back to center. When even the description alone doesn\'t fit, the description goes outside-right and the meta joins it outside-left.',
+    ],
+  },
+  {
     version: '4.81',
     date: '2026-05-21',
     notes: [
