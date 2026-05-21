@@ -7787,25 +7787,32 @@ function renderActionsPage() {
     btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
   });
 
-  // Quick-add: project dropdown populated from existing projects.
-  const projSel = document.getElementById('actions-qa-project');
+  // Refresh the project + person select dropdowns. Preserve the user's
+  // current selections across rebuilds so a re-render doesn't blow away
+  // their filter state.
+  const projSel        = document.getElementById('actions-qa-project');
   const filterProjSel  = document.getElementById('actions-filter-project');
   const filterAsgSel   = document.getElementById('actions-filter-assignee');
   const projects = uniqueValues('project').sort();
-  const assignees = Array.from(new Set((state.tasks || []).filter(t => t.is_action).map(t => t.assignee).filter(Boolean))).sort();
-  if (projSel)  projSel.innerHTML  = '<option value="">— pick project —</option>' + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
-  if (filterProjSel)  filterProjSel.innerHTML  = '<option value="">All projects</option>'  + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
-  if (filterAsgSel)   filterAsgSel.innerHTML   = '<option value="">All assignees</option>' + assignees.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  const people   = Array.from(new Set((state.tasks || []).filter(t => t.is_action).map(t => t.assignee).filter(Boolean))).sort();
+  const prevQaProj  = projSel?.value || '';
+  const prevFltProj = filterProjSel?.value || '';
+  const prevFltAsg  = filterAsgSel?.value  || '';
+  if (projSel)        projSel.innerHTML       = '<option value="">— pick project —</option>'  + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  if (filterProjSel)  filterProjSel.innerHTML = '<option value="">All projects</option>'      + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  if (filterAsgSel)   filterAsgSel.innerHTML  = '<option value="">All people</option>'        + people.map(a   => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  if (projSel       && prevQaProj)  projSel.value       = prevQaProj;
+  if (filterProjSel)                filterProjSel.value = _actionsPageState.filters.project || prevFltProj;
+  if (filterAsgSel)                 filterAsgSel.value  = _actionsPageState.filters.assignee || prevFltAsg;
 
   // Quick-add handlers (wire once).
   const qaCreate  = document.getElementById('actions-qa-create');
   const qaTitle   = document.getElementById('actions-qa-title');
   const qaSection = document.getElementById('actions-qa-section');
+  const qaDept    = document.getElementById('actions-qa-dept');
   const qaDue     = document.getElementById('actions-qa-due');
   if (qaCreate && !qaCreate.dataset.wired) {
     qaCreate.dataset.wired = '1';
-    // Held-state for the chosen section. User clicks "Section ▾" to pick
-    // group/dept/sub; the choice is parked here until they hit Create.
     qaCreate._pickedSection = null;
 
     qaSection.addEventListener('click', (e) => {
@@ -7816,6 +7823,11 @@ function renderActionsPage() {
         const dept = d ? (window.findDepartment(g, d)?.label || d) : '(no dept)';
         const sub  = s ? (window.findSubDepartment(g, d, s)?.label || s) : '';
         qaSection.textContent = `${dept}${sub ? ' · ' + sub : ''} ▾`;
+        // v4.62: auto-fill the Department dropdown from the picked section.
+        // User can still override if the mapping is ambiguous (e.g. section 40
+        // engineering → could be Mech or Controls).
+        const auto = disciplineForSection(d, s);
+        if (auto && qaDept) qaDept.value = auto;
       });
     });
 
@@ -7825,28 +7837,40 @@ function renderActionsPage() {
       const sect = qaCreate._pickedSection;
       if (!title)   { qaTitle.focus(); return; }
       if (!project) { projSel.focus(); alert('Pick a project for this action.'); return; }
-      if (!sect)    { qaSection.focus(); alert('Pick a section so we know which Placeholder to assign it to.'); return; }
-      const discKey = disciplineForSection(sect.d, sect.s);
+      if (!sect)    { qaSection.focus(); alert('Pick a section so we know where the action lives.'); return; }
+      // v4.62: discipline comes from the dropdown first (user-explicit),
+      // falling back to the section auto-map. If neither resolves we just
+      // leave the assignee blank so the manager can pick later.
+      const discKey = (qaDept && qaDept.value) || disciplineForSection(sect.d, sect.s) || '';
       const placeholderName = placeholderNameForDiscipline(discKey);
       const due = qaDue.value || null;
-      await api.create({
-        name: title,
-        project,
-        phase_group: sect.g,
-        department: sect.d,
-        sub_department: sect.s,
-        is_action: 1,
-        duration_days: 0,
-        is_milestone: 1,
-        progress: 0,
-        ...(due ? { start_date: due, end_date: due } : {}),
-        ...(placeholderName ? { assignee: placeholderName } : {}),
-      });
-      // Reset the form, reload, and re-render.
+      try {
+        await api.create({
+          name: title,
+          project,
+          phase_group: sect.g,
+          department: sect.d,
+          sub_department: sect.s,
+          is_action: 1,
+          duration_days: 0,
+          is_milestone: 1,
+          progress: 0,
+          ...(due ? { start_date: due, end_date: due } : {}),
+          ...(placeholderName ? { assignee: placeholderName } : {}),
+        });
+      } catch (err) {
+        alert('Failed to create action: ' + (err?.message || err));
+        return;
+      }
+      // Reset the form.
       qaTitle.value = '';
       qaDue.value   = '';
       qaCreate._pickedSection = null;
       qaSection.textContent = 'Section ▾';
+      if (qaDept) qaDept.value = '';
+      // Force-switch back to Active so the user sees their new action even
+      // if they were on Closed when they clicked Create.
+      _actionsPageState.bucket = 'active';
       await loadTasks();
       renderActionsPage();
     };
@@ -7887,27 +7911,24 @@ function renderActionsPage() {
     const key = map[chip.dataset.filter];
     chip.classList.toggle('is-active', !!_actionsPageState.filters[key]);
   });
-  if (filterProjSel) filterProjSel.value = _actionsPageState.filters.project;
-  if (filterAsgSel)  filterAsgSel.value  = _actionsPageState.filters.assignee;
-  document.getElementById('actions-filter-discipline').value = _actionsPageState.filters.discipline;
+  if (filterProjSel)                                  filterProjSel.value = _actionsPageState.filters.project;
+  if (filterAsgSel)                                   filterAsgSel.value  = _actionsPageState.filters.assignee;
+  const filterDiscSel = document.getElementById('actions-filter-discipline');
+  if (filterDiscSel) filterDiscSel.value = _actionsPageState.filters.discipline;
 
   // Compute the visible list.
   const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
   const ONE_WEEK = 7 * 86400000;
-  let actions = (state.tasks || []).filter(t => !!t.is_action);
-  // Bucket
+  const allActions = (state.tasks || []).filter(t => !!t.is_action);
+  let actions = allActions.slice();
   if (_actionsPageState.bucket === 'active') {
     actions = actions.filter(t => (Number(t.progress) || 0) < 100);
   } else {
     actions = actions.filter(t => (Number(t.progress) || 0) >= 100);
   }
-  // Filter chips
   const f = _actionsPageState.filters;
   if (f.behind) {
-    actions = actions.filter(t => {
-      if (!t.end_date) return false;
-      return new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
-    });
+    actions = actions.filter(t => t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100);
   }
   if (f.dueWeek) {
     actions = actions.filter(t => {
@@ -7916,13 +7937,11 @@ function renderActionsPage() {
       return due >= todayMs && due <= todayMs + ONE_WEEK;
     });
   }
-  if (f.unassigned) {
-    actions = actions.filter(t => !t.assignee || isPlaceholder(t.assignee));
-  }
-  if (f.project)  actions = actions.filter(t => t.project === f.project);
-  if (f.assignee) actions = actions.filter(t => t.assignee === f.assignee);
+  if (f.unassigned) actions = actions.filter(t => !t.assignee || isPlaceholder(t.assignee));
+  if (f.project)    actions = actions.filter(t => t.project === f.project);
+  if (f.assignee)   actions = actions.filter(t => t.assignee === f.assignee);
   if (f.discipline) actions = actions.filter(t => actionDisciplineKey(t) === f.discipline);
-  // Sort: overdue first, then by due date asc, then by created order.
+  // Sort: overdue first, then by due date asc, then by id.
   actions.sort((a, b) => {
     const aOver = a.end_date && new Date(a.end_date).getTime() < todayMs && (Number(a.progress) || 0) < 100;
     const bOver = b.end_date && new Date(b.end_date).getTime() < todayMs && (Number(b.progress) || 0) < 100;
@@ -7935,77 +7954,122 @@ function renderActionsPage() {
 
   // Render rows.
   const list = document.getElementById('actions-list');
-  const empty = document.getElementById('actions-empty');
   if (!list) return;
+  // v4.62 BUGFIX: build the empty-state INLINE — previously the empty <p>
+  // lived in static HTML and got removed by innerHTML rewrites, then null
+  // references caused renders to throw silently and leave the list stuck.
   if (actions.length === 0) {
-    list.innerHTML = '';
-    list.appendChild(empty);
-    empty.classList.remove('hidden');
-    return;
-  }
-  empty.classList.add('hidden');
-  const disciplineLabel = { mech: 'Mech', controls: 'Controls', build: 'Build', wire: 'Wire' };
-  const disciplineColor = {
-    mech:     { bg: '#bfdbfe', fg: '#1e3a8a' },
-    controls: { bg: '#bbf7d0', fg: '#14532d' },
-    build:    { bg: '#fed7aa', fg: '#7c2d12' },
-    wire:     { bg: '#fef08a', fg: '#713f12' },
-  };
-  list.innerHTML = actions.map(t => {
-    const overdue = t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
-    const done = (Number(t.progress) || 0) >= 100;
-    const dkey = actionDisciplineKey(t);
-    const dColor = disciplineColor[dkey] || { bg: '#f1f5f9', fg: '#475569' };
-    const dueLabel = t.end_date ? fmtDate(t.end_date) : '—';
-    return `
-      <div class="actions-row${overdue ? ' is-overdue' : ''}${done ? ' is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
-        <input type="checkbox" class="actions-row-check" data-id="${t.id}" ${done ? 'checked' : ''} title="Mark done / not done">
-        <span class="actions-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
-        <span class="actions-row-project" title="Project: ${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
-        <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || '—')}">${escapeHtml(t.assignee || '—')}</span>
-        <span class="actions-row-dept" style="background:${dColor.bg};color:${dColor.fg}" title="${escapeHtml(disciplineLabel[dkey] || 'Cross-cutting')}">${dkey ? disciplineLabel[dkey] : '—'}</span>
-        <span class="actions-row-due" title="Due date">${dueLabel}</span>
-        <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">×</button>
-      </div>`;
-  }).join('');
+    list.innerHTML = `<p class="empty-state actions-empty-state">${
+      _actionsPageState.bucket === 'closed'
+        ? 'No completed action items yet.'
+        : 'No action items match the current filters. Add one above.'
+    }</p>`;
+  } else {
+    const disciplineLabel = { mech: 'Mech', controls: 'Controls', build: 'Build', wire: 'Wire' };
+    const disciplineColor = {
+      mech:     { bg: '#bfdbfe', fg: '#1e3a8a' },
+      controls: { bg: '#bbf7d0', fg: '#14532d' },
+      build:    { bg: '#fed7aa', fg: '#7c2d12' },
+      wire:     { bg: '#fef08a', fg: '#713f12' },
+    };
+    list.innerHTML = actions.map(t => {
+      const overdue = t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
+      const done = (Number(t.progress) || 0) >= 100;
+      const dkey = actionDisciplineKey(t);
+      const dColor = disciplineColor[dkey] || { bg: '#f1f5f9', fg: '#475569' };
+      // For closed actions show the completed date instead of the due date —
+      // that's the more interesting value once an action is in the past.
+      const dueLabel = done && t.completed_on
+        ? `${fmtDate(t.completed_on)} ✓`
+        : (t.end_date ? fmtDate(t.end_date) : '—');
+      return `
+        <div class="actions-row${overdue ? ' is-overdue' : ''}${done ? ' is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
+          <input type="checkbox" class="actions-row-check" data-id="${t.id}" ${done ? 'checked' : ''} title="Mark done / not done">
+          <span class="actions-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
+          <span class="actions-row-project" title="Project: ${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
+          <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || '—')}">${escapeHtml(t.assignee || '—')}</span>
+          <span class="actions-row-dept" style="background:${dColor.bg};color:${dColor.fg}" title="${escapeHtml(disciplineLabel[dkey] || 'Cross-cutting')}">${dkey ? disciplineLabel[dkey] : '—'}</span>
+          <span class="actions-row-due${done ? ' is-completed' : ''}" title="${done ? 'Completed date' : 'Due date'}">${dueLabel}</span>
+          <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">×</button>
+        </div>`;
+    }).join('');
 
-  // Row click → open the parent project's schedule.
-  list.querySelectorAll('.actions-row').forEach(row => {
-    row.addEventListener('click', (e) => {
-      // Ignore clicks on the checkbox or delete button (they have their own handlers).
-      if (e.target.closest('.actions-row-check') || e.target.closest('.actions-row-delete')) return;
-      const project = row.dataset.project;
-      if (!project) return;
-      // Open the project tab (if not already) and switch to schedule view.
-      if (!state.openProjects.includes(project)) {
-        state.openProjects.push(project);
+    // Row click → open the parent project's schedule.
+    list.querySelectorAll('.actions-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.actions-row-check') || e.target.closest('.actions-row-delete')) return;
+        const project = row.dataset.project;
+        if (!project) return;
+        if (!state.openProjects.includes(project)) state.openProjects.push(project);
+        state.filters.project = project;
         saveProjectTabs();
-      }
-      state.filters.project = project;
-      saveProjectTabs();
-      setView('schedule');
+        setView('schedule');
+      });
     });
-  });
-  list.querySelectorAll('.actions-row-check').forEach(cb => {
-    cb.addEventListener('change', async (e) => {
-      e.stopPropagation();
-      const id = Number(cb.dataset.id);
-      const t = state.tasks.find(x => x.id === id);
-      if (!t) return;
-      await api.update(id, { progress: cb.checked ? 100 : 0 });
-      await loadTasks();
-      renderActionsPage();
+    list.querySelectorAll('.actions-row-check').forEach(cb => {
+      cb.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const id = Number(cb.dataset.id);
+        await api.update(id, { progress: cb.checked ? 100 : 0 });
+        await loadTasks();
+        renderActionsPage();
+      });
     });
-  });
-  list.querySelectorAll('.actions-row-delete').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const id = Number(btn.dataset.id);
-      const t = state.tasks.find(x => x.id === id);
-      if (!t) return;
-      if (!confirm(`Delete action "${t.name || '(untitled)'}"?`)) return;
-      await api.remove(id);
-      await loadTasks();
+    list.querySelectorAll('.actions-row-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = Number(btn.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        if (!t) return;
+        if (!confirm(`Delete action "${t.name || '(untitled)'}"?`)) return;
+        await api.remove(id);
+        await loadTasks();
+        renderActionsPage();
+      });
+    });
+  }
+
+  // v4.62: per-department dashboard. Small cards below the list summarising
+  // open / overdue / done counts for actions owned by each discipline.
+  // Always renders against the FULL action set (not the filtered list) so
+  // the cards keep showing the big-picture health even when the list above
+  // is narrowed by a chip.
+  renderActionsDeptDashboard(allActions, todayMs);
+}
+
+function renderActionsDeptDashboard(allActions, todayMs) {
+  const wrap = document.getElementById('actions-dept-dashboard');
+  if (!wrap) return;
+  const discs = [
+    { key: 'mech',     label: 'Mech Eng',     color: '#bfdbfe', text: '#1e3a8a' },
+    { key: 'controls', label: 'Controls Eng', color: '#bbf7d0', text: '#14532d' },
+    { key: 'build',    label: 'Build',        color: '#fed7aa', text: '#7c2d12' },
+    { key: 'wire',     label: 'Wire',         color: '#fef08a', text: '#713f12' },
+  ];
+  wrap.innerHTML = `
+    <div class="actions-dept-title">Action items by department</div>
+    <div class="actions-dept-cards">
+      ${discs.map(d => {
+        const mine = allActions.filter(t => actionDisciplineKey(t) === d.key);
+        const open = mine.filter(t => (Number(t.progress) || 0) < 100);
+        const overdue = open.filter(t => t.end_date && new Date(t.end_date).getTime() < todayMs);
+        const done = mine.filter(t => (Number(t.progress) || 0) >= 100);
+        return `
+          <button type="button" class="actions-dept-card" data-disc="${d.key}" style="border-top:3px solid ${d.color}">
+            <div class="adc-head" style="color:${d.text}">${escapeHtml(d.label)}</div>
+            <div class="adc-stats">
+              <div class="adc-stat"><div class="adc-num">${open.length}</div><div class="adc-lbl">Open</div></div>
+              <div class="adc-stat ${overdue.length > 0 ? 'is-warn' : ''}"><div class="adc-num">${overdue.length}</div><div class="adc-lbl">Overdue</div></div>
+              <div class="adc-stat"><div class="adc-num">${done.length}</div><div class="adc-lbl">Done</div></div>
+            </div>
+          </button>`;
+      }).join('')}
+    </div>`;
+  // Clicking a dept card filters the list to that discipline.
+  wrap.querySelectorAll('.actions-dept-card').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const disc = btn.dataset.disc;
+      _actionsPageState.filters.discipline = (_actionsPageState.filters.discipline === disc) ? '' : disc;
       renderActionsPage();
     });
   });

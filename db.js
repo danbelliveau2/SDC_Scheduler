@@ -235,6 +235,11 @@ const migrations = [
   // regular scheduled task" — i.e. the default for everything that
   // existed pre-v4.46.
   { col: 'is_action', sql: 'ALTER TABLE tasks ADD COLUMN is_action INTEGER DEFAULT 0' },
+  // v4.62: completed_on captures the actual close date for a task/action.
+  // Auto-set by the server when progress hits 100; cleared when progress
+  // drops back below 100. Editable via the API so the user can backfill
+  // a missed checkoff. Drives variance reports (completed_on vs end_date).
+  { col: 'completed_on', sql: 'ALTER TABLE tasks ADD COLUMN completed_on TEXT' },
 ];
 for (const m of migrations) {
   if (!columnExists('tasks', m.col)) db.exec(m.sql);

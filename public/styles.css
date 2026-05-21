@@ -3914,7 +3914,7 @@ body.customer-view .schedule-footer { display: none; }
   font-size: 13px;
   font-family: inherit;
 }
-.actions-qa-project, .actions-qa-due {
+.actions-qa-project, .actions-qa-due, .actions-qa-dept {
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -3925,6 +3925,76 @@ body.customer-view .schedule-footer { display: none; }
 }
 .actions-qa-section { white-space: nowrap; }
 .actions-qa-create { padding: 6px 14px; font-size: 12px; }
+
+/* v4.62: Per-department dashboard below the action list. */
+.actions-dept-dashboard {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border-strong);
+}
+.actions-dept-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.actions-dept-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.actions-dept-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+.actions-dept-card:hover {
+  border-color: var(--sdc-primary);
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white);
+}
+.adc-head {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+}
+.adc-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+.adc-stat {
+  text-align: center;
+  background: var(--surface-alt);
+  border-radius: 6px;
+  padding: 6px 4px;
+}
+.adc-stat.is-warn { background: #fee2e2; }
+.adc-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.adc-stat.is-warn .adc-num { color: #991b1b; }
+.adc-lbl {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.actions-empty-state {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 30px 12px;
+  margin: 0;
+}
+.actions-row-due.is-completed { color: #15803d; font-weight: 700; }
 /* Filter row — chip toggles + a few selects on the right. */
 .actions-filters {
   display: flex;

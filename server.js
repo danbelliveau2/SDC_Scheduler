@@ -15,7 +15,7 @@ app.use((req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false }));
 
-const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action'];
+const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'completed_on'];
 
 // ---------- Schedule auto-computation (FS/SS/FF/SF + lag) ----------
 // All scheduling is done in BUSINESS DAYS (Mon–Fri). Weekends are skipped: a task
@@ -263,6 +263,20 @@ app.put('/api/tasks/:id', (req, res) => {
     if (f in req.body) {
       if (f === 'is_milestone') updates[f] = req.body[f] ? 1 : 0;
       else updates[f] = req.body[f] === '' ? null : req.body[f];
+    }
+  }
+  // v4.62: auto-stamp completed_on when progress transitions to 100, and
+  // clear it when progress drops back below 100. Skipped when the caller
+  // explicitly sends completed_on in the same request (manual edit wins).
+  if ('progress' in updates && !('completed_on' in updates)) {
+    const newProgress = Number(updates.progress) || 0;
+    const oldProgress = Number(existing.progress) || 0;
+    if (newProgress >= 100 && oldProgress < 100) {
+      // Just completed → stamp today's date in YYYY-MM-DD.
+      updates.completed_on = new Date().toISOString().slice(0, 10);
+    } else if (newProgress < 100 && oldProgress >= 100) {
+      // Re-opened → clear the completed date.
+      updates.completed_on = null;
     }
   }
   if (Object.keys(updates).length === 0) return res.json(existing);

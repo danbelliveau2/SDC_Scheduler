@@ -279,12 +279,21 @@
           </div>
         </div>
 
-        <!-- Quick-add bar: title + project + section + due date + create.
-             Assignee is auto-set to the section's discipline Placeholder. -->
+        <!-- Quick-add bar: title + project + section + department + due date + create.
+             Department auto-fills from the section pick but the user can override
+             when the section is ambiguous (e.g. section 40 engineering could be
+             Mech OR Controls — pick the discipline explicitly). -->
         <div class="actions-quickadd" id="actions-quickadd">
           <input type="text" class="actions-qa-title" id="actions-qa-title" placeholder="What needs doing? (Enter to add)" maxlength="240" />
           <select class="actions-qa-project" id="actions-qa-project" title="Which project does this action belong to?"></select>
-          <button type="button" class="toolbar-toggle-btn actions-qa-section" id="actions-qa-section" title="Pick the section — determines which Placeholder gets the action by default.">Section ▾</button>
+          <button type="button" class="toolbar-toggle-btn actions-qa-section" id="actions-qa-section" title="Pick the section (phase group / department / sub-department) the action belongs to.">Section ▾</button>
+          <select class="actions-qa-dept" id="actions-qa-dept" title="Which team owns this action? Auto-fills from the section; override if needed.">
+            <option value="">— department —</option>
+            <option value="mech">Mech Eng</option>
+            <option value="controls">Controls Eng</option>
+            <option value="build">Build</option>
+            <option value="wire">Wire</option>
+          </select>
           <input type="date" class="actions-qa-due" id="actions-qa-due" title="Due date (optional)" />
           <button type="button" class="btn-primary actions-qa-create" id="actions-qa-create">+ Add action</button>
         </div>
@@ -305,9 +314,12 @@
           </select>
         </div>
 
-        <div class="actions-list" id="actions-list">
-          <p class="empty-state" id="actions-empty">No action items yet. Add one above.</p>
-        </div>
+        <div class="actions-list" id="actions-list"></div>
+
+        <!-- v4.62: per-department dashboard below the list — small cards per
+             discipline summarising open / overdue / done counts for actions
+             owned by that team. -->
+        <div class="actions-dept-dashboard" id="actions-dept-dashboard"></div>
       </div>
     </section>
 
