@@ -4416,10 +4416,10 @@ body.customer-view .schedule-footer { display: none; }
 }
 .actions-row {
   display: grid;
-  /* v4.70: 8 columns — done / name / project / assignee / dept / due / open / delete.
-     Done widened to 36px so its header doesn't crowd Task. Other columns
-     keep their flex-based balance. */
-  grid-template-columns: 36px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 80px 92px 28px 24px;
+  /* v4.74: 8 columns — done / name / project / assignee / dept / due / open / delete.
+     Open widened from 28 → 60px so the "Open" header isn't truncated to
+     "Op…". Other columns unchanged. */
+  grid-template-columns: 36px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 80px 92px 60px 24px;
   gap: 10px;
   align-items: center;
   padding: 8px 12px;
@@ -4464,6 +4464,37 @@ body.customer-view .schedule-footer { display: none; }
 .actions-row.actions-row-header > .actions-hdr-done { text-align: center; }
 .actions-row.actions-row-header > .actions-hdr-due,
 .actions-row.actions-row-header > .actions-hdr-open { text-align: right; }
+
+/* v4.74: per-department group divider. Dotted border in the discipline's
+   color + label + count. Renders between the header row and the first
+   row of each department's actions. */
+.actions-group-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 6px 4px 4px;
+  border-top: 2px dotted;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.actions-group-divider:first-child { margin-top: 4px; }
+.actions-group-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.actions-group-label { flex: 1 1 auto; }
+.actions-group-count {
+  font-size: 10px;
+  background: rgba(0,0,0,0.08);
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: inherit;
+}
 .actions-row-open {
   background: transparent;
   border: 1px solid var(--border);

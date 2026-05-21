@@ -4,6 +4,30 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.74',
+    date: '2026-05-21',
+    notes: [
+      'Actions list — per-row assignee filter, dept grouping, Open header fix.',
+      '',
+      'ASSIGNED-TO DROPDOWN IS NOW DEPARTMENT-SCOPED:',
+      '   ▸ Each row\'s Assigned To select now shows ONLY the team members in THAT action\'s department. A Mech Eng action only lists mech engineers, a Controls Eng action only lists controls engineers, etc. Previously every row showed every name on the team — confusing once actions spanned multiple departments.',
+      '   ▸ Edge case handled: if an action\'s current assignee belongs to a different discipline (e.g. after a department change), they\'re still listed in the dropdown so you can see + change them.',
+      '',
+      'PLACEHOLDERS DISPLAY AS "— UNASSIGNED —":',
+      '   ▸ Placeholders (ME Placeholder / CE Placeholder / etc.) no longer appear as separate options in the dropdown — they ARE the unassigned state. When a row\'s saved assignee is a placeholder, the dropdown shows "— unassigned —" as the selected option.',
+      '   ▸ Picking "— unassigned —" sets the assignee back to the action\'s discipline placeholder under the hood (keeps the invariant that every action has someone owning the slot, even if it\'s the placeholder).',
+      '',
+      'OPEN HEADER NO LONGER TRUNCATED:',
+      '   ▸ Open column widened from 28px → 60px so the "Open" header text fits. Previously truncated to "Op…" because the cell was sized for the → glyph only.',
+      '',
+      'LIST GROUPED BY DEPARTMENT:',
+      '   ▸ Actions are now grouped by discipline: Mech Eng → Controls Eng → Build → Wire → Cross-cutting. Each group gets a colored dotted-line divider with a colored dot, the discipline name, and the item count.',
+      '   ▸ Empty departments don\'t render a divider. Sort within each group preserves the existing overdue-first → due-date → id order.',
+      '',
+      'NOTE — per-department dashboard with item-level breakdown is queued for a future round (per your "I think that\'s okay for now").',
+    ],
+  },
+  {
     version: '4.73',
     date: '2026-05-21',
     notes: [

@@ -8128,7 +8128,33 @@ function renderActionsPage() {
     // explicit "Open" arrow per row. Clicking the row body no longer jumps
     // anywhere — the user wanted to be able to interact with the row without
     // accidentally navigating to the project schedule.
-    const teamNames = (state.team || []).map(m => m.name).filter(Boolean);
+    // v4.74: per-row team filter. The Assigned To dropdown now shows ONLY
+    // the team members in THIS action's department (mech actions → mech
+    // engineers, etc.). Placeholders are dropped from the option list
+    // because "— unassigned —" already represents that state — and the
+    // dropdown selects "— unassigned —" when the saved assignee IS a
+    // placeholder, so placeholders read as unassigned in the UI.
+    const teamByDiscipline = (() => {
+      const map = {};
+      (state.team || []).forEach(m => {
+        if (!m.name || isPlaceholder(m.name) || m.active === 0) return;
+        const k = m.discipline || 'other';
+        if (!map[k]) map[k] = [];
+        map[k].push(m.name);
+      });
+      Object.keys(map).forEach(k => map[k].sort());
+      return map;
+    })();
+    const teamForTask = (t) => {
+      const k = actionDisciplineKey(t);
+      const base = (k && teamByDiscipline[k])
+        ? [...teamByDiscipline[k]]
+        : (state.team || []).filter(m => m.name && !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
+      if (t.assignee && !isPlaceholder(t.assignee) && !base.includes(t.assignee)) {
+        base.unshift(t.assignee);
+      }
+      return base;
+    };
     // v4.70: header row — every column has a uniform-styled <span> header.
     // The previous build re-used the data-row classes (each with their own
     // font-size / weight / color / padding overrides), so headers came out
@@ -8145,7 +8171,18 @@ function renderActionsPage() {
         <span class="actions-hdr-open">Open</span>
         <span class="actions-hdr-delete"></span>
       </div>`;
-    const rowsHtml = actions.map(t => {
+    // v4.74: group rows by department so each discipline reads as a self-
+    // contained block. Order: Mech → Controls → Build → Wire → Other.
+    // Each group has a dotted-line header in the discipline's color.
+    const GROUP_ORDER = ['mech', 'controls', 'build', 'wire', 'other'];
+    const GROUP_LABELS = { mech: 'Mech Eng', controls: 'Controls Eng', build: 'Build', wire: 'Wire', other: 'Cross-cutting' };
+    const grouped = {};
+    actions.forEach(t => {
+      const dkey = actionDisciplineKey(t) || 'other';
+      if (!grouped[dkey]) grouped[dkey] = [];
+      grouped[dkey].push(t);
+    });
+    const renderRow = (t) => {
       const overdue = t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
       const done = (Number(t.progress) || 0) >= 100;
       const dkey = actionDisciplineKey(t);
@@ -8153,10 +8190,14 @@ function renderActionsPage() {
       const dueLabel = done && t.completed_on
         ? `${fmtDate(t.completed_on)} ✓`
         : (t.end_date ? fmtDate(t.end_date) : '—');
+      // v4.74: placeholder assignees show as "— unassigned —" in the dropdown.
+      // The dropdown options are filtered to this action's department.
+      const assigneeUnassigned = !t.assignee || isPlaceholder(t.assignee);
+      const rowTeam = teamForTask(t);
       const assignedSelect = `
-        <select class="actions-row-assignee-select" data-id="${t.id}" title="Assign this action — pick a team member or leave on the Placeholder">
-          <option value="" ${!t.assignee ? 'selected' : ''}>— unassigned —</option>
-          ${teamNames.map(n => `<option value="${escapeHtml(n)}" ${n === t.assignee ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+        <select class="actions-row-assignee-select" data-id="${t.id}" title="Assign — only ${escapeHtml(disciplineLabel[dkey] || 'team')} shown">
+          <option value="" ${assigneeUnassigned ? 'selected' : ''}>— unassigned —</option>
+          ${rowTeam.map(n => `<option value="${escapeHtml(n)}" ${n === t.assignee && !assigneeUnassigned ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
         </select>`;
       return `
         <div class="actions-row${overdue ? ' is-overdue' : ''}${done ? ' is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
@@ -8169,8 +8210,22 @@ function renderActionsPage() {
           <button type="button" class="actions-row-open" data-id="${t.id}" title="Open this action in the project schedule">→</button>
           <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">×</button>
         </div>`;
-    }).join('');
-    list.innerHTML = headerHtml + rowsHtml;
+    };
+    // Build the grouped list. Skip groups with no items.
+    let groupedHtml = '';
+    for (const gkey of GROUP_ORDER) {
+      const items = grouped[gkey];
+      if (!items || items.length === 0) continue;
+      const gColor = disciplineColor[gkey] || { bg: '#f1f5f9', fg: '#475569' };
+      groupedHtml += `
+        <div class="actions-group-divider" style="border-color:${gColor.fg};color:${gColor.fg}">
+          <span class="actions-group-dot" style="background:${gColor.fg}"></span>
+          <span class="actions-group-label">${escapeHtml(GROUP_LABELS[gkey])}</span>
+          <span class="actions-group-count">${items.length}</span>
+        </div>`;
+      groupedHtml += items.map(renderRow).join('');
+    }
+    list.innerHTML = headerHtml + groupedHtml;
 
     // v4.68: Open button — explicit navigation. Row body is now non-clickable
     // (no accidental jumps when the user tries to interact with the row).
@@ -8199,7 +8254,17 @@ function renderActionsPage() {
       sel.addEventListener('change', async (e) => {
         e.stopPropagation();
         const id = Number(sel.dataset.id);
-        const newAssignee = sel.value || null;
+        let newAssignee = sel.value || null;
+        // v4.74: picking "— unassigned —" sets the assignee back to the
+        // action's discipline Placeholder (ME Placeholder / CE Placeholder /
+        // etc.) — keeps the "every action has someone owning it" invariant.
+        // The dropdown will still display "— unassigned —" because the
+        // selected assignee is a placeholder (handled in the render path).
+        if (!newAssignee) {
+          const task = state.tasks.find(x => x.id === id);
+          const dkey = task ? actionDisciplineKey(task) : '';
+          newAssignee = placeholderNameForDiscipline(dkey) || null;
+        }
         await api.update(id, { assignee: newAssignee === null ? '' : newAssignee });
         await loadTasks();
         renderActionsPage();
