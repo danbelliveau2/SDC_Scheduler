@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.89',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — getBoundingClientRect as source of truth (fixes overlap, finally).',
+      '',
+      'Pattern across v4.85–v4.88: every SVG text-measurement API I tried (getBBox().width, getComputedTextLength()) was returning sizes smaller than the actual rendered text on at least some bars. The overlap check fired "no overlap" when there clearly was one, leaving the name centered on top of the meta. User saw the same overlap bug across 4 versions.',
+      '',
+      'FIX: getBoundingClientRect() reads the ACTUAL rendered rectangle from the browser\'s layout — it forces a sync layout flush and returns the real pixel-perfect bbox in CSS pixels. Now I use it for BOTH initial measurement AND post-placement verification. If a step\'s placement leaves the rendered name overlapping the rendered meta, the cascade advances to the next step.',
+      '',
+      'Pattern: place → measure rendered rect → check actual overlap → advance if needed.',
+      '',
+      'CASCADE (overlap detected from real rendered rects, not text-API guesses):',
+      '   STEP 1 — meta inside-left at barX+3, name centered IN BAR. Stays IF rendered meta.right + 3 ≤ rendered name.left AND rendered name.right + 3 ≤ rendered bar.right.',
+      '   STEP 2 — meta inside-left, name centered between meta-right and bar-right. Stays IF same checks pass after re-placement.',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar. Stays IF rendered name fits in bar with 3 px each side.',
+      '   STEP 4 — both outside. Meta outside-left, name outside-right.',
+      '',
+      'No more arithmetic-on-guessed-widths. The browser tells us where everything actually is, and we react to that.',
+    ],
+  },
+  {
     version: '4.88',
     date: '2026-05-21',
     notes: [

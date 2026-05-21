@@ -2536,32 +2536,31 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.88 LAYOUT CASCADE — measure with getComputedTextLength + arithmetic.
+    // v4.89 LAYOUT CASCADE — getBoundingClientRect as source of truth.
     //
-    //   Previous versions used getBBox(), which sometimes returned 0 or
-    //   under-sized widths right after appendChild before the SVG had laid
-    //   out — causing Step 2 to fire when Step 3 should have, and placing
-    //   the name overlapping the meta. getComputedTextLength is specifically
-    //   for text run length and is reliable immediately after content is set.
+    //   The pattern across v4.85–v4.88: every text-measurement API I tried
+    //   (getBBox().width, getComputedTextLength()) was returning sizes
+    //   smaller than the actual rendered text on at least some bars — so
+    //   my overlap check fired "no overlap" when there clearly was one,
+    //   leaving the name centered on top of the meta.
     //
-    //   Gaps (all 3 px):
-    //     INSIDE_PADDING = 3   gap between bar's left edge and inside-left meta
-    //     INSIDE_GAP     = 3   gap between meta-right and name-left, name-right and bar-right
-    //     OUTSIDE_GAP    = 3   gap between outside-left meta PILL right edge and bar's left edge
+    //   getBoundingClientRect() reads the actual rendered rectangle from
+    //   the browser's layout (forces sync layout flush, returns the real
+    //   pixel-perfect bbox). Use it for BOTH initial width measurement AND
+    //   post-placement overlap verification. If a step's placement leaves
+    //   the rendered name overlapping the rendered meta, the cascade
+    //   advances to the next step.
     //
-    //   Step 1: meta INSIDE-left at barX+3, name CENTERED IN BAR.
-    //           Fits IF centered name has ≥INSIDE_GAP to meta AND ≥INSIDE_GAP to bar-right.
-    //   Step 2: meta INSIDE-left, name CENTERED between meta-right and bar-right
-    //           (symmetric gaps). Per user: "dead center of the bar OR centered
-    //           between the meta and bar's right — those are the only two options."
-    //           Fits IF (barRight - metaRight) ≥ nameW + 2·INSIDE_GAP.
-    //   Step 3: meta OUTSIDE-left, name CENTERED in bar.
-    //           Fits IF barW ≥ nameW + 2·INSIDE_GAP.
-    //   Step 4: BOTH outside. Meta outside-left, name ALWAYS outside-RIGHT.
+    //   Place → measure → check rendered overlap → advance if needed.
     //
-    //   A +1 px safety margin is added to measured widths to absorb sub-pixel
-    //   rendering variance (kerning, antialiasing) — keeps the gap visibly
-    //   ≥3 px even when measurements are slightly under-reported.
+    //   Step 1: meta inside-left at barX+3, name centered IN BAR.
+    //           Stays IF rendered meta.right + 3 ≤ rendered name.left AND
+    //                    rendered name.right + 3 ≤ rendered bar.right.
+    //   Step 2: meta inside-left, name centered between meta-right and bar-right.
+    //           Stays IF same checks pass after re-placement.
+    //   Step 3: meta OUTSIDE-left, name centered in bar.
+    //           Stays IF rendered name fits inside bar with 3 px each side.
+    //   Step 4: BOTH outside. Meta outside-left, name ALWAYS outside-right.
     const INSIDE_PADDING = 3;
     const INSIDE_GAP     = 3;
     const OUTSIDE_GAP    = 3;
@@ -2590,23 +2589,6 @@ function drawBarMeta() {
     metaEl.textContent = metaText;
     group.appendChild(metaEl);
 
-    // Measure widths via getComputedTextLength. This API is specifically for
-    // text run length (in user units) and is reliable right after setting
-    // textContent. getBBox().width sometimes returns 0 or under-sized values
-    // immediately after appendChild — which is what was causing v4.86/v4.87's
-    // overlap bug. Fall back to a char-count estimate only if the API throws
-    // or returns ≤ 0.
-    const measureLen = (el, text, pxPerChar) => {
-      let w = 0;
-      try { w = el.getComputedTextLength(); } catch (_) { w = 0; }
-      if (!w || w < 1) w = Math.max(1, (text || '').length) * pxPerChar;
-      return w;
-    };
-    // +1 px safety margin absorbs sub-pixel rendering variance so the visible
-    // gap stays ≥ INSIDE_GAP even when the API under-reports by a fraction.
-    const metaW = measureLen(metaEl, metaText, 6.5) + 1;
-    const nameW = measureLen(barLabel, task.name, 7) + 1;
-
     // Helper: center name inside the bar (frappe-gantt's natural placement).
     // clipBarLabels may have pushed it outside if the bar was narrower than
     // its PAD=8 threshold — force it back inside here.
@@ -2629,48 +2611,61 @@ function drawBarMeta() {
       addPillOccluder(group, metaEl, PILL_PAD);
     };
 
-    const metaInsideRight = barX + INSIDE_PADDING + metaW;
-    const barRightEdge    = barX + barW;
+    // === STEP 1 ATTEMPT: meta inside-left, name centered in bar ===
+    centerNameInBar();
 
-    // STEP 1: meta inside-left, name centered IN BAR.
-    // Centered name's left/right edges (assuming text-anchor='middle' at barX + barW/2):
-    const step1NameLeft  = (barX + barW / 2) - (nameW / 2);
-    const step1NameRight = (barX + barW / 2) + (nameW / 2);
-    const step1Works = (step1NameLeft >= metaInsideRight + INSIDE_GAP) &&
-                       (step1NameRight + INSIDE_GAP <= barRightEdge);
+    // Measure actual rendered rects. getBoundingClientRect forces a sync
+    // layout flush, so rects reflect what the user will actually see.
+    const barRect = bar.getBoundingClientRect();
+    let metaRect = metaEl.getBoundingClientRect();
+    let nameRect = barLabel.getBoundingClientRect();
 
-    if (step1Works) {
-      centerNameInBar();
-      continue;
+    const step1OverlapsMeta = (metaRect.right + INSIDE_GAP > nameRect.left);
+    const step1SpillsRight  = (nameRect.right + INSIDE_GAP > barRect.right);
+
+    if (!step1OverlapsMeta && !step1SpillsRight) {
+      continue;  // Step 1 works.
     }
 
-    // STEP 2: meta inside-left, name centered between meta-right and bar-right.
-    // Available width is (barRight - metaInsideRight). The name needs that minus
-    // INSIDE_GAP on each side.
-    const step2AvailableWidth = barRightEdge - metaInsideRight;
-    const step2Works = step2AvailableWidth >= nameW + 2 * INSIDE_GAP;
+    // === STEP 2 ATTEMPT: meta inside-left, name centered between meta-right and bar-right ===
+    // To position in SVG coords, we need meta's right edge in SVG units. Since
+    // meta is anchored 'start' at barX + INSIDE_PADDING, its right edge in SVG
+    // is barX + INSIDE_PADDING + (metaRect.width). Assumes 1 CSS px = 1 SVG
+    // unit (true for this SVG — no scale transforms applied).
+    const metaSvgRight   = barX + INSIDE_PADDING + metaRect.width;
+    const nameCenterSvg  = (metaSvgRight + (barX + barW)) / 2;
 
-    if (step2Works) {
-      const nameCenterX = (metaInsideRight + barRightEdge) / 2;
-      barLabel.setAttribute('x', String(nameCenterX));
-      barLabel.setAttribute('text-anchor', 'middle');
-      barLabel.style.textAnchor = '';
-      barLabel.classList.remove('bar-label-outside');
-      continue;
+    barLabel.setAttribute('x', String(nameCenterSvg));
+    barLabel.setAttribute('text-anchor', 'middle');
+    barLabel.style.textAnchor = '';
+    barLabel.classList.remove('bar-label-outside');
+
+    // Re-measure name post-placement.
+    nameRect = barLabel.getBoundingClientRect();
+
+    const step2OverlapsMeta = (metaRect.right + INSIDE_GAP > nameRect.left);
+    const step2SpillsRight  = (nameRect.right + INSIDE_GAP > barRect.right);
+
+    if (!step2OverlapsMeta && !step2SpillsRight) {
+      continue;  // Step 2 works.
     }
 
-    // STEP 3: meta outside-left, name centered in bar.
-    const step3Works = barW >= nameW + 2 * INSIDE_GAP;
-
-    if (step3Works) {
-      moveMetaOutside();
-      centerNameInBar();
-      continue;
-    }
-
-    // STEP 4: BOTH outside. Meta outside-left, name ALWAYS outside-right
-    // (override clipBarLabels' viewport-clip-to-left if it kicked in).
+    // === STEP 3 ATTEMPT: meta outside-left, name centered in bar ===
     moveMetaOutside();
+    centerNameInBar();
+
+    // Re-measure (meta moved; name re-centered).
+    nameRect = barLabel.getBoundingClientRect();
+
+    const step3SpillsLeft  = (nameRect.left  < barRect.left  + INSIDE_GAP);
+    const step3SpillsRight = (nameRect.right > barRect.right - INSIDE_GAP);
+
+    if (!step3SpillsLeft && !step3SpillsRight) {
+      continue;  // Step 3 works.
+    }
+
+    // === STEP 4: both outside ===
+    // Meta already outside from Step 3 attempt. Force name outside-right.
     barLabel.setAttribute('x', String(barX + barW + 6));
     barLabel.setAttribute('text-anchor', 'start');
     barLabel.style.textAnchor = '';
