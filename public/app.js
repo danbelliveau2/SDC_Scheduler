@@ -7892,6 +7892,16 @@ function renderActionsPage() {
     btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
   });
 
+  // v4.76: when a person is signed in, focus the page on their personal
+  // Gantt — hide the section divider, filter chips, action list, and
+  // dept dashboard. The Gantt shows the same data the list would and
+  // doing both feels disconnected ("top half is mine, bottom half is
+  // team"). Quick-add bar stays visible so the user can keep adding.
+  const pageRoot = document.querySelector('.actions-page');
+  if (pageRoot) {
+    pageRoot.classList.toggle('is-signed-in', _actionsPageState.personId != null);
+  }
+
   // v4.63: render the person picker (Everyone + every team member except
   // placeholders) and the optional personal summary strip.
   // v4.66: also render the per-person Gantt visualization when someone is
@@ -7967,7 +7977,12 @@ function renderActionsPage() {
       // leave the assignee blank so the manager can pick later.
       const discKey = (qaDept && qaDept.value) || disciplineForSection(sect.d, sect.s) || '';
       const placeholderName = placeholderNameForDiscipline(discKey);
-      const due = qaDue.value || null;
+      // v4.76: if the user didn't pick a due date, default it to TODAY.
+      // Why: without a date the action never shows on the personal Gantt
+      // (which requires start/end dates to position the diamond on the
+      // timeline). User explicitly asked for actions to appear as
+      // milestones on the Gantt — so every action gets a date now.
+      const due = qaDue.value || new Date().toISOString().slice(0, 10);
       try {
         await api.create({
           name: title,
@@ -7979,7 +7994,8 @@ function renderActionsPage() {
           duration_days: 0,
           is_milestone: 1,
           progress: 0,
-          ...(due ? { start_date: due, end_date: due } : {}),
+          start_date: due,
+          end_date: due,
           ...(placeholderName ? { assignee: placeholderName } : {}),
         });
       } catch (err) {
@@ -8509,16 +8525,16 @@ function renderActionsPersonGantt() {
     const metaLabel = metaParts.join(' · ');
     const tip = `${t.project ? `[${t.project}] ` : ''}${t.name}\n${fmtDate(t.start_date)} → ${fmtDate(t.end_date)}${alloc != null ? ` · ${alloc}%` : ''}${wks > 0 ? ` · ${wks}w` : ''}${progress > 0 ? ` · ${progress}% done` : ''}`;
     const isMilestone = (t.is_milestone || durDays === 0) && (endMs - startMs) <= 86400000;
-    // v4.68: bar content = TASK NAME on the left, alloc/dur/progress meta
-    // packed on the right. Mirrors the main Schedule Gantt where the name
-    // is the primary label inside the bar and the meta is the trailing pill.
-    const barLabel = escapeHtml(t.name || '');
+    // v4.76: bar content layout MATCHES v4.75 main Gantt — combined inline
+    // "meta · name" at the bar's LEFT edge. Meta in 700 weight, name in 600.
+    // Reads as "[meta pill] · description" without the pill border.
+    const barName = escapeHtml(t.name || '');
+    const metaInline = metaLabel ? `<span class="apg-bar-meta">${escapeHtml(metaLabel)}</span><span class="apg-bar-sep"> · </span>` : '';
     const barOrDot = isMilestone
       ? `<div class="apg-diamond ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''} ${isAction ? 'is-action' : ''}" style="left:${startPct}%;background:${isAction ? 'var(--sdc-primary, #2563eb)' : palette.fill};border-color:${palette.text}" title="${escapeHtml(tip)}"></div>`
       : `<div class="apg-bar ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" style="left:${startPct}%;width:${widthPct}%;background:${palette.fill};border-color:${palette.text};color:${palette.text}" title="${escapeHtml(tip)}">
           ${progress > 0 ? `<div class="apg-bar-fill" style="width:${progress}%;background:${palette.text}"></div>` : ''}
-          <span class="apg-bar-name">${barLabel}</span>
-          ${metaLabel ? `<span class="apg-bar-meta">${escapeHtml(metaLabel)}</span>` : ''}
+          <span class="apg-bar-content">${metaInline}<span class="apg-bar-name">${barName}</span></span>
         </div>`;
     return `
       <div class="apg-row" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">

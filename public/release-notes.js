@@ -4,6 +4,29 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.76',
+    date: '2026-05-21',
+    notes: [
+      'Actions when signed in — unified Gantt, no separated list below.',
+      '',
+      'ACTION CREATION DEFAULTS TO TODAY:',
+      '   ▸ Quick-add without a due date used to leave start/end null, which meant the action never appeared on the personal Gantt (Gantt requires a date to position the diamond). Now: missing due date → today\'s date as start AND end. Every action shows up on the Gantt as a milestone diamond.',
+      '',
+      'UNIFIED VIEW WHEN SIGNED IN:',
+      '   ▸ When a person is signed in, the personal Gantt above IS the view. The lime section divider, filter chips, action list, and per-department dashboard cards all hide. Reads as one continuous "your stuff" page instead of "top is mine / bottom is team".',
+      '   ▸ Quick-add bar stays visible so the user can keep adding actions.',
+      '   ▸ When the user clears the sign-in, everything below the divider returns to the team-wide view.',
+      '   ▸ Implementation: .actions-page gets a .is-signed-in class; CSS hides the redundant sections.',
+      '',
+      'PERSONAL GANTT BARS MATCH THE MAIN SCHEDULE LAYOUT:',
+      '   ▸ Bar content was previously a separate <name>...<meta> split (name left, meta right). Now matches the v4.75 main Schedule Gantt: ONE inline label "85% · 2w · Configure Machine" at the bar\'s LEFT edge — meta in 700 weight, " · " separator in 400, task name in 600.',
+      '   ▸ Same visual system across all Gantts in the app — schedule view, personal view, anywhere bars + meta render together.',
+      '',
+      'ACTIONS ON THE GANTT AS MILESTONES:',
+      '   ▸ Action items (is_milestone=1 by default) render as diamond markers on the personal Gantt, positioned at their due date. Same diamond styling as the schedule Gantt — SDC-blue for action diamonds, hierarchy color for regular milestones, red border for overdue.',
+    ],
+  },
+  {
     version: '4.75',
     date: '2026-05-21',
     notes: [
