@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.86',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — OVERLAP-DRIVEN cascade (no more pre-computed pixel thresholds).',
+      '',
+      'BUG: v4.85 was using barW thresholds (barW >= nameW + 2·metaW + 4·GAP, etc.) to decide which step fires. The math assumed measured widths matched rendered widths exactly. They don\'t — getBBox() can return 0 or slightly-off values depending on layout timing, and the threshold check then fires Step 1 (centered name) on bars where the actual rendered name overlaps the meta. User saw "90% · 2wRobot" visibly touching on multiple bars.',
+      '',
+      'FIX: place the elements, then MEASURE the actual rendered positions, and if they overlap (or run past the bar edge), advance to the next step. No more "barW >= some-number" decisions — purely overlap detection per the user\'s instruction: "if it overlaps, make the change, not based on the pixels of the bar."',
+      '',
+      'STEP 2 PLACEMENT CHANGED: was "name centered in available space (equal gaps from meta and bar\'s right)". NOW: "name\'s LEFT edge anchored at meta\'s right edge + INSIDE_GAP" — so the gap between meta and name is ALWAYS exactly 3 px, never less. The gap on the bar\'s right side varies. Per user: "there always should be the same gap between the meta and the name."',
+      '',
+      'CASCADE (overlap-driven):',
+      '   STEP 1 — meta inside-left at barX+3, name CENTERED in bar. Keep IF measured name\'s left edge ≥ measured meta\'s right edge + 3 AND name\'s right edge + 3 ≤ bar\'s right edge.',
+      '   STEP 2 — meta stays inside-left, name shifted to anchor at meta_right + 3. Keep IF name\'s right edge + 3 ≤ bar\'s right edge.',
+      '   STEP 3 — meta pops OUTSIDE-left, name centered in bar. Keep IF name fits centered with 3 px each side.',
+      '   STEP 4 — both outside. Meta outside-left, name ALWAYS outside-right (overrides clipBarLabels\' viewport-clip-to-left).',
+      '',
+      'IMPLEMENTATION: each measure() call after a mutation forces a layout flush via getBBox, so subsequent reads are accurate. Three getBBox-pairs total per bar (one per step transition) — negligible cost for typical schedule sizes.',
+    ],
+  },
+  {
     version: '4.85',
     date: '2026-05-21',
     notes: [
