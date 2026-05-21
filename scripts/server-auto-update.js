@@ -27,7 +27,7 @@ const os               = require('os');
 const { execSync }     = require('child_process');
 
 const GITHUB_REPO       = 'danbelliveau2/SDC_Scheduler';
-const GITHUB_BRANCH     = 'master';
+const GITHUB_BRANCH     = 'main';
 const CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const APP_DIR           = path.join(__dirname, '..');
 const PM2_APP_NAME      = 'sdc-scheduler';
@@ -92,7 +92,12 @@ function downloadFile(url, dest) {
 }
 
 function run(cmd, cwd) {
-  execSync(cmd, { cwd: cwd || APP_DIR, stdio: 'pipe' });
+  try {
+    execSync(cmd, { cwd: cwd || APP_DIR, stdio: 'pipe' });
+  } catch (e) {
+    const detail = e.stderr ? e.stderr.toString().trim() : (e.stdout ? e.stdout.toString().trim() : '');
+    throw new Error(`Command failed: ${cmd}\n${detail}`);
+  }
 }
 
 // ─── update flow ─────────────────────────────────────────────────────────────
@@ -202,7 +207,7 @@ async function checkAndUpdate() {
 
 async function main() {
   log('SDC Scheduler — server auto-updater started');
-  log(`Watching: https://github.com/${GITHUB_REPO}/tree/${GITHUB_BRANCH}`);
+  log(`Watching: https://github.com/${GITHUB_REPO}/tree/${GITHUB_BRANCH}  (branch: ${GITHUB_BRANCH})`);
   log(`Check interval: ${CHECK_INTERVAL_MS / 60000} min`);
   await checkAndUpdate();
   setInterval(checkAndUpdate, CHECK_INTERVAL_MS);
