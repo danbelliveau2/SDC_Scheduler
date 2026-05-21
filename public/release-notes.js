@@ -4,6 +4,28 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.75',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — proper width-based fit decision + milestone double-render fix.',
+      '',
+      'BUGFIX — MILESTONE NAMES DOUBLED WHEN % WAS ON:',
+      '   ▸ drawMilestoneDiamonds intentionally hides frappe-gantt\'s bar-label on milestones (opacity = 0) because drawMilestoneLabels renders its own labels. My v4.72 reset of ALL bar-labels\' opacity at the top of drawBarMeta was undoing that — so when % was on, every milestone showed two name labels stacked / offset.',
+      '   ▸ Fix: the reset now scopes to non-milestone bar-wrappers only — `.bar-wrapper:not(.is-milestone) .bar-label`. Milestone bar-labels stay hidden.',
+      '',
+      'NEW LAYOUT ALGORITHM — actual width-based fit decision:',
+      '   ▸ Old behavior: a fudge-factor approximation ("barW >= 2 × labelW") that decided "inside" vs "outside" without considering the task name length. Result: lots of bars where the description WOULD have fit alongside the meta got pushed out, AND some narrow bars kept the meta inside where it overlapped the centered name.',
+      '   ▸ New behavior: compute the actual width of "{meta} · {name}" using char-count × font-size estimates. Then:',
+      '       • Combined fits inside the bar → render ONE INLINE label "85% · 2w · Configure Machine" at the bar\'s left edge. Frappe-gantt\'s centered label is hidden so it doesn\'t double up.',
+      '       • Combined doesn\'t fit → meta moves OUTSIDE to the LEFT of the bar (with pill occluder so arrows pass behind). Frappe-gantt\'s label stays wherever clipBarLabels put it — centered if name fits inside, outside-right if not.',
+      '   ▸ Meta renders in 700 weight, name in 600, separator (" · ") in normal — reads as "[meta pill] · description" without the pill border. Color follows the bar\'s hierarchy palette (mech blue, controls green, etc.).',
+      '   ▸ No more right-aligning the description. No more guessing. Direct width arithmetic.',
+      '',
+      'STILL TODO IF YOU SEE EDGE CASES:',
+      '   ▸ Char-width estimates (META_CHAR_W = 6, NAME_CHAR_W = nameFontSize × 0.6) are conservative — they err on "won\'t fit" so bars don\'t overflow. If a bar looks like it should fit and doesn\'t, we can tune those down to ~5.5 / 0.55.',
+    ],
+  },
+  {
     version: '4.74',
     date: '2026-05-21',
     notes: [

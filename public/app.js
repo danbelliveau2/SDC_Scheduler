@@ -2377,9 +2377,12 @@ function drawBarMeta() {
   if (!svg) return;
   // Tear down any prior labels so toggling off cleanly removes them.
   svg.querySelectorAll('.sdc-bar-meta').forEach(el => el.remove());
-  // v4.72: when bar-meta is OFF, restore any frappe-gantt bar-labels we
-  // previously hid so they reappear at their normal centered position.
-  svg.querySelectorAll('.bar-label').forEach(el => {
+  // v4.75 BUGFIX: only reset visibility/opacity on NON-MILESTONE bar-labels.
+  // drawMilestoneDiamonds sets opacity=0 on milestone bar-labels because
+  // drawMilestoneLabels renders its own text — so undoing that here was
+  // causing milestone names to render TWICE (one from frappe-gantt, one
+  // from drawMilestoneLabels) when the % toggle was on.
+  svg.querySelectorAll('.bar-wrapper:not(.is-milestone) .bar-label').forEach(el => {
     el.style.opacity = '';
     el.style.visibility = '';
   });
@@ -2467,110 +2470,84 @@ function drawBarMeta() {
     const allocText = (alloc > 0) ? `${alloc}%` : '';
     const durText   = (wks > 0)   ? `${wks}w`   : '';
     if (!allocText && !durText) continue;
-    const labelText = [allocText, durText].filter(Boolean).join(' · ');
-    const labelW = labelText.length * 6.5 + 4;
+    const metaText = [allocText, durText].filter(Boolean).join(' · ');
+    const nameTextStr = task.name || '';
+    const sepText  = ' · ';
 
+    // v4.75 NEW LAYOUT ALGORITHM — width-based decision instead of fudge factors.
+    //
+    //   Compute width of "{meta} · {name}" using char-count estimates.
+    //   1. If the COMBINED string fits inside the bar: render BOTH inline at
+    //      the bar's left edge, natural left-to-right reading. Hide frappe-
+    //      gantt's separate centered label so we don't double up.
+    //   2. If the combined doesn't fit: meta goes OUTSIDE-LEFT of the bar
+    //      with a pill occluder. Bar-label stays where clipBarLabels put
+    //      it (centered if name fits inside the bar; outside-right if not).
+    //   No more right-aligning. No more "fits inside if barW >= 2 × labelW"
+    //   approximation that overflowed half the time.
     const INSIDE_PADDING = 4;
     const SAME_ROW_GAP   = 4;
+    const nameFontSize   = Math.max(8, Math.min(12, barH - 2));
+    // Conservative width estimates — err on "too tight to fit" so we don't
+    // overflow. Meta uses the smaller 9px font.
+    const META_CHAR_W  = 6;
+    const NAME_CHAR_W  = nameFontSize * 0.6;
+    const metaW        = metaText.length    * META_CHAR_W;
+    const sepW         = sepText.length     * NAME_CHAR_W;
+    const nameW        = nameTextStr.length * NAME_CHAR_W;
+    const combinedW    = metaW + sepW + nameW + INSIDE_PADDING * 2;
+    const fitsCombined = combinedW <= barW;
 
-    // Inside fits when the bar is comfortably wider than the label plus
-    // padding on both sides. 2× ensures the centered task name still gets
-    // room in the middle without the label butting against it.
-    const fitsInside = barW >= (labelW + INSIDE_PADDING * 2) * 2;
-    // Left fits when there's enough room to the left of the bar inside
-    // the chart's drawable area. We approximate "drawable area" as x >= 0.
-    const fitsLeft = (barX - SAME_ROW_GAP - labelW) >= 0;
+    const barLabel = wrap.querySelector('.bar-label');
+    const ck       = rowColorKey(task);
+    const fill     = (HIERARCHY_BAR_COLORS[ck] && HIERARCHY_BAR_COLORS[ck].text) || '#0f172a';
 
-    // Candidate rectangles for arrow-collision checks on the top/bottom
-    // fallbacks. Inside + left don't need a collision check (inside is
-    // bar-own territory; left uses the pill occluder for arrows).
-    const belowRect = { x: barX + barW - labelW, y: barY + barH + GAP,    w: labelW, h: LABEL_H };
-    const aboveRect = { x: barX + barW - labelW, y: barY - GAP - LABEL_H, w: labelW, h: LABEL_H };
-
-    let placement = null;
-    if (fitsInside)                      placement = 'inside';
-    else if (fitsLeft)                   placement = 'left';
-    else if (!overlapsArrow(belowRect))  placement = 'below';
-    else if (!overlapsArrow(aboveRect))  placement = 'above';
-    if (!placement) continue;
-
-    // v4.59: label is ALWAYS LEFT-ALIGNED regardless of placement.
-    // Inside  → left end inside the bar (halo, no rect).
-    // Left    → just outside the bar's left edge (right-edge of text touches
-    //           barX − GAP) with the white pill occluder behind it.
-    // Below   → bar's left edge (left-aligned) with pill occluder.
-    // Above   → bar's left edge (left-aligned) with pill occluder.
-    if (placement !== 'inside') {
-      const txtAttrs = {
-        left:  { x: barX - SAME_ROW_GAP, y: barY + barH / 2,   anchor: 'end',   baseline: 'central'    },
-        below: { x: barX,                y: barY + barH + GAP, anchor: 'start', baseline: 'hanging'    },
-        above: { x: barX,                y: barY - GAP,        anchor: 'start', baseline: 'alphabetic' },
-      }[placement];
-      const text = document.createElementNS(SVG_NS, 'text');
-      text.setAttribute('x', txtAttrs.x);
-      text.setAttribute('y', txtAttrs.y);
-      text.setAttribute('text-anchor', txtAttrs.anchor);
-      text.setAttribute('dominant-baseline', txtAttrs.baseline);
-      text.setAttribute('font-size', '9');
-      text.setAttribute('font-weight', '700');
-      text.setAttribute('fill', '#1e293b');
-      text.style.pointerEvents = 'none';
-      text.textContent = labelText;
-      group.appendChild(text);
-      addPillOccluder(group, text);
+    if (fitsCombined) {
+      // BOTH fit — render one inline combined label at the bar's left.
+      // Hide frappe-gantt's centered label so it doesn't double up.
+      if (barLabel) barLabel.style.visibility = 'hidden';
+      const combined = document.createElementNS(SVG_NS, 'text');
+      combined.setAttribute('class', 'sdc-bar-meta sdc-bar-combined');
+      combined.setAttribute('x', String(barX + INSIDE_PADDING));
+      combined.setAttribute('y', String(barY + barH / 2));
+      combined.setAttribute('text-anchor', 'start');
+      combined.setAttribute('dominant-baseline', 'central');
+      combined.setAttribute('font-size', String(nameFontSize));
+      combined.setAttribute('font-weight', '600');
+      combined.setAttribute('fill', fill);
+      combined.style.pointerEvents = 'none';
+      // tspan structure so the meta reads slightly heavier than the name
+      // (mirrors "[meta pill] · description" — pill-without-the-pill-border).
+      const metaSpan = document.createElementNS(SVG_NS, 'tspan');
+      metaSpan.setAttribute('font-weight', '700');
+      metaSpan.textContent = metaText;
+      combined.appendChild(metaSpan);
+      const sepSpan = document.createElementNS(SVG_NS, 'tspan');
+      sepSpan.textContent = sepText;
+      combined.appendChild(sepSpan);
+      const nameSpan = document.createElementNS(SVG_NS, 'tspan');
+      nameSpan.textContent = nameTextStr;
+      combined.appendChild(nameSpan);
+      group.appendChild(combined);
       continue;
     }
 
-    // Inside placement — left-aligned at the bar's left edge with a halo
-    // so the text reads on any phase fill color.
-    const el = document.createElementNS(SVG_NS, 'text');
-    el.setAttribute('x', barX + INSIDE_PADDING);
-    el.setAttribute('y', barY + barH / 2);
-    el.setAttribute('text-anchor', 'start');
-    el.setAttribute('dominant-baseline', 'central');
-    el.setAttribute('font-size', '9');
-    el.setAttribute('font-weight', '700');
-    el.setAttribute('paint-order', 'stroke');
-    el.setAttribute('stroke', 'rgba(255,255,255,0.9)');
-    el.setAttribute('stroke-width', '2.5');
-    el.setAttribute('stroke-linejoin', 'round');
-    el.setAttribute('fill', '#0f172a');
-    el.style.pointerEvents = 'none';
-    el.textContent = labelText;
-    group.appendChild(el);
-
-    // v4.72: HIDE the frappe-gantt bar-label and render our OWN task name
-    // at the right end of the bar. The previous attribute-shift approach
-    // (v4.69, v4.71) couldn't reliably beat frappe-gantt's stylesheet —
-    // shifted x but text-anchor stayed centered, so names ended up half
-    // outside the bar or otherwise misaligned. Clean override is more
-    // robust. Frappe-gantt's label is hidden via visibility (not display)
-    // so its bbox is still queryable elsewhere if anything depends on it.
-    const barLabel = wrap.querySelector('.bar-label');
-    if (barLabel) {
-      barLabel.style.visibility = 'hidden';
-    }
-    const nameText = document.createElementNS(SVG_NS, 'text');
-    nameText.setAttribute('class', 'sdc-bar-meta sdc-bar-name-right');
-    nameText.setAttribute('x', String(barX + barW - INSIDE_PADDING));
-    nameText.setAttribute('y', String(barY + barH / 2));
-    nameText.setAttribute('text-anchor', 'end');
-    nameText.setAttribute('dominant-baseline', 'central');
-    // Match the original .bar-label font (frappe-gantt default = 12px /
-    // 600 weight). clipBarLabels also pulls font-size to fit barH; mirror
-    // that here so very-short bars don't get clipped descenders.
-    const nameFontSize = Math.max(8, Math.min(12, barH - 2));
-    nameText.setAttribute('font-size', String(nameFontSize));
-    nameText.setAttribute('font-weight', '600');
-    // Fill follows the bar's hierarchy color (same as frappe-gantt would).
-    // Phase rules in injectPhaseStyles use .bar-label color via class — we
-    // mirror the colorKey lookup here so the name reads in the same hue.
-    const ck = rowColorKey(task);
-    const fill = (HIERARCHY_BAR_COLORS[ck] && HIERARCHY_BAR_COLORS[ck].text) || '#0f172a';
-    nameText.setAttribute('fill', fill);
-    nameText.style.pointerEvents = 'none';
-    nameText.textContent = task.name || '';
-    group.appendChild(nameText);
+    // COMBINED DOESN'T FIT — meta moves OUTSIDE the bar to the LEFT. The
+    // bar-label stays wherever clipBarLabels put it (centered if the name
+    // fits inside; outside-right if not). Pill occluder behind so arrows
+    // entering the bar visually disappear under the meta text.
+    const text = document.createElementNS(SVG_NS, 'text');
+    text.setAttribute('x', String(barX - SAME_ROW_GAP));
+    text.setAttribute('y', String(barY + barH / 2));
+    text.setAttribute('text-anchor', 'end');
+    text.setAttribute('dominant-baseline', 'central');
+    text.setAttribute('font-size', '9');
+    text.setAttribute('font-weight', '700');
+    text.setAttribute('fill', '#1e293b');
+    text.style.pointerEvents = 'none';
+    text.textContent = metaText;
+    group.appendChild(text);
+    addPillOccluder(group, text);
   }
 }
 
