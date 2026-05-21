@@ -4,6 +4,31 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.68',
+    date: '2026-05-21',
+    notes: [
+      'Actions page polish — headers, inline edit, no accidental nav.',
+      '',
+      'ACTIONS LIST — proper grid layout:',
+      '   ▸ Column headers: Done / Task / Project / Assigned To / Dept / Due / Open / ×. The list now reads like a table instead of a wall of mystery columns.',
+      '   ▸ Row body no longer clicks-through to the schedule. Each row has an explicit "→" Open button at the right; everything else stays put for editing.',
+      '   ▸ Assigned-To is now an INLINE select on every row — pick a name and the assignee updates immediately (no popup, no schedule jump). Falls back to "— unassigned —" if the user clears it.',
+      '   ▸ Done checkbox now has a labelled column header so the column actually reads as "this is the complete toggle".',
+      '   ▸ Project name + Task name columns rebalanced (1.4fr / 1fr / 1fr) so titles don\'t get crammed into a sliver.',
+      '',
+      'QUICK-ADD project dropdown filters templates:',
+      '   ▸ Template projects (SDC_StandardProject_Template etc.) and Sales-workspace projects no longer appear in the Project picker. Fixes the "my new action ended up on the template" issue.',
+      '',
+      'PERSONAL GANTT — bar content + UX fixes:',
+      '   ▸ Bars now show TASK NAME on the left + alloc/dur/progress meta on the right inside the bar (was just alloc/dur, no name).',
+      '   ▸ Row body click no longer jumps to the schedule (it was eating drag attempts and felt like a trap). Each row has an explicit "→" button at the right edge to open the parent project.',
+      '   ▸ Bottom padding bumped 22 → 32 + last row\'s border-bottom removed so the chart\'s final task isn\'t crammed against the card edge.',
+      '   ▸ Hover affordance softened from 4% to 3% tint — less twitchy when you\'re reading the bars.',
+      '',
+      'NOTE — drag-to-move on the personal Gantt still requires the frappe-gantt cross-project rewire (see v4.67 notes). The "→ Open" button is the bridge to the editable view for now.',
+    ],
+  },
+  {
     version: '4.67',
     date: '2026-05-21',
     notes: [

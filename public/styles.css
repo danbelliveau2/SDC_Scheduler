@@ -4089,10 +4089,11 @@ body.customer-view .schedule-footer { display: none; }
 .actions-person-gantt {
   --apg-label-w: 240px;
   --apg-row-h: 32px;
+  --apg-open-w: 32px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 18px 18px 22px;
+  padding: 22px 18px 32px;
 }
 .actions-person-gantt:empty { display: none; }
 .apg-title {
@@ -4161,9 +4162,27 @@ body.customer-view .schedule-footer { display: none; }
   align-items: center;
   height: var(--apg-row-h);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
-  cursor: pointer;
 }
-.apg-row:hover { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white); }
+.apg-row:hover { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 3%, white); }
+.apg-row:last-child { border-bottom: 0; }
+.apg-row-open {
+  flex: 0 0 var(--apg-open-w);
+  margin-left: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  font-family: inherit;
+}
+.apg-row-open:hover {
+  background: var(--sdc-primary);
+  color: white;
+  border-color: var(--sdc-primary);
+}
 .apg-row-label {
   flex: 0 0 var(--apg-label-w);
   padding-right: 12px;
@@ -4201,8 +4220,20 @@ body.customer-view .schedule-footer { display: none; }
   border: 1px solid;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   padding: 0 6px;
   overflow: hidden;
+}
+.apg-bar-name {
+  position: relative;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .apg-bar.is-overdue {
   box-shadow: inset 0 0 0 2px #dc2626;
@@ -4222,8 +4253,8 @@ body.customer-view .schedule-footer { display: none; }
   font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  opacity: 0.85;
 }
 .apg-diamond {
   position: absolute;
@@ -4331,7 +4362,8 @@ body.customer-view .schedule-footer { display: none; }
 }
 .actions-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 140px 140px 100px 92px 24px;
+  /* v4.68: 8 columns — done / name / project / assignee / dept / due / open / delete */
+  grid-template-columns: 22px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 80px 92px 28px 24px;
   gap: 10px;
   align-items: center;
   padding: 8px 12px;
@@ -4339,11 +4371,62 @@ body.customer-view .schedule-footer { display: none; }
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12px;
-  cursor: pointer;
 }
 .actions-row:hover {
-  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white);
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 2%, white);
+}
+/* v4.68: header row mirrors the data row's grid but reads as a column-title
+   strip — uppercase, smaller, no hover, no border. */
+.actions-row.actions-row-header {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding-bottom: 4px;
+  margin-bottom: 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.actions-row.actions-row-header:hover { background: transparent; }
+.actions-row.actions-row-header .actions-row-check-head,
+.actions-row.actions-row-header .actions-row-delete-head {
+  text-align: center;
+}
+.actions-row-open {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  font-family: inherit;
+}
+.actions-row-open:hover {
+  background: var(--sdc-primary);
+  color: white;
   border-color: var(--sdc-primary);
+}
+.actions-row-assignee-select {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+}
+.actions-row-assignee-select:hover,
+.actions-row-assignee-select:focus {
+  background: white;
+  border-color: var(--border);
+  outline: none;
 }
 .actions-row.is-overdue { border-left: 3px solid #dc2626; }
 .actions-row.is-done .actions-row-name { text-decoration: line-through; color: var(--text-muted); }

@@ -7874,7 +7874,14 @@ function renderActionsPage() {
   const projSel        = document.getElementById('actions-qa-project');
   const filterProjSel  = document.getElementById('actions-filter-project');
   const filterAsgSel   = document.getElementById('actions-filter-assignee');
-  const projects = uniqueValues('project').sort();
+  // v4.68: drop template projects + Sales-workspace projects from the
+  // pickers. Templates are scaffolding (e.g. SDC_StandardProject_Template)
+  // and shouldn't be a valid target for new action items; Sales projects
+  // are pre-quote work where the user explicitly doesn't want staffing
+  // assignments — same exclusions used by the Departments dashboard.
+  const projects = uniqueValues('project')
+    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+    .sort();
   const people   = Array.from(new Set((state.tasks || []).filter(t => t.is_action).map(t => t.assignee).filter(Boolean))).sort();
   const prevQaProj  = projSel?.value || '';
   const prevFltProj = filterProjSel?.value || '';
@@ -8058,36 +8065,59 @@ function renderActionsPage() {
       build:    { bg: '#fed7aa', fg: '#7c2d12' },
       wire:     { bg: '#fef08a', fg: '#713f12' },
     };
-    list.innerHTML = actions.map(t => {
+    // v4.68: list now has a header row, inline-editable Assigned-To, and an
+    // explicit "Open" arrow per row. Clicking the row body no longer jumps
+    // anywhere — the user wanted to be able to interact with the row without
+    // accidentally navigating to the project schedule.
+    const teamNames = (state.team || []).map(m => m.name).filter(Boolean);
+    const headerHtml = `
+      <div class="actions-row actions-row-header">
+        <span class="actions-row-check-head" title="Mark done">Done</span>
+        <span class="actions-row-name"     title="Action title">Task</span>
+        <span class="actions-row-project"  title="Project">Project</span>
+        <span class="actions-row-assignee" title="Assigned to">Assigned To</span>
+        <span class="actions-row-dept"     title="Owning department">Dept</span>
+        <span class="actions-row-due"      title="Due date">Due</span>
+        <span class="actions-row-open"     title="Open in project schedule">Open</span>
+        <span class="actions-row-delete-head" title="Delete">×</span>
+      </div>`;
+    const rowsHtml = actions.map(t => {
       const overdue = t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
       const done = (Number(t.progress) || 0) >= 100;
       const dkey = actionDisciplineKey(t);
       const dColor = disciplineColor[dkey] || { bg: '#f1f5f9', fg: '#475569' };
-      // For closed actions show the completed date instead of the due date —
-      // that's the more interesting value once an action is in the past.
       const dueLabel = done && t.completed_on
         ? `${fmtDate(t.completed_on)} ✓`
         : (t.end_date ? fmtDate(t.end_date) : '—');
+      const assignedSelect = `
+        <select class="actions-row-assignee-select" data-id="${t.id}" title="Assign this action — pick a team member or leave on the Placeholder">
+          <option value="" ${!t.assignee ? 'selected' : ''}>— unassigned —</option>
+          ${teamNames.map(n => `<option value="${escapeHtml(n)}" ${n === t.assignee ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+        </select>`;
       return `
         <div class="actions-row${overdue ? ' is-overdue' : ''}${done ? ' is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
           <input type="checkbox" class="actions-row-check" data-id="${t.id}" ${done ? 'checked' : ''} title="Mark done / not done">
           <span class="actions-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
           <span class="actions-row-project" title="Project: ${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
-          <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || '—')}">${escapeHtml(t.assignee || '—')}</span>
+          <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || '—')}">${assignedSelect}</span>
           <span class="actions-row-dept" style="background:${dColor.bg};color:${dColor.fg}" title="${escapeHtml(disciplineLabel[dkey] || 'Cross-cutting')}">${dkey ? disciplineLabel[dkey] : '—'}</span>
           <span class="actions-row-due${done ? ' is-completed' : ''}" title="${done ? 'Completed date' : 'Due date'}">${dueLabel}</span>
+          <button type="button" class="actions-row-open" data-id="${t.id}" title="Open this action in the project schedule">→</button>
           <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">×</button>
         </div>`;
     }).join('');
+    list.innerHTML = headerHtml + rowsHtml;
 
-    // Row click → open the parent project's schedule.
-    list.querySelectorAll('.actions-row').forEach(row => {
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.actions-row-check') || e.target.closest('.actions-row-delete')) return;
-        const project = row.dataset.project;
-        if (!project) return;
-        if (!state.openProjects.includes(project)) state.openProjects.push(project);
-        state.filters.project = project;
+    // v4.68: Open button — explicit navigation. Row body is now non-clickable
+    // (no accidental jumps when the user tries to interact with the row).
+    list.querySelectorAll('.actions-row-open').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = Number(btn.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        if (!t || !t.project) return;
+        if (!state.openProjects.includes(t.project)) state.openProjects.push(t.project);
+        state.filters.project = t.project;
         saveProjectTabs();
         setView('schedule');
       });
@@ -8100,6 +8130,19 @@ function renderActionsPage() {
         await loadTasks();
         renderActionsPage();
       });
+    });
+    list.querySelectorAll('.actions-row-assignee-select').forEach(sel => {
+      sel.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const id = Number(sel.dataset.id);
+        const newAssignee = sel.value || null;
+        await api.update(id, { assignee: newAssignee === null ? '' : newAssignee });
+        await loadTasks();
+        renderActionsPage();
+      });
+      // Stop propagation on the select clicks so they don't bubble up to
+      // anything outside the row.
+      sel.addEventListener('click', (e) => e.stopPropagation());
     });
     list.querySelectorAll('.actions-row-delete').forEach(btn => {
       btn.addEventListener('click', async (e) => {
@@ -8360,10 +8403,15 @@ function renderActionsPersonGantt() {
     const metaLabel = metaParts.join(' · ');
     const tip = `${t.project ? `[${t.project}] ` : ''}${t.name}\n${fmtDate(t.start_date)} → ${fmtDate(t.end_date)}${alloc != null ? ` · ${alloc}%` : ''}${wks > 0 ? ` · ${wks}w` : ''}${progress > 0 ? ` · ${progress}% done` : ''}`;
     const isMilestone = (t.is_milestone || durDays === 0) && (endMs - startMs) <= 86400000;
+    // v4.68: bar content = TASK NAME on the left, alloc/dur/progress meta
+    // packed on the right. Mirrors the main Schedule Gantt where the name
+    // is the primary label inside the bar and the meta is the trailing pill.
+    const barLabel = escapeHtml(t.name || '');
     const barOrDot = isMilestone
       ? `<div class="apg-diamond ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''} ${isAction ? 'is-action' : ''}" style="left:${startPct}%;background:${isAction ? 'var(--sdc-primary, #2563eb)' : palette.fill};border-color:${palette.text}" title="${escapeHtml(tip)}"></div>`
       : `<div class="apg-bar ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" style="left:${startPct}%;width:${widthPct}%;background:${palette.fill};border-color:${palette.text};color:${palette.text}" title="${escapeHtml(tip)}">
           ${progress > 0 ? `<div class="apg-bar-fill" style="width:${progress}%;background:${palette.text}"></div>` : ''}
+          <span class="apg-bar-name">${barLabel}</span>
           ${metaLabel ? `<span class="apg-bar-meta">${escapeHtml(metaLabel)}</span>` : ''}
         </div>`;
     return `
@@ -8373,6 +8421,7 @@ function renderActionsPersonGantt() {
           <span class="apg-row-project">${escapeHtml(t.project || '')}</span>
         </div>
         <div class="apg-row-track">${barOrDot}</div>
+        <button type="button" class="apg-row-open" data-id="${t.id}" title="Open this task in the project schedule">→</button>
       </div>`;
   }).join('');
 
@@ -8392,14 +8441,17 @@ function renderActionsPersonGantt() {
     </div>
   `;
 
-  // Click a row to jump to the parent project's schedule (same UX as the
-  // actions list rows further down the page).
-  wrap.querySelectorAll('.apg-row').forEach(row => {
-    row.addEventListener('click', () => {
-      const project = row.dataset.project;
-      if (!project) return;
-      if (!state.openProjects.includes(project)) state.openProjects.push(project);
-      state.filters.project = project;
+  // v4.68: clicking the row body no longer jumps to the schedule — that
+  // intercepted drag attempts and felt like a trap. Each row has an explicit
+  // → Open button instead.
+  wrap.querySelectorAll('.apg-row-open').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const t = state.tasks.find(x => x.id === id);
+      if (!t || !t.project) return;
+      if (!state.openProjects.includes(t.project)) state.openProjects.push(t.project);
+      state.filters.project = t.project;
       saveProjectTabs();
       setView('schedule');
     });
