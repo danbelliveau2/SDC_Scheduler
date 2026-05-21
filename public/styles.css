@@ -2874,14 +2874,20 @@ body.hide-alloc-pre .th-label-alloc { display: none; }
   background: #15803d;
 }
 
-/* Backlog — duration-only spine task between Receipt of PO and section 10.
-   Rendered with anchor-chip styling so it reads as a spine marker. RED tint
-   to differentiate from the lime-green anchor markers. Grouped with PO above
-   it (no border in between) via the no-top-border class. */
+/* v4.84: Backlog — duration-only spine task between Receipt of PO and
+   section 10. GRAY pill (was red) — reads as a neutral spine marker.
+   Once the backlog duration is in the past (end_date < today), the pill
+   gets a lime-green BORDER to signal "expired / time consumed", but the
+   fill stays gray. There's no done-checkmark — backlog isn't a checkable
+   task, it just elapses. */
 .anchor-name-chip.backlog-chip {
-  background: #fee2e2;
-  color: #991b1b;
-  border: 1px solid #dc2626;
+  background: #e2e8f0;
+  color: #334155;
+  border: 1px solid #94a3b8;
+}
+.anchor-name-chip.backlog-chip.is-expired {
+  border-color: var(--sdc-accent, #c1f53e);
+  border-width: 2px;
 }
 tbody tr.anchor-row.backlog-row.no-top-border td {
   border-top: none;
@@ -2889,18 +2895,22 @@ tbody tr.anchor-row.backlog-row.no-top-border td {
 tbody tr.anchor-row.no-bottom-border td {
   border-bottom: none;
 }
-/* Gantt bar for backlog — red fill with darker red stroke. */
+/* Gantt bar for backlog — gray fill, slate stroke. Lime stroke when expired. */
 .gantt .bar-wrapper.is-backlog .bar {
-  fill: #fee2e2 !important;
-  stroke: #dc2626 !important;
+  fill: #e2e8f0 !important;
+  stroke: #64748b !important;
   stroke-width: 1.5 !important;
+}
+.gantt .bar-wrapper.is-backlog.is-backlog-expired .bar {
+  stroke: var(--sdc-accent, #c1f53e) !important;
+  stroke-width: 2.5 !important;
 }
 .gantt .bar-wrapper.is-backlog .bar-progress {
   fill: transparent !important;
 }
 .gantt .bar-wrapper.is-backlog text,
 .gantt .bar-wrapper.is-backlog .bar-label {
-  fill: #991b1b !important;
+  fill: #334155 !important;
   font-weight: 700;
 }
 

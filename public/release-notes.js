@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.84',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta + Backlog duration picker + Backlog color (gray, lime on expire).',
+      '',
+      'BAR META — TIGHT FIT, NAME RIGHT-ALIGNED ON SHIFT:',
+      '   ▸ Reverted v4.83\'s gap inflation. All gaps are 1px now (INSIDE_PADDING / SAME_ROW_GAP / META_NAME_GAP). Per user: "the gap should always be the same. Stop trying to fix gaps. Fix when they actually overlap."',
+      '   ▸ Case C2 (overlap on centered name) now RIGHT-ALIGNS the name to the bar\'s right edge (text-anchor="end", x=barInsideRight) instead of placing it just past the meta. The description goes as far right as possible without extending past the bar — exactly what was requested: "almost all the way to the right side of the bar".',
+      '   ▸ Post-shift overflow check kept as a sanity check: if the right-aligned bbox somehow exceeds the bar, revert and move meta outside.',
+      '',
+      'BACKLOG — DURATION PICKER:',
+      '   ▸ The Duration column on the Backlog row is now a <select> dropdown with presets 1w / 2w / 3w / 4w / 5w / 6w / 8w / 10w / 12w + "Custom…". Pick a value, it saves immediately. "Custom…" opens the inline text editor for non-standard values (e.g. 3 days, 7w, etc).',
+      '   ▸ Discoverable: it\'s an obvious dropdown, no hover-pencil-hint required. Click stays on the cell — doesn\'t fire the generic cell-edit path.',
+      '',
+      'BACKLOG — GRAY PILL, LIME BORDER WHEN EXPIRED:',
+      '   ▸ Was red (#fee2e2 / #dc2626). Now gray (#e2e8f0 / #94a3b8) — reads as a neutral spine marker like the other anchor rows, not "behind schedule".',
+      '   ▸ When the backlog\'s end_date is in the past (the calendar time has elapsed), the pill gets a lime-green border. Fill stays gray. No checkbox — backlog isn\'t a task you check off; it just expires.',
+      '   ▸ Same logic on the Gantt: backlog bar is gray-filled with slate stroke by default; when expired, the stroke goes lime-green (2.5px).',
+    ],
+  },
+  {
     version: '4.83',
     date: '2026-05-21',
     notes: [

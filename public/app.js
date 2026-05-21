@@ -963,14 +963,37 @@ function cellHtml(t, key) {
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'duration': {
-      // v4.71: Backlog duration gets an explicit tooltip + a tiny pencil hint
-      // so the user sees it's editable. The cell already opens enterCellEdit
-      // on click via the general td[data-col] handler — this is purely a
-      // discoverability fix.
+      // v4.84: Backlog row gets a real inline <select> dropdown for picking
+      // a common duration (1w through 12w + "Custom…"). The text-input
+      // click-to-edit path is still available for non-standard values via
+      // the "Custom…" option. Solves the "I don't see how to change this"
+      // discoverability problem.
       const isBacklogRow = isBacklogTask(t);
-      const title = isBacklogRow ? ' title="Click to edit — backlog duration varies based on team load."' : '';
-      const hint  = isBacklogRow ? '<span class="duration-edit-hint" aria-hidden="true">✎</span>' : '';
-      return `<td class="${cls}${isBacklogRow ? ' is-backlog-duration' : ''}" data-col="duration"${title}>${durationLabel(t)}${hint}</td>`;
+      if (isBacklogRow) {
+        const curDays = Number(t.duration_days) || 0;
+        const opts = [
+          { d: 5,  label: '1w' },
+          { d: 10, label: '2w' },
+          { d: 15, label: '3w' },
+          { d: 20, label: '4w' },
+          { d: 25, label: '5w' },
+          { d: 30, label: '6w' },
+          { d: 40, label: '8w' },
+          { d: 50, label: '10w' },
+          { d: 60, label: '12w' },
+        ];
+        // If the current value is one of our presets, mark it selected.
+        // Otherwise we render it as a one-off "current" option at the top.
+        const hasPreset = opts.some(o => o.d === curDays);
+        const optionsHtml = (hasPreset ? '' :
+          `<option value="${curDays}" selected>${escapeHtml(durationLabel(t))}</option>`)
+          + opts.map(o => `<option value="${o.d}" ${o.d === curDays ? 'selected' : ''}>${o.label}</option>`).join('')
+          + '<option value="__custom__">Custom…</option>';
+        return `<td class="${cls} is-backlog-duration" data-col="duration" title="Pick a backlog duration — click to choose.">
+          <select class="backlog-duration-select" data-id="${t.id}">${optionsHtml}</select>
+        </td>`;
+      }
+      return `<td class="${cls}" data-col="duration">${durationLabel(t)}</td>`;
     }
     case 'pred':     return `<td class="${cls}" data-col="pred"></td>`; /* filled in by updateLineNumbers */
     case 'progress': {
@@ -1179,10 +1202,15 @@ function renderTable() {
     const order = state.layout.columnOrder;
     const isDone = (t.progress || 0) >= 100;
     const isBacklog = !!opts.backlog;
+    // v4.84: backlog is "expired" once its end_date is in the past — the
+    // calendar time it represented has elapsed. We don't check it off; we
+    // just signal with a lime-green border that the backlog window is over.
+    const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+    const backlogExpired = isBacklog && t.end_date && new Date(t.end_date).getTime() < todayMs;
     const cells = order.map(k => {
       if (k === 'name') {
         const check = (isDone && !isBacklog) ? '<span class="anchor-done-check">✓</span> ' : '';
-        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}`;
+        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}`;
         return `<td data-col="name"><span class="${chipCls}">${check}${escapeHtml(t.name || '')}</span></td>`;
       }
       return cellHtml(t, k);
@@ -1325,6 +1353,25 @@ function renderTable() {
     });
   });
 
+  // v4.84: Backlog duration <select> — picking a preset (1w / 2w / ...) sets
+  // duration_days directly. "Custom…" falls back to the inline text editor.
+  tbody.querySelectorAll('.backlog-duration-select').forEach(sel => {
+    sel.addEventListener('click', (e) => e.stopPropagation());
+    sel.addEventListener('mousedown', (e) => e.stopPropagation());
+    sel.addEventListener('change', async (e) => {
+      e.stopPropagation();
+      const id = Number(sel.dataset.id);
+      if (sel.value === '__custom__') {
+        // Restore visible select then open the underlying duration edit.
+        const td = sel.closest('td[data-col="duration"]');
+        if (td) enterCellEdit(td, id, 'duration');
+        return;
+      }
+      const days = Math.max(0, Number(sel.value) || 0);
+      await api.update(id, { duration_days: days });
+      await loadTasks();
+    });
+  });
 
   attachRowDragHandlers(tbody);
 }
@@ -1454,6 +1501,9 @@ function handleCellClick(e) {
     api.update(taskId, { progress: newProgress }).then(() => loadTasks());
     return;
   }
+  // v4.84: Backlog duration select handles its own clicks — don't open the
+  // generic enterCellEdit path on top of it.
+  if (e.target.closest('.backlog-duration-select')) return;
   const td = e.target.closest('td[data-col]');
   if (!td) return;
   const tr = td.closest('tr[data-id]');
@@ -2236,7 +2286,16 @@ function renderGantt() {
     const colorKey = rowColorKey(t);
     if (colorKey) classes.push(`bar-color-${colorKey}`);
     if (t.is_milestone) classes.push('is-milestone');
-    if (isBacklogTask(t)) classes.push('is-backlog');
+    if (isBacklogTask(t)) {
+      classes.push('is-backlog');
+      // v4.84: backlog with end_date in the past gets is-backlog-expired so
+      // the bar picks up the lime-green border styling. No checkbox; just a
+      // visual signal that the calendar time has elapsed.
+      const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+      if (t.end_date && new Date(t.end_date).getTime() < todayMs) {
+        classes.push('is-backlog-expired');
+      }
+    }
     // Milestones at 100%: still tagged milestone-done — drawMilestoneDiamonds
     // uses it to paint the ✓ overlay glyph. As of v4.4 milestones keep their
     // normal fill color (lime for anchors, slate for non-anchors) when done;
@@ -2494,10 +2553,14 @@ function drawBarMeta() {
     //
     //   NO TOLERANCE. Either it fits exactly or it doesn't.
     //   NO double-render code path. ONE meta text element per task, period.
-    const INSIDE_PADDING = 4;
-    const SAME_ROW_GAP   = 8;          // v4.83: 4→8, clearer visual gap between outside-left meta and bar
-    const META_NAME_GAP  = 12;         // v4.83: 6→12, clearer visual gap between inside meta and shifted name
-    const METAR_DASH_SUFFIX = ' -';    // trailing dash when meta is inside (next to name)
+    // v4.84: gaps reverted to a uniform 1px. The user explicitly rejected
+    // the "bump the gap to fix overlap" approach — fit them as tightly as
+    // possible; if they overlap, fix it by moving meta outside, not by
+    // padding them apart.
+    const INSIDE_PADDING = 1;
+    const SAME_ROW_GAP   = 1;
+    const META_NAME_GAP  = 1;
+    const METAR_DASH_SUFFIX = ' -';
 
     const barLabel = wrap.querySelector('.bar-label');
     if (!barLabel) continue;
@@ -2565,21 +2628,19 @@ function drawBarMeta() {
       // C1. Centered name clears the meta. Keep centered (clipBarLabels already did).
       continue;
     }
-    // C2. Centered overlaps. Shift name right to just clear the meta + gap.
-    const shiftedNameLeft = metaRight + META_NAME_GAP;
-    barLabel.setAttribute('x', String(shiftedNameLeft));
-    barLabel.setAttribute('text-anchor', 'start');
-    barLabel.style.textAnchor = 'start';
+    // C2. Centered overlaps. RIGHT-align the name to the bar's right edge
+    // (text-anchor='end', x=barInsideRight). This pushes the name as far
+    // right as possible — the user wants the description "almost all the
+    // way to the right side of the bar" before the meta pops outside.
+    barLabel.setAttribute('x', String(barInsideRight));
+    barLabel.setAttribute('text-anchor', 'end');
+    barLabel.style.textAnchor = 'end';
 
-    // v4.83: VERIFY the actual rendered name doesn't overflow the bar's right
-    // edge. getBBox-based pre-measurement can be off by a pixel or two due to
-    // font kerning / antialiasing, so we double-check after the shift. If the
-    // rendered name extends past barInsideRight, revert the shift and move
-    // meta outside-left (case B).
+    // Defensive: if the right-aligned name somehow still extends past the
+    // bar (font-metric weirdness), revert and move meta outside.
     let postShiftBBox = null;
     try { postShiftBBox = barLabel.getBBox(); } catch (_) {}
     if (postShiftBBox && (postShiftBBox.x + postShiftBBox.width) > barInsideRight) {
-      // Revert shift — restore centered position.
       barLabel.style.textAnchor = '';
       barLabel.setAttribute('x', String(barX + barW / 2));
       barLabel.setAttribute('text-anchor', 'middle');
