@@ -4,6 +4,19 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.83',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta: real-measurement overflow check + bigger gaps.',
+      '',
+      '   1. POST-SHIFT OVERFLOW CHECK: after shifting the name right (case C2), the code re-measures the bar-label\'s actual rendered bbox via getBBox. If the right edge of the rendered name overflows barInsideRight by ANY amount, the shift is reverted and the meta moves outside-left (case B). Pre-shift measurements were off by a pixel or two on certain fonts/glyphs, which let "should have fit" cases overflow into the space past the bar. The post-shift check catches this empirically.',
+      '',
+      '   2. META_NAME_GAP bumped 6 → 12 px: clearer visual gap between the inside meta and the shifted name. Forces case B (meta outside) to trigger sooner on borderline bars, so the meta and name don\'t get crammed together inside.',
+      '',
+      '   3. SAME_ROW_GAP bumped 4 → 8 px: when meta lands outside-left, the gap between the meta pill and the bar\'s left edge is now 8 px instead of 4. Reads cleanly at typical zoom — no more "they look touching" perception.',
+    ],
+  },
+  {
     version: '4.82',
     date: '2026-05-21',
     notes: [

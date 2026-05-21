@@ -2495,8 +2495,8 @@ function drawBarMeta() {
     //   NO TOLERANCE. Either it fits exactly or it doesn't.
     //   NO double-render code path. ONE meta text element per task, period.
     const INSIDE_PADDING = 4;
-    const SAME_ROW_GAP   = 4;
-    const META_NAME_GAP  = 6;          // gap between meta right edge and (shifted) name left edge
+    const SAME_ROW_GAP   = 8;          // v4.83: 4→8, clearer visual gap between outside-left meta and bar
+    const META_NAME_GAP  = 12;         // v4.83: 6→12, clearer visual gap between inside meta and shifted name
     const METAR_DASH_SUFFIX = ' -';    // trailing dash when meta is inside (next to name)
 
     const barLabel = wrap.querySelector('.bar-label');
@@ -2570,6 +2570,21 @@ function drawBarMeta() {
     barLabel.setAttribute('x', String(shiftedNameLeft));
     barLabel.setAttribute('text-anchor', 'start');
     barLabel.style.textAnchor = 'start';
+
+    // v4.83: VERIFY the actual rendered name doesn't overflow the bar's right
+    // edge. getBBox-based pre-measurement can be off by a pixel or two due to
+    // font kerning / antialiasing, so we double-check after the shift. If the
+    // rendered name extends past barInsideRight, revert the shift and move
+    // meta outside-left (case B).
+    let postShiftBBox = null;
+    try { postShiftBBox = barLabel.getBBox(); } catch (_) {}
+    if (postShiftBBox && (postShiftBBox.x + postShiftBBox.width) > barInsideRight) {
+      // Revert shift — restore centered position.
+      barLabel.style.textAnchor = '';
+      barLabel.setAttribute('x', String(barX + barW / 2));
+      barLabel.setAttribute('text-anchor', 'middle');
+      moveMetaOutside();
+    }
   }
 }
 
