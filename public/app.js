@@ -2382,9 +2382,14 @@ function drawBarMeta() {
   // drawMilestoneLabels renders its own text — so undoing that here was
   // causing milestone names to render TWICE (one from frappe-gantt, one
   // from drawMilestoneLabels) when the % toggle was on.
+  //
+  // v4.79: also reset style.textAnchor so the "shifted right" state from a
+  // previous render doesn't accumulate. clipBarLabels positions the label
+  // via setAttribute, which won't override an inline style.textAnchor.
   svg.querySelectorAll('.bar-wrapper:not(.is-milestone) .bar-label').forEach(el => {
     el.style.opacity = '';
     el.style.visibility = '';
+    el.style.textAnchor = '';
   });
   if (state.scheduleView?.showBarMeta !== true) return;
 
@@ -2471,78 +2476,102 @@ function drawBarMeta() {
     const durText   = (wks > 0)   ? `${wks}w`   : '';
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
-    const nameTextStr = task.name || '';
-    const sepText  = ' · ';
 
-    // v4.75 NEW LAYOUT ALGORITHM — width-based decision instead of fudge factors.
+    // v4.79 NEW LAYOUT ALGORITHM (per user spec):
     //
-    //   Compute width of "{meta} · {name}" using char-count estimates.
-    //   1. If the COMBINED string fits inside the bar: render BOTH inline at
-    //      the bar's left edge, natural left-to-right reading. Hide frappe-
-    //      gantt's separate centered label so we don't double up.
-    //   2. If the combined doesn't fit: meta goes OUTSIDE-LEFT of the bar
-    //      with a pill occluder. Bar-label stays where clipBarLabels put
-    //      it (centered if name fits inside the bar; outside-right if not).
-    //   No more right-aligning. No more "fits inside if barW >= 2 × labelW"
-    //   approximation that overflowed half the time.
+    //   PRIORITY CASCADE (each step measures real bbox before deciding):
+    //
+    //   1. DEFAULT: description stays CENTERED (frappe-gantt's default
+    //      position). Meta lives inside the bar on the left with a trailing
+    //      dash. If they don't overlap, keep this layout.
+    //
+    //   2. OVERLAP: if the centered name's left edge would overlap the meta's
+    //      right edge, SHIFT the description right just enough to clear the
+    //      meta. Description never goes left of center — only right.
+    //
+    //   3. CAN'T SHIFT: if shifting the description right would push it past
+    //      the bar's right edge, the meta moves OUTSIDE the bar to the LEFT
+    //      (with the pill occluder for arrows). Description goes back to its
+    //      centered (or outside-right, if it doesn't fit inside) position.
+    //
+    //   Separator between meta and name is " - " (hyphen) per user — was
+    //   " · " (middle-dot) in v4.78.
     const INSIDE_PADDING = 4;
     const SAME_ROW_GAP   = 4;
-    const nameFontSize   = Math.max(8, Math.min(12, barH - 2));
+    const META_NAME_GAP  = 6;          // breathing room between meta and (shifted) name
+    const METAR_DASH_SUFFIX = ' -';    // dash trailing the meta, signals "more after this"
 
     const barLabel = wrap.querySelector('.bar-label');
-    const ck       = rowColorKey(task);
-    const fill     = (HIERARCHY_BAR_COLORS[ck] && HIERARCHY_BAR_COLORS[ck].text) || '#0f172a';
 
-    // v4.78: ALWAYS try the inline combined label first. Char-count estimates
-    // were biased toward "doesn't fit" on bars with visible room — get rid of
-    // the estimate gate entirely. Render the element, measure with getBBox,
-    // and ONLY fall back to outside-left if the real width really exceeds
-    // the bar by more than a small slack (4px). The slack absorbs minor
-    // font-metric differences between browsers without making the meta jump
-    // outside for bars that obviously have room.
-    const combined = document.createElementNS(SVG_NS, 'text');
-    combined.setAttribute('class', 'sdc-bar-meta sdc-bar-combined');
-    combined.setAttribute('x', String(barX + INSIDE_PADDING));
-    combined.setAttribute('y', String(barY + barH / 2));
-    combined.setAttribute('text-anchor', 'start');
-    combined.setAttribute('dominant-baseline', 'central');
-    combined.style.pointerEvents = 'none';
+    // Step 1: render meta inside-left with trailing dash + halo. Measure.
+    const metaEl = document.createElementNS(SVG_NS, 'text');
+    metaEl.setAttribute('class', 'sdc-bar-meta');
+    metaEl.setAttribute('x', String(barX + INSIDE_PADDING));
+    metaEl.setAttribute('y', String(barY + barH / 2));
+    metaEl.setAttribute('text-anchor', 'start');
+    metaEl.setAttribute('dominant-baseline', 'central');
+    metaEl.setAttribute('font-size', '9');
+    metaEl.setAttribute('font-weight', '700');
+    metaEl.setAttribute('fill', '#1e293b');
+    metaEl.setAttribute('paint-order', 'stroke');
+    metaEl.setAttribute('stroke', 'rgba(255,255,255,0.9)');
+    metaEl.setAttribute('stroke-width', '2.5');
+    metaEl.setAttribute('stroke-linejoin', 'round');
+    metaEl.style.pointerEvents = 'none';
+    metaEl.textContent = metaText + METAR_DASH_SUFFIX;
+    group.appendChild(metaEl);
 
-    // Meta tspan — small (9px), 700 weight, dark fill with white halo.
-    const metaSpan = document.createElementNS(SVG_NS, 'tspan');
-    metaSpan.setAttribute('font-size', '9');
-    metaSpan.setAttribute('font-weight', '700');
-    metaSpan.setAttribute('fill', '#1e293b');
-    metaSpan.setAttribute('paint-order', 'stroke');
-    metaSpan.setAttribute('stroke', 'rgba(255,255,255,0.9)');
-    metaSpan.setAttribute('stroke-width', '2.5');
-    metaSpan.setAttribute('stroke-linejoin', 'round');
-    metaSpan.textContent = metaText;
-    combined.appendChild(metaSpan);
+    let metaW = 0;
+    try { metaW = metaEl.getBBox().width; } catch (_) { metaW = (metaText.length + 2) * 6; }
+    const metaRight = barX + INSIDE_PADDING + metaW;
 
-    // Separator + name tspan — bigger font, 600 weight, no halo.
-    const nameSpan = document.createElementNS(SVG_NS, 'tspan');
-    nameSpan.setAttribute('font-size', String(nameFontSize));
-    nameSpan.setAttribute('font-weight', '600');
-    nameSpan.setAttribute('fill', fill);
-    nameSpan.setAttribute('stroke', 'none');
-    nameSpan.textContent = sepText + nameTextStr;
-    combined.appendChild(nameSpan);
+    // Read the bar-label's current position (clipBarLabels already ran).
+    // If it's outside the bar (very narrow bar case), no overlap is possible
+    // with our left-side meta — we keep meta inside, name stays outside.
+    if (!barLabel) continue;
+    let nameW = 0;
+    try { nameW = barLabel.getBBox().width; } catch (_) { nameW = (task.name || '').length * 7; }
+    const labelAnchor = barLabel.getAttribute('text-anchor') || 'middle';
+    const labelXAttr  = parseFloat(barLabel.getAttribute('x')) || (barX + barW / 2);
+    let nameLeft, nameRight;
+    if (labelAnchor === 'middle')     { nameLeft = labelXAttr - nameW / 2; nameRight = labelXAttr + nameW / 2; }
+    else if (labelAnchor === 'end')   { nameLeft = labelXAttr - nameW;     nameRight = labelXAttr; }
+    else                              { nameLeft = labelXAttr;             nameRight = labelXAttr + nameW; }
 
-    // Append, measure, decide.
-    if (barLabel) barLabel.style.visibility = 'hidden';
-    group.appendChild(combined);
-    let actualW = 0;
-    try { actualW = combined.getBBox().width; } catch (_) { actualW = 0; }
-    const availableW = barW - INSIDE_PADDING * 2;
-    const SLACK = 4; // 4px slack absorbs font-metric jitter
-    if (actualW === 0 || actualW <= availableW + SLACK) {
-      // Fits (or close enough). Keep inline.
+    const barRightInside = barX + barW - INSIDE_PADDING;
+    const nameIsOutsideBar = nameLeft >= (barX + barW) || nameRight <= barX;
+
+    // Step 2: no-overlap case — name centered (or outside), meta on left. Done.
+    if (nameIsOutsideBar || metaRight + META_NAME_GAP <= nameLeft) {
       continue;
     }
-    // Truly doesn't fit — remove the combined label and render meta outside-left.
-    combined.remove();
-    if (barLabel) barLabel.style.visibility = '';
+
+    // Step 3: overlap. Try shifting the name right.
+    const shiftedNameLeft  = metaRight + META_NAME_GAP;
+    const shiftedNameRight = shiftedNameLeft + nameW;
+    if (shiftedNameRight <= barRightInside) {
+      // Shifted name fits inside the bar. Position bar-label start-anchored at
+      // the shifted left position. Inline style beats frappe-gantt's CSS.
+      barLabel.setAttribute('x', String(shiftedNameLeft));
+      barLabel.setAttribute('text-anchor', 'start');
+      barLabel.style.textAnchor = 'start';
+      continue;
+    }
+
+    // Step 4: even shifting doesn't fit. Meta moves OUTSIDE-LEFT, name stays
+    // wherever clipBarLabels put it (centered if it fit inside, outside-right
+    // otherwise). Reset the meta's position attributes for the outside slot.
+    metaEl.setAttribute('x', String(barX - SAME_ROW_GAP));
+    metaEl.setAttribute('text-anchor', 'end');
+    metaEl.textContent = metaText; // drop the trailing dash — it pointed at the name, which is now away from the meta
+    // Remove the halo styling (we use a pill occluder instead for outside placement).
+    metaEl.removeAttribute('paint-order');
+    metaEl.removeAttribute('stroke');
+    metaEl.removeAttribute('stroke-width');
+    metaEl.removeAttribute('stroke-linejoin');
+    addPillOccluder(group, metaEl);
+    // Ensure the bar-label is back to whatever clipBarLabels set (no shift).
+    barLabel.style.textAnchor = '';
 
     // COMBINED DOESN'T FIT — meta moves OUTSIDE the bar to the LEFT. The
     // bar-label stays wherever clipBarLabels put it (centered if the name

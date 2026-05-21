@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.79',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta layout — center-first cascade, dash separator.',
+      '',
+      'NEW PRIORITY CASCADE:',
+      '   ▸ 1. DEFAULT: description stays CENTERED (frappe-gantt\'s default). Meta lives inside the bar on the left with a trailing " -" dash. If they don\'t overlap, keep this layout.',
+      '   ▸ 2. OVERLAP: if the centered name\'s left edge would overlap the meta\'s right edge, SHIFT the description right just enough to clear the meta (text-anchor = start, x = meta_right + 6px gap). Description never goes LEFT of center — only right.',
+      '   ▸ 3. CAN\'T SHIFT: if shifting would push the description past the bar\'s right edge, the meta moves OUTSIDE the bar to the LEFT with the pill occluder. Description goes back to its natural position (centered, or outside-right if the bar is too narrow for the name itself).',
+      '',
+      'SEPARATOR CHANGED TO " - " (dash):',
+      '   ▸ Was " · " (middle dot). Trailing the meta now reads "85% · 2w -" with a hyphen at the end. Inside the meta itself the " · " between alloc and dur stays (it\'s the convention from the rest of the app).',
+      '',
+      'IMPLEMENTATION NOTES:',
+      '   ▸ Reads the bar-label\'s current x + text-anchor (set by clipBarLabels) so we can compute the centered name\'s actual edges without re-rendering.',
+      '   ▸ Inline style.textAnchor is RESET at the top of drawBarMeta so a previous "shifted right" state doesn\'t accumulate across renders.',
+      '   ▸ When meta goes outside-left, the trailing dash is dropped from its text (it pointed at the name, which is now far away on the right).',
+      '   ▸ getBBox measures actual rendered widths — no more char-count guesses for the centered-vs-shifted decision.',
+    ],
+  },
+  {
     version: '4.78',
     date: '2026-05-21',
     notes: [
