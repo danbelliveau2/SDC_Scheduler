@@ -3966,11 +3966,12 @@ body.customer-view .schedule-footer { display: none; }
 .actions-qa-section { white-space: nowrap; }
 .actions-qa-create { padding: 6px 14px; font-size: 12px; }
 
-/* v4.63: Person picker bar at the top of the Actions page. */
+/* v4.65: Person picker bar — two cascading dropdowns (Department → Person)
+   instead of the v4.63 strip of every-team-member-as-chip. */
 .actions-person-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -3985,28 +3986,36 @@ body.customer-view .schedule-footer { display: none; }
   color: var(--text-muted);
   flex: 0 0 auto;
 }
-.actions-person-chips {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  flex: 1 1 auto;
-}
-.actions-person-chip {
-  padding: 4px 10px;
+.actions-person-select {
+  padding: 6px 10px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
   background: white;
   color: var(--text);
-  font-size: 11px;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer;
-  white-space: nowrap;
+  min-width: 160px;
 }
-.actions-person-chip:hover { border-color: var(--sdc-primary); color: var(--sdc-primary); }
-.actions-person-chip.is-active {
+.actions-person-select:disabled {
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.actions-person-clear {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 11px;
   font-weight: 700;
-  box-shadow: 0 0 0 2px white, 0 0 0 4px var(--sdc-primary);
+  font-family: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.actions-person-clear:hover {
+  border-color: var(--sdc-primary);
+  color: var(--sdc-primary);
 }
 
 /* v4.63: Personal summary banner + stats (shown when a person is picked). */

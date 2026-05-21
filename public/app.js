@@ -7828,6 +7828,9 @@ const _actionsPageState = {
       return v ? Number(v) : null;
     } catch { return null; }
   })(),
+  // v4.65: discipline picked in the Person dropdown (drives which people the
+  // Person select shows). Seeded from the persisted personId on first render.
+  deptForPicker: '',
 };
 
 // Map a task's section (dept + sub) to one of the 4 main discipline keys,
@@ -8117,43 +8120,76 @@ function renderActionsPage() {
   renderActionsDeptDashboard(allActions, todayMs);
 }
 
-// v4.63: render the person bar at the top of the actions page. Lists every
-// real (non-placeholder) team member as a clickable chip, plus "Everyone" on
-// the left. Clicking your name flips the page into personal mode.
+// v4.65: two cascading dropdowns — Department → Person — instead of v4.63's
+// giant strip of every-team-member-as-a-chip. Department dropdown drives
+// what people show in the Person dropdown so the user doesn't have to scan
+// a wall of names. Picking a person sets personId; the existing Back-to-
+// Everyone button on the personal summary banner exits.
 function renderActionsPersonBar() {
   const bar = document.getElementById('actions-person-bar');
   if (!bar) return;
-  const team = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0)
-    .sort((a, b) => {
-      // Discipline group first, then leads-first, then sort_order/name.
-      const da = a.discipline || ''; const db = b.discipline || '';
-      if (da !== db) return da.localeCompare(db);
-      if (!!b.is_lead - !!a.is_lead !== 0) return (!!b.is_lead) - (!!a.is_lead);
-      return (a.sort_order || 0) - (b.sort_order || 0);
-    });
-  const picked = _actionsPageState.personId;
+  const allTeam = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
+
+  // Derive department from the currently-picked person, if any, so the
+  // dropdowns reflect the last selection across re-renders.
+  const pickedId = _actionsPageState.personId;
+  const pickedMember = pickedId != null ? allTeam.find(m => m.id === pickedId) : null;
+  // _actionsPageState.deptForPicker is set by the department dropdown's
+  // change handler. We seed it from the picked person on first render.
+  if (!_actionsPageState.deptForPicker && pickedMember) {
+    _actionsPageState.deptForPicker = pickedMember.discipline || '';
+  }
+  const dept = _actionsPageState.deptForPicker || '';
+
+  const inDept = dept ? allTeam.filter(m => m.discipline === dept) : [];
+  inDept.sort((a, b) => {
+    if (!!b.is_lead - !!a.is_lead !== 0) return (!!b.is_lead) - (!!a.is_lead);
+    return (a.sort_order || 0) - (b.sort_order || 0);
+  });
+
   bar.innerHTML = `
     <div class="actions-person-bar-label">Who are you?</div>
-    <div class="actions-person-chips">
-      <button type="button" class="actions-person-chip ${picked == null ? 'is-active' : ''}" data-pid="">Everyone</button>
-      ${team.map(m => {
-        const disc = DISCIPLINE_BY_KEY[m.discipline] || { color: '#e2e8f0', text: '#0f172a' };
-        const active = picked === m.id;
-        const style = active ? `background:${disc.color};color:${disc.text};border-color:${disc.text}` : '';
-        return `<button type="button" class="actions-person-chip ${active ? 'is-active' : ''}" data-pid="${m.id}" style="${style}" title="${escapeHtml(m.discipline || '')}">${escapeHtml(m.name)}</button>`;
-      }).join('')}
-    </div>`;
-  bar.querySelectorAll('.actions-person-chip').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.pid ? Number(btn.dataset.pid) : null;
-      _actionsPageState.personId = id;
-      try {
-        if (id == null) localStorage.removeItem('sdcActionsPersonId');
-        else localStorage.setItem('sdcActionsPersonId', String(id));
-      } catch {}
+    <select class="actions-person-select" id="actions-person-dept" title="Pick your department first.">
+      <option value="">Department…</option>
+      <option value="mech"     ${dept === 'mech'     ? 'selected' : ''}>Mech Eng</option>
+      <option value="controls" ${dept === 'controls' ? 'selected' : ''}>Controls Eng</option>
+      <option value="build"    ${dept === 'build'    ? 'selected' : ''}>Build</option>
+      <option value="wire"     ${dept === 'wire'     ? 'selected' : ''}>Wire</option>
+      <option value="pm"       ${dept === 'pm'       ? 'selected' : ''}>Project Mgmt</option>
+    </select>
+    <select class="actions-person-select" id="actions-person-pick" title="Pick yourself." ${dept ? '' : 'disabled'}>
+      <option value="">${dept ? 'Pick yourself…' : 'Pick department first'}</option>
+      ${inDept.map(m => `<option value="${m.id}" ${pickedId === m.id ? 'selected' : ''}>${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`).join('')}
+    </select>
+    ${pickedId != null ? '<button type="button" class="actions-person-clear" id="actions-person-clear" title="Clear selection — back to Everyone view.">× Clear</button>' : ''}
+  `;
+
+  document.getElementById('actions-person-dept').addEventListener('change', (e) => {
+    _actionsPageState.deptForPicker = e.target.value || '';
+    // Changing department clears any previously-picked person (since they
+    // probably aren't in the new department).
+    _actionsPageState.personId = null;
+    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+    renderActionsPage();
+  });
+  document.getElementById('actions-person-pick').addEventListener('change', (e) => {
+    const id = e.target.value ? Number(e.target.value) : null;
+    _actionsPageState.personId = id;
+    try {
+      if (id == null) localStorage.removeItem('sdcActionsPersonId');
+      else localStorage.setItem('sdcActionsPersonId', String(id));
+    } catch {}
+    renderActionsPage();
+  });
+  const clearBtn = document.getElementById('actions-person-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      _actionsPageState.personId = null;
+      _actionsPageState.deptForPicker = '';
+      try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
       renderActionsPage();
     });
-  });
+  }
 }
 
 // v4.63: stats strip + name banner for the picked person. Hidden when no one

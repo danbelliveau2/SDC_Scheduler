@@ -4,6 +4,20 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.65',
+    date: '2026-05-21',
+    notes: [
+      'Actions "Who are you?" picker — cascading dropdowns.',
+      '',
+      '   ▸ v4.63 listed every team member as a chip in a horizontal strip. With 20+ people that\'s a wall of names. Replaced with two cascading dropdowns:',
+      '       1. Department: Mech Eng / Controls Eng / Build / Wire / Project Mgmt',
+      '       2. Person: populated with that department\'s members (leads marked with a ★)',
+      '   ▸ Changing department clears the previously-picked person.',
+      '   ▸ A small "× Clear" button appears once someone is picked, to jump straight back to Everyone view without going through the dropdowns.',
+      '   ▸ Selection still persists in localStorage so Ian\'s next visit remembers him.',
+    ],
+  },
+  {
     version: '4.64',
     date: '2026-05-21',
     notes: [
