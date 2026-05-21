@@ -3841,12 +3841,23 @@ body.customer-view .schedule-footer { display: none; }
   align-self: center;
 }
 .pd-row.is-overdue .pd-row-due { color: #dc2626; font-weight: 700; }
-/* Team member rows get a subtle hover cue indicating they're clickable for
-   the dashboard (v4.61 — previously rows did nothing on bare click). */
-.team-member { cursor: pointer; }
-.team-member input, .team-member button { cursor: auto; }
-.team-member input { cursor: text; }
-.team-member button { cursor: pointer; }
+/* v4.63: View button on each team member row opens the per-person dashboard.
+   Sized like the lead-toggle / remove buttons next to it. */
+.team-member-view {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.team-member-view:hover {
+  background: var(--surface-alt);
+  color: var(--sdc-primary);
+  border-color: var(--border);
+}
 
 /* ---------- v4.61: Action Items master page ---------- */
 .actions-page {
@@ -3925,6 +3936,114 @@ body.customer-view .schedule-footer { display: none; }
 }
 .actions-qa-section { white-space: nowrap; }
 .actions-qa-create { padding: 6px 14px; font-size: 12px; }
+
+/* v4.63: Person picker bar at the top of the Actions page. */
+.actions-person-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.actions-person-bar-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.actions-person-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+}
+.actions-person-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: white;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.actions-person-chip:hover { border-color: var(--sdc-primary); color: var(--sdc-primary); }
+.actions-person-chip.is-active {
+  font-weight: 700;
+  box-shadow: 0 0 0 2px white, 0 0 0 4px var(--sdc-primary);
+}
+
+/* v4.63: Personal summary banner + stats (shown when a person is picked). */
+.actions-person-summary { display: contents; }
+.aps-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.aps-banner-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  line-height: 1.2;
+}
+.aps-banner-left strong { font-size: 16px; }
+.aps-banner-disc {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.8;
+}
+.aps-banner-spec { font-style: italic; opacity: 0.85; font-size: 11px; }
+.aps-banner-exit {
+  background: rgba(255,255,255,0.6);
+  border: 1px solid currentColor;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.aps-banner-exit:hover { background: white; }
+.aps-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+.aps-stat {
+  text-align: center;
+  background: var(--surface-alt);
+  border-radius: 8px;
+  padding: 10px 6px;
+}
+.aps-stat.is-warn { background: #fee2e2; }
+.aps-stat-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.aps-stat.is-warn .aps-stat-num { color: #991b1b; }
+.aps-stat-lbl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
 
 /* v4.62: Per-department dashboard below the action list. */
 .actions-dept-dashboard {

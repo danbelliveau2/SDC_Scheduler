@@ -59,6 +59,12 @@ const api = {
 // Disciplines = roles that get assigned to project tasks. Keep in sync with the server-side
 // TEAM_DISCIPLINES set. The bar color used in the Resources timeline is per-PROJECT, not per-
 // discipline, so the discipline color/text below is only used for chips and headers.
+// v4.63: password gate for the Departments tab. Not real security — just
+// keeps regular engineers from accidentally opening the manager view. The
+// password caches in sessionStorage so it's prompted once per browser
+// session, not on every click. Change here when you need to rotate it.
+const TEAM_PASSWORD = 'sdc';
+
 const DISCIPLINES = [
   { key: 'pm',       label: 'Project Management',   short: 'PM',       color: '#e9d5ff', text: '#581c87' },
   { key: 'mech',     label: 'Mechanical Engineers', short: 'Mech',     color: '#bfdbfe', text: '#1e3a8a' },
@@ -7758,6 +7764,16 @@ const _actionsPageState = {
     assignee: '',
     discipline: '',
   },
+  // v4.63: when set, the page flips to "personal" mode for that team member —
+  // the list shows ONLY their assigned tasks + actions (across every project),
+  // and a summary strip up top mirrors the Departments per-person dashboard.
+  // 'everyone' (or empty) = manager / team-wide view. Persists in localStorage.
+  personId: (() => {
+    try {
+      const v = localStorage.getItem('sdcActionsPersonId');
+      return v ? Number(v) : null;
+    } catch { return null; }
+  })(),
 };
 
 // Map a task's section (dept + sub) to one of the 4 main discipline keys,
@@ -7786,6 +7802,11 @@ function renderActionsPage() {
   tabs.querySelectorAll('.actions-tab').forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
   });
+
+  // v4.63: render the person picker (Everyone + every team member except
+  // placeholders) and the optional personal summary strip.
+  renderActionsPersonBar();
+  renderActionsPersonSummary();
 
   // Refresh the project + person select dropdowns. Preserve the user's
   // current selections across rebuilds so a re-render doesn't blow away
@@ -7941,6 +7962,11 @@ function renderActionsPage() {
   if (f.project)    actions = actions.filter(t => t.project === f.project);
   if (f.assignee)   actions = actions.filter(t => t.assignee === f.assignee);
   if (f.discipline) actions = actions.filter(t => actionDisciplineKey(t) === f.discipline);
+  // v4.63: person picker filters everything to one team member when set.
+  const pickedPerson = _actionsPageState.personId
+    ? (state.team || []).find(m => m.id === _actionsPageState.personId)
+    : null;
+  if (pickedPerson) actions = actions.filter(t => (t.assignee || '').trim().toLowerCase() === pickedPerson.name.trim().toLowerCase());
   // Sort: overdue first, then by due date asc, then by id.
   actions.sort((a, b) => {
     const aOver = a.end_date && new Date(a.end_date).getTime() < todayMs && (Number(a.progress) || 0) < 100;
@@ -8035,6 +8061,115 @@ function renderActionsPage() {
   // the cards keep showing the big-picture health even when the list above
   // is narrowed by a chip.
   renderActionsDeptDashboard(allActions, todayMs);
+}
+
+// v4.63: render the person bar at the top of the actions page. Lists every
+// real (non-placeholder) team member as a clickable chip, plus "Everyone" on
+// the left. Clicking your name flips the page into personal mode.
+function renderActionsPersonBar() {
+  const bar = document.getElementById('actions-person-bar');
+  if (!bar) return;
+  const team = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0)
+    .sort((a, b) => {
+      // Discipline group first, then leads-first, then sort_order/name.
+      const da = a.discipline || ''; const db = b.discipline || '';
+      if (da !== db) return da.localeCompare(db);
+      if (!!b.is_lead - !!a.is_lead !== 0) return (!!b.is_lead) - (!!a.is_lead);
+      return (a.sort_order || 0) - (b.sort_order || 0);
+    });
+  const picked = _actionsPageState.personId;
+  bar.innerHTML = `
+    <div class="actions-person-bar-label">Who are you?</div>
+    <div class="actions-person-chips">
+      <button type="button" class="actions-person-chip ${picked == null ? 'is-active' : ''}" data-pid="">Everyone</button>
+      ${team.map(m => {
+        const disc = DISCIPLINE_BY_KEY[m.discipline] || { color: '#e2e8f0', text: '#0f172a' };
+        const active = picked === m.id;
+        const style = active ? `background:${disc.color};color:${disc.text};border-color:${disc.text}` : '';
+        return `<button type="button" class="actions-person-chip ${active ? 'is-active' : ''}" data-pid="${m.id}" style="${style}" title="${escapeHtml(m.discipline || '')}">${escapeHtml(m.name)}</button>`;
+      }).join('')}
+    </div>`;
+  bar.querySelectorAll('.actions-person-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.pid ? Number(btn.dataset.pid) : null;
+      _actionsPageState.personId = id;
+      try {
+        if (id == null) localStorage.removeItem('sdcActionsPersonId');
+        else localStorage.setItem('sdcActionsPersonId', String(id));
+      } catch {}
+      renderActionsPage();
+    });
+  });
+}
+
+// v4.63: stats strip + name banner for the picked person. Hidden when no one
+// is selected (manager / Everyone view). Numbers cover EVERYTHING assigned to
+// the person — actions and scheduled tasks both — so the user gets a "what's
+// on my plate" snapshot, not just the actions list.
+function renderActionsPersonSummary() {
+  const wrap = document.getElementById('actions-person-summary');
+  if (!wrap) return;
+  const personId = _actionsPageState.personId;
+  if (personId == null) { wrap.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === personId);
+  if (!member) { wrap.innerHTML = ''; return; }
+  const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const mine = (state.tasks || []).filter(t => (t.assignee || '').trim().toLowerCase() === member.name.trim().toLowerCase());
+  const open = (t) => (Number(t.progress) || 0) < 100;
+  const isOverdue = (t) => t.end_date && new Date(t.end_date).getTime() < todayMs && open(t);
+  const tasks   = mine.filter(t => !t.is_action);
+  const actions = mine.filter(t =>  t.is_action);
+  const openCount    = mine.filter(open).length;
+  const overdueCount = mine.filter(isOverdue).length;
+  const doneActions  = actions.filter(t => !open(t) && t.end_date);
+  let avgOverrun = null;
+  if (doneActions.length > 0) {
+    const totalDays = doneActions.reduce((sum, t) => {
+      const due = new Date(t.end_date).getTime();
+      const closedMs = t.completed_on ? new Date(t.completed_on).getTime() : todayMs;
+      // Positive = closed AFTER due (overrun). Negative = closed early.
+      return sum + (closedMs - due) / 86400000;
+    }, 0);
+    avgOverrun = Math.round(totalDays / doneActions.length);
+  }
+  const disc = DISCIPLINE_BY_KEY[member.discipline];
+  wrap.innerHTML = `
+    <div class="aps-banner" style="background:${disc?.color || '#e2e8f0'};color:${disc?.text || '#0f172a'}">
+      <div class="aps-banner-left">
+        <strong>${escapeHtml(member.name)}</strong>
+        <span class="aps-banner-disc">${escapeHtml(disc?.label || member.discipline || '')}</span>
+        ${member.specialty ? `<span class="aps-banner-spec">${escapeHtml(member.specialty)}</span>` : ''}
+      </div>
+      <button type="button" class="aps-banner-exit" data-action="exit-personal">Back to Everyone</button>
+    </div>
+    <div class="aps-stats">
+      <div class="aps-stat">
+        <div class="aps-stat-num">${openCount}</div>
+        <div class="aps-stat-lbl">Open total</div>
+      </div>
+      <div class="aps-stat ${overdueCount > 0 ? 'is-warn' : ''}">
+        <div class="aps-stat-num">${overdueCount}</div>
+        <div class="aps-stat-lbl">Overdue</div>
+      </div>
+      <div class="aps-stat">
+        <div class="aps-stat-num">${tasks.length}</div>
+        <div class="aps-stat-lbl">Scheduled tasks</div>
+      </div>
+      <div class="aps-stat">
+        <div class="aps-stat-num">${actions.length}</div>
+        <div class="aps-stat-lbl">Action items</div>
+      </div>
+      <div class="aps-stat">
+        <div class="aps-stat-num">${avgOverrun != null ? (avgOverrun > 0 ? '+' : '') + avgOverrun + 'd' : '—'}</div>
+        <div class="aps-stat-lbl">Avg overrun</div>
+      </div>
+    </div>
+  `;
+  wrap.querySelector('[data-action="exit-personal"]').addEventListener('click', () => {
+    _actionsPageState.personId = null;
+    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+    renderActionsPage();
+  });
 }
 
 function renderActionsDeptDashboard(allActions, todayMs) {
@@ -8255,16 +8390,17 @@ function renderTeam() {
   const renderRow = (m) => {
     const ph = isPlaceholder(m.name);
     const leadStar = m.is_lead ? '<span class="team-member-lead" title="Department lead">★</span>' : '';
-    // v4.56: specialty is now an input + datalist with suggested levels
-    // (Level 1 / 2 / 3). Datalist is type-ahead-only — the user can still
-    // type any custom value (e.g. "Robot", "Vision", "HMI") if a level
-    // doesn't fit. Keeps the data model identical (single string field).
+    // v4.63: explicit "View" button on each row opens the per-person
+    // dashboard. The row click handler was falling through because the
+    // name + specialty inputs take 100% of the row's flex space, leaving
+    // no bare row pixels to click. Dedicated button is unambiguous.
     return `
       <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
         <span class="team-member-grip" title="Drag to reorder">⋮⋮</span>
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
+        <button type="button" class="team-member-view" data-action="view-dashboard" data-id="${m.id}" title="See ${escapeHtml(m.name)}'s tasks + action items">👁</button>
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
       </li>`;
@@ -8389,15 +8525,13 @@ function renderTeam() {
     });
   });
 
-  // v4.61: click a row (anywhere except an input / button) to open the
-  // per-person dashboard panel. Filters click events on the form controls
-  // so the user can still edit name / specialty / remove inline.
-  grid.querySelectorAll('.team-member').forEach(row => {
-    row.addEventListener('click', (e) => {
-      if (e.target.closest('input')) return;
-      if (e.target.closest('button')) return;
-      if (e.target.closest('.team-member-grip')) return;
-      const id = Number(row.dataset.id);
+  // v4.63: explicit View button on each row opens the per-person dashboard.
+  // (v4.61's "click anywhere on the row" handler never fired in practice
+  // because the name + specialty inputs took 100% of the row's flex space.)
+  grid.querySelectorAll('[data-action="view-dashboard"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
       if (!Number.isFinite(id)) return;
       openPersonDashboard(id);
     });
@@ -11572,7 +11706,22 @@ async function init() {
   document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
       const v = btn.dataset.view;
-      if (v) setView(v);
+      if (!v) return;
+      // v4.63: Departments tab is now password-gated. Manager-level only.
+      // Auth caches in sessionStorage so the prompt fires once per browser
+      // session, not on every click. Default password is "sdc" — change in
+      // the TEAM_PASSWORD constant below. (No real security; just keeps
+      // regular engineers out of the manager view by accident.)
+      if (v === 'team' && !sessionStorage.getItem('sdcTeamAuth')) {
+        const pwd = prompt('Departments is manager-only. Enter the team password:');
+        if (pwd == null) return; // cancelled
+        if (pwd !== TEAM_PASSWORD) {
+          alert('Wrong password.');
+          return;
+        }
+        sessionStorage.setItem('sdcTeamAuth', '1');
+      }
+      setView(v);
     });
   });
 

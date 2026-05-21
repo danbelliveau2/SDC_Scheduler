@@ -279,6 +279,13 @@
           </div>
         </div>
 
+        <!-- v4.63: person picker. Click your name to switch to a personal
+             view filtered to your tasks + actions. "Everyone" is the
+             manager / team default. Selection persists in localStorage so
+             your login state carries across reloads. -->
+        <div class="actions-person-bar" id="actions-person-bar"></div>
+        <div class="actions-person-summary" id="actions-person-summary"></div>
+
         <!-- Quick-add bar: title + project + section + department + due date + create.
              Department auto-fills from the section pick but the user can override
              when the section is ambiguous (e.g. section 40 engineering could be

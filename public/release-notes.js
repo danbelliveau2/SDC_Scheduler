@@ -4,6 +4,35 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.63',
+    date: '2026-05-21',
+    notes: [
+      'Personal view + Departments password gate + bugfix.',
+      '',
+      'BUGFIX — DEPARTMENTS ROW CLICK NEVER OPENED THE DASHBOARD:',
+      '   ▸ Each row\'s name + specialty inputs use flex: 1, so they take 100% of the row\'s horizontal space. The v4.61 "click anywhere on the row" handler ran but every click hit an <input> or <button> and returned early. The dashboard never appeared.',
+      '   ▸ Fix: explicit 👁 View button on each team-member row next to the lead-toggle and remove buttons. Click it to open the per-person dashboard side panel. Tooltip on hover says whose tasks you\'re about to see.',
+      '',
+      'PASSWORD GATE ON THE DEPARTMENTS TAB:',
+      '   ▸ Departments is now manager-only. Clicking the sidebar entry prompts for a password (default: "sdc") the first time per browser session. Auth is cached in sessionStorage so it doesn\'t re-prompt on every click.',
+      '   ▸ Not real security — wrong-password just bounces the navigation. The point is to keep regular engineers from accidentally seeing the manager view, not to protect against motivated bypass.',
+      '   ▸ Change the password by editing TEAM_PASSWORD at the top of app.js.',
+      '',
+      'PERSONAL VIEW ON THE ACTIONS PAGE:',
+      '   ▸ New "Who are you?" chip bar at the top of the Actions page lists every real team member. Click your name → page flips into PERSONAL mode for you.',
+      '   ▸ Personal mode shows:',
+      '       • Banner with your name + discipline + specialty (colored to match your team).',
+      '       • Stats strip: Open total / Overdue (red when > 0) / Scheduled tasks / Action items / Avg overrun (days past due across your closed actions — driven by completed_on minus end_date).',
+      '       • Filtered list: ONLY your assigned action items, with the same filter chips + Active/Closed tabs available.',
+      '   ▸ "Back to Everyone" button on the banner exits personal mode.',
+      '   ▸ Selection persists in localStorage so the next time Ian opens the app it remembers him.',
+      '   ▸ Stats reflect ALL your assignments (scheduled tasks AND action items), not just actions — gives the "what\'s on my plate" snapshot. The list below still scopes to action items so it stays focused.',
+      '',
+      'NOTE ON ACCESS CONTROL:',
+      '   ▸ This is Option A from the design conversation — a "view as" picker, no real auth. Anyone with the URL can pick any name. Later upgrades can swap the picker out for a real login without changing the rest of the wiring.',
+    ],
+  },
+  {
     version: '4.62',
     date: '2026-05-21',
     notes: [
