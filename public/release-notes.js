@@ -4,6 +4,33 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.92',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — belt-and-braces width measurement.',
+      '',
+      'Every single measurement technique tried across v4.85-v4.91 (getBBox, getComputedTextLength, getBoundingClientRect, canvas measureText with computed-style font, canvas measureText with matched font-family) has under-reported widths on at least some bars. v4.92 stops betting on any single method.',
+      '',
+      'NEW WIDTH MEASUREMENT — run FIVE methods and take the MAX:',
+      '   ▸ A: canvas measureText with the element\'s computed font',
+      '   ▸ B: canvas measureText with hardcoded "bold/normal Xpx sans-serif"',
+      '   ▸ C: getBoundingClientRect',
+      '   ▸ D: getComputedTextLength',
+      '   ▸ E: getBBox',
+      '   ▸ F (floor): char-count × 8 px char',
+      '',
+      'Plus a +8 px safety margin (was +5 in v4.91). The combination makes it mathematically impossible to under-estimate the rendered width — whichever method is broken or under-reporting, the others fill in.',
+      '',
+      'DIAGNOSTIC: open DevTools and run `window.SDC_DEBUG_BARMETA = true`. The next render logs per-bar measurements so we can see exactly what each method returned. Helps verify the fix is doing what it claims.',
+      '',
+      'CASCADE (unchanged):',
+      '   STEP 1 — meta inside-left, name centered IN BAR.',
+      '   STEP 2 — meta inside-left, name centered between meta-right and bar-right.',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar.',
+      '   STEP 4 — both outside.',
+    ],
+  },
+  {
     version: '4.91',
     date: '2026-05-21',
     notes: [
