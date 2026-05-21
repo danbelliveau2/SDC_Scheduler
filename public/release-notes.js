@@ -4,6 +4,23 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.80',
+    date: '2026-05-21',
+    notes: [
+      'Action items now show on the personal Gantt (even without dates).',
+      '',
+      '   ▸ Personal Gantt was filtering out tasks/actions without start/end dates. Scheduled tasks without dates can\'t be positioned on a timeline so they still skip — but ACTION items always show now, defaulting to TODAY when their dates are null (old data created before v4.76\'s default-to-today, or anything migrated in).',
+      '   ▸ The date projection happens at render time only — no mutation of state.tasks, so the underlying DB record is unchanged. Edit the action in the schedule to set a real date.',
+      '',
+      'PLACEHOLDER-ASSIGNED ACTIONS SURFACE TO THE DISCIPLINE:',
+      '   ▸ Actions auto-assigned to "ME Placeholder" / "CE Placeholder" / etc. (because the user didn\'t pick a specific person at create time) now appear on EVERY engineer in that discipline\'s personal Gantt. So a freshly-added mech action shows on Ian\'s timeline, Mike\'s timeline, every mech engineer — not just the placeholder\'s.',
+      '   ▸ Once a manager assigns the action to a specific person (via the inline Assigned To dropdown in the action list), it stops showing on everyone else\'s timeline and lives only on the assignee\'s.',
+      '',
+      'BACKLOG DURATION REMINDER:',
+      '   ▸ The Backlog row\'s Duration column has been click-to-edit since v4.71. Hover the cell on the Backlog row in the schedule grid — you\'ll see a ✎ pencil hint and a lime tint. Click to type a new duration (2w / 3w / 10d / etc.) and Enter. The schedule cascades to reflect it.',
+    ],
+  },
+  {
     version: '4.79',
     date: '2026-05-21',
     notes: [

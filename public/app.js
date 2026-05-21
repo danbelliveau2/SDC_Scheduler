@@ -8484,14 +8484,40 @@ function renderActionsPersonGantt() {
   const member = (state.team || []).find(m => m.id === personId);
   if (!member) { wrap.innerHTML = ''; return; }
 
-  // Gather this person's tasks + actions that have valid dates. Skip the
-  // same projects we skip everywhere else (templates + Sales workspace).
-  const mine = (state.tasks || []).filter(t =>
-    (t.assignee || '').trim().toLowerCase() === member.name.trim().toLowerCase() &&
-    t.start_date && t.end_date &&
-    !isTemplateProject(t.project) &&
-    projectWorkspace(t.project) !== 'Sales'
-  );
+  // v4.80: gather this person's tasks + actions.
+  // - Scheduled tasks need dates to position on the timeline (skip if null).
+  // - Action items ALWAYS show on the timeline — even if their start/end
+  //   dates are null (old data, pre-v4.76 quick-add without a due date).
+  //   For those, we default to TODAY at render time so the diamond appears
+  //   under the today line. User can edit the date later via the schedule.
+  // - Also surface placeholder-assigned action items to every engineer in
+  //   that discipline — so unstaffed actions show up on the relevant team's
+  //   timeline before someone manually claims them.
+  const memberNameLower = member.name.trim().toLowerCase();
+  const _todayISO_ = new Date().toISOString().slice(0, 10);
+  const mine = (state.tasks || [])
+    .filter(t => {
+      if (!t.project) return false;
+      if (isTemplateProject(t.project)) return false;
+      if (projectWorkspace(t.project) === 'Sales') return false;
+      const assignee = (t.assignee || '').trim().toLowerCase();
+      const directAssign = assignee === memberNameLower;
+      const placeholderForMyDiscipline =
+        t.is_action
+        && isPlaceholder(t.assignee)
+        && actionDisciplineKey(t) === member.discipline;
+      if (!directAssign && !placeholderForMyDiscipline) return false;
+      // Scheduled tasks must have dates; action items default to today below.
+      if (!t.is_action) return !!(t.start_date && t.end_date);
+      return true;
+    })
+    // Project dateless action items onto today WITHOUT mutating state.tasks.
+    .map(t => {
+      if (!t.is_action || (t.start_date && t.end_date)) return t;
+      const start = t.start_date || _todayISO_;
+      const end   = t.end_date   || start;
+      return { ...t, start_date: start, end_date: end };
+    });
 
   if (mine.length === 0) {
     wrap.innerHTML = `<div class="apg-empty">Nothing scheduled. ${escapeHtml(member.name)} has no tasks or action items with dates.</div>`;
