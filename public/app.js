@@ -2377,6 +2377,12 @@ function drawBarMeta() {
   if (!svg) return;
   // Tear down any prior labels so toggling off cleanly removes them.
   svg.querySelectorAll('.sdc-bar-meta').forEach(el => el.remove());
+  // v4.72: when bar-meta is OFF, restore any frappe-gantt bar-labels we
+  // previously hid so they reappear at their normal centered position.
+  svg.querySelectorAll('.bar-label').forEach(el => {
+    el.style.opacity = '';
+    el.style.visibility = '';
+  });
   if (state.scheduleView?.showBarMeta !== true) return;
 
   const group = document.createElementNS(SVG_NS, 'g');
@@ -2533,19 +2539,38 @@ function drawBarMeta() {
     el.textContent = labelText;
     group.appendChild(el);
 
-    // v4.71: shift the frappe-gantt bar-LABEL (task name) to the RIGHT end
-    // of the bar so it doesn't overlap our left-aligned alloc/dur meta.
-    // frappe-gantt's CSS sets .bar-label { text-anchor: middle } which has
-    // higher specificity than the SVG presentation attribute — setAttribute
-    // didn't take. Use INLINE STYLE so it actually beats the stylesheet.
-    // (Same reason clipBarLabels uses inline style.fontSize: SVG attribute
-    // gets overridden by CSS.)
+    // v4.72: HIDE the frappe-gantt bar-label and render our OWN task name
+    // at the right end of the bar. The previous attribute-shift approach
+    // (v4.69, v4.71) couldn't reliably beat frappe-gantt's stylesheet —
+    // shifted x but text-anchor stayed centered, so names ended up half
+    // outside the bar or otherwise misaligned. Clean override is more
+    // robust. Frappe-gantt's label is hidden via visibility (not display)
+    // so its bbox is still queryable elsewhere if anything depends on it.
     const barLabel = wrap.querySelector('.bar-label');
     if (barLabel) {
-      barLabel.setAttribute('x', String(barX + barW - INSIDE_PADDING));
-      barLabel.setAttribute('text-anchor', 'end');
-      barLabel.style.textAnchor = 'end';
+      barLabel.style.visibility = 'hidden';
     }
+    const nameText = document.createElementNS(SVG_NS, 'text');
+    nameText.setAttribute('class', 'sdc-bar-meta sdc-bar-name-right');
+    nameText.setAttribute('x', String(barX + barW - INSIDE_PADDING));
+    nameText.setAttribute('y', String(barY + barH / 2));
+    nameText.setAttribute('text-anchor', 'end');
+    nameText.setAttribute('dominant-baseline', 'central');
+    // Match the original .bar-label font (frappe-gantt default = 12px /
+    // 600 weight). clipBarLabels also pulls font-size to fit barH; mirror
+    // that here so very-short bars don't get clipped descenders.
+    const nameFontSize = Math.max(8, Math.min(12, barH - 2));
+    nameText.setAttribute('font-size', String(nameFontSize));
+    nameText.setAttribute('font-weight', '600');
+    // Fill follows the bar's hierarchy color (same as frappe-gantt would).
+    // Phase rules in injectPhaseStyles use .bar-label color via class — we
+    // mirror the colorKey lookup here so the name reads in the same hue.
+    const ck = rowColorKey(task);
+    const fill = (HIERARCHY_BAR_COLORS[ck] && HIERARCHY_BAR_COLORS[ck].text) || '#0f172a';
+    nameText.setAttribute('fill', fill);
+    nameText.style.pointerEvents = 'none';
+    nameText.textContent = task.name || '';
+    group.appendChild(nameText);
   }
 }
 

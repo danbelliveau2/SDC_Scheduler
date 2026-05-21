@@ -4,6 +4,22 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.73',
+    date: '2026-05-21',
+    notes: [
+      'Bar label finally right-aligns when % toggle is on — clean override.',
+      '',
+      '   ▸ v4.69 + v4.71 tried to shift frappe-gantt\'s bar-label via setAttribute + inline style. Neither stuck reliably — names still overlapped the alloc/dur meta on bars like Builder 1 / Builder 2 / Machine Wiring.',
+      '   ▸ New approach: stop fighting frappe-gantt\'s CSS. When the % toggle is on AND the alloc/dur meta lands INSIDE the bar:',
+      '       1. The frappe-gantt bar-label is hidden via visibility: hidden.',
+      '       2. We render OUR OWN <text> at the right end of the bar with text-anchor="end" + x = barX + barW − 4.',
+      '       3. Font size mirrors clipBarLabels so short bars don\'t get clipped descenders.',
+      '       4. Fill follows the bar\'s hierarchy color (matches what frappe-gantt would have shown).',
+      '   ▸ When % is toggled OFF, drawBarMeta restores visibility on all bar-labels so the centered name reappears at its normal position.',
+      '   ▸ Outside-placement bars (narrow bars where the meta sits outside the bar to the left) are unchanged — there\'s no overlap to fix in that case.',
+    ],
+  },
+  {
     version: '4.72',
     date: '2026-05-21',
     notes: [
