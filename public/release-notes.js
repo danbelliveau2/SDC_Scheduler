@@ -4,6 +4,28 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.90',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta — canvas measureText (font-metric source of truth).',
+      '',
+      'v4.85-v4.89 all tried SVG-layout APIs (getBBox, getComputedTextLength, getBoundingClientRect). EVERY ONE of them was returning sizes smaller than the actual rendered text on at least some bars. The overlap check kept firing "no overlap" when there clearly was one. Name kept landing on top of the meta.',
+      '',
+      'FINAL FIX: switched to canvas measureText() with each element\'s computed font (extracted via window.getComputedStyle). Canvas measureText:',
+      '   ▸ Works directly off the browser\'s font metrics — doesn\'t care if the SVG element has been laid out yet.',
+      '   ▸ Returns synchronously with sub-pixel precision.',
+      '   ▸ Doesn\'t require the element to be in the DOM (we use it because it\'s reliable, not because of DOM state).',
+      '',
+      'Conservative: take the MAX of (canvas measureText) and (getBoundingClientRect.width). If either method over-reports, we use the larger value — better to overshoot and have an extra-large gap than to overlap. +2 px safety margin on top of that absorbs any final sub-pixel variance, kerning, antialiasing, and the meta\'s 2.5 px stroke padding.',
+      '',
+      'Cascade applied via arithmetic with these conservative widths:',
+      '   STEP 1 — meta inside-left, name centered IN BAR. Trigger: centered name has ≥3 px from meta-right AND ≥3 px from bar-right.',
+      '   STEP 2 — meta inside-left, name centered between meta-right and bar-right. Trigger: (barRight - metaInsideRight) ≥ nameW + 6.',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar. Trigger: barW ≥ nameW + 6.',
+      '   STEP 4 — both outside.',
+    ],
+  },
+  {
     version: '4.89',
     date: '2026-05-21',
     notes: [
