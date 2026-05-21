@@ -4,6 +4,23 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.71',
+    date: '2026-05-21',
+    notes: [
+      'Bar-label shift actually works + Backlog duration is editable.',
+      '',
+      'BAR LABEL SHIFT — CSS OVERRIDE FIX:',
+      '   ▸ v4.69 added the shift via setAttribute("text-anchor", "end") but frappe-gantt\'s stylesheet sets .bar-label { text-anchor: middle } which has higher specificity than the SVG presentation attribute. Result: the attribute was set on the DOM but the rendered text stayed centered, so "Test/Debug Engineer 1" continued to sit smack on top of the alloc/dur meta.',
+      '   ▸ Fix: ALSO set the inline style — barLabel.style.textAnchor = "end". Inline style beats stylesheet rules. Same reason clipBarLabels uses style.fontSize instead of setAttribute (matching comment up top of that function).',
+      '   ▸ End result: when the % toggle is on AND the alloc/dur fits inside the bar, the task name slides to the right edge of the bar. The two labels claim opposite ends, no more overlap on long names.',
+      '',
+      'BACKLOG DURATION — DISCOVERABLE + EDITABLE:',
+      '   ▸ The Backlog duration cell has always been editable (same td[data-col="duration"] click handler as every other duration column). But the Backlog row reads as a spine block — no progress pill, no drift chip — so users asked "can I change this?".',
+      '   ▸ Pencil ✎ hint appears in the Backlog\'s Duration cell on hover. Cell tinted SDC-lime on hover so it visibly invites a click. Tooltip says "Click to edit — backlog duration varies based on team load."',
+      '   ▸ Click the duration cell, edit the value ("2w", "3w", "10d", etc.), Enter to save. Cascade picks up the new duration and re-flows the rest of the schedule.',
+    ],
+  },
+  {
     version: '4.70',
     date: '2026-05-21',
     notes: [

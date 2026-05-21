@@ -962,7 +962,16 @@ function cellHtml(t, key) {
     }
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
-    case 'duration': return `<td class="${cls}" data-col="duration">${durationLabel(t)}</td>`;
+    case 'duration': {
+      // v4.71: Backlog duration gets an explicit tooltip + a tiny pencil hint
+      // so the user sees it's editable. The cell already opens enterCellEdit
+      // on click via the general td[data-col] handler — this is purely a
+      // discoverability fix.
+      const isBacklogRow = isBacklogTask(t);
+      const title = isBacklogRow ? ' title="Click to edit — backlog duration varies based on team load."' : '';
+      const hint  = isBacklogRow ? '<span class="duration-edit-hint" aria-hidden="true">✎</span>' : '';
+      return `<td class="${cls}${isBacklogRow ? ' is-backlog-duration' : ''}" data-col="duration"${title}>${durationLabel(t)}${hint}</td>`;
+    }
     case 'pred':     return `<td class="${cls}" data-col="pred"></td>`; /* filled in by updateLineNumbers */
     case 'progress': {
       const p = t.progress || 0;
@@ -2524,14 +2533,18 @@ function drawBarMeta() {
     el.textContent = labelText;
     group.appendChild(el);
 
-    // v4.69: shift the frappe-gantt bar-LABEL (the task name) to the RIGHT
-    // end of the bar so it doesn't overlap our left-aligned alloc/dur meta.
-    // Only when the meta lands INSIDE the bar (placement === 'inside') —
-    // outside placements don't conflict with the centered name.
+    // v4.71: shift the frappe-gantt bar-LABEL (task name) to the RIGHT end
+    // of the bar so it doesn't overlap our left-aligned alloc/dur meta.
+    // frappe-gantt's CSS sets .bar-label { text-anchor: middle } which has
+    // higher specificity than the SVG presentation attribute — setAttribute
+    // didn't take. Use INLINE STYLE so it actually beats the stylesheet.
+    // (Same reason clipBarLabels uses inline style.fontSize: SVG attribute
+    // gets overridden by CSS.)
     const barLabel = wrap.querySelector('.bar-label');
     if (barLabel) {
       barLabel.setAttribute('x', String(barX + barW - INSIDE_PADDING));
       barLabel.setAttribute('text-anchor', 'end');
+      barLabel.style.textAnchor = 'end';
     }
   }
 }

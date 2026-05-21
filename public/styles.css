@@ -3966,6 +3966,28 @@ body.customer-view .schedule-footer { display: none; }
 .actions-qa-section { white-space: nowrap; }
 .actions-qa-create { padding: 6px 14px; font-size: 12px; }
 
+/* v4.71: Backlog duration cell is editable like any duration column, but
+   the row otherwise reads as a spine block (no progress pill, no drift
+   chip) so users have asked "can I change this?". Pencil hint on hover. */
+.is-backlog-duration {
+  position: relative;
+  cursor: pointer;
+}
+.duration-edit-hint {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.is-backlog-duration:hover {
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 18%, white);
+}
+.is-backlog-duration:hover .duration-edit-hint {
+  opacity: 1;
+}
+
 /* v4.70: Thick lime divider between the SIGN-IN section (person picker /
    personal summary / personal Gantt) and the TASK section (quick-add /
    filters / list / dept cards). Reads as a clear visual break so the
