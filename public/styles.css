@@ -4083,6 +4083,161 @@ body.customer-view .schedule-footer { display: none; }
   margin-top: 2px;
 }
 
+/* v4.66: Per-person Gantt visualisation on the Actions page. Shows when a
+   person is signed in. Horizontal-bar timeline of their tasks + actions,
+   each bar colored by project. Today is a dotted vertical line. */
+.actions-person-gantt {
+  --apg-label-w: 240px;
+  --apg-row-h: 26px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.actions-person-gantt:empty { display: none; }
+.apg-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.apg-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 18px 6px;
+}
+.apg-chart {
+  position: relative;
+  overflow-x: auto;
+}
+.apg-header {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+.apg-header-spacer {
+  flex: 0 0 var(--apg-label-w);
+}
+.apg-axis {
+  position: relative;
+  flex: 1 1 auto;
+  height: 18px;
+}
+.apg-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.apg-tick::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 1px;
+  height: 6px;
+  background: var(--border);
+}
+.apg-body { position: relative; }
+.apg-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px dotted #dc2626;
+  z-index: 2;
+  pointer-events: none;
+}
+.apg-row {
+  display: flex;
+  align-items: center;
+  height: var(--apg-row-h);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  cursor: pointer;
+}
+.apg-row:hover { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white); }
+.apg-row-label {
+  flex: 0 0 var(--apg-label-w);
+  padding-right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.apg-row-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  line-height: 1.1;
+}
+.apg-row-project {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  line-height: 1.1;
+}
+.apg-row-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: var(--apg-row-h);
+}
+.apg-bar {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, currentColor 50%, black 12%);
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  overflow: hidden;
+}
+.apg-bar.is-overdue { box-shadow: inset 0 0 0 1px #dc2626; }
+.apg-bar.is-done    { opacity: 0.6; }
+.apg-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(0,0,0,0.18);
+  border-radius: 3px 0 0 3px;
+}
+.apg-bar-label {
+  position: relative;
+  font-size: 10px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.apg-diamond {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  transform: translateY(-50%) rotate(45deg);
+  border: 1px solid color-mix(in srgb, currentColor 50%, black 18%);
+  border-radius: 2px;
+}
+.apg-diamond.is-action { background: var(--sdc-primary, #2563eb) !important; border-color: var(--sdc-dark, #061d39); }
+.apg-diamond.is-overdue { background: #fca5a5 !important; border-color: #dc2626; }
+.apg-diamond.is-done    { opacity: 0.5; }
+
 /* v4.62: Per-department dashboard below the action list. */
 .actions-dept-dashboard {
   margin-top: 22px;

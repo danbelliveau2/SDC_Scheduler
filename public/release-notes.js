@@ -4,6 +4,22 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.66',
+    date: '2026-05-21',
+    notes: [
+      'Sign-in label + per-person Gantt on Actions.',
+      '',
+      '   ▸ "Who are you?" → "Sign in". Reads as an explicit account action instead of a quiz prompt.',
+      '   ▸ NEW: per-person Gantt visualisation appears on the Actions page when someone signs in. Horizontal-bar timeline showing every task + action item they\'re assigned to, with valid dates, across every project.',
+      '   ▸ Each bar is colored by project (stable hash so the same project gets the same color across reloads). Bars show the task name overlaid; tasks with progress > 0 < 100 get a dark overlay showing % done.',
+      '   ▸ Zero-duration items (milestones + most action items) render as diamond markers in the project color. Action item diamonds paint SDC-blue; overdue ones turn red-bordered.',
+      '   ▸ Vertical dotted red line marks TODAY across the chart.',
+      '   ▸ Date axis up top labels each visible week (or every other week when the range is long).',
+      '   ▸ Clicking any row jumps to that project\'s schedule.',
+      '   ▸ When nothing\'s assigned with dates, an inline empty-state explains why instead of leaving the chart blank.',
+    ],
+  },
+  {
     version: '4.65',
     date: '2026-05-21',
     notes: [

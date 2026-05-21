@@ -7862,8 +7862,11 @@ function renderActionsPage() {
 
   // v4.63: render the person picker (Everyone + every team member except
   // placeholders) and the optional personal summary strip.
+  // v4.66: also render the per-person Gantt visualization when someone is
+  // signed in. Clears itself when no person is picked.
   renderActionsPersonBar();
   renderActionsPersonSummary();
+  renderActionsPersonGantt();
 
   // Refresh the project + person select dropdowns. Preserve the user's
   // current selections across rebuilds so a re-render doesn't blow away
@@ -8148,7 +8151,7 @@ function renderActionsPersonBar() {
   });
 
   bar.innerHTML = `
-    <div class="actions-person-bar-label">Who are you?</div>
+    <div class="actions-person-bar-label">Sign in</div>
     <select class="actions-person-select" id="actions-person-dept" title="Pick your department first.">
       <option value="">Department…</option>
       <option value="mech"     ${dept === 'mech'     ? 'selected' : ''}>Mech Eng</option>
@@ -8259,6 +8262,142 @@ function renderActionsPersonSummary() {
     _actionsPageState.personId = null;
     try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
     renderActionsPage();
+  });
+}
+
+// v4.66: per-person Gantt visualisation on the Actions page. Renders every
+// task + action item (with start/end dates) assigned to the signed-in
+// person as a horizontal-bar timeline. Bars are colored by project. Action
+// items render as small diamond markers since they typically have zero
+// duration. Hover shows project + task name + dates.
+function renderActionsPersonGantt() {
+  const wrap = document.getElementById('actions-person-gantt');
+  if (!wrap) return;
+  const personId = _actionsPageState.personId;
+  if (personId == null) { wrap.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === personId);
+  if (!member) { wrap.innerHTML = ''; return; }
+
+  // Gather this person's tasks + actions that have valid dates. Skip the
+  // same projects we skip everywhere else (templates + Sales workspace).
+  const mine = (state.tasks || []).filter(t =>
+    (t.assignee || '').trim().toLowerCase() === member.name.trim().toLowerCase() &&
+    t.start_date && t.end_date &&
+    !isTemplateProject(t.project) &&
+    projectWorkspace(t.project) !== 'Sales'
+  );
+
+  if (mine.length === 0) {
+    wrap.innerHTML = `<div class="apg-empty">Nothing scheduled. ${escapeHtml(member.name)} has no tasks or action items with dates.</div>`;
+    return;
+  }
+
+  // Sort by start date so the chart reads top-down chronologically.
+  mine.sort((a, b) => {
+    const sa = (a.start_date || '').localeCompare(b.start_date || '');
+    if (sa !== 0) return sa;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  // Compute the date range (with padding) so every bar fits with breathing room.
+  const startsMs = mine.map(t => new Date(t.start_date + 'T00:00:00').getTime());
+  const endsMs   = mine.map(t => new Date(t.end_date   + 'T00:00:00').getTime());
+  const minTaskMs = Math.min(...startsMs);
+  const maxTaskMs = Math.max(...endsMs);
+  const todayMs   = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const PAD_DAYS  = 7;
+  const minMs = Math.min(minTaskMs, todayMs) - PAD_DAYS * 86400000;
+  const maxMs = Math.max(maxTaskMs, todayMs) + PAD_DAYS * 86400000;
+  const totalDays = Math.max(1, (maxMs - minMs) / 86400000);
+
+  // Stable color per project name. Hash-based hue so the same project gets
+  // the same bar color session over session. Soft pastels (S=55%, L=72%).
+  const projectColor = (() => {
+    const cache = {};
+    const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; };
+    return (proj) => {
+      if (!proj) return '#cbd5e1';
+      if (cache[proj]) return cache[proj];
+      const hue = hash(proj) % 360;
+      cache[proj] = `hsl(${hue} 55% 72%)`;
+      return cache[proj];
+    };
+  })();
+
+  // Build week ticks across the axis.
+  const ticks = [];
+  let cursor = new Date(minMs);
+  // Snap cursor to the next Monday so the labels line up.
+  while (cursor.getDay() !== 1) cursor.setDate(cursor.getDate() + 1);
+  while (cursor.getTime() <= maxMs) {
+    const offsetDays = (cursor.getTime() - minMs) / 86400000;
+    const leftPct = (offsetDays / totalDays) * 100;
+    ticks.push({ leftPct, label: fmtDate(cursor.toISOString().slice(0, 10)) });
+    cursor.setDate(cursor.getDate() + 7);
+  }
+  // Subsample to roughly every 2 weeks if there are too many ticks.
+  const visibleTicks = ticks.length > 16 ? ticks.filter((_, i) => i % 2 === 0) : ticks;
+
+  // Today line position
+  const todayPct = ((todayMs - minMs) / 86400000 / totalDays) * 100;
+
+  // Build the rows.
+  const rowsHtml = mine.map(t => {
+    const startMs  = new Date(t.start_date + 'T00:00:00').getTime();
+    const endMs    = new Date(t.end_date   + 'T00:00:00').getTime();
+    const startPct = ((startMs - minMs) / 86400000 / totalDays) * 100;
+    const widthPct = Math.max(0.4, ((endMs - startMs) / 86400000 / totalDays) * 100);
+    const color    = projectColor(t.project);
+    const progress = Math.max(0, Math.min(100, Number(t.progress) || 0));
+    const overdue  = endMs < todayMs && progress < 100;
+    const done     = progress >= 100;
+    const isAction = !!t.is_action;
+    const tip      = `${t.project ? `[${t.project}] ` : ''}${t.name}\n${fmtDate(t.start_date)} → ${fmtDate(t.end_date)}${progress > 0 ? ` · ${progress}%` : ''}`;
+    // Diamond marker for milestones / zero-duration actions; bar otherwise.
+    const isMilestone = (t.is_milestone || t.duration_days === 0) && (endMs - startMs) <= 86400000;
+    const barOrDot = isMilestone
+      ? `<div class="apg-diamond ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''} ${isAction ? 'is-action' : ''}" style="left:${startPct}%;background:${color}" title="${escapeHtml(tip)}"></div>`
+      : `<div class="apg-bar ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" style="left:${startPct}%;width:${widthPct}%;background:${color}" title="${escapeHtml(tip)}">
+          ${progress > 0 && progress < 100 ? `<div class="apg-bar-fill" style="width:${progress}%"></div>` : ''}
+          <span class="apg-bar-label">${escapeHtml(t.name)}</span>
+        </div>`;
+    return `
+      <div class="apg-row" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
+        <div class="apg-row-label" title="${escapeHtml(t.name)}">
+          <span class="apg-row-name">${escapeHtml(t.name)}</span>
+          <span class="apg-row-project">${escapeHtml(t.project || '')}</span>
+        </div>
+        <div class="apg-row-track">${barOrDot}</div>
+      </div>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <div class="apg-title">${escapeHtml(member.name)}'s timeline</div>
+    <div class="apg-chart">
+      <div class="apg-header">
+        <div class="apg-row-label apg-header-spacer"></div>
+        <div class="apg-axis">
+          ${visibleTicks.map(t => `<div class="apg-tick" style="left:${t.leftPct}%"><span>${escapeHtml(t.label)}</span></div>`).join('')}
+        </div>
+      </div>
+      <div class="apg-body">
+        ${todayPct >= 0 && todayPct <= 100 ? `<div class="apg-today" style="left:calc(var(--apg-label-w) + (100% - var(--apg-label-w)) * ${todayPct / 100})" title="Today"></div>` : ''}
+        ${rowsHtml}
+      </div>
+    </div>
+  `;
+
+  // Click a row to jump to the parent project's schedule (same UX as the
+  // actions list rows further down the page).
+  wrap.querySelectorAll('.apg-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const project = row.dataset.project;
+      if (!project) return;
+      if (!state.openProjects.includes(project)) state.openProjects.push(project);
+      state.filters.project = project;
+      saveProjectTabs();
+      setView('schedule');
+    });
   });
 }
 
