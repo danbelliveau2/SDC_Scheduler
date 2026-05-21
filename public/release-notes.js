@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.77',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta inside the bar — same styling as outside, real bbox check.',
+      '',
+      'STYLE PARITY:',
+      '   ▸ v4.75 mistakenly bumped the inside meta to match the task name\'s bigger / 600-weight styling. Reverted. The meta now keeps its outside-left styling exactly: 9px / 700 weight / dark fill / white halo (via paint-order stroke). Looks identical whether it lands inside or outside the bar.',
+      '   ▸ Task name is the bigger / 600-weight part. Separator " · " is normal weight. Reads as "[small bold meta] · [bigger name]" — the name is the loudest text on the bar, the meta supports it.',
+      '',
+      'REAL BBOX CHECK INSTEAD OF CHAR-COUNT GUESS:',
+      '   ▸ v4.75\'s char-count estimates were conservative enough that some bars that visibly had room (e.g. "Panel" at 3w) were getting the meta pushed outside anyway.',
+      '   ▸ Now: estimate is OPTIMISTIC — bias toward trying the inline label. We then render it, measure actual width via getBBox, and only fall back to outside-left if the real bbox overflows the bar.',
+      '   ▸ Result: more bars fit the combined inline label. Mismatched-estimate edge cases self-correct.',
+      '',
+      'IMPLEMENTATION:',
+      '   ▸ Meta tspan: font-size 9 / font-weight 700 / paint-order stroke / stroke white / fill #1e293b.',
+      '   ▸ Name tspan: font-size = nameFontSize (8-12 capped by bar height) / font-weight 600 / fill = hierarchy palette text / stroke none.',
+      '   ▸ Both tspans share dominant-baseline central on the parent text so their baselines align.',
+    ],
+  },
+  {
     version: '4.76',
     date: '2026-05-21',
     notes: [

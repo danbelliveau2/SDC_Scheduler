@@ -2488,10 +2488,13 @@ function drawBarMeta() {
     const INSIDE_PADDING = 4;
     const SAME_ROW_GAP   = 4;
     const nameFontSize   = Math.max(8, Math.min(12, barH - 2));
-    // Conservative width estimates — err on "too tight to fit" so we don't
-    // overflow. Meta uses the smaller 9px font.
-    const META_CHAR_W  = 6;
-    const NAME_CHAR_W  = nameFontSize * 0.6;
+    // v4.77: estimates are now OPTIMISTIC. getBBox after the element is in
+    // the DOM is the actual gatekeeper — if the estimate said "fits" and
+    // getBBox disagrees, the combined label is removed + we fall through
+    // to outside-left placement. This way the initial decision biases toward
+    // trying the inline label (the layout the user prefers).
+    const META_CHAR_W  = 5;            // 9px font, dense
+    const NAME_CHAR_W  = nameFontSize * 0.55;
     const metaW        = metaText.length    * META_CHAR_W;
     const sepW         = sepText.length     * NAME_CHAR_W;
     const nameW        = nameTextStr.length * NAME_CHAR_W;
@@ -2503,8 +2506,10 @@ function drawBarMeta() {
     const fill     = (HIERARCHY_BAR_COLORS[ck] && HIERARCHY_BAR_COLORS[ck].text) || '#0f172a';
 
     if (fitsCombined) {
-      // BOTH fit — render one inline combined label at the bar's left.
-      // Hide frappe-gantt's centered label so it doesn't double up.
+      // v4.77: meta stays SMALL with white halo (matches the outside-left
+      // styling exactly) — 9px / 700 weight. Task name is the bigger /
+      // 600-weight part (matches what frappe-gantt would have rendered).
+      // Per-task: meta is the small heavier prefix, then " · ", then name.
       if (barLabel) barLabel.style.visibility = 'hidden';
       const combined = document.createElementNS(SVG_NS, 'text');
       combined.setAttribute('class', 'sdc-bar-meta sdc-bar-combined');
@@ -2512,24 +2517,45 @@ function drawBarMeta() {
       combined.setAttribute('y', String(barY + barH / 2));
       combined.setAttribute('text-anchor', 'start');
       combined.setAttribute('dominant-baseline', 'central');
-      combined.setAttribute('font-size', String(nameFontSize));
-      combined.setAttribute('font-weight', '600');
-      combined.setAttribute('fill', fill);
       combined.style.pointerEvents = 'none';
-      // tspan structure so the meta reads slightly heavier than the name
-      // (mirrors "[meta pill] · description" — pill-without-the-pill-border).
+
+      // Meta tspan — small (9px), 700 weight, dark fill with white halo
+      // (paint-order stroke). Identical visual to the outside-left meta.
       const metaSpan = document.createElementNS(SVG_NS, 'tspan');
+      metaSpan.setAttribute('font-size', '9');
       metaSpan.setAttribute('font-weight', '700');
+      metaSpan.setAttribute('fill', '#1e293b');
+      metaSpan.setAttribute('paint-order', 'stroke');
+      metaSpan.setAttribute('stroke', 'rgba(255,255,255,0.9)');
+      metaSpan.setAttribute('stroke-width', '2.5');
+      metaSpan.setAttribute('stroke-linejoin', 'round');
       metaSpan.textContent = metaText;
       combined.appendChild(metaSpan);
-      const sepSpan = document.createElementNS(SVG_NS, 'tspan');
-      sepSpan.textContent = sepText;
-      combined.appendChild(sepSpan);
+
+      // Separator + name tspan — bigger font, 600 weight, no halo.
+      // Color matches the hierarchy palette (mech blue text, etc.).
       const nameSpan = document.createElementNS(SVG_NS, 'tspan');
-      nameSpan.textContent = nameTextStr;
+      nameSpan.setAttribute('font-size', String(nameFontSize));
+      nameSpan.setAttribute('font-weight', '600');
+      nameSpan.setAttribute('fill', fill);
+      nameSpan.setAttribute('stroke', 'none');
+      nameSpan.textContent = sepText + nameTextStr;
       combined.appendChild(nameSpan);
+
       group.appendChild(combined);
-      continue;
+      // v4.77: verify the combined label actually fits. Char-count estimates
+      // can be off by a few px on certain font / glyph combos. If the real
+      // bbox overflows the bar, remove the inline label and fall through to
+      // the outside-left placement below. Belt-and-suspenders so we don't
+      // ship "should fit but doesn't" overflow.
+      let actualW = combinedW;
+      try { actualW = combined.getBBox().width + INSIDE_PADDING * 2; } catch (_) {}
+      if (actualW <= barW) {
+        continue;
+      }
+      // Didn't actually fit — remove and fall through to outside-left.
+      combined.remove();
+      if (barLabel) barLabel.style.visibility = '';
     }
 
     // COMBINED DOESN'T FIT — meta moves OUTSIDE the bar to the LEFT. The
