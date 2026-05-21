@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.81',
+    date: '2026-05-21',
+    notes: [
+      'Bar meta: never inside-bar while name is outside-bar.',
+      '',
+      'RULE FIX (per user):',
+      '   ▸ When the description doesn\'t fit inside the bar (clipBarLabels puts it outside-right because the bar is too narrow for the name), the META is now ALSO moved outside-left. Previously the meta stayed inside, which left a bar with "85%" inside it and "Configure Machine" floating to the right — visually broken.',
+      '   ▸ Invariant: if name is outside, meta is outside. They live together.',
+      '',
+      'SHIFT-RIGHT MORE GENEROUS:',
+      '   ▸ When a centered name overlaps the inside meta, we shift the name right. The previous check required the shifted name to fit STRICTLY inside the bar. Now there\'s a 6px overflow tolerance — borderline cases keep the meta inside instead of bouncing to outside-left. The user reads "barely fits" as "should fit".',
+      '',
+      'CASCADE NOW READS:',
+      '   ▸ 1. Name is outside-bar (frappe-gantt couldn\'t fit it) → meta outside-left too.',
+      '   ▸ 2. Name centered + meta inside-left don\'t overlap → keep both.',
+      '   ▸ 3. They overlap, shifted-name fits (with 6px tolerance) → shift name right, meta inside-left.',
+      '   ▸ 4. Shifted name doesn\'t fit → meta outside-left, name stays centered.',
+    ],
+  },
+  {
     version: '4.80',
     date: '2026-05-21',
     notes: [

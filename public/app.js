@@ -2541,17 +2541,43 @@ function drawBarMeta() {
     const barRightInside = barX + barW - INSIDE_PADDING;
     const nameIsOutsideBar = nameLeft >= (barX + barW) || nameRight <= barX;
 
-    // Step 2: no-overlap case — name centered (or outside), meta on left. Done.
-    if (nameIsOutsideBar || metaRight + META_NAME_GAP <= nameLeft) {
+    // v4.81 RULE FIX (per user): if the NAME doesn't fit inside the bar
+    // (clipBarLabels put it outside-right because the bar is too narrow for
+    // the name), the META also must NOT be inside the bar. Move it outside-
+    // left. Never have meta inside while name is outside.
+    const moveMetaOutside = () => {
+      metaEl.setAttribute('x', String(barX - SAME_ROW_GAP));
+      metaEl.setAttribute('text-anchor', 'end');
+      metaEl.textContent = metaText; // drop the trailing dash
+      metaEl.removeAttribute('paint-order');
+      metaEl.removeAttribute('stroke');
+      metaEl.removeAttribute('stroke-width');
+      metaEl.removeAttribute('stroke-linejoin');
+      addPillOccluder(group, metaEl);
+      // Ensure the bar-label is back to whatever clipBarLabels set (no shift).
+      barLabel.style.textAnchor = '';
+    };
+
+    if (nameIsOutsideBar) {
+      moveMetaOutside();
       continue;
     }
 
-    // Step 3: overlap. Try shifting the name right.
+    // Step 2: no-overlap case — name centered, meta on left. Done.
+    if (metaRight + META_NAME_GAP <= nameLeft) {
+      continue;
+    }
+
+    // Step 3: overlap. Try shifting the name right. Allow a small overflow
+    // tolerance (6px) so borderline-fits land INSIDE instead of bouncing to
+    // outside-left — the user reads "barely fits" as "should fit".
+    const SHIFT_OVERFLOW_TOLERANCE = 6;
     const shiftedNameLeft  = metaRight + META_NAME_GAP;
     const shiftedNameRight = shiftedNameLeft + nameW;
-    if (shiftedNameRight <= barRightInside) {
-      // Shifted name fits inside the bar. Position bar-label start-anchored at
-      // the shifted left position. Inline style beats frappe-gantt's CSS.
+    if (shiftedNameRight <= barRightInside + SHIFT_OVERFLOW_TOLERANCE) {
+      // Shifted name fits inside the bar (or close enough). Position bar-label
+      // start-anchored at the shifted left position. Inline style beats
+      // frappe-gantt's stylesheet rule.
       barLabel.setAttribute('x', String(shiftedNameLeft));
       barLabel.setAttribute('text-anchor', 'start');
       barLabel.style.textAnchor = 'start';
@@ -2559,19 +2585,8 @@ function drawBarMeta() {
     }
 
     // Step 4: even shifting doesn't fit. Meta moves OUTSIDE-LEFT, name stays
-    // wherever clipBarLabels put it (centered if it fit inside, outside-right
-    // otherwise). Reset the meta's position attributes for the outside slot.
-    metaEl.setAttribute('x', String(barX - SAME_ROW_GAP));
-    metaEl.setAttribute('text-anchor', 'end');
-    metaEl.textContent = metaText; // drop the trailing dash — it pointed at the name, which is now away from the meta
-    // Remove the halo styling (we use a pill occluder instead for outside placement).
-    metaEl.removeAttribute('paint-order');
-    metaEl.removeAttribute('stroke');
-    metaEl.removeAttribute('stroke-width');
-    metaEl.removeAttribute('stroke-linejoin');
-    addPillOccluder(group, metaEl);
-    // Ensure the bar-label is back to whatever clipBarLabels set (no shift).
-    barLabel.style.textAnchor = '';
+    // wherever clipBarLabels set it (centered).
+    moveMetaOutside();
 
     // COMBINED DOESN'T FIT — meta moves OUTSIDE the bar to the LEFT. The
     // bar-label stays wherever clipBarLabels put it (centered if the name
