@@ -3966,6 +3966,18 @@ body.customer-view .schedule-footer { display: none; }
 .actions-qa-section { white-space: nowrap; }
 .actions-qa-create { padding: 6px 14px; font-size: 12px; }
 
+/* v4.70: Thick lime divider between the SIGN-IN section (person picker /
+   personal summary / personal Gantt) and the TASK section (quick-add /
+   filters / list / dept cards). Reads as a clear visual break so the
+   user knows where their personal view ends and the team view begins. */
+.actions-section-divider {
+  height: 4px;
+  background: var(--sdc-accent, #c1f53e);
+  border-radius: 2px;
+  margin: 8px 0 6px;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06);
+}
+
 /* v4.65: Person picker bar — two cascading dropdowns (Department → Person)
    instead of the v4.63 strip of every-team-member-as-chip. */
 .actions-person-bar {
@@ -4362,8 +4374,10 @@ body.customer-view .schedule-footer { display: none; }
 }
 .actions-row {
   display: grid;
-  /* v4.68: 8 columns — done / name / project / assignee / dept / due / open / delete */
-  grid-template-columns: 22px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 80px 92px 28px 24px;
+  /* v4.70: 8 columns — done / name / project / assignee / dept / due / open / delete.
+     Done widened to 36px so its header doesn't crowd Task. Other columns
+     keep their flex-based balance. */
+  grid-template-columns: 36px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 80px 92px 28px 24px;
   gap: 10px;
   align-items: center;
   padding: 8px 12px;
@@ -4375,26 +4389,39 @@ body.customer-view .schedule-footer { display: none; }
 .actions-row:hover {
   background: color-mix(in srgb, var(--sdc-primary, #2563eb) 2%, white);
 }
-/* v4.68: header row mirrors the data row's grid but reads as a column-title
-   strip — uppercase, smaller, no hover, no border. */
+/* v4.70: header row — uniform typography across every column.
+   Reset background / padding / font-* / text-align / etc. on EVERY child
+   so column-specific styles from the data rows don't leak through. */
 .actions-row.actions-row-header {
   background: transparent;
   border: 0;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
-  padding-bottom: 4px;
-  margin-bottom: 2px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 700;
-  color: var(--text-muted);
+  padding: 4px 12px 6px;
+  margin-bottom: 4px;
 }
 .actions-row.actions-row-header:hover { background: transparent; }
-.actions-row.actions-row-header .actions-row-check-head,
-.actions-row.actions-row-header .actions-row-delete-head {
-  text-align: center;
+.actions-row.actions-row-header > span {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: normal;
+  font-family: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.actions-row.actions-row-header > .actions-hdr-done { text-align: center; }
+.actions-row.actions-row-header > .actions-hdr-due,
+.actions-row.actions-row-header > .actions-hdr-open { text-align: right; }
 .actions-row-open {
   background: transparent;
   border: 1px solid var(--border);

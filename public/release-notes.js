@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.70',
+    date: '2026-05-21',
+    notes: [
+      'Actions page polish — uniform headers + section divider.',
+      '',
+      'COLUMN HEADERS ARE NOW UNIFORM:',
+      '   ▸ Previous build re-used the data-row classes on each header cell, so column-specific styles leaked through — "Done" was centered + small, "Task" was bold + bigger, "Dept" had a pill background, "Open" was a bordered button, "×" was a red glyph. Headers read as eight different elements.',
+      '   ▸ Each header is now its own class (.actions-hdr-done, .actions-hdr-name, .actions-hdr-project, etc.) with NO column-specific styles. The header row resets every child via `> span` rules: 10px, 700 weight, uppercase, muted color, no background, no padding, no border.',
+      '   ▸ "Done" stays centered (matches the checkbox below). "Due" and "Open" stay right-aligned (matches the data below). Everything else left-aligned.',
+      '   ▸ The "×" label on the delete column header is gone — it was reading like an action button instead of a column title. Header cell is blank now.',
+      '   ▸ Done column widened from 22px → 36px so the "Done" header no longer crowds the "Task" header.',
+      '',
+      'LIME GREEN SECTION DIVIDER:',
+      '   ▸ Thick lime bar inserted between the SIGN-IN section (person picker / personal summary / personal Gantt) and the TASK section (quick-add / filters / list / dept cards). Always visible, regardless of whether someone\'s signed in.',
+      '   ▸ Reads as a clear visual break: stuff above the bar is YOU; stuff below is the WORK. Was: those two areas bled together with no separation.',
+      '',
+      'NOTE: department column kept for now — once you add actions across multiple departments, the colored Dept pill is the quickest visual scan.',
+    ],
+  },
+  {
     version: '4.69',
     date: '2026-05-21',
     notes: [

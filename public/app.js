@@ -8080,16 +8080,21 @@ function renderActionsPage() {
     // anywhere — the user wanted to be able to interact with the row without
     // accidentally navigating to the project schedule.
     const teamNames = (state.team || []).map(m => m.name).filter(Boolean);
+    // v4.70: header row — every column has a uniform-styled <span> header.
+    // The previous build re-used the data-row classes (each with their own
+    // font-size / weight / color / padding overrides), so headers came out
+    // visually inconsistent. CSS now resets every header cell to the same
+    // typography via .actions-row-header > * (see styles.css).
     const headerHtml = `
       <div class="actions-row actions-row-header">
-        <span class="actions-row-check-head" title="Mark done">Done</span>
-        <span class="actions-row-name"     title="Action title">Task</span>
-        <span class="actions-row-project"  title="Project">Project</span>
-        <span class="actions-row-assignee" title="Assigned to">Assigned To</span>
-        <span class="actions-row-dept"     title="Owning department">Dept</span>
-        <span class="actions-row-due"      title="Due date">Due</span>
-        <span class="actions-row-open"     title="Open in project schedule">Open</span>
-        <span class="actions-row-delete-head" title="Delete">×</span>
+        <span class="actions-hdr-done">Done</span>
+        <span class="actions-hdr-name">Task</span>
+        <span class="actions-hdr-project">Project</span>
+        <span class="actions-hdr-assignee">Assigned To</span>
+        <span class="actions-hdr-dept">Dept</span>
+        <span class="actions-hdr-due">Due</span>
+        <span class="actions-hdr-open">Open</span>
+        <span class="actions-hdr-delete"></span>
       </div>`;
     const rowsHtml = actions.map(t => {
       const overdue = t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
