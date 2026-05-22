@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.98',
+    date: '2026-05-22',
+    notes: [
+      'Bar meta — Step 2 shifts the name with CSS transform (not x attribute).',
+      '',
+      'NEW INSIGHT from v4.97 visual debug: the blue tick was tracking the bar-label\'s getBoundingClientRect to Step 2\'s new position, but the RENDERED glyphs visually stayed at the old centered position. So setAttribute("x", ...) on the bar-label was updating the DOM bbox (which is what getBoundingClientRect reads) but somehow not the rendered paint position. That\'s the bug.',
+      '',
+      'FIX: Step 2 now leaves the x attribute at the centered position and uses CSS `transform: translateX(...)` to shift the rendered text into place. CSS transforms are picked up directly by the SVG paint pipeline — no decoupling between layout-bbox and paint.',
+      '',
+      'ALSO ADDED: debug fill colors on the bar-label based on which step fires. Step 1 = default (unchanged), Step 2 = red, Step 3 = blue, Step 4 = orange. So we can visually verify the cascade decisions match what\'s rendered. Hide via `window.SDC_HIDE_BARMETA_DEBUG = true`.',
+      '',
+      'Other steps clear the transform to avoid stale shifts persisting across renders.',
+    ],
+  },
+  {
     version: '4.97',
     date: '2026-05-22',
     notes: [

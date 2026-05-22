@@ -2449,6 +2449,8 @@ function drawBarMeta() {
     el.style.opacity = '';
     el.style.visibility = '';
     el.style.textAnchor = '';
+    el.style.transform = '';
+    el.style.fill = '';
   });
   if (state.scheduleView?.showBarMeta !== true) return;
 
@@ -2536,7 +2538,7 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.97 LAYOUT CASCADE — debug ticks draw after cascade (show final positions).
+    // v4.98 LAYOUT CASCADE — Step 2 uses CSS transform, plus per-step fill color.
     //
     //   Across v4.85-v4.93 the bug was the same: my width measurements for
     //   the SVG <text> elements were under-reporting compared to what the
@@ -2602,6 +2604,7 @@ function drawBarMeta() {
       barLabel.setAttribute('x', String(barX + barW / 2));
       barLabel.setAttribute('text-anchor', 'middle');
       barLabel.style.textAnchor = '';
+      barLabel.style.transform = '';  // Clear any prior Step-2 shift transform.
       barLabel.classList.remove('bar-label-outside');
     };
 
@@ -2673,9 +2676,18 @@ function drawBarMeta() {
       const metaInsideRight = barX + INSIDE_PADDING + metaW;
       const barRightEdge    = barX + barW;
       const nameCenterX     = (metaInsideRight + barRightEdge) / 2;
-      barLabel.setAttribute('x', String(nameCenterX));
+      // BUG IN PRIOR VERSIONS: setAttribute('x', ...) on the bar-label was
+      // updating the DOM attribute (getBoundingClientRect returned the new
+      // position) but the rendered glyphs visually stayed at the centered
+      // position — looked like Step 2 wasn't firing. Use CSS transform
+      // instead: it's picked up directly by the SVG paint pipeline. We keep
+      // the x attribute at the centered position and shift the rendered
+      // text via translate.
+      const shiftX = nameCenterX - (barX + barW / 2);
+      barLabel.setAttribute('x', String(barX + barW / 2));
       barLabel.setAttribute('text-anchor', 'middle');
       barLabel.style.textAnchor = '';
+      barLabel.style.transform = `translateX(${shiftX}px)`;
       barLabel.classList.remove('bar-label-outside');
     } else if (step3Works) {
       chosenStep = 3;
@@ -2689,7 +2701,16 @@ function drawBarMeta() {
       barLabel.setAttribute('x', String(barX + barW + 6));
       barLabel.setAttribute('text-anchor', 'start');
       barLabel.style.textAnchor = '';
+      barLabel.style.transform = '';
       barLabel.classList.add('bar-label-outside');
+    }
+
+    // DEBUG: tint the name's fill based on which step fired, so we can
+    // visually verify the cascade is doing what it claims. Disable when
+    // satisfied via the same SDC_HIDE_BARMETA_DEBUG flag as the ticks.
+    if (!window.SDC_HIDE_BARMETA_DEBUG) {
+      const stepFills = { 2: '#dc2626', 3: '#1d4ed8', 4: '#ea580c' };
+      if (stepFills[chosenStep]) barLabel.style.fill = stepFills[chosenStep];
     }
 
     // DEBUG TICKS — drawn AFTER the cascade has placed everything, so the
