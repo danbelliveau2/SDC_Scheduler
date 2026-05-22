@@ -4,6 +4,20 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.5',
+    date: '2026-05-22',
+    notes: [
+      'Backlog stops becoming a milestone (data-corruption fix + auto-recovery).',
+      '',
+      'ROOT CAUSE: when saveCellEdit handled a duration save with days=0, it unconditionally set is_milestone=true. So if you ever cleared the Backlog\'s duration cell or typed something that parsed to 0, the Backlog was permanently flipped to a milestone — small diamond on the Gantt, empty DUR cell in the grid, no recovery path.',
+      '',
+      'FIX:',
+      '   ▸ saveCellEdit duration path now skips the auto-milestone conversion for anchors (Receipt of PO, FAT, Ship, Mech 1 Release, Power-Up) and for the Backlog row. Those have their own milestone semantics; a 0-duration entry should NOT silently change what they are.',
+      '   ▸ When duration > 0 is saved for the Backlog, is_milestone is force-cleared back to false — recovers any Backlog already corrupted by older versions when you next edit its duration.',
+      '   ▸ ensureAnchorsForProject (which runs on every page load) now auto-detects a Backlog with is_milestone=true and PATCHes it back to a duration block with the existing duration_days (defaulting to 10 / 2 weeks if missing). Existing broken Backlogs heal on next refresh.',
+    ],
+  },
+  {
     version: '5.4',
     date: '2026-05-22',
     notes: [

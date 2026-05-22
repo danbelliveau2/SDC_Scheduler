@@ -1881,11 +1881,19 @@ async function saveCellEdit(id, col, value, task) {
       const today = new Date().toISOString().slice(0, 10);
       let startStr = snapToBusinessDay(task.start_date || today, 1);
       if (startStr !== task.start_date) data.start_date = startStr;
+      // v5.5: anchors (PO, FAT, Ship, etc.) and Backlog are NEVER auto-converted
+      // to milestones based on duration. Anchors have their own milestone
+      // semantics; Backlog is a duration-only spine task. Without this guard,
+      // saving "0" (or any value that parsed to 0 days) for the Backlog
+      // duration flipped is_milestone=true and broke the Backlog rendering.
+      const isAnchorOrBacklog = !!inferredAnchorKey(task) || isBacklogTask(task);
       if (days === 0) {
-        data.is_milestone = true;
+        if (!isAnchorOrBacklog) data.is_milestone = true;
         data.end_date = startStr;
       } else if (days > 0) {
-        if (task.is_milestone) data.is_milestone = false;
+        // Always clear is_milestone for backlog when duration > 0 — recovers
+        // a Backlog that was wrongly flipped to a milestone by older versions.
+        if (task.is_milestone && !inferredAnchorKey(task)) data.is_milestone = false;
         // N business days INCLUSIVE → end = start + (N-1) business days.
         data.end_date = addBusinessDays(startStr, days - 1);
       }
@@ -10779,8 +10787,8 @@ async function ensureAnchorsForProject(project) {
   // backlog) end up without it — and the user expects to see Backlog right
   // under Receipt of PO. Default duration: 10 business days = 2 weeks,
   // matching the estimate-create default. Allocation 0 (no real work).
-  const hasBacklog = state.tasks.some(t => t.project === project && isBacklogTask(t));
-  if (!hasBacklog) {
+  const backlogRow = state.tasks.find(t => t.project === project && isBacklogTask(t));
+  if (!backlogRow) {
     const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
     if (po && po.start_date) {
       await api.create({
@@ -10800,6 +10808,22 @@ async function ensureAnchorsForProject(project) {
       });
       created = true;
     }
+  } else if (backlogRow.is_milestone) {
+    // v5.5: auto-recover a Backlog that was wrongly flipped to a milestone
+    // by older versions of saveCellEdit (the duration=0 path used to set
+    // is_milestone=true unconditionally). Clear the flag and re-derive
+    // end_date from duration_days so the bar renders as a duration block
+    // again instead of a diamond.
+    const days = Math.max(1, Number(backlogRow.duration_days) || 10);
+    const startStr = backlogRow.start_date || todayISO();
+    const endStr = addBusinessDays(startStr, days - 1);
+    await api.update(backlogRow.id, {
+      is_milestone: false,
+      duration_days: days,
+      start_date: startStr,
+      end_date: endStr,
+    });
+    created = true;
   }
   return created;
 }
