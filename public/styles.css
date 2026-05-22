@@ -1836,6 +1836,32 @@ body > .dropdown-menu {
 }
 td.editing { padding: 3px 8px !important; }
 
+/* v5.1: NAME-column edit input sits in place of the .name-cell-main span,
+   so it occupies the same absolute bounds (left 64, right 110) and leaves
+   the alloc + dash + dur + % pill visible on either side. Overrides the
+   .cell-edit-input full-cell defaults via more-specific selector. */
+.cell-edit-input.name-cell-input {
+  position: absolute;
+  left: 64px;
+  right: 110px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 2px 6px;
+  font-size: clamp(9px, calc(var(--row-h, 26px) * 0.55), 18px);
+  font-weight: 600;
+  line-height: 1.2;
+  border-radius: 3px;
+  z-index: 2;
+}
+/* When the alloc column is hidden, .name-cell-main shifts to left:8; the
+   input has to mirror that. */
+body.hide-alloc-pre .cell-edit-input.name-cell-input {
+  left: 8px;
+}
+
 /* Strip the up/down spinner arrows from EVERY number input — typing is the only
    intended interaction. Spinners appear on focus in WebKit by default; the appearance
    override suppresses them across browsers. */
@@ -4016,6 +4042,30 @@ body.customer-view .schedule-footer { display: none; }
 }
 .is-backlog-duration:hover .duration-edit-hint {
   opacity: 1;
+}
+/* v5.1: explicit styling on the backlog-duration <select> so it reads as
+   an obvious interactive dropdown (instead of looking like static text
+   on Windows / native form themes that style selects very flatly). */
+.backlog-duration-select {
+  appearance: auto;
+  background: white;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+  min-width: 64px;
+}
+.backlog-duration-select:hover {
+  border-color: var(--sdc-primary, #2563eb);
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 22%, white);
+}
+.backlog-duration-select:focus {
+  outline: none;
+  border-color: var(--sdc-primary, #2563eb);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #2563eb) 25%, transparent);
 }
 
 /* v4.76: when a person is signed in, hide the bottom team-view sections

@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.1',
+    date: '2026-05-22',
+    notes: [
+      'Task-name editor stays inside the name area + backlog duration picker styled.',
+      '',
+      'NAME-EDIT FIX: when you click a task name to rename it, the input (and its text-selection highlight) used to stretch across the entire Task column — covering up the allocation %, the duration, and the % complete pill on the right. The actual editable text was only the middle portion, which made the wider highlight look broken.',
+      '',
+      '   ▸ enterCellEdit now special-cases the NAME column: it swaps only the .name-cell-main span for the input instead of wiping the whole td. The alloc, dash, dur, and % pill stay visible during edit.',
+      '   ▸ The input is positioned absolute at left:64 right:110 (mirroring .name-cell-main) so its width and selection highlight exactly match the actual name area.',
+      '   ▸ When the alloc column is hidden (View pill toggle), the input shifts to left:8 to follow .name-cell-main.',
+      '',
+      'BACKLOG DURATION PICKER: the inline <select> dropdown on the Backlog row got explicit styling (border, hover/focus rings, accent background on hover, ≥64 px min-width). Native form themes on Windows render selects very flatly — without the dedicated styling, the dropdown could read as static text. Now it clearly looks like an interactive control. Pick 1w / 2w / ... / 12w or "Custom…" for a typed value.',
+    ],
+  },
+  {
     version: '5.0',
     date: '2026-05-22',
     notes: [

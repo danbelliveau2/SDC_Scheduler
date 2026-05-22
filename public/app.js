@@ -1657,9 +1657,23 @@ function enterCellEdit(td, taskId, col) {
   if (!task) return;
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
-  td.classList.add('editing');
-  td.innerHTML = '';
-  td.appendChild(input);
+  // v5.1: when editing the NAME column, swap ONLY the .name-cell-main span
+  // for the input — don't wipe the whole td. That keeps the alloc, dur, and
+  // %-complete pills visible and constrains the input (and its text-selection
+  // highlight) to the name's actual area between them, instead of stretching
+  // across the entire Task column.
+  let nameMainSpan = null;
+  if (col === 'name') {
+    nameMainSpan = td.querySelector('.name-cell-main');
+  }
+  if (nameMainSpan) {
+    input.classList.add('name-cell-input');
+    nameMainSpan.replaceWith(input);
+  } else {
+    td.classList.add('editing');
+    td.innerHTML = '';
+    td.appendChild(input);
+  }
   input.focus();
   if (typeof input.select === 'function') input.select();
 
