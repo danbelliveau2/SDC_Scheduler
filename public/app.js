@@ -1631,6 +1631,14 @@ function enterCellEdit(td, taskId, col) {
   if (nameMainSpan) {
     input.classList.add('name-cell-input');
     nameMainSpan.replaceWith(input);
+  } else if (col === 'duration') {
+    // v5.3: duration uses a compact right-aligned input that just replaces
+    // the text. Skip the full-cell 'editing' state so the input doesn't
+    // stretch across the entire 80-px column — it sits where the duration
+    // text used to be, so the selection highlight matches the actual edit area.
+    input.classList.add('duration-cell-input');
+    td.innerHTML = '';
+    td.appendChild(input);
   } else {
     td.classList.add('editing');
     td.innerHTML = '';

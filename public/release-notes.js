@@ -4,6 +4,19 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.3',
+    date: '2026-05-22',
+    notes: [
+      'Duration cell editor is compact (no more full-column-width highlight).',
+      '',
+      'BUG: clicking the Duration column to edit (Backlog or any task) made the input fill the entire 80-px column, with a wide selection highlight that looked broken — same complaint as the name-column edit that v5.1 fixed.',
+      '',
+      'FIX: when editing the Duration column, the input gets a `duration-cell-input` class that constrains it to 58 px, right-aligned, with the cell\'s normal padding intact (no \"editing\" full-bleed override). The selection highlight now matches the actual edit area, same shape as the displayed "10W" / "3w" text.',
+      '',
+      'Combined with v5.2 (backlog duration is a regular click-to-edit cell instead of a flaky native <select>), changing the backlog duration now works exactly the same as every other task: click → type → Enter.',
+    ],
+  },
+  {
     version: '5.2',
     date: '2026-05-22',
     notes: [

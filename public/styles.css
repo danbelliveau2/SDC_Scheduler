@@ -1862,6 +1862,22 @@ body.hide-alloc-pre .cell-edit-input.name-cell-input {
   left: 8px;
 }
 
+/* v5.3: DURATION-column edit input — compact, right-aligned, sized to fit
+   the column's actual data (e.g. "10W", "3w") instead of bleeding to fill
+   the entire 80-px column. Override the .cell-edit-input full-cell defaults
+   via more-specific selector. */
+.cell-edit-input.duration-cell-input {
+  width: 58px;
+  height: auto;
+  margin: 0;
+  padding: 2px 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  border-radius: 3px;
+  display: inline-block;
+  font-size: 12px;
+}
+
 /* Strip the up/down spinner arrows from EVERY number input — typing is the only
    intended interaction. Spinners appear on focus in WebKit by default; the appearance
    override suppresses them across browsers. */
