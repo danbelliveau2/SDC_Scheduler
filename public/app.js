@@ -2536,7 +2536,7 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.96 LAYOUT CASCADE — calibrated per-char width + magenta+blue debug ticks.
+    // v4.97 LAYOUT CASCADE — debug ticks draw after cascade (show final positions).
     //
     //   Across v4.85-v4.93 the bug was the same: my width measurements for
     //   the SVG <text> elements were under-reporting compared to what the
@@ -2656,17 +2656,51 @@ function drawBarMeta() {
     const availRightPx = barRect.right - nameRect.right;
     const nameWidthPx = nameRect.width;
 
-    // DEBUG MARKERS (v4.95-v4.96):
-    //   ▸ MAGENTA tick = where the code believes the meta's right edge lands.
-    //     If the rendered meta text extends past this tick, the per-char
-    //     estimate is too small.
-    //   ▸ BLUE tick = where the code believes the name's left edge actually
-    //     is (from getBoundingClientRect on the bar-label).
-    // Hide by setting window.SDC_HIDE_BARMETA_DEBUG = true in the console.
+    // === CASCADE — decide which step ===
+    const step1Works = availLeftPx >= metaW + INSIDE_PADDING + INSIDE_GAP;
+    const step2AvailableForName = barW - INSIDE_PADDING - metaW;
+    const step2Works = step2AvailableForName >= nameWidthPx + 2 * INSIDE_GAP;
+    const step3Works = barW >= nameWidthPx + 2 * INSIDE_GAP;
+
+    let chosenStep;
+    if (step1Works) {
+      chosenStep = 1;
+      // Name already centered (centerNameInBar above), meta at default
+      // inside-left position. Nothing more to do.
+    } else if (step2Works) {
+      chosenStep = 2;
+      // Meta stays inside-left. Re-center name between meta-right and bar-right.
+      const metaInsideRight = barX + INSIDE_PADDING + metaW;
+      const barRightEdge    = barX + barW;
+      const nameCenterX     = (metaInsideRight + barRightEdge) / 2;
+      barLabel.setAttribute('x', String(nameCenterX));
+      barLabel.setAttribute('text-anchor', 'middle');
+      barLabel.style.textAnchor = '';
+      barLabel.classList.remove('bar-label-outside');
+    } else if (step3Works) {
+      chosenStep = 3;
+      // Meta OUTSIDE-left. Name centered in bar (it now has full width to use).
+      moveMetaOutside();
+      centerNameInBar();
+    } else {
+      chosenStep = 4;
+      // Both outside.
+      moveMetaOutside();
+      barLabel.setAttribute('x', String(barX + barW + 6));
+      barLabel.setAttribute('text-anchor', 'start');
+      barLabel.style.textAnchor = '';
+      barLabel.classList.add('bar-label-outside');
+    }
+
+    // DEBUG TICKS — drawn AFTER the cascade has placed everything, so the
+    // ticks reflect the FINAL rendered positions, not the pre-cascade ones.
+    //   ▸ MAGENTA = computed meta right edge (only shown when meta is inside).
+    //   ▸ BLUE    = name's ACTUAL rendered left edge after cascade decision.
+    // Hide both via `window.SDC_HIDE_BARMETA_DEBUG = true` in DevTools.
     if (!window.SDC_HIDE_BARMETA_DEBUG) {
       const drawTick = (x, color) => {
         const tick = document.createElementNS(SVG_NS, 'line');
-        tick.setAttribute('class', 'sdc-bar-meta');  // cleaned up next render
+        tick.setAttribute('class', 'sdc-bar-meta');
         tick.setAttribute('x1', String(x));
         tick.setAttribute('x2', String(x));
         tick.setAttribute('y1', String(barY));
@@ -2677,61 +2711,15 @@ function drawBarMeta() {
         tick.style.pointerEvents = 'none';
         group.appendChild(tick);
       };
-      // Magenta — computed meta right edge.
-      drawTick(barX + INSIDE_PADDING + metaW, '#e11d48');
-      // Blue — rendered name's left edge (as the code sees it).
-      drawTick(barX + availLeftPx, '#1d4ed8');
+      // Magenta — only meaningful when meta is inside the bar (Step 1 & 2).
+      if (chosenStep === 1 || chosenStep === 2) {
+        drawTick(barX + INSIDE_PADDING + metaW, '#e11d48');
+      }
+      // Blue — re-read the name's rect AFTER the cascade so the tick lands
+      // at the actual final left edge.
+      const finalNameRect = barLabel.getBoundingClientRect();
+      drawTick(barX + (finalNameRect.left - barRect.left), '#1d4ed8');
     }
-
-    // === STEP 1 ===
-    // Meta inside-left, NAME STAYS WHERE clipBarLabels put it (centered in bar).
-    // Works IF the gap from bar-left to the rendered name-left is enough for
-    // the meta + INSIDE_PADDING (3 px on the left) + INSIDE_GAP (3 px to name).
-    // No prediction — we're using the REAL rendered name position from the browser.
-    const step1Works = availLeftPx >= metaW + INSIDE_PADDING + INSIDE_GAP;
-
-    if (step1Works) {
-      // Name already centered (we called centerNameInBar above). Meta already
-      // at barX + INSIDE_PADDING. Done.
-      continue;
-    }
-
-    // === STEP 2 ===
-    // Meta inside-left, name RE-CENTERED between meta-right and bar-right.
-    // Available space for the name in this layout is (barW - INSIDE_PADDING -
-    // metaW). The name needs that minus INSIDE_GAP on each side.
-    const step2AvailableForName = barW - INSIDE_PADDING - metaW;
-    const step2Works = step2AvailableForName >= nameWidthPx + 2 * INSIDE_GAP;
-
-    if (step2Works) {
-      // Place name centered between (meta's right edge) and (bar's right edge).
-      const metaInsideRight = barX + INSIDE_PADDING + metaW;
-      const barRightEdge    = barX + barW;
-      const nameCenterX     = (metaInsideRight + barRightEdge) / 2;
-      barLabel.setAttribute('x', String(nameCenterX));
-      barLabel.setAttribute('text-anchor', 'middle');
-      barLabel.style.textAnchor = '';
-      barLabel.classList.remove('bar-label-outside');
-      continue;
-    }
-
-    // === STEP 3 ===
-    // Meta OUTSIDE-left, name centered in bar (more room for name now).
-    const step3Works = barW >= nameWidthPx + 2 * INSIDE_GAP;
-
-    if (step3Works) {
-      moveMetaOutside();
-      centerNameInBar();
-      continue;
-    }
-
-    // === STEP 4 ===
-    // Both outside. Meta outside-left, name ALWAYS outside-right.
-    moveMetaOutside();
-    barLabel.setAttribute('x', String(barX + barW + 6));
-    barLabel.setAttribute('text-anchor', 'start');
-    barLabel.style.textAnchor = '';
-    barLabel.classList.add('bar-label-outside');
   }
 }
 

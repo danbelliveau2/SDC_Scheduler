@@ -4,6 +4,22 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.97',
+    date: '2026-05-22',
+    notes: [
+      'Bar meta — debug ticks now show the FINAL positions after the cascade ran.',
+      '',
+      'BUG IN v4.96 DEBUG: the blue tick was drawn BEFORE the cascade had a chance to move the name (Step 2). So even when Step 2 shifted the name to clear the meta, the blue tick was still showing the pre-shift centered position — looked like the cascade did nothing.',
+      '',
+      'FIX:',
+      '   ▸ Restructured the cascade as an if/else chain with a `chosenStep` variable instead of early `continue` returns.',
+      '   ▸ Ticks are drawn AFTER the cascade decision, and the blue tick re-reads the bar-label\'s rect at that point so it lands at the name\'s real final left edge.',
+      '   ▸ Magenta tick now only renders for Step 1 and Step 2 (meta inside). For Step 3/4 the meta is outside and the "meta-right inside the bar" position is meaningless.',
+      '',
+      'When you refresh, the blue tick should always land to the RIGHT of the magenta tick whenever the meta is inside the bar. If you see blue left of magenta, the cascade is genuinely failing to trigger Step 2 and we have a different bug to chase.',
+    ],
+  },
+  {
     version: '4.96',
     date: '2026-05-22',
     notes: [
