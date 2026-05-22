@@ -4043,30 +4043,8 @@ body.customer-view .schedule-footer { display: none; }
 .is-backlog-duration:hover .duration-edit-hint {
   opacity: 1;
 }
-/* v5.1: explicit styling on the backlog-duration <select> so it reads as
-   an obvious interactive dropdown (instead of looking like static text
-   on Windows / native form themes that style selects very flatly). */
-.backlog-duration-select {
-  appearance: auto;
-  background: white;
-  border: 1px solid var(--border, #cbd5e1);
-  border-radius: 4px;
-  padding: 2px 4px;
-  font-size: 12px;
-  font-family: inherit;
-  color: var(--text);
-  cursor: pointer;
-  min-width: 64px;
-}
-.backlog-duration-select:hover {
-  border-color: var(--sdc-primary, #2563eb);
-  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 22%, white);
-}
-.backlog-duration-select:focus {
-  outline: none;
-  border-color: var(--sdc-primary, #2563eb);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #2563eb) 25%, transparent);
-}
+/* v5.2: backlog-duration <select> dropped. Backlog duration is now a
+   regular click-to-edit cell, same as every other duration cell. */
 
 /* v4.76: when a person is signed in, hide the bottom team-view sections
    (section divider, filter chips, action list, dept dashboard). The

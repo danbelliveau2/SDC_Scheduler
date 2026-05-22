@@ -4,6 +4,19 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.2',
+    date: '2026-05-22',
+    notes: [
+      'Backlog duration is now a regular click-to-edit cell.',
+      '',
+      'BUG: the native <select> dropdown on the Backlog row (introduced v4.84, restyled v5.1) was unreliable. On some platforms / native form themes it didn\'t register clicks properly, and the multiple stop-propagation handlers attached to it interacted badly with the table\'s general click handler. Net effect: the user couldn\'t change the backlog duration.',
+      '',
+      'FIX: removed the <select> wiring entirely. Backlog duration cell now renders as a plain td with the same click-to-edit path as every other duration cell. Click the cell, type "3w" / "5d" / "2w" / etc., press Enter. Saves immediately. The is-backlog-duration class keeps the hover-highlight + pencil hint so it\'s still obviously editable.',
+      '',
+      'Consistent with how the rest of the schedule is edited — no special widget, no special handlers, no platform-specific dropdown quirks.',
+    ],
+  },
+  {
     version: '5.1',
     date: '2026-05-22',
     notes: [

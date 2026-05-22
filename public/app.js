@@ -963,35 +963,16 @@ function cellHtml(t, key) {
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'duration': {
-      // v4.84: Backlog row gets a real inline <select> dropdown for picking
-      // a common duration (1w through 12w + "Custom…"). The text-input
-      // click-to-edit path is still available for non-standard values via
-      // the "Custom…" option. Solves the "I don't see how to change this"
-      // discoverability problem.
+      // v5.2: Backlog row used to render a native <select> dropdown (v4.84) —
+      // but the dropdown was unreliable on some platforms (native form
+      // theming, stopPropagation interactions, etc.) and the user kept
+      // hitting "I can't edit the duration." Now it uses the SAME
+      // click-to-edit text input as every other duration cell: click the
+      // cell, type "3w" / "5d" / etc., press Enter. The is-backlog-duration
+      // class + hover highlight + pencil hint make it obviously interactive.
       const isBacklogRow = isBacklogTask(t);
       if (isBacklogRow) {
-        const curDays = Number(t.duration_days) || 0;
-        const opts = [
-          { d: 5,  label: '1w' },
-          { d: 10, label: '2w' },
-          { d: 15, label: '3w' },
-          { d: 20, label: '4w' },
-          { d: 25, label: '5w' },
-          { d: 30, label: '6w' },
-          { d: 40, label: '8w' },
-          { d: 50, label: '10w' },
-          { d: 60, label: '12w' },
-        ];
-        // If the current value is one of our presets, mark it selected.
-        // Otherwise we render it as a one-off "current" option at the top.
-        const hasPreset = opts.some(o => o.d === curDays);
-        const optionsHtml = (hasPreset ? '' :
-          `<option value="${curDays}" selected>${escapeHtml(durationLabel(t))}</option>`)
-          + opts.map(o => `<option value="${o.d}" ${o.d === curDays ? 'selected' : ''}>${o.label}</option>`).join('')
-          + '<option value="__custom__">Custom…</option>';
-        return `<td class="${cls} is-backlog-duration" data-col="duration" title="Pick a backlog duration — click to choose.">
-          <select class="backlog-duration-select" data-id="${t.id}">${optionsHtml}</select>
-        </td>`;
+        return `<td class="${cls} is-backlog-duration" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${durationLabel(t)}<span class="duration-edit-hint">✎</span></td>`;
       }
       return `<td class="${cls}" data-col="duration">${durationLabel(t)}</td>`;
     }
@@ -1353,25 +1334,9 @@ function renderTable() {
     });
   });
 
-  // v4.84: Backlog duration <select> — picking a preset (1w / 2w / ...) sets
-  // duration_days directly. "Custom…" falls back to the inline text editor.
-  tbody.querySelectorAll('.backlog-duration-select').forEach(sel => {
-    sel.addEventListener('click', (e) => e.stopPropagation());
-    sel.addEventListener('mousedown', (e) => e.stopPropagation());
-    sel.addEventListener('change', async (e) => {
-      e.stopPropagation();
-      const id = Number(sel.dataset.id);
-      if (sel.value === '__custom__') {
-        // Restore visible select then open the underlying duration edit.
-        const td = sel.closest('td[data-col="duration"]');
-        if (td) enterCellEdit(td, id, 'duration');
-        return;
-      }
-      const days = Math.max(0, Number(sel.value) || 0);
-      await api.update(id, { duration_days: days });
-      await loadTasks();
-    });
-  });
+  // v5.2: backlog duration is now a regular click-to-edit cell — no special
+  // select dropdown wiring needed. handleCellClick → enterCellEdit handles
+  // it via the standard "duration" column flow.
 
   attachRowDragHandlers(tbody);
 }
@@ -1501,9 +1466,6 @@ function handleCellClick(e) {
     api.update(taskId, { progress: newProgress }).then(() => loadTasks());
     return;
   }
-  // v4.84: Backlog duration select handles its own clicks — don't open the
-  // generic enterCellEdit path on top of it.
-  if (e.target.closest('.backlog-duration-select')) return;
   const td = e.target.closest('td[data-col]');
   if (!td) return;
   const tr = td.closest('tr[data-id]');
