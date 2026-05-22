@@ -4,6 +4,29 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.95',
+    date: '2026-05-22',
+    notes: [
+      'Bar meta — per-char width estimate + visual debug tick.',
+      '',
+      'TWO CHANGES:',
+      '',
+      '1. META WIDTH — per-character lookup, not browser APIs.',
+      '   Every browser/canvas measurement API returned widths smaller than what was actually rendered on screen. Switched to a per-char table calibrated for any common bold-9 px sans-serif: digits = 7 px, "%" = 8 px, space = 3 px, "·" = 4 px, "w" = 8 px, default 7 px. Plus 3 px for the meta\'s 2.5 px stroke halo. Deterministic, doesn\'t depend on which font the browser picks.',
+      '',
+      '2. VISUAL DEBUG TICK on each bar.',
+      '   A thin magenta dashed line is now drawn on every bar at the position where the code believes the meta\'s right edge lands. If the actual rendered meta text extends PAST the tick, the per-char estimate is too small and we know to bump it. Hides via `window.SDC_HIDE_BARMETA_DEBUG = true` in the console once verified.',
+      '',
+      'The name\'s width is still read live from the bar-label\'s real rendered rect (getBoundingClientRect) — that part has always been reliable because clipBarLabels has already placed the bar-label by the time drawBarMeta runs.',
+      '',
+      'CASCADE (unchanged from v4.94 — algorithm has been correct since v4.85, the bug was always meta-width measurement):',
+      '   STEP 1 — meta inside-left, name centered IN BAR.',
+      '   STEP 2 — meta inside-left, name centered between meta-right and bar-right.',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar.',
+      '   STEP 4 — both outside.',
+    ],
+  },
+  {
     version: '4.94',
     date: '2026-05-22',
     notes: [
