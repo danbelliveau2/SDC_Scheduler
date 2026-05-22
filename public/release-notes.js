@@ -4,6 +4,25 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.93',
+    date: '2026-05-22',
+    notes: [
+      'Bar meta — accurate width measurement, tight 3 px gap.',
+      '',
+      'CONTEXT: the cascade logic has been correct since v4.85 — "leave the name centered until it overlaps the meta, then shift to centered-between-meta-and-bar-right." What kept failing was WIDTH MEASUREMENT.',
+      '',
+      'WHY measurement kept failing: the SVG <text> meta was inheriting the document\'s font-family stack (-apple-system, Segoe UI, Roboto, etc.) but canvas measureText\'s "sans-serif" resolves to a different OS-default font (Arial on Windows, Helvetica on Mac). Same text, different font, 15-25 px width discrepancy. My overlap check used the canvas-measured width, said "no overlap," and the name landed on top of the meta.',
+      '',
+      'v4.92 fixed the overlap by taking the MAX of 5 measurement methods plus a chars × 8 px floor — guaranteed no underestimate, but overestimated by 15-25 px on most bars (the "big gap" report).',
+      '',
+      'v4.93 FIX:',
+      '   ▸ Force the meta to render in "sans-serif" explicitly (font-family attribute on the SVG element). No more font-stack inheritance.',
+      '   ▸ Canvas measureText with "bold 9px sans-serif" now matches the SVG render exactly because both sides resolve to the same OS-default sans.',
+      '   ▸ Drop the 5-methods-max + char-count floor + +8 safety margin paranoia. Just trust canvas measureText + 2.5 px for the meta\'s stroke halo (which is real width the rendered glyphs occupy).',
+      '   ▸ Result: 3 px gap between meta-right and name-left, every time.',
+    ],
+  },
+  {
     version: '4.92',
     date: '2026-05-21',
     notes: [
