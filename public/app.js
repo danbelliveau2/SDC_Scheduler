@@ -2536,31 +2536,34 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.93 LAYOUT CASCADE — accurate width measurement, tight gaps.
+    // v4.94 LAYOUT CASCADE — read the name's rendered position, don't predict it.
     //
-    //   The whole cascade logic has been correct since v4.85. What kept
-    //   failing was WIDTH MEASUREMENT — the SVG was rendering the meta in a
-    //   font picked up from the document's font-family stack while canvas
-    //   measureText was resolving 'sans-serif' to a different font. Widths
-    //   were off by 15-25 px and Step 1 fired when it shouldn't.
+    //   Across v4.85-v4.93 the bug was the same: my width measurements for
+    //   the SVG <text> elements were under-reporting compared to what the
+    //   browser actually rendered. Every API I tried (getBBox,
+    //   getComputedTextLength, getBoundingClientRect, canvas measureText
+    //   with various fonts) returned widths smaller than reality. The
+    //   overlap check then said "no overlap" when there obviously was one.
     //
-    //   v4.92 killed the overlap by over-estimating widths aggressively (max
-    //   of 5 methods plus a char-count floor). But that left ~20 px gaps on
-    //   most bars — overkill.
+    //   v4.94 stops predicting where the name will land. By the time this
+    //   function runs, clipBarLabels has already positioned the bar-label
+    //   and the browser has laid it out. So we READ the bar-label's actual
+    //   rendered rect via getBoundingClientRect (reliable for already-
+    //   placed-and-laid-out elements) and compare it to the bar's rect.
+    //   The gap between the bar's left edge and the rendered name's left
+    //   edge IS the available space for the meta.
     //
-    //   v4.93 fix: force the meta to render in 'sans-serif' explicitly (no
-    //   font-family stack inheritance). Canvas measureText with 'bold 9px
-    //   sans-serif' now matches the SVG render exactly. Accurate widths,
-    //   tight 3 px gaps.
-    //
-    //   Cascade unchanged:
-    //     Step 1 — meta inside-left, name centered IN BAR.
-    //              Trigger: centered name has ≥3 px from meta-right AND ≥3 px from bar-right.
-    //     Step 2 — meta inside-left, name centered between meta-right and bar-right.
-    //              Trigger: (barRight - metaInsideRight) ≥ nameW + 6.
-    //     Step 3 — meta OUTSIDE-left, name centered in bar.
-    //              Trigger: barW ≥ nameW + 6.
-    //     Step 4 — both outside.
+    //   Algorithm:
+    //     1. Read barLabel.getBoundingClientRect() → real name position.
+    //     2. Compute meta width via canvas measureText + small safety pad.
+    //     3. If (nameLeft - barLeft) ≥ metaW + INSIDE_PADDING + INSIDE_GAP,
+    //        Step 1 works: place meta inside-left, name stays put.
+    //     4. Else if (barW - metaW) is large enough to center name between
+    //        meta-right and bar-right with ≥INSIDE_GAP each side, Step 2:
+    //        place meta inside-left, RE-position name centered in available.
+    //     5. Else if name fits centered in full bar with ≥INSIDE_GAP each
+    //        side, Step 3: meta outside, name centered in bar.
+    //     6. Else Step 4: both outside.
     const INSIDE_PADDING = 3;
     const INSIDE_GAP     = 3;
     const OUTSIDE_GAP    = 3;
@@ -2571,35 +2574,30 @@ function drawBarMeta() {
     const barLabel = wrap.querySelector('.bar-label');
     if (!barLabel) continue;
 
-    // Force a known, simple font on the meta. Using 'sans-serif' explicitly
-    // means the SVG and canvas both resolve to the same OS-default sans
-    // (Arial on Windows, Helvetica on macOS). This was the source of the
-    // measurement drift in v4.85-v4.91 — without an explicit family the SVG
-    // was picking up the document's font-family stack while canvas was
-    // resolving "sans-serif" to a different font.
-    const META_FONT_FAMILY = 'sans-serif';
-    const META_FONT        = 'bold 9px sans-serif';
-
-    // Render meta inside-left with halo.
+    // Force a known font on the meta SO IT MATCHES what canvas measures.
+    // Via inline style so it beats any CSS rule (frappe-gantt's stylesheet
+    // sets font-family on .gantt text — would override a presentation
+    // attribute).
     const metaEl = document.createElementNS(SVG_NS, 'text');
     metaEl.setAttribute('class', 'sdc-bar-meta');
     metaEl.setAttribute('x', String(barX + INSIDE_PADDING));
     metaEl.setAttribute('y', String(barY + barH / 2));
     metaEl.setAttribute('text-anchor', 'start');
     metaEl.setAttribute('dominant-baseline', 'central');
-    metaEl.setAttribute('font-size', '9');
-    metaEl.setAttribute('font-weight', '700');
-    metaEl.setAttribute('font-family', META_FONT_FAMILY);
     metaEl.setAttribute('fill', '#1e293b');
     metaEl.setAttribute('paint-order', 'stroke');
     metaEl.setAttribute('stroke', 'rgba(255,255,255,0.9)');
     metaEl.setAttribute('stroke-width', '2.5');
     metaEl.setAttribute('stroke-linejoin', 'round');
+    metaEl.style.fontFamily = 'sans-serif';
+    metaEl.style.fontSize   = '9px';
+    metaEl.style.fontWeight = '700';
     metaEl.style.pointerEvents = 'none';
     metaEl.textContent = metaText;
     group.appendChild(metaEl);
 
-    // Helper: center name inside the bar.
+    // Center name inside the bar — sets the bar-label to its natural
+    // centered-in-bar position. Used for Step 1 (default) and Step 3.
     const centerNameInBar = () => {
       barLabel.setAttribute('x', String(barX + barW / 2));
       barLabel.setAttribute('text-anchor', 'middle');
@@ -2607,7 +2605,7 @@ function drawBarMeta() {
       barLabel.classList.remove('bar-label-outside');
     };
 
-    // Helper: move metaEl from inside-left to outside-left + swap halo for pill occluder.
+    // Move metaEl from inside-left to outside-left + swap halo for pill occluder.
     const moveMetaOutside = () => {
       metaEl.setAttribute('x', String(barX - SAME_ROW_GAP));
       metaEl.setAttribute('text-anchor', 'end');
@@ -2618,47 +2616,60 @@ function drawBarMeta() {
       addPillOccluder(group, metaEl, PILL_PAD);
     };
 
-    // Width measurement — now reliable because both meta and canvas use
-    // 'sans-serif'. Canvas measureText returns the true rendered width.
+    // Meta width — canvas measureText with the SAME font we forced on the
+    // SVG element. Plus the stroke halo width. Plus a small safety margin
+    // for any final sub-pixel drift between canvas measureText and SVG
+    // rendering.
     const ctx = ensureMetaCanvasCtx();
-    ctx.font = META_FONT;
-    const metaTextW = ctx.measureText(metaText).width;
-    // Meta paints a 2.5 px white stroke halo around the glyphs. Add the full
-    // 2.5 px on the right (and 2.5 on the left of nothing — it's symmetric)
-    // so our "right edge of meta" matches the visually-readable right edge.
-    const metaW = metaTextW + 2.5;
+    ctx.font = 'bold 9px sans-serif';
+    const metaW = ctx.measureText(metaText).width + 2.5 /* stroke halo */ + 3 /* safety */;
 
-    // Measure the name with the bar-label's actual computed font.
-    const barLabelStyle = window.getComputedStyle(barLabel);
-    const nameFontSize   = barLabelStyle.fontSize   || '12px';
-    const nameFontWeight = barLabelStyle.fontWeight || '400';
-    const nameFontFamily = barLabelStyle.fontFamily || 'sans-serif';
-    ctx.font = `${nameFontWeight} ${nameFontSize} ${nameFontFamily}`;
-    const nameW = ctx.measureText(task.name || '').width;
+    // Center the bar-label as Step 1 would. clipBarLabels may have placed it
+    // outside if the bar is narrower than nameW + PAD — force back to center
+    // so we can read its real centered-in-bar position. The browser does a
+    // layout pass when we read getBoundingClientRect below.
+    centerNameInBar();
 
-    const metaInsideRight = barX + INSIDE_PADDING + metaW;
-    const barRightEdge    = barX + barW;
+    // === READ THE NAME'S ACTUAL RENDERED POSITION ===
+    // This is the key change from prior versions: we don't COMPUTE where the
+    // name will be from a (potentially wrong) measured width — we READ where
+    // the browser actually placed it. getBoundingClientRect on the already-
+    // laid-out bar-label is reliable.
+    const barRect   = bar.getBoundingClientRect();
+    const nameRect  = barLabel.getBoundingClientRect();
+    // Gap from bar's left edge to the rendered name's left edge — this is
+    // the space available for the meta on the inside-left.
+    const availLeftPx = nameRect.left - barRect.left;
+    // Gap from the rendered name's right edge to bar's right edge — used
+    // for Step 2 "does the name still fit if we re-center it?" check below.
+    const availRightPx = barRect.right - nameRect.right;
+    const nameWidthPx = nameRect.width;
 
     // === STEP 1 ===
-    // Meta inside-left, name centered IN BAR.
-    // Fits IF centered name has ≥INSIDE_GAP from meta-right AND ≥INSIDE_GAP from bar-right.
-    const step1NameLeft  = (barX + barW / 2) - (nameW / 2);
-    const step1NameRight = (barX + barW / 2) + (nameW / 2);
-    const step1Works = (step1NameLeft >= metaInsideRight + INSIDE_GAP) &&
-                       (step1NameRight + INSIDE_GAP <= barRightEdge);
+    // Meta inside-left, NAME STAYS WHERE clipBarLabels put it (centered in bar).
+    // Works IF the gap from bar-left to the rendered name-left is enough for
+    // the meta + INSIDE_PADDING (3 px on the left) + INSIDE_GAP (3 px to name).
+    // No prediction — we're using the REAL rendered name position from the browser.
+    const step1Works = availLeftPx >= metaW + INSIDE_PADDING + INSIDE_GAP;
 
     if (step1Works) {
-      centerNameInBar();
+      // Name already centered (we called centerNameInBar above). Meta already
+      // at barX + INSIDE_PADDING. Done.
       continue;
     }
 
     // === STEP 2 ===
-    // Meta inside-left, name centered between meta-right and bar-right.
-    const step2AvailableWidth = barRightEdge - metaInsideRight;
-    const step2Works = step2AvailableWidth >= nameW + 2 * INSIDE_GAP;
+    // Meta inside-left, name RE-CENTERED between meta-right and bar-right.
+    // Available space for the name in this layout is (barW - INSIDE_PADDING -
+    // metaW). The name needs that minus INSIDE_GAP on each side.
+    const step2AvailableForName = barW - INSIDE_PADDING - metaW;
+    const step2Works = step2AvailableForName >= nameWidthPx + 2 * INSIDE_GAP;
 
     if (step2Works) {
-      const nameCenterX = (metaInsideRight + barRightEdge) / 2;
+      // Place name centered between (meta's right edge) and (bar's right edge).
+      const metaInsideRight = barX + INSIDE_PADDING + metaW;
+      const barRightEdge    = barX + barW;
+      const nameCenterX     = (metaInsideRight + barRightEdge) / 2;
       barLabel.setAttribute('x', String(nameCenterX));
       barLabel.setAttribute('text-anchor', 'middle');
       barLabel.style.textAnchor = '';
@@ -2667,8 +2678,8 @@ function drawBarMeta() {
     }
 
     // === STEP 3 ===
-    // Meta OUTSIDE-left, name centered in bar.
-    const step3Works = barW >= nameW + 2 * INSIDE_GAP;
+    // Meta OUTSIDE-left, name centered in bar (more room for name now).
+    const step3Works = barW >= nameWidthPx + 2 * INSIDE_GAP;
 
     if (step3Works) {
       moveMetaOutside();
@@ -2677,8 +2688,7 @@ function drawBarMeta() {
     }
 
     // === STEP 4 ===
-    // Both outside. Meta outside-left, name ALWAYS outside-right
-    // (override clipBarLabels' viewport-clip-to-left if it kicked in).
+    // Both outside. Meta outside-left, name ALWAYS outside-right.
     moveMetaOutside();
     barLabel.setAttribute('x', String(barX + barW + 6));
     barLabel.setAttribute('text-anchor', 'start');

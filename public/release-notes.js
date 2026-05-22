@@ -4,6 +4,32 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.94',
+    date: '2026-05-22',
+    notes: [
+      'Bar meta — read the name\'s actual position, stop predicting it.',
+      '',
+      'CONTEXT: across v4.85-v4.93 the bug was the same. My width measurements for the SVG <text> elements were UNDER-REPORTING vs what the browser actually rendered. Every API I tried — getBBox, getComputedTextLength, getBoundingClientRect, canvas measureText with various fonts — returned widths smaller than reality on at least some bars. The overlap check then said "no overlap" when there clearly was one, and the name stayed centered on top of the meta.',
+      '',
+      'In v4.93 I tried to force the meta to render in "sans-serif" so canvas measureText would match. The font-family attribute I set on the SVG element was getting OVERRIDDEN by frappe-gantt\'s CSS rule on .gantt text. The SVG still rendered in the document\'s font stack while canvas measured Arial. Same 15-20 px discrepancy. Same overlap.',
+      '',
+      'v4.94 STOPS PREDICTING THE NAME\'S POSITION. By the time drawBarMeta runs, clipBarLabels has already placed the bar-label and the browser has laid it out. So we READ the bar-label\'s real rendered rect via getBoundingClientRect (reliable on already-laid-out elements) and compare it to the bar\'s rect:',
+      '',
+      '   ▸ availLeftPx = nameRect.left - barRect.left → the space the meta can use.',
+      '   ▸ availRightPx = barRect.right - nameRect.right → for the Step 2 fit check.',
+      '   ▸ Step 1 fires if availLeftPx ≥ metaW + INSIDE_PADDING + INSIDE_GAP.',
+      '   ▸ No more "what would the centered name look like" prediction — we know exactly where it is.',
+      '',
+      'The ONLY width I still measure is the meta itself, via canvas measureText. The meta text is bounded (max "100% · 99w" ≈ 10 chars) so any reasonable measurement + the +5 px stroke+safety margin covers it. Plus we also set the meta\'s font-family via INLINE STYLE this time, which beats CSS specificity — so SVG and canvas finally do render in the same font.',
+      '',
+      'CASCADE (unchanged behaviorally):',
+      '   STEP 1 — meta inside-left, name centered IN BAR.',
+      '   STEP 2 — meta inside-left, name RE-centered between meta-right and bar-right.',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar.',
+      '   STEP 4 — both outside.',
+    ],
+  },
+  {
     version: '4.93',
     date: '2026-05-22',
     notes: [
