@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.7',
+    date: '2026-05-22',
+    notes: [
+      'Personal timeline now scrolls, zooms, and actually shows actions + tasks.',
+      '',
+      'After v5.4 (shared-machinery personal Gantt), three follow-ups landed:',
+      '',
+      '1. ACTIONS + TASKS NOW SHOW. The main renderGantt has two filters that were silently dropping rows on the personal view: an actionsMode=schedule filter that excludes is_action items, and a section filter that requires task.phase_group to be a known section. The personal context now overrides actionsMode to "combined" (show both) and patches each task\'s phase_group to "design_build" when missing — purely for the personal-view clone, no DB mutation.',
+      '',
+      '2. SCROLL FIXED. #actions-person-gantt now has `overflow: auto` and a `max-height: 70vh`, matching the main #gantt-container. The wide frappe-gantt SVG becomes horizontally scrollable instead of overflowing the panel.',
+      '',
+      '3. ZOOM FIXED. setZoom detects when the active view is Actions with a signed-in person and re-renders the personal Gantt instead of (or in addition to) the main one. Wheel zoom, +/- buttons, the Day/Week/Month picker, and Zoom-to-Fit all hit the active timeline.',
+    ],
+  },
+  {
     version: '5.6',
     date: '2026-05-22',
     notes: [

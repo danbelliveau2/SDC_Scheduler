@@ -3400,7 +3400,14 @@ function setZoom(percent) {
   }
 
   state.zoomPercent = next;
-  renderGantt();
+  // v5.7: re-render whichever Gantt is currently active. When the user is
+  // on the Actions tab and signed in, zoom changes hit the personal Gantt
+  // instead of (or in addition to) the main schedule.
+  if (state.view === 'actions' && typeof _actionsPageState !== 'undefined' && _actionsPageState && _actionsPageState.personId != null) {
+    renderActionsPersonGantt();
+  } else {
+    renderGantt();
+  }
 
   // Now find that same date on the new chart and scroll so it sits at the
   // viewport center. If gantt_start changed (mode flip can shift the padding
@@ -8646,6 +8653,12 @@ function renderActionsPersonGantt() {
   // today so they still show under the today line.
   const memberNameLower = (member.name || '').trim().toLowerCase();
   const _todayISO_ = new Date().toISOString().slice(0, 10);
+  // v5.7: renderGantt drops any task whose phase_group isn't a recognized
+  // section, AND drops actions when actionsMode='schedule'. Action items
+  // and free-floating tasks without a phase_group would silently vanish
+  // from the personal Gantt. We patch each task with a default phase_group
+  // ("design_build") if it doesn't have one — purely for personal-view
+  // filtering — and switch actionsMode to "combined" below so both show.
   const personalTasks = (state.tasks || [])
     .filter(t => {
       if (!t.project) return false;
@@ -8662,10 +8675,20 @@ function renderActionsPersonGantt() {
       return true;
     })
     .map(t => {
-      if (!t.is_action || (t.start_date && t.end_date)) return t;
-      const start = t.start_date || _todayISO_;
-      const end   = t.end_date   || start;
-      return { ...t, start_date: start, end_date: end };
+      let task = t;
+      // Default dateless actions onto today (no date == no bar).
+      if (t.is_action && (!t.start_date || !t.end_date)) {
+        const start = t.start_date || _todayISO_;
+        const end   = t.end_date   || start;
+        task = { ...task, start_date: start, end_date: end };
+      }
+      // Patch missing phase_group so renderGantt's section filter doesn't
+      // silently drop the row. Doesn't mutate the original — only the
+      // clone used for personal-view rendering.
+      if (!inferredAnchorKey(task) && !isBacklogTask(task) && !task.phase_group) {
+        task = { ...task, phase_group: 'design_build' };
+      }
+      return task;
     });
 
   if (personalTasks.length === 0) {
@@ -8695,6 +8718,7 @@ function renderActionsPersonGantt() {
     sortByStart: true,
     criticalOnly: false,
     criticalPath: false,
+    actionsMode: 'combined',  // show scheduled tasks AND action items
   };
 
   // Swap container IDs so renderGantt's hard-coded #gantt-container
