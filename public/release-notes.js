@@ -4,6 +4,23 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '4.96',
+    date: '2026-05-22',
+    notes: [
+      'Bar meta — calibrated per-char width + blue name-left tick.',
+      '',
+      'TWO CHANGES based on v4.95 visual check:',
+      '',
+      '1. PER-CHAR WIDTHS trimmed ~20 %. v4.95\'s table (digits 7, % 8, space 3, · 4, w 8) put the magenta tick well past the rendered meta\'s right edge. New values (digits 5.5, % 6.5, space 2.5, · 3, w 6.5) put the tick right at the edge of the rendered text.',
+      '',
+      '2. BLUE DEBUG TICK — where the code thinks the name\'s left edge actually is, read from getBoundingClientRect on the bar-label. Use it side-by-side with the magenta tick: if BLUE is left of MAGENTA (or within 3 px), the name overlaps the meta and Step 2 should fire. If BLUE is well past MAGENTA, Step 1 is correct to leave the name centered.',
+      '',
+      'Hide both via `window.SDC_HIDE_BARMETA_DEBUG = true` in the console once we\'re done verifying.',
+      '',
+      'Cascade unchanged — the algorithm is correct, just calibrating the meta-width inputs.',
+    ],
+  },
+  {
     version: '4.95',
     date: '2026-05-22',
     notes: [

@@ -2536,7 +2536,7 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.95 LAYOUT CASCADE — per-char meta width + visual debug tick.
+    // v4.96 LAYOUT CASCADE — calibrated per-char width + magenta+blue debug ticks.
     //
     //   Across v4.85-v4.93 the bug was the same: my width measurements for
     //   the SVG <text> elements were under-reporting compared to what the
@@ -2616,27 +2616,23 @@ function drawBarMeta() {
       addPillOccluder(group, metaEl, PILL_PAD);
     };
 
-    // Meta width — PER-CHARACTER estimate calibrated to slightly over-
-    // estimate actual rendered widths in common bold-9px sans-serif fonts
-    // (Arial, Helvetica, Segoe UI, Verdana, Tahoma). The meta text is
-    // bounded — digits, "%", spaces, "·", "w" — so a per-char table works
-    // better than any browser measurement API. Every browser/canvas/SVG
-    // width API I tried (getBBox, getComputedTextLength,
-    // getBoundingClientRect, canvas measureText) was returning widths
-    // smaller than what was actually rendered on the user's machine. This
-    // table is deterministic and slightly conservative (over by ~2 px on
-    // typical strings) — safe from overlap without leaving huge gaps.
+    // Meta width — PER-CHARACTER estimate. v4.95's first-pass values were
+    // about 20 % too generous (visible by the magenta debug tick sitting
+    // well past the rendered meta's right edge), so v4.96 trims them
+    // proportionally. The meta text is bounded — digits, "%", spaces, "·",
+    // "w" — so a per-char table works better than any browser measurement
+    // API. Deterministic, slightly conservative, safe from overlap.
     const metaCharW = (ch) => {
-      if (/[0-9]/.test(ch)) return 7;     // digits 0–9
-      if (ch === '%')        return 8;     // percent sign
-      if (ch === ' ')        return 3;     // space
-      if (ch === '·')        return 4;     // middle dot (U+00B7)
-      if (ch === 'w')        return 8;     // weeks marker
-      return 7;                            // any other char
+      if (/[0-9]/.test(ch)) return 5.5;   // digits 0–9 (was 7)
+      if (ch === '%')        return 6.5;   // percent sign (was 8)
+      if (ch === ' ')        return 2.5;   // space (was 3)
+      if (ch === '·')        return 3;     // middle dot (was 4)
+      if (ch === 'w')        return 6.5;   // weeks marker (was 8)
+      return 5.5;                          // any other char (was 7)
     };
     let metaTextW = 0;
     for (const ch of metaText) metaTextW += metaCharW(ch);
-    // + 3 px = stroke halo (~2.5 px) rounded up + tiny safety margin.
+    // + 3 px = stroke halo (~2.5 px) + tiny safety margin.
     const metaW = metaTextW + 3;
 
     // Center the bar-label as Step 1 would. clipBarLabels may have placed it
@@ -2660,23 +2656,31 @@ function drawBarMeta() {
     const availRightPx = barRect.right - nameRect.right;
     const nameWidthPx = nameRect.width;
 
-    // DEBUG MARKER (v4.95): draw a thin magenta vertical tick at the position
-    // where the code believes the meta's right edge will land. If the actual
-    // rendered meta extends past this tick, the meta-width estimate is too
-    // small. Toggle off by setting window.SDC_HIDE_BARMETA_DEBUG = true.
+    // DEBUG MARKERS (v4.95-v4.96):
+    //   ▸ MAGENTA tick = where the code believes the meta's right edge lands.
+    //     If the rendered meta text extends past this tick, the per-char
+    //     estimate is too small.
+    //   ▸ BLUE tick = where the code believes the name's left edge actually
+    //     is (from getBoundingClientRect on the bar-label).
+    // Hide by setting window.SDC_HIDE_BARMETA_DEBUG = true in the console.
     if (!window.SDC_HIDE_BARMETA_DEBUG) {
-      const tickX = barX + INSIDE_PADDING + metaW;
-      const tick = document.createElementNS(SVG_NS, 'line');
-      tick.setAttribute('class', 'sdc-bar-meta');  // gets cleaned up next render
-      tick.setAttribute('x1', String(tickX));
-      tick.setAttribute('x2', String(tickX));
-      tick.setAttribute('y1', String(barY));
-      tick.setAttribute('y2', String(barY + barH));
-      tick.setAttribute('stroke', '#e11d48');  // magenta-red
-      tick.setAttribute('stroke-width', '1');
-      tick.setAttribute('stroke-dasharray', '2 1');
-      tick.style.pointerEvents = 'none';
-      group.appendChild(tick);
+      const drawTick = (x, color) => {
+        const tick = document.createElementNS(SVG_NS, 'line');
+        tick.setAttribute('class', 'sdc-bar-meta');  // cleaned up next render
+        tick.setAttribute('x1', String(x));
+        tick.setAttribute('x2', String(x));
+        tick.setAttribute('y1', String(barY));
+        tick.setAttribute('y2', String(barY + barH));
+        tick.setAttribute('stroke', color);
+        tick.setAttribute('stroke-width', '1');
+        tick.setAttribute('stroke-dasharray', '2 1');
+        tick.style.pointerEvents = 'none';
+        group.appendChild(tick);
+      };
+      // Magenta — computed meta right edge.
+      drawTick(barX + INSIDE_PADDING + metaW, '#e11d48');
+      // Blue — rendered name's left edge (as the code sees it).
+      drawTick(barX + availLeftPx, '#1d4ed8');
     }
 
     // === STEP 1 ===
