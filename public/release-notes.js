@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.4',
+    date: '2026-05-22',
+    notes: [
+      'Personal timeline (Actions tab) now uses the same Gantt as the main schedule.',
+      '',
+      'The custom-HTML personal timeline (.apg-* layout) is gone. The Actions tab now renders the SAME frappe-gantt + arrows + milestone diamonds + bar-meta cascade + today line + status colors as the main schedule, just filtered to the signed-in person\'s tasks.',
+      '',
+      'Same look, same colors, same scroll, same zoom controls. When you sign in as someone, you see THEIR slice of the schedule with the full chart machinery.',
+      '',
+      'IMPLEMENTATION: renderActionsPersonGantt temporarily swaps element IDs so the main renderGantt\'s hard-coded `#gantt-container` selectors target the actions panel\'s container, substitutes state.tasks with the person\'s filtered list, calls renderGantt(), then restores everything. Avoids parameterizing the 17+ Gantt-related selectors across the codebase while still sharing 100 % of the rendering pipeline.',
+      '',
+      'Overrides applied for the personal context: ganttOnly=true (no grid alignment), sortByStart=true (chronological top-down), criticalOnly/criticalPath=false (per-person view ignores critical path), project filter cleared (all this person\'s projects show together).',
+    ],
+  },
+  {
     version: '5.3',
     date: '2026-05-22',
     notes: [

@@ -8606,6 +8606,13 @@ function renderActionsPersonSummary() {
 // person as a horizontal-bar timeline. Bars are colored by project. Action
 // items render as small diamond markers since they typically have zero
 // duration. Hover shows project + task name + dates.
+// v5.4: personal timeline now uses the SAME Gantt machinery as the main
+// schedule — real frappe-gantt + arrows + milestone diamonds + bar-meta
+// cascade + today line + status colors. Approach: temporarily swap the
+// element IDs so renderGantt's hard-coded `#gantt-container` selectors hit
+// the personal container, render with this person's tasks substituted into
+// state.tasks, then restore. Same look, same colors, same scroll, same
+// zoom controls drive both Ganttts.
 function renderActionsPersonGantt() {
   const wrap = document.getElementById('actions-person-gantt');
   if (!wrap) return;
@@ -8623,9 +8630,13 @@ function renderActionsPersonGantt() {
   // - Also surface placeholder-assigned action items to every engineer in
   //   that discipline — so unstaffed actions show up on the relevant team's
   //   timeline before someone manually claims them.
-  const memberNameLower = member.name.trim().toLowerCase();
+  // Filter to this person's tasks. Same selection logic the old custom
+  // renderer used — direct assign OR placeholder-for-my-discipline on
+  // action items. Scheduled tasks need dates; dateless actions default to
+  // today so they still show under the today line.
+  const memberNameLower = (member.name || '').trim().toLowerCase();
   const _todayISO_ = new Date().toISOString().slice(0, 10);
-  const mine = (state.tasks || [])
+  const personalTasks = (state.tasks || [])
     .filter(t => {
       if (!t.project) return false;
       if (isTemplateProject(t.project)) return false;
@@ -8637,11 +8648,9 @@ function renderActionsPersonGantt() {
         && isPlaceholder(t.assignee)
         && actionDisciplineKey(t) === member.discipline;
       if (!directAssign && !placeholderForMyDiscipline) return false;
-      // Scheduled tasks must have dates; action items default to today below.
       if (!t.is_action) return !!(t.start_date && t.end_date);
       return true;
     })
-    // Project dateless action items onto today WITHOUT mutating state.tasks.
     .map(t => {
       if (!t.is_action || (t.start_date && t.end_date)) return t;
       const start = t.start_date || _todayISO_;
@@ -8649,132 +8658,67 @@ function renderActionsPersonGantt() {
       return { ...t, start_date: start, end_date: end };
     });
 
-  if (mine.length === 0) {
-    wrap.innerHTML = `<div class="apg-empty">Nothing scheduled. ${escapeHtml(member.name)} has no tasks or action items with dates.</div>`;
+  if (personalTasks.length === 0) {
+    wrap.innerHTML = `<div class="apg-empty">Nothing scheduled. ${escapeHtml(member.name)} has no tasks or action items.</div>`;
     return;
   }
 
-  // Sort by start date so the chart reads top-down chronologically.
-  mine.sort((a, b) => {
-    const sa = (a.start_date || '').localeCompare(b.start_date || '');
-    if (sa !== 0) return sa;
-    return (a.name || '').localeCompare(b.name || '');
-  });
+  const mainContainer = document.getElementById('gantt-container');
+  if (!mainContainer) { wrap.innerHTML = ''; return; }
 
-  // Compute the date range (with padding) so every bar fits with breathing room.
-  const startsMs = mine.map(t => new Date(t.start_date + 'T00:00:00').getTime());
-  const endsMs   = mine.map(t => new Date(t.end_date   + 'T00:00:00').getTime());
-  const minTaskMs = Math.min(...startsMs);
-  const maxTaskMs = Math.max(...endsMs);
-  const todayMs   = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
-  const PAD_DAYS  = 7;
-  const minMs = Math.min(minTaskMs, todayMs) - PAD_DAYS * 86400000;
-  const maxMs = Math.max(maxTaskMs, todayMs) + PAD_DAYS * 86400000;
-  const totalDays = Math.max(1, (maxMs - minMs) / 86400000);
+  // Stash state we'll temporarily replace.
+  const savedTasks        = state.tasks;
+  const savedGantt        = state.gantt;
+  const savedFilters      = { ...state.filters };
+  const savedScheduleView = { ...(state.scheduleView || {}) };
 
-  // v4.67: colors come from the SAME hierarchy palette the main Schedule
-  // Gantt uses (rowColorKey → HIERARCHY_BAR_COLORS). Mech tasks read blue,
-  // Controls green, Build orange, Wire yellow — consistent with the rest
-  // of the app. Falls back to procurement grey for anything unclassified.
-  const colorsForTask = (t) => {
-    const key = rowColorKey(t);
-    const palette = HIERARCHY_BAR_COLORS[key] || HIERARCHY_BAR_COLORS.procurement || { fill: '#cbd5e1', text: '#334155' };
-    return palette;
+  // Substitute the person's filtered task list and clear per-project
+  // filters so all their projects show together. Force ganttOnly so we
+  // don't try to align bars to a (nonexistent) grid in the actions panel.
+  // sortByStart so the personal timeline reads top-down chronologically.
+  // Skip critical-path filtering (not meaningful per-person).
+  state.tasks = personalTasks;
+  state.filters = { ...savedFilters, project: null };
+  state.scheduleView = {
+    ...savedScheduleView,
+    ganttOnly: true,
+    sortByStart: true,
+    criticalOnly: false,
+    criticalPath: false,
   };
 
-  // Build week ticks across the axis.
-  const ticks = [];
-  let cursor = new Date(minMs);
-  // Snap cursor to the next Monday so the labels line up.
-  while (cursor.getDay() !== 1) cursor.setDate(cursor.getDate() + 1);
-  while (cursor.getTime() <= maxMs) {
-    const offsetDays = (cursor.getTime() - minMs) / 86400000;
-    const leftPct = (offsetDays / totalDays) * 100;
-    ticks.push({ leftPct, label: fmtDate(cursor.toISOString().slice(0, 10)) });
-    cursor.setDate(cursor.getDate() + 7);
+  // Swap container IDs so renderGantt's hard-coded #gantt-container
+  // selectors target the personal container instead.
+  mainContainer.id = '__gantt-container__main_saved';
+  wrap.id = 'gantt-container';
+
+  let renderedOk = false;
+  try {
+    renderGantt();
+    state.personalGantt = state.gantt;
+    renderedOk = true;
+  } catch (e) {
+    console.error('personal Gantt render failed:', e);
+  } finally {
+    // Restore IDs and state regardless of success.
+    wrap.id = 'actions-person-gantt';
+    mainContainer.id = 'gantt-container';
+    state.tasks = savedTasks;
+    state.gantt = savedGantt;
+    state.filters = savedFilters;
+    state.scheduleView = savedScheduleView;
   }
-  // Subsample to roughly every 2 weeks if there are too many ticks.
-  const visibleTicks = ticks.length > 16 ? ticks.filter((_, i) => i % 2 === 0) : ticks;
 
-  // Today line position
-  const todayPct = ((todayMs - minMs) / 86400000 / totalDays) * 100;
+  if (!renderedOk) {
+    wrap.innerHTML = '';
+    return;
+  }
 
-  // Build the rows.
-  const rowsHtml = mine.map(t => {
-    const startMs  = new Date(t.start_date + 'T00:00:00').getTime();
-    const endMs    = new Date(t.end_date   + 'T00:00:00').getTime();
-    const startPct = ((startMs - minMs) / 86400000 / totalDays) * 100;
-    const widthPct = Math.max(0.4, ((endMs - startMs) / 86400000 / totalDays) * 100);
-    const palette  = colorsForTask(t);
-    const progress = Math.max(0, Math.min(100, Number(t.progress) || 0));
-    const overdue  = endMs < todayMs && progress < 100;
-    const done     = progress >= 100;
-    const isAction = !!t.is_action;
-    const alloc    = t.is_milestone ? null : (t.allocation == null ? 90 : Math.max(0, Math.min(100, Number(t.allocation))));
-    const durDays  = Number(t.duration_days) || 0;
-    const wks      = Math.round(durDays / 5);
-    // Combined meta label like the main Gantt: "85% · 2w · 50%" (alloc · dur · progress).
-    // Progress is only included once a task is started so unstarted bars stay clean.
-    const metaParts = [];
-    if (alloc != null && alloc > 0)            metaParts.push(`${alloc}%`);
-    if (wks > 0)                               metaParts.push(`${wks}w`);
-    if (progress > 0 && progress < 100)        metaParts.push(`${progress}% done`);
-    const metaLabel = metaParts.join(' · ');
-    const tip = `${t.project ? `[${t.project}] ` : ''}${t.name}\n${fmtDate(t.start_date)} → ${fmtDate(t.end_date)}${alloc != null ? ` · ${alloc}%` : ''}${wks > 0 ? ` · ${wks}w` : ''}${progress > 0 ? ` · ${progress}% done` : ''}`;
-    const isMilestone = (t.is_milestone || durDays === 0) && (endMs - startMs) <= 86400000;
-    // v4.76: bar content layout MATCHES v4.75 main Gantt — combined inline
-    // "meta · name" at the bar's LEFT edge. Meta in 700 weight, name in 600.
-    // Reads as "[meta pill] · description" without the pill border.
-    const barName = escapeHtml(t.name || '');
-    const metaInline = metaLabel ? `<span class="apg-bar-meta">${escapeHtml(metaLabel)}</span><span class="apg-bar-sep"> · </span>` : '';
-    const barOrDot = isMilestone
-      ? `<div class="apg-diamond ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''} ${isAction ? 'is-action' : ''}" style="left:${startPct}%;background:${isAction ? 'var(--sdc-primary, #2563eb)' : palette.fill};border-color:${palette.text}" title="${escapeHtml(tip)}"></div>`
-      : `<div class="apg-bar ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" style="left:${startPct}%;width:${widthPct}%;background:${palette.fill};border-color:${palette.text};color:${palette.text}" title="${escapeHtml(tip)}">
-          ${progress > 0 ? `<div class="apg-bar-fill" style="width:${progress}%;background:${palette.text}"></div>` : ''}
-          <span class="apg-bar-content">${metaInline}<span class="apg-bar-name">${barName}</span></span>
-        </div>`;
-    return `
-      <div class="apg-row" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
-        <div class="apg-row-label" title="${escapeHtml(t.name)}">
-          <span class="apg-row-name">${escapeHtml(t.name)}</span>
-          <span class="apg-row-project">${escapeHtml(t.project || '')}</span>
-        </div>
-        <div class="apg-row-track">${barOrDot}</div>
-        <button type="button" class="apg-row-open" data-id="${t.id}" title="Open this task in the project schedule">→</button>
-      </div>`;
-  }).join('');
-
-  wrap.innerHTML = `
-    <div class="apg-title">${escapeHtml(member.name)}'s timeline</div>
-    <div class="apg-chart">
-      <div class="apg-header">
-        <div class="apg-row-label apg-header-spacer"></div>
-        <div class="apg-axis">
-          ${visibleTicks.map(t => `<div class="apg-tick" style="left:${t.leftPct}%"><span>${escapeHtml(t.label)}</span></div>`).join('')}
-        </div>
-      </div>
-      <div class="apg-body">
-        ${todayPct >= 0 && todayPct <= 100 ? `<div class="apg-today" style="left:calc(var(--apg-label-w) + (100% - var(--apg-label-w)) * ${todayPct / 100})" title="Today"></div>` : ''}
-        ${rowsHtml}
-      </div>
-    </div>
-  `;
-
-  // v4.68: clicking the row body no longer jumps to the schedule — that
-  // intercepted drag attempts and felt like a trap. Each row has an explicit
-  // → Open button instead.
-  wrap.querySelectorAll('.apg-row-open').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = Number(btn.dataset.id);
-      const t = state.tasks.find(x => x.id === id);
-      if (!t || !t.project) return;
-      if (!state.openProjects.includes(t.project)) state.openProjects.push(t.project);
-      state.filters.project = t.project;
-      saveProjectTabs();
-      setView('schedule');
-    });
-  });
+  // Prepend a title above the chart.
+  const title = document.createElement('div');
+  title.className = 'apg-title';
+  title.textContent = `${member.name}'s timeline`;
+  wrap.insertBefore(title, wrap.firstChild);
 }
 
 function renderActionsDeptDashboard(allActions, todayMs) {
