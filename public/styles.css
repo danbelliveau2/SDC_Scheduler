@@ -472,8 +472,10 @@ body {
   position: sticky;
   top: 0;
   z-index: 11;
-  overflow-x: auto;
-  overflow-y: hidden;
+  /* Outer bar must NOT scroll — only the inner .project-tabs scrolls.
+     If overflow-x:auto is here the "+ New tab" button scrolls with the
+     tabs and overlaps them when many projects are open. */
+  overflow: hidden;
 }
 .project-tabs {
   display: flex;
@@ -481,7 +483,13 @@ body {
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
+  /* Only the tabs section scrolls — "+ New tab" stays pinned to the right */
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Hide scrollbar on Windows (still scrollable via mouse/touch) */
+  scrollbar-width: none;
 }
+.project-tabs::-webkit-scrollbar { display: none; }
 .project-tab {
   display: inline-flex;
   align-items: center;
