@@ -4,18 +4,23 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
-    version: '4.98',
+    version: '5.0',
     date: '2026-05-22',
     notes: [
-      'Bar meta — Step 2 shifts the name with CSS transform (not x attribute).',
+      'Bar meta cascade — settled. Debug markers removed.',
       '',
-      'NEW INSIGHT from v4.97 visual debug: the blue tick was tracking the bar-label\'s getBoundingClientRect to Step 2\'s new position, but the RENDERED glyphs visually stayed at the old centered position. So setAttribute("x", ...) on the bar-label was updating the DOM bbox (which is what getBoundingClientRect reads) but somehow not the rendered paint position. That\'s the bug.',
+      'Over v4.85-v4.98 the bar-meta layout went through 14 iterations chasing a single bug: the centered name visually overlapped the inside-left meta on narrow bars. The cascade math was right the whole time; the chain of failures was about MEASUREMENT and APPLICATION.',
       '',
-      'FIX: Step 2 now leaves the x attribute at the centered position and uses CSS `transform: translateX(...)` to shift the rendered text into place. CSS transforms are picked up directly by the SVG paint pipeline — no decoupling between layout-bbox and paint.',
+      '   ▸ Measurement: every browser API for SVG text width (getBBox, getComputedTextLength, getBoundingClientRect, canvas measureText with various fonts) was under-reporting on at least some bars. Settled on a per-character lookup for the meta (it\'s bounded text — "XX% · YYw"), plus reading the bar-label\'s actual rendered rect for the name.',
+      '   ▸ Application: setAttribute("x", ...) on the bar-label was updating the SVG DOM (getBoundingClientRect returned the new position) but the rendered glyphs visually stayed at the old centered position — paint and layout disagreed. Switched Step 2\'s name shift to CSS `transform: translateX(...)`, which hooks into the paint pipeline directly.',
       '',
-      'ALSO ADDED: debug fill colors on the bar-label based on which step fires. Step 1 = default (unchanged), Step 2 = red, Step 3 = blue, Step 4 = orange. So we can visually verify the cascade decisions match what\'s rendered. Hide via `window.SDC_HIDE_BARMETA_DEBUG = true`.',
+      'FINAL CASCADE:',
+      '   STEP 1 — meta inside-left, name centered IN BAR. Used when the centered name has ≥3 px from the meta-right AND ≥3 px from the bar-right.',
+      '   STEP 2 — meta inside-left, name shifted right to be centered between meta-right and bar-right (symmetric gaps). Triggers when Step 1 would overlap. Shift applied via CSS transform.',
+      '   STEP 3 — meta OUTSIDE-left, name centered in bar. Triggers when the bar is too narrow to fit both inside but the name still fits centered in the bar alone.',
+      '   STEP 4 — both outside. Meta outside-left, name ALWAYS outside-right.',
       '',
-      'Other steps clear the transform to avoid stale shifts persisting across renders.',
+      'v5.0 strips the debug fill colors and the magenta/blue alignment ticks now that the cascade is verified working.',
     ],
   },
   {

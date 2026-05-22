@@ -2538,34 +2538,51 @@ function drawBarMeta() {
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // v4.98 LAYOUT CASCADE — Step 2 uses CSS transform, plus per-step fill color.
+    // BAR-META LAYOUT CASCADE (settled in v5.0).
     //
-    //   Across v4.85-v4.93 the bug was the same: my width measurements for
-    //   the SVG <text> elements were under-reporting compared to what the
-    //   browser actually rendered. Every API I tried (getBBox,
-    //   getComputedTextLength, getBoundingClientRect, canvas measureText
-    //   with various fonts) returned widths smaller than reality. The
-    //   overlap check then said "no overlap" when there obviously was one.
+    //   Terminology:
+    //     meta = alloc/duration pill ("85% · 8w")
+    //     name = task description (the bar-label rendered by frappe-gantt)
+    //     bar  = Gantt bar rectangle
     //
-    //   v4.94 stops predicting where the name will land. By the time this
-    //   function runs, clipBarLabels has already positioned the bar-label
-    //   and the browser has laid it out. So we READ the bar-label's actual
-    //   rendered rect via getBoundingClientRect (reliable for already-
-    //   placed-and-laid-out elements) and compare it to the bar's rect.
-    //   The gap between the bar's left edge and the rendered name's left
-    //   edge IS the available space for the meta.
+    //   Gaps (all 3 px):
+    //     INSIDE_PADDING = bar-left edge ↔ inside-left meta-left edge.
+    //     INSIDE_GAP     = meta-right ↔ name-left  AND  name-right ↔ bar-right.
+    //     OUTSIDE_GAP    = outside-left meta pill right edge ↔ bar-left edge.
     //
-    //   Algorithm:
-    //     1. Read barLabel.getBoundingClientRect() → real name position.
-    //     2. Compute meta width via canvas measureText + small safety pad.
-    //     3. If (nameLeft - barLeft) ≥ metaW + INSIDE_PADDING + INSIDE_GAP,
-    //        Step 1 works: place meta inside-left, name stays put.
-    //     4. Else if (barW - metaW) is large enough to center name between
-    //        meta-right and bar-right with ≥INSIDE_GAP each side, Step 2:
-    //        place meta inside-left, RE-position name centered in available.
-    //     5. Else if name fits centered in full bar with ≥INSIDE_GAP each
-    //        side, Step 3: meta outside, name centered in bar.
-    //     6. Else Step 4: both outside.
+    //   Algorithm — measure where the name actually IS, don't predict:
+    //     1. clipBarLabels has already centered the bar-label in its bar by
+    //        the time we run, so we can read its real rendered rect via
+    //        getBoundingClientRect.
+    //     2. metaW is computed via a per-character table calibrated for
+    //        bold-9 px sans-serif (digits 5.5, % 6.5, space 2.5, · 3, w 6.5)
+    //        plus 3 px stroke halo + safety. The meta text is bounded
+    //        ("XX% · YYw"), so the per-char table is reliable without
+    //        depending on any browser measurement API (every one tried —
+    //        getBBox, getComputedTextLength, getBoundingClientRect, canvas
+    //        measureText — was returning widths smaller than actual on at
+    //        least some bars).
+    //     3. availLeftPx = nameRect.left - barRect.left = the actual gap
+    //        between the bar's left edge and the rendered name's left edge.
+    //        This is the space the meta can use.
+    //
+    //   Cascade:
+    //     Step 1 — meta inside-left, name stays centered in bar.
+    //              Trigger: availLeftPx ≥ metaW + INSIDE_PADDING + INSIDE_GAP.
+    //     Step 2 — meta inside-left, name shifts to be centered between
+    //              meta-right and bar-right (symmetric gaps on both sides).
+    //              Trigger: (barW - INSIDE_PADDING - metaW) ≥ nameW + 2·INSIDE_GAP.
+    //              IMPLEMENTATION: the bar-label's x attribute stays at the
+    //              centered position; the shift is applied via CSS
+    //              `transform: translateX(...)`. Why: setAttribute('x', …)
+    //              was updating the SVG DOM (getBoundingClientRect picked
+    //              up the new x) but the rendered glyphs visually stayed
+    //              at the centered position. CSS transforms hook into the
+    //              paint pipeline directly, so the visible text actually
+    //              moves.
+    //     Step 3 — meta OUTSIDE-left, name centered in bar.
+    //              Trigger: barW ≥ nameW + 2·INSIDE_GAP.
+    //     Step 4 — both outside. Meta outside-left, name ALWAYS outside-right.
     const INSIDE_PADDING = 3;
     const INSIDE_GAP     = 3;
     const OUTSIDE_GAP    = 3;
@@ -2665,81 +2682,43 @@ function drawBarMeta() {
     const step2Works = step2AvailableForName >= nameWidthPx + 2 * INSIDE_GAP;
     const step3Works = barW >= nameWidthPx + 2 * INSIDE_GAP;
 
-    let chosenStep;
     if (step1Works) {
-      chosenStep = 1;
-      // Name already centered (centerNameInBar above), meta at default
-      // inside-left position. Nothing more to do.
+      // Step 1 — name already centered (centerNameInBar above), meta at
+      // default inside-left position. Nothing more to do.
     } else if (step2Works) {
-      chosenStep = 2;
-      // Meta stays inside-left. Re-center name between meta-right and bar-right.
+      // Step 2 — meta stays inside-left, name shifts right so it's centered
+      // between meta-right and bar-right.
+      //
+      // Why a CSS transform and not setAttribute('x', ...): on at least some
+      // browsers/renderers, setAttribute('x', ...) on a bar-label updates
+      // the SVG DOM (getBoundingClientRect picks up the new x) but the
+      // rendered glyphs visually stay at the old x — paint and layout
+      // disagree. CSS `transform: translateX(...)` hooks into the paint
+      // pipeline directly and the visible text actually moves. The x
+      // attribute stays at the centered position; the transform supplies
+      // the shift.
       const metaInsideRight = barX + INSIDE_PADDING + metaW;
       const barRightEdge    = barX + barW;
       const nameCenterX     = (metaInsideRight + barRightEdge) / 2;
-      // BUG IN PRIOR VERSIONS: setAttribute('x', ...) on the bar-label was
-      // updating the DOM attribute (getBoundingClientRect returned the new
-      // position) but the rendered glyphs visually stayed at the centered
-      // position — looked like Step 2 wasn't firing. Use CSS transform
-      // instead: it's picked up directly by the SVG paint pipeline. We keep
-      // the x attribute at the centered position and shift the rendered
-      // text via translate.
-      const shiftX = nameCenterX - (barX + barW / 2);
+      const shiftX          = nameCenterX - (barX + barW / 2);
       barLabel.setAttribute('x', String(barX + barW / 2));
       barLabel.setAttribute('text-anchor', 'middle');
       barLabel.style.textAnchor = '';
       barLabel.style.transform = `translateX(${shiftX}px)`;
       barLabel.classList.remove('bar-label-outside');
     } else if (step3Works) {
-      chosenStep = 3;
-      // Meta OUTSIDE-left. Name centered in bar (it now has full width to use).
+      // Step 3 — meta OUTSIDE-left. Name centered in bar (it now has full
+      // width to use).
       moveMetaOutside();
       centerNameInBar();
     } else {
-      chosenStep = 4;
-      // Both outside.
+      // Step 4 — both outside.
       moveMetaOutside();
       barLabel.setAttribute('x', String(barX + barW + 6));
       barLabel.setAttribute('text-anchor', 'start');
       barLabel.style.textAnchor = '';
       barLabel.style.transform = '';
       barLabel.classList.add('bar-label-outside');
-    }
-
-    // DEBUG: tint the name's fill based on which step fired, so we can
-    // visually verify the cascade is doing what it claims. Disable when
-    // satisfied via the same SDC_HIDE_BARMETA_DEBUG flag as the ticks.
-    if (!window.SDC_HIDE_BARMETA_DEBUG) {
-      const stepFills = { 2: '#dc2626', 3: '#1d4ed8', 4: '#ea580c' };
-      if (stepFills[chosenStep]) barLabel.style.fill = stepFills[chosenStep];
-    }
-
-    // DEBUG TICKS — drawn AFTER the cascade has placed everything, so the
-    // ticks reflect the FINAL rendered positions, not the pre-cascade ones.
-    //   ▸ MAGENTA = computed meta right edge (only shown when meta is inside).
-    //   ▸ BLUE    = name's ACTUAL rendered left edge after cascade decision.
-    // Hide both via `window.SDC_HIDE_BARMETA_DEBUG = true` in DevTools.
-    if (!window.SDC_HIDE_BARMETA_DEBUG) {
-      const drawTick = (x, color) => {
-        const tick = document.createElementNS(SVG_NS, 'line');
-        tick.setAttribute('class', 'sdc-bar-meta');
-        tick.setAttribute('x1', String(x));
-        tick.setAttribute('x2', String(x));
-        tick.setAttribute('y1', String(barY));
-        tick.setAttribute('y2', String(barY + barH));
-        tick.setAttribute('stroke', color);
-        tick.setAttribute('stroke-width', '1');
-        tick.setAttribute('stroke-dasharray', '2 1');
-        tick.style.pointerEvents = 'none';
-        group.appendChild(tick);
-      };
-      // Magenta — only meaningful when meta is inside the bar (Step 1 & 2).
-      if (chosenStep === 1 || chosenStep === 2) {
-        drawTick(barX + INSIDE_PADDING + metaW, '#e11d48');
-      }
-      // Blue — re-read the name's rect AFTER the cascade so the tick lands
-      // at the actual final left edge.
-      const finalNameRect = barLabel.getBoundingClientRect();
-      drawTick(barX + (finalNameRect.left - barRect.left), '#1d4ed8');
     }
   }
 }
