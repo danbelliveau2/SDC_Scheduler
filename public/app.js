@@ -963,18 +963,20 @@ function cellHtml(t, key) {
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'duration': {
-      // v5.2: Backlog row used to render a native <select> dropdown (v4.84) —
-      // but the dropdown was unreliable on some platforms (native form
-      // theming, stopPropagation interactions, etc.) and the user kept
-      // hitting "I can't edit the duration." Now it uses the SAME
-      // click-to-edit text input as every other duration cell: click the
-      // cell, type "3w" / "5d" / etc., press Enter. The is-backlog-duration
-      // class + hover highlight + pencil hint make it obviously interactive.
+      // v5.6: EVERY duration cell — task, milestone, anchor, backlog — gets
+      // the same click-to-edit treatment with a hover hint, so it's clear the
+      // value is editable. Previously milestones rendered an empty cell when
+      // durationLabel returned "0" or "" (depending on data state), making
+      // them look static. Now they always show something ("0d" for
+      // milestones, "—" for missing data) and the hover pencil signals
+      // "click to edit." Backlog keeps the is-backlog-duration class for the
+      // accent-colored hover.
       const isBacklogRow = isBacklogTask(t);
-      if (isBacklogRow) {
-        return `<td class="${cls} is-backlog-duration" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${durationLabel(t)}<span class="duration-edit-hint">✎</span></td>`;
-      }
-      return `<td class="${cls}" data-col="duration">${durationLabel(t)}</td>`;
+      let label = durationLabel(t);
+      if (!label) label = '—';
+      else if (label === '0') label = t.is_milestone ? '0d' : '0';
+      const classes = `${cls} is-editable-duration${isBacklogRow ? ' is-backlog-duration' : ''}`;
+      return `<td class="${classes}" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${escapeHtml(label)}<span class="duration-edit-hint">✎</span></td>`;
     }
     case 'pred':     return `<td class="${cls}" data-col="pred"></td>`; /* filled in by updateLineNumbers */
     case 'progress': {

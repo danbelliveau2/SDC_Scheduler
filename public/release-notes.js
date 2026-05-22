@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.6',
+    date: '2026-05-22',
+    notes: [
+      'Every duration cell shows a value AND is obviously editable.',
+      '',
+      'BUG: milestone rows (Receipt of PO, Mech 1 Release, Design Review, Mech 2 Release, etc.) were rendering with empty DUR cells. The underlying durationLabel returned "0" for milestones, but it wasn\'t visually obvious that those cells were clickable and editable. User reported "why can\'t I see duration and edit like every other task?"',
+      '',
+      'FIX:',
+      '   ▸ EVERY duration cell — task, milestone, anchor, backlog — now uses the same .is-editable-duration class, with a hover highlight and a faint pencil ✎ icon that appears on hover. The "click me, I\'m editable" affordance is now consistent across all rows.',
+      '   ▸ Milestones render "0d" instead of bare "0" so it\'s explicit that the duration is zero days (a point-in-time marker), not just an unset value.',
+      '   ▸ Tasks with no usable duration data fall back to "—" instead of empty cell. Clicking that opens the same text editor where you can type "3w" / "5d" / etc.',
+      '   ▸ Click any duration cell → type → Enter to save. Same on every row.',
+    ],
+  },
+  {
     version: '5.5',
     date: '2026-05-22',
     notes: [

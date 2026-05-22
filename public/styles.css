@@ -4041,7 +4041,10 @@ body.customer-view .schedule-footer { display: none; }
 /* v4.71: Backlog duration cell is editable like any duration column, but
    the row otherwise reads as a spine block (no progress pill, no drift
    chip) so users have asked "can I change this?". Pencil hint on hover. */
-.is-backlog-duration {
+/* v5.6: every duration cell uses .is-editable-duration so the hover hint
+   shows on ALL rows (task, milestone, anchor, backlog). Backlog keeps the
+   accent-tinted hover via the extra .is-backlog-duration class. */
+.is-editable-duration {
   position: relative;
   cursor: pointer;
 }
@@ -4053,11 +4056,14 @@ body.customer-view .schedule-footer { display: none; }
   opacity: 0;
   transition: opacity 0.12s ease;
 }
+.is-editable-duration:hover {
+  background: rgba(15, 23, 42, 0.05);
+}
+.is-editable-duration:hover .duration-edit-hint {
+  opacity: 1;
+}
 .is-backlog-duration:hover {
   background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 18%, white);
-}
-.is-backlog-duration:hover .duration-edit-hint {
-  opacity: 1;
 }
 /* v5.2: backlog-duration <select> dropped. Backlog duration is now a
    regular click-to-edit cell, same as every other duration cell. */
