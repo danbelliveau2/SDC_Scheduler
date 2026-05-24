@@ -4,6 +4,29 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.11',
+    date: '2026-05-24',
+    notes: [
+      'Backlog is just a regular row above section 10 — all special code stripped.',
+      '',
+      'User: "strip all backlog code.. this is a line this is so easy, just like any other line just above section 10."',
+      '',
+      'STRIPPED:',
+      '   ▸ cellHtml NAME case: removed the isBacklog branch that hid the % complete pill, the alloc/dash/duration spans, and the name-backlog class. Backlog row now renders alloc + name + duration + % pill like any other task.',
+      '   ▸ cellHtml DURATION case: removed isBacklogRow branch and "(set)" placeholder. Every duration cell is the same.',
+      '   ▸ rowHtml: removed the backlog-row class.',
+      '   ▸ saveCellEdit DURATION: simplified. Backlog is treated as a non-anchor (so saves clear is_milestone like any task). Final safety: backlog never persists is_milestone=true.',
+      '   ▸ ensureAnchorsForProject: removed the auto-recovery PATCH that fired every page load when a backlog had is_milestone=true. Backlog is no longer silently mutated server-side.',
+      '   ▸ applyFilters: removed the backlog exemption from the assignee filter. Backlog filters like any task in regular schedule view.',
+      '',
+      'KEPT:',
+      '   ▸ The position-above-section-10 placement in renderTable (this is the only thing that\'s "special" about Backlog — its location in the hierarchy walk).',
+      '   ▸ Personal Assignments mode still hides Backlog (along with anchors and milestones) — that view shows only the person\'s direct work, no project spine.',
+      '',
+      'Result: click the Backlog row\'s DUR cell, type "3w", press Enter. Click the START cell, pick a date. Same as every other row.',
+    ],
+  },
+  {
     version: '5.10',
     date: '2026-05-24',
     notes: [

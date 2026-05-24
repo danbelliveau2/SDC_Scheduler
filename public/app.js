@@ -806,10 +806,9 @@ function applyFilters(tasks) {
     if (project && t.project !== project) return false;
     if (phase && t.phase !== phase) return false;
     // Regular schedule view with optional assignee filter (not personal
-    // mode): anchors and backlog still show as project context.
-    if (assignee && t.assignee !== assignee
-        && !inferredAnchorKey(t)
-        && !isBacklogTask(t)) {
+    // mode): anchors still show as project context. Backlog is treated
+    // as a normal task — filter applies normally.
+    if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
       return false;
     }
     if (q) {
@@ -877,22 +876,18 @@ function cellHtml(t, key) {
       //          (NOTHING for Backlog — it's a duration-only spine task)
       const done = (t.progress || 0) >= 100;
       const isAnchor = !!inferredAnchorKey(t);
-      const isBacklog = isBacklogTask(t);
       const drift = taskScheduleDelta(t);
       let driftChip = '';
       // Drift chip is for IN-PROGRESS work only — once a task is 100% done,
       // there's no "ahead" or "behind" anymore, it's just complete. So skip
       // the chip when done (the green name + checkmark pill already say "done").
-      if (drift !== 0 && !t.is_milestone && !isAnchor && !isBacklog && !done) {
+      if (drift !== 0 && !t.is_milestone && !isAnchor && !done) {
         const ahead = drift > 0;
         driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
       }
       const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
       let rightWidget = '';
-      if (isBacklog) {
-        // Backlog: no widget. It's a calendar block, not a work task.
-        rightWidget = '';
-      } else if (!t.is_milestone && !isAnchor) {
+      if (!t.is_milestone && !isAnchor) {
         // Duration task: pill renders as a small PROGRESS BAR. The fill width
         // tracks the percent (0–100%), color tracks the schedule status:
         //   - is-zero    (0%):      empty pill outline, "0%" text in slate
@@ -926,17 +921,10 @@ function cellHtml(t, key) {
         rightWidget = `<button type="button" class="name-milestone-check ${done ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${done ? 'Mark not complete' : 'Mark complete'}">${done ? '✓' : ''}</button>`;
       }
       const classes = [cls];
-      if (isBacklog) classes.push('name-backlog');
-      // Note: completed duration tasks deliberately do NOT get a "name-done"
-      // class — the task name stays black/normal, same as a completed milestone.
-      // The green ✓ pill on the right is the sole signal that the row is done,
-      // so duration tasks and milestones read consistently when complete.
       if (rightWidget) classes.push('has-pills');
       // v4.39: `has-meta` indicates the row will render the alloc + dash +
-      // dur spans (regular tasks only). CSS uses this class to reserve TD
-      // padding-left for the absolute-positioned alloc and dur — milestones
-      // and anchors that DON'T have meta keep their name flush at the left.
-      const hasMeta = !t.is_milestone && !isAnchor && !isBacklog;
+      // dur spans (regular tasks only).
+      const hasMeta = !t.is_milestone && !isAnchor;
       if (hasMeta) classes.push('has-meta');
       // v4.30: Single-line PLAIN-TEXT layout. No more stacked meta row, no
       // more pill-styled allocation/duration. Just inline text:
@@ -952,7 +940,7 @@ function cellHtml(t, key) {
       let allocPre = '';
       let dashSep = '';
       let durEl = '';
-      if (!t.is_milestone && !isAnchor && !isBacklog) {
+      if (!t.is_milestone && !isAnchor) {
         const allocVal = t.allocation == null ? null : Number(t.allocation);
         const durDays  = Number(t.duration_days) || 0;
         const wks = durDays > 0 ? Math.round(durDays / 5 * 10) / 10 : 0;  // 1 decimal week
@@ -1018,29 +1006,13 @@ function cellHtml(t, key) {
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'duration': {
-      // v5.10: every duration cell renders with the editable affordance.
-      // For Backlog specifically, derive the label from raw data even if
-      // durationLabel returned ''. The reported "blank Backlog DUR cell"
-      // turned out to be data state: backlog rows with duration_days=null
-      // (from the auto-recovery race or an older import). Show "(set)"
-      // as an explicit click-to-edit affordance so the cell is never
-      // visually empty.
-      const isBacklogRow = isBacklogTask(t);
+      // v5.11: no backlog special-case. Every row uses the same path —
+      // click cell, type "3w" / "5d" / etc., Enter. The hover pencil
+      // signals "editable" on every row.
       let label = durationLabel(t);
-      if (!label) {
-        // Try businessDaysBetween directly, then fall back to a clearly
-        // editable placeholder.
-        const days = businessDaysBetween(t.start_date, t.end_date);
-        if (days != null && days > 0) {
-          label = days % 5 === 0 ? `${days / 5}w` : `${days}d`;
-        } else {
-          label = isBacklogRow ? '(set)' : '—';
-        }
-      } else if (label === '0') {
-        label = t.is_milestone ? '0d' : (isBacklogRow ? '(set)' : '0');
-      }
-      const classes = `${cls} is-editable-duration${isBacklogRow ? ' is-backlog-duration' : ''}`;
-      return `<td class="${classes}" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${escapeHtml(label)}<span class="duration-edit-hint">✎</span></td>`;
+      if (!label) label = '—';
+      else if (label === '0') label = t.is_milestone ? '0d' : '0';
+      return `<td class="${cls} is-editable-duration" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${escapeHtml(label)}<span class="duration-edit-hint">✎</span></td>`;
     }
     case 'pred':     return `<td class="${cls}" data-col="pred"></td>`; /* filled in by updateLineNumbers */
     case 'progress': {
@@ -1129,10 +1101,7 @@ function rowHtml(t, depth = 0) {
   // don't re-evaluate per row.
   const todayISO = new Date().toISOString().slice(0, 10);
   const overdueCls = (t.is_action && (t.progress || 0) < 100 && t.end_date && t.end_date < todayISO) ? ' is-overdue' : '';
-  // v5.9: Backlog renders via rowHtml too (used to be anchorRowHtml).
-  // Tag the row so any backlog-only styling still has a hook.
-  const backlogCls = isBacklogTask(t) ? ' backlog-row' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}${backlogCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -1954,24 +1923,20 @@ async function saveCellEdit(id, col, value, task) {
       const today = new Date().toISOString().slice(0, 10);
       let startStr = snapToBusinessDay(task.start_date || today, 1);
       if (startStr !== task.start_date) data.start_date = startStr;
-      // v5.9: anchors (PO, FAT, Ship, Mech 1 Release, Power-Up) keep their
-      // is_milestone flag — they're real milestones by definition. Backlog
-      // is special: it has anchor_key='backlog' (so inferredAnchorKey
-      // returns truthy) but is a DURATION task, not a milestone. Always
-      // clear is_milestone when saving a positive duration on the backlog.
-      // For regular tasks, days=0 still flips to milestone (existing
-      // behavior preserved).
-      const isRealAnchor = !!inferredAnchorKey(task) && !isBacklogTask(task);
+      // v5.11: standard duration save. Backlog is treated as a non-anchor
+      // for milestone-flipping purposes (anchor_key='backlog' notwithstanding)
+      // so saves clear is_milestone like any regular task. Real anchors
+      // (PO/FAT/Ship/Mech 1/Power-Up) keep their milestone flag.
+      const isAnchor = !!inferredAnchorKey(task) && !isBacklogTask(task);
       if (days === 0) {
-        if (!isRealAnchor && !isBacklogTask(task)) data.is_milestone = true;
+        if (!isAnchor && !isBacklogTask(task)) data.is_milestone = true;
         data.end_date = startStr;
       } else if (days > 0) {
-        // Clear is_milestone for backlog (always — recovers corrupted rows)
-        // and for non-anchor tasks. Real anchors keep their milestone flag.
-        if (task.is_milestone && !isRealAnchor) data.is_milestone = false;
-        // N business days INCLUSIVE → end = start + (N-1) business days.
+        if (task.is_milestone && !isAnchor) data.is_milestone = false;
         data.end_date = addBusinessDays(startStr, days - 1);
       }
+      // Backlog is never a milestone — clear unconditionally on save.
+      if (isBacklogTask(task)) data.is_milestone = false;
       break;
     }
     case 'pred':     data.predecessors = predParse((value || '').trim()) || null; break;
@@ -10965,6 +10930,9 @@ async function ensureAnchorsForProject(project) {
   // backlog) end up without it — and the user expects to see Backlog right
   // under Receipt of PO. Default duration: 10 business days = 2 weeks,
   // matching the estimate-create default. Allocation 0 (no real work).
+  // v5.11: backlog auto-recovery removed. Backlog is just a regular task
+  // — if it doesn't exist, create one with a 2-week default; otherwise
+  // leave it alone (no more silent server-side updates).
   const backlogRow = state.tasks.find(t => t.project === project && isBacklogTask(t));
   if (!backlogRow) {
     const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
@@ -10981,27 +10949,11 @@ async function ensureAnchorsForProject(project) {
         progress: 0,
         allocation: 0,
         start_date: po.start_date,
-        end_date: po.start_date,           // server cascade will set end from duration_days
+        end_date: po.start_date,
         predecessors: `${po.id}FS`,
       });
       created = true;
     }
-  } else if (backlogRow.is_milestone) {
-    // v5.5: auto-recover a Backlog that was wrongly flipped to a milestone
-    // by older versions of saveCellEdit (the duration=0 path used to set
-    // is_milestone=true unconditionally). Clear the flag and re-derive
-    // end_date from duration_days so the bar renders as a duration block
-    // again instead of a diamond.
-    const days = Math.max(1, Number(backlogRow.duration_days) || 10);
-    const startStr = backlogRow.start_date || todayISO();
-    const endStr = addBusinessDays(startStr, days - 1);
-    await api.update(backlogRow.id, {
-      is_milestone: false,
-      duration_days: days,
-      start_date: startStr,
-      end_date: endStr,
-    });
-    created = true;
   }
   return created;
 }
