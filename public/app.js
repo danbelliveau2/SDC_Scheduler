@@ -7031,14 +7031,11 @@ function handleRowContextMenu(e) {
   e.preventDefault();
   const id = Number(tr.dataset.id);
   const task = state.tasks.find(t => t.id === id);
+  const cx = e.clientX, cy = e.clientY;
   const items = [
-    // v5.13: "Add row below" — creates a task in the same section /
-    // department / sub-department as the right-clicked row. Lets the user
-    // add a row anywhere they want without having to find the right
-    // section header to right-click on.
-    { label: '＋ Add row below', onClick: () => createTaskBelow(id) },
+    { label: '＋ Add row below', onClick: () => createTaskBelow(id, cx, cy) },
     { label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) },
-    { label: 'Move to section…', onClick: () => moveTaskInline(id, e.clientX, e.clientY) },
+    { label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) },
     { label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) },
   ];
   // Milestones / anchors / backlog rows aren't "resources" — duplicating
@@ -7046,15 +7043,26 @@ function handleRowContextMenu(e) {
   if (task && (task.is_milestone || inferredAnchorKey(task) || isBacklogTask(task))) {
     items.splice(1, 1);  // remove the "Add additional resource" entry
   }
-  showContextMenu(e.clientX, e.clientY, items);
+  showContextMenu(cx, cy, items);
 }
 
-// v5.13: create a new task in the SAME section as the given task. The new
-// row opens in name-edit mode immediately so the user can type the name.
-async function createTaskBelow(taskId) {
+// Create a new task in the SAME section as the given task. If the
+// clicked row has no phase_group (anchors like PO/FAT/Ship, or the
+// Backlog row), we can't inherit a section — orphan tasks don't render
+// in the grid, so we pop the section picker instead so the user gets to
+// choose where the new row lives. The new row opens in name-edit mode
+// immediately so they can type the name.
+async function createTaskBelow(taskId, x, y) {
   const t = state.tasks.find(x => x.id === taskId);
   if (!t) return;
-  await createTaskInSection(t.phase_group || null, t.department || null, t.sub_department || null);
+  if (t.phase_group) {
+    await createTaskInSection(t.phase_group || null, t.department || null, t.sub_department || null);
+    return;
+  }
+  // Anchor / Backlog row clicked — ask which section to put the new row in.
+  showSectionPicker(x || 100, y || 100, async (g, d, s) => {
+    await createTaskInSection(g, d, s);
+  });
 }
 
 // Right-click → "Add additional resource". Duplicates a task row as the
