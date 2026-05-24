@@ -772,7 +772,16 @@ function applyFilters(tasks) {
   return tasks.filter(t => {
     if (project && t.project !== project) return false;
     if (phase && t.phase !== phase) return false;
-    if (assignee && t.assignee !== assignee) return false;
+    // v5.8: when an assignee filter is on (e.g. "show me only Dan's tasks"),
+    // keep anchors (PO, FAT, Ship, Mech 1 Release, Power-Up) AND the Backlog
+    // visible as context — they're spine markers for the project, not work
+    // assigned to anyone. The filter only hides regular WORK tasks that
+    // aren't theirs.
+    if (assignee && t.assignee !== assignee
+        && !inferredAnchorKey(t)
+        && !isBacklogTask(t)) {
+      return false;
+    }
     if (q) {
       const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''} ${t.phase||''}`.toLowerCase();
       if (!hay.includes(q)) return false;
@@ -6708,12 +6717,49 @@ function render() {
   // with the active project after every render — covers project-tab switches
   // as well as data reloads.
   syncBaselineButtons();
+  renderAssigneeFilterBanner();
   if (state.view === 'schedule') {
     renderTable();
     renderGantt();
   } else if (state.view === 'team') {
     renderTeam();
   }
+}
+
+// v5.8: when state.filters.assignee is set, a banner appears at the top of
+// the schedule view announcing "Viewing tasks for: <name>" with a Clear
+// button. The filter survives across project-tab switches; the banner is
+// the user's "you're in a filtered mode" indicator + escape hatch.
+function renderAssigneeFilterBanner() {
+  const view = document.getElementById('view-schedule');
+  if (!view) return;
+  let banner = document.getElementById('assignee-filter-banner');
+  const name = state.filters?.assignee;
+  if (!name) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'assignee-filter-banner';
+    banner.className = 'assignee-filter-banner';
+    view.insertBefore(banner, view.firstChild);
+  }
+  banner.innerHTML = `
+    <span class="afb-label">Viewing tasks for</span>
+    <span class="afb-name">${escapeHtml(name)}</span>
+    <button type="button" class="afb-clear" id="afb-clear" title="Clear filter — show all tasks">× Clear</button>
+    <button type="button" class="afb-actions" id="afb-back-actions" title="Back to Actions tab">↩ Actions</button>
+  `;
+  banner.querySelector('#afb-clear').addEventListener('click', () => {
+    state.filters.assignee = '';
+    _actionsPageState.personId = null;
+    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+    render();
+  });
+  banner.querySelector('#afb-back-actions').addEventListener('click', () => {
+    setView('actions');
+  });
 }
 
 // ---------- New-task & delete (no modal — everything else is inline) ----------
@@ -8080,23 +8126,21 @@ function renderActionsPage() {
     btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
   });
 
-  // v4.76: when a person is signed in, focus the page on their personal
-  // Gantt — hide the section divider, filter chips, action list, and
-  // dept dashboard. The Gantt shows the same data the list would and
-  // doing both feels disconnected ("top half is mine, bottom half is
-  // team"). Quick-add bar stays visible so the user can keep adding.
+  // v5.8: the is-signed-in mode that hid the action list / dept dashboard
+  // when signed in is removed — picking a person now routes to the
+  // Schedule view (with an assignee filter) where the full grid + Gantt
+  // experience lives. The Actions tab itself stays as the dept dashboard /
+  // list view, regardless of who's currently picked in the dropdown.
   const pageRoot = document.querySelector('.actions-page');
-  if (pageRoot) {
-    pageRoot.classList.toggle('is-signed-in', _actionsPageState.personId != null);
-  }
+  if (pageRoot) pageRoot.classList.remove('is-signed-in');
 
-  // v4.63: render the person picker (Everyone + every team member except
-  // placeholders) and the optional personal summary strip.
-  // v4.66: also render the per-person Gantt visualization when someone is
-  // signed in. Clears itself when no person is picked.
+  // v5.8: personal Gantt removed from this page. Signing in via the person
+  // picker now routes the user to the Schedule view with an assignee filter
+  // pre-applied — same look, scroll, zoom, grid + Gantt + filters as the
+  // main schedule, just scoped to their tasks. The Actions tab stays as the
+  // dept dashboard / action list view.
   renderActionsPersonBar();
   renderActionsPersonSummary();
-  renderActionsPersonGantt();
 
   // Refresh the project + person select dropdowns. Preserve the user's
   // current selections across rebuilds so a re-render doesn't blow away
@@ -8535,6 +8579,23 @@ function renderActionsPersonBar() {
       if (id == null) localStorage.removeItem('sdcActionsPersonId');
       else localStorage.setItem('sdcActionsPersonId', String(id));
     } catch {}
+    // v5.8: signing in as a person now SWITCHES to the schedule view with
+    // an assignee filter pre-applied — that gives the user the full grid +
+    // gantt + filters + view toggles experience, just scoped to this
+    // person's tasks. Anchors and Backlog stay visible as project context
+    // (see applyFilters). Picking "Everyone" clears the assignee filter
+    // but stays on the Actions page.
+    if (id != null) {
+      const m = (state.team || []).find(x => x.id === id);
+      if (m) {
+        state.filters.assignee = m.name;
+        setView('schedule');
+        return;
+      }
+    } else if (state.filters.assignee) {
+      // Picking "Everyone" while a person filter was on — clear it.
+      state.filters.assignee = '';
+    }
     renderActionsPage();
   });
   const clearBtn = document.getElementById('actions-person-clear');

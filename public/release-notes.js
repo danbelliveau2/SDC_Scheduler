@@ -4,6 +4,25 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.8',
+    date: '2026-05-24',
+    notes: [
+      'Signing in as a person now opens the real Schedule view filtered to their tasks.',
+      '',
+      'BIGGER FIX: the v5.4-v5.7 hybrid personal Gantt embedded inside the Actions tab was still missing too much — no grid, no filters, no view toggles, no drag-pan scroll, no exact-same look. User wanted "just another Schedule that only shows that person\'s tasks."',
+      '',
+      'NEW FLOW:',
+      '   ▸ On the Actions tab, pick a person from the sign-in dropdown.',
+      '   ▸ The app switches to the Schedule view with state.filters.assignee = that person\'s name.',
+      '   ▸ Full Schedule experience — grid, Gantt, Both/Grid-only/Gantt-only toggle, every filter chip, project tabs, zoom, drag-pan scroll, the works. Same look as the main Schedule because IT IS the main Schedule.',
+      '   ▸ A banner at the top of the view announces "Viewing tasks for [Name]" with × Clear and ↩ Actions buttons.',
+      '',
+      'APPLYFILTERS UPDATE: the assignee filter now lets anchors (PO / Mech 1 Release / Power-Up / FAT / Ship Machine) and Backlog through as project context — even when filtering to one person, those spine markers still render so the user sees where their tasks sit in the project timeline.',
+      '',
+      'REMOVED the personal Gantt rendering inside the Actions tab — the schedule-view-with-filter approach replaces it entirely. Actions tab stays a dept dashboard / action list view.',
+    ],
+  },
+  {
     version: '5.7',
     date: '2026-05-22',
     notes: [

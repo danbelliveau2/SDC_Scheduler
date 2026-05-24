@@ -4228,6 +4228,46 @@ body.customer-view .schedule-footer { display: none; }
   max-height: 70vh;
 }
 .actions-person-gantt:empty { display: none; }
+
+/* v5.8: assignee-filter banner that announces "you're in a filtered mode"
+   when signing in as someone on the Actions tab routes the user to the
+   schedule view with state.filters.assignee pre-set. Pinned at the top
+   of #view-schedule with a clear button + a back-to-Actions button. */
+.assignee-filter-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 25%, white);
+  border-bottom: 2px solid var(--sdc-primary, #2563eb);
+  font-size: 13px;
+}
+.assignee-filter-banner .afb-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.assignee-filter-banner .afb-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--sdc-dark, #061d39);
+}
+.assignee-filter-banner button {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.assignee-filter-banner button + button { margin-left: 6px; }
+.assignee-filter-banner button:hover {
+  background: var(--sdc-accent, #c1f53e);
+}
 .apg-title {
   font-size: 11px;
   font-weight: 700;
