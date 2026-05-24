@@ -769,14 +769,44 @@ function applyFilters(tasks) {
   const { search, project, phase, assignee, quick } = state.filters;
   const q = (search || '').trim().toLowerCase();
   const qf = quick || {};
+  // v5.10: Personal Assignments mode — STRICT filter. Hide every anchor,
+  // backlog, and milestone from any project. Show only regular tasks and
+  // action items where the assignee matches (directly OR via placeholder
+  // for the person's discipline on an action item).
+  const personalMode = !!state.personalMode;
+  const personMember = personalMode && _actionsPageState && _actionsPageState.personId != null
+    ? (state.team || []).find(m => m.id === _actionsPageState.personId)
+    : null;
   return tasks.filter(t => {
+    if (personalMode) {
+      // No anchors, no backlog, no milestones — only the person's actual work.
+      if (inferredAnchorKey(t)) return false;
+      if (isBacklogTask(t))     return false;
+      if (t.is_milestone)       return false;
+      // Templates and Sales-workspace projects don't belong in a personal view.
+      if (!t.project)                     return false;
+      if (isTemplateProject(t.project))   return false;
+      if (projectWorkspace(t.project) === 'Sales') return false;
+      const a = (t.assignee || '').trim().toLowerCase();
+      const matchDirect = a === (assignee || '').trim().toLowerCase();
+      const matchPlaceholder = personMember
+        && t.is_action
+        && isPlaceholder(t.assignee)
+        && actionDisciplineKey(t) === personMember.discipline;
+      if (!matchDirect && !matchPlaceholder) return false;
+      // Drop the project filter so all this person's projects show together.
+      if (q) {
+        const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      const isDone = (t.progress || 0) >= 100;
+      if (!qf.showCompleted && isDone) return false;
+      return true;
+    }
     if (project && t.project !== project) return false;
     if (phase && t.phase !== phase) return false;
-    // v5.8: when an assignee filter is on (e.g. "show me only Dan's tasks"),
-    // keep anchors (PO, FAT, Ship, Mech 1 Release, Power-Up) AND the Backlog
-    // visible as context — they're spine markers for the project, not work
-    // assigned to anyone. The filter only hides regular WORK tasks that
-    // aren't theirs.
+    // Regular schedule view with optional assignee filter (not personal
+    // mode): anchors and backlog still show as project context.
     if (assignee && t.assignee !== assignee
         && !inferredAnchorKey(t)
         && !isBacklogTask(t)) {
@@ -988,18 +1018,27 @@ function cellHtml(t, key) {
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'duration': {
-      // v5.6: EVERY duration cell — task, milestone, anchor, backlog — gets
-      // the same click-to-edit treatment with a hover hint, so it's clear the
-      // value is editable. Previously milestones rendered an empty cell when
-      // durationLabel returned "0" or "" (depending on data state), making
-      // them look static. Now they always show something ("0d" for
-      // milestones, "—" for missing data) and the hover pencil signals
-      // "click to edit." Backlog keeps the is-backlog-duration class for the
-      // accent-colored hover.
+      // v5.10: every duration cell renders with the editable affordance.
+      // For Backlog specifically, derive the label from raw data even if
+      // durationLabel returned ''. The reported "blank Backlog DUR cell"
+      // turned out to be data state: backlog rows with duration_days=null
+      // (from the auto-recovery race or an older import). Show "(set)"
+      // as an explicit click-to-edit affordance so the cell is never
+      // visually empty.
       const isBacklogRow = isBacklogTask(t);
       let label = durationLabel(t);
-      if (!label) label = '—';
-      else if (label === '0') label = t.is_milestone ? '0d' : '0';
+      if (!label) {
+        // Try businessDaysBetween directly, then fall back to a clearly
+        // editable placeholder.
+        const days = businessDaysBetween(t.start_date, t.end_date);
+        if (days != null && days > 0) {
+          label = days % 5 === 0 ? `${days / 5}w` : `${days}d`;
+        } else {
+          label = isBacklogRow ? '(set)' : '—';
+        }
+      } else if (label === '0') {
+        label = t.is_milestone ? '0d' : (isBacklogRow ? '(set)' : '0');
+      }
       const classes = `${cls} is-editable-duration${isBacklogRow ? ' is-backlog-duration' : ''}`;
       return `<td class="${classes}" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${escapeHtml(label)}<span class="duration-edit-hint">✎</span></td>`;
     }
@@ -6751,39 +6790,60 @@ function render() {
   }
 }
 
-// v5.8: when state.filters.assignee is set, a banner appears at the top of
-// the schedule view announcing "Viewing tasks for: <name>" with a Clear
-// button. The filter survives across project-tab switches; the banner is
-// the user's "you're in a filtered mode" indicator + escape hatch.
+// v5.10: schedule-view banner removed — personal mode now lives on the
+// Actions tab, not the Schedule view. See enterPersonalMode below.
 function renderAssigneeFilterBanner() {
-  const view = document.getElementById('view-schedule');
-  if (!view) return;
-  let banner = document.getElementById('assignee-filter-banner');
-  const name = state.filters?.assignee;
-  if (!name) {
-    if (banner) banner.remove();
-    return;
+  const banner = document.getElementById('assignee-filter-banner');
+  if (banner) banner.remove();
+}
+
+// v5.10: when the user picks a person on the Actions tab, move the
+// schedule-split DOM (grid + Gantt + all the toolbars/filters) into the
+// actions personal host, render the "Personal Assignments — <name>"
+// banner, and trigger a render so the schedule populates with the
+// person's filtered tasks. Stays on the Actions tab (no view switch).
+function enterPersonalMode() {
+  const host = document.getElementById('actions-personal-host');
+  const split = document.getElementById('schedule-split');
+  if (host && split && split.parentElement !== host) {
+    host.appendChild(split);
   }
-  if (!banner) {
-    banner = document.createElement('div');
-    banner.id = 'assignee-filter-banner';
-    banner.className = 'assignee-filter-banner';
-    view.insertBefore(banner, view.firstChild);
+  renderPersonalAssignmentsBanner();
+  // Trigger a fresh table+Gantt render now that the DOM is in place.
+  if (typeof renderTable === 'function') renderTable();
+  if (typeof renderGantt === 'function') renderGantt();
+}
+
+function exitPersonalMode() {
+  const split = document.getElementById('schedule-split');
+  const scheduleView = document.getElementById('view-schedule');
+  if (split && scheduleView && split.parentElement !== scheduleView) {
+    // Insert at the natural position (right after the schedule's toolbars
+    // — appending to the end is fine here since the schedule-split is the
+    // last block under #view-schedule).
+    scheduleView.appendChild(split);
   }
+  // Clear the banner.
+  const b = document.getElementById('personal-assignments-banner');
+  if (b) b.innerHTML = '';
+}
+
+function renderPersonalAssignmentsBanner() {
+  const banner = document.getElementById('personal-assignments-banner');
+  if (!banner) return;
+  const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
+  if (!member) { banner.innerHTML = ''; return; }
   banner.innerHTML = `
-    <span class="afb-label">Viewing tasks for</span>
-    <span class="afb-name">${escapeHtml(name)}</span>
-    <button type="button" class="afb-clear" id="afb-clear" title="Clear filter — show all tasks">× Clear</button>
-    <button type="button" class="afb-actions" id="afb-back-actions" title="Back to Actions tab">↩ Actions</button>
+    <span class="pab-label">Personal Assignments</span>
+    <span class="pab-name">${escapeHtml(member.name)}</span>
+    <button type="button" class="pab-clear" id="pab-clear" title="Sign out — back to the action list view">× Clear</button>
   `;
-  banner.querySelector('#afb-clear').addEventListener('click', () => {
-    state.filters.assignee = '';
+  banner.querySelector('#pab-clear').addEventListener('click', () => {
     _actionsPageState.personId = null;
+    state.filters.assignee = '';
+    state.personalMode = false;
     try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
-    render();
-  });
-  banner.querySelector('#afb-back-actions').addEventListener('click', () => {
-    setView('actions');
+    renderActionsPage();
   });
 }
 
@@ -8151,13 +8211,20 @@ function renderActionsPage() {
     btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
   });
 
-  // v5.8: the is-signed-in mode that hid the action list / dept dashboard
-  // when signed in is removed — picking a person now routes to the
-  // Schedule view (with an assignee filter) where the full grid + Gantt
-  // experience lives. The Actions tab itself stays as the dept dashboard /
-  // list view, regardless of who's currently picked in the dropdown.
+  // v5.10: Personal Assignments mode — when signed in, the actions tab
+  // hosts the schedule's grid + Gantt with a strict filter to the
+  // person's work. We swap the .actions-page into "personal" mode (CSS
+  // hides the action list, dept dashboard, etc.) and physically move
+  // #schedule-split into our personal-host div so the existing render
+  // pipeline targets that DOM. Restored to #view-schedule when signing
+  // out (Everyone) or when navigating away.
   const pageRoot = document.querySelector('.actions-page');
-  if (pageRoot) pageRoot.classList.remove('is-signed-in');
+  if (pageRoot) {
+    const signedIn = _actionsPageState.personId != null;
+    pageRoot.classList.toggle('is-personal-mode', signedIn);
+    if (signedIn) enterPersonalMode();
+    else exitPersonalMode();
+  }
 
   // v5.8: personal Gantt removed from this page. Signing in via the person
   // picker now routes the user to the Schedule view with an assignee filter
@@ -8604,22 +8671,21 @@ function renderActionsPersonBar() {
       if (id == null) localStorage.removeItem('sdcActionsPersonId');
       else localStorage.setItem('sdcActionsPersonId', String(id));
     } catch {}
-    // v5.8: signing in as a person now SWITCHES to the schedule view with
-    // an assignee filter pre-applied — that gives the user the full grid +
-    // gantt + filters + view toggles experience, just scoped to this
-    // person's tasks. Anchors and Backlog stay visible as project context
-    // (see applyFilters). Picking "Everyone" clears the assignee filter
-    // but stays on the Actions page.
+    // v5.10: signing in stays on the Actions tab. We move the
+    // schedule-split DOM into the actions container so the user sees the
+    // full grid + Gantt + filters experience without leaving the Actions
+    // nav. State.personalMode flag drives applyFilters to hide
+    // anchors / backlog / milestones — strictly the person's work.
     if (id != null) {
       const m = (state.team || []).find(x => x.id === id);
       if (m) {
         state.filters.assignee = m.name;
-        setView('schedule');
-        return;
+        state.personalMode = true;
       }
-    } else if (state.filters.assignee) {
-      // Picking "Everyone" while a person filter was on — clear it.
+    } else {
+      // Everyone selected — exit personal mode.
       state.filters.assignee = '';
+      state.personalMode = false;
     }
     renderActionsPage();
   });
@@ -11076,6 +11142,13 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 function setView(view) {
+  // v5.10: if leaving Actions while in personal mode, restore the
+  // schedule-split DOM to #view-schedule so the regular Schedule view
+  // works. Personal mode itself isn't cleared — re-entering Actions
+  // re-applies it. The exit just relocates the DOM.
+  if (state.view === 'actions' && view !== 'actions') {
+    exitPersonalMode();
+  }
   state.view = view;
   document.body.dataset.view = view;
   // Update the legacy .tab buttons (if any still exist) and the sidebar

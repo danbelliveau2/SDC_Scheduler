@@ -285,11 +285,14 @@
              your login state carries across reloads. -->
         <div class="actions-person-bar" id="actions-person-bar"></div>
         <div class="actions-person-summary" id="actions-person-summary"></div>
-        <!-- v4.66: per-person Gantt view. Renders when a person is signed in
-             on the Actions page — visualises their tasks + action items on
-             a single horizontal timeline so they see their work at a glance,
-             not just a list of names. -->
-        <div class="actions-person-gantt" id="actions-person-gantt"></div>
+        <!-- v5.10: Personal Assignments banner — sits above the moved
+             schedule DOM while in personal mode. Empty otherwise. -->
+        <div class="personal-assignments-banner" id="personal-assignments-banner"></div>
+        <!-- v5.10: when a person is signed in, the schedule-split DOM is
+             temporarily moved here so the user gets the full grid + Gantt
+             + filters experience without leaving the Actions tab. Restored
+             to #view-schedule when signing out. -->
+        <div class="actions-personal-host" id="actions-personal-host"></div>
 
         <!-- v4.70: thick lime divider between the SIGN-IN section above
              (person picker / personal summary / personal Gantt) and the

@@ -4,6 +4,25 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.10',
+    date: '2026-05-24',
+    notes: [
+      'Personal Assignments lives inside the Actions tab + backlog DUR cell never blank.',
+      '',
+      'PERSONAL ASSIGNMENTS — rebuilt to match what was asked for:',
+      '   ▸ Signing in stays on the Actions tab (Schedule nav no longer highlighted). The schedule-split DOM (grid + Gantt + filters + toolbars + zoom + scroll) is physically moved into the Actions container so you get the full schedule experience without leaving the tab.',
+      '   ▸ Banner at the top reads "PERSONAL ASSIGNMENTS — [Name]" with × Clear. Not a project name, not a schedule title.',
+      '   ▸ STRICT filter: only the person\'s tasks and action items (direct assign + discipline-placeholder for actions). No anchors, no Backlog, no milestones from random projects, no template / Sales-workspace rows. Just their work.',
+      '   ▸ × Clear restores the schedule-split to its #view-schedule home and shows the regular Actions tab (action list + dept dashboard). No more accidental project-tab navigation.',
+      '   ▸ Clicking a different nav (Schedule, Team, etc.) also auto-restores the schedule-split — personal mode is just a temporary repositioning.',
+      '',
+      'BACKLOG DUR CELL never blank:',
+      '   ▸ If durationLabel returns "" (data has no duration_days + dates that don\'t span business days), the cell falls back to businessDaysBetween() and then to "(set)" as an explicit click-to-edit affordance for Backlog rows. No more empty cell that looks unclickable.',
+      '   ▸ A "0" duration on Backlog renders as "(set)" too — same affordance.',
+      '   ▸ Click the cell → text input → type 2w / 3w / 5d → Enter. Same path as every other task.',
+    ],
+  },
+  {
     version: '5.9',
     date: '2026-05-24',
     notes: [
