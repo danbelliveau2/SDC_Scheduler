@@ -769,45 +769,11 @@ function applyFilters(tasks) {
   const { search, project, phase, assignee, quick } = state.filters;
   const q = (search || '').trim().toLowerCase();
   const qf = quick || {};
-  // v5.10: Personal Assignments mode — STRICT filter. Hide every anchor,
-  // backlog, and milestone from any project. Show only regular tasks and
-  // action items where the assignee matches (directly OR via placeholder
-  // for the person's discipline on an action item).
-  const personalMode = !!state.personalMode;
-  const personMember = personalMode && _actionsPageState && _actionsPageState.personId != null
-    ? (state.team || []).find(m => m.id === _actionsPageState.personId)
-    : null;
   return tasks.filter(t => {
-    if (personalMode) {
-      // No anchors, no backlog, no milestones — only the person's actual work.
-      if (inferredAnchorKey(t)) return false;
-      if (isBacklogTask(t))     return false;
-      if (t.is_milestone)       return false;
-      // Templates and Sales-workspace projects don't belong in a personal view.
-      if (!t.project)                     return false;
-      if (isTemplateProject(t.project))   return false;
-      if (projectWorkspace(t.project) === 'Sales') return false;
-      const a = (t.assignee || '').trim().toLowerCase();
-      const matchDirect = a === (assignee || '').trim().toLowerCase();
-      const matchPlaceholder = personMember
-        && t.is_action
-        && isPlaceholder(t.assignee)
-        && actionDisciplineKey(t) === personMember.discipline;
-      if (!matchDirect && !matchPlaceholder) return false;
-      // Drop the project filter so all this person's projects show together.
-      if (q) {
-        const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''}`.toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      const isDone = (t.progress || 0) >= 100;
-      if (!qf.showCompleted && isDone) return false;
-      return true;
-    }
     if (project && t.project !== project) return false;
     if (phase && t.phase !== phase) return false;
-    // Regular schedule view with optional assignee filter (not personal
-    // mode): anchors still show as project context. Backlog is treated
-    // as a normal task — filter applies normally.
+    // Assignee filter on regular schedule: anchors still show as
+    // project context.
     if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
       return false;
     }
@@ -1279,29 +1245,12 @@ function renderTable() {
   // styling that still wants to differentiate it.
   if (backlogTask)   html += rowHtml(backlogTask, 1);
 
-  // v5.12: in personal mode, skip empty section / department / sub-dept
-  // headers — only show hierarchy levels that actually contain this
-  // person's work. Outside personal mode every level renders even when
-  // empty (the skeleton tells the user where to add tasks).
-  const inPersonal = !!state.personalMode;
-  const hasTasksUnder = (gKey, dKey, sKey) => {
-    for (const path in buckets) {
-      if (!buckets[path] || !buckets[path].length) continue;
-      const parts = path.split('/');
-      if (parts[0] !== gKey) continue;
-      if (dKey && parts[1] !== dKey) continue;
-      if (sKey && parts[2] !== sKey) continue;
-      return true;
-    }
-    return false;
-  };
   // Walk the full canonical hierarchy. Every level renders its header even when empty —
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
   // under a phase_group (cross-cutting like Perform FAT), under a department, or under a
   // sub-department. Machine Power-Up flows through the bucket walk like any other Wire
   // task — its anchor styling is applied by the row renderer below.
   for (const group of HIERARCHY) {
-    if (inPersonal && !hasTasksUnder(group.key)) continue;
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
@@ -1342,7 +1291,6 @@ function renderTable() {
     const groupLevelTasks = buckets[gPath] || [];
     for (const t of groupLevelTasks) html += renderTaskRow(t, 2);
     for (const dept of group.departments) {
-      if (inPersonal && !hasTasksUnder(group.key, dept.key)) continue;
       // Ship Machine sits between TEARDOWN and INSTALL inside section 50 — it's the
       // gate where the disassembled machine leaves SDC for the customer's site.
       if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchor) {
@@ -1366,7 +1314,6 @@ function renderTable() {
         const deptLevelTasks = buckets[dPath] || [];
         for (const t of deptLevelTasks) html += renderTaskRow(t, 3);
         for (const sub of dept.subs) {
-          if (inPersonal && !hasTasksUnder(group.key, dept.key, sub.key)) continue;
           const sPath = groupPath(group.key, dept.key, sub.key);
           const sCollapsed = collapsedGroups.has(sPath);
           html += headerRowHtml(3, sub.label, sPath, sCollapsed,
@@ -6787,91 +6734,95 @@ function render() {
   }
 }
 
-// v5.10: schedule-view banner removed — personal mode now lives on the
-// Actions tab, not the Schedule view. See enterPersonalMode below.
-function renderAssigneeFilterBanner() {
-  const banner = document.getElementById('assignee-filter-banner');
-  if (banner) banner.remove();
-}
+function renderAssigneeFilterBanner() { /* removed — personal view is a simple list in the Actions tab */ }
 
-// v5.10: when the user picks a person on the Actions tab, move the
-// schedule-split DOM (grid + Gantt + all the toolbars/filters) into the
-// actions personal host, render the "Personal Assignments — <name>"
-// banner, and trigger a render so the schedule populates with the
-// person's filtered tasks. Stays on the Actions tab (no view switch).
-function enterPersonalMode() {
-  const host = document.getElementById('actions-personal-host');
-  const split = document.getElementById('schedule-split');
-  if (host && split && split.parentElement !== host) {
-    host.appendChild(split);
-  }
-  renderPersonalAssignmentsBanner();
+// Render the personal list when a person is signed in on the Actions tab.
+// Simple flat list grouped by section (10 DESIGN & BUILD / 40 MACHINE
+// TESTING / 50 TEARDOWN & INSTALL). Department / sub-department headers
+// are intentionally NOT shown — one person typically lives in one
+// department, the breakdown adds noise. Empty sections are hidden.
+function renderPersonalAssignments() {
+  const wrap = document.getElementById('actions-personal-list');
+  if (!wrap) return;
+  const personId = _actionsPageState.personId;
+  if (personId == null) { wrap.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === personId);
+  if (!member) { wrap.innerHTML = ''; return; }
 
-  // v5.12: patch state.tasks so action items have dates + phase_group set
-  // for rendering. Without dates, the Gantt drops the action. Without
-  // phase_group, the grid hierarchy walk drops it. We default missing
-  // dates to today, missing phase_group to 'design_build'. State.tasks
-  // is restored after render so the original (unpatched) data is what
-  // saveCellEdit and other handlers see.
-  // Also force actionsMode='combined' (so the Gantt's actionsMode filter
-  // doesn't drop is_action rows in personal view).
-  const _todayISO = todayISO();
-  const savedTasks = state.tasks;
-  const savedActionsMode = state.scheduleView?.actionsMode;
-  state.scheduleView = { ...(state.scheduleView || {}), actionsMode: 'combined' };
-  state.tasks = state.tasks.map(t => {
-    if (!t.is_action) return t;
-    let task = t;
-    if (!task.start_date || !task.end_date) {
-      const start = task.start_date || _todayISO;
-      const end   = task.end_date   || start;
-      task = { ...task, start_date: start, end_date: end };
-    }
-    if (!task.phase_group) {
-      task = { ...task, phase_group: 'design_build' };
-    }
-    return task;
+  const memberNameLower = (member.name || '').trim().toLowerCase();
+  const _today = new Date().toISOString().slice(0, 10);
+
+  // Tasks + actions assigned to this person. Action items also surface
+  // when assigned to a discipline-placeholder matching the person's
+  // discipline (so unstaffed actions show on the right team's view).
+  const mine = (state.tasks || []).filter(t => {
+    if (!t.project) return false;
+    if (isTemplateProject(t.project)) return false;
+    if (projectWorkspace(t.project) === 'Sales') return false;
+    if (inferredAnchorKey(t)) return false;
+    if (isBacklogTask(t))     return false;
+    const a = (t.assignee || '').trim().toLowerCase();
+    if (a === memberNameLower) return true;
+    if (t.is_action && isPlaceholder(t.assignee) && actionDisciplineKey(t) === member.discipline) return true;
+    return false;
   });
 
-  try {
-    if (typeof renderTable === 'function') renderTable();
-    if (typeof renderGantt === 'function') renderGantt();
-  } finally {
-    state.tasks = savedTasks;
-    if (savedActionsMode !== undefined) {
-      state.scheduleView.actionsMode = savedActionsMode;
-    }
+  if (mine.length === 0) {
+    wrap.innerHTML = `<div class="apl-empty">Nothing assigned to ${escapeHtml(member.name)}.</div>`;
+    return;
   }
-}
 
-function exitPersonalMode() {
-  const split = document.getElementById('schedule-split');
-  const scheduleView = document.getElementById('view-schedule');
-  if (split && scheduleView && split.parentElement !== scheduleView) {
-    // Insert at the natural position (right after the schedule's toolbars
-    // — appending to the end is fine here since the schedule-split is the
-    // last block under #view-schedule).
-    scheduleView.appendChild(split);
+  // Group by section (phase_group). Actions without phase_group fall
+  // into design_build (the natural home for most engineering work).
+  const buckets = {};
+  for (const t of mine) {
+    const key = t.phase_group || 'design_build';
+    (buckets[key] ||= []).push(t);
   }
-  // Clear the banner.
-  const b = document.getElementById('personal-assignments-banner');
-  if (b) b.innerHTML = '';
-}
+  // Sort within each bucket by start_date, then name.
+  for (const k of Object.keys(buckets)) {
+    buckets[k].sort((a, b) => {
+      const sa = (a.start_date || '￿').localeCompare(b.start_date || '￿');
+      if (sa !== 0) return sa;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+  }
 
-function renderPersonalAssignmentsBanner() {
-  const banner = document.getElementById('personal-assignments-banner');
-  if (!banner) return;
-  const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
-  if (!member) { banner.innerHTML = ''; return; }
-  banner.innerHTML = `
-    <span class="pab-label">Personal Assignments</span>
-    <span class="pab-name">${escapeHtml(member.name)}</span>
-    <button type="button" class="pab-clear" id="pab-clear" title="Sign out — back to the action list view">× Clear</button>
+  const sectionHtml = HIERARCHY
+    .filter(g => buckets[g.key] && buckets[g.key].length > 0)
+    .map(g => {
+      const rows = buckets[g.key].map(t => {
+        const dur = durationLabel(t) || '—';
+        const due = t.end_date ? fmtDate(t.end_date) : '—';
+        const overdue = t.end_date && t.end_date < _today && (t.progress || 0) < 100;
+        const done = (t.progress || 0) >= 100;
+        const tagAction = t.is_action ? '<span class="apl-tag apl-tag-action">action</span>' : '';
+        const tagOverdue = overdue ? '<span class="apl-tag apl-tag-overdue">overdue</span>' : '';
+        const tagDone = done ? '<span class="apl-tag apl-tag-done">done</span>' : '';
+        return `<div class="apl-row${done ? ' is-done' : ''}${overdue ? ' is-overdue' : ''}" data-id="${t.id}">
+          <span class="apl-name">${escapeHtml(t.name || '')}${tagAction}${tagOverdue}${tagDone}</span>
+          <span class="apl-project">${escapeHtml(t.project || '')}</span>
+          <span class="apl-dur">${escapeHtml(dur)}</span>
+          <span class="apl-due">${escapeHtml(due)}</span>
+        </div>`;
+      }).join('');
+      return `<div class="apl-section">
+        <div class="apl-section-header">${escapeHtml(g.label)}</div>
+        <div class="apl-rows">${rows}</div>
+      </div>`;
+    }).join('');
+
+  wrap.innerHTML = `
+    <div class="apl-title-row">
+      <span class="apl-title-label">Personal Assignments</span>
+      <span class="apl-title-name">${escapeHtml(member.name)}</span>
+      <button type="button" class="apl-clear" id="apl-clear" title="Sign out">× Clear</button>
+    </div>
+    ${sectionHtml}
   `;
-  banner.querySelector('#pab-clear').addEventListener('click', () => {
+
+  wrap.querySelector('#apl-clear').addEventListener('click', () => {
     _actionsPageState.personId = null;
-    state.filters.assignee = '';
-    state.personalMode = false;
     try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
     renderActionsPage();
   });
@@ -7032,37 +6983,28 @@ function handleRowContextMenu(e) {
   const id = Number(tr.dataset.id);
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
-  const items = [
-    { label: '＋ Add row below', onClick: () => createTaskBelow(id, cx, cy) },
-    { label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) },
-    { label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) },
-    { label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) },
-  ];
-  // Milestones / anchors / backlog rows aren't "resources" — duplicating
-  // them as additional resources doesn't make sense. Hide the option.
-  if (task && (task.is_milestone || inferredAnchorKey(task) || isBacklogTask(task))) {
-    items.splice(1, 1);  // remove the "Add additional resource" entry
+  const items = [];
+  // "+ Add row below" only makes sense for rows that live in a section.
+  // Anchors (PO/FAT/Ship/Mech 1/Power-Up) and the Backlog row don't —
+  // they have no phase_group to inherit, so the option is hidden there.
+  if (task && task.phase_group) {
+    items.push({ label: '＋ Add row below', onClick: () => createTaskBelow(id) });
   }
+  if (task && !(task.is_milestone || inferredAnchorKey(task) || isBacklogTask(task))) {
+    items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
+  }
+  items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
+  items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
   showContextMenu(cx, cy, items);
 }
 
-// Create a new task in the SAME section as the given task. If the
-// clicked row has no phase_group (anchors like PO/FAT/Ship, or the
-// Backlog row), we can't inherit a section — orphan tasks don't render
-// in the grid, so we pop the section picker instead so the user gets to
-// choose where the new row lives. The new row opens in name-edit mode
-// immediately so they can type the name.
-async function createTaskBelow(taskId, x, y) {
+// Create a new task in the SAME section as the given task. Only callable
+// for rows that have a phase_group (caller is responsible for hiding the
+// option on anchors / backlog rows that don't).
+async function createTaskBelow(taskId) {
   const t = state.tasks.find(x => x.id === taskId);
-  if (!t) return;
-  if (t.phase_group) {
-    await createTaskInSection(t.phase_group || null, t.department || null, t.sub_department || null);
-    return;
-  }
-  // Anchor / Backlog row clicked — ask which section to put the new row in.
-  showSectionPicker(x || 100, y || 100, async (g, d, s) => {
-    await createTaskInSection(g, d, s);
-  });
+  if (!t || !t.phase_group) return;
+  await createTaskInSection(t.phase_group, t.department || null, t.sub_department || null);
 }
 
 // Right-click → "Add additional resource". Duplicates a task row as the
@@ -8262,19 +8204,18 @@ function renderActionsPage() {
     btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
   });
 
-  // v5.10: Personal Assignments mode — when signed in, the actions tab
-  // hosts the schedule's grid + Gantt with a strict filter to the
-  // person's work. We swap the .actions-page into "personal" mode (CSS
-  // hides the action list, dept dashboard, etc.) and physically move
-  // #schedule-split into our personal-host div so the existing render
-  // pipeline targets that DOM. Restored to #view-schedule when signing
-  // out (Everyone) or when navigating away.
+  // When signed in: show the personal list and hide the regular Actions
+  // page content (quick-add, filters, list, dept dashboard) via the
+  // .is-signed-in class on .actions-page. When signed out: opposite.
   const pageRoot = document.querySelector('.actions-page');
   if (pageRoot) {
     const signedIn = _actionsPageState.personId != null;
-    pageRoot.classList.toggle('is-personal-mode', signedIn);
-    if (signedIn) enterPersonalMode();
-    else exitPersonalMode();
+    pageRoot.classList.toggle('is-signed-in', signedIn);
+    if (signedIn) renderPersonalAssignments();
+    else {
+      const list = document.getElementById('actions-personal-list');
+      if (list) list.innerHTML = '';
+    }
   }
 
   // v5.8: personal Gantt removed from this page. Signing in via the person
@@ -8722,22 +8663,6 @@ function renderActionsPersonBar() {
       if (id == null) localStorage.removeItem('sdcActionsPersonId');
       else localStorage.setItem('sdcActionsPersonId', String(id));
     } catch {}
-    // v5.10: signing in stays on the Actions tab. We move the
-    // schedule-split DOM into the actions container so the user sees the
-    // full grid + Gantt + filters experience without leaving the Actions
-    // nav. State.personalMode flag drives applyFilters to hide
-    // anchors / backlog / milestones — strictly the person's work.
-    if (id != null) {
-      const m = (state.team || []).find(x => x.id === id);
-      if (m) {
-        state.filters.assignee = m.name;
-        state.personalMode = true;
-      }
-    } else {
-      // Everyone selected — exit personal mode.
-      state.filters.assignee = '';
-      state.personalMode = false;
-    }
     renderActionsPage();
   });
   const clearBtn = document.getElementById('actions-person-clear');
@@ -11194,13 +11119,6 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 function setView(view) {
-  // v5.10: if leaving Actions while in personal mode, restore the
-  // schedule-split DOM to #view-schedule so the regular Schedule view
-  // works. Personal mode itself isn't cleared — re-entering Actions
-  // re-applies it. The exit just relocates the DOM.
-  if (state.view === 'actions' && view !== 'actions') {
-    exitPersonalMode();
-  }
   state.view = view;
   document.body.dataset.view = view;
   // Update the legacy .tab buttons (if any still exist) and the sidebar

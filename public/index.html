@@ -279,20 +279,15 @@
           </div>
         </div>
 
-        <!-- v4.63: person picker. Click your name to switch to a personal
-             view filtered to your tasks + actions. "Everyone" is the
-             manager / team default. Selection persists in localStorage so
-             your login state carries across reloads. -->
+        <!-- Person picker. Click your name to switch to a personal view
+             filtered to your tasks + actions. Selection persists in
+             localStorage so your login state carries across reloads. -->
         <div class="actions-person-bar" id="actions-person-bar"></div>
         <div class="actions-person-summary" id="actions-person-summary"></div>
-        <!-- v5.10: Personal Assignments banner — sits above the moved
-             schedule DOM while in personal mode. Empty otherwise. -->
-        <div class="personal-assignments-banner" id="personal-assignments-banner"></div>
-        <!-- v5.10: when a person is signed in, the schedule-split DOM is
-             temporarily moved here so the user gets the full grid + Gantt
-             + filters experience without leaving the Actions tab. Restored
-             to #view-schedule when signing out. -->
-        <div class="actions-personal-host" id="actions-personal-host"></div>
+        <!-- Personal Assignments list — populated when a person is signed
+             in. Simple grouped list of their tasks + actions by section
+             (no department/sub-dept headers, no extras). Empty otherwise. -->
+        <div class="actions-personal-list" id="actions-personal-list"></div>
 
         <!-- v4.70: thick lime divider between the SIGN-IN section above
              (person picker / personal summary / personal Gantt) and the

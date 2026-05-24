@@ -4229,15 +4229,14 @@ body.customer-view .schedule-footer { display: none; }
 }
 .actions-person-gantt:empty { display: none; }
 
-/* v5.10: Personal Assignments mode on the Actions tab.
-   - Banner above the moved schedule-split.
-   - Hides the action list / dept dashboard / quick-add while in
-     personal mode so the schedule fills the page.
-   - Schedule-split appears inside the actions container; its own CSS
-     (#schedule-split, #schedule-grid, #schedule-gantt, etc.) keeps
-     applying because we move the DOM, not duplicate it. */
-.personal-assignments-banner:empty { display: none; }
-.personal-assignments-banner {
+/* Personal Assignments list — shown on the Actions tab when a person
+   is signed in. Simple grouped list of their tasks + actions by
+   section. No department headers, no extras. */
+.actions-personal-list:empty { display: none; }
+.actions-personal-list {
+  margin: 14px 0 8px;
+}
+.apl-title-row {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -4245,21 +4244,21 @@ body.customer-view .schedule-footer { display: none; }
   background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 28%, white);
   border: 2px solid var(--sdc-primary, #2563eb);
   border-radius: 8px;
-  margin: 12px 0;
+  margin-bottom: 14px;
 }
-.personal-assignments-banner .pab-label {
+.apl-title-label {
   color: var(--text-muted);
   font-weight: 700;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
 }
-.personal-assignments-banner .pab-name {
+.apl-title-name {
   font-weight: 800;
   font-size: 16px;
   color: var(--sdc-dark, #061d39);
 }
-.personal-assignments-banner button {
+.apl-clear {
   margin-left: auto;
   padding: 6px 12px;
   font-size: 12px;
@@ -4269,23 +4268,69 @@ body.customer-view .schedule-footer { display: none; }
   border-radius: 5px;
   cursor: pointer;
 }
-.personal-assignments-banner button:hover {
-  background: var(--sdc-accent, #c1f53e);
+.apl-clear:hover { background: var(--sdc-accent, #c1f53e); }
+.apl-empty {
+  padding: 18px 14px;
+  color: var(--text-muted);
+  font-style: italic;
 }
-.actions-personal-host:empty { display: none; }
-/* When in personal mode, hide all the regular Actions-tab content so
-   the moved schedule-split is the focus. */
-.actions-page.is-personal-mode .actions-section-divider,
-.actions-page.is-personal-mode .actions-quickadd,
-.actions-page.is-personal-mode .actions-filters,
-.actions-page.is-personal-mode .actions-list,
-.actions-page.is-personal-mode .actions-dept-dashboard {
-  display: none;
+.apl-section {
+  margin-bottom: 16px;
 }
-/* v5.12: predecessors column hidden in personal view — predecessors
-   reference task ids that aren't in the filtered list, so the column
-   would just show "?<id>" placeholders that mean nothing to the user. */
-.actions-page.is-personal-mode [data-col="pred"] {
+.apl-section-header {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sdc-dark, #061d39);
+  background: var(--surface-alt, #f4f6f8);
+  padding: 8px 12px;
+  border-top: 2px solid var(--anchor-text, #0f172a);
+  border-bottom: 2px solid var(--anchor-text, #0f172a);
+}
+.apl-rows {
+  display: flex;
+  flex-direction: column;
+}
+.apl-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) 60px 90px;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  font-size: 13px;
+}
+.apl-row:hover { background: rgba(15, 23, 42, 0.03); }
+.apl-row.is-done { opacity: 0.6; }
+.apl-row.is-overdue .apl-due { color: #b91c1c; font-weight: 700; }
+.apl-name { font-weight: 600; }
+.apl-project { color: var(--text-muted, #64748b); font-size: 12px; }
+.apl-dur { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.apl-due { font-variant-numeric: tabular-nums; text-align: right; }
+.apl-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  vertical-align: middle;
+}
+.apl-tag-action  { background: #dbeafe; color: #1d4ed8; }
+.apl-tag-overdue { background: #fee2e2; color: #b91c1c; }
+.apl-tag-done    { background: #d1fae5; color: #065f46; }
+
+/* When a person is signed in on the Actions tab, hide the regular
+   action-management UI (quick-add, filters, list, dept dashboard) so
+   the personal list is the focus. */
+.actions-page.is-signed-in .actions-section-divider,
+.actions-page.is-signed-in .actions-quickadd,
+.actions-page.is-signed-in .actions-filters,
+.actions-page.is-signed-in .actions-list,
+.actions-page.is-signed-in .actions-dept-dashboard {
   display: none;
 }
 .apg-title {
