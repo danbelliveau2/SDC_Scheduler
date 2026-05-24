@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.12',
+    date: '2026-05-24',
+    notes: [
+      'Personal Assignments view — only relevant sections, actions show up, no predecessors column.',
+      '',
+      'THREE FIXES BASED ON USER FEEDBACK:',
+      '',
+      '1. EMPTY SECTION HEADERS REMOVED. Personal view used to render every group / department / sub-department header (Controls Engineering, General Engineering, Procurement, Build, Wire, Shop, Engineering...) even when the person had no work there. Now we walk the bucket map and only emit a header if it (or one of its child buckets) has tasks. A mech engineer\'s view collapses down to just the sections that contain their work.',
+      '',
+      '2. ACTIONS NOW SHOW UP. Two filters were silently dropping action items from the personal Gantt: Gantt\'s section-key filter (requires phase_group to be a known section), and the actionsMode=schedule filter (drops is_action rows). enterPersonalMode now patches each is_action task with a default phase_group of "design_build" if missing and forces scheduleView.actionsMode to "combined" while rendering. Missing dates default to today so dateless actions still get a bar under the Today line. State.tasks and actionsMode are restored after the render — the patches are display-only.',
+      '',
+      '3. PREDECESSORS COLUMN HIDDEN. Personal view showed "?<id>" in the PRED column for tasks whose predecessor wasn\'t in the filtered list — useless visual noise. CSS rule on .actions-page.is-personal-mode hides [data-col="pred"] cells in personal mode. Toggleable via the View pill if you want it back.',
+    ],
+  },
+  {
     version: '5.11',
     date: '2026-05-24',
     notes: [

@@ -4282,6 +4282,12 @@ body.customer-view .schedule-footer { display: none; }
 .actions-page.is-personal-mode .actions-dept-dashboard {
   display: none;
 }
+/* v5.12: predecessors column hidden in personal view — predecessors
+   reference task ids that aren't in the filtered list, so the column
+   would just show "?<id>" placeholders that mean nothing to the user. */
+.actions-page.is-personal-mode [data-col="pred"] {
+  display: none;
+}
 .apg-title {
   font-size: 11px;
   font-weight: 700;

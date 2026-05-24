@@ -1266,12 +1266,29 @@ function renderTable() {
   // styling that still wants to differentiate it.
   if (backlogTask)   html += rowHtml(backlogTask, 1);
 
+  // v5.12: in personal mode, skip empty section / department / sub-dept
+  // headers — only show hierarchy levels that actually contain this
+  // person's work. Outside personal mode every level renders even when
+  // empty (the skeleton tells the user where to add tasks).
+  const inPersonal = !!state.personalMode;
+  const hasTasksUnder = (gKey, dKey, sKey) => {
+    for (const path in buckets) {
+      if (!buckets[path] || !buckets[path].length) continue;
+      const parts = path.split('/');
+      if (parts[0] !== gKey) continue;
+      if (dKey && parts[1] !== dKey) continue;
+      if (sKey && parts[2] !== sKey) continue;
+      return true;
+    }
+    return false;
+  };
   // Walk the full canonical hierarchy. Every level renders its header even when empty —
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
   // under a phase_group (cross-cutting like Perform FAT), under a department, or under a
   // sub-department. Machine Power-Up flows through the bucket walk like any other Wire
   // task — its anchor styling is applied by the row renderer below.
   for (const group of HIERARCHY) {
+    if (inPersonal && !hasTasksUnder(group.key)) continue;
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
@@ -1312,6 +1329,7 @@ function renderTable() {
     const groupLevelTasks = buckets[gPath] || [];
     for (const t of groupLevelTasks) html += renderTaskRow(t, 2);
     for (const dept of group.departments) {
+      if (inPersonal && !hasTasksUnder(group.key, dept.key)) continue;
       // Ship Machine sits between TEARDOWN and INSTALL inside section 50 — it's the
       // gate where the disassembled machine leaves SDC for the customer's site.
       if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchor) {
@@ -1335,6 +1353,7 @@ function renderTable() {
         const deptLevelTasks = buckets[dPath] || [];
         for (const t of deptLevelTasks) html += renderTaskRow(t, 3);
         for (const sub of dept.subs) {
+          if (inPersonal && !hasTasksUnder(group.key, dept.key, sub.key)) continue;
           const sPath = groupPath(group.key, dept.key, sub.key);
           const sCollapsed = collapsedGroups.has(sPath);
           html += headerRowHtml(3, sub.label, sPath, sCollapsed,
@@ -6774,9 +6793,42 @@ function enterPersonalMode() {
     host.appendChild(split);
   }
   renderPersonalAssignmentsBanner();
-  // Trigger a fresh table+Gantt render now that the DOM is in place.
-  if (typeof renderTable === 'function') renderTable();
-  if (typeof renderGantt === 'function') renderGantt();
+
+  // v5.12: patch state.tasks so action items have dates + phase_group set
+  // for rendering. Without dates, the Gantt drops the action. Without
+  // phase_group, the grid hierarchy walk drops it. We default missing
+  // dates to today, missing phase_group to 'design_build'. State.tasks
+  // is restored after render so the original (unpatched) data is what
+  // saveCellEdit and other handlers see.
+  // Also force actionsMode='combined' (so the Gantt's actionsMode filter
+  // doesn't drop is_action rows in personal view).
+  const _todayISO = todayISO();
+  const savedTasks = state.tasks;
+  const savedActionsMode = state.scheduleView?.actionsMode;
+  state.scheduleView = { ...(state.scheduleView || {}), actionsMode: 'combined' };
+  state.tasks = state.tasks.map(t => {
+    if (!t.is_action) return t;
+    let task = t;
+    if (!task.start_date || !task.end_date) {
+      const start = task.start_date || _todayISO;
+      const end   = task.end_date   || start;
+      task = { ...task, start_date: start, end_date: end };
+    }
+    if (!task.phase_group) {
+      task = { ...task, phase_group: 'design_build' };
+    }
+    return task;
+  });
+
+  try {
+    if (typeof renderTable === 'function') renderTable();
+    if (typeof renderGantt === 'function') renderGantt();
+  } finally {
+    state.tasks = savedTasks;
+    if (savedActionsMode !== undefined) {
+      state.scheduleView.actionsMode = savedActionsMode;
+    }
+  }
 }
 
 function exitPersonalMode() {
