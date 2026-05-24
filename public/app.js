@@ -876,18 +876,23 @@ function cellHtml(t, key) {
       //          (NOTHING for Backlog — it's a duration-only spine task)
       const done = (t.progress || 0) >= 100;
       const isAnchor = !!inferredAnchorKey(t);
+      const isBacklog = isBacklogTask(t);
       const drift = taskScheduleDelta(t);
       let driftChip = '';
-      // Drift chip is for IN-PROGRESS work only — once a task is 100% done,
-      // there's no "ahead" or "behind" anymore, it's just complete. So skip
-      // the chip when done (the green name + checkmark pill already say "done").
-      if (drift !== 0 && !t.is_milestone && !isAnchor && !done) {
+      if (drift !== 0 && !t.is_milestone && !isAnchor && !isBacklog && !done) {
         const ahead = drift > 0;
         driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
       }
       const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
       let rightWidget = '';
-      if (!t.is_milestone && !isAnchor) {
+      // v5.13: Backlog gets NO right-side widget — no % pill, no
+      // milestone-check. User keeps reporting clicking the checkbox
+      // accidentally marked the row done, which then got filtered out
+      // ("deleted the line"). Strip it. DUR column is the only editable
+      // bit on the backlog row.
+      if (isBacklog) {
+        rightWidget = '';
+      } else if (!t.is_milestone && !isAnchor) {
         // Duration task: pill renders as a small PROGRESS BAR. The fill width
         // tracks the percent (0–100%), color tracks the schedule status:
         //   - is-zero    (0%):      empty pill outline, "0%" text in slate
@@ -940,7 +945,10 @@ function cellHtml(t, key) {
       let allocPre = '';
       let dashSep = '';
       let durEl = '';
-      if (!t.is_milestone && !isAnchor) {
+      // v5.13: Backlog skips alloc + dur in the name cell too. The user
+      // wants the name area to just be the task name — alloc and %
+      // complete are explicitly NOT shown on the Backlog row.
+      if (!t.is_milestone && !isAnchor && !isBacklog) {
         const allocVal = t.allocation == null ? null : Number(t.allocation);
         const durDays  = Number(t.duration_days) || 0;
         const wks = durDays > 0 ? Math.round(durDays / 5 * 10) / 10 : 0;  // 1 decimal week
@@ -1101,7 +1109,12 @@ function rowHtml(t, depth = 0) {
   // don't re-evaluate per row.
   const todayISO = new Date().toISOString().slice(0, 10);
   const overdueCls = (t.is_action && (t.progress || 0) < 100 && t.end_date && t.end_date < todayISO) ? ' is-overdue' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  // v5.13: Backlog NEVER renders as a milestone, even if the DB has
+  // is_milestone=true on it (legacy data from older buggy saves).
+  // Display-only override; auto-recovery (ensureAnchorsForProject)
+  // heals the data on next page load.
+  const milestoneCls = (t.is_milestone && !isBacklogTask(t)) ? 'is-milestone' : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${milestoneCls}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -7019,6 +7032,11 @@ function handleRowContextMenu(e) {
   const id = Number(tr.dataset.id);
   const task = state.tasks.find(t => t.id === id);
   const items = [
+    // v5.13: "Add row below" — creates a task in the same section /
+    // department / sub-department as the right-clicked row. Lets the user
+    // add a row anywhere they want without having to find the right
+    // section header to right-click on.
+    { label: '＋ Add row below', onClick: () => createTaskBelow(id) },
     { label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) },
     { label: 'Move to section…', onClick: () => moveTaskInline(id, e.clientX, e.clientY) },
     { label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) },
@@ -7026,9 +7044,17 @@ function handleRowContextMenu(e) {
   // Milestones / anchors / backlog rows aren't "resources" — duplicating
   // them as additional resources doesn't make sense. Hide the option.
   if (task && (task.is_milestone || inferredAnchorKey(task) || isBacklogTask(task))) {
-    items.shift();
+    items.splice(1, 1);  // remove the "Add additional resource" entry
   }
   showContextMenu(e.clientX, e.clientY, items);
+}
+
+// v5.13: create a new task in the SAME section as the given task. The new
+// row opens in name-edit mode immediately so the user can type the name.
+async function createTaskBelow(taskId) {
+  const t = state.tasks.find(x => x.id === taskId);
+  if (!t) return;
+  await createTaskInSection(t.phase_group || null, t.department || null, t.sub_department || null);
 }
 
 // Right-click → "Add additional resource". Duplicates a task row as the
@@ -10982,9 +11008,10 @@ async function ensureAnchorsForProject(project) {
   // backlog) end up without it — and the user expects to see Backlog right
   // under Receipt of PO. Default duration: 10 business days = 2 weeks,
   // matching the estimate-create default. Allocation 0 (no real work).
-  // v5.11: backlog auto-recovery removed. Backlog is just a regular task
-  // — if it doesn't exist, create one with a 2-week default; otherwise
-  // leave it alone (no more silent server-side updates).
+  // v5.13: ensure a Backlog row exists per project + auto-recover corrupted
+  // ones (is_milestone=true was set by older bugs). Don't touch anything
+  // else — Backlog is just a regular task except for the auto-create on
+  // first load and the milestone-flag heal.
   const backlogRow = state.tasks.find(t => t.project === project && isBacklogTask(t));
   if (!backlogRow) {
     const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
@@ -11006,6 +11033,19 @@ async function ensureAnchorsForProject(project) {
       });
       created = true;
     }
+  } else if (backlogRow.is_milestone) {
+    // Heal: clear the is_milestone flag and rebuild end_date from
+    // duration_days so the row renders as a regular duration block again.
+    const days = Math.max(1, Number(backlogRow.duration_days) || 10);
+    const startStr = backlogRow.start_date || todayISO();
+    const endStr = addBusinessDays(startStr, days - 1);
+    await api.update(backlogRow.id, {
+      is_milestone: false,
+      duration_days: days,
+      start_date: startStr,
+      end_date: endStr,
+    });
+    created = true;
   }
   return created;
 }

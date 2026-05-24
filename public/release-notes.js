@@ -4,6 +4,24 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.13',
+    date: '2026-05-24',
+    notes: [
+      'Backlog: no widget that can accidentally delete it + right-click "Add row below" anywhere.',
+      '',
+      'BACKLOG — the "I clicked a box and the line disappeared" bug:',
+      '   Root cause: v5.11 stripped too much. Backlog rows ended up rendering the milestone-check button on their right side (when is_milestone=true was lingering in the DB). Clicking the button marked progress 100 %, the "Show completed" filter (default off) then hid the row. Looked like deletion.',
+      '   Fixes:',
+      '   ▸ Backlog row NO right-side widget. No % pill, no milestone-check. The only things on a Backlog row are: name + duration (editable in the DUR column). No allocation, no % complete, nothing clickable to mark it done.',
+      '   ▸ rowHtml never adds `is-milestone` class to a Backlog row, even if the DB column says is_milestone=true. Display-only safety.',
+      '   ▸ ensureAnchorsForProject auto-recovery restored: on every page load, a Backlog with is_milestone=true is PATCHed back to is_milestone=false with its existing duration_days. Heals legacy corrupted data.',
+      '',
+      'RIGHT-CLICK "ADD ROW BELOW":',
+      '   ▸ Right-click any task row → "+ Add row below". Creates a new task in the SAME section / department / sub-department as the clicked row, opens it in name-edit mode immediately.',
+      '   ▸ Lets you add a row anywhere without first finding the right section header to right-click on. If something gets messed up — Backlog, an anchor, anything — you can right-click any sibling row and recreate it inline.',
+    ],
+  },
+  {
     version: '5.12',
     date: '2026-05-24',
     notes: [
