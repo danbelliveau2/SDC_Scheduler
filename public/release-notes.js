@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '5.9',
+    date: '2026-05-24',
+    notes: [
+      'Backlog row is now a normal row (edit duration like every other task) + milestones obey filters.',
+      '',
+      'BACKLOG — actual root cause found:',
+      '   The Backlog\'s anchor_key is "backlog", so inferredAnchorKey() returned truthy. My v5.5 fix used `if (task.is_milestone && !inferredAnchorKey(task))` to clear is_milestone, which excluded the Backlog from the clear path. So the Backlog stayed flagged as a milestone after every duration edit and reverted to a milestone diamond.',
+      '   ▸ saveCellEdit now distinguishes REAL anchors (PO / FAT / Ship / Mech 1 Release / Power-Up) from the Backlog. is_milestone gets cleared on the Backlog every time you save a duration > 0.',
+      '   ▸ The Backlog row now renders via rowHtml() (the regular row renderer) instead of anchorRowHtml(). Same editing flow as every other task: click the DUR cell, type "3w" / "5d" / etc., press Enter. Tagged with .backlog-row class if you still want to style it specially.',
+      '',
+      'MILESTONE FILTERING:',
+      '   Anchors and milestones were unconditionally exempt from every quick filter — "Ahead of schedule" showed every milestone regardless of whether it was actually ahead. User: "the tasks seem to be acting correctly but not the milestones."',
+      '   ▸ Removed the blanket exemption. Milestones (anchor or not) now obey the quick filters with milestone-specific rules:',
+      '       • Ahead = progress 100 % AND end_date is in the future (checked off but not due yet).',
+      '       • Behind = NOT done AND end_date is in the past (missed the date).',
+      '       • Assigned = has an assignee.',
+      '       • Over-allocated = N/A (milestones have no duration / no work hours; always filtered out).',
+    ],
+  },
+  {
     version: '5.8',
     date: '2026-05-24',
     notes: [

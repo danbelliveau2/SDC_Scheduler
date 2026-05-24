@@ -793,15 +793,31 @@ function applyFilters(tasks) {
     // remaining work, so it stays out of view unless the user wants it.
     const isDone = (t.progress || 0) >= 100;
     if (!qf.showCompleted && isDone) return false;
-    // Milestones — anchors (PO / Mech 1 / Power-Up / FAT / Ship) AND the
-    // smaller non-anchor milestones (Mech 2 Release, BOM Review, etc.) — are
-    // always kept regardless of which quick filter is on. They're spine /
-    // schedule markers, not "tasks" the user is asking to focus on. So
-    // clicking "Behind schedule" doesn't hide your project anchors, clicking
-    // "Assigned" doesn't hide unassigned milestone markers, etc.
-    const isAnchor = !!inferredAnchorKey(t);
-    if (isAnchor || t.is_milestone) return true;
+    // "Milestones only" filter — straightforward.
     if (qf.milestones && !t.is_milestone) return false;
+
+    // v5.9: milestones and anchors are now subject to the SAME quick-filter
+    // logic as tasks. Previously they were unconditionally returned true,
+    // which meant clicking "Ahead of schedule" still showed every milestone
+    // regardless of whether it was actually ahead. User wanted milestones
+    // to be filtered like tasks ("ahead = checked off but not due yet",
+    // "behind = past due and not done").
+    if (t.is_milestone) {
+      const today = new Date().toISOString().slice(0, 10);
+      const mDone = (t.progress || 0) >= 100;
+      const mPastDue = t.end_date && t.end_date < today;
+      const mFutureDue = t.end_date && t.end_date > today;
+      if (qf.assigned && !t.assignee) return false;
+      // Behind = past due AND not done.
+      if (qf.behind && !(!mDone && mPastDue)) return false;
+      // Ahead = done AND not yet due (completed before scheduled date).
+      if (qf.ahead && !(mDone && mFutureDue)) return false;
+      // Over-allocated doesn't apply to milestones (no duration / no work hours).
+      if (qf.overallocated) return false;
+      return true;
+    }
+
+    // Regular tasks.
     if (qf.assigned && !t.assignee) return false;
     if (qf.behind && taskScheduleDelta(t) >= 0) return false;
     if (qf.ahead  && taskScheduleDelta(t) <= 0) return false;
@@ -1074,7 +1090,10 @@ function rowHtml(t, depth = 0) {
   // don't re-evaluate per row.
   const todayISO = new Date().toISOString().slice(0, 10);
   const overdueCls = (t.is_action && (t.progress || 0) < 100 && t.end_date && t.end_date < todayISO) ? ' is-overdue' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  // v5.9: Backlog renders via rowHtml too (used to be anchorRowHtml).
+  // Tag the row so any backlog-only styling still has a hook.
+  const backlogCls = isBacklogTask(t) ? ' backlog-row' : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}${backlogCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -1229,11 +1248,15 @@ function renderTable() {
   const shipAnchor    = pickOldest('ship_machine');
   // Receipt of PO — top of the schedule, above section 10.
   const backlogTask = filtered.find(t => isBacklogTask(t));
-  // If Backlog is present, suppress PO's BOTTOM border so PO + Backlog read as
-  // one continuous spine block (border only at the very top of PO and very
-  // bottom of Backlog).
-  if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: !backlogTask });
-  if (backlogTask)   html += anchorRowHtml(backlogTask,   { backlog: true, groupTop: false });
+  if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
+  // v5.9: render Backlog as a REGULAR row (rowHtml) instead of an anchor
+  // row. Same editing flow as every other task — click DUR cell, type
+  // value, save. Was using anchorRowHtml which made the duration cell
+  // sit on a chip-styled row with non-standard handlers; the user kept
+  // hitting "I can't edit backlog duration" because the special path had
+  // subtle differences. rowHtml adds a `backlog-row` class for any
+  // styling that still wants to differentiate it.
+  if (backlogTask)   html += rowHtml(backlogTask, 1);
 
   // Walk the full canonical hierarchy. Every level renders its header even when empty —
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
@@ -1892,19 +1915,21 @@ async function saveCellEdit(id, col, value, task) {
       const today = new Date().toISOString().slice(0, 10);
       let startStr = snapToBusinessDay(task.start_date || today, 1);
       if (startStr !== task.start_date) data.start_date = startStr;
-      // v5.5: anchors (PO, FAT, Ship, etc.) and Backlog are NEVER auto-converted
-      // to milestones based on duration. Anchors have their own milestone
-      // semantics; Backlog is a duration-only spine task. Without this guard,
-      // saving "0" (or any value that parsed to 0 days) for the Backlog
-      // duration flipped is_milestone=true and broke the Backlog rendering.
-      const isAnchorOrBacklog = !!inferredAnchorKey(task) || isBacklogTask(task);
+      // v5.9: anchors (PO, FAT, Ship, Mech 1 Release, Power-Up) keep their
+      // is_milestone flag — they're real milestones by definition. Backlog
+      // is special: it has anchor_key='backlog' (so inferredAnchorKey
+      // returns truthy) but is a DURATION task, not a milestone. Always
+      // clear is_milestone when saving a positive duration on the backlog.
+      // For regular tasks, days=0 still flips to milestone (existing
+      // behavior preserved).
+      const isRealAnchor = !!inferredAnchorKey(task) && !isBacklogTask(task);
       if (days === 0) {
-        if (!isAnchorOrBacklog) data.is_milestone = true;
+        if (!isRealAnchor && !isBacklogTask(task)) data.is_milestone = true;
         data.end_date = startStr;
       } else if (days > 0) {
-        // Always clear is_milestone for backlog when duration > 0 — recovers
-        // a Backlog that was wrongly flipped to a milestone by older versions.
-        if (task.is_milestone && !inferredAnchorKey(task)) data.is_milestone = false;
+        // Clear is_milestone for backlog (always — recovers corrupted rows)
+        // and for non-anchor tasks. Real anchors keep their milestone flag.
+        if (task.is_milestone && !isRealAnchor) data.is_milestone = false;
         // N business days INCLUSIVE → end = start + (N-1) business days.
         data.end_date = addBusinessDays(startStr, days - 1);
       }
