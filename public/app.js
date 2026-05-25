@@ -772,14 +772,6 @@ function applyFilters(tasks) {
   return tasks.filter(t => {
     if (project && t.project !== project) return false;
     if (phase && t.phase !== phase) return false;
-    // Backlog is project spine context. Only project/phase filters can
-    // exclude it. Search, assignee, completion, milestones-only, and the
-    // quick filters all bypass — Backlog isn't real work, those filters
-    // don't conceptually apply to it. Without this early exemption, any
-    // one of those filters being on (or, in the case of behind/ahead,
-    // taskScheduleDelta returning 0 making 0>=0 / 0<=0 trip) would drop
-    // the Backlog and leave the user without a row to edit.
-    if (isBacklogTask(t)) return true;
     // Assignee filter on regular schedule: anchors still show as
     // project context.
     if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
@@ -850,23 +842,15 @@ function cellHtml(t, key) {
       //          (NOTHING for Backlog — it's a duration-only spine task)
       const done = (t.progress || 0) >= 100;
       const isAnchor = !!inferredAnchorKey(t);
-      const isBacklog = isBacklogTask(t);
       const drift = taskScheduleDelta(t);
       let driftChip = '';
-      if (drift !== 0 && !t.is_milestone && !isAnchor && !isBacklog && !done) {
+      if (drift !== 0 && !t.is_milestone && !isAnchor && !done) {
         const ahead = drift > 0;
         driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
       }
       const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
       let rightWidget = '';
-      // v5.13: Backlog gets NO right-side widget — no % pill, no
-      // milestone-check. User keeps reporting clicking the checkbox
-      // accidentally marked the row done, which then got filtered out
-      // ("deleted the line"). Strip it. DUR column is the only editable
-      // bit on the backlog row.
-      if (isBacklog) {
-        rightWidget = '';
-      } else if (!t.is_milestone && !isAnchor) {
+      if (!t.is_milestone && !isAnchor) {
         // Duration task: pill renders as a small PROGRESS BAR. The fill width
         // tracks the percent (0–100%), color tracks the schedule status:
         //   - is-zero    (0%):      empty pill outline, "0%" text in slate
@@ -919,10 +903,7 @@ function cellHtml(t, key) {
       let allocPre = '';
       let dashSep = '';
       let durEl = '';
-      // v5.13: Backlog skips alloc + dur in the name cell too. The user
-      // wants the name area to just be the task name — alloc and %
-      // complete are explicitly NOT shown on the Backlog row.
-      if (!t.is_milestone && !isAnchor && !isBacklog) {
+      if (!t.is_milestone && !isAnchor) {
         const allocVal = t.allocation == null ? null : Number(t.allocation);
         const durDays  = Number(t.duration_days) || 0;
         const wks = durDays > 0 ? Math.round(durDays / 5 * 10) / 10 : 0;  // 1 decimal week
@@ -1067,13 +1048,10 @@ function rowHtml(t, depth = 0) {
   // chip + a diamond fill that matches anchors. Anchors take their own path via
   // anchorRowHtml above; this is for the regular bucket-resident milestones.
   const milestoneDone = t.is_milestone && (t.progress || 0) >= 100 ? ' milestone-done' : '';
-  // v4.45: completed DURATION tasks (non-milestone, progress >= 100) get
+  // Completed DURATION tasks (non-milestone, progress >= 100) get
   // a task-done class so CSS can paint the row with the lime outline +
-  // diagonal hash pattern. Backlog excluded — it's project spine, not
-  // work, so "done" doesn't conceptually apply. If progress somehow
-  // gets to 100 on a Backlog (legacy data), the row still renders as a
-  // normal duration block.
-  const taskDone = !t.is_milestone && !isBacklogTask(t) && (t.progress || 0) >= 100 ? ' task-done' : '';
+  // diagonal hash pattern.
+  const taskDone = !t.is_milestone && (t.progress || 0) >= 100 ? ' task-done' : '';
   // v4.46: action items get is-action so CSS can italicize the task name
   // and (in Combined view) tint the row subtly to differentiate from
   // scheduled work.
@@ -1085,12 +1063,7 @@ function rowHtml(t, depth = 0) {
   // don't re-evaluate per row.
   const todayISO = new Date().toISOString().slice(0, 10);
   const overdueCls = (t.is_action && (t.progress || 0) < 100 && t.end_date && t.end_date < todayISO) ? ' is-overdue' : '';
-  // v5.13: Backlog NEVER renders as a milestone, even if the DB has
-  // is_milestone=true on it (legacy data from older buggy saves).
-  // Display-only override; auto-recovery (ensureAnchorsForProject)
-  // heals the data on next page load.
-  const milestoneCls = (t.is_milestone && !isBacklogTask(t)) ? 'is-milestone' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${milestoneCls}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -1244,16 +1217,16 @@ function renderTable() {
   const fatAnchor     = pickOldest('fat');
   const shipAnchor    = pickOldest('ship_machine');
   // Receipt of PO — top of the schedule, above section 10.
-  const backlogTask = filtered.find(t => isBacklogTask(t));
   if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
-  // v5.9: render Backlog as a REGULAR row (rowHtml) instead of an anchor
-  // row. Same editing flow as every other task — click DUR cell, type
-  // value, save. Was using anchorRowHtml which made the duration cell
-  // sit on a chip-styled row with non-standard handlers; the user kept
-  // hitting "I can't edit backlog duration" because the special path had
-  // subtle differences. rowHtml adds a `backlog-row` class for any
-  // styling that still wants to differentiate it.
-  if (backlogTask)   html += rowHtml(backlogTask, 1);
+  // Every non-anchor task with no phase_group renders above section 10,
+  // ordered by sort_order. This is the "above section 10" zone — the
+  // Backlog row lives here, and so do any rows the user adds below an
+  // anchor via right-click → "+ Add row below."
+  const aboveSectionTasks = filtered
+    .filter(t => !inferredAnchorKey(t) && !t.phase_group)
+    .slice()
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  for (const t of aboveSectionTasks) html += rowHtml(t, 1);
 
   // Walk the full canonical hierarchy. Every level renders its header even when empty —
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
@@ -1912,20 +1885,16 @@ async function saveCellEdit(id, col, value, task) {
       const today = new Date().toISOString().slice(0, 10);
       let startStr = snapToBusinessDay(task.start_date || today, 1);
       if (startStr !== task.start_date) data.start_date = startStr;
-      // v5.11: standard duration save. Backlog is treated as a non-anchor
-      // for milestone-flipping purposes (anchor_key='backlog' notwithstanding)
-      // so saves clear is_milestone like any regular task. Real anchors
-      // (PO/FAT/Ship/Mech 1/Power-Up) keep their milestone flag.
-      const isAnchor = !!inferredAnchorKey(task) && !isBacklogTask(task);
+      // Standard duration save. Real anchors keep their milestone flag.
+      // Everything else: days=0 flips to milestone, days>0 flips back.
+      const isAnchor = !!inferredAnchorKey(task);
       if (days === 0) {
-        if (!isAnchor && !isBacklogTask(task)) data.is_milestone = true;
+        if (!isAnchor) data.is_milestone = true;
         data.end_date = startStr;
       } else if (days > 0) {
         if (task.is_milestone && !isAnchor) data.is_milestone = false;
         data.end_date = addBusinessDays(startStr, days - 1);
       }
-      // Backlog is never a milestone — clear unconditionally on save.
-      if (isBacklogTask(task)) data.is_milestone = false;
       break;
     }
     case 'pred':     data.predecessors = predParse((value || '').trim()) || null; break;
@@ -6947,12 +6916,11 @@ function newActionInline() {
 }
 
 async function deleteTaskById(id) {
-  // Real anchor milestones (Receipt of PO, FAT, Mech 1 Release, Power-Up,
-  // Ship Machine) are protected — they're project-spine markers. Backlog
-  // is anchor_key='backlog' but is a regular row the user is free to
-  // delete (auto-create will recreate it on next page load anyway).
+  // Real anchor milestones (PO, FAT, Ship, Mech 1 Release, Power-Up) are
+  // protected via inferredAnchorKey, which returns null for Backlog. So
+  // Backlog deletes like any other row.
   const t = state.tasks.find(x => x.id === id);
-  if (t && t.anchor_key && !isBacklogTask(t)) {
+  if (t && inferredAnchorKey(t)) {
     await showAlertDialog({
       title: 'Anchor milestones are protected',
       message: `"${t.name}" is an anchor milestone and can't be deleted. You can still edit its date, predecessors, and progress like any other task.`,
@@ -6994,24 +6962,10 @@ function handleRowContextMenu(e) {
   const id = Number(tr.dataset.id);
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
-  const items = [];
-  // "+ Add Backlog row" — ALWAYS available on every task row right-click.
-  // The handler creates a Backlog if none exists, or heals a corrupted
-  // one (is_milestone=true / zero duration) so the row renders properly.
-  // Showing it unconditionally avoids the failure mode where a corrupted
-  // Backlog made the option hide itself, leaving the user with no path
-  // to fix the row.
-  const project = task && task.project;
-  if (project) {
-    items.push({ label: '＋ Add Backlog row', onClick: () => addBacklogToProject(project) });
-  }
-  // "+ Add row below" only makes sense for rows that live in a section.
-  // Anchors and the Backlog row have no phase_group to inherit, so the
-  // option is hidden there.
-  if (task && task.phase_group) {
-    items.push({ label: '＋ Add row below', onClick: () => createTaskBelow(id) });
-  }
-  if (task && !(task.is_milestone || inferredAnchorKey(task) || isBacklogTask(task))) {
+  const items = [
+    { label: '＋ Add row below', onClick: () => createTaskBelow(id) },
+  ];
+  if (task && !(task.is_milestone || inferredAnchorKey(task))) {
     items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
   }
   items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
@@ -7019,78 +6973,32 @@ function handleRowContextMenu(e) {
   showContextMenu(cx, cy, items);
 }
 
-// Manual Backlog creator/healer. Creates the Backlog row if none exists,
-// or heals a corrupted one (is_milestone=true / zero duration) so it
-// renders properly. Verbose error-checking on every step — if the API
-// rejects the request, the alert tells the user exactly what failed.
-async function addBacklogToProject(project) {
-  if (!project) {
-    alert('No project context. Right-click a task that belongs to a project.');
-    return;
-  }
-  try {
-    const existing = state.tasks.find(t => t.project === project && isBacklogTask(t));
-    const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
-    const startStr = (po && po.start_date) || todayISO();
-    let resp;
-    if (existing) {
-      const days = Math.max(1, Number(existing.duration_days) || 10);
-      const fixedStart = existing.start_date || startStr;
-      const fixedEnd = addBusinessDays(fixedStart, days - 1);
-      resp = await api.update(existing.id, {
-        is_milestone: false,
-        duration_days: days,
-        start_date: fixedStart,
-        end_date: fixedEnd,
-        anchor_key: 'backlog',
-        progress: 0,      // ← heal: clear stale 100% so the row stops rendering as "done" (green).
-        allocation: 0,    // ← heal: Backlog has no work allocation.
-      });
-    } else {
-      resp = await api.create({
-        name: 'Backlog',
-        project,
-        anchor_key: 'backlog',
-        is_milestone: false,
-        phase_group: null,
-        department: null,
-        sub_department: null,
-        duration_days: 10,
-        progress: 0,
-        allocation: 0,
-        start_date: startStr,
-        end_date: addBusinessDays(startStr, 9),
-        predecessors: po ? `${po.id}FS` : null,
-      });
-    }
-    if (resp && resp.error) {
-      alert(`Backlog ${existing ? 'fix' : 'create'} failed: ${resp.error}`);
-      return;
-    }
-    await loadTasks();
-    // Scroll to the Backlog row + flash it so the user can spot it.
-    const after = state.tasks.find(t => t.project === project && isBacklogTask(t));
-    if (after) {
-      const tr = document.querySelector(`tr[data-id="${after.id}"]`);
-      if (tr) {
-        tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        tr.style.transition = 'background 0.4s';
-        tr.style.background = '#fef08a';
-        setTimeout(() => { tr.style.background = ''; }, 1800);
-      }
-    }
-  } catch (err) {
-    alert(`Add Backlog failed: ${err && err.message ? err.message : String(err)}`);
-  }
-}
-
-// Create a new task in the SAME section as the given task. Only callable
-// for rows that have a phase_group (caller is responsible for hiding the
-// option on anchors / backlog rows that don't).
+// Create a new row directly below the given task. Inherits section info
+// verbatim — phase_group, department, sub_department (including null
+// for anchors and rows that live above section 10). sort_order is set
+// to clicked + 0.5 so the new row lands immediately below in the
+// rendered grid. Opens in name-edit mode so the user can type the name.
 async function createTaskBelow(taskId) {
   const t = state.tasks.find(x => x.id === taskId);
-  if (!t || !t.phase_group) return;
-  await createTaskInSection(t.phase_group, t.department || null, t.sub_department || null);
+  if (!t) return;
+  const project = state.filters.project || t.project || null;
+  const sortOrder = (Number(t.sort_order) || 0) + 0.5;
+  const created = await api.create({
+    name: 'New task',
+    project,
+    phase_group: t.phase_group || null,
+    department: t.department || null,
+    sub_department: t.sub_department || null,
+    sort_order: sortOrder,
+  });
+  if (!created || created.error) return;
+  await loadTasks();
+  const newTr = document.querySelector(`tr[data-id="${created.id}"]`);
+  if (newTr) {
+    newTr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const nameCell = newTr.querySelector('td[data-col="name"]');
+    if (nameCell) enterCellEdit(nameCell, created.id, 'name');
+  }
 }
 
 // Right-click → "Add additional resource". Duplicates a task row as the
@@ -10965,7 +10873,11 @@ function offsetISO(days) {
 // Match an existing task to an anchor by either anchor_key (when the column has been
 // populated) OR by name (fallback for tasks created before the column existed).
 function inferredAnchorKey(t) {
-  if (t.anchor_key) return t.anchor_key;
+  // Backlog is NOT an anchor for behavior purposes — it's just a regular
+  // row that happens to live above section 10. Returning null here makes
+  // every code path (delete protection, milestone-flip logic, etc.)
+  // treat it as an ordinary task.
+  if (t.anchor_key && t.anchor_key !== 'backlog') return t.anchor_key;
   const n = String(t.name || '').trim().toLowerCase();
   if (n === 'receipt of po')                              return 'receipt_of_po';
   if (n === 'mech 1 release' || n === 'mech release 1' || n === 'mech1 release') return 'mech_release_1';
@@ -11027,41 +10939,24 @@ async function ensureAnchorsForProject(project) {
   // backlog) end up without it — and the user expects to see Backlog right
   // under Receipt of PO. Default duration: 10 business days = 2 weeks,
   // matching the estimate-create default. Allocation 0 (no real work).
-  // Ensure a Backlog row exists per project + auto-recover corrupted
-  // ones (is_milestone=true was set by older bugs). Auto-create no longer
-  // requires PO to have a start_date — it falls back to today so a
-  // Backlog appears on every schedule even when PO isn't dated yet.
-  const backlogRow = state.tasks.find(t => t.project === project && isBacklogTask(t));
-  if (!backlogRow) {
+  // Ensure a Backlog row exists per project. Auto-create when missing,
+  // no other healing — Backlog is a regular row, user can edit/delete it
+  // however they want.
+  const hasBacklog = state.tasks.some(t => t.project === project && isBacklogTask(t));
+  if (!hasBacklog) {
     const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
     const startStr = (po && po.start_date) || todayISO();
     await api.create({
       name: 'Backlog',
       project,
-      anchor_key: 'backlog',
       is_milestone: false,
       phase_group: null,
       department: null,
       sub_department: null,
       duration_days: 10,
-      progress: 0,
-      allocation: 0,
       start_date: startStr,
-      end_date: startStr,
+      end_date: addBusinessDays(startStr, 9),
       predecessors: po ? `${po.id}FS` : null,
-    });
-    created = true;
-  } else if (backlogRow.is_milestone) {
-    // Heal: clear the is_milestone flag and rebuild end_date from
-    // duration_days so the row renders as a regular duration block again.
-    const days = Math.max(1, Number(backlogRow.duration_days) || 10);
-    const startStr = backlogRow.start_date || todayISO();
-    const endStr = addBusinessDays(startStr, days - 1);
-    await api.update(backlogRow.id, {
-      is_milestone: false,
-      duration_days: days,
-      start_date: startStr,
-      end_date: endStr,
     });
     created = true;
   }
