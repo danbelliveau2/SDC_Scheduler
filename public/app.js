@@ -6984,9 +6984,19 @@ function handleRowContextMenu(e) {
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
   const items = [];
+  // Receipt of PO row: offer "+ Add Backlog row" if no Backlog exists
+  // for this project — gives the user a manual way to recreate the
+  // Backlog whenever they want, regardless of the auto-create state.
+  const isPO = task && inferredAnchorKey(task) === 'receipt_of_po';
+  if (isPO) {
+    const hasBacklog = state.tasks.some(t => t.project === task.project && isBacklogTask(t));
+    if (!hasBacklog) {
+      items.push({ label: '＋ Add Backlog row', onClick: () => addBacklogToProject(task.project) });
+    }
+  }
   // "+ Add row below" only makes sense for rows that live in a section.
-  // Anchors (PO/FAT/Ship/Mech 1/Power-Up) and the Backlog row don't —
-  // they have no phase_group to inherit, so the option is hidden there.
+  // Anchors and the Backlog row have no phase_group to inherit, so the
+  // option is hidden there.
   if (task && task.phase_group) {
     items.push({ label: '＋ Add row below', onClick: () => createTaskBelow(id) });
   }
@@ -6996,6 +7006,30 @@ function handleRowContextMenu(e) {
   items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
   items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
   showContextMenu(cx, cy, items);
+}
+
+// Manual Backlog creator — used by the PO right-click menu. Creates the
+// Backlog row with the same defaults the auto-create uses (10 business
+// days, anchor_key='backlog', predecessor=PO FS).
+async function addBacklogToProject(project) {
+  const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
+  const startStr = (po && po.start_date) || todayISO();
+  await api.create({
+    name: 'Backlog',
+    project,
+    anchor_key: 'backlog',
+    is_milestone: false,
+    phase_group: null,
+    department: null,
+    sub_department: null,
+    duration_days: 10,
+    progress: 0,
+    allocation: 0,
+    start_date: startStr,
+    end_date: startStr,
+    predecessors: po ? `${po.id}FS` : null,
+  });
+  await loadTasks();
 }
 
 // Create a new task in the SAME section as the given task. Only callable
@@ -10941,31 +10975,30 @@ async function ensureAnchorsForProject(project) {
   // backlog) end up without it — and the user expects to see Backlog right
   // under Receipt of PO. Default duration: 10 business days = 2 weeks,
   // matching the estimate-create default. Allocation 0 (no real work).
-  // v5.13: ensure a Backlog row exists per project + auto-recover corrupted
-  // ones (is_milestone=true was set by older bugs). Don't touch anything
-  // else — Backlog is just a regular task except for the auto-create on
-  // first load and the milestone-flag heal.
+  // Ensure a Backlog row exists per project + auto-recover corrupted
+  // ones (is_milestone=true was set by older bugs). Auto-create no longer
+  // requires PO to have a start_date — it falls back to today so a
+  // Backlog appears on every schedule even when PO isn't dated yet.
   const backlogRow = state.tasks.find(t => t.project === project && isBacklogTask(t));
   if (!backlogRow) {
     const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
-    if (po && po.start_date) {
-      await api.create({
-        name: 'Backlog',
-        project,
-        anchor_key: 'backlog',
-        is_milestone: false,
-        phase_group: null,
-        department: null,
-        sub_department: null,
-        duration_days: 10,
-        progress: 0,
-        allocation: 0,
-        start_date: po.start_date,
-        end_date: po.start_date,
-        predecessors: `${po.id}FS`,
-      });
-      created = true;
-    }
+    const startStr = (po && po.start_date) || todayISO();
+    await api.create({
+      name: 'Backlog',
+      project,
+      anchor_key: 'backlog',
+      is_milestone: false,
+      phase_group: null,
+      department: null,
+      sub_department: null,
+      duration_days: 10,
+      progress: 0,
+      allocation: 0,
+      start_date: startStr,
+      end_date: startStr,
+      predecessors: po ? `${po.id}FS` : null,
+    });
+    created = true;
   } else if (backlogRow.is_milestone) {
     // Heal: clear the is_milestone flag and rebuild end_date from
     // duration_days so the row renders as a regular duration block again.
