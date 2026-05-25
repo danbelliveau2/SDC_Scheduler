@@ -790,6 +790,11 @@ function applyFilters(tasks) {
     if (!qf.showCompleted && isDone) return false;
     // "Milestones only" filter — straightforward.
     if (qf.milestones && !t.is_milestone) return false;
+    // Backlog is project spine context (like anchors) — exempt from the
+    // behind / ahead / assigned / overallocated quick filters. It's not a
+    // task someone is working on, so "Ahead" / "Behind" / "Assigned" /
+    // "Over-allocated" don't conceptually apply.
+    if (isBacklogTask(t)) return true;
 
     // v5.9: milestones and anchors are now subject to the SAME quick-filter
     // logic as tasks. Previously they were unconditionally returned true,
