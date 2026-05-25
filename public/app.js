@@ -1069,9 +1069,11 @@ function rowHtml(t, depth = 0) {
   const milestoneDone = t.is_milestone && (t.progress || 0) >= 100 ? ' milestone-done' : '';
   // v4.45: completed DURATION tasks (non-milestone, progress >= 100) get
   // a task-done class so CSS can paint the row with the lime outline +
-  // diagonal hash pattern. The Filters popover's "Show completed" toggle
-  // controls whether these rows are filtered out entirely.
-  const taskDone = !t.is_milestone && (t.progress || 0) >= 100 ? ' task-done' : '';
+  // diagonal hash pattern. Backlog excluded — it's project spine, not
+  // work, so "done" doesn't conceptually apply. If progress somehow
+  // gets to 100 on a Backlog (legacy data), the row still renders as a
+  // normal duration block.
+  const taskDone = !t.is_milestone && !isBacklogTask(t) && (t.progress || 0) >= 100 ? ' task-done' : '';
   // v4.46: action items get is-action so CSS can italicize the task name
   // and (in Combined view) tint the row subtly to differentiate from
   // scheduled work.
@@ -7041,6 +7043,8 @@ async function addBacklogToProject(project) {
         start_date: fixedStart,
         end_date: fixedEnd,
         anchor_key: 'backlog',
+        progress: 0,      // ← heal: clear stale 100% so the row stops rendering as "done" (green).
+        allocation: 0,    // ← heal: Backlog has no work allocation.
       });
     } else {
       resp = await api.create({
