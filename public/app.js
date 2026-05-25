@@ -7013,6 +7013,11 @@ function handleRowContextMenu(e) {
 // renders properly. Verbose error-checking on every step — if the API
 // rejects the request, the alert tells the user exactly what failed.
 async function addBacklogToProject(project) {
+  // DIAGNOSTIC: confirm the function is being called at all. If the
+  // user clicks "+ Add Backlog row" and doesn't see this alert, the
+  // click handler isn't reaching the function — bug is in the menu
+  // wiring, not the Backlog logic.
+  alert(`addBacklogToProject called. project = "${project}"`);
   if (!project) {
     alert('No project context. Right-click a task that belongs to a project.');
     return;
