@@ -1648,6 +1648,14 @@ function enterCellEdit(td, taskId, col) {
   if (td.querySelector('input, select')) return;
   const task = state.tasks.find(t => t.id === taskId);
   if (!task) return;
+  // DIAGNOSTIC: if this is a Backlog row + DUR cell, alert so we know
+  // the click reached the editor. If user clicks DUR on the Backlog
+  // and doesn't see this alert, something is intercepting the click
+  // BEFORE handleCellClick → enterCellEdit. If they see it, the bug
+  // is in the input creation or save path.
+  if (col === 'duration' && isBacklogTask(task)) {
+    alert(`enterCellEdit fired for Backlog DUR.\nid=${task.id}\nname="${task.name}"\nproject="${task.project}"\nduration_days=${task.duration_days}\nis_milestone=${task.is_milestone}\nanchor_key="${task.anchor_key}"`);
+  }
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
   // v5.1: when editing the NAME column, swap ONLY the .name-cell-main span
