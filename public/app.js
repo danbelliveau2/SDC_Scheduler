@@ -6984,14 +6984,14 @@ function handleRowContextMenu(e) {
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
   const items = [];
-  // Receipt of PO row: offer "+ Add Backlog row" if no Backlog exists
-  // for this project — gives the user a manual way to recreate the
-  // Backlog whenever they want, regardless of the auto-create state.
-  const isPO = task && inferredAnchorKey(task) === 'receipt_of_po';
-  if (isPO) {
-    const hasBacklog = state.tasks.some(t => t.project === task.project && isBacklogTask(t));
+  // "+ Add Backlog row" — available on every task row right-click when
+  // the project doesn't already have a Backlog. Doesn't depend on which
+  // row was clicked; just needs a project context.
+  const project = task && task.project;
+  if (project) {
+    const hasBacklog = state.tasks.some(t => t.project === project && isBacklogTask(t));
     if (!hasBacklog) {
-      items.push({ label: '＋ Add Backlog row', onClick: () => addBacklogToProject(task.project) });
+      items.push({ label: '＋ Add Backlog row', onClick: () => addBacklogToProject(project) });
     }
   }
   // "+ Add row below" only makes sense for rows that live in a section.
