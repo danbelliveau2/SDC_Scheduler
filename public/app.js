@@ -6984,15 +6984,15 @@ function handleRowContextMenu(e) {
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
   const items = [];
-  // "+ Add Backlog row" — available on every task row right-click when
-  // the project doesn't already have a Backlog. Doesn't depend on which
-  // row was clicked; just needs a project context.
+  // "+ Add Backlog row" — ALWAYS available on every task row right-click.
+  // The handler creates a Backlog if none exists, or heals a corrupted
+  // one (is_milestone=true / zero duration) so the row renders properly.
+  // Showing it unconditionally avoids the failure mode where a corrupted
+  // Backlog made the option hide itself, leaving the user with no path
+  // to fix the row.
   const project = task && task.project;
   if (project) {
-    const hasBacklog = state.tasks.some(t => t.project === project && isBacklogTask(t));
-    if (!hasBacklog) {
-      items.push({ label: '＋ Add Backlog row', onClick: () => addBacklogToProject(project) });
-    }
+    items.push({ label: '＋ Add Backlog row', onClick: () => addBacklogToProject(project) });
   }
   // "+ Add row below" only makes sense for rows that live in a section.
   // Anchors and the Backlog row have no phase_group to inherit, so the
@@ -7008,27 +7008,45 @@ function handleRowContextMenu(e) {
   showContextMenu(cx, cy, items);
 }
 
-// Manual Backlog creator — used by the PO right-click menu. Creates the
-// Backlog row with the same defaults the auto-create uses (10 business
-// days, anchor_key='backlog', predecessor=PO FS).
+// Manual Backlog creator/healer. Creates the Backlog row if none exists
+// in the project. If a Backlog DOES exist but is corrupted (older bugs
+// could leave is_milestone=true or duration_days=0 on it, making it
+// render as a milestone diamond / blank row), PATCHes it back to a
+// healthy state. Either way, after this runs the user has a visible,
+// editable Backlog row right below Receipt of PO.
 async function addBacklogToProject(project) {
+  if (!project) return;
+  const existing = state.tasks.find(t => t.project === project && isBacklogTask(t));
   const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
   const startStr = (po && po.start_date) || todayISO();
-  await api.create({
-    name: 'Backlog',
-    project,
-    anchor_key: 'backlog',
-    is_milestone: false,
-    phase_group: null,
-    department: null,
-    sub_department: null,
-    duration_days: 10,
-    progress: 0,
-    allocation: 0,
-    start_date: startStr,
-    end_date: startStr,
-    predecessors: po ? `${po.id}FS` : null,
-  });
+  if (existing) {
+    // Heal: ensure is_milestone=false, duration_days>=1, dates set.
+    const days = Math.max(1, Number(existing.duration_days) || 10);
+    const fixedStart = existing.start_date || startStr;
+    const fixedEnd = addBusinessDays(fixedStart, days - 1);
+    await api.update(existing.id, {
+      is_milestone: false,
+      duration_days: days,
+      start_date: fixedStart,
+      end_date: fixedEnd,
+    });
+  } else {
+    await api.create({
+      name: 'Backlog',
+      project,
+      anchor_key: 'backlog',
+      is_milestone: false,
+      phase_group: null,
+      department: null,
+      sub_department: null,
+      duration_days: 10,
+      progress: 0,
+      allocation: 0,
+      start_date: startStr,
+      end_date: startStr,
+      predecessors: po ? `${po.id}FS` : null,
+    });
+  }
   await loadTasks();
 }
 
