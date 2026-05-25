@@ -7008,46 +7008,67 @@ function handleRowContextMenu(e) {
   showContextMenu(cx, cy, items);
 }
 
-// Manual Backlog creator/healer. Creates the Backlog row if none exists
-// in the project. If a Backlog DOES exist but is corrupted (older bugs
-// could leave is_milestone=true or duration_days=0 on it, making it
-// render as a milestone diamond / blank row), PATCHes it back to a
-// healthy state. Either way, after this runs the user has a visible,
-// editable Backlog row right below Receipt of PO.
+// Manual Backlog creator/healer. Creates the Backlog row if none exists,
+// or heals a corrupted one (is_milestone=true / zero duration) so it
+// renders properly. Verbose error-checking on every step — if the API
+// rejects the request, the alert tells the user exactly what failed.
 async function addBacklogToProject(project) {
-  if (!project) return;
-  const existing = state.tasks.find(t => t.project === project && isBacklogTask(t));
-  const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
-  const startStr = (po && po.start_date) || todayISO();
-  if (existing) {
-    // Heal: ensure is_milestone=false, duration_days>=1, dates set.
-    const days = Math.max(1, Number(existing.duration_days) || 10);
-    const fixedStart = existing.start_date || startStr;
-    const fixedEnd = addBusinessDays(fixedStart, days - 1);
-    await api.update(existing.id, {
-      is_milestone: false,
-      duration_days: days,
-      start_date: fixedStart,
-      end_date: fixedEnd,
-    });
-  } else {
-    await api.create({
-      name: 'Backlog',
-      project,
-      anchor_key: 'backlog',
-      is_milestone: false,
-      phase_group: null,
-      department: null,
-      sub_department: null,
-      duration_days: 10,
-      progress: 0,
-      allocation: 0,
-      start_date: startStr,
-      end_date: startStr,
-      predecessors: po ? `${po.id}FS` : null,
-    });
+  if (!project) {
+    alert('No project context. Right-click a task that belongs to a project.');
+    return;
   }
-  await loadTasks();
+  try {
+    const existing = state.tasks.find(t => t.project === project && isBacklogTask(t));
+    const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
+    const startStr = (po && po.start_date) || todayISO();
+    let resp;
+    if (existing) {
+      // Heal: ensure is_milestone=false, duration_days>=1, dates set.
+      const days = Math.max(1, Number(existing.duration_days) || 10);
+      const fixedStart = existing.start_date || startStr;
+      const fixedEnd = addBusinessDays(fixedStart, days - 1);
+      resp = await api.update(existing.id, {
+        is_milestone: false,
+        duration_days: days,
+        start_date: fixedStart,
+        end_date: fixedEnd,
+        anchor_key: 'backlog',
+      });
+    } else {
+      resp = await api.create({
+        name: 'Backlog',
+        project,
+        anchor_key: 'backlog',
+        is_milestone: false,
+        phase_group: null,
+        department: null,
+        sub_department: null,
+        duration_days: 10,
+        progress: 0,
+        allocation: 0,
+        start_date: startStr,
+        end_date: addBusinessDays(startStr, 9),
+        predecessors: po ? `${po.id}FS` : null,
+      });
+    }
+    if (resp && resp.error) {
+      alert(`Backlog ${existing ? 'fix' : 'create'} failed: ${resp.error}`);
+      return;
+    }
+    await loadTasks();
+    // Verify the row is visible and healthy after the round trip.
+    const after = state.tasks.find(t => t.project === project && isBacklogTask(t));
+    if (!after) {
+      alert(`Server accepted the request but no Backlog row came back from /api/tasks. Project: "${project}"`);
+      return;
+    }
+    if (after.is_milestone) {
+      alert(`Backlog row exists but is still flagged as a milestone (server didn't accept is_milestone=false). Row id ${after.id}, project "${project}".`);
+      return;
+    }
+  } catch (err) {
+    alert(`Add Backlog failed: ${err && err.message ? err.message : err}`);
+  }
 }
 
 // Create a new task in the SAME section as the given task. Only callable
