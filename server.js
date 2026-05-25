@@ -351,11 +351,12 @@ app.put('/api/tasks/:id', (req, res) => {
 
 app.delete('/api/tasks/:id', (req, res) => {
   const id = Number(req.params.id);
-  // Anchor milestones (Receipt of PO, Machine Power-Up, FAT, Ship Machine) are
-  // project-spine markers and can't be removed — only edited. Reject with a clear
-  // message so the client can show it.
+  // Real anchor milestones (Receipt of PO, Machine Power-Up, FAT, Mech 1
+  // Release, Ship Machine) are project-spine markers and can't be removed
+  // — only edited. Backlog (anchor_key='backlog') is allowed to delete
+  // since it's a regular duration row, not a spine milestone.
   const t = db.prepare('SELECT anchor_key, assignee FROM tasks WHERE id = ?').get(id);
-  if (t && t.anchor_key) {
+  if (t && t.anchor_key && t.anchor_key !== 'backlog') {
     return res.status(400).json({ error: 'Anchor milestones cannot be deleted.' });
   }
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id);

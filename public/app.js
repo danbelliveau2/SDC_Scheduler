@@ -6942,17 +6942,18 @@ function newActionInline() {
 }
 
 async function deleteTaskById(id) {
-  // Anchor milestones (Receipt of PO, FAT) are project-spine markers and aren't deletable.
+  // Real anchor milestones (Receipt of PO, FAT, Mech 1 Release, Power-Up,
+  // Ship Machine) are protected — they're project-spine markers. Backlog
+  // is anchor_key='backlog' but is a regular row the user is free to
+  // delete (auto-create will recreate it on next page load anyway).
   const t = state.tasks.find(x => x.id === id);
-  if (t && t.anchor_key) {
+  if (t && t.anchor_key && !isBacklogTask(t)) {
     await showAlertDialog({
       title: 'Anchor milestones are protected',
       message: `"${t.name}" is an anchor milestone and can't be deleted. You can still edit its date, predecessors, and progress like any other task.`,
     });
     return;
   }
-  // No confirmation popup — right-click → Delete is already 2 intentional clicks.
-  // User explicitly requested this.
   await api.remove(id);
   await loadTasks();
 }
