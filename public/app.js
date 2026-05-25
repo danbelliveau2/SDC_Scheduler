@@ -772,6 +772,14 @@ function applyFilters(tasks) {
   return tasks.filter(t => {
     if (project && t.project !== project) return false;
     if (phase && t.phase !== phase) return false;
+    // Backlog is project spine context. Only project/phase filters can
+    // exclude it. Search, assignee, completion, milestones-only, and the
+    // quick filters all bypass — Backlog isn't real work, those filters
+    // don't conceptually apply to it. Without this early exemption, any
+    // one of those filters being on (or, in the case of behind/ahead,
+    // taskScheduleDelta returning 0 making 0>=0 / 0<=0 trip) would drop
+    // the Backlog and leave the user without a row to edit.
+    if (isBacklogTask(t)) return true;
     // Assignee filter on regular schedule: anchors still show as
     // project context.
     if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
@@ -790,11 +798,6 @@ function applyFilters(tasks) {
     if (!qf.showCompleted && isDone) return false;
     // "Milestones only" filter — straightforward.
     if (qf.milestones && !t.is_milestone) return false;
-    // Backlog is project spine context (like anchors) — exempt from the
-    // behind / ahead / assigned / overallocated quick filters. It's not a
-    // task someone is working on, so "Ahead" / "Behind" / "Assigned" /
-    // "Over-allocated" don't conceptually apply.
-    if (isBacklogTask(t)) return true;
 
     // v5.9: milestones and anchors are now subject to the SAME quick-filter
     // logic as tasks. Previously they were unconditionally returned true,
