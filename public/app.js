@@ -1648,14 +1648,6 @@ function enterCellEdit(td, taskId, col) {
   if (td.querySelector('input, select')) return;
   const task = state.tasks.find(t => t.id === taskId);
   if (!task) return;
-  // DIAGNOSTIC: if this is a Backlog row + DUR cell, alert so we know
-  // the click reached the editor. If user clicks DUR on the Backlog
-  // and doesn't see this alert, something is intercepting the click
-  // BEFORE handleCellClick → enterCellEdit. If they see it, the bug
-  // is in the input creation or save path.
-  if (col === 'duration' && isBacklogTask(task)) {
-    alert(`enterCellEdit fired for Backlog DUR.\nid=${task.id}\nname="${task.name}"\nproject="${task.project}"\nduration_days=${task.duration_days}\nis_milestone=${task.is_milestone}\nanchor_key="${task.anchor_key}"`);
-  }
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
   // v5.1: when editing the NAME column, swap ONLY the .name-cell-main span
@@ -7076,51 +7068,17 @@ async function addBacklogToProject(project) {
       return;
     }
     await loadTasks();
-
-    // Multi-step diagnostics — figure out exactly where the Backlog
-    // gets dropped between "exists in DB" and "renders in the grid".
-    const allBacklogs = state.tasks.filter(t => t.project === project && isBacklogTask(t));
-    if (allBacklogs.length === 0) {
-      alert(`Server response had no error, but no Backlog row in /api/tasks for project "${project}". Possibly server-side rejection.`);
-      return;
+    // Scroll to the Backlog row + flash it so the user can spot it.
+    const after = state.tasks.find(t => t.project === project && isBacklogTask(t));
+    if (after) {
+      const tr = document.querySelector(`tr[data-id="${after.id}"]`);
+      if (tr) {
+        tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        tr.style.transition = 'background 0.4s';
+        tr.style.background = '#fef08a';
+        setTimeout(() => { tr.style.background = ''; }, 1800);
+      }
     }
-    const after = allBacklogs[0];
-
-    // Step A: does applyFilters keep it?
-    const filtered = applyFilters(state.tasks);
-    const inFiltered = filtered.find(t => t.id === after.id);
-    if (!inFiltered) {
-      alert(
-        `Backlog (id=${after.id}) is in state.tasks but applyFilters dropped it.\n\n` +
-        `state.filters = ${JSON.stringify(state.filters, null, 2)}\n` +
-        `state.scheduleView.actionsMode = "${state.scheduleView?.actionsMode}"\n` +
-        `state.scheduleView.criticalOnly = ${!!state.scheduleView?.criticalOnly}`
-      );
-      return;
-    }
-
-    // Step B: is it in the DOM?
-    const tr = document.querySelector(`tr[data-id="${after.id}"]`);
-    if (!tr) {
-      alert(
-        `Backlog (id=${after.id}) passed applyFilters but is NOT in the rendered DOM.\n\n` +
-        `Total Backlogs found in project "${project}": ${allBacklogs.length}\n` +
-        `IDs: ${allBacklogs.map(b => b.id).join(', ')}\n\n` +
-        `state.tasks.length = ${state.tasks.length}\n` +
-        `filtered.length = ${filtered.length}\n` +
-        `state.scheduleView.actionsMode = "${state.scheduleView?.actionsMode}"\n` +
-        `state.scheduleView.criticalOnly = ${!!state.scheduleView?.criticalOnly}\n` +
-        `state.view = "${state.view}"`
-      );
-      return;
-    }
-
-    // Found in DOM — scroll + flash so the user spots it.
-    tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    const prevBg = tr.style.background;
-    tr.style.transition = 'background 0.4s';
-    tr.style.background = '#fef08a';
-    setTimeout(() => { tr.style.background = prevBg; }, 1800);
   } catch (err) {
     alert(`Add Backlog failed: ${err && err.message ? err.message : String(err)}`);
   }
