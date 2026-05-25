@@ -7056,29 +7056,45 @@ async function addBacklogToProject(project) {
     }
     await loadTasks();
 
-    // Verify visibility — both in state.tasks AND in the rendered DOM.
-    // If the row exists in data but not in the DOM, something is
-    // filtering it out at render time — alert with the actual filter
-    // values so we know which one to chase.
-    const after = state.tasks.find(t => t.project === project && isBacklogTask(t));
-    if (!after) {
+    // Multi-step diagnostics — figure out exactly where the Backlog
+    // gets dropped between "exists in DB" and "renders in the grid".
+    const allBacklogs = state.tasks.filter(t => t.project === project && isBacklogTask(t));
+    if (allBacklogs.length === 0) {
       alert(`Server response had no error, but no Backlog row in /api/tasks for project "${project}". Possibly server-side rejection.`);
       return;
     }
-    const tr = document.querySelector(`tr[data-id="${after.id}"]`);
-    if (!tr) {
+    const after = allBacklogs[0];
+
+    // Step A: does applyFilters keep it?
+    const filtered = applyFilters(state.tasks);
+    const inFiltered = filtered.find(t => t.id === after.id);
+    if (!inFiltered) {
       alert(
-        `Backlog row exists in data (id=${after.id}, project="${after.project}", is_milestone=${after.is_milestone}, duration_days=${after.duration_days}) ` +
-        `but NOT in the rendered grid.\n\n` +
-        `state.filters.project = "${state.filters.project || '(none)'}"\n` +
-        `state.view = "${state.view}"\n\n` +
-        `Most likely cause: you're not viewing the project the Backlog belongs to. ` +
-        `Switch to the project tab "${after.project}" to see it.`
+        `Backlog (id=${after.id}) is in state.tasks but applyFilters dropped it.\n\n` +
+        `state.filters = ${JSON.stringify(state.filters, null, 2)}\n` +
+        `state.scheduleView.actionsMode = "${state.scheduleView?.actionsMode}"\n` +
+        `state.scheduleView.criticalOnly = ${!!state.scheduleView?.criticalOnly}`
       );
       return;
     }
-    // Found in DOM — scroll to it and briefly flash it yellow so the
-    // user can't miss it.
+
+    // Step B: is it in the DOM?
+    const tr = document.querySelector(`tr[data-id="${after.id}"]`);
+    if (!tr) {
+      alert(
+        `Backlog (id=${after.id}) passed applyFilters but is NOT in the rendered DOM.\n\n` +
+        `Total Backlogs found in project "${project}": ${allBacklogs.length}\n` +
+        `IDs: ${allBacklogs.map(b => b.id).join(', ')}\n\n` +
+        `state.tasks.length = ${state.tasks.length}\n` +
+        `filtered.length = ${filtered.length}\n` +
+        `state.scheduleView.actionsMode = "${state.scheduleView?.actionsMode}"\n` +
+        `state.scheduleView.criticalOnly = ${!!state.scheduleView?.criticalOnly}\n` +
+        `state.view = "${state.view}"`
+      );
+      return;
+    }
+
+    // Found in DOM — scroll + flash so the user spots it.
     tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
     const prevBg = tr.style.background;
     tr.style.transition = 'background 0.4s';
