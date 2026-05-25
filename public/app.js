@@ -7013,11 +7013,6 @@ function handleRowContextMenu(e) {
 // renders properly. Verbose error-checking on every step — if the API
 // rejects the request, the alert tells the user exactly what failed.
 async function addBacklogToProject(project) {
-  // DIAGNOSTIC: confirm the function is being called at all. If the
-  // user clicks "+ Add Backlog row" and doesn't see this alert, the
-  // click handler isn't reaching the function — bug is in the menu
-  // wiring, not the Backlog logic.
-  alert(`addBacklogToProject called. project = "${project}"`);
   if (!project) {
     alert('No project context. Right-click a task that belongs to a project.');
     return;
@@ -7028,7 +7023,6 @@ async function addBacklogToProject(project) {
     const startStr = (po && po.start_date) || todayISO();
     let resp;
     if (existing) {
-      // Heal: ensure is_milestone=false, duration_days>=1, dates set.
       const days = Math.max(1, Number(existing.duration_days) || 10);
       const fixedStart = existing.start_date || startStr;
       const fixedEnd = addBusinessDays(fixedStart, days - 1);
@@ -7061,18 +7055,37 @@ async function addBacklogToProject(project) {
       return;
     }
     await loadTasks();
-    // Verify the row is visible and healthy after the round trip.
+
+    // Verify visibility — both in state.tasks AND in the rendered DOM.
+    // If the row exists in data but not in the DOM, something is
+    // filtering it out at render time — alert with the actual filter
+    // values so we know which one to chase.
     const after = state.tasks.find(t => t.project === project && isBacklogTask(t));
     if (!after) {
-      alert(`Server accepted the request but no Backlog row came back from /api/tasks. Project: "${project}"`);
+      alert(`Server response had no error, but no Backlog row in /api/tasks for project "${project}". Possibly server-side rejection.`);
       return;
     }
-    if (after.is_milestone) {
-      alert(`Backlog row exists but is still flagged as a milestone (server didn't accept is_milestone=false). Row id ${after.id}, project "${project}".`);
+    const tr = document.querySelector(`tr[data-id="${after.id}"]`);
+    if (!tr) {
+      alert(
+        `Backlog row exists in data (id=${after.id}, project="${after.project}", is_milestone=${after.is_milestone}, duration_days=${after.duration_days}) ` +
+        `but NOT in the rendered grid.\n\n` +
+        `state.filters.project = "${state.filters.project || '(none)'}"\n` +
+        `state.view = "${state.view}"\n\n` +
+        `Most likely cause: you're not viewing the project the Backlog belongs to. ` +
+        `Switch to the project tab "${after.project}" to see it.`
+      );
       return;
     }
+    // Found in DOM — scroll to it and briefly flash it yellow so the
+    // user can't miss it.
+    tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const prevBg = tr.style.background;
+    tr.style.transition = 'background 0.4s';
+    tr.style.background = '#fef08a';
+    setTimeout(() => { tr.style.background = prevBg; }, 1800);
   } catch (err) {
-    alert(`Add Backlog failed: ${err && err.message ? err.message : err}`);
+    alert(`Add Backlog failed: ${err && err.message ? err.message : String(err)}`);
   }
 }
 
