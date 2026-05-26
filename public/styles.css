@@ -472,10 +472,8 @@ body {
   position: sticky;
   top: 0;
   z-index: 11;
-  /* Outer bar must NOT scroll — only the inner .project-tabs scrolls.
-     If overflow-x:auto is here the "+ New tab" button scrolls with the
-     tabs and overlaps them when many projects are open. */
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .project-tabs {
   display: flex;
@@ -483,13 +481,7 @@ body {
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
-  /* Only the tabs section scrolls — "+ New tab" stays pinned to the right */
-  overflow-x: auto;
-  overflow-y: hidden;
-  /* Hide scrollbar on Windows (still scrollable via mouse/touch) */
-  scrollbar-width: none;
 }
-.project-tabs::-webkit-scrollbar { display: none; }
 .project-tab {
   display: inline-flex;
   align-items: center;
@@ -1036,17 +1028,21 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .orphan-save-btn:hover { filter: brightness(0.95); }
 
-/* Segmented control: Grid / Both / Gantt — mutually exclusive pane modes. */
+/* v4.52: seg-controls restored. Two visible seg-controls now live on the
+   toolbar row — Grid/Both/Gantt for pane layout, Schedule/Combined/Actions
+   for content mode. The v4.51 combined dropdown is gone; user prefers
+   click-to-select buttons over the two-section popover. */
 .seg-control {
   display: inline-flex;
   background: #e2e8f0;
   border-radius: 8px;
   padding: 2px;
+  flex: 0 0 auto;
 }
 .seg-btn {
   border: none;
   background: transparent;
-  padding: 6px 14px;
+  padding: 6px 12px;
   font-size: 12px;
   font-weight: 600;
   font-family: inherit;
@@ -1054,18 +1050,13 @@ body.customer-view .customer-view-flatten.is-active {
   border-radius: 6px;
   cursor: pointer;
   letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 .seg-btn:hover { color: var(--text); }
 .seg-btn.is-active {
   background: white;
   color: var(--sdc-primary);
   box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-}
-.seg-divider {
-  width: 1px;
-  height: 22px;
-  background: var(--border);
-  margin: 0 4px;
 }
 
 /* Toolbar toggle buttons — Flatten / By date. Outlined when off, filled blue when on. */
@@ -1160,8 +1151,8 @@ body.customer-view .customer-view-flatten.is-active {
 
 /* "+ Add task" inline button at the bottom of the grid. Targets the active project. */
 .grid-add-task-btn {
-  display: block;
-  margin: 8px 12px;
+  display: inline-block;
+  margin: 8px 6px 8px 12px;
   padding: 8px 14px;
   background: var(--sdc-accent, #ffde51);
   color: #061d39;
@@ -1180,6 +1171,13 @@ body.customer-view .customer-view-flatten.is-active {
   color: #94a3b8;
   cursor: not-allowed;
   filter: none;
+}
+/* v4.46: + Add action gets the SDC lime variant (vs Add task's yellow)
+   so the two buttons sit side-by-side but visually distinct. Italic
+   font hints at the action-item visual language used in the grid. */
+.grid-add-action-btn {
+  background: var(--anchor-fill, #befa4f);
+  font-style: italic;
 }
 
 /* ---------- Topbar ---------- */
@@ -1364,6 +1362,38 @@ body.customer-view .customer-view-flatten.is-active {
   margin-top: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+}
+/* v4.51 / v4.54: divider + sections inside the Filters popover. */
+.filters-popover-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0;
+}
+/* v4.54: filter rows are checkboxes (not pills). One row per filter, list
+   reads top-to-bottom. Hovering a row highlights the whole stripe so the
+   click target is obvious. */
+.filters-check-list {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+}
+.filters-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text);
+}
+.filters-check-row:hover {
+  background: var(--surface-alt);
+  color: var(--sdc-primary);
+}
+.filters-check-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Revision pill — sits on the far right of the topbar. */
@@ -1746,6 +1776,42 @@ body > .dropdown-menu {
   left: auto;
 }
 
+/* v4.51: View dropdown (Smartsheet-style combined picker).
+   The popover holds two sections divided by a line:
+     • Top:    Grid only / Both / Gantt only     (pane layout)
+     • Bottom: Schedule / Combined / Actions     (content mode)
+   Each row has a checkmark column on the left so the active option
+   reads at a glance. Sections share the standard .dropdown-menu chrome
+   (border, shadow, radius); only the internal layout changes. */
+.view-mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0;
+  min-width: 240px;
+}
+/* Checkmark column. Fixed width so the labels line up regardless of
+   whether the row is the active selection. Uses SDC blue to match the
+   rest of the active-state language. */
+.dropdown-item-check {
+  display: inline-block;
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  color: var(--sdc-primary);
+  font-weight: 700;
+  font-size: 12px;
+}
+/* The active row gets a soft tinted background so it reads as the
+   current selection even before the user scans the checkmark column. */
+.dropdown-menu .dropdown-item.is-active {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 8%, white);
+  color: var(--sdc-primary);
+}
+.dropdown-menu .dropdown-item.is-active:hover {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 14%, white);
+}
+
 /* Hide columns by class */
 [data-col].col-hidden { display: none; }
 
@@ -1769,6 +1835,48 @@ body > .dropdown-menu {
   height: calc(100% + 6px);
 }
 td.editing { padding: 3px 8px !important; }
+
+/* v5.1: NAME-column edit input sits in place of the .name-cell-main span,
+   so it occupies the same absolute bounds (left 64, right 110) and leaves
+   the alloc + dash + dur + % pill visible on either side. Overrides the
+   .cell-edit-input full-cell defaults via more-specific selector. */
+.cell-edit-input.name-cell-input {
+  position: absolute;
+  left: 64px;
+  right: 110px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 2px 6px;
+  font-size: clamp(9px, calc(var(--row-h, 26px) * 0.55), 18px);
+  font-weight: 600;
+  line-height: 1.2;
+  border-radius: 3px;
+  z-index: 2;
+}
+/* When the alloc column is hidden, .name-cell-main shifts to left:8; the
+   input has to mirror that. */
+body.hide-alloc-pre .cell-edit-input.name-cell-input {
+  left: 8px;
+}
+
+/* v5.3: DURATION-column edit input — compact, right-aligned, sized to fit
+   the column's actual data (e.g. "10W", "3w") instead of bleeding to fill
+   the entire 80-px column. Override the .cell-edit-input full-cell defaults
+   via more-specific selector. */
+.cell-edit-input.duration-cell-input {
+  width: 58px;
+  height: auto;
+  margin: 0;
+  padding: 2px 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  border-radius: 3px;
+  display: inline-block;
+  font-size: 12px;
+}
 
 /* Strip the up/down spinner arrows from EVERY number input — typing is the only
    intended interaction. Spinners appear on focus in WebKit by default; the appearance
@@ -2587,6 +2695,26 @@ tbody tr.task-done td:last-child {
 /* The matching Gantt bar gets the lime outline + hash pattern too —
    see drawScheduleStatus / clipBarLabels for the corresponding paint
    when the bar has class .is-done (frappe-gantt adds it). */
+
+/* v4.46/v4.47: action items render with an italic + SDC-BLUE task name
+   so they pop visibly against the scheduled rows (regular black, upright).
+   The blue color matches the alloc pill + the Gantt action-milestone
+   diamond — visual continuity across grid and chart for the same data. */
+tbody tr.is-action .name-cell-main {
+  font-style: italic;
+  font-weight: 600;
+  color: var(--sdc-primary, #1574c4);
+}
+/* v4.49: overdue actions — past their due date, not marked complete —
+   flip the task name + duration to RED to demand attention. Visible
+   without needing the user to apply the "Behind" filter. Gantt diamond
+   gets the same red treatment in drawMilestoneDiamonds. */
+tbody tr.is-action.is-overdue .name-cell-main {
+  color: #dc2626;
+}
+tbody tr.is-action.is-overdue .name-cell-dur {
+  color: #dc2626;
+}
 /* α icon OFF — hides the inline allocation prefix AND its dash separator.
    Task name and bold duration suffix stay. Header ALOC + its dash spacer
    hide too. Toggling is a CSS class swap (set in applyScheduleView) — no
@@ -2788,14 +2916,20 @@ body.hide-alloc-pre .th-label-alloc { display: none; }
   background: #15803d;
 }
 
-/* Backlog — duration-only spine task between Receipt of PO and section 10.
-   Rendered with anchor-chip styling so it reads as a spine marker. RED tint
-   to differentiate from the lime-green anchor markers. Grouped with PO above
-   it (no border in between) via the no-top-border class. */
+/* v4.84: Backlog — duration-only spine task between Receipt of PO and
+   section 10. GRAY pill (was red) — reads as a neutral spine marker.
+   Once the backlog duration is in the past (end_date < today), the pill
+   gets a lime-green BORDER to signal "expired / time consumed", but the
+   fill stays gray. There's no done-checkmark — backlog isn't a checkable
+   task, it just elapses. */
 .anchor-name-chip.backlog-chip {
-  background: #fee2e2;
-  color: #991b1b;
-  border: 1px solid #dc2626;
+  background: #e2e8f0;
+  color: #334155;
+  border: 1px solid #94a3b8;
+}
+.anchor-name-chip.backlog-chip.is-expired {
+  border-color: var(--sdc-accent, #c1f53e);
+  border-width: 2px;
 }
 tbody tr.anchor-row.backlog-row.no-top-border td {
   border-top: none;
@@ -2803,18 +2937,22 @@ tbody tr.anchor-row.backlog-row.no-top-border td {
 tbody tr.anchor-row.no-bottom-border td {
   border-bottom: none;
 }
-/* Gantt bar for backlog — red fill with darker red stroke. */
+/* Gantt bar for backlog — gray fill, slate stroke. Lime stroke when expired. */
 .gantt .bar-wrapper.is-backlog .bar {
-  fill: #fee2e2 !important;
-  stroke: #dc2626 !important;
+  fill: #e2e8f0 !important;
+  stroke: #64748b !important;
   stroke-width: 1.5 !important;
+}
+.gantt .bar-wrapper.is-backlog.is-backlog-expired .bar {
+  stroke: var(--sdc-accent, #c1f53e) !important;
+  stroke-width: 2.5 !important;
 }
 .gantt .bar-wrapper.is-backlog .bar-progress {
   fill: transparent !important;
 }
 .gantt .bar-wrapper.is-backlog text,
 .gantt .bar-wrapper.is-backlog .bar-label {
-  fill: #991b1b !important;
+  fill: #334155 !important;
   font-weight: 700;
 }
 
@@ -3377,115 +3515,180 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   font-weight: 700;
 }
 
-/* Stacked Weeks/Rows pill — used on the Schedule toolbar to fuse the chart-
-   zoom controls (top row, Days/Weeks/Months) and the row-height controls
-   (bottom row, "rows") into a single visual unit. Reduces toolbar width and
-   makes it clear they're paired "zoom" controls (one zooms time, one zooms
-   row height). */
-.zoom-stack {
+/* v4.51: .zoom-stack (the stacked Weeks/Rows pill) and .view-pill (the icon
+   row with the "View" label) were replaced by:
+     • .view-bracket — Smartsheet-style bracketed icon row with thick outer
+       borders and thin inner dividers, no "View" label.
+     • #zoom-menu — a dropdown popover containing Time scale (Days/Weeks/
+       Months), Gantt zoom %, and row height (10-100). The button is a
+       standard .toolbar-toggle-btn.
+   The legacy .zoom-controls / .row-height-controls rules above STAY — the
+   Team page resource-timeline still uses those single-row pills.
+   The .legacy-zoom-controls div in index.html keeps the original DOM IDs
+   (#btn-zoom-out, #btn-zoom-in, #zoom-mode, #btn-row-h-up, #btn-row-h-down,
+   #btn-customer-view) alive so the existing event handlers don't need to be
+   rewritten — the new Zoom dropdown + Filters popover drive these directly. */
+.legacy-zoom-controls[hidden] { display: none !important; }
+
+/* v4.52: View toggle bracket — Smartsheet-style framing.
+   Thick outer borders (2px SDC-dark) frame the group on left + right.
+   Thin 1px inner dividers separate each icon. Tooltips on every button
+   explain what they do. (The v4.51 filter-bracket twin is gone — filters
+   are back to a labelled dropdown.) */
+.view-bracket {
   display: inline-flex;
-  flex-direction: column;
-  border: 1px solid var(--border-strong, #94a3b8);
-  border-radius: 6px;
+  align-items: stretch;
+  height: 30px;
   background: white;
-  overflow: hidden;
+  border-top: 1px solid var(--border-strong, #94a3b8);
+  border-bottom: 1px solid var(--border-strong, #94a3b8);
+  border-left: 2px solid var(--sdc-dark, #061d39);
+  border-right: 2px solid var(--sdc-dark, #061d39);
+  border-radius: 4px;
   box-sizing: border-box;
+  padding: 0;
+  overflow: hidden;
+  flex: 0 0 auto;
 }
-.zoom-stack-row {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-}
-.zoom-stack-row + .zoom-stack-row {
-  border-top: 1px solid var(--border);
-}
-.zoom-stack .btn-icon {
-  width: 22px;
-  height: 22px;
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text);
-  border-radius: 0;
-}
-.zoom-stack .btn-icon:hover {
-  background: var(--surface-alt);
-}
-.zoom-stack-select {
+.view-bracket-icon {
+  min-width: 32px;
+  padding: 0 8px;
   border: 0;
   background: transparent;
-  font-size: 11px;
-  font-weight: 700;
   color: var(--text);
-  cursor: pointer;
-  padding: 0 4px;
-  min-width: 64px;
-  height: 100%;
-  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
   font-family: inherit;
+  cursor: pointer;
+  line-height: 1;
 }
-.zoom-stack-select:hover {
+.view-bracket-icon + .view-bracket-icon {
+  border-left: 1px solid var(--border);
+}
+.view-bracket-icon:hover {
   background: var(--surface-alt);
+  color: var(--sdc-primary);
 }
-.zoom-stack-label {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--text);
-  min-width: 64px;
-  text-align: center;
-  padding: 0 4px;
+.view-bracket-icon.is-active {
+  background: var(--sdc-primary, #2563eb);
+  color: white;
 }
 
-/* View pill — title row on top, three icon-toggles below. Each icon is its
-   own clickable on/off button (Flatten ≡, Sort-by-date ↕, Financials $). The
-   pill is the same height as other toolbar buttons so the row reads evenly. */
-.view-pill {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: stretch;
-  border: 1px solid var(--border-strong, #94a3b8);
-  border-radius: 6px;
-  background: white;
-  overflow: hidden;
-  box-sizing: border-box;
+/* v4.51: Vertical divider between toolbar groups.
+   Sits inside the .schedule-toolbar flex row. Thin 1px line, centered
+   vertically with a little margin so groups breathe. */
+.toolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  margin: 0 6px;
+  align-self: center;
+  flex: 0 0 auto;
 }
-.view-pill-label {
-  font-size: 9px;
+
+/* v4.51: Rounded icon-only Undo/Redo. Variant of .toolbar-icon-btn that goes
+   fully round (border-radius: 50%) and drops the inline-flex gap since the
+   glyph is the only content. Disabled state dims the button + kills hover. */
+.toolbar-icon-round {
+  width: 30px;
+  min-width: 30px;
+  padding: 0;
+  border-radius: 50%;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+.toolbar-icon-round:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.toolbar-icon-round:disabled:hover {
+  background: white;
+  color: var(--text-muted);
+}
+
+/* v4.51: Zoom dropdown popover content.
+   Three sections divided by .dropdown-sep:
+     1) TIME SCALE — Days/Weeks/Months as radio-style items
+     2) ZOOM       — Gantt zoom % with − [value] +
+     3) ROW HEIGHT — 10-100 scale with − [value] +
+   Each section title is small all-caps muted text; the controls below sit
+   in a single row with the value centered between the two ± buttons. */
+.zoom-menu-section {
+  padding: 6px 4px;
+}
+.zoom-menu-title {
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  text-align: center;
-  padding: 2px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-alt, #f1f5f9);
+  padding: 0 4px 4px;
 }
-.view-pill-icons {
-  display: inline-flex;
+.zoom-menu-row {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px;
 }
-.view-pill-icon {
-  width: 24px;
-  height: 24px;
-  border: 0;
-  background: transparent;
+.zoom-menu-row .zoom-menu-value {
+  flex: 1 1 auto;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
   color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.zoom-menu-row .btn-icon {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: white;
   font-size: 14px;
   font-weight: 700;
-  font-family: inherit;
+  color: var(--text);
   cursor: pointer;
-  padding: 0;
+  flex: 0 0 26px;
 }
-.view-pill-icon + .view-pill-icon {
-  border-left: 1px solid var(--border);
-}
-.view-pill-icon:hover {
+.zoom-menu-row .btn-icon:hover {
   background: var(--surface-alt);
   color: var(--sdc-primary);
 }
-.view-pill-icon.is-active {
-  background: var(--sdc-primary, #2563eb);
-  color: white;
+.zoom-menu-row .btn-icon:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
+.zoom-menu-row .btn-icon:disabled:hover {
+  background: white;
+  color: var(--text);
+}
+/* Time scale section — radio rows. Each row is the full menu width so the
+   active row's tinted background reads as a bar, not a chip. */
+.zoom-menu-scale {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.zoom-menu-scale .dropdown-item {
+  padding: 6px 8px;
+}
+
+/* v4.51: Bottom footer of the schedule view. Holds the Quote vs Schedule
+   button (moved out of the toolbar). Right-aligned in a thin strip so it
+   doesn't steal vertical space from the grid + Gantt. */
+.schedule-footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 6px 18px;
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  gap: 8px;
+}
+.schedule-footer .toolbar-toggle-btn { font-size: 12px; }
+body.customer-view .schedule-footer { display: none; }
 .btn-icon {
   width: 28px;
   height: 28px;
@@ -3511,6 +3714,1062 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   text-align: center;
 }
 .zoom-controls #zoom-mode:hover { background: var(--surface-alt); border-radius: 4px; }
+
+/* ---------- v4.61: Per-person dashboard side panel ---------- */
+.person-dashboard {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 420px;
+  max-width: 90vw;
+  height: 100vh;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -10px 0 30px rgba(15, 23, 42, 0.18);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  transform: translateX(110%);
+  transition: transform 0.18s ease-out;
+}
+.person-dashboard.is-open { transform: translateX(0); }
+.person-dashboard-head {
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.person-dashboard-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.2;
+}
+.person-dashboard-title strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+.person-dashboard-disc {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.8;
+}
+.person-dashboard-spec {
+  font-size: 11px;
+  opacity: 0.85;
+  font-style: italic;
+}
+.person-dashboard-close {
+  background: transparent;
+  border: 0;
+  font-size: 22px;
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.person-dashboard-close:hover { background: rgba(255,255,255,0.4); }
+.person-dashboard-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.pd-stat {
+  text-align: center;
+  background: var(--surface-alt);
+  border-radius: 8px;
+  padding: 10px 6px;
+}
+.pd-stat.is-warn { background: #fee2e2; }
+.pd-stat-num {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+}
+.pd-stat.is-warn .pd-stat-num { color: #991b1b; }
+.pd-stat-lbl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.person-dashboard-filters {
+  display: flex;
+  gap: 6px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+.pd-filter {
+  flex: 1 1 auto;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.pd-filter:hover { color: var(--text); }
+.pd-filter.is-active {
+  background: var(--sdc-primary);
+  color: white;
+  border-color: var(--sdc-primary);
+}
+.person-dashboard-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.person-dashboard-list .empty-state {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 30px 10px;
+}
+.pd-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 90px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.pd-row:hover {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white);
+  border-color: var(--sdc-primary);
+}
+.pd-row.is-overdue { border-left: 3px solid #dc2626; }
+.pd-row.is-done .pd-row-name { text-decoration: line-through; color: var(--text-muted); }
+.pd-row-tag {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-align: center;
+}
+.pd-row-tag-task   { background: #dbeafe; color: #1e3a8a; }
+.pd-row-tag-action { background: #fef3c7; color: #92400e; }
+.pd-row-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  grid-row: 1;
+}
+.pd-row-project {
+  font-size: 10px;
+  color: var(--text-muted);
+  grid-column: 2;
+  grid-row: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-row-due {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  text-align: right;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
+.pd-row.is-overdue .pd-row-due { color: #dc2626; font-weight: 700; }
+/* v4.64: focused team member row + banner. Clicking a row highlights it
+   here, sets state.resources.focusMemberId, then renders the banner +
+   filters the resources timeline + dashboard cards. */
+.team-member.is-focused {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 14%, white);
+  outline: 2px solid var(--sdc-primary, #2563eb);
+  outline-offset: -2px;
+}
+.team-focus-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 16px 0;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.team-focus-banner.hidden { display: none; }
+.team-focus-banner-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+}
+.team-focus-banner strong { font-size: 15px; }
+.team-focus-banner-disc {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+.team-focus-banner-clear {
+  margin-left: auto;
+  background: rgba(255,255,255,0.5);
+  border: 1px solid currentColor;
+  color: inherit;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.team-focus-banner-clear:hover { background: white; }
+
+/* ---------- v4.61: Action Items master page ---------- */
+.actions-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.actions-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.actions-page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--sdc-dark);
+}
+.actions-page-tabs {
+  display: inline-flex;
+  background: #e2e8f0;
+  border-radius: 8px;
+  padding: 2px;
+}
+.actions-tab {
+  border: 0;
+  background: transparent;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.actions-tab:hover { color: var(--text); }
+.actions-tab.is-active {
+  background: white;
+  color: var(--sdc-primary);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+/* v4.72: Quick-add bar — labelled fields that match the action list's
+   column headers below. Each field is a vertical stack: label up top,
+   input/select/button underneath. The whole bar is a flex row of these
+   field-stacks so the inputs line up with the list columns visually. */
+.actions-quickadd {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+.actions-qa-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+.actions-qa-field-title {
+  flex: 1 1 240px;
+  min-width: 180px;
+}
+.actions-qa-field-submit { justify-content: flex-end; }
+.actions-qa-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding-left: 2px;
+}
+.actions-qa-title {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.actions-qa-project, .actions-qa-due, .actions-qa-dept {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: white;
+}
+.actions-qa-section { white-space: nowrap; }
+.actions-qa-create { padding: 6px 14px; font-size: 12px; }
+
+/* v4.71: Backlog duration cell is editable like any duration column, but
+   the row otherwise reads as a spine block (no progress pill, no drift
+   chip) so users have asked "can I change this?". Pencil hint on hover. */
+/* v5.6: every duration cell uses .is-editable-duration so the hover hint
+   shows on ALL rows (task, milestone, anchor, backlog). Backlog keeps the
+   accent-tinted hover via the extra .is-backlog-duration class. */
+.is-editable-duration {
+  position: relative;
+  cursor: pointer;
+}
+.duration-edit-hint {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.is-editable-duration:hover {
+  background: rgba(15, 23, 42, 0.05);
+}
+.is-editable-duration:hover .duration-edit-hint {
+  opacity: 1;
+}
+.is-backlog-duration:hover {
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 18%, white);
+}
+/* v5.2: backlog-duration <select> dropped. Backlog duration is now a
+   regular click-to-edit cell, same as every other duration cell. */
+
+/* v4.76: when a person is signed in, hide the bottom team-view sections
+   (section divider, filter chips, action list, dept dashboard). The
+   personal Gantt above already shows the same data — duplicating it
+   below felt like "top is mine / bottom is team" instead of one view.
+   Quick-add bar stays visible so the user can keep adding actions. */
+.actions-page.is-signed-in .actions-section-divider,
+.actions-page.is-signed-in .actions-filters,
+.actions-page.is-signed-in .actions-list,
+.actions-page.is-signed-in .actions-dept-dashboard {
+  display: none;
+}
+
+/* v4.70: Thick lime divider between the SIGN-IN section (person picker /
+   personal summary / personal Gantt) and the TASK section (quick-add /
+   filters / list / dept cards). Reads as a clear visual break so the
+   user knows where their personal view ends and the team view begins. */
+.actions-section-divider {
+  height: 4px;
+  background: var(--sdc-accent, #c1f53e);
+  border-radius: 2px;
+  margin: 8px 0 6px;
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06);
+}
+
+/* v4.65: Person picker bar — two cascading dropdowns (Department → Person)
+   instead of the v4.63 strip of every-team-member-as-chip. */
+.actions-person-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.actions-person-bar-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.actions-person-select {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  background: white;
+  color: var(--text);
+  min-width: 160px;
+}
+.actions-person-select:disabled {
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.actions-person-clear {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.actions-person-clear:hover {
+  border-color: var(--sdc-primary);
+  color: var(--sdc-primary);
+}
+
+/* v4.63: Personal summary banner + stats (shown when a person is picked). */
+.actions-person-summary { display: contents; }
+.aps-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.aps-banner-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  line-height: 1.2;
+}
+.aps-banner-left strong { font-size: 16px; }
+.aps-banner-disc {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.8;
+}
+.aps-banner-spec { font-style: italic; opacity: 0.85; font-size: 11px; }
+.aps-banner-exit {
+  background: rgba(255,255,255,0.6);
+  border: 1px solid currentColor;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: inherit;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.aps-banner-exit:hover { background: white; }
+.aps-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 8px;
+}
+.aps-stat {
+  text-align: center;
+  background: var(--surface-alt);
+  border-radius: 8px;
+  padding: 10px 6px;
+}
+.aps-stat.is-warn { background: #fee2e2; }
+.aps-stat-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.aps-stat.is-warn .aps-stat-num { color: #991b1b; }
+.aps-stat-lbl {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* v4.66: Per-person Gantt visualisation on the Actions page. Shows when a
+   person is signed in. Horizontal-bar timeline of their tasks + actions,
+   each bar colored by project. Today is a dotted vertical line. */
+.actions-person-gantt {
+  --apg-label-w: 240px;
+  --apg-row-h: 32px;
+  --apg-open-w: 32px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 22px 18px 32px;
+  /* v5.7: match the main #gantt-container so frappe-gantt's wide SVG
+     becomes horizontally scrollable instead of overflowing the panel.
+     max-height limits vertical extent — many bars don't make the
+     actions page infinitely tall. */
+  overflow: auto;
+  max-height: 70vh;
+}
+.actions-person-gantt:empty { display: none; }
+
+/* Personal Assignments list — shown on the Actions tab when a person
+   is signed in. Simple grouped list of their tasks + actions by
+   section. No department headers, no extras. */
+.actions-personal-list:empty { display: none; }
+.actions-personal-list {
+  margin: 14px 0 8px;
+}
+.apl-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 28%, white);
+  border: 2px solid var(--sdc-primary, #2563eb);
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.apl-title-label {
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.apl-title-name {
+  font-weight: 800;
+  font-size: 16px;
+  color: var(--sdc-dark, #061d39);
+}
+.apl-clear {
+  margin-left: auto;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.apl-clear:hover { background: var(--sdc-accent, #c1f53e); }
+.apl-empty {
+  padding: 18px 14px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.apl-section {
+  margin-bottom: 16px;
+}
+.apl-section-header {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sdc-dark, #061d39);
+  background: var(--surface-alt, #f4f6f8);
+  padding: 8px 12px;
+  border-top: 2px solid var(--anchor-text, #0f172a);
+  border-bottom: 2px solid var(--anchor-text, #0f172a);
+}
+.apl-rows {
+  display: flex;
+  flex-direction: column;
+}
+.apl-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) 60px 90px;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  font-size: 13px;
+}
+.apl-row:hover { background: rgba(15, 23, 42, 0.03); }
+.apl-row.is-done { opacity: 0.6; }
+.apl-row.is-overdue .apl-due { color: #b91c1c; font-weight: 700; }
+.apl-name { font-weight: 600; }
+.apl-project { color: var(--text-muted, #64748b); font-size: 12px; }
+.apl-dur { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.apl-due { font-variant-numeric: tabular-nums; text-align: right; }
+.apl-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  vertical-align: middle;
+}
+.apl-tag-action  { background: #dbeafe; color: #1d4ed8; }
+.apl-tag-overdue { background: #fee2e2; color: #b91c1c; }
+.apl-tag-done    { background: #d1fae5; color: #065f46; }
+
+/* When a person is signed in on the Actions tab, hide the regular
+   action-management UI (quick-add, filters, list, dept dashboard) so
+   the personal list is the focus. */
+.actions-page.is-signed-in .actions-section-divider,
+.actions-page.is-signed-in .actions-quickadd,
+.actions-page.is-signed-in .actions-filters,
+.actions-page.is-signed-in .actions-list,
+.actions-page.is-signed-in .actions-dept-dashboard {
+  display: none;
+}
+.apg-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 14px;
+}
+.apg-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 18px 6px;
+}
+.apg-chart {
+  position: relative;
+  overflow-x: auto;
+}
+.apg-header {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+}
+.apg-header-spacer {
+  flex: 0 0 var(--apg-label-w);
+}
+.apg-axis {
+  position: relative;
+  flex: 1 1 auto;
+  height: 18px;
+}
+.apg-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.apg-tick::before {
+  content: '';
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 1px;
+  height: 6px;
+  background: var(--border);
+}
+.apg-body { position: relative; }
+.apg-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px dotted #dc2626;
+  z-index: 2;
+  pointer-events: none;
+}
+.apg-row {
+  display: flex;
+  align-items: center;
+  height: var(--apg-row-h);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+.apg-row:hover { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 3%, white); }
+.apg-row:last-child { border-bottom: 0; }
+.apg-row-open {
+  flex: 0 0 var(--apg-open-w);
+  margin-left: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  font-family: inherit;
+}
+.apg-row-open:hover {
+  background: var(--sdc-primary);
+  color: white;
+  border-color: var(--sdc-primary);
+}
+.apg-row-label {
+  flex: 0 0 var(--apg-label-w);
+  padding-right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.apg-row-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  line-height: 1.1;
+}
+.apg-row-project {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  line-height: 1.1;
+}
+.apg-row-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: var(--apg-row-h);
+}
+.apg-bar {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  border-radius: 4px;
+  border: 1px solid;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  overflow: hidden;
+}
+/* v4.76: combined inline content — "[meta] · [name]" at the LEFT of the bar
+   (matches v4.75 main Gantt). Meta in 700 weight, name in 600. */
+.apg-bar-content {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 0;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.apg-bar-meta {
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.apg-bar-sep {
+  font-weight: 400;
+  flex: 0 0 auto;
+}
+.apg-bar-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.apg-bar.is-overdue {
+  box-shadow: inset 0 0 0 2px #dc2626;
+  border-color: #dc2626;
+}
+.apg-bar.is-done { opacity: 0.65; }
+.apg-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  opacity: 0.4;
+  border-radius: 3px 0 0 3px;
+}
+/* v4.76: legacy .apg-bar-meta solo (when name absent) — kept for back-compat
+   but the combined .apg-bar-content above is the primary layout now. */
+.apg-diamond {
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  transform: translateY(-50%) rotate(45deg);
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+.apg-diamond.is-overdue { background: #fca5a5 !important; border-color: #dc2626; }
+.apg-diamond.is-done    { opacity: 0.5; }
+
+/* v4.62: Per-department dashboard below the action list. */
+.actions-dept-dashboard {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border-strong);
+}
+.actions-dept-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+.actions-dept-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.actions-dept-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px 12px;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+.actions-dept-card:hover {
+  border-color: var(--sdc-primary);
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 4%, white);
+}
+.adc-head {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+}
+.adc-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+.adc-stat {
+  text-align: center;
+  background: var(--surface-alt);
+  border-radius: 6px;
+  padding: 6px 4px;
+}
+.adc-stat.is-warn { background: #fee2e2; }
+.adc-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.adc-stat.is-warn .adc-num { color: #991b1b; }
+.adc-lbl {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.actions-empty-state {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 30px 12px;
+  margin: 0;
+}
+.actions-row-due.is-completed { color: #15803d; font-weight: 700; }
+/* Filter row — chip toggles + a few selects on the right. */
+.actions-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.actions-filter-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: white;
+  color: var(--text);
+}
+/* List rows. */
+.actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.actions-row {
+  display: grid;
+  /* v4.74: 8 columns — done / name / project / assignee / dept / due / open / delete.
+     Open widened from 28 → 60px so the "Open" header isn't truncated to
+     "Op…". Other columns unchanged. */
+  grid-template-columns: 36px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 80px 92px 60px 24px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.actions-row:hover {
+  background: color-mix(in srgb, var(--sdc-primary, #2563eb) 2%, white);
+}
+/* v4.70: header row — uniform typography across every column.
+   Reset background / padding / font-* / text-align / etc. on EVERY child
+   so column-specific styles from the data rows don't leak through. */
+.actions-row.actions-row-header {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 4px 12px 6px;
+  margin-bottom: 4px;
+}
+.actions-row.actions-row-header:hover { background: transparent; }
+.actions-row.actions-row-header > span {
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: normal;
+  font-family: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.actions-row.actions-row-header > .actions-hdr-done { text-align: center; }
+.actions-row.actions-row-header > .actions-hdr-due,
+.actions-row.actions-row-header > .actions-hdr-open { text-align: right; }
+
+/* v4.74: per-department group divider. Dotted border in the discipline's
+   color + label + count. Renders between the header row and the first
+   row of each department's actions. */
+.actions-group-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  padding: 6px 4px 4px;
+  border-top: 2px dotted;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.actions-group-divider:first-child { margin-top: 4px; }
+.actions-group-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.actions-group-label { flex: 1 1 auto; }
+.actions-group-count {
+  font-size: 10px;
+  background: rgba(0,0,0,0.08);
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: inherit;
+}
+.actions-row-open {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  font-family: inherit;
+}
+.actions-row-open:hover {
+  background: var(--sdc-primary);
+  color: white;
+  border-color: var(--sdc-primary);
+}
+.actions-row-assignee-select {
+  width: 100%;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+}
+.actions-row-assignee-select:hover,
+.actions-row-assignee-select:focus {
+  background: white;
+  border-color: var(--border);
+  outline: none;
+}
+.actions-row.is-overdue { border-left: 3px solid #dc2626; }
+.actions-row.is-done .actions-row-name { text-decoration: line-through; color: var(--text-muted); }
+.actions-row-check {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  margin: 0;
+}
+.actions-row-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions-row-project, .actions-row-assignee {
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions-row-dept {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+.actions-row-due {
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.actions-row.is-overdue .actions-row-due { color: #dc2626; font-weight: 700; }
+.actions-row-delete {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0;
+}
+.actions-row:hover .actions-row-delete { opacity: 1; }
+.actions-row-delete:hover { color: #dc2626; }
 
 /* ---------- Setup view ---------- */
 .setup-pane {
@@ -4170,6 +5429,93 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .app-dialog-danger .modal-head h2 { color: #b91c1c; }
 
+/* v4.64: Password dialog. SDC-blue background, SDC-lime border so it reads
+   as an in-app credential prompt and not a generic browser thing. */
+.app-password-card {
+  max-width: 380px;
+  width: 100%;
+  background: var(--sdc-primary, #2563eb);
+  color: white;
+  border: 3px solid var(--sdc-accent, #c1f53e);
+  border-radius: 10px;
+  padding: 0;
+  overflow: hidden;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.35);
+}
+.app-password-head {
+  padding: 16px 22px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.18);
+}
+.app-password-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: white;
+  letter-spacing: 0.01em;
+}
+.app-password-body {
+  padding: 14px 22px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.app-password-msg {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(255,255,255,0.92);
+}
+.app-password-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid rgba(255,255,255,0.35);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.12);
+  color: white;
+  font-size: 14px;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  box-sizing: border-box;
+}
+.app-password-input::placeholder { color: rgba(255,255,255,0.55); }
+.app-password-input:focus {
+  outline: none;
+  border-color: var(--sdc-accent, #c1f53e);
+  background: rgba(255,255,255,0.2);
+}
+.app-password-error {
+  margin: 0;
+  font-size: 12px;
+  color: #fecaca;
+  font-weight: 600;
+}
+.app-password-error.hidden { display: none; }
+.app-password-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 22px 16px;
+  background: rgba(0,0,0,0.10);
+  border-top: 1px solid rgba(255,255,255,0.10);
+}
+.app-password-foot .btn-ghost {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.4);
+  color: white;
+}
+.app-password-foot .btn-ghost:hover {
+  background: rgba(255,255,255,0.12);
+}
+.app-password-foot .btn-primary {
+  background: var(--sdc-accent, #c1f53e);
+  color: var(--sdc-dark, #061d39);
+  border: 1px solid var(--sdc-accent, #c1f53e);
+  font-weight: 700;
+}
+.app-password-foot .btn-primary:hover {
+  filter: brightness(1.05);
+}
+
 /* "$ Financial Milestones" action button inside the Quote vs Schedule modal
    header. Styled in SDC primary so it reads as "do this important thing" —
    per-project financial milestones are usually set once at project creation
@@ -4601,14 +5947,22 @@ body[data-view="setup"] #btn-add { display: none; }
   flex-direction: column;
   box-shadow: 0 1px 2px rgba(15,23,42,0.04);
 }
-/* Layout: placeholders sit at the TOP of each card right below the capacity
-   strip, visually separated from the real-member list by a dashed divider.
-   The lead floats to the top of the real-member list. */
+/* v4.56: placeholders moved to the BOTTOM of each card (below the real
+   members), with a "Placeholders" label so they read as role markers
+   rather than active staff. Was at the top of the card pre-v4.56. */
+.team-placeholders-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 8px 12px 2px;
+  border-top: 1px dashed var(--border-strong);
+}
 .team-placeholders {
   list-style: none;
   margin: 0;
   padding: 4px 6px 6px;
-  border-bottom: 1px dashed var(--border-strong);
 }
 .team-placeholders:empty {
   display: none;        /* no placeholders → no divider */

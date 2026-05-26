@@ -59,6 +59,13 @@ const api = {
 // Disciplines = roles that get assigned to project tasks. Keep in sync with the server-side
 // TEAM_DISCIPLINES set. The bar color used in the Resources timeline is per-PROJECT, not per-
 // discipline, so the discipline color/text below is only used for chips and headers.
+// v4.63: password gate for the Departments tab. Not real security — just
+// keeps regular engineers from accidentally opening the manager view. The
+// password caches in sessionStorage so it's prompted once per browser
+// session, not on every click. Change here when you need to rotate it.
+// v4.64: password updated to 'sdcautomation' (all lowercase).
+const TEAM_PASSWORD = 'sdcautomation';
+
 const DISCIPLINES = [
   { key: 'pm',       label: 'Project Management',   short: 'PM',       color: '#e9d5ff', text: '#581c87' },
   { key: 'mech',     label: 'Mechanical Engineers', short: 'Mech',     color: '#bfdbfe', text: '#1e3a8a' },
@@ -95,11 +102,11 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'schedule' },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
-  resources: { discipline: 'mech', project: '', zoomPercent: 100 },
+  resources: { discipline: 'mech', project: '', zoomPercent: 100, focusMemberId: null },
   overAllocatedTaskIds: new Set(),
   // Open project schedules — like browser tabs. The empty string acts as the "All
   // projects" pseudo-tab so the user can always step back to the global view. Persisted
@@ -151,12 +158,15 @@ const state = {
   redoStack: [],
 };
 
-// v4.30: ROW_H_MIN dropped back to 18 now that the Task column is SINGLE-LINE
-// (alloc + name + duration inline). Single line of 9px-min text + 2px
-// breathing room fits comfortably in 18px. v4.27 bumped this to 22 to fit
-// the stacked layout; the stacked layout is gone again as of v4.30.
-const ROW_H_MIN = 18;
+// v4.54: ROW_H_MIN = 16 (was 12 in v4.52-v4.53; was 18 before that). User
+// feedback: even friendly 10 = 12px was too small to be readable. New
+// friendly scale goes 0–100 (not 10–100), mapping 0=16px → 100=30px in
+// increments of 10 = 1.4px each. The previous "you'd never go smaller
+// than 30 (= 16px in v4.53 friendly)" gets renamed to 0 in the new scale.
+const ROW_H_MIN = 16;
 const ROW_H_MAX = 120;
+const ROW_H_FRIENDLY_MIN_PX = 16;
+const ROW_H_FRIENDLY_MAX_PX = 30;
 const ROW_H_DEFAULT = 26;
 const BAR_H_MIN = 10;
 // Row-height +/- step. Fixed 2px/click is fine-grained enough for the typical 14–60
@@ -640,6 +650,59 @@ function showAlertDialog(opts = {}) {
   });
 }
 
+// v4.64: SDC-themed password prompt (replaces the browser-native prompt()).
+// Renders an in-app modal with the SDC blue + lime branding, returns a
+// Promise that resolves to the entered string or null on cancel.
+function showPasswordDialog(opts = {}) {
+  const title = opts.title || 'Manager password';
+  const message = opts.message || 'Enter the team password to continue.';
+  return new Promise(resolve => {
+    document.getElementById('app-password-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'app-password-dialog';
+    overlay.className = 'modal-overlay app-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card app-password-card">
+        <div class="app-password-head">
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <div class="app-password-body">
+          <p class="app-password-msg">${escapeHtml(message)}</p>
+          <input type="password" class="app-password-input" autocomplete="off" placeholder="Password" />
+          <p class="app-password-error hidden">Wrong password.</p>
+        </div>
+        <div class="app-password-foot">
+          <button type="button" class="btn-ghost" data-action="cancel">Cancel</button>
+          <button type="button" class="btn-primary" data-action="ok">Unlock</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input  = overlay.querySelector('.app-password-input');
+    const errEl  = overlay.querySelector('.app-password-error');
+    const done = (value) => {
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(value);
+    };
+    overlay.querySelector('[data-action="cancel"]').onclick = () => done(null);
+    overlay.querySelector('[data-action="ok"]').onclick = () => done(input.value);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      else if (e.key === 'Enter') { e.preventDefault(); done(input.value); }
+    };
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => input.focus(), 0);
+    // expose for the caller in case they want to surface a "wrong password"
+    // shake without reopening — currently unused, kept for future polish.
+    overlay._showError = (msg) => {
+      errEl.textContent = msg || 'Wrong password.';
+      errEl.classList.remove('hidden');
+      input.select();
+    };
+  });
+}
+
 function uniqueValues(field) {
   return [...new Set(state.tasks.map(t => t[field]).filter(Boolean))].sort();
 }
@@ -709,7 +772,11 @@ function applyFilters(tasks) {
   return tasks.filter(t => {
     if (project && t.project !== project) return false;
     if (phase && t.phase !== phase) return false;
-    if (assignee && t.assignee !== assignee) return false;
+    // Assignee filter on regular schedule: anchors still show as
+    // project context.
+    if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
+      return false;
+    }
     if (q) {
       const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''} ${t.phase||''}`.toLowerCase();
       if (!hay.includes(q)) return false;
@@ -721,15 +788,31 @@ function applyFilters(tasks) {
     // remaining work, so it stays out of view unless the user wants it.
     const isDone = (t.progress || 0) >= 100;
     if (!qf.showCompleted && isDone) return false;
-    // Milestones — anchors (PO / Mech 1 / Power-Up / FAT / Ship) AND the
-    // smaller non-anchor milestones (Mech 2 Release, BOM Review, etc.) — are
-    // always kept regardless of which quick filter is on. They're spine /
-    // schedule markers, not "tasks" the user is asking to focus on. So
-    // clicking "Behind schedule" doesn't hide your project anchors, clicking
-    // "Assigned" doesn't hide unassigned milestone markers, etc.
-    const isAnchor = !!inferredAnchorKey(t);
-    if (isAnchor || t.is_milestone) return true;
+    // "Milestones only" filter — straightforward.
     if (qf.milestones && !t.is_milestone) return false;
+
+    // v5.9: milestones and anchors are now subject to the SAME quick-filter
+    // logic as tasks. Previously they were unconditionally returned true,
+    // which meant clicking "Ahead of schedule" still showed every milestone
+    // regardless of whether it was actually ahead. User wanted milestones
+    // to be filtered like tasks ("ahead = checked off but not due yet",
+    // "behind = past due and not done").
+    if (t.is_milestone) {
+      const today = new Date().toISOString().slice(0, 10);
+      const mDone = (t.progress || 0) >= 100;
+      const mPastDue = t.end_date && t.end_date < today;
+      const mFutureDue = t.end_date && t.end_date > today;
+      if (qf.assigned && !t.assignee) return false;
+      // Behind = past due AND not done.
+      if (qf.behind && !(!mDone && mPastDue)) return false;
+      // Ahead = done AND not yet due (completed before scheduled date).
+      if (qf.ahead && !(mDone && mFutureDue)) return false;
+      // Over-allocated doesn't apply to milestones (no duration / no work hours).
+      if (qf.overallocated) return false;
+      return true;
+    }
+
+    // Regular tasks.
     if (qf.assigned && !t.assignee) return false;
     if (qf.behind && taskScheduleDelta(t) >= 0) return false;
     if (qf.ahead  && taskScheduleDelta(t) <= 0) return false;
@@ -759,22 +842,15 @@ function cellHtml(t, key) {
       //          (NOTHING for Backlog — it's a duration-only spine task)
       const done = (t.progress || 0) >= 100;
       const isAnchor = !!inferredAnchorKey(t);
-      const isBacklog = isBacklogTask(t);
       const drift = taskScheduleDelta(t);
       let driftChip = '';
-      // Drift chip is for IN-PROGRESS work only — once a task is 100% done,
-      // there's no "ahead" or "behind" anymore, it's just complete. So skip
-      // the chip when done (the green name + checkmark pill already say "done").
-      if (drift !== 0 && !t.is_milestone && !isAnchor && !isBacklog && !done) {
+      if (drift !== 0 && !t.is_milestone && !isAnchor && !done) {
         const ahead = drift > 0;
         driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
       }
       const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
       let rightWidget = '';
-      if (isBacklog) {
-        // Backlog: no widget. It's a calendar block, not a work task.
-        rightWidget = '';
-      } else if (!t.is_milestone && !isAnchor) {
+      if (!t.is_milestone && !isAnchor) {
         // Duration task: pill renders as a small PROGRESS BAR. The fill width
         // tracks the percent (0–100%), color tracks the schedule status:
         //   - is-zero    (0%):      empty pill outline, "0%" text in slate
@@ -808,17 +884,10 @@ function cellHtml(t, key) {
         rightWidget = `<button type="button" class="name-milestone-check ${done ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${done ? 'Mark not complete' : 'Mark complete'}">${done ? '✓' : ''}</button>`;
       }
       const classes = [cls];
-      if (isBacklog) classes.push('name-backlog');
-      // Note: completed duration tasks deliberately do NOT get a "name-done"
-      // class — the task name stays black/normal, same as a completed milestone.
-      // The green ✓ pill on the right is the sole signal that the row is done,
-      // so duration tasks and milestones read consistently when complete.
       if (rightWidget) classes.push('has-pills');
       // v4.39: `has-meta` indicates the row will render the alloc + dash +
-      // dur spans (regular tasks only). CSS uses this class to reserve TD
-      // padding-left for the absolute-positioned alloc and dur — milestones
-      // and anchors that DON'T have meta keep their name flush at the left.
-      const hasMeta = !t.is_milestone && !isAnchor && !isBacklog;
+      // dur spans (regular tasks only).
+      const hasMeta = !t.is_milestone && !isAnchor;
       if (hasMeta) classes.push('has-meta');
       // v4.30: Single-line PLAIN-TEXT layout. No more stacked meta row, no
       // more pill-styled allocation/duration. Just inline text:
@@ -834,7 +903,7 @@ function cellHtml(t, key) {
       let allocPre = '';
       let dashSep = '';
       let durEl = '';
-      if (!t.is_milestone && !isAnchor && !isBacklog) {
+      if (!t.is_milestone && !isAnchor) {
         const allocVal = t.allocation == null ? null : Number(t.allocation);
         const durDays  = Number(t.duration_days) || 0;
         const wks = durDays > 0 ? Math.round(durDays / 5 * 10) / 10 : 0;  // 1 decimal week
@@ -881,7 +950,7 @@ function cellHtml(t, key) {
       // schedule risks accidentally communicating who'll own the work
       // before the deal is signed.
       if (isSalesProjectTask(t)) {
-        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry assignees — staff after the project moves to Active."></td>`;
+        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry Assigned To — staff after the project moves to Active."></td>`;
       }
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
       // running daily total over 100% somewhere in its span — flag the cell so the user
@@ -899,7 +968,15 @@ function cellHtml(t, key) {
     }
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
-    case 'duration': return `<td class="${cls}" data-col="duration">${durationLabel(t)}</td>`;
+    case 'duration': {
+      // v5.11: no backlog special-case. Every row uses the same path —
+      // click cell, type "3w" / "5d" / etc., Enter. The hover pencil
+      // signals "editable" on every row.
+      let label = durationLabel(t);
+      if (!label) label = '—';
+      else if (label === '0') label = t.is_milestone ? '0d' : '0';
+      return `<td class="${cls} is-editable-duration" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${escapeHtml(label)}<span class="duration-edit-hint">✎</span></td>`;
+    }
     case 'pred':     return `<td class="${cls}" data-col="pred"></td>`; /* filled in by updateLineNumbers */
     case 'progress': {
       const p = t.progress || 0;
@@ -971,12 +1048,22 @@ function rowHtml(t, depth = 0) {
   // chip + a diamond fill that matches anchors. Anchors take their own path via
   // anchorRowHtml above; this is for the regular bucket-resident milestones.
   const milestoneDone = t.is_milestone && (t.progress || 0) >= 100 ? ' milestone-done' : '';
-  // v4.45: completed DURATION tasks (non-milestone, progress >= 100) get
+  // Completed DURATION tasks (non-milestone, progress >= 100) get
   // a task-done class so CSS can paint the row with the lime outline +
-  // diagonal hash pattern. The Filters popover's "Show completed" toggle
-  // controls whether these rows are filtered out entirely.
+  // diagonal hash pattern.
   const taskDone = !t.is_milestone && (t.progress || 0) >= 100 ? ' task-done' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  // v4.46: action items get is-action so CSS can italicize the task name
+  // and (in Combined view) tint the row subtly to differentiate from
+  // scheduled work.
+  const actionCls = t.is_action ? ' is-action' : '';
+  // v4.49: actions past their due date but not marked complete paint
+  // RED in both the grid row and (for milestone-style actions) the Gantt
+  // diamond. Limited to actions for now — regular scheduled work has its
+  // own drift chip system. Today is computed once at render time so we
+  // don't re-evaluate per row.
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const overdueCls = (t.is_action && (t.progress || 0) < 100 && t.end_date && t.end_date < todayISO) ? ' is-overdue' : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
@@ -1005,6 +1092,16 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
 function renderTable() {
   const tbody = document.getElementById('tasks-tbody');
   let filtered = applyFilters(state.tasks);
+  // v4.46: Actions mode filter. Default 'schedule' hides action items
+  // entirely; 'actions' shows ONLY actions; 'combined' shows both.
+  // Anchor rows (Receipt of PO, FAT, Ship Machine, etc.) are always kept
+  // because they're project-spine markers, not work items.
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  if (am === 'schedule') {
+    filtered = filtered.filter(t => !t.is_action || inferredAnchorKey(t));
+  } else if (am === 'actions') {
+    filtered = filtered.filter(t => t.is_action || inferredAnchorKey(t));
+  }
   // Only-critical mode: restrict the visible set to tasks on the critical-path
   // chain. Anchor milestones are always kept (Receipt of PO / FAT / Ship Machine)
   // since they're the spine markers — Ship Machine sits outside the path but is
@@ -1041,14 +1138,20 @@ function renderTable() {
     (buckets[path] ||= []).push(t);
   }
   // Sort each bucket — by start_date when the user has flipped the "By date" toggle,
-  // otherwise by their manual sort_order so drag-reordering sticks.
+  // otherwise by their manual sort_order so drag-reordering sticks. In BOTH cases,
+  // action items (is_action = 1) sort to the BOTTOM of their bucket so scheduled
+  // work appears first and actions read as "extras tucked under their section."
+  // v4.46 added the is_action secondary sort.
   const sortBucket = (arr) => {
     if (state.scheduleView.sortByStart) {
       arr.sort((a, b) =>
-        (a.start_date || '￿').localeCompare(b.start_date || '￿')
+        ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0))
+        || (a.start_date || '￿').localeCompare(b.start_date || '￿')
         || (a.sort_order || 0) - (b.sort_order || 0));
     } else {
-      arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      arr.sort((a, b) =>
+        ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0))
+        || (a.sort_order || 0) - (b.sort_order || 0));
     }
   };
   for (const k in buckets) sortBucket(buckets[k]);
@@ -1080,10 +1183,15 @@ function renderTable() {
     const order = state.layout.columnOrder;
     const isDone = (t.progress || 0) >= 100;
     const isBacklog = !!opts.backlog;
+    // v4.84: backlog is "expired" once its end_date is in the past — the
+    // calendar time it represented has elapsed. We don't check it off; we
+    // just signal with a lime-green border that the backlog window is over.
+    const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+    const backlogExpired = isBacklog && t.end_date && new Date(t.end_date).getTime() < todayMs;
     const cells = order.map(k => {
       if (k === 'name') {
         const check = (isDone && !isBacklog) ? '<span class="anchor-done-check">✓</span> ' : '';
-        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}`;
+        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}`;
         return `<td data-col="name"><span class="${chipCls}">${check}${escapeHtml(t.name || '')}</span></td>`;
       }
       return cellHtml(t, k);
@@ -1109,12 +1217,16 @@ function renderTable() {
   const fatAnchor     = pickOldest('fat');
   const shipAnchor    = pickOldest('ship_machine');
   // Receipt of PO — top of the schedule, above section 10.
-  const backlogTask = filtered.find(t => isBacklogTask(t));
-  // If Backlog is present, suppress PO's BOTTOM border so PO + Backlog read as
-  // one continuous spine block (border only at the very top of PO and very
-  // bottom of Backlog).
-  if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: !backlogTask });
-  if (backlogTask)   html += anchorRowHtml(backlogTask,   { backlog: true, groupTop: false });
+  if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
+  // Every non-anchor task with no phase_group renders above section 10,
+  // ordered by sort_order. This is the "above section 10" zone — the
+  // Backlog row lives here, and so do any rows the user adds below an
+  // anchor via right-click → "+ Add row below."
+  const aboveSectionTasks = filtered
+    .filter(t => !inferredAnchorKey(t) && !t.phase_group)
+    .slice()
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  for (const t of aboveSectionTasks) html += rowHtml(t, 1);
 
   // Walk the full canonical hierarchy. Every level renders its header even when empty —
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
@@ -1226,6 +1338,9 @@ function renderTable() {
     });
   });
 
+  // v5.2: backlog duration is now a regular click-to-edit cell — no special
+  // select dropdown wiring needed. handleCellClick → enterCellEdit handles
+  // it via the standard "duration" column flow.
 
   attachRowDragHandlers(tbody);
 }
@@ -1508,9 +1623,31 @@ function enterCellEdit(td, taskId, col) {
   if (!task) return;
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
-  td.classList.add('editing');
-  td.innerHTML = '';
-  td.appendChild(input);
+  // v5.1: when editing the NAME column, swap ONLY the .name-cell-main span
+  // for the input — don't wipe the whole td. That keeps the alloc, dur, and
+  // %-complete pills visible and constrains the input (and its text-selection
+  // highlight) to the name's actual area between them, instead of stretching
+  // across the entire Task column.
+  let nameMainSpan = null;
+  if (col === 'name') {
+    nameMainSpan = td.querySelector('.name-cell-main');
+  }
+  if (nameMainSpan) {
+    input.classList.add('name-cell-input');
+    nameMainSpan.replaceWith(input);
+  } else if (col === 'duration') {
+    // v5.3: duration uses a compact right-aligned input that just replaces
+    // the text. Skip the full-cell 'editing' state so the input doesn't
+    // stretch across the entire 80-px column — it sits where the duration
+    // text used to be, so the selection highlight matches the actual edit area.
+    input.classList.add('duration-cell-input');
+    td.innerHTML = '';
+    td.appendChild(input);
+  } else {
+    td.classList.add('editing');
+    td.innerHTML = '';
+    td.appendChild(input);
+  }
   input.focus();
   if (typeof input.select === 'function') input.select();
 
@@ -1748,12 +1885,14 @@ async function saveCellEdit(id, col, value, task) {
       const today = new Date().toISOString().slice(0, 10);
       let startStr = snapToBusinessDay(task.start_date || today, 1);
       if (startStr !== task.start_date) data.start_date = startStr;
+      // Standard duration save. Real anchors keep their milestone flag.
+      // Everything else: days=0 flips to milestone, days>0 flips back.
+      const isAnchor = !!inferredAnchorKey(task);
       if (days === 0) {
-        data.is_milestone = true;
+        if (!isAnchor) data.is_milestone = true;
         data.end_date = startStr;
       } else if (days > 0) {
-        if (task.is_milestone) data.is_milestone = false;
-        // N business days INCLUSIVE → end = start + (N-1) business days.
+        if (task.is_milestone && !isAnchor) data.is_milestone = false;
         data.end_date = addBusinessDays(startStr, days - 1);
       }
       break;
@@ -2069,20 +2208,50 @@ function renderGantt() {
   // dropped — those are leftovers from old data structures that the grid hides;
   // the Gantt should hide them too so no ghost bars appear.
   const validSectionKeys = new Set(HIERARCHY.map(g => g.key));
-  const ordered = state.scheduleView?.sortByStart
-    ? [...applyFilters(state.tasks)].sort((a, b) =>
-        (a.start_date || '￿').localeCompare(b.start_date || '￿')
-        || (a.sort_order || 0) - (b.sort_order || 0))
-    : sortByPhaseThenOrder(applyFilters(state.tasks));
+  // v4.50: when NOT in sortByStart mode, use the GRID's canonical order
+  // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
+  // grid rows do — Receipt of PO at top, Backlog under it, section 10
+  // bucket walk, FAT closing section 40, Ship Machine inside section 50.
+  // The previous sortByPhaseThenOrder ranked anchors / orphans by their
+  // `phase` field, which has anchors phase=null → rank 99 → bottom of
+  // chart. That's why FAT appeared above PO and Ship above Power-Up in
+  // Gantt-only view.
+  // buildCanonicalTaskOrder() ALREADY applies filters internally, so we
+  // don't call applyFilters again.
+  let ordered;
+  if (state.scheduleView?.sortByStart) {
+    ordered = [...applyFilters(state.tasks)].sort((a, b) =>
+      (a.start_date || '￿').localeCompare(b.start_date || '￿')
+      || (a.sort_order || 0) - (b.sort_order || 0));
+  } else {
+    const canonicalIds = buildCanonicalTaskOrder();
+    const byId = Object.fromEntries(state.tasks.map(t => [t.id, t]));
+    ordered = canonicalIds.map(id => byId[id]).filter(Boolean);
+  }
   // Same Only-critical filter renderTable applies, mirrored here so the Gantt only
   // shows the critical bars + anchor markers when the toggle is on.
   const onlyCrit = state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath;
   const critForFilter = onlyCrit ? computeCriticalPath() : null;
+  // v4.47: mirror the Schedule/Combined/Actions filter from renderTable —
+  // the Gantt must always show the SAME row set as the grid. Without this
+  // filter, the Gantt drew every task regardless of actionsMode, so "Actions
+  // only" in the grid still showed scheduled bars on the chart.
+  const am = state.scheduleView?.actionsMode || 'schedule';
   const filtered = ordered
     .filter(t => t.start_date && t.end_date)
     .filter(t => !isTaskInCollapsedGroup(t))
     .filter(t => inferredAnchorKey(t) || isBacklogTask(t) || (t.phase_group && validSectionKeys.has(t.phase_group)))
-    .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t));
+    .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t))
+    .filter(t => {
+      // Anchors always render. Otherwise honor the actionsMode toggle:
+      //   schedule → drop is_action tasks
+      //   actions  → drop non-action tasks
+      //   combined → keep both
+      if (inferredAnchorKey(t)) return true;
+      if (am === 'schedule') return !t.is_action;
+      if (am === 'actions')  return !!t.is_action;
+      return true; // combined
+    });
 
   renderGanttLegend();
 
@@ -2107,7 +2276,16 @@ function renderGantt() {
     const colorKey = rowColorKey(t);
     if (colorKey) classes.push(`bar-color-${colorKey}`);
     if (t.is_milestone) classes.push('is-milestone');
-    if (isBacklogTask(t)) classes.push('is-backlog');
+    if (isBacklogTask(t)) {
+      classes.push('is-backlog');
+      // v4.84: backlog with end_date in the past gets is-backlog-expired so
+      // the bar picks up the lime-green border styling. No checkbox; just a
+      // visual signal that the calendar time has elapsed.
+      const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+      if (t.end_date && new Date(t.end_date).getTime() < todayMs) {
+        classes.push('is-backlog-expired');
+      }
+    }
     // Milestones at 100%: still tagged milestone-done — drawMilestoneDiamonds
     // uses it to paint the ✓ overlay glyph. As of v4.4 milestones keep their
     // normal fill color (lime for anchors, slate for non-anchors) when done;
@@ -2248,6 +2426,22 @@ function drawBarMeta() {
   if (!svg) return;
   // Tear down any prior labels so toggling off cleanly removes them.
   svg.querySelectorAll('.sdc-bar-meta').forEach(el => el.remove());
+  // v4.75 BUGFIX: only reset visibility/opacity on NON-MILESTONE bar-labels.
+  // drawMilestoneDiamonds sets opacity=0 on milestone bar-labels because
+  // drawMilestoneLabels renders its own text — so undoing that here was
+  // causing milestone names to render TWICE (one from frappe-gantt, one
+  // from drawMilestoneLabels) when the % toggle was on.
+  //
+  // v4.79: also reset style.textAnchor so the "shifted right" state from a
+  // previous render doesn't accumulate. clipBarLabels positions the label
+  // via setAttribute, which won't override an inline style.textAnchor.
+  svg.querySelectorAll('.bar-wrapper:not(.is-milestone) .bar-label').forEach(el => {
+    el.style.opacity = '';
+    el.style.visibility = '';
+    el.style.textAnchor = '';
+    el.style.transform = '';
+    el.style.fill = '';
+  });
   if (state.scheduleView?.showBarMeta !== true) return;
 
   const group = document.createElementNS(SVG_NS, 'g');
@@ -2312,54 +2506,210 @@ function drawBarMeta() {
     const barH = +bar.getAttribute('height');
     const cx = barX + barW / 2;
 
-    const alloc = Math.max(0, Math.min(100, Number(task.allocation) || 0));
+    const alloc = Math.max(0, Math.min(100, Number(task.allocation == null ? 90 : task.allocation)));
     const durDays = Number(task.duration_days) || 0;
-    const wks = Math.round(durDays / 5);  // 5 business days = 1 week (matches FAT variance rounding)
-    // Sales-workspace tasks hide allocation everywhere — same reasoning as
-    // the grid meta row / Assignee + Allocation columns (v4.22): pre-quote
-    // work shouldn't surface staffing commitments. Bar meta still shows the
-    // duration label so the bar's length is annotated.
-    const salesTask = isSalesProjectTask(task);
+    const wks = Math.round(durDays / 5);
 
-    // Build the combined label. Skip the whole row if both values are zero.
-    const parts = [];
-    if (!salesTask && alloc > 0) parts.push(`${alloc}%`);
-    if (wks > 0)   parts.push(`${wks}w`);
-    if (parts.length === 0) continue;
-    const labelText = parts.join(' · ');
-    // Estimate label width — 6.5px per char at 9px / 700 weight is close enough
-    // for collision detection. The text element is centered on cx anyway, so
-    // ± a couple pixels of error doesn't change which side we pick.
-    const labelW = labelText.length * 6.5 + 4;
+    // v4.58: SINGLE COMBINED LABEL — "85% · 8w" — feels like one pill.
+    // Placement priority changed to match user feedback:
+    //   1. INSIDE the bar at the right end (halo so it reads on any color).
+    //   2. JUST OUTSIDE on the LEFT of the bar — preferred outside slot
+    //      because frappe-gantt drops the bar's NAME outside-right when
+    //      the bar is too narrow. Putting our label to the right would
+    //      collide with the name; putting it to the left is clear.
+    //   3. BELOW the bar at the right end (right-aligned).
+    //   4. ABOVE the bar at the right end (right-aligned).
+    // For OUTSIDE placements we draw a white "occluder" rect behind the
+    // text so any arrow segment passing through the label visually
+    // disappears under it. Reads cleanly even when an arrow enters the
+    // bar from the left right where our left-label sits.
+    const allocText = (alloc > 0) ? `${alloc}%` : '';
+    const durText   = (wks > 0)   ? `${wks}w`   : '';
+    if (!allocText && !durText) continue;
+    const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
-    // Build candidate rectangles for BELOW and ABOVE placements. y is the
-    // TOP of the candidate rect (matches our dominant-baseline:hanging text
-    // anchor for below, and we offset accordingly for above).
-    const belowRect = { x: cx - labelW / 2, y: barY + barH + GAP, w: labelW, h: LABEL_H };
-    const aboveRect = { x: cx - labelW / 2, y: barY - GAP - LABEL_H,         w: labelW, h: LABEL_H };
+    // BAR-META LAYOUT CASCADE (settled in v5.0).
+    //
+    //   Terminology:
+    //     meta = alloc/duration pill ("85% · 8w")
+    //     name = task description (the bar-label rendered by frappe-gantt)
+    //     bar  = Gantt bar rectangle
+    //
+    //   Gaps (all 3 px):
+    //     INSIDE_PADDING = bar-left edge ↔ inside-left meta-left edge.
+    //     INSIDE_GAP     = meta-right ↔ name-left  AND  name-right ↔ bar-right.
+    //     OUTSIDE_GAP    = outside-left meta pill right edge ↔ bar-left edge.
+    //
+    //   Algorithm — measure where the name actually IS, don't predict:
+    //     1. clipBarLabels has already centered the bar-label in its bar by
+    //        the time we run, so we can read its real rendered rect via
+    //        getBoundingClientRect.
+    //     2. metaW is computed via a per-character table calibrated for
+    //        bold-9 px sans-serif (digits 5.5, % 6.5, space 2.5, · 3, w 6.5)
+    //        plus 3 px stroke halo + safety. The meta text is bounded
+    //        ("XX% · YYw"), so the per-char table is reliable without
+    //        depending on any browser measurement API (every one tried —
+    //        getBBox, getComputedTextLength, getBoundingClientRect, canvas
+    //        measureText — was returning widths smaller than actual on at
+    //        least some bars).
+    //     3. availLeftPx = nameRect.left - barRect.left = the actual gap
+    //        between the bar's left edge and the rendered name's left edge.
+    //        This is the space the meta can use.
+    //
+    //   Cascade:
+    //     Step 1 — meta inside-left, name stays centered in bar.
+    //              Trigger: availLeftPx ≥ metaW + INSIDE_PADDING + INSIDE_GAP.
+    //     Step 2 — meta inside-left, name shifts to be centered between
+    //              meta-right and bar-right (symmetric gaps on both sides).
+    //              Trigger: (barW - INSIDE_PADDING - metaW) ≥ nameW + 2·INSIDE_GAP.
+    //              IMPLEMENTATION: the bar-label's x attribute stays at the
+    //              centered position; the shift is applied via CSS
+    //              `transform: translateX(...)`. Why: setAttribute('x', …)
+    //              was updating the SVG DOM (getBoundingClientRect picked
+    //              up the new x) but the rendered glyphs visually stayed
+    //              at the centered position. CSS transforms hook into the
+    //              paint pipeline directly, so the visible text actually
+    //              moves.
+    //     Step 3 — meta OUTSIDE-left, name centered in bar.
+    //              Trigger: barW ≥ nameW + 2·INSIDE_GAP.
+    //     Step 4 — both outside. Meta outside-left, name ALWAYS outside-right.
+    const INSIDE_PADDING = 3;
+    const INSIDE_GAP     = 3;
+    const OUTSIDE_GAP    = 3;
+    const PILL_PAD       = 2;
+    // text right edge = barX - SAME_ROW_GAP, pill right edge = barX - OUTSIDE_GAP.
+    const SAME_ROW_GAP   = OUTSIDE_GAP + PILL_PAD;
 
-    let placement; // 'below' | 'above' | null
-    if (!overlapsArrow(belowRect))      placement = 'below';
-    else if (!overlapsArrow(aboveRect)) placement = 'above';
-    // else: both sides occupied — skip the label rather than draw it where
-    // it can't be read. Rare; user can disable the toggle if it bites.
-    if (!placement) continue;
+    const barLabel = wrap.querySelector('.bar-label');
+    if (!barLabel) continue;
 
-    const text = document.createElementNS(SVG_NS, 'text');
-    text.setAttribute('x', cx);
-    if (placement === 'below') {
-      text.setAttribute('y', barY + barH + GAP);
-      text.setAttribute('dominant-baseline', 'hanging');  // top of text sits at y
+    // Force a known font on the meta SO IT MATCHES what canvas measures.
+    // Via inline style so it beats any CSS rule (frappe-gantt's stylesheet
+    // sets font-family on .gantt text — would override a presentation
+    // attribute).
+    const metaEl = document.createElementNS(SVG_NS, 'text');
+    metaEl.setAttribute('class', 'sdc-bar-meta');
+    metaEl.setAttribute('x', String(barX + INSIDE_PADDING));
+    metaEl.setAttribute('y', String(barY + barH / 2));
+    metaEl.setAttribute('text-anchor', 'start');
+    metaEl.setAttribute('dominant-baseline', 'central');
+    metaEl.setAttribute('fill', '#1e293b');
+    metaEl.setAttribute('paint-order', 'stroke');
+    metaEl.setAttribute('stroke', 'rgba(255,255,255,0.9)');
+    metaEl.setAttribute('stroke-width', '2.5');
+    metaEl.setAttribute('stroke-linejoin', 'round');
+    metaEl.style.fontFamily = 'sans-serif';
+    metaEl.style.fontSize   = '9px';
+    metaEl.style.fontWeight = '700';
+    metaEl.style.pointerEvents = 'none';
+    metaEl.textContent = metaText;
+    group.appendChild(metaEl);
+
+    // Center name inside the bar — sets the bar-label to its natural
+    // centered-in-bar position. Used for Step 1 (default) and Step 3.
+    const centerNameInBar = () => {
+      barLabel.setAttribute('x', String(barX + barW / 2));
+      barLabel.setAttribute('text-anchor', 'middle');
+      barLabel.style.textAnchor = '';
+      barLabel.style.transform = '';  // Clear any prior Step-2 shift transform.
+      barLabel.classList.remove('bar-label-outside');
+    };
+
+    // Move metaEl from inside-left to outside-left + swap halo for pill occluder.
+    const moveMetaOutside = () => {
+      metaEl.setAttribute('x', String(barX - SAME_ROW_GAP));
+      metaEl.setAttribute('text-anchor', 'end');
+      metaEl.removeAttribute('paint-order');
+      metaEl.removeAttribute('stroke');
+      metaEl.removeAttribute('stroke-width');
+      metaEl.removeAttribute('stroke-linejoin');
+      addPillOccluder(group, metaEl, PILL_PAD);
+    };
+
+    // Meta width — PER-CHARACTER estimate. v4.95's first-pass values were
+    // about 20 % too generous (visible by the magenta debug tick sitting
+    // well past the rendered meta's right edge), so v4.96 trims them
+    // proportionally. The meta text is bounded — digits, "%", spaces, "·",
+    // "w" — so a per-char table works better than any browser measurement
+    // API. Deterministic, slightly conservative, safe from overlap.
+    const metaCharW = (ch) => {
+      if (/[0-9]/.test(ch)) return 5.5;   // digits 0–9 (was 7)
+      if (ch === '%')        return 6.5;   // percent sign (was 8)
+      if (ch === ' ')        return 2.5;   // space (was 3)
+      if (ch === '·')        return 3;     // middle dot (was 4)
+      if (ch === 'w')        return 6.5;   // weeks marker (was 8)
+      return 5.5;                          // any other char (was 7)
+    };
+    let metaTextW = 0;
+    for (const ch of metaText) metaTextW += metaCharW(ch);
+    // + 3 px = stroke halo (~2.5 px) + tiny safety margin.
+    const metaW = metaTextW + 3;
+
+    // Center the bar-label as Step 1 would. clipBarLabels may have placed it
+    // outside if the bar is narrower than nameW + PAD — force back to center
+    // so we can read its real centered-in-bar position. The browser does a
+    // layout pass when we read getBoundingClientRect below.
+    centerNameInBar();
+
+    // === READ THE NAME'S ACTUAL RENDERED POSITION ===
+    // This is the key change from prior versions: we don't COMPUTE where the
+    // name will be from a (potentially wrong) measured width — we READ where
+    // the browser actually placed it. getBoundingClientRect on the already-
+    // laid-out bar-label is reliable.
+    const barRect   = bar.getBoundingClientRect();
+    const nameRect  = barLabel.getBoundingClientRect();
+    // Gap from bar's left edge to the rendered name's left edge — this is
+    // the space available for the meta on the inside-left.
+    const availLeftPx = nameRect.left - barRect.left;
+    // Gap from the rendered name's right edge to bar's right edge — used
+    // for Step 2 "does the name still fit if we re-center it?" check below.
+    const availRightPx = barRect.right - nameRect.right;
+    const nameWidthPx = nameRect.width;
+
+    // === CASCADE — decide which step ===
+    const step1Works = availLeftPx >= metaW + INSIDE_PADDING + INSIDE_GAP;
+    const step2AvailableForName = barW - INSIDE_PADDING - metaW;
+    const step2Works = step2AvailableForName >= nameWidthPx + 2 * INSIDE_GAP;
+    const step3Works = barW >= nameWidthPx + 2 * INSIDE_GAP;
+
+    if (step1Works) {
+      // Step 1 — name already centered (centerNameInBar above), meta at
+      // default inside-left position. Nothing more to do.
+    } else if (step2Works) {
+      // Step 2 — meta stays inside-left, name shifts right so it's centered
+      // between meta-right and bar-right.
+      //
+      // Why a CSS transform and not setAttribute('x', ...): on at least some
+      // browsers/renderers, setAttribute('x', ...) on a bar-label updates
+      // the SVG DOM (getBoundingClientRect picks up the new x) but the
+      // rendered glyphs visually stay at the old x — paint and layout
+      // disagree. CSS `transform: translateX(...)` hooks into the paint
+      // pipeline directly and the visible text actually moves. The x
+      // attribute stays at the centered position; the transform supplies
+      // the shift.
+      const metaInsideRight = barX + INSIDE_PADDING + metaW;
+      const barRightEdge    = barX + barW;
+      const nameCenterX     = (metaInsideRight + barRightEdge) / 2;
+      const shiftX          = nameCenterX - (barX + barW / 2);
+      barLabel.setAttribute('x', String(barX + barW / 2));
+      barLabel.setAttribute('text-anchor', 'middle');
+      barLabel.style.textAnchor = '';
+      barLabel.style.transform = `translateX(${shiftX}px)`;
+      barLabel.classList.remove('bar-label-outside');
+    } else if (step3Works) {
+      // Step 3 — meta OUTSIDE-left. Name centered in bar (it now has full
+      // width to use).
+      moveMetaOutside();
+      centerNameInBar();
     } else {
-      text.setAttribute('y', barY - GAP);
-      text.setAttribute('dominant-baseline', 'alphabetic');  // baseline of text sits at y → text rises above
+      // Step 4 — both outside.
+      moveMetaOutside();
+      barLabel.setAttribute('x', String(barX + barW + 6));
+      barLabel.setAttribute('text-anchor', 'start');
+      barLabel.style.textAnchor = '';
+      barLabel.style.transform = '';
+      barLabel.classList.add('bar-label-outside');
     }
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('font-size', '9');
-    text.setAttribute('font-weight', '700');
-    text.setAttribute('fill', '#1e293b');
-    text.textContent = labelText;
-    group.appendChild(text);
   }
 }
 
@@ -3046,7 +3396,14 @@ function setZoom(percent) {
   }
 
   state.zoomPercent = next;
-  renderGantt();
+  // v5.7: re-render whichever Gantt is currently active. When the user is
+  // on the Actions tab and signed in, zoom changes hit the personal Gantt
+  // instead of (or in addition to) the main schedule.
+  if (state.view === 'actions' && typeof _actionsPageState !== 'undefined' && _actionsPageState && _actionsPageState.personId != null) {
+    renderActionsPersonGantt();
+  } else {
+    renderGantt();
+  }
 
   // Now find that same date on the new chart and scroll so it sits at the
   // viewport center. If gantt_start changed (mode flip can shift the padding
@@ -3065,6 +3422,11 @@ function setZoom(percent) {
       newScroller.scrollLeft = Math.max(0, targetPx - viewW / 2);
     }
   }
+  // v4.55: Keep the Zoom dropdown's displayed value in sync with any zoom
+  // change — wheel zoom, Zoom-to-fit, time-scale switch, and the dropdown's
+  // own +/− buttons all flow through here. renderZoomMenu bails if the
+  // menu element isn't in the DOM yet, so this is safe on init.
+  if (typeof renderZoomMenu === 'function') renderZoomMenu();
 }
 
 
@@ -3187,15 +3549,35 @@ function drawMilestoneDiamonds() {
     const points = `${cx},${cy - size/2} ${cx + size/2},${cy} ${cx},${cy + size/2} ${cx - size/2},${cy}`;
     const diamond = document.createElementNS(SVG_NS, 'polygon');
     diamond.setAttribute('points', points);
-    diamond.setAttribute('class', 'milestone-diamond' + (isAnchor ? ' anchor-inner' : '') + (isDone ? ' done' : ''));
-    // Milestones keep their NORMAL color whether done or not:
+    diamond.setAttribute('class', 'milestone-diamond' + (isAnchor ? ' anchor-inner' : '') + (isDone ? ' done' : '') + (task.is_action ? ' action-milestone' : ''));
+    // v4.47/v4.49: action-item milestones get SDC blue (default) or RED
+    // (overdue + not done). Grid + Gantt paint the same red so the user
+    // immediately sees overdue actions without applying a filter.
     //   - Anchors: lime fill + dark green stroke (from anchor_color settings)
-    //   - Non-anchors: slate fill + darker slate stroke
-    // The ✓ overlay (added below) is the only visual difference between done
-    // and undone — consistent color = consistent identity, easy to scan.
-    diamond.setAttribute('fill',   isAnchor ? ac.fill : '#475569');
-    diamond.setAttribute('stroke', isAnchor ? ac.text : '#334155');
-    diamond.setAttribute('stroke-width', isAnchor ? '1.5' : '1');
+    //   - Action milestones overdue: red-300 fill + red-600 stroke
+    //   - Action milestones normal: SDC primary blue
+    //   - Regular non-anchor milestones: slate fill + darker slate stroke
+    let dFill = '#475569';
+    let dStroke = '#334155';
+    let dStrokeW = '1';
+    const todayISOForDiamond = new Date().toISOString().slice(0, 10);
+    const isOverdueAction = task.is_action && !isDone && task.end_date && task.end_date < todayISOForDiamond;
+    if (isAnchor) {
+      dFill = ac.fill;
+      dStroke = ac.text;
+      dStrokeW = '1.5';
+    } else if (isOverdueAction) {
+      dFill = '#fca5a5';  // red-300
+      dStroke = '#dc2626'; // red-600
+      dStrokeW = '1.5';
+    } else if (task.is_action) {
+      dFill = '#3a8edc';  // SDC primary lighter
+      dStroke = '#1574c4'; // SDC primary
+      dStrokeW = '1.5';
+    }
+    diamond.setAttribute('fill',   dFill);
+    diamond.setAttribute('stroke', dStroke);
+    diamond.setAttribute('stroke-width', dStrokeW);
     wrap.appendChild(diamond);
 
     // Checkmark glyph rendered on top of the diamond for done milestones.
@@ -3363,6 +3745,9 @@ function drawMilestoneLabels() {
     lbl.style.pointerEvents = 'none';
     lbl.textContent = task.name || '';
     group.appendChild(lbl);
+    // v4.60: milestone labels NO LONGER get the pill occluder — user
+    // prefers seeing the arrow pass through the text. Bar-meta keeps the
+    // pill (arrows can't otherwise be distinguished from the meta text).
     // Date label on the LEFT side of the diamond for the 5 spine anchors.
     if (inferredAnchorKey(task) && task.start_date) {
       const dateLbl = document.createElementNS(SVG_NS, 'text');
@@ -3378,6 +3763,45 @@ function drawMilestoneLabels() {
       group.appendChild(dateLbl);
     }
   }
+}
+
+// v4.58: insert an invisible white "occluder" rect behind a freshly-appended
+// SVG text element so any arrow line passing through that area visually
+// disappears under it. The rect has no stroke and matches the chart
+// background (white), so it reads as if the arrow naturally stops at the
+// label edge and continues out the other side. Reused by drawBarMeta and
+// drawMilestoneLabels. Caller must have already appended the text element
+// to the group — we use getBBox to measure the actual rendered glyph box.
+// Shared canvas 2D context for text measurement. Created lazily.
+// Canvas measureText is the most reliable way to get text widths in CSS
+// pixels — it works directly off the browser's font metrics, doesn't
+// require the element to be in the DOM or laid out, and returns
+// synchronously. Used by drawBarMeta to size the meta/name labels before
+// deciding the cascade step.
+let _metaCanvasCtx = null;
+function ensureMetaCanvasCtx() {
+  if (!_metaCanvasCtx) {
+    const c = document.createElement('canvas');
+    _metaCanvasCtx = c.getContext('2d');
+  }
+  return _metaCanvasCtx;
+}
+
+function addPillOccluder(parent, textEl, pad = 2) {
+  try {
+    const bbox = textEl.getBBox();
+    if (!bbox || bbox.width <= 0) return;
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', bbox.x - pad);
+    rect.setAttribute('y', bbox.y - pad);
+    rect.setAttribute('width',  bbox.width + pad * 2);
+    rect.setAttribute('height', bbox.height + pad * 2);
+    rect.setAttribute('fill', 'white');
+    rect.setAttribute('stroke', 'none');
+    rect.setAttribute('rx', '2');
+    rect.style.pointerEvents = 'none';
+    parent.insertBefore(rect, textEl);
+  } catch (_) { /* getBBox can throw if not laid out; safe to skip */ }
 }
 
 function parsePredecessor(s) {
@@ -3407,7 +3831,11 @@ function parsePredecessor(s) {
 //         pred's bottom/top edge at the target x.
 //       * Otherwise, exit horizontally from pred's left/right side at center y.
 //   - Final segment direction sets the arrowhead orientation (LEFT, RIGHT, UP, DOWN).
-const ARROW_DEFAULTS = { headSize: 6 };
+// v4.56: arrow head shrunk from 6 → 3 (half size) per user feedback —
+// the previous head filled the whole vertical gap between adjacent rows
+// at default row heights, which looked clunky. Now it's a small marker
+// that points without dominating.
+const ARROW_DEFAULTS = { headSize: 3 };
 function computeArrowPath(pred, succ, type, opts = {}) {
   const headSize = opts.headSize ?? ARROW_DEFAULTS.headSize;
 
@@ -3602,7 +4030,7 @@ function drawCustomArrows() {
   const barById = Object.fromEntries(bars.map(b => [b.id, b]));
 
   const arrowColor = '#334155';
-  const headSize = 6;
+  const headSize = 3; // v4.56: half size (was 6)
 
   // Build the job list, then group by pred + direction so successors leaving the same
   // side of one pred can stagger their exit y values.
@@ -3918,18 +4346,29 @@ function renderFilters() {
     { key: 'criticalPath',  label: 'Critical path',     source: 'view',  active: !!sv.criticalPath },
     { key: 'criticalOnly',  label: 'Critical path only', source: 'view', active: !!sv.criticalOnly },
   ];
+  // v4.54: Filters popover uses CHECKBOXES (not pills). Each filter is a
+  // row with checkbox + label. Easier to scan as a list. For Customer mode
+  // is just another checkbox in the same list under a VIEW section.
+  const inCustomerView = document.body.classList.contains('customer-view');
   pop.innerHTML = `
     <div class="filters-popover-title">Quick filters</div>
-    <div class="filters-quick-chips">
+    <div class="filters-check-list">
       ${chipDefs.map(c => {
         const active = c.source === 'view' ? !!c.active : !!qf[c.key];
         return `
-          <button type="button" class="filter-chip ${active ? 'is-active' : ''}" data-quick="${c.key}" data-source="${c.source}">
-            ${escapeHtml(c.label)}
-          </button>
+          <label class="filters-check-row">
+            <input type="checkbox" data-quick="${c.key}" data-source="${c.source}" ${active ? 'checked' : ''}>
+            <span>${escapeHtml(c.label)}</span>
+          </label>
         `;
       }).join('')}
     </div>
+    <div class="filters-popover-sep"></div>
+    <div class="filters-popover-title">View</div>
+    <label class="filters-check-row">
+      <input type="checkbox" id="filters-customer-view-toggle" ${inCustomerView ? 'checked' : ''}>
+      <span>For Customer mode</span>
+    </label>
     <div class="filters-popover-actions">
       <button type="button" id="btn-clear-filters" class="btn-ghost btn-tight">Clear all</button>
     </div>
@@ -3937,23 +4376,18 @@ function renderFilters() {
   // Stop propagation on every click inside the popover so the document-level
   // close handler doesn't see "click outside" and dismiss the popover. Users
   // want to toggle multiple filters in one session without re-opening.
-  pop.querySelectorAll('.filter-chip').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+  pop.querySelectorAll('input[type="checkbox"][data-quick]').forEach(cb => {
+    cb.addEventListener('change', (e) => {
       e.stopPropagation();
-      const k = btn.dataset.quick;
-      const src = btn.dataset.source;
+      const k = cb.dataset.quick;
+      const src = cb.dataset.source;
       if (src === 'view' && k === 'criticalPath') {
-        // Toggling Critical path: if turning OFF, also drop Critical-only
-        // since "only" without "highlight" doesn't make sense.
         const turningOff = state.scheduleView.criticalPath;
         state.scheduleView.criticalPath = !turningOff;
         if (turningOff) state.scheduleView.criticalOnly = false;
         saveScheduleView();
         applyScheduleView();
       } else if (src === 'view' && k === 'criticalOnly') {
-        // Toggling Critical-only: turning ON auto-enables Critical path too
-        // (the only-filter relies on the highlight chain being computed).
-        // Turning OFF leaves the highlight alone.
         const turningOn = !state.scheduleView.criticalOnly;
         state.scheduleView.criticalOnly = turningOn;
         if (turningOn) state.scheduleView.criticalPath = true;
@@ -3966,6 +4400,10 @@ function renderFilters() {
       render();
     });
   });
+  // Stop propagation on label clicks so the popover doesn't auto-close.
+  pop.querySelectorAll('.filters-check-row').forEach(row => {
+    row.addEventListener('click', (e) => e.stopPropagation());
+  });
   pop.querySelector('#btn-clear-filters').addEventListener('click', (e) => {
     e.stopPropagation();
     state.filters.quick = { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false };
@@ -3976,6 +4414,26 @@ function renderFilters() {
     applyScheduleView();
     render();
   });
+  // v4.51: For Customer mode toggle (moved out of toolbar into Filters).
+  // Drives the existing enterCustomerView / exitCustomerView flow so the
+  // flatten + zoom-to-fit side effects still fire. Falls back to a no-op
+  // alert if no project is selected (the customer view is per-project).
+  const cvToggle = pop.querySelector('#filters-customer-view-toggle');
+  if (cvToggle) {
+    cvToggle.addEventListener('change', (e) => {
+      e.stopPropagation();
+      if (cvToggle.checked) {
+        if (!state.filters.project) {
+          cvToggle.checked = false;
+          showAlertDialog('Pick a project tab first — customer view is per-project.');
+          return;
+        }
+        enterCustomerView();
+      } else {
+        exitCustomerView();
+      }
+    });
+  }
 }
 
 // ---------- Project tabs (open schedules) ----------
@@ -6246,12 +6704,107 @@ function render() {
   // with the active project after every render — covers project-tab switches
   // as well as data reloads.
   syncBaselineButtons();
+  renderAssigneeFilterBanner();
   if (state.view === 'schedule') {
     renderTable();
     renderGantt();
   } else if (state.view === 'team') {
     renderTeam();
   }
+}
+
+function renderAssigneeFilterBanner() { /* removed — personal view is a simple list in the Actions tab */ }
+
+// Render the personal list when a person is signed in on the Actions tab.
+// Simple flat list grouped by section (10 DESIGN & BUILD / 40 MACHINE
+// TESTING / 50 TEARDOWN & INSTALL). Department / sub-department headers
+// are intentionally NOT shown — one person typically lives in one
+// department, the breakdown adds noise. Empty sections are hidden.
+function renderPersonalAssignments() {
+  const wrap = document.getElementById('actions-personal-list');
+  if (!wrap) return;
+  const personId = _actionsPageState.personId;
+  if (personId == null) { wrap.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === personId);
+  if (!member) { wrap.innerHTML = ''; return; }
+
+  const memberNameLower = (member.name || '').trim().toLowerCase();
+  const _today = new Date().toISOString().slice(0, 10);
+
+  // Tasks + actions assigned to this person. Action items also surface
+  // when assigned to a discipline-placeholder matching the person's
+  // discipline (so unstaffed actions show on the right team's view).
+  const mine = (state.tasks || []).filter(t => {
+    if (!t.project) return false;
+    if (isTemplateProject(t.project)) return false;
+    if (projectWorkspace(t.project) === 'Sales') return false;
+    if (inferredAnchorKey(t)) return false;
+    if (isBacklogTask(t))     return false;
+    const a = (t.assignee || '').trim().toLowerCase();
+    if (a === memberNameLower) return true;
+    if (t.is_action && isPlaceholder(t.assignee) && actionDisciplineKey(t) === member.discipline) return true;
+    return false;
+  });
+
+  if (mine.length === 0) {
+    wrap.innerHTML = `<div class="apl-empty">Nothing assigned to ${escapeHtml(member.name)}.</div>`;
+    return;
+  }
+
+  // Group by section (phase_group). Actions without phase_group fall
+  // into design_build (the natural home for most engineering work).
+  const buckets = {};
+  for (const t of mine) {
+    const key = t.phase_group || 'design_build';
+    (buckets[key] ||= []).push(t);
+  }
+  // Sort within each bucket by start_date, then name.
+  for (const k of Object.keys(buckets)) {
+    buckets[k].sort((a, b) => {
+      const sa = (a.start_date || '￿').localeCompare(b.start_date || '￿');
+      if (sa !== 0) return sa;
+      return (a.name || '').localeCompare(b.name || '');
+    });
+  }
+
+  const sectionHtml = HIERARCHY
+    .filter(g => buckets[g.key] && buckets[g.key].length > 0)
+    .map(g => {
+      const rows = buckets[g.key].map(t => {
+        const dur = durationLabel(t) || '—';
+        const due = t.end_date ? fmtDate(t.end_date) : '—';
+        const overdue = t.end_date && t.end_date < _today && (t.progress || 0) < 100;
+        const done = (t.progress || 0) >= 100;
+        const tagAction = t.is_action ? '<span class="apl-tag apl-tag-action">action</span>' : '';
+        const tagOverdue = overdue ? '<span class="apl-tag apl-tag-overdue">overdue</span>' : '';
+        const tagDone = done ? '<span class="apl-tag apl-tag-done">done</span>' : '';
+        return `<div class="apl-row${done ? ' is-done' : ''}${overdue ? ' is-overdue' : ''}" data-id="${t.id}">
+          <span class="apl-name">${escapeHtml(t.name || '')}${tagAction}${tagOverdue}${tagDone}</span>
+          <span class="apl-project">${escapeHtml(t.project || '')}</span>
+          <span class="apl-dur">${escapeHtml(dur)}</span>
+          <span class="apl-due">${escapeHtml(due)}</span>
+        </div>`;
+      }).join('');
+      return `<div class="apl-section">
+        <div class="apl-section-header">${escapeHtml(g.label)}</div>
+        <div class="apl-rows">${rows}</div>
+      </div>`;
+    }).join('');
+
+  wrap.innerHTML = `
+    <div class="apl-title-row">
+      <span class="apl-title-label">Personal Assignments</span>
+      <span class="apl-title-name">${escapeHtml(member.name)}</span>
+      <button type="button" class="apl-clear" id="apl-clear" title="Sign out">× Clear</button>
+    </div>
+    ${sectionHtml}
+  `;
+
+  wrap.querySelector('#apl-clear').addEventListener('click', () => {
+    _actionsPageState.personId = null;
+    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+    renderActionsPage();
+  });
 }
 
 // ---------- New-task & delete (no modal — everything else is inline) ----------
@@ -6280,18 +6833,100 @@ function newTaskInline() {
   });
 }
 
+// v4.61: map a (department, sub_department) section to the team discipline
+// that owns it. Used by the action-creation flow to auto-assign a new
+// action to that discipline's Placeholder member so the manager can see
+// the action in their queue and reassign to a real person later.
+function disciplineForSection(deptKey, subKey) {
+  // Sub-department wins when present (most specific).
+  if (subKey === 'mech')     return 'mech';
+  if (subKey === 'controls') return 'controls';
+  if (subKey === 'build')    return 'build';
+  if (subKey === 'wire')     return 'wire';
+  // General engineering (HMI / Robot / Vision crosses mech + controls) —
+  // default to controls since most general engineering work is software.
+  if (subKey === 'general')  return 'controls';
+  // Section 50 install sub-departments.
+  if (subKey === 'shop')        return 'build';
+  if (subKey === 'engineering') return 'mech';
+  // Department-level fallbacks (no sub picked).
+  if (deptKey === 'teardown')    return 'build';
+  if (deptKey === 'install')     return 'build';
+  if (deptKey === 'engineering') return 'mech';
+  if (deptKey === 'shop')        return 'build';
+  // Procurement / unknown sections: no auto-assign.
+  return null;
+}
+// v4.61: pick the Placeholder team member for a given discipline. Returns
+// the name string (e.g. "ME Placeholder") or null if no placeholder exists
+// in that discipline (in which case the caller leaves the assignee blank).
+function placeholderNameForDiscipline(discKey) {
+  if (!discKey) return null;
+  const ph = (state.team || []).find(m => m.discipline === discKey && isPlaceholder(m.name));
+  return ph ? ph.name : null;
+}
+
+// v4.46: + Add action — same flow as newTaskInline but with is_action = 1
+// and milestone defaults (duration 0). If the user is currently in
+// 'schedule' actions-mode, the new action would be filtered out of view
+// after the save, so we auto-switch to 'combined' so they can see it.
+// v4.61: auto-assign to the section's discipline Placeholder so the manager
+// can see + triage. User can still edit the assignee inline after creation.
+function newActionInline() {
+  if (!state.filters.project) {
+    alert('Pick a specific project tab first — actions attach to the active project. "All projects" is an aggregate view.');
+    return;
+  }
+  const btn = document.getElementById('btn-add-action');
+  const r = btn.getBoundingClientRect();
+  showSectionPicker(r.right - 280, r.bottom + 6, async (g, d, s) => {
+    const project = state.filters.project;
+    const discKey = disciplineForSection(d, s);
+    const placeholderName = placeholderNameForDiscipline(discKey);
+    const created = await api.create({
+      name: 'New action',
+      phase_group: g,
+      department: d,
+      sub_department: s,
+      project,
+      is_action: 1,
+      duration_days: 0,
+      is_milestone: 1,
+      ...(placeholderName ? { assignee: placeholderName } : {}),
+    });
+    // If we're in Schedule mode (actions hidden), bump to Combined so
+    // the user can actually see what they just created. Don't override
+    // an explicit Actions-only choice.
+    if (state.scheduleView.actionsMode === 'schedule') {
+      state.scheduleView.actionsMode = 'combined';
+      saveScheduleView();
+      syncActionsModeButtons();
+    }
+    await loadTasks();
+    const tr = document.querySelector(`tr[data-id="${created.id}"]`);
+    if (!tr) return;
+    tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const nameCell = tr.querySelector('td[data-col="name"]');
+    if (nameCell) {
+      enterCellEdit(nameCell, created.id, 'name');
+      const input = nameCell.querySelector('input');
+      if (input) input.select();
+    }
+  });
+}
+
 async function deleteTaskById(id) {
-  // Anchor milestones (Receipt of PO, FAT) are project-spine markers and aren't deletable.
+  // Real anchor milestones (PO, FAT, Ship, Mech 1 Release, Power-Up) are
+  // protected via inferredAnchorKey, which returns null for Backlog. So
+  // Backlog deletes like any other row.
   const t = state.tasks.find(x => x.id === id);
-  if (t && t.anchor_key) {
+  if (t && inferredAnchorKey(t)) {
     await showAlertDialog({
       title: 'Anchor milestones are protected',
       message: `"${t.name}" is an anchor milestone and can't be deleted. You can still edit its date, predecessors, and progress like any other task.`,
     });
     return;
   }
-  // No confirmation popup — right-click → Delete is already 2 intentional clicks.
-  // User explicitly requested this.
   await api.remove(id);
   await loadTasks();
 }
@@ -6326,17 +6961,44 @@ function handleRowContextMenu(e) {
   e.preventDefault();
   const id = Number(tr.dataset.id);
   const task = state.tasks.find(t => t.id === id);
+  const cx = e.clientX, cy = e.clientY;
   const items = [
-    { label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) },
-    { label: 'Move to section…', onClick: () => moveTaskInline(id, e.clientX, e.clientY) },
-    { label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) },
+    { label: '＋ Add row below', onClick: () => createTaskBelow(id) },
   ];
-  // Milestones / anchors / backlog rows aren't "resources" — duplicating
-  // them as additional resources doesn't make sense. Hide the option.
-  if (task && (task.is_milestone || inferredAnchorKey(task) || isBacklogTask(task))) {
-    items.shift();
+  if (task && !(task.is_milestone || inferredAnchorKey(task))) {
+    items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
   }
-  showContextMenu(e.clientX, e.clientY, items);
+  items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
+  items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
+  showContextMenu(cx, cy, items);
+}
+
+// Create a new row directly below the given task. Inherits section info
+// verbatim — phase_group, department, sub_department (including null
+// for anchors and rows that live above section 10). sort_order is set
+// to clicked + 0.5 so the new row lands immediately below in the
+// rendered grid. Opens in name-edit mode so the user can type the name.
+async function createTaskBelow(taskId) {
+  const t = state.tasks.find(x => x.id === taskId);
+  if (!t) return;
+  const project = state.filters.project || t.project || null;
+  const sortOrder = (Number(t.sort_order) || 0) + 0.5;
+  const created = await api.create({
+    name: 'New task',
+    project,
+    phase_group: t.phase_group || null,
+    department: t.department || null,
+    sub_department: t.sub_department || null,
+    sort_order: sortOrder,
+  });
+  if (!created || created.error) return;
+  await loadTasks();
+  const newTr = document.querySelector(`tr[data-id="${created.id}"]`);
+  if (newTr) {
+    newTr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const nameCell = newTr.querySelector('td[data-col="name"]');
+    if (nameCell) enterCellEdit(nameCell, created.id, 'name');
+  }
 }
 
 // Right-click → "Add additional resource". Duplicates a task row as the
@@ -7251,7 +7913,14 @@ function setupGridPan() {
   });
 }
 
-function showSectionPicker(x, y, onPick) {
+// v4.72: showSectionPicker accepts an opts.okLabel override (and an opts.title).
+// Default "Create" still works for the schedule's + Add task / + Add action
+// flows where the picker DOES commit the new task. The Actions page quick-add
+// passes okLabel:"Done" because that picker is just stashing the section —
+// the actual create happens later when the user hits + Add action.
+function showSectionPicker(x, y, onPick, opts = {}) {
+  const okLabel = opts.okLabel || 'Create';
+  const title   = opts.title   || 'Where should this task go?';
   const existing = document.getElementById('section-picker');
   if (existing) existing.remove();
   const pop = document.createElement('div');
@@ -7262,7 +7931,7 @@ function showSectionPicker(x, y, onPick) {
   pop.style.left = '-9999px';
   pop.style.top  = '-9999px';
   pop.innerHTML = `
-    <div class="section-picker-title">Where should this task go?</div>
+    <div class="section-picker-title">${escapeHtml(title)}</div>
     <select class="sp-group">
       <option value="">— phase group —</option>
       ${HIERARCHY.map(g => `<option value="${g.key}">${escapeHtml(g.label)}</option>`).join('')}
@@ -7272,7 +7941,7 @@ function showSectionPicker(x, y, onPick) {
     <div class="section-picker-hint">Leave department blank for a cross-cutting task (e.g. FAT) that spans the whole phase.</div>
     <div class="section-picker-actions">
       <button type="button" class="btn-ghost sp-cancel">Cancel</button>
-      <button type="button" class="btn-primary sp-create">Create</button>
+      <button type="button" class="btn-primary sp-create">${escapeHtml(okLabel)}</button>
     </div>
   `;
   document.body.appendChild(pop);
@@ -7469,6 +8138,955 @@ async function loadSettings() {
 // block pinned to the bottom of the card via flex:1 on the regular list. The
 // "+ Add member" button is always the last element. Rows are drag-reorderable
 // within a card so a manager can group their team by specialty / pod / etc.
+// ----------------------------------------------------------------------------
+// v4.61 — Action Items master page (left sidebar > Actions).
+// Lists every action item (is_action = 1) across every project. Two buckets:
+//   active = progress < 100 (default)
+//   closed = progress >= 100
+// Filters (chips + selects) narrow the list further. Quick-add bar at top
+// creates a new action and immediately appears in the list.
+// ----------------------------------------------------------------------------
+const _actionsPageState = {
+  bucket: 'active',        // 'active' | 'closed'
+  filters: {
+    behind: false,         // past due, not done
+    dueWeek: false,        // due in next 7 days
+    unassigned: false,     // assignee is a Placeholder
+    project: '',
+    assignee: '',
+    discipline: '',
+  },
+  // v4.63: when set, the page flips to "personal" mode for that team member —
+  // the list shows ONLY their assigned tasks + actions (across every project),
+  // and a summary strip up top mirrors the Departments per-person dashboard.
+  // 'everyone' (or empty) = manager / team-wide view. Persists in localStorage.
+  personId: (() => {
+    try {
+      const v = localStorage.getItem('sdcActionsPersonId');
+      return v ? Number(v) : null;
+    } catch { return null; }
+  })(),
+  // v4.65: discipline picked in the Person dropdown (drives which people the
+  // Person select shows). Seeded from the persisted personId on first render.
+  deptForPicker: '',
+};
+
+// Map a task's section (dept + sub) to one of the 4 main discipline keys,
+// used for the colored department pill in the actions list + the filter
+// select. Falls back to '' for procurement / cross-cutting / section 40
+// engineering-shop generic cases. Mech eng / Controls eng / Build / Wire.
+function actionDisciplineKey(task) {
+  return disciplineForSection(task.department, task.sub_department) || '';
+}
+
+function renderActionsPage() {
+  const tabs = document.getElementById('actions-page-tabs');
+  if (!tabs) return;
+
+  // Tabs (Active / Closed) — wire once. Use a marker dataset attribute so
+  // we only attach the handler the first time renderActionsPage runs.
+  if (!tabs.dataset.wired) {
+    tabs.dataset.wired = '1';
+    tabs.querySelectorAll('.actions-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        _actionsPageState.bucket = btn.dataset.bucket;
+        renderActionsPage();
+      });
+    });
+  }
+  tabs.querySelectorAll('.actions-tab').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
+  });
+
+  // When signed in: show the personal list and hide the regular Actions
+  // page content (quick-add, filters, list, dept dashboard) via the
+  // .is-signed-in class on .actions-page. When signed out: opposite.
+  const pageRoot = document.querySelector('.actions-page');
+  if (pageRoot) {
+    const signedIn = _actionsPageState.personId != null;
+    pageRoot.classList.toggle('is-signed-in', signedIn);
+    if (signedIn) renderPersonalAssignments();
+    else {
+      const list = document.getElementById('actions-personal-list');
+      if (list) list.innerHTML = '';
+    }
+  }
+
+  // v5.8: personal Gantt removed from this page. Signing in via the person
+  // picker now routes the user to the Schedule view with an assignee filter
+  // pre-applied — same look, scroll, zoom, grid + Gantt + filters as the
+  // main schedule, just scoped to their tasks. The Actions tab stays as the
+  // dept dashboard / action list view.
+  renderActionsPersonBar();
+  renderActionsPersonSummary();
+
+  // Refresh the project + person select dropdowns. Preserve the user's
+  // current selections across rebuilds so a re-render doesn't blow away
+  // their filter state.
+  const projSel        = document.getElementById('actions-qa-project');
+  const filterProjSel  = document.getElementById('actions-filter-project');
+  const filterAsgSel   = document.getElementById('actions-filter-assignee');
+  // v4.68: drop template projects + Sales-workspace projects from the
+  // pickers. Templates are scaffolding (e.g. SDC_StandardProject_Template)
+  // and shouldn't be a valid target for new action items; Sales projects
+  // are pre-quote work where the user explicitly doesn't want staffing
+  // assignments — same exclusions used by the Departments dashboard.
+  const projects = uniqueValues('project')
+    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+    .sort();
+  const people   = Array.from(new Set((state.tasks || []).filter(t => t.is_action).map(t => t.assignee).filter(Boolean))).sort();
+  const prevQaProj  = projSel?.value || '';
+  const prevFltProj = filterProjSel?.value || '';
+  const prevFltAsg  = filterAsgSel?.value  || '';
+  if (projSel)        projSel.innerHTML       = '<option value="">— pick project —</option>'  + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  if (filterProjSel)  filterProjSel.innerHTML = '<option value="">All projects</option>'      + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  if (filterAsgSel)   filterAsgSel.innerHTML  = '<option value="">All people</option>'        + people.map(a   => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  if (projSel       && prevQaProj)  projSel.value       = prevQaProj;
+  if (filterProjSel)                filterProjSel.value = _actionsPageState.filters.project || prevFltProj;
+  if (filterAsgSel)                 filterAsgSel.value  = _actionsPageState.filters.assignee || prevFltAsg;
+
+  // Quick-add handlers (wire once).
+  const qaCreate  = document.getElementById('actions-qa-create');
+  const qaTitle   = document.getElementById('actions-qa-title');
+  const qaSection = document.getElementById('actions-qa-section');
+  const qaDept    = document.getElementById('actions-qa-dept');
+  const qaDue     = document.getElementById('actions-qa-due');
+  if (qaCreate && !qaCreate.dataset.wired) {
+    qaCreate.dataset.wired = '1';
+    qaCreate._pickedSection = null;
+
+    qaSection.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const r = qaSection.getBoundingClientRect();
+      // v4.72: this picker just STASHES the section — the action gets created
+      // later when the user fills in dept/due and clicks "+ Add action".
+      // Override the picker's default "Create" button to "Done" so the user
+      // doesn't think clicking it commits the action.
+      showSectionPicker(r.left, r.bottom + 6, (g, d, s) => {
+        qaCreate._pickedSection = { g, d, s };
+        const dept = d ? (window.findDepartment(g, d)?.label || d) : '(no dept)';
+        const sub  = s ? (window.findSubDepartment(g, d, s)?.label || s) : '';
+        qaSection.textContent = `${dept}${sub ? ' · ' + sub : ''} ▾`;
+        // v4.62: auto-fill the Department dropdown from the picked section.
+        // User can still override if the mapping is ambiguous (e.g. section 40
+        // engineering → could be Mech or Controls).
+        const auto = disciplineForSection(d, s);
+        if (auto && qaDept) qaDept.value = auto;
+      }, { okLabel: 'Done', title: 'Pick the section' });
+    });
+
+    const createNow = async () => {
+      const title = (qaTitle.value || '').trim();
+      const project = projSel.value;
+      const sect = qaCreate._pickedSection;
+      if (!title)   { qaTitle.focus(); return; }
+      if (!project) { projSel.focus(); alert('Pick a project for this action.'); return; }
+      if (!sect)    { qaSection.focus(); alert('Pick a section so we know where the action lives.'); return; }
+      // v4.62: discipline comes from the dropdown first (user-explicit),
+      // falling back to the section auto-map. If neither resolves we just
+      // leave the assignee blank so the manager can pick later.
+      const discKey = (qaDept && qaDept.value) || disciplineForSection(sect.d, sect.s) || '';
+      const placeholderName = placeholderNameForDiscipline(discKey);
+      // v4.76: if the user didn't pick a due date, default it to TODAY.
+      // Why: without a date the action never shows on the personal Gantt
+      // (which requires start/end dates to position the diamond on the
+      // timeline). User explicitly asked for actions to appear as
+      // milestones on the Gantt — so every action gets a date now.
+      const due = qaDue.value || new Date().toISOString().slice(0, 10);
+      try {
+        await api.create({
+          name: title,
+          project,
+          phase_group: sect.g,
+          department: sect.d,
+          sub_department: sect.s,
+          is_action: 1,
+          duration_days: 0,
+          is_milestone: 1,
+          progress: 0,
+          start_date: due,
+          end_date: due,
+          ...(placeholderName ? { assignee: placeholderName } : {}),
+        });
+      } catch (err) {
+        alert('Failed to create action: ' + (err?.message || err));
+        return;
+      }
+      // Reset the form.
+      qaTitle.value = '';
+      qaDue.value   = '';
+      qaCreate._pickedSection = null;
+      qaSection.textContent = 'Section ▾';
+      if (qaDept) qaDept.value = '';
+      // Force-switch back to Active so the user sees their new action even
+      // if they were on Closed when they clicked Create.
+      _actionsPageState.bucket = 'active';
+      await loadTasks();
+      renderActionsPage();
+    };
+    qaCreate.addEventListener('click', createNow);
+    qaTitle.addEventListener('keydown', (e) => { if (e.key === 'Enter') createNow(); });
+  }
+
+  // Filter chips + selects (wire once).
+  const filtersRow = document.getElementById('actions-filters');
+  if (filtersRow && !filtersRow.dataset.wired) {
+    filtersRow.dataset.wired = '1';
+    filtersRow.querySelectorAll('.filter-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const k = chip.dataset.filter;
+        const map = { behind: 'behind', 'overdue-week': 'dueWeek', unassigned: 'unassigned' };
+        const key = map[k];
+        if (!key) return;
+        _actionsPageState.filters[key] = !_actionsPageState.filters[key];
+        renderActionsPage();
+      });
+    });
+    document.getElementById('actions-filter-project').addEventListener('change', (e) => {
+      _actionsPageState.filters.project = e.target.value;
+      renderActionsPage();
+    });
+    document.getElementById('actions-filter-assignee').addEventListener('change', (e) => {
+      _actionsPageState.filters.assignee = e.target.value;
+      renderActionsPage();
+    });
+    document.getElementById('actions-filter-discipline').addEventListener('change', (e) => {
+      _actionsPageState.filters.discipline = e.target.value;
+      renderActionsPage();
+    });
+  }
+  // Reflect filter state on chips + selects.
+  filtersRow?.querySelectorAll('.filter-chip').forEach(chip => {
+    const map = { behind: 'behind', 'overdue-week': 'dueWeek', unassigned: 'unassigned' };
+    const key = map[chip.dataset.filter];
+    chip.classList.toggle('is-active', !!_actionsPageState.filters[key]);
+  });
+  if (filterProjSel)                                  filterProjSel.value = _actionsPageState.filters.project;
+  if (filterAsgSel)                                   filterAsgSel.value  = _actionsPageState.filters.assignee;
+  const filterDiscSel = document.getElementById('actions-filter-discipline');
+  if (filterDiscSel) filterDiscSel.value = _actionsPageState.filters.discipline;
+
+  // Compute the visible list.
+  const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const ONE_WEEK = 7 * 86400000;
+  const allActions = (state.tasks || []).filter(t => !!t.is_action);
+  let actions = allActions.slice();
+  if (_actionsPageState.bucket === 'active') {
+    actions = actions.filter(t => (Number(t.progress) || 0) < 100);
+  } else {
+    actions = actions.filter(t => (Number(t.progress) || 0) >= 100);
+  }
+  const f = _actionsPageState.filters;
+  if (f.behind) {
+    actions = actions.filter(t => t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100);
+  }
+  if (f.dueWeek) {
+    actions = actions.filter(t => {
+      if (!t.end_date) return false;
+      const due = new Date(t.end_date).getTime();
+      return due >= todayMs && due <= todayMs + ONE_WEEK;
+    });
+  }
+  if (f.unassigned) actions = actions.filter(t => !t.assignee || isPlaceholder(t.assignee));
+  if (f.project)    actions = actions.filter(t => t.project === f.project);
+  if (f.assignee)   actions = actions.filter(t => t.assignee === f.assignee);
+  if (f.discipline) actions = actions.filter(t => actionDisciplineKey(t) === f.discipline);
+  // v4.63: person picker filters everything to one team member when set.
+  const pickedPerson = _actionsPageState.personId
+    ? (state.team || []).find(m => m.id === _actionsPageState.personId)
+    : null;
+  if (pickedPerson) actions = actions.filter(t => (t.assignee || '').trim().toLowerCase() === pickedPerson.name.trim().toLowerCase());
+  // Sort: overdue first, then by due date asc, then by id.
+  actions.sort((a, b) => {
+    const aOver = a.end_date && new Date(a.end_date).getTime() < todayMs && (Number(a.progress) || 0) < 100;
+    const bOver = b.end_date && new Date(b.end_date).getTime() < todayMs && (Number(b.progress) || 0) < 100;
+    if (aOver !== bOver) return aOver ? -1 : 1;
+    const aDue = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+    const bDue = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+    if (aDue !== bDue) return aDue - bDue;
+    return (a.id || 0) - (b.id || 0);
+  });
+
+  // Render rows.
+  const list = document.getElementById('actions-list');
+  if (!list) return;
+  // v4.62 BUGFIX: build the empty-state INLINE — previously the empty <p>
+  // lived in static HTML and got removed by innerHTML rewrites, then null
+  // references caused renders to throw silently and leave the list stuck.
+  if (actions.length === 0) {
+    list.innerHTML = `<p class="empty-state actions-empty-state">${
+      _actionsPageState.bucket === 'closed'
+        ? 'No completed action items yet.'
+        : 'No action items match the current filters. Add one above.'
+    }</p>`;
+  } else {
+    const disciplineLabel = { mech: 'Mech', controls: 'Controls', build: 'Build', wire: 'Wire' };
+    const disciplineColor = {
+      mech:     { bg: '#bfdbfe', fg: '#1e3a8a' },
+      controls: { bg: '#bbf7d0', fg: '#14532d' },
+      build:    { bg: '#fed7aa', fg: '#7c2d12' },
+      wire:     { bg: '#fef08a', fg: '#713f12' },
+    };
+    // v4.68: list now has a header row, inline-editable Assigned-To, and an
+    // explicit "Open" arrow per row. Clicking the row body no longer jumps
+    // anywhere — the user wanted to be able to interact with the row without
+    // accidentally navigating to the project schedule.
+    // v4.74: per-row team filter. The Assigned To dropdown now shows ONLY
+    // the team members in THIS action's department (mech actions → mech
+    // engineers, etc.). Placeholders are dropped from the option list
+    // because "— unassigned —" already represents that state — and the
+    // dropdown selects "— unassigned —" when the saved assignee IS a
+    // placeholder, so placeholders read as unassigned in the UI.
+    const teamByDiscipline = (() => {
+      const map = {};
+      (state.team || []).forEach(m => {
+        if (!m.name || isPlaceholder(m.name) || m.active === 0) return;
+        const k = m.discipline || 'other';
+        if (!map[k]) map[k] = [];
+        map[k].push(m.name);
+      });
+      Object.keys(map).forEach(k => map[k].sort());
+      return map;
+    })();
+    const teamForTask = (t) => {
+      const k = actionDisciplineKey(t);
+      const base = (k && teamByDiscipline[k])
+        ? [...teamByDiscipline[k]]
+        : (state.team || []).filter(m => m.name && !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
+      if (t.assignee && !isPlaceholder(t.assignee) && !base.includes(t.assignee)) {
+        base.unshift(t.assignee);
+      }
+      return base;
+    };
+    // v4.70: header row — every column has a uniform-styled <span> header.
+    // The previous build re-used the data-row classes (each with their own
+    // font-size / weight / color / padding overrides), so headers came out
+    // visually inconsistent. CSS now resets every header cell to the same
+    // typography via .actions-row-header > * (see styles.css).
+    const headerHtml = `
+      <div class="actions-row actions-row-header">
+        <span class="actions-hdr-done">Done</span>
+        <span class="actions-hdr-name">Task</span>
+        <span class="actions-hdr-project">Project</span>
+        <span class="actions-hdr-assignee">Assigned To</span>
+        <span class="actions-hdr-dept">Dept</span>
+        <span class="actions-hdr-due">Due</span>
+        <span class="actions-hdr-open">Open</span>
+        <span class="actions-hdr-delete"></span>
+      </div>`;
+    // v4.74: group rows by department so each discipline reads as a self-
+    // contained block. Order: Mech → Controls → Build → Wire → Other.
+    // Each group has a dotted-line header in the discipline's color.
+    const GROUP_ORDER = ['mech', 'controls', 'build', 'wire', 'other'];
+    const GROUP_LABELS = { mech: 'Mech Eng', controls: 'Controls Eng', build: 'Build', wire: 'Wire', other: 'Cross-cutting' };
+    const grouped = {};
+    actions.forEach(t => {
+      const dkey = actionDisciplineKey(t) || 'other';
+      if (!grouped[dkey]) grouped[dkey] = [];
+      grouped[dkey].push(t);
+    });
+    const renderRow = (t) => {
+      const overdue = t.end_date && new Date(t.end_date).getTime() < todayMs && (Number(t.progress) || 0) < 100;
+      const done = (Number(t.progress) || 0) >= 100;
+      const dkey = actionDisciplineKey(t);
+      const dColor = disciplineColor[dkey] || { bg: '#f1f5f9', fg: '#475569' };
+      const dueLabel = done && t.completed_on
+        ? `${fmtDate(t.completed_on)} ✓`
+        : (t.end_date ? fmtDate(t.end_date) : '—');
+      // v4.74: placeholder assignees show as "— unassigned —" in the dropdown.
+      // The dropdown options are filtered to this action's department.
+      const assigneeUnassigned = !t.assignee || isPlaceholder(t.assignee);
+      const rowTeam = teamForTask(t);
+      const assignedSelect = `
+        <select class="actions-row-assignee-select" data-id="${t.id}" title="Assign — only ${escapeHtml(disciplineLabel[dkey] || 'team')} shown">
+          <option value="" ${assigneeUnassigned ? 'selected' : ''}>— unassigned —</option>
+          ${rowTeam.map(n => `<option value="${escapeHtml(n)}" ${n === t.assignee && !assigneeUnassigned ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+        </select>`;
+      return `
+        <div class="actions-row${overdue ? ' is-overdue' : ''}${done ? ' is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
+          <input type="checkbox" class="actions-row-check" data-id="${t.id}" ${done ? 'checked' : ''} title="Mark done / not done">
+          <span class="actions-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
+          <span class="actions-row-project" title="Project: ${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
+          <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || '—')}">${assignedSelect}</span>
+          <span class="actions-row-dept" style="background:${dColor.bg};color:${dColor.fg}" title="${escapeHtml(disciplineLabel[dkey] || 'Cross-cutting')}">${dkey ? disciplineLabel[dkey] : '—'}</span>
+          <span class="actions-row-due${done ? ' is-completed' : ''}" title="${done ? 'Completed date' : 'Due date'}">${dueLabel}</span>
+          <button type="button" class="actions-row-open" data-id="${t.id}" title="Open this action in the project schedule">→</button>
+          <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">×</button>
+        </div>`;
+    };
+    // Build the grouped list. Skip groups with no items.
+    let groupedHtml = '';
+    for (const gkey of GROUP_ORDER) {
+      const items = grouped[gkey];
+      if (!items || items.length === 0) continue;
+      const gColor = disciplineColor[gkey] || { bg: '#f1f5f9', fg: '#475569' };
+      groupedHtml += `
+        <div class="actions-group-divider" style="border-color:${gColor.fg};color:${gColor.fg}">
+          <span class="actions-group-dot" style="background:${gColor.fg}"></span>
+          <span class="actions-group-label">${escapeHtml(GROUP_LABELS[gkey])}</span>
+          <span class="actions-group-count">${items.length}</span>
+        </div>`;
+      groupedHtml += items.map(renderRow).join('');
+    }
+    list.innerHTML = headerHtml + groupedHtml;
+
+    // v4.68: Open button — explicit navigation. Row body is now non-clickable
+    // (no accidental jumps when the user tries to interact with the row).
+    list.querySelectorAll('.actions-row-open').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = Number(btn.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        if (!t || !t.project) return;
+        if (!state.openProjects.includes(t.project)) state.openProjects.push(t.project);
+        state.filters.project = t.project;
+        saveProjectTabs();
+        setView('schedule');
+      });
+    });
+    list.querySelectorAll('.actions-row-check').forEach(cb => {
+      cb.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const id = Number(cb.dataset.id);
+        await api.update(id, { progress: cb.checked ? 100 : 0 });
+        await loadTasks();
+        renderActionsPage();
+      });
+    });
+    list.querySelectorAll('.actions-row-assignee-select').forEach(sel => {
+      sel.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const id = Number(sel.dataset.id);
+        let newAssignee = sel.value || null;
+        // v4.74: picking "— unassigned —" sets the assignee back to the
+        // action's discipline Placeholder (ME Placeholder / CE Placeholder /
+        // etc.) — keeps the "every action has someone owning it" invariant.
+        // The dropdown will still display "— unassigned —" because the
+        // selected assignee is a placeholder (handled in the render path).
+        if (!newAssignee) {
+          const task = state.tasks.find(x => x.id === id);
+          const dkey = task ? actionDisciplineKey(task) : '';
+          newAssignee = placeholderNameForDiscipline(dkey) || null;
+        }
+        await api.update(id, { assignee: newAssignee === null ? '' : newAssignee });
+        await loadTasks();
+        renderActionsPage();
+      });
+      // Stop propagation on the select clicks so they don't bubble up to
+      // anything outside the row.
+      sel.addEventListener('click', (e) => e.stopPropagation());
+    });
+    list.querySelectorAll('.actions-row-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = Number(btn.dataset.id);
+        const t = state.tasks.find(x => x.id === id);
+        if (!t) return;
+        if (!confirm(`Delete action "${t.name || '(untitled)'}"?`)) return;
+        await api.remove(id);
+        await loadTasks();
+        renderActionsPage();
+      });
+    });
+  }
+
+  // v4.62: per-department dashboard. Small cards below the list summarising
+  // open / overdue / done counts for actions owned by each discipline.
+  // Always renders against the FULL action set (not the filtered list) so
+  // the cards keep showing the big-picture health even when the list above
+  // is narrowed by a chip.
+  renderActionsDeptDashboard(allActions, todayMs);
+}
+
+// v4.65: two cascading dropdowns — Department → Person — instead of v4.63's
+// giant strip of every-team-member-as-a-chip. Department dropdown drives
+// what people show in the Person dropdown so the user doesn't have to scan
+// a wall of names. Picking a person sets personId; the existing Back-to-
+// Everyone button on the personal summary banner exits.
+function renderActionsPersonBar() {
+  const bar = document.getElementById('actions-person-bar');
+  if (!bar) return;
+  const allTeam = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
+
+  // Derive department from the currently-picked person, if any, so the
+  // dropdowns reflect the last selection across re-renders.
+  const pickedId = _actionsPageState.personId;
+  const pickedMember = pickedId != null ? allTeam.find(m => m.id === pickedId) : null;
+  // _actionsPageState.deptForPicker is set by the department dropdown's
+  // change handler. We seed it from the picked person on first render.
+  if (!_actionsPageState.deptForPicker && pickedMember) {
+    _actionsPageState.deptForPicker = pickedMember.discipline || '';
+  }
+  const dept = _actionsPageState.deptForPicker || '';
+
+  const inDept = dept ? allTeam.filter(m => m.discipline === dept) : [];
+  inDept.sort((a, b) => {
+    if (!!b.is_lead - !!a.is_lead !== 0) return (!!b.is_lead) - (!!a.is_lead);
+    return (a.sort_order || 0) - (b.sort_order || 0);
+  });
+
+  bar.innerHTML = `
+    <div class="actions-person-bar-label">Sign in</div>
+    <select class="actions-person-select" id="actions-person-dept" title="Pick your department first.">
+      <option value="">Department…</option>
+      <option value="mech"     ${dept === 'mech'     ? 'selected' : ''}>Mech Eng</option>
+      <option value="controls" ${dept === 'controls' ? 'selected' : ''}>Controls Eng</option>
+      <option value="build"    ${dept === 'build'    ? 'selected' : ''}>Build</option>
+      <option value="wire"     ${dept === 'wire'     ? 'selected' : ''}>Wire</option>
+      <option value="pm"       ${dept === 'pm'       ? 'selected' : ''}>Project Mgmt</option>
+    </select>
+    <select class="actions-person-select" id="actions-person-pick" title="Pick yourself." ${dept ? '' : 'disabled'}>
+      <option value="">${dept ? 'Pick yourself…' : 'Pick department first'}</option>
+      ${inDept.map(m => `<option value="${m.id}" ${pickedId === m.id ? 'selected' : ''}>${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`).join('')}
+    </select>
+    ${pickedId != null ? '<button type="button" class="actions-person-clear" id="actions-person-clear" title="Clear selection — back to Everyone view.">× Clear</button>' : ''}
+  `;
+
+  document.getElementById('actions-person-dept').addEventListener('change', (e) => {
+    _actionsPageState.deptForPicker = e.target.value || '';
+    // Changing department clears any previously-picked person (since they
+    // probably aren't in the new department).
+    _actionsPageState.personId = null;
+    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+    renderActionsPage();
+  });
+  document.getElementById('actions-person-pick').addEventListener('change', (e) => {
+    const id = e.target.value ? Number(e.target.value) : null;
+    _actionsPageState.personId = id;
+    try {
+      if (id == null) localStorage.removeItem('sdcActionsPersonId');
+      else localStorage.setItem('sdcActionsPersonId', String(id));
+    } catch {}
+    renderActionsPage();
+  });
+  const clearBtn = document.getElementById('actions-person-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      _actionsPageState.personId = null;
+      _actionsPageState.deptForPicker = '';
+      try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+      renderActionsPage();
+    });
+  }
+}
+
+// v4.63: stats strip + name banner for the picked person. Hidden when no one
+// is selected (manager / Everyone view). Numbers cover EVERYTHING assigned to
+// the person — actions and scheduled tasks both — so the user gets a "what's
+// on my plate" snapshot, not just the actions list.
+function renderActionsPersonSummary() {
+  const wrap = document.getElementById('actions-person-summary');
+  if (!wrap) return;
+  const personId = _actionsPageState.personId;
+  if (personId == null) { wrap.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === personId);
+  if (!member) { wrap.innerHTML = ''; return; }
+  const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const mine = (state.tasks || []).filter(t => (t.assignee || '').trim().toLowerCase() === member.name.trim().toLowerCase());
+  const open = (t) => (Number(t.progress) || 0) < 100;
+  const isOverdue = (t) => t.end_date && new Date(t.end_date).getTime() < todayMs && open(t);
+  const tasks   = mine.filter(t => !t.is_action);
+  const actions = mine.filter(t =>  t.is_action);
+  const openCount    = mine.filter(open).length;
+  const overdueCount = mine.filter(isOverdue).length;
+  const doneActions  = actions.filter(t => !open(t) && t.end_date);
+  let avgOverrun = null;
+  if (doneActions.length > 0) {
+    const totalDays = doneActions.reduce((sum, t) => {
+      const due = new Date(t.end_date).getTime();
+      const closedMs = t.completed_on ? new Date(t.completed_on).getTime() : todayMs;
+      // Positive = closed AFTER due (overrun). Negative = closed early.
+      return sum + (closedMs - due) / 86400000;
+    }, 0);
+    avgOverrun = Math.round(totalDays / doneActions.length);
+  }
+  const disc = DISCIPLINE_BY_KEY[member.discipline];
+  wrap.innerHTML = `
+    <div class="aps-banner" style="background:${disc?.color || '#e2e8f0'};color:${disc?.text || '#0f172a'}">
+      <div class="aps-banner-left">
+        <strong>${escapeHtml(member.name)}</strong>
+        <span class="aps-banner-disc">${escapeHtml(disc?.label || member.discipline || '')}</span>
+        ${member.specialty ? `<span class="aps-banner-spec">${escapeHtml(member.specialty)}</span>` : ''}
+      </div>
+      <button type="button" class="aps-banner-exit" data-action="exit-personal">Back to Everyone</button>
+    </div>
+    <div class="aps-stats">
+      <div class="aps-stat">
+        <div class="aps-stat-num">${openCount}</div>
+        <div class="aps-stat-lbl">Open total</div>
+      </div>
+      <div class="aps-stat ${overdueCount > 0 ? 'is-warn' : ''}">
+        <div class="aps-stat-num">${overdueCount}</div>
+        <div class="aps-stat-lbl">Overdue</div>
+      </div>
+      <div class="aps-stat">
+        <div class="aps-stat-num">${tasks.length}</div>
+        <div class="aps-stat-lbl">Scheduled tasks</div>
+      </div>
+      <div class="aps-stat">
+        <div class="aps-stat-num">${actions.length}</div>
+        <div class="aps-stat-lbl">Action items</div>
+      </div>
+      <div class="aps-stat">
+        <div class="aps-stat-num">${avgOverrun != null ? (avgOverrun > 0 ? '+' : '') + avgOverrun + 'd' : '—'}</div>
+        <div class="aps-stat-lbl">Avg overrun</div>
+      </div>
+    </div>
+  `;
+  wrap.querySelector('[data-action="exit-personal"]').addEventListener('click', () => {
+    _actionsPageState.personId = null;
+    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+    renderActionsPage();
+  });
+}
+
+// v4.66: per-person Gantt visualisation on the Actions page. Renders every
+// task + action item (with start/end dates) assigned to the signed-in
+// person as a horizontal-bar timeline. Bars are colored by project. Action
+// items render as small diamond markers since they typically have zero
+// duration. Hover shows project + task name + dates.
+// v5.4: personal timeline now uses the SAME Gantt machinery as the main
+// schedule — real frappe-gantt + arrows + milestone diamonds + bar-meta
+// cascade + today line + status colors. Approach: temporarily swap the
+// element IDs so renderGantt's hard-coded `#gantt-container` selectors hit
+// the personal container, render with this person's tasks substituted into
+// state.tasks, then restore. Same look, same colors, same scroll, same
+// zoom controls drive both Ganttts.
+function renderActionsPersonGantt() {
+  const wrap = document.getElementById('actions-person-gantt');
+  if (!wrap) return;
+  const personId = _actionsPageState.personId;
+  if (personId == null) { wrap.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === personId);
+  if (!member) { wrap.innerHTML = ''; return; }
+
+  // v4.80: gather this person's tasks + actions.
+  // - Scheduled tasks need dates to position on the timeline (skip if null).
+  // - Action items ALWAYS show on the timeline — even if their start/end
+  //   dates are null (old data, pre-v4.76 quick-add without a due date).
+  //   For those, we default to TODAY at render time so the diamond appears
+  //   under the today line. User can edit the date later via the schedule.
+  // - Also surface placeholder-assigned action items to every engineer in
+  //   that discipline — so unstaffed actions show up on the relevant team's
+  //   timeline before someone manually claims them.
+  // Filter to this person's tasks. Same selection logic the old custom
+  // renderer used — direct assign OR placeholder-for-my-discipline on
+  // action items. Scheduled tasks need dates; dateless actions default to
+  // today so they still show under the today line.
+  const memberNameLower = (member.name || '').trim().toLowerCase();
+  const _todayISO_ = new Date().toISOString().slice(0, 10);
+  // v5.7: renderGantt drops any task whose phase_group isn't a recognized
+  // section, AND drops actions when actionsMode='schedule'. Action items
+  // and free-floating tasks without a phase_group would silently vanish
+  // from the personal Gantt. We patch each task with a default phase_group
+  // ("design_build") if it doesn't have one — purely for personal-view
+  // filtering — and switch actionsMode to "combined" below so both show.
+  const personalTasks = (state.tasks || [])
+    .filter(t => {
+      if (!t.project) return false;
+      if (isTemplateProject(t.project)) return false;
+      if (projectWorkspace(t.project) === 'Sales') return false;
+      const assignee = (t.assignee || '').trim().toLowerCase();
+      const directAssign = assignee === memberNameLower;
+      const placeholderForMyDiscipline =
+        t.is_action
+        && isPlaceholder(t.assignee)
+        && actionDisciplineKey(t) === member.discipline;
+      if (!directAssign && !placeholderForMyDiscipline) return false;
+      if (!t.is_action) return !!(t.start_date && t.end_date);
+      return true;
+    })
+    .map(t => {
+      let task = t;
+      // Default dateless actions onto today (no date == no bar).
+      if (t.is_action && (!t.start_date || !t.end_date)) {
+        const start = t.start_date || _todayISO_;
+        const end   = t.end_date   || start;
+        task = { ...task, start_date: start, end_date: end };
+      }
+      // Patch missing phase_group so renderGantt's section filter doesn't
+      // silently drop the row. Doesn't mutate the original — only the
+      // clone used for personal-view rendering.
+      if (!inferredAnchorKey(task) && !isBacklogTask(task) && !task.phase_group) {
+        task = { ...task, phase_group: 'design_build' };
+      }
+      return task;
+    });
+
+  if (personalTasks.length === 0) {
+    wrap.innerHTML = `<div class="apg-empty">Nothing scheduled. ${escapeHtml(member.name)} has no tasks or action items.</div>`;
+    return;
+  }
+
+  const mainContainer = document.getElementById('gantt-container');
+  if (!mainContainer) { wrap.innerHTML = ''; return; }
+
+  // Stash state we'll temporarily replace.
+  const savedTasks        = state.tasks;
+  const savedGantt        = state.gantt;
+  const savedFilters      = { ...state.filters };
+  const savedScheduleView = { ...(state.scheduleView || {}) };
+
+  // Substitute the person's filtered task list and clear per-project
+  // filters so all their projects show together. Force ganttOnly so we
+  // don't try to align bars to a (nonexistent) grid in the actions panel.
+  // sortByStart so the personal timeline reads top-down chronologically.
+  // Skip critical-path filtering (not meaningful per-person).
+  state.tasks = personalTasks;
+  state.filters = { ...savedFilters, project: null };
+  state.scheduleView = {
+    ...savedScheduleView,
+    ganttOnly: true,
+    sortByStart: true,
+    criticalOnly: false,
+    criticalPath: false,
+    actionsMode: 'combined',  // show scheduled tasks AND action items
+  };
+
+  // Swap container IDs so renderGantt's hard-coded #gantt-container
+  // selectors target the personal container instead.
+  mainContainer.id = '__gantt-container__main_saved';
+  wrap.id = 'gantt-container';
+
+  let renderedOk = false;
+  try {
+    renderGantt();
+    state.personalGantt = state.gantt;
+    renderedOk = true;
+  } catch (e) {
+    console.error('personal Gantt render failed:', e);
+  } finally {
+    // Restore IDs and state regardless of success.
+    wrap.id = 'actions-person-gantt';
+    mainContainer.id = 'gantt-container';
+    state.tasks = savedTasks;
+    state.gantt = savedGantt;
+    state.filters = savedFilters;
+    state.scheduleView = savedScheduleView;
+  }
+
+  if (!renderedOk) {
+    wrap.innerHTML = '';
+    return;
+  }
+
+  // Prepend a title above the chart.
+  const title = document.createElement('div');
+  title.className = 'apg-title';
+  title.textContent = `${member.name}'s timeline`;
+  wrap.insertBefore(title, wrap.firstChild);
+}
+
+function renderActionsDeptDashboard(allActions, todayMs) {
+  const wrap = document.getElementById('actions-dept-dashboard');
+  if (!wrap) return;
+  const discs = [
+    { key: 'mech',     label: 'Mech Eng',     color: '#bfdbfe', text: '#1e3a8a' },
+    { key: 'controls', label: 'Controls Eng', color: '#bbf7d0', text: '#14532d' },
+    { key: 'build',    label: 'Build',        color: '#fed7aa', text: '#7c2d12' },
+    { key: 'wire',     label: 'Wire',         color: '#fef08a', text: '#713f12' },
+  ];
+  wrap.innerHTML = `
+    <div class="actions-dept-title">Action items by department</div>
+    <div class="actions-dept-cards">
+      ${discs.map(d => {
+        const mine = allActions.filter(t => actionDisciplineKey(t) === d.key);
+        const open = mine.filter(t => (Number(t.progress) || 0) < 100);
+        const overdue = open.filter(t => t.end_date && new Date(t.end_date).getTime() < todayMs);
+        const done = mine.filter(t => (Number(t.progress) || 0) >= 100);
+        return `
+          <button type="button" class="actions-dept-card" data-disc="${d.key}" style="border-top:3px solid ${d.color}">
+            <div class="adc-head" style="color:${d.text}">${escapeHtml(d.label)}</div>
+            <div class="adc-stats">
+              <div class="adc-stat"><div class="adc-num">${open.length}</div><div class="adc-lbl">Open</div></div>
+              <div class="adc-stat ${overdue.length > 0 ? 'is-warn' : ''}"><div class="adc-num">${overdue.length}</div><div class="adc-lbl">Overdue</div></div>
+              <div class="adc-stat"><div class="adc-num">${done.length}</div><div class="adc-lbl">Done</div></div>
+            </div>
+          </button>`;
+      }).join('')}
+    </div>`;
+  // Clicking a dept card filters the list to that discipline.
+  wrap.querySelectorAll('.actions-dept-card').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const disc = btn.dataset.disc;
+      _actionsPageState.filters.discipline = (_actionsPageState.filters.discipline === disc) ? '' : disc;
+      renderActionsPage();
+    });
+  });
+}
+
+// ----------------------------------------------------------------------------
+// v4.61 — Per-person dashboard. Click a team member row on the Departments
+// tab → a side panel slides in from the right with everything assigned to
+// that person (scheduled work + action items + upcoming milestones).
+// ----------------------------------------------------------------------------
+const _personDashState = {
+  memberId: null,
+  filter: 'all',  // 'all' | 'tasks' | 'actions'
+};
+
+function openPersonDashboard(memberId) {
+  _personDashState.memberId = memberId;
+  _personDashState.filter = 'all';
+  renderPersonDashboard();
+}
+
+function closePersonDashboard() {
+  _personDashState.memberId = null;
+  const panel = document.getElementById('person-dashboard');
+  if (panel) panel.classList.remove('is-open');
+}
+
+function renderPersonDashboard() {
+  const memberId = _personDashState.memberId;
+  if (memberId == null) return;
+  const member = (state.team || []).find(m => m.id === memberId);
+  if (!member) { closePersonDashboard(); return; }
+
+  // Ensure the panel exists in the DOM (we create it lazily on first open).
+  let panel = document.getElementById('person-dashboard');
+  if (!panel) {
+    panel = document.createElement('aside');
+    panel.id = 'person-dashboard';
+    panel.className = 'person-dashboard';
+    document.body.appendChild(panel);
+    // Close on outside click. We attach the listener once and gate on the
+    // panel being open so it doesn't run for every body click.
+    document.addEventListener('click', (e) => {
+      if (!panel.classList.contains('is-open')) return;
+      if (panel.contains(e.target)) return;
+      // Ignore clicks on team member rows (those open / re-open the panel).
+      if (e.target.closest('.team-member')) return;
+      closePersonDashboard();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && panel.classList.contains('is-open')) closePersonDashboard();
+    });
+  }
+
+  // Compute the assigned set.
+  const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
+  const isAssignedTo = (t, name) => {
+    if (!name) return false;
+    return (t.assignee || '').trim().toLowerCase() === name.trim().toLowerCase();
+  };
+  const allAssigned = (state.tasks || []).filter(t => isAssignedTo(t, member.name));
+  const tasks   = allAssigned.filter(t => !t.is_action);
+  const actions = allAssigned.filter(t =>  t.is_action);
+  const open = (t) => (Number(t.progress) || 0) < 100;
+  const isOverdue = (t) => t.end_date && new Date(t.end_date).getTime() < todayMs && open(t);
+
+  // Stats strip.
+  const openCount    = allAssigned.filter(open).length;
+  const overdueCount = allAssigned.filter(isOverdue).length;
+  const doneActions  = actions.filter(t => !open(t) && t.end_date);
+  // Naive avg-close: difference between today and end_date for done actions.
+  // (No "completed_at" column — using end_date as a stand-in. Skips if no due date.)
+  let avgCloseDays = null;
+  if (doneActions.length > 0) {
+    const totalDays = doneActions.reduce((sum, t) => {
+      const due = new Date(t.end_date).getTime();
+      // Roughly: positive => closed BEFORE due, negative => closed AFTER.
+      return sum + Math.max(0, (todayMs - due) / 86400000);
+    }, 0);
+    avgCloseDays = Math.round(totalDays / doneActions.length);
+  }
+
+  // Apply filter.
+  const filter = _personDashState.filter;
+  let visible = allAssigned;
+  if (filter === 'tasks')   visible = tasks;
+  if (filter === 'actions') visible = actions;
+
+  // Sort: overdue first, then by due date, then by name.
+  visible = visible.slice().sort((a, b) => {
+    const ao = isOverdue(a) ? 0 : 1;
+    const bo = isOverdue(b) ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    const ad = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+    const bd = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+    if (ad !== bd) return ad - bd;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  // Render markup.
+  const disc = DISCIPLINE_BY_KEY[member.discipline];
+  panel.innerHTML = `
+    <header class="person-dashboard-head" style="background:${disc?.color || '#e2e8f0'};color:${disc?.text || '#0f172a'}">
+      <div class="person-dashboard-title">
+        <strong>${escapeHtml(member.name)}</strong>
+        <span class="person-dashboard-disc">${escapeHtml(disc?.label || member.discipline || '')}</span>
+        ${member.specialty ? `<span class="person-dashboard-spec">${escapeHtml(member.specialty)}</span>` : ''}
+      </div>
+      <button type="button" class="person-dashboard-close" title="Close (Esc)">×</button>
+    </header>
+    <div class="person-dashboard-stats">
+      <div class="pd-stat">
+        <div class="pd-stat-num">${openCount}</div>
+        <div class="pd-stat-lbl">Open</div>
+      </div>
+      <div class="pd-stat ${overdueCount > 0 ? 'is-warn' : ''}">
+        <div class="pd-stat-num">${overdueCount}</div>
+        <div class="pd-stat-lbl">Overdue</div>
+      </div>
+      <div class="pd-stat">
+        <div class="pd-stat-num">${avgCloseDays != null ? avgCloseDays + 'd' : '—'}</div>
+        <div class="pd-stat-lbl">Avg overrun</div>
+      </div>
+    </div>
+    <div class="person-dashboard-filters">
+      <button type="button" class="pd-filter ${filter === 'all'     ? 'is-active' : ''}" data-filter="all">All (${allAssigned.length})</button>
+      <button type="button" class="pd-filter ${filter === 'tasks'   ? 'is-active' : ''}" data-filter="tasks">Tasks (${tasks.length})</button>
+      <button type="button" class="pd-filter ${filter === 'actions' ? 'is-active' : ''}" data-filter="actions">Actions (${actions.length})</button>
+    </div>
+    <div class="person-dashboard-list">
+      ${visible.length === 0
+        ? '<p class="empty-state">Nothing assigned in this view.</p>'
+        : visible.map(t => {
+            const overdue = isOverdue(t);
+            const done = !open(t);
+            const due = t.end_date ? fmtDate(t.end_date) : '—';
+            const tag = t.is_action ? 'Action' : 'Task';
+            return `
+              <div class="pd-row ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
+                <span class="pd-row-tag pd-row-tag-${t.is_action ? 'action' : 'task'}">${tag}</span>
+                <span class="pd-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
+                <span class="pd-row-project" title="${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
+                <span class="pd-row-due">${due}</span>
+              </div>`;
+          }).join('')
+      }
+    </div>
+  `;
+
+  // Wire close button.
+  panel.querySelector('.person-dashboard-close').addEventListener('click', closePersonDashboard);
+  // Wire filter chips.
+  panel.querySelectorAll('.pd-filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _personDashState.filter = btn.dataset.filter;
+      renderPersonDashboard();
+    });
+  });
+  // Click a row → open that project's schedule.
+  panel.querySelectorAll('.pd-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const project = row.dataset.project;
+      if (!project) return;
+      if (!state.openProjects.includes(project)) {
+        state.openProjects.push(project);
+      }
+      state.filters.project = project;
+      saveProjectTabs();
+      closePersonDashboard();
+      setView('schedule');
+    });
+  });
+
+  // Show the panel (CSS handles the slide-in).
+  panel.classList.add('is-open');
+}
+
 function renderTeam() {
   const grid = document.getElementById('team-grid');
   if (!grid) return;
@@ -7476,34 +9094,47 @@ function renderTeam() {
   // Build a member row. Used for both regular and placeholder lists.
   const renderRow = (m) => {
     const ph = isPlaceholder(m.name);
+    const focused = state.resources?.focusMemberId === m.id;
     const leadStar = m.is_lead ? '<span class="team-member-lead" title="Department lead">★</span>' : '';
+    // v4.64: View button removed. Clicking ANYWHERE on the row focuses that
+    // person — the resources timeline + dashboard cards below filter to
+    // just their work. Clicks on the action buttons (lead toggle / remove)
+    // bypass via stopPropagation in their own handlers.
     return `
-      <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
+      <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}${focused ? ' is-focused' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
         <span class="team-member-grip" title="Drag to reorder">⋮⋮</span>
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
-        <input type="text" class="team-member-specialty" value="${escapeHtml(m.specialty || '')}" placeholder="Specialty" data-id="${m.id}" />
+        <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
       </li>`;
   };
 
   grid.innerHTML = DISCIPLINES.map(disc => {
-    // Hide placeholders from the Departments view — they're template-only
-    // role markers (e.g. "ME Placeholder", "Build Placeholder") that the
-    // user manually fills with real names when staffing a project, and they
-    // shouldn't pollute the live Departments dashboard.
-    const all = state.team.filter(m => m.discipline === disc.key && !isPlaceholder(m.name));
-    const reals = all
+    // v4.56: placeholders are now SHOWN at the bottom of each card (per
+    // user request). Reals on top (sorted lead-first then sort_order),
+    // placeholders below in a separate visual stripe so the user can see
+    // role markers like "ME Placeholder" / "Build Placeholder" are still
+    // around to absorb action-item assignments before staffing locks.
+    const allInDisc = state.team.filter(m => m.discipline === disc.key);
+    const reals = allInDisc
+      .filter(m => !isPlaceholder(m.name))
       .sort((a, b) => {
         const aLead = a.is_lead ? 0 : 1;
         const bLead = b.is_lead ? 0 : 1;
         if (aLead !== bLead) return aLead - bLead;
         return (a.sort_order || 0) - (b.sort_order || 0);
       });
+    const placeholders = allInDisc
+      .filter(m => isPlaceholder(m.name))
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    // Capacity math still only counts reals (the cap helper internally
+    // filters placeholders), so passing allInDisc here is fine.
+    const all = allInDisc.filter(m => !isPlaceholder(m.name));
 
     const realRows = reals.map(renderRow).join('');
-    const phRows   = '';
+    const phRows   = placeholders.map(renderRow).join('');
     const cap = computeDisciplineCapacity(disc.key, all);
     const capStats = `
       <div class="team-card-capacity" title="${escapeHtml(cap.tooltip)}">
@@ -7521,8 +9152,8 @@ function renderTeam() {
           <h3>${escapeHtml(disc.label)}</h3>
         </header>
         ${capStats}
-        <ul class="team-placeholders">${phRows}</ul>
         <ul class="team-list">${realRows}</ul>
+        ${phRows ? `<div class="team-placeholders-label">Placeholders</div><ul class="team-placeholders">${phRows}</ul>` : ''}
         <button type="button" class="team-add-btn" data-action="add-member" data-discipline="${disc.key}">+ Add member</button>
       </section>`;
   }).join('');
@@ -7597,6 +9228,29 @@ function renderTeam() {
       if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
       else if (e.key === 'Escape') { e.preventDefault(); input.value = original; input.blur(); }
     });
+  });
+
+  // v4.64: click anywhere on the row to FOCUS that person. The resources
+  // timeline + dashboard cards below filter to just their assignments.
+  // Click handlers on the row's buttons stopPropagation so they don't
+  // accidentally trigger this. Inputs are exempt — clicking the name to
+  // edit it shouldn't kick off a re-render that yanks input focus.
+  grid.querySelectorAll('.team-member').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (e.target.closest('input'))  return;
+      if (e.target.closest('.team-member-grip')) return;
+      const id = Number(row.dataset.id);
+      if (!Number.isFinite(id)) return;
+      // Toggle: clicking the already-focused row clears focus.
+      const newFocus = (state.resources.focusMemberId === id) ? null : id;
+      setFocusedMember(newFocus);
+    });
+  });
+  // Lead-toggle + remove buttons get explicit stopPropagation so their
+  // existing async handlers run without also triggering setFocusedMember.
+  grid.querySelectorAll('[data-action="toggle-lead"], [data-action="remove-member"]').forEach(btn => {
+    btn.addEventListener('click', (e) => e.stopPropagation());
   });
 
   // Drag-to-reorder within the same discipline. Placeholders are draggable=false
@@ -7793,12 +9447,13 @@ function renderTeamDashboard() {
   const disc = state.resources?.discipline;
   if (!disc) return;
   const discDef = DISCIPLINE_BY_KEY[disc] || { label: disc };
-  // Names of every team member in this discipline — drives the "this discipline
-  // owns this task" filter for the first two cards. Includes placeholders too
-  // so unstaffed templated work surfaces.
-  const memberNames = new Set(
-    state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name)
-  );
+  // v4.64: if a single member is focused, the dashboard cards narrow to just
+  // that person's name. Otherwise we use every name in the discipline.
+  const focusId = state.resources.focusMemberId;
+  const focusedMember = focusId != null ? state.team.find(m => m.id === focusId) : null;
+  const memberNames = focusedMember
+    ? new Set([focusedMember.name])
+    : new Set(state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name));
   // Departments dashboard skips:
   //   - Template projects (SDC_StandardProject_Template, SDC_Sales_Template, …)
   //     — they're scaffolding, not real work to surface as behind/coming-due.
@@ -7808,11 +9463,11 @@ function renderTeamDashboard() {
   const isProjectExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
 
   // --- Behind schedule ----------------------------------------------------
-  // Every assigned task whose business-day drift is negative AND not a
-  // milestone (milestones use the +/-Nd math too but the schedule-status code
-  // skips them; mirror that here for consistency). Sorted most-behind first.
+  // Every assigned task whose business-day drift is negative AND not a true
+  // milestone (anchor / spine). v4.64: action items (is_milestone = 1 +
+  // is_action = 1) are INCLUDED so the dashboard shows overdue actions too.
   const behind = state.tasks
-    .filter(t => !t.is_milestone && t.assignee && memberNames.has(t.assignee) && !isProjectExcluded(t.project))
+    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && !isProjectExcluded(t.project))
     .map(t => ({ task: t, drift: taskScheduleDelta(t) }))
     .filter(x => x.drift < 0)
     .sort((a, b) => a.drift - b.drift);
@@ -7934,6 +9589,62 @@ function renderDashboardList(bodyId, items, mapper, emptyText) {
   });
 }
 
+// v4.64: persist focus on a specific team member on the Departments tab.
+// When set, the resources timeline + dashboard cards both filter to just
+// that person's assignments. Toggling the same row again clears focus
+// (back to "whole discipline" view).
+function setFocusedMember(memberId) {
+  state.resources.focusMemberId = memberId;
+  // Update the .is-focused class on the team-member rows without a full
+  // grid re-render — re-rendering would tear down input edits in progress.
+  document.querySelectorAll('.team-member').forEach(row => {
+    row.classList.toggle('is-focused', Number(row.dataset.id) === memberId);
+  });
+  // If the focused person belongs to a different discipline than the one
+  // currently shown in the Resources tab, swap to their discipline so the
+  // bars actually render.
+  if (memberId != null) {
+    const m = (state.team || []).find(x => x.id === memberId);
+    if (m && m.discipline && m.discipline !== state.resources.discipline) {
+      state.resources.discipline = m.discipline;
+    }
+  }
+  renderResources();
+  renderTeamDashboard();
+  renderTeamFocusBanner();
+}
+
+// v4.64: small strip above the Resources timeline that names the focused
+// person + offers a Clear button. Hidden when no one is focused.
+function renderTeamFocusBanner() {
+  let banner = document.getElementById('team-focus-banner');
+  const resourcesSection = document.querySelector('#view-team .resources-section');
+  if (!resourcesSection) return;
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'team-focus-banner';
+    banner.className = 'team-focus-banner hidden';
+    resourcesSection.parentNode.insertBefore(banner, resourcesSection);
+  }
+  const id = state.resources.focusMemberId;
+  if (id == null) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === id);
+  if (!member) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
+  const disc = DISCIPLINE_BY_KEY[member.discipline];
+  banner.classList.remove('hidden');
+  banner.style.background = disc?.color || '#e2e8f0';
+  banner.style.color      = disc?.text  || '#0f172a';
+  banner.innerHTML = `
+    <span class="team-focus-banner-label">Focused on</span>
+    <strong>${escapeHtml(member.name)}</strong>
+    ${disc ? `<span class="team-focus-banner-disc">${escapeHtml(disc.label)}</span>` : ''}
+    <button type="button" class="team-focus-banner-clear" title="Show the whole discipline again">× Clear focus</button>
+  `;
+  banner.querySelector('.team-focus-banner-clear').addEventListener('click', () => {
+    setFocusedMember(null);
+  });
+}
+
 function renderResources() {
   // Dashboard cards re-render alongside the resources timeline so they always
   // reflect the currently selected discipline.
@@ -8000,7 +9711,9 @@ function renderResources() {
   // the team cards above: placeholders FIRST (they're the template-stage
   // stand-ins, useful to see at the top when planning), then real members with
   // the LEAD first, then everyone else by their dragged sort_order.
-  const members = state.team
+  // v4.64: when a member is focused (clicked on the team panel above), narrow
+  // to just that person regardless of discipline.
+  let members = state.team
     .filter(m => m.discipline === state.resources.discipline && m.active !== 0)
     .sort((a, b) => {
       const aPh = isPlaceholder(a.name) ? 0 : 1;
@@ -8011,6 +9724,9 @@ function renderResources() {
       if (aLead !== bLead) return aLead - bLead;
       return (a.sort_order || 0) - (b.sort_order || 0);
     });
+  if (state.resources.focusMemberId != null) {
+    members = members.filter(m => m.id === state.resources.focusMemberId);
+  }
 
   // Empty state — no members in this discipline OR no tasks anywhere yet
   if (members.length === 0) {
@@ -9157,7 +10873,11 @@ function offsetISO(days) {
 // Match an existing task to an anchor by either anchor_key (when the column has been
 // populated) OR by name (fallback for tasks created before the column existed).
 function inferredAnchorKey(t) {
-  if (t.anchor_key) return t.anchor_key;
+  // Backlog is NOT an anchor for behavior purposes — it's just a regular
+  // row that happens to live above section 10. Returning null here makes
+  // every code path (delete protection, milestone-flip logic, etc.)
+  // treat it as an ordinary task.
+  if (t.anchor_key && t.anchor_key !== 'backlog') return t.anchor_key;
   const n = String(t.name || '').trim().toLowerCase();
   if (n === 'receipt of po')                              return 'receipt_of_po';
   if (n === 'mech 1 release' || n === 'mech release 1' || n === 'mech1 release') return 'mech_release_1';
@@ -9173,9 +10893,14 @@ function inferredAnchorKey(t) {
 // rows). No % complete pill, no drift chip, no allocation pill.
 function isBacklogTask(t) {
   if (!t) return false;
-  // phase_group=null + exact name "Backlog" matches both new-format and any
-  // user-created equivalents. anchor_key was tried but conflicted with
-  // anchor row rendering — name-only detection is cleaner.
+  // v4.69: also match on anchor_key='backlog' — the server's estimate-create
+  // INSERT was supposed to stamp it but the actual SQL leaves anchor_key
+  // NULL (legacy oversight). Either signal counts now, so a Backlog row
+  // shows in the special spine slot even if its phase_group got set or its
+  // name was tweaked. Detection order:
+  //   1. anchor_key === 'backlog'
+  //   2. name === 'backlog' AND phase_group is null
+  if (String(t.anchor_key || '').toLowerCase() === 'backlog') return true;
   return String(t.name || '').trim().toLowerCase() === 'backlog' && !t.phase_group;
 }
 
@@ -9206,6 +10931,32 @@ async function ensureAnchorsForProject(project) {
       phase_group:    a.phaseGroup    || null,
       department:     a.department    || null,
       sub_department: a.subDepartment || null,
+    });
+    created = true;
+  }
+  // v4.69: also ensure a Backlog row exists. The estimate-create flow stamps
+  // one, but template projects (and any project where the user deleted the
+  // backlog) end up without it — and the user expects to see Backlog right
+  // under Receipt of PO. Default duration: 10 business days = 2 weeks,
+  // matching the estimate-create default. Allocation 0 (no real work).
+  // Ensure a Backlog row exists per project. Auto-create when missing,
+  // no other healing — Backlog is a regular row, user can edit/delete it
+  // however they want.
+  const hasBacklog = state.tasks.some(t => t.project === project && isBacklogTask(t));
+  if (!hasBacklog) {
+    const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
+    const startStr = (po && po.start_date) || todayISO();
+    await api.create({
+      name: 'Backlog',
+      project,
+      is_milestone: false,
+      phase_group: null,
+      department: null,
+      sub_department: null,
+      duration_days: 10,
+      start_date: startStr,
+      end_date: addBusinessDays(startStr, 9),
+      predecessors: po ? `${po.id}FS` : null,
     });
     created = true;
   }
@@ -9363,6 +11114,7 @@ function setView(view) {
   else if (view === 'projects')  renderProjectsPage();
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
+  else if (view === 'actions')   renderActionsPage();
   else render();
 }
 
@@ -9567,9 +11319,17 @@ function loadScheduleView() {
       // α icon turns it off when presenting to a customer or anyone else
       // who shouldn't see the staffing percentages.
       showInlineAlloc: saved.showInlineAlloc === undefined ? true : !!saved.showInlineAlloc,
+      // v4.46: 3-way toggle for action items rendering:
+      //   'schedule' — only scheduled work (is_action = 0). Default.
+      //   'combined' — schedule rows AND action rows. Actions sort to the
+      //                bottom of their sub-dep bucket.
+      //   'actions'  — only action items (is_action = 1).
+      actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
+        ? saved.actionsMode
+        : 'schedule'),
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'schedule' };
   }
 }
 function saveScheduleView() {
@@ -10019,6 +11779,296 @@ function exitCustomerView() {
 // Set the schedule pane layout. 'grid' = grid only (Gantt hidden). 'both' = split.
 // 'gantt' = Gantt full-width (grid hidden). The two existing flags drive everything;
 // this just keeps them in sync and re-applies styles + re-renders the Gantt.
+// v4.52: the schedule/combined/actions toggle is a visible seg-control
+// again. Keep the original function name (existing callers like + Add
+// action's auto-switch Schedule → Combined still call this) and sync
+// both the seg-control AND the hidden v4.51 dropdown helper.
+function syncActionsModeButtons() {
+  syncModeSegControl();
+  syncViewModeButton();
+  renderViewModeMenu();
+}
+
+// v4.51: View dropdown — Smartsheet-style picker holding both pane mode
+// (Grid / Both / Gantt) and content mode (Schedule / Combined / Actions)
+// in one popover divided by a line. The button label reflects both
+// current values ("Both · Schedule") so the user can see state without
+// opening the menu.
+function getCurrentPaneMode() {
+  if (state.scheduleView?.ganttOnly) return 'gantt';
+  if (state.layout?.showGantt === false) return 'grid';
+  return 'both';
+}
+function paneLabel(mode) {
+  return mode === 'grid' ? 'Grid' : mode === 'gantt' ? 'Gantt' : 'Both';
+}
+function actionsLabel(mode) {
+  return mode === 'combined' ? 'Combined' : mode === 'actions' ? 'Actions' : 'Schedule';
+}
+function syncViewModeButton() {
+  const label = document.getElementById('view-mode-label');
+  if (!label) return;
+  const pane = getCurrentPaneMode();
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  label.textContent = `${paneLabel(pane)} · ${actionsLabel(am)}`;
+}
+function renderViewModeMenu() {
+  const menu = document.getElementById('view-mode-menu');
+  if (!menu) return;
+  const pane = getCurrentPaneMode();
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  const item = (active, value, label, group) =>
+    `<button type="button" class="dropdown-item ${active ? 'is-active' : ''}" data-${group}="${value}">
+       <span class="dropdown-item-check">${active ? '✓' : ''}</span>
+       <span>${label}</span>
+     </button>`;
+  menu.innerHTML = `
+    <div class="view-mode-section">
+      ${item(pane === 'grid',  'grid',  'Grid only',  'pane')}
+      ${item(pane === 'both',  'both',  'Both',       'pane')}
+      ${item(pane === 'gantt', 'gantt', 'Gantt only', 'pane')}
+    </div>
+    <div class="dropdown-sep"></div>
+    <div class="view-mode-section">
+      ${item(am === 'schedule', 'schedule', 'Schedule (duration tasks only)',         'actions')}
+      ${item(am === 'combined', 'combined', 'Combined (scheduled + action items)',    'actions')}
+      ${item(am === 'actions',  'actions',  'Actions (ad-hoc to-do items only)',      'actions')}
+    </div>`;
+  menu.querySelectorAll('[data-pane]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // setPaneMode now calls syncViewModeButton + renderViewModeMenu at
+      // the end on its own — no extra sync needed here.
+      setPaneMode(btn.dataset.pane);
+    });
+  });
+  menu.querySelectorAll('[data-actions]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const m = btn.dataset.actions;
+      if (state.scheduleView.actionsMode !== m) {
+        state.scheduleView.actionsMode = m;
+        saveScheduleView();
+        render();
+        // render() doesn't touch the dropdown — sync the button label and
+        // re-render the menu so the new active row gets its checkmark + tint.
+        syncViewModeButton();
+        renderViewModeMenu();
+      }
+    });
+  });
+}
+function setupViewModeDropdown() {
+  const btn = document.getElementById('btn-view-mode');
+  const menu = document.getElementById('view-mode-menu');
+  if (!btn || !menu) return;
+  syncViewModeButton();
+  renderViewModeMenu();
+  const closeMenu = () => menu.classList.add('hidden');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = menu.classList.contains('hidden');
+    // Close any other dropdown menus that might be open.
+    document.querySelectorAll('.dropdown-menu').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
+    if (opening) {
+      renderViewModeMenu(); // refresh checkmarks against current state
+      menu.classList.remove('hidden');
+    } else {
+      menu.classList.add('hidden');
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.contains(e.target) && e.target !== btn) closeMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeMenu();
+  });
+}
+
+// ----------------------------------------------------------------------------
+// v4.51 — Zoom dropdown. Single toolbar button that opens a popover holding
+// three controls:
+//   • TIME SCALE — radio rows: Days / Weeks / Months. Picks the Gantt's
+//     view_mode (the existing #zoom-mode select is the underlying control).
+//   • ZOOM       — minus / current % / plus. Drives setZoom() at the same
+//     1.25x step the legacy + / − buttons used.
+//   • ROW HEIGHT — minus / friendly value (10-100, increments of 10) / plus.
+//     The internal layout.rowHeight value still tracks pixels (18-120) so
+//     setRowHeight() doesn't need to change; the friendly value is a UI-only
+//     projection mapped via px-to-friendly / friendly-to-px helpers below.
+// The popover uses the standard .dropdown-menu chrome so styling matches
+// the other dropdowns (Columns, View, Baseline).
+// ----------------------------------------------------------------------------
+// v4.55 friendly scales for the Zoom dropdown.
+// ROW HEIGHT: 0 → 16px (smallest), 100 → 30px (largest). Step of 10 friendly
+//   units = 1.4px. Note the friendly minimum is 0 (not 10).
+// ZOOM: 1-10 EXPONENTIAL — each click multiplies zoomPercent by ~1.527 (the
+//   9th root of 50, since friendly 1 = 5% and friendly 10 = 250% covers a
+//   50× range). Levels:
+//     1 → 5%    (Month, very far out)
+//     2 → 7.6%
+//     3 → 11.7%
+//     4 → 17.8%
+//     5 → 27.2%  (Week kicks in around here)
+//     6 → 41.5%
+//     7 → 63.4%
+//     8 → 96.8%
+//     9 → 147.8% (Day kicks in around here)
+//     10 → 225.6%
+//   getZoomConfig auto-switches Month/Week/Day based on pct, so the time
+//   scale follows the zoom level automatically without a separate selector.
+const ZOOM_FRIENDLY_MIN_PCT = 5;
+const ZOOM_FRIENDLY_MAX_PCT = 250;
+const ZOOM_FRIENDLY_MAX_LEVEL = 10;
+const ZOOM_FRIENDLY_MULTIPLIER = Math.pow(
+  ZOOM_FRIENDLY_MAX_PCT / ZOOM_FRIENDLY_MIN_PCT,
+  1 / (ZOOM_FRIENDLY_MAX_LEVEL - 1)
+); // ≈ 1.527
+function pxToFriendlyRowH(px) {
+  const t = (px - ROW_H_FRIENDLY_MIN_PX) / (ROW_H_FRIENDLY_MAX_PX - ROW_H_FRIENDLY_MIN_PX); // 0..1
+  return Math.max(0, Math.min(100, Math.round((t * 100) / 10) * 10));
+}
+function friendlyRowHToPx(friendly) {
+  const t = friendly / 100; // 0..1
+  return Math.round(ROW_H_FRIENDLY_MIN_PX + t * (ROW_H_FRIENDLY_MAX_PX - ROW_H_FRIENDLY_MIN_PX));
+}
+function zoomToFriendly(pct) {
+  // Exponential mapping: friendly = 1 + log(pct / 5) / log(multiplier).
+  // Round to nearest integer + clamp to 1-10.
+  if (pct <= ZOOM_FRIENDLY_MIN_PCT) return 1;
+  const f = 1 + Math.log(pct / ZOOM_FRIENDLY_MIN_PCT) / Math.log(ZOOM_FRIENDLY_MULTIPLIER);
+  return Math.max(1, Math.min(ZOOM_FRIENDLY_MAX_LEVEL, Math.round(f)));
+}
+function friendlyToZoom(friendly) {
+  return ZOOM_FRIENDLY_MIN_PCT * Math.pow(ZOOM_FRIENDLY_MULTIPLIER, friendly - 1);
+}
+function renderZoomMenu() {
+  const menu = document.getElementById('zoom-menu');
+  if (!menu) return;
+  const friendlyZoom = zoomToFriendly(state.zoomPercent);
+  const friendlyRow  = pxToFriendlyRowH(state.layout?.rowHeight || ROW_H_FRIENDLY_MIN_PX);
+  // v4.54: Time scale section dropped from the popover. Each zoom level (1-5)
+  // now carries its own time-scale preset, so getZoomConfig auto-switches
+  // Month → Week → Day as you step +/-. No need for a manual selector.
+  menu.innerHTML = `
+    <div class="zoom-menu-section">
+      <div class="zoom-menu-title">Zoom</div>
+      <div class="zoom-menu-row">
+        <button type="button" class="btn-icon" data-zoom="out" ${friendlyZoom <= 1 ? 'disabled' : ''} title="Zoom out — small step (~1.5× per click). Mouse-wheel inside the Gantt is finer (~1.06× per tick).">−</button>
+        <span class="zoom-menu-value">${friendlyZoom}</span>
+        <button type="button" class="btn-icon" data-zoom="in"  ${friendlyZoom >= ZOOM_FRIENDLY_MAX_LEVEL ? 'disabled' : ''} title="Zoom in — small step (~1.5× per click). Mouse-wheel inside the Gantt is finer (~1.06× per tick).">+</button>
+      </div>
+    </div>
+    <div class="dropdown-sep"></div>
+    <div class="zoom-menu-section">
+      <div class="zoom-menu-title">Row height</div>
+      <div class="zoom-menu-row">
+        <button type="button" class="btn-icon" data-row="down" ${friendlyRow <= 0   ? 'disabled' : ''} title="Shorter rows">−</button>
+        <span class="zoom-menu-value">${friendlyRow}</span>
+        <button type="button" class="btn-icon" data-row="up"   ${friendlyRow >= 100 ? 'disabled' : ''} title="Taller rows">+</button>
+      </div>
+    </div>`;
+  // Zoom +/− — step by exactly 1 friendly unit (1-10). Each level is
+  // ~1.527× the previous, so the displayed value moves reliably one step
+  // per click. Mouse-wheel inside the Gantt stays finer (~1.06× per tick).
+  menu.querySelectorAll('[data-zoom]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dir = btn.dataset.zoom;
+      const shown = zoomToFriendly(state.zoomPercent);
+      const target = dir === 'in'
+        ? Math.min(ZOOM_FRIENDLY_MAX_LEVEL, shown + 1)
+        : Math.max(1, shown - 1);
+      setZoom(friendlyToZoom(target));
+      renderZoomMenu();
+    });
+  });
+  // Row +/− — steps in friendly increments of 10. setRowHeight clamps to the
+  // px range so we never escape ROW_H_MIN/ROW_H_MAX.
+  menu.querySelectorAll('[data-row]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dir = btn.dataset.row;
+      const current = pxToFriendlyRowH(state.layout.rowHeight);
+      const next = dir === 'up' ? Math.min(100, current + 10) : Math.max(10, current - 10);
+      setRowHeight(friendlyRowHToPx(next));
+      renderZoomMenu();
+    });
+  });
+}
+function setupZoomDropdown() {
+  const btn = document.getElementById('btn-zoom-menu');
+  const menu = document.getElementById('zoom-menu');
+  if (!btn || !menu) return;
+  renderZoomMenu();
+  const closeMenu = () => menu.classList.add('hidden');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = menu.classList.contains('hidden');
+    document.querySelectorAll('.dropdown-menu').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
+    if (opening) {
+      renderZoomMenu();
+      menu.classList.remove('hidden');
+    } else {
+      menu.classList.add('hidden');
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.contains(e.target) && e.target !== btn) closeMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeMenu();
+  });
+}
+
+// ----------------------------------------------------------------------------
+// v4.52 — Pane + Mode seg-controls on the toolbar (replaces the v4.51
+// combined View dropdown). Two visible 3-button seg-controls: pane layout
+// (Grid/Both/Gantt) and content mode (Schedule/Combined/Actions). Each
+// button has its own is-active state synced to the underlying state via
+// syncPaneSegControl / syncModeSegControl.
+// ----------------------------------------------------------------------------
+function syncPaneSegControl() {
+  const mode = getCurrentPaneMode(); // 'grid' | 'both' | 'gantt'
+  document.querySelectorAll('#pane-seg .seg-btn').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.pane === mode);
+  });
+}
+function setupPaneSegControl() {
+  const seg = document.getElementById('pane-seg');
+  if (!seg) return;
+  seg.querySelectorAll('.seg-btn[data-pane]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setPaneMode(btn.dataset.pane);
+    });
+  });
+  syncPaneSegControl();
+}
+function syncModeSegControl() {
+  const mode = state.scheduleView?.actionsMode || 'schedule';
+  document.querySelectorAll('#mode-seg .seg-btn').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.actionsMode === mode);
+  });
+}
+function setupModeSegControl() {
+  const seg = document.getElementById('mode-seg');
+  if (!seg) return;
+  seg.querySelectorAll('.seg-btn[data-actions-mode]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const m = btn.dataset.actionsMode;
+      if (!['schedule', 'combined', 'actions'].includes(m)) return;
+      if (state.scheduleView.actionsMode === m) return;
+      state.scheduleView.actionsMode = m;
+      saveScheduleView();
+      syncModeSegControl();
+      render();
+    });
+  });
+  syncModeSegControl();
+}
+
 function setPaneMode(mode) {
   if (!['grid', 'both', 'gantt'].includes(mode)) return;
   const becomingVisible = !state.layout.showGantt && mode !== 'grid';
@@ -10042,6 +12092,13 @@ function setPaneMode(mode) {
   } else if (mode !== 'grid') {
     renderGantt();
   }
+  // v4.52: keep the pane seg-control's is-active states in sync no matter
+  // where setPaneMode was called from (seg-btn click, customer-view exit,
+  // future keyboard shortcuts, etc.). Also pings the hidden v4.51 dropdown
+  // helper so it stays consistent if anything still references it.
+  syncPaneSegControl();
+  syncViewModeButton();
+  renderViewModeMenu();
 }
 
 // ----------------------------------------------------------------------------
@@ -10159,10 +12216,18 @@ async function init() {
   setupSplitDivider();
   setupRowHeightHandle();
   setupGanttPan();
-  // Pane mode segmented control — Grid / Both / Gantt. Mutually exclusive.
-  document.querySelectorAll('.seg-btn[data-pane]').forEach(btn => {
-    btn.addEventListener('click', () => setPaneMode(btn.dataset.pane));
-  });
+  // v4.52: Two visible seg-controls on the toolbar row replace the v4.51
+  // combined dropdown. Pane (Grid/Both/Gantt) + Actions mode (Schedule/
+  // Combined/Actions) are now direct click-to-select buttons. The hidden
+  // legacy #btn-view-mode is still wired by setupViewModeDropdown() but
+  // nobody can open it — its menu element exists just so the helper
+  // functions don't bail. The seg-controls are the visible UI.
+  setupViewModeDropdown();
+  setupPaneSegControl();
+  setupModeSegControl();
+  // v4.51: Zoom dropdown — single toolbar button popover with Time scale /
+  // Zoom (1-10) / Row height (10-100). Drives the legacy zoom/row controls.
+  setupZoomDropdown();
   // View pill — four icon-toggles in the toolbar:
   //   ≡   Flatten sub-sections + sort by start date (linked toggle)
   //   $   Show financial milestones overlay
@@ -10386,6 +12451,8 @@ async function init() {
   // + New Task button creates an empty task in UNASSIGNED and focuses its name cell for
   // inline rename. The user drags it into a section after.
   document.getElementById('btn-add').addEventListener('click', newTaskInline);
+  const addActionBtn = document.getElementById('btn-add-action');
+  if (addActionBtn) addActionBtn.addEventListener('click', newActionInline);
   // Cell-edit handler is attached once here — renderTable rebuilds tbody.innerHTML so the
   // tbody element survives across renders and accumulating listeners is wasteful.
   const tbodyEl = document.getElementById('tasks-tbody');
@@ -10409,6 +12476,11 @@ async function init() {
       const willShow = filtersPop.classList.contains('hidden');
       filtersPop.classList.toggle('hidden', !willShow);
       if (willShow) {
+        // v4.51: re-render the popover content before showing so the For
+        // Customer checkbox (and any other live state) reflects current
+        // values. exitCustomerView etc. don't trigger a full render() so
+        // without this the checkbox could go stale.
+        renderFilters();
         // Anchor the popover to the button's bottom-left so it always opens on screen.
         const r = filtersBtn.getBoundingClientRect();
         filtersPop.style.top  = (r.bottom + 4) + 'px';
@@ -10445,9 +12517,26 @@ async function init() {
   // it. Revision pill (📌) opens the revision popover via its own existing
   // handler below — not handled here.
   document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const v = btn.dataset.view;
-      if (v) setView(v);
+      if (!v) return;
+      // v4.64: Departments tab is password-gated via the SDC-themed modal
+      // (was a browser prompt() in v4.63). Auth caches in sessionStorage so
+      // the prompt fires once per browser session, not on every click.
+      // Change TEAM_PASSWORD at the top of this file to rotate the password.
+      if (v === 'team' && !sessionStorage.getItem('sdcTeamAuth')) {
+        const pwd = await showPasswordDialog({
+          title: 'Departments',
+          message: 'Manager-only area. Enter the team password to continue.',
+        });
+        if (pwd == null) return; // cancelled
+        if (pwd !== TEAM_PASSWORD) {
+          await showAlertDialog({ title: 'Wrong password', message: "That doesn't match. Ask a manager for the password if you need access." });
+          return;
+        }
+        sessionStorage.setItem('sdcTeamAuth', '1');
+      }
+      setView(v);
     });
   });
 
