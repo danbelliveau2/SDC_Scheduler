@@ -1704,5 +1704,11 @@ function startServer({ port } = {}) {
   return server;
 }
 
-if (require.main === module) startServer();
+if (require.main === module) {
+  const server = startServer();
+  process.on('SIGTERM', () => {
+    console.log('[scheduler] SIGTERM — shutting down gracefully');
+    server.close(() => process.exit(0));
+  });
+}
 module.exports = { startServer };
