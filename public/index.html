@@ -119,6 +119,11 @@
       </div>
     </section>
     <section id="view-schedule" class="view active">
+      <!-- Personal-mode banner — only visible when a person is signed in on
+           the Actions tab. Routing logic in routePersonalMode() sets
+           state.filters.assignee, switches to this view, and shows this
+           banner. Banner contents are rendered by renderPersonalBanner(). -->
+      <div class="schedule-personal-banner" id="schedule-personal-banner" hidden></div>
       <!-- Toolbar lives at the top. Project name now sits in a separate banner
            BELOW the toolbar (see schedule-project-banner) so it works for both
            Grid-only and Gantt-only pane modes — the name reads as "what
@@ -145,6 +150,17 @@
 
           <button id="btn-undo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↺</button>
           <button id="btn-redo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↻</button>
+          <button id="btn-refresh" class="toolbar-icon-btn toolbar-icon-round" type="button" title="Refresh task data from the server. Preserves your current view — collapsed sections, scroll position, and filters all stay where they are.">🔄</button>
+
+          <div class="toolbar-divider"></div>
+
+          <!-- Content mode dropdown — defaults to Combined (the usual view).
+               Schedule and Actions are alternate modes you can switch to
+               but almost never need. Replaced the 3-button seg-control. -->
+          <div class="dropdown" id="mode-dropdown">
+            <button id="btn-mode-menu" class="toolbar-toggle-btn" type="button" title="Content mode — what kinds of rows show. Combined is the default; pick Schedule or Actions to filter.">Combined ▾</button>
+            <div id="mode-menu" class="dropdown-menu hidden"></div>
+          </div>
 
           <div class="toolbar-divider"></div>
 
@@ -154,15 +170,6 @@
             <button class="seg-btn" type="button" data-pane="grid"  title="Grid only — hide the Gantt, show the editable table at full width.">Grid</button>
             <button class="seg-btn" type="button" data-pane="both"  title="Both panes — grid on the left, Gantt on the right (draggable divider).">Both</button>
             <button class="seg-btn" type="button" data-pane="gantt" title="Gantt only — hide the grid, show the chart at full width.">Gantt</button>
-          </div>
-
-          <div class="toolbar-divider"></div>
-
-          <!-- Content mode seg-control: Schedule / Combined / Actions. -->
-          <div class="seg-control" id="mode-seg" title="Pick what kind of rows show: Schedule (duration tasks), Combined (both), or Actions (ad-hoc to-dos).">
-            <button class="seg-btn" type="button" data-actions-mode="schedule" title="Schedule — only the duration-based scheduled tasks.">Schedule</button>
-            <button class="seg-btn" type="button" data-actions-mode="combined" title="Combined — scheduled tasks AND action items together.">Combined</button>
-            <button class="seg-btn" type="button" data-actions-mode="actions"  title="Actions — only the ad-hoc to-do action items.">Actions</button>
           </div>
 
           <div class="toolbar-divider"></div>
@@ -284,10 +291,18 @@
              localStorage so your login state carries across reloads. -->
         <div class="actions-person-bar" id="actions-person-bar"></div>
         <div class="actions-person-summary" id="actions-person-summary"></div>
-        <!-- Personal Assignments list — populated when a person is signed
-             in. Simple grouped list of their tasks + actions by section
-             (no department/sub-dept headers, no extras). Empty otherwise. -->
-        <div class="actions-personal-list" id="actions-personal-list"></div>
+        <!-- Personal Assignments — populated when a person is signed in.
+             Grid is a simple grouped list of their tasks + actions by section
+             (no department/sub-dept headers, no extras). Gantt is a simple
+             timeline of the same data, also broken out by section. The
+             toolbar toggles between Grid / Both / Gantt. Empty otherwise. -->
+        <div class="actions-personal-wrap" id="actions-personal-wrap">
+          <div class="actions-personal-toolbar" id="actions-personal-toolbar"></div>
+          <div class="actions-personal-split" id="actions-personal-split">
+            <div class="actions-personal-list" id="actions-personal-list"></div>
+            <div class="actions-personal-gantt" id="actions-person-gantt"></div>
+          </div>
+        </div>
 
         <!-- v4.70: thick lime divider between the SIGN-IN section above
              (person picker / personal summary / personal Gantt) and the
@@ -300,27 +315,19 @@
              as "filling out a new row" instead of a soup of inputs. Each
              field is wrapped in .actions-qa-field with its label up top. -->
         <div class="actions-quickadd" id="actions-quickadd">
-          <div class="actions-qa-field actions-qa-field-title">
-            <label class="actions-qa-label">Task</label>
-            <input type="text" class="actions-qa-title" id="actions-qa-title" placeholder="What needs doing?" maxlength="240" />
-          </div>
           <div class="actions-qa-field">
             <label class="actions-qa-label">Project</label>
             <select class="actions-qa-project" id="actions-qa-project" title="Which project does this action belong to?"></select>
           </div>
           <div class="actions-qa-field">
-            <label class="actions-qa-label">Section</label>
-            <button type="button" class="toolbar-toggle-btn actions-qa-section" id="actions-qa-section" title="Pick the section (phase group / department / sub-department) the action belongs to.">Section ▾</button>
-          </div>
-          <div class="actions-qa-field">
-            <label class="actions-qa-label">Department</label>
-            <select class="actions-qa-dept" id="actions-qa-dept" title="Which team owns this action? Auto-fills from the section; override if needed.">
-              <option value="">— department —</option>
-              <option value="mech">Mech Eng</option>
-              <option value="controls">Controls Eng</option>
-              <option value="build">Build</option>
-              <option value="wire">Wire</option>
+            <label class="actions-qa-label">Section / Function</label>
+            <select class="actions-qa-where" id="actions-qa-where" title="Section + function + discipline in one pick. Options are grouped by section.">
+              <option value="">— pick —</option>
             </select>
+          </div>
+          <div class="actions-qa-field actions-qa-field-title">
+            <label class="actions-qa-label">Description</label>
+            <input type="text" class="actions-qa-title" id="actions-qa-title" placeholder="Description" maxlength="240" />
           </div>
           <div class="actions-qa-field">
             <label class="actions-qa-label">Due</label>
@@ -428,6 +435,18 @@
           </header>
           <div id="palette-list" class="palette-grid"></div>
           <button id="btn-add-color" type="button" class="btn-ghost btn-tight">+ Add color</button>
+        </section>
+
+        <section class="setup-card">
+          <header class="setup-card-head">
+            <h2>Gantt Weekday Markers</h2>
+            <p>Faint dashed lines + M / T / W / Th / F letters that appear in the date header as you zoom into the Gantt. Threshold is how many pixels each day of the chart must occupy before the markers appear — higher = need more zoom to see them, lower = appear sooner but the letters may overlap. Default is 8.</p>
+          </header>
+          <div class="theme-grid">
+            <label>Show at (px per day)
+              <input type="number" id="weekday-marker-threshold" min="3" max="40" step="1" style="padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 4px; width: 100px; font-size: 13px;" />
+            </label>
+          </div>
         </section>
 
         <section class="setup-card">

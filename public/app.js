@@ -81,6 +81,14 @@ const state = {
   view: 'schedule',
   filters: {
     search: '', project: '', phase: '', assignee: '',
+    // PM view: when on the All-projects tab, narrow to a subset of projects.
+    // Empty array = show all. Non-empty = show only these projects. Picked
+    // via the "Projects" multi-select popup on the All-projects banner.
+    // Persisted in localStorage so the filter sticks across reloads.
+    projectsSubset: (() => {
+      try { return JSON.parse(localStorage.getItem('sdcProjectsSubset') || '[]') || []; }
+      catch { return []; }
+    })(),
     // Quick chip filters in the popover — each is a boolean toggle. Anchors are
     // exempt (always shown) so the schedule spine stays visible when filtering.
     quick: { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false },
@@ -102,7 +110,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'schedule' },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -197,8 +205,11 @@ function predDisplay(predString) {
     if (!m) return s.trim().toUpperCase();
     const id = Number(m[1]);
     const line = lineByTaskId[id];
-    return ((line != null ? line : `?${id}`) + m[2]).toUpperCase();
-  }).join(', ');
+    // If we don't know the line, render nothing for this entry instead of
+    // "?id" — a question mark in the predecessor column is just noise.
+    if (line == null) return '';
+    return (line + m[2]).toUpperCase();
+  }).filter(Boolean).join(', ');
 }
 function predParse(displayString) {
   if (!displayString) return '';
@@ -249,15 +260,18 @@ function buildCanonicalTaskOrder() {
 
   const order = [];
   if (receiptAnchor) order.push(receiptAnchor.id);
-  // Backlog sits BETWEEN Receipt of PO and section 10 in the rendered grid
-  // (anchorRowHtml renders it right after PO). Include it in the canonical
-  // line order so it gets a stable line number — without this, predecessors
-  // that point at backlog (Mechanical Design starts with backlogFS) display
-  // as "?id" because lineByTaskId[backlogId] is undefined.
-  const backlogTask = filtered.find(t => isBacklogTask(t));
-  if (backlogTask) order.push(backlogTask.id);
+  // Every non-anchor task with no phase_group sits BETWEEN Receipt of PO and
+  // section 10 in the rendered grid — these are the "above section 10" rows
+  // (Backlog, or anything the user added below an anchor via right-click).
+  // Include them in canonical order so they each get a stable line number
+  // that can be used as a predecessor reference.
+  const aboveSectionTasks = filtered
+    .filter(t => !inferredAnchorKey(t) && !t.phase_group)
+    .slice()
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  for (const t of aboveSectionTasks) order.push(t.id);
   for (const group of HIERARCHY) {
-    if (state.scheduleView?.flatten) {
+    if (state.scheduleView?.flatten || isPersonalMode()) {
       // Same INLINE_ANCHORS rule as the table walk.
       const sectionTasks = filtered.filter(t => {
         if (t.phase_group !== group.key) return false;
@@ -746,34 +760,89 @@ function computeProjectStats(project) {
   return { percentComplete, fatVariance };
 }
 
-// Compute how far ahead/behind a task is at today's date. Returns business-day
-// integer: positive = ahead of plan, negative = behind, 0 = on track / N/A.
-// Mirrors the math in drawScheduleStatus so the chip and the filter agree.
+// Compute how far ahead/behind a task is. Returns business-day integer:
+// positive = ahead of plan, negative = behind, 0 = on track / N/A.
+//
+// Formula: project the task's finish date assuming you keep working at full
+// allocation, then compare to the SCHEDULED finish date.
+//   remainingDays = (1 − progress/100) × totalDays
+//   projectedFinish = today + remainingDays business days
+//   drift = scheduledEnd − projectedFinish  (business days)
+//
+// Examples:
+//   • 2-week task, 50% done, today is 3 weeks before scheduled start:
+//     remaining = 5 BD, projectedFinish = today + 5 BD, drift ≈ +20d ahead.
+//   • Task halfway through window but only 25% done:
+//     remaining = 0.75 × 10 = 7.5 ≈ 8 BD, drift goes negative → behind chip.
+//
+// Skipped (returns 0):
+//   • Milestones, anchors, backlog — they have their own status logic.
+//   • Tasks at exactly 0% — not yet started, treated as on schedule.
+//   • Completed tasks (progress ≥ 100) — done is done; baseline handles
+//     finish variance.
 function taskScheduleDelta(task) {
   if (!task || task.is_milestone || !task.start_date || !task.end_date) return 0;
   if (inferredAnchorKey(task)) return 0;
   if (isBacklogTask(task)) return 0;
+  const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
+  if (actualPct >= 100) return 0;  // Done — no drift chip.
+  if (actualPct <= 0)   return 0;  // Not started — treated as on schedule.
   const totalDays = businessDaysBetween(task.start_date, task.end_date);
   if (!totalDays || totalDays <= 0) return 0;
+  const remainingBD = Math.max(0, Math.round((1 - actualPct / 100) * totalDays));
   const todayISO = new Date().toISOString().slice(0, 10);
-  const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
-  let elapsedDays;
-  if (todayISO < task.start_date)      elapsedDays = 0;
-  else if (todayISO > task.end_date)   elapsedDays = totalDays;
-  else                                  elapsedDays = businessDaysBetween(task.start_date, todayISO) || 0;
-  const actualDays = (actualPct / 100) * totalDays;
-  return Math.round(actualDays - elapsedDays);
+  // Snap today to a business day (forward) so a Saturday/Sunday "today"
+  // doesn't produce odd math.
+  const snappedToday = snapToBusinessDay(todayISO, 1);
+  // addBusinessDays(date, n) means "n business days FORWARD". When the
+  // remaining work is N days, that work SPANS N consecutive business days
+  // starting today, so the LAST day of work is today + (N - 1).
+  const projectedFinish = remainingBD === 0
+    ? snappedToday
+    : addBusinessDays(snappedToday, remainingBD - 1);
+  if (!projectedFinish || projectedFinish === task.end_date) return 0;
+  // Sign: projectedFinish BEFORE scheduledEnd → ahead; AFTER → behind.
+  if (projectedFinish < task.end_date) {
+    const span = businessDaysBetween(projectedFinish, task.end_date) || 0;
+    return Math.max(0, span - 1); // span is inclusive on both ends
+  } else {
+    const span = businessDaysBetween(task.end_date, projectedFinish) || 0;
+    return -Math.max(0, span - 1);
+  }
 }
 
 function applyFilters(tasks) {
-  const { search, project, phase, assignee, quick } = state.filters;
+  const { search, project, phase, assignee, quick, projectsSubset } = state.filters;
   const q = (search || '').trim().toLowerCase();
   const qf = quick || {};
+  const personal = isPersonalMode();
+  const subset = Array.isArray(projectsSubset) ? projectsSubset : [];
+  // Subset only applies on the All-projects view (no single-project filter
+  // active). Empty subset = no filter; non-empty = whitelist.
+  const useSubset = !project && subset.length > 0;
+  const subsetSet = useSubset ? new Set(subset) : null;
   return tasks.filter(t => {
     if (project && t.project !== project) return false;
+    if (useSubset && !subsetSet.has(t.project)) return false;
     if (phase && t.phase !== phase) return false;
-    // Assignee filter on regular schedule: anchors still show as
-    // project context.
+    // Personal mode + All Projects view: hide TEMPLATE tasks and
+    // SALES-workspace tasks. Templates are scaffolding for cloning into
+    // real projects, not work people are doing. Sales projects are
+    // pre-quote, no real allocation yet. Both are noise on aggregate views.
+    // (If the user explicitly opens a template or Sales project tab,
+    // we DO show its tasks — that branch hits the `project` check above.)
+    if (!project && t.project &&
+        (isTemplateProject(t.project) || projectWorkspace(t.project) === 'Sales')) {
+      return false;
+    }
+    // Personal mode: hide anchor milestones entirely — this view is "one
+    // person across many projects", so per-project anchors like Receipt of
+    // PO / FAT / Ship Machine are noise.
+    if (personal && inferredAnchorKey(t)) return false;
+    // Strict assignee filter. The personal view only shows tasks/actions
+    // DIRECTLY assigned to the signed-in person. If a task gets reassigned
+    // away from them (e.g. to a placeholder), it drops off their view
+    // immediately on next render — no stale leftovers.
     if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
       return false;
     }
@@ -781,13 +850,14 @@ function applyFilters(tasks) {
       const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''} ${t.phase||''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    // v4.45: completed tasks HIDE BY DEFAULT now. The Filters chip flipped
-    // polarity — "Show completed" (default off = hide) replaces the older
-    // "Not complete" (default off = show). Milestones included in the
-    // hide-by-default behavior: a done Receipt of PO / FAT / Mech 1 isn't
-    // remaining work, so it stays out of view unless the user wants it.
+    // Completed handling — two independent controls:
+    //   • Filter "Show completed" (popover): when ON, show ONLY completed
+    //     items. When OFF, no completion filtering — everything passes.
+    //   • View toggle "Hide completed" (View menu): when ON, hides completed
+    //     items entirely. Independent of the filter.
     const isDone = (t.progress || 0) >= 100;
-    if (!qf.showCompleted && isDone) return false;
+    if (qf.showCompleted && !isDone) return false;
+    if (state.scheduleView?.hideCompleted && isDone) return false;
     // "Milestones only" filter — straightforward.
     if (qf.milestones && !t.is_milestone) return false;
 
@@ -968,6 +1038,12 @@ function cellHtml(t, key) {
     }
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
+    case 'project':  return `<td class="${cls}" data-col="project" title="${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</td>`;
+    case 'completed':
+      // Auto-stamped by the server when progress hits 100, cleared when it
+      // drops below. User-editable in case the actual completion date
+      // differs from when the checkbox was clicked.
+      return `<td class="${cls}" data-col="completed">${fmtDate(t.completed_on)}</td>`;
     case 'duration': {
       // v5.11: no backlog special-case. Every row uses the same path —
       // click cell, type "3w" / "5d" / etc., Enter. The hover pencil
@@ -1028,7 +1104,10 @@ function rowColorKey(task) {
   if (task.department === 'shop')        return 'shop-combined';
   if (task.department === 'teardown')    return 'shop-combined';
   if (task.department === 'procurement') return 'procurement';
-  return '';
+  // Fallback for rows with no department / sub_department (e.g. above-section-10
+  // rows the user added manually). Keeps the bar fill + label color consistent
+  // with every other bar instead of falling through to frappe-gantt's default.
+  return 'neutral';
 }
 
 function rowHtml(t, depth = 0) {
@@ -1161,8 +1240,12 @@ function renderTable() {
   // Same INLINE_ANCHORS rule as the bucketed walk: Mech 1 Release and Machine
   // Power-Up flow into their section's flat list; the other anchors render
   // outside the walk regardless of what their stored phase_group says.
+  // Personal mode (signed in as a specific person on Actions tab) forces
+  // flatten — there's no point in showing dept / sub-dept headers when the
+  // whole view is one person who typically lives in one department.
+  const flattenEffective = state.scheduleView.flatten || isPersonalMode();
   const flatBySection = {};
-  if (state.scheduleView.flatten) {
+  if (flattenEffective) {
     for (const t of filtered) {
       const k = inferredAnchorKey(t);
       if (k && !INLINE_ANCHORS.has(k)) continue;
@@ -1247,7 +1330,7 @@ function renderTable() {
     // so they read as spine markers even while sitting inline with their siblings.
     const renderTaskRow = (t, depth) => inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, depth);
 
-    if (state.scheduleView.flatten) {
+    if (flattenEffective) {
       const sectionTasks = flatBySection[group.key] || [];
       let shipDropped = false;
       for (const t of sectionTasks) {
@@ -1706,9 +1789,11 @@ function enterCellEdit(td, taskId, col) {
 function currentCellValue(task, col) {
   switch (col) {
     case 'name':     return task.name || '';
+    case 'project':  return task.project || '';
     case 'assignee': return task.assignee || '';
     case 'start':    return task.start_date || '';
     case 'finish':   return task.end_date || '';
+    case 'completed': return task.completed_on || '';
     case 'duration': {
       // v4.37: pre-fill the editor with "=N" when the task is linked,
       // so the user can see + edit the link target directly. Re-saving
@@ -1782,7 +1867,7 @@ function createEditInput(col, value, task) {
   }
   const input = document.createElement('input');
   input.className = 'cell-edit-input';
-  if (col === 'start' || col === 'finish') {
+  if (col === 'start' || col === 'finish' || col === 'completed') {
     input.type = 'date';
   } else if (col === 'progress' || col === 'allocation' || col === 'priority') {
     // type="text" with inputmode=numeric — looks like a plain text field (no spinner
@@ -1802,6 +1887,7 @@ async function saveCellEdit(id, col, value, task) {
   switch (col) {
     case 'name':     data.name = (value || '').trim(); break;
     case 'assignee': data.assignee = (value || '').trim() || null; break;
+    case 'completed': data.completed_on = (value || '').trim() || null; break;
     case 'start': {
       // Snap to a business day — we don't work weekends, so a Saturday start always
       // means the user wants Monday. Duration NEVER changes on a start edit; only the
@@ -2088,6 +2174,10 @@ const HIERARCHY_COLOR_DEFAULTS = {
   'eng-combined': { label: 'Engineering (combined)', fill: '#b6e5dc', text: '#134e4a' },
   'shop-combined':{ label: 'Shop (combined)',        fill: '#fbc97a', text: '#78350f' }, // distinct amber, not orange-pink
   procurement:    { label: 'Procurement',            fill: '#d6dde6', text: '#334155' },
+  // Fallback for rows with no hierarchy (above-section-10 rows). Soft slate
+  // background + the same dark-slate text shade procurement uses, so the bar
+  // reads consistently with the rest of the chart.
+  neutral:        { label: 'Other',                  fill: '#e2e8f0', text: '#334155' },
 };
 const HIERARCHY_KEYS = Object.keys(HIERARCHY_COLOR_DEFAULTS);
 
@@ -2146,8 +2236,15 @@ function injectPhaseStyles() {
   // the anchor-color palette so the "done" visual language is consistent
   // across tasks and anchors. Critical-path red border still wins (it's
   // declared after and uses the same selector specificity).
+  // Done duration tasks: lime outline on the bar signals "complete". We also
+  // hide the dark bar-progress overlay because at 100% it covers the entire
+  // bar with the text-color fill at 0.4 opacity, which makes the bar-label
+  // (also drawn in text color) low-contrast and hard to read. With the
+  // overlay gone, the label sits on the bar's normal lighter fill and is
+  // readable just like an active task.
   const doneRule = `
     .gantt .bar-wrapper.is-done .bar { stroke: #befa4f !important; stroke-width: 2.5 !important; }
+    .gantt .bar-wrapper.is-done .bar-progress { opacity: 0 !important; }
   `;
 
   el.textContent = phaseRules + '\n' + hierarchyRules + '\n' + doneRule + '\n' + overAlloc + '\n' + critical;
@@ -2240,7 +2337,11 @@ function renderGantt() {
   const filtered = ordered
     .filter(t => t.start_date && t.end_date)
     .filter(t => !isTaskInCollapsedGroup(t))
-    .filter(t => inferredAnchorKey(t) || isBacklogTask(t) || (t.phase_group && validSectionKeys.has(t.phase_group)))
+    // Anchors always render. Above-section-10 rows (phase_group=null, non-anchor)
+    // render too. Anything else needs a valid HIERARCHY phase_group; tasks with
+    // a phase_group that doesn't match any current section are legacy leftovers
+    // and stay hidden (the grid hides them too).
+    .filter(t => inferredAnchorKey(t) || !t.phase_group || validSectionKeys.has(t.phase_group))
     .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t))
     .filter(t => {
       // Anchors always render. Otherwise honor the actionsMode toggle:
@@ -2396,9 +2497,206 @@ function renderGantt() {
   drawMilestoneLabels();
   clipBarLabels();
   drawScheduleStatus();
+  drawDoneHashOverlay();
+  drawWeekdayLetters();
   drawFinancialOverlay();
   drawBarMeta();
   renderProjectStatsPopup();
+}
+
+// When zoomed in enough that each day occupies enough pixels to fit a
+// letter, paint faint M / T / W / Th / F labels in the date header along
+// with thin vertical tick lines through the chart for each weekday. Skipped
+// at lower zoom levels (and skipped on weekends — we don't work Sa/Su).
+function drawWeekdayLetters() {
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg) return;
+    svg.querySelectorAll('.sdc-weekday-letter-group, .sdc-weekday-tick').forEach(el => el.remove());
+
+    const g = state.gantt;
+    if (!g || !g.gantt_start) return;
+    const cw = g.options.column_width;
+    const mode = g.options.view_mode || 'Week';
+    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+    const pxPerDay = cw / step;
+    // Threshold (px/day) at which the markers appear. Configurable on
+    // Setup → Gantt Weekday Markers. Default 8.
+    const threshold = (state.settings?.weekday_marker_threshold != null)
+      ? Number(state.settings.weekday_marker_threshold)
+      : 8;
+    if (pxPerDay < threshold) return;
+
+    const totalWidth = +svg.getAttribute('width') ||
+                       (svg.viewBox?.baseVal?.width) || 8000;
+    const totalDays = Math.ceil(totalWidth / pxPerDay) + 1;
+
+    // Pin to the existing week-label y so the letters sit just below it.
+    // Read from the actual lower-text element in the SVG.
+    const lowerTexts = svg.querySelectorAll('.lower-text');
+    let baselineY = 26;
+    if (lowerTexts.length > 0) {
+      baselineY = +lowerTexts[0].getAttribute('y') || baselineY;
+    }
+    // Push letters further below the header's bottom border so the line
+    // doesn't visually clip the top of the glyphs.
+    const letterY = baselineY + 22;
+    const tickTop = letterY + 6;
+    const svgHeight = +svg.getAttribute('height') ||
+                      (svg.viewBox?.baseVal?.height) || 800;
+
+    // Letter group — same pattern as drawBarMeta (which DOES render text
+    // successfully): create a <g>, append to SVG root, drop text elements
+    // inside. Critically, set font-family inline because frappe-gantt's
+    // own stylesheet sets `.gantt text { font-family: ... }`, which would
+    // otherwise override any presentation attribute and made my letters
+    // not render with a usable font in earlier attempts.
+    const lettersGroup = document.createElementNS(SVG_NS, 'g');
+    lettersGroup.setAttribute('class', 'sdc-weekday-letter-group');
+    lettersGroup.style.pointerEvents = 'none';
+    svg.appendChild(lettersGroup);
+
+    // g.gantt_start is a Date OBJECT — pass to new Date() directly.
+    const startMs = new Date(g.gantt_start).getTime();
+    const startDow = new Date(startMs).getUTCDay(); // 0=Sun .. 6=Sat
+    // Find the day-index (relative to gantt_start) of the most recent
+    // Monday on or before gantt_start. Mon=1, Tue=2…Sun=0.
+    // Distance back to Monday: Mon→0, Tue→-1, Wed→-2, …, Sun→-6.
+    const daysToMonday = startDow === 0 ? -6 : -(startDow - 1);
+    const pxPerWeek = pxPerDay * 7;
+    const letters5 = ['M', 'T', 'W', 'Th', 'F'];
+
+    // Five evenly-distributed positions per week. Each position is the
+    // CENTER of a 1.4-day "slot" — so the 5 marks span the full 7-day
+    // week with equal half-slot padding on the left and right (no big
+    // weekend gap clustering them to the start). Ticks AND letters share
+    // the SAME x positions so they read as a single unit.
+    for (let weekDayIdx = daysToMonday; weekDayIdx * pxPerDay < totalWidth; weekDayIdx += 7) {
+      const weekStartX = weekDayIdx * pxPerDay;
+      for (let j = 0; j < 5; j++) {
+        const x = weekStartX + (j + 0.5) * (pxPerWeek / 5);
+        if (x < 0 || x > totalWidth) continue;
+
+        // Dashed faint tick.
+        const tick = document.createElementNS(SVG_NS, 'line');
+        tick.setAttribute('class', 'sdc-weekday-tick');
+        tick.setAttribute('x1', x);
+        tick.setAttribute('x2', x);
+        tick.setAttribute('y1', tickTop);
+        tick.setAttribute('y2', svgHeight);
+        tick.setAttribute('stroke', '#e2e8f0');
+        tick.setAttribute('stroke-width', '0.5');
+        tick.setAttribute('stroke-dasharray', '2 4');
+        tick.setAttribute('pointer-events', 'none');
+        svg.insertBefore(tick, svg.firstChild);
+
+        // Letter directly above the tick.
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('class', 'sdc-weekday-letter');
+        text.setAttribute('x', String(x));
+        text.setAttribute('y', String(letterY));
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('dominant-baseline', 'central');
+        text.setAttribute('fill', '#475569');
+        text.setAttribute('paint-order', 'stroke');
+        text.setAttribute('stroke', 'rgba(255,255,255,0.9)');
+        text.setAttribute('stroke-width', '2');
+        text.setAttribute('stroke-linejoin', 'round');
+        text.style.fontFamily = 'sans-serif';
+        text.style.fontSize = '9px';
+        text.style.fontWeight = '700';
+        text.style.pointerEvents = 'none';
+        text.textContent = letters5[j];
+        lettersGroup.appendChild(text);
+      }
+    }
+  } catch (_) { /* swallow — cosmetic, never break render chain */ }
+}
+
+// Paint a diagonal lime hash pattern on every completed (.is-done) bar so
+// it reads as "done" at a glance — same visual idea as a checked-off line.
+// The pattern is defined once per render in <defs> and reused by every
+// overlay rect. The overlay sits ABOVE the bar + bar-progress but BELOW
+// the bar-label, so the task name stays readable on top.
+function drawDoneHashOverlay() {
+  // Diagonal stripes via SVG diagonal-line elements. Each completed bar
+  // gets a group of 45° lines that span its bounds. No clipPath — we use
+  // a foreignObject with CSS repeating-linear-gradient instead, which is
+  // the most reliable cross-browser way to render a hash pattern inside
+  // an SVG. Try/catch so any failure can't kill the rest of the render
+  // chain (zoom scroll-restore, drawBarMeta, etc.).
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg) return;
+    svg.querySelectorAll('.sdc-done-hash-overlay').forEach(el => el.remove());
+
+    svg.querySelectorAll('.bar-wrapper.is-done').forEach(wrap => {
+      const bar = wrap.querySelector('.bar');
+      if (!bar) return;
+      const x = +bar.getAttribute('x');
+      const y = +bar.getAttribute('y');
+      const w = +bar.getAttribute('width');
+      const h = +bar.getAttribute('height');
+      if (!(w > 0 && h > 0)) return;
+
+      // Diagonal stripes drawn as <line> elements at 45° (slope 1). Endpoints
+      // mathematically clamped to stay inside the bar's rectangle — no
+      // clipPath / mask / URL refs (all failed in this SVG).
+      //
+      // DOM placement: insert the line INTO bar-label's parentNode, just
+      // before bar-label itself. This makes the line a SIBLING of bar-label
+      // (so they share a parent group containing the bar / bar-progress /
+      // bar-label). Paint order ends up as: bar → bar-progress → my line →
+      // bar-label. So the line paints OVER the bar fill (visible) but
+      // UNDER the description text (text stays readable).
+      //
+      // Earlier attempt inserted before a direct-child ancestor of wrap,
+      // which placed the line BEFORE the whole bar group in DOM order,
+      // making the bar fill paint over the line. That's why the user saw
+      // the stripes only briefly during zoom/render transitions.
+      const labelEl = wrap.querySelector('.bar-label');
+      const labelParent = labelEl ? labelEl.parentNode : null;
+      const spacing = 6;
+      for (let i = -h; i <= w; i += spacing) {
+        let x1 = x + i,     y1 = y;
+        let x2 = x + i + h, y2 = y + h;
+        // Clip START point at the bar's LEFT edge.
+        if (x1 < x) {
+          const dx = x - x1;
+          x1 = x;
+          y1 = y + dx;
+        }
+        // Clip END point at the bar's RIGHT edge.
+        if (x2 > x + w) {
+          const dx = x2 - (x + w);
+          x2 = x + w;
+          y2 = y + h - dx;
+        }
+        if (Math.abs(x2 - x1) < 0.5 && Math.abs(y2 - y1) < 0.5) continue;
+
+        const line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('class', 'sdc-done-hash-overlay');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        // SDC lime — same color as the bar's lime border (doneRule in
+        // injectPhaseStyles uses #befa4f).
+        line.setAttribute('stroke', '#befa4f');
+        line.setAttribute('stroke-width', '1.5');
+        line.setAttribute('stroke-opacity', '0.85');
+        line.setAttribute('pointer-events', 'none');
+        // Insert into bar-label's PARENT, just before bar-label itself,
+        // so the line is a sibling of the label in the same group. Paints
+        // over the bar/bar-progress, under the description text.
+        if (labelParent && labelEl) {
+          labelParent.insertBefore(line, labelEl);
+        } else {
+          wrap.appendChild(line);
+        }
+      }
+    });
+  } catch (_) { /* swallow — hash overlay is cosmetic, render chain must continue */ }
 }
 
 // Per-bar allocation + duration labels on the Gantt. Renders ONE compact label
@@ -3183,30 +3481,40 @@ function drawScheduleStatus() {
     if (!wrap) continue;
     const bar = wrap.querySelector('.bar');
     if (!bar) continue;
-    // Days math — business-day aware so "2 weeks ahead" actually reads as 10, not 14.
-    const totalDays = businessDaysBetween(task.start_date, task.end_date);
-    if (!totalDays || totalDays <= 0) continue;
+    // For completed tasks, use the locked drift (scheduled_end − completed_on).
+    // For incomplete tasks, the live formula based on today.
+    // taskScheduleDelta handles both — single source of truth.
     const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
+    const diffDays = taskScheduleDelta(task);
+    // Hover-tooltip context: % math is only meaningful for INCOMPLETE tasks.
+    // For completed tasks, the chip says "finished X days ahead/behind", and
+    // the tooltip says the same thing in long form.
+    const totalDays = businessDaysBetween(task.start_date, task.end_date) || 0;
     let elapsedDays;
-    if (todayISO < task.start_date) {
-      // Not yet started. Any progress here = ahead. Expected = 0.
-      elapsedDays = 0;
-    } else if (todayISO > task.end_date) {
-      // Past end date — should be 100% by now.
-      elapsedDays = totalDays;
-    } else {
-      elapsedDays = businessDaysBetween(task.start_date, todayISO) || 0;
-    }
-    const expectedPct = (elapsedDays / totalDays) * 100;
-    const actualDays  = (actualPct   / 100) * totalDays;
-    const diffDays = Math.round(actualDays - elapsedDays); // + ahead, − behind
+    if (todayISO < task.start_date) elapsedDays = 0;
+    else if (todayISO > task.end_date) elapsedDays = totalDays;
+    else elapsedDays = businessDaysBetween(task.start_date, todayISO) || 0;
+    const expectedPct = totalDays > 0 ? (elapsedDays / totalDays) * 100 : 0;
     if (Math.abs(diffDays) < 1) continue;
     const ahead = diffDays > 0;
     const barX = +bar.getAttribute('x');
     const barY = +bar.getAttribute('y');
     const barW = +bar.getAttribute('width');
     const barH = +bar.getAttribute('height');
-    const cx = barX + barW + 6;       // 6px gap to the right of the bar
+    // Default chip position: 6px right of the bar's end. If the bar's name
+    // label overflowed past the bar (clipBarLabels added .bar-label-outside
+    // with text-anchor='start'), the label sits in that exact spot, so push
+    // the chip further right past the label so they don't overlap.
+    let cx = barX + barW + 6;
+    const labelEl = wrap.querySelector('.bar-label.bar-label-outside');
+    if (labelEl && labelEl.getAttribute('text-anchor') === 'start') {
+      try {
+        const lb = labelEl.getBBox();
+        // Label x is its start point; width = lb.width. End = labelX + lb.width.
+        const labelEndX = (+labelEl.getAttribute('x')) + lb.width;
+        cx = Math.max(cx, labelEndX + 6);
+      } catch (_) { /* SVG not measurable yet — fall back to default cx */ }
+    }
     const cy = barY + barH / 2;
     const label = `${ahead ? '+' : '−'}${Math.abs(diffDays)}d`;
     const padX = 5, chipH = Math.max(12, barH - 2);
@@ -3429,6 +3737,40 @@ function setZoom(percent) {
   if (typeof renderZoomMenu === 'function') renderZoomMenu();
 }
 
+
+// Personal-Gantt counterpart to zoomToFit. Measures the personal panel,
+// reads the signed-in person's tasks (same filter the personal Gantt uses),
+// and re-renders the personal Gantt at a zoom that fits the timeline.
+function zoomToFitPersonal() {
+  const panel = document.getElementById('actions-person-gantt');
+  if (!panel) return;
+  const personId = _actionsPageState?.personId;
+  if (personId == null) return;
+  const member = (state.team || []).find(m => m.id === personId);
+  if (!member) return;
+  const memberNameLower = (member.name || '').trim().toLowerCase();
+  const today = new Date().toISOString().slice(0, 10);
+  const tasks = (state.tasks || []).filter(t => {
+    if (!t.project) return false;
+    if (isTemplateProject(t.project)) return false;
+    if (projectWorkspace(t.project) === 'Sales') return false;
+    if (!t.start_date || !t.end_date) return false;
+    const a = (t.assignee || '').trim().toLowerCase();
+    const direct = a === memberNameLower;
+    const placeholder = t.is_action && isPlaceholder(t.assignee) && actionDisciplineKey(t) === member.discipline;
+    if (!direct && !placeholder) return false;
+    return personalFilterPass(t, today);
+  });
+  if (tasks.length === 0) return;
+  const target = Math.max(300, panel.clientWidth - 24);
+  const minStart = Math.min(...tasks.map(t => new Date(t.start_date).getTime()));
+  const maxEnd   = Math.max(...tasks.map(t => new Date(t.end_date).getTime()));
+  const projectDays = Math.max(1, (maxEnd - minStart) / 86400000 + 1);
+  const PAD_DAYS = 14;
+  const requiredPxPerDay = target / (projectDays + PAD_DAYS);
+  state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (requiredPxPerDay / 20) * 100));
+  renderActionsPersonGantt();
+}
 
 function zoomToFit() {
   const visiblePanel = document.getElementById('schedule-gantt');
@@ -3743,7 +4085,11 @@ function drawMilestoneLabels() {
     lbl.setAttribute('font-weight', '600');
     lbl.setAttribute('fill', '#061d39');
     lbl.style.pointerEvents = 'none';
-    lbl.textContent = task.name || '';
+    // In personal mode, append the date to non-anchor milestone labels so
+    // the user can see when each thing's due directly on the Gantt
+    // (anchors already get a date label on the LEFT — see below).
+    const showPersonalDate = isPersonalMode() && !isAnchor && task.start_date;
+    lbl.textContent = (task.name || '') + (showPersonalDate ? ` · ${fmtDate(task.start_date)}` : '');
     group.appendChild(lbl);
     // v4.60: milestone labels NO LONGER get the pill occluder — user
     // prefers seeing the arrow pass through the text. Bar-meta keeps the
@@ -5199,6 +5545,27 @@ function renderWorkspaceBar() { /* no-op — kept for callers that haven't been 
 function renderProjectTabs() {
   const wrap = document.getElementById('project-tabs');
   if (!wrap) return;
+
+  // When signed in (personId persisted), the personal tab is ALWAYS visible
+  // in the strip — even when the user clicks away to a project tab — so
+  // they can return to their personal view in one click. Active state is
+  // separate: only highlighted when isPersonalMode() reports true (assignee
+  // filter actually applied + no project filter).
+  let personalTabHtml = '';
+  const personId = _actionsPageState?.personId;
+  if (personId != null) {
+    const member = (state.team || []).find(m => m.id === personId);
+    if (member) {
+      const isPersonalActive = isPersonalMode();
+      personalTabHtml = `
+        <button class="project-tab is-personal ${isPersonalActive ? 'active' : ''}" data-personal="1" type="button" draggable="false">
+          <span class="project-tab-dot project-tab-dot-personal" title="Personal view"></span>
+          <span class="project-tab-label">👤 ${escapeHtml(member.name)}</span>
+          <span class="project-tab-close" data-personal-clear="1" title="Sign out — back to All projects">×</span>
+        </button>`;
+    }
+  }
+
   // Show ALL open project tabs regardless of workspace. v4.18 dropped the
   // workspace filter that v4.8 introduced — having tabs disappear when you
   // navigate to a different workspace's project was disorienting. Now you
@@ -5212,9 +5579,16 @@ function renderProjectTabs() {
     ...visibleList.filter(p => p !== '' && isTemplateProject(p)),
     ...visibleList.filter(p => p !== '' && !isTemplateProject(p)),
   ].filter(p => p !== undefined);
-  wrap.innerHTML = templatesFirst.map(p => {
+  wrap.innerHTML = personalTabHtml + templatesFirst.map(p => {
     const isAll = p === '';
-    const isActive = (state.filters.project || '') === p;
+    // A tab only reads as "active" when you're ACTUALLY on the Schedule
+    // view. If you're on Actions / Team / Setup / etc., no project tab is
+    // highlighted — clicking the Actions sidebar icon shouldn't leave a
+    // schedule tab looking selected. Personal mode is also exclusive —
+    // the personal tab owns the active state then.
+    const isActive = state.view === 'schedule'
+      && !isPersonalMode()
+      && (state.filters.project || '') === p;
     const isTemplate = isTemplateProject(p);
     const label = isAll ? 'All projects' : p;
     // All-projects pseudo-tab has no close button (it's a special permanent
@@ -5250,9 +5624,42 @@ function renderProjectTabs() {
       </button>`;
   }).join('');
 
-  wrap.querySelectorAll('.project-tab').forEach(btn => {
+  // Personal-tab × handler — full sign-out: clear personId entirely, drop
+  // assignee filter, return to All Projects.
+  const personalClearBtn = wrap.querySelector('[data-personal-clear]');
+  if (personalClearBtn) {
+    personalClearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _actionsPageState.personId = null;
+      try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+      routePersonalMode(null);
+    });
+  }
+  // Personal tab body click — re-enter personal mode (re-applies the
+  // assignee filter + clears the project filter so the schedule view
+  // shows just this person's work again).
+  const personalTabBtn = wrap.querySelector('.project-tab.is-personal');
+  if (personalTabBtn) {
+    personalTabBtn.addEventListener('click', (e) => {
+      if (e.target.closest('.project-tab-close')) return;
+      if (_actionsPageState && _actionsPageState.personId != null) {
+        routePersonalMode(_actionsPageState.personId);
+      }
+    });
+  }
+
+  // Regular project tabs (NOT the personal tab) — wire normal click behavior.
+  wrap.querySelectorAll('.project-tab:not(.is-personal)').forEach(btn => {
     btn.addEventListener('click', (e) => {
       if (e.target.closest('.project-tab-close')) return;
+      // Clicking a regular project tab while signed in: keep personId
+      // persisted (so the personal tab stays visible — they can return)
+      // but drop the assignee filter so the project view shows the whole
+      // project, not just this person's slice.
+      if (isPersonalMode()) {
+        state.filters.assignee = '';
+        document.body.classList.remove('personal-mode');
+      }
       state.filters.project = btn.dataset.project;
       saveProjectTabs();
       // Always switch to the schedule view when a project tab is clicked.
@@ -5329,16 +5736,70 @@ function renderProjectTabs() {
   // "Save all tasks as one project" rescue button alongside the label.
   const banner = document.getElementById('schedule-project-banner');
   if (banner) {
-    if (!state.filters.project) {
-      const total = state.tasks.length;
-      const distinctProjects = new Set(state.tasks.map(t => t.project || '__null__')).size;
-      const showSaveAll = total > 0 && distinctProjects > 0;
-      const saveAllBtn = showSaveAll
-        ? `<button id="btn-save-all-as-one" class="orphan-save-btn" type="button" title="Take every task in the database (across every project) and re-tag them under one new project name. The All-projects view becomes a true aggregate.">Save all ${total} task${total === 1 ? '' : 's'} as one project →</button>`
+    if (isPersonalMode()) {
+      // Personal-mode banner is the .schedule-personal-banner above the
+      // toolbar — this one stays empty so the layout doesn't double up.
+      banner.innerHTML = '';
+    } else if (!state.filters.project) {
+      // Two-step sign-in: department first, then person. Mirrors the picker
+      // the Actions tab used to have. `_actionsPageState.deptForPicker`
+      // holds the currently-picked department.
+      const team = (state.team || []).filter(m => m.active !== 0 && !isPlaceholder(m.name));
+      const dept = _actionsPageState.deptForPicker || '';
+      const inDept = dept ? team.filter(m => m.discipline === dept) : [];
+      inDept.sort((a, b) => {
+        if (!!b.is_lead - !!a.is_lead !== 0) return (!!b.is_lead) - (!!a.is_lead);
+        return (a.sort_order || 0) - (b.sort_order || 0) || (a.name || '').localeCompare(b.name || '');
+      });
+      const signInHtml = team.length > 0
+        ? `<span class="banner-signin-wrap" title="Sign in as one team member — switches to a personal view of their tasks/actions across every project.">
+             <span class="banner-signin-label">Sign in:</span>
+             <select id="banner-signin-dept" class="banner-signin-pick">
+               <option value="">Department…</option>
+               <option value="mech"     ${dept === 'mech'     ? 'selected' : ''}>Mech Eng</option>
+               <option value="controls" ${dept === 'controls' ? 'selected' : ''}>Controls Eng</option>
+               <option value="build"    ${dept === 'build'    ? 'selected' : ''}>Build</option>
+               <option value="wire"     ${dept === 'wire'     ? 'selected' : ''}>Wire</option>
+               <option value="pm"       ${dept === 'pm'       ? 'selected' : ''}>Project Mgmt</option>
+             </select>
+             <select id="banner-signin-pick" class="banner-signin-pick" ${dept ? '' : 'disabled'}>
+               <option value="">${dept ? 'Pick yourself…' : 'Pick department first'}</option>
+               ${inDept.map(m => `<option value="${m.id}">${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`).join('')}
+             </select>
+           </span>`
         : '';
-      banner.innerHTML = '<span class="schedule-project-name-pill schedule-project-label">All projects</span>' + saveAllBtn;
-      const sb = document.getElementById('btn-save-all-as-one');
-      if (sb) sb.addEventListener('click', saveAllAsOneProject);
+      // Multi-project filter — PM view.
+      const subset = Array.isArray(state.filters.projectsSubset) ? state.filters.projectsSubset : [];
+      const subsetCount = subset.length;
+      const projectsBtnLabel = subsetCount === 0 ? 'All projects'
+                              : subsetCount === 1 ? `1 project`
+                              : `${subsetCount} projects`;
+      const projectsFilterHtml = `
+        <button id="btn-banner-projects" class="banner-projects-btn ${subsetCount > 0 ? 'is-active' : ''}" type="button" title="Narrow the view to a subset of projects — useful for PMs who want to see only the projects they run.">
+          <span class="banner-projects-label">Projects:</span>
+          <span class="banner-projects-value">${escapeHtml(projectsBtnLabel)}</span>
+          <span class="banner-projects-caret">▾</span>
+        </button>
+        <div id="banner-projects-popup" class="banner-projects-popup hidden"></div>`;
+      banner.innerHTML = '<span class="schedule-project-name-pill schedule-project-label">All projects</span>' + signInHtml + projectsFilterHtml;
+      const deptSel = document.getElementById('banner-signin-dept');
+      if (deptSel) {
+        deptSel.addEventListener('change', (e) => {
+          _actionsPageState.deptForPicker = e.target.value || '';
+          renderProjectTabs(); // re-render so the person select repopulates
+        });
+      }
+      const signInPick = document.getElementById('banner-signin-pick');
+      if (signInPick) {
+        signInPick.addEventListener('change', (e) => {
+          const id = e.target.value ? Number(e.target.value) : null;
+          if (id == null) return;
+          _actionsPageState.personId = id;
+          try { localStorage.setItem('sdcActionsPersonId', String(id)); } catch {}
+          routePersonalMode(id);
+        });
+      }
+      wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
       banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
@@ -6705,6 +7166,7 @@ function render() {
   // as well as data reloads.
   syncBaselineButtons();
   renderAssigneeFilterBanner();
+  renderPersonalBanner();
   if (state.view === 'schedule') {
     renderTable();
     renderGantt();
@@ -6720,6 +7182,108 @@ function renderAssigneeFilterBanner() { /* removed — personal view is a simple
 // TESTING / 50 TEARDOWN & INSTALL). Department / sub-department headers
 // are intentionally NOT shown — one person typically lives in one
 // department, the breakdown adds noise. Empty sections are hidden.
+// Toolbar above the personal view — three buttons (Grid / Both / Gantt)
+// that swap which pane is visible. Mode persists in localStorage.
+function renderPersonalToolbar() {
+  const bar = document.getElementById('actions-personal-toolbar');
+  if (!bar) return;
+  const personId = _actionsPageState.personId;
+  const member = personId == null ? null : (state.team || []).find(m => m.id === personId);
+  if (!member) { bar.innerHTML = ''; return; }
+  const mode = _actionsPageState.personalPaneMode || 'grid';
+  const pf = _actionsPageState.personalFilters || {};
+  const paneBtn = (key, label) =>
+    `<button type="button" class="apl-pane-btn ${mode === key ? 'is-active' : ''}" data-pane="${key}">${label}</button>`;
+  const chipBtn = (key, label) =>
+    `<button type="button" class="apl-pane-btn ${pf[key] ? 'is-active' : ''}" data-filter="${key}">${label}</button>`;
+  const friendlyZoom = zoomToFriendly(state.zoomPercent);
+  const zoomOutDisabled = friendlyZoom <= 1 ? 'disabled' : '';
+  const zoomInDisabled  = friendlyZoom >= ZOOM_FRIENDLY_MAX_LEVEL ? 'disabled' : '';
+  bar.innerHTML = `
+    <span class="apl-pane-label">View:</span>
+    ${paneBtn('grid',  'Grid')}
+    ${paneBtn('both',  'Both')}
+    ${paneBtn('gantt', 'Gantt')}
+    <span class="apl-pane-label" style="margin-left:14px">Filter:</span>
+    ${chipBtn('overdue',  'Overdue')}
+    ${chipBtn('ahead',    'Ahead')}
+    ${chipBtn('hideDone', 'Hide done')}
+    <span class="apl-pane-label" style="margin-left:14px">Zoom:</span>
+    <button type="button" class="apl-pane-btn" data-zoom="out" ${zoomOutDisabled} title="Zoom out">−</button>
+    <button type="button" class="apl-pane-btn" data-zoom="fit" title="Fit timeline to window">Fit</button>
+    <button type="button" class="apl-pane-btn" data-zoom="in"  ${zoomInDisabled}  title="Zoom in">+</button>
+    <span style="flex:1"></span>
+    <span class="apl-title-name">${escapeHtml(member.name)}</span>
+    <button type="button" class="apl-clear" id="apl-clear-toolbar" title="Sign out">× Clear</button>
+  `;
+  bar.querySelectorAll('[data-pane]').forEach(b => {
+    b.addEventListener('click', () => {
+      const next = b.dataset.pane;
+      if (_actionsPageState.personalPaneMode === next) return;
+      _actionsPageState.personalPaneMode = next;
+      try { localStorage.setItem('sdcActionsPersonalPaneMode', next); } catch {}
+      renderPersonalToolbar();
+      applyPersonalPaneVisibility();
+      // Render the Gantt on demand. Grid-only mode wipes the gantt container
+      // so it doesn't keep a stale render around.
+      if (next === 'grid') {
+        const g = document.getElementById('actions-person-gantt');
+        if (g) g.innerHTML = '';
+      } else {
+        renderActionsPersonGantt();
+      }
+    });
+  });
+  bar.querySelectorAll('[data-filter]').forEach(b => {
+    b.addEventListener('click', () => {
+      const key = b.dataset.filter;
+      _actionsPageState.personalFilters[key] = !_actionsPageState.personalFilters[key];
+      try {
+        localStorage.setItem('sdcActionsPersonalFilters', JSON.stringify(_actionsPageState.personalFilters));
+      } catch {}
+      renderPersonalToolbar();
+      // Re-render both panes so grid + gantt stay in lockstep.
+      renderPersonalAssignments();
+      if (_actionsPageState.personalPaneMode !== 'grid') {
+        renderActionsPersonGantt();
+      }
+    });
+  });
+  bar.querySelectorAll('[data-zoom]').forEach(b => {
+    b.addEventListener('click', () => {
+      const action = b.dataset.zoom;
+      // setZoom is already personal-aware — it routes to renderActionsPersonGantt
+      // when state.view === 'actions' && _actionsPageState.personId != null.
+      if (action === 'in' || action === 'out') {
+        const cur = zoomToFriendly(state.zoomPercent);
+        const target = action === 'in' ? cur + 1 : cur - 1;
+        setZoom(friendlyToZoom(Math.max(1, Math.min(ZOOM_FRIENDLY_MAX_LEVEL, target))));
+      } else if (action === 'fit') {
+        zoomToFitPersonal();
+      }
+      renderPersonalToolbar(); // refresh disabled state on +/-
+    });
+  });
+  const clearBtn = bar.querySelector('#apl-clear-toolbar');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      _actionsPageState.personId = null;
+      try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+      renderActionsPage();
+    });
+  }
+}
+
+// Toggle which pane(s) are visible by stamping a class on the wrapper.
+// CSS handles the show/hide.
+function applyPersonalPaneVisibility() {
+  const wrap = document.getElementById('actions-personal-wrap');
+  if (!wrap) return;
+  const mode = _actionsPageState.personalPaneMode || 'grid';
+  wrap.classList.remove('is-grid', 'is-gantt', 'is-both');
+  wrap.classList.add(`is-${mode}`);
+}
+
 function renderPersonalAssignments() {
   const wrap = document.getElementById('actions-personal-list');
   if (!wrap) return;
@@ -6741,13 +7305,16 @@ function renderPersonalAssignments() {
     if (inferredAnchorKey(t)) return false;
     if (isBacklogTask(t))     return false;
     const a = (t.assignee || '').trim().toLowerCase();
-    if (a === memberNameLower) return true;
-    if (t.is_action && isPlaceholder(t.assignee) && actionDisciplineKey(t) === member.discipline) return true;
-    return false;
+    const directAssign = a === memberNameLower;
+    const placeholderForMyDiscipline =
+      t.is_action && isPlaceholder(t.assignee) && actionDisciplineKey(t) === member.discipline;
+    if (!directAssign && !placeholderForMyDiscipline) return false;
+    // Personal-view quick filters (Overdue / Ahead / Hide done).
+    return personalFilterPass(t, _today);
   });
 
   if (mine.length === 0) {
-    wrap.innerHTML = `<div class="apl-empty">Nothing assigned to ${escapeHtml(member.name)}.</div>`;
+    wrap.innerHTML = `<div class="apl-empty">Nothing matches the current filters for ${escapeHtml(member.name)}.</div>`;
     return;
   }
 
@@ -6791,20 +7358,19 @@ function renderPersonalAssignments() {
       </div>`;
     }).join('');
 
-  wrap.innerHTML = `
-    <div class="apl-title-row">
-      <span class="apl-title-label">Personal Assignments</span>
-      <span class="apl-title-name">${escapeHtml(member.name)}</span>
-      <button type="button" class="apl-clear" id="apl-clear" title="Sign out">× Clear</button>
-    </div>
-    ${sectionHtml}
-  `;
-
-  wrap.querySelector('#apl-clear').addEventListener('click', () => {
-    _actionsPageState.personId = null;
-    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
-    renderActionsPage();
-  });
+  // Title row is now part of renderPersonalToolbar (name + clear button) so
+  // the same controls show whether you're on Grid, Both, or Gantt view.
+  // Column header sits above the section rows — matches main grid layout
+  // semantics so the user knows what each column means.
+  const headerHtml = `
+    <div class="apl-col-header">
+      <span>Task</span>
+      <span>Project</span>
+      <span>Dur</span>
+      <span>Due</span>
+    </div>`;
+  wrap.innerHTML = headerHtml + sectionHtml;
+  setupPersonalRowCrossHighlight();
 }
 
 // ---------- New-task & delete (no modal — everything else is inline) ----------
@@ -6831,6 +7397,53 @@ function newTaskInline() {
       if (input) input.select();
     }
   });
+}
+
+// Build the per-section "Function" dropdown options for the action
+// quick-add cascade. Returns objects shaped { g, d, s, discipline, label }
+// where (g, d, s) is the schedule location matching HIERARCHY and
+// `discipline` is the assignee-placeholder key (mech / controls / build /
+// wire / '' for none). For sections 40 and 50 where the HIERARCHY doesn't
+// carry sub-department detail, we still expose the discipline choice here
+// so a "40 · Engineering" action can be assigned specifically to a
+// Mechanical or Controls placeholder — not a generic Engineering one.
+function buildFunctionOptions(sectionKey) {
+  if (sectionKey === 'design_build') {
+    // Section 10 — HIERARCHY already has discipline-level sub-departments,
+    // so each row is unique on its own.
+    return [
+      { g: 'design_build', d: 'engineering', s: 'mech',     discipline: 'mech',     label: 'Mechanical Eng' },
+      { g: 'design_build', d: 'engineering', s: 'controls', discipline: 'controls', label: 'Controls Eng' },
+      { g: 'design_build', d: 'engineering', s: 'general',  discipline: '',         label: 'General Eng' },
+      { g: 'design_build', d: 'procurement', s: null,       discipline: '',         label: 'Procurement' },
+      { g: 'design_build', d: 'shop',        s: 'build',    discipline: 'build',    label: 'Build' },
+      { g: 'design_build', d: 'shop',        s: 'wire',     discipline: 'wire',     label: 'Wire' },
+    ];
+  }
+  if (sectionKey === 'machine_testing') {
+    // Section 40 — HIERARCHY has only Engineering / Shop. We expand each
+    // here into its constituent disciplines so the user can target the
+    // right placeholder.
+    return [
+      { g: 'machine_testing', d: 'engineering', s: null, discipline: 'mech',     label: 'Engineering · Mechanical' },
+      { g: 'machine_testing', d: 'engineering', s: null, discipline: 'controls', label: 'Engineering · Controls' },
+      { g: 'machine_testing', d: 'shop',        s: null, discipline: 'build',    label: 'Shop · Build' },
+      { g: 'machine_testing', d: 'shop',        s: null, discipline: 'wire',     label: 'Shop · Wire' },
+    ];
+  }
+  if (sectionKey === 'teardown_install') {
+    // Section 50 — Teardown is shop work (Build/Wire); Install splits
+    // Shop and Engineering, each with their own discipline pair.
+    return [
+      { g: 'teardown_install', d: 'teardown', s: null,          discipline: 'build',    label: 'Teardown · Build' },
+      { g: 'teardown_install', d: 'teardown', s: null,          discipline: 'wire',     label: 'Teardown · Wire' },
+      { g: 'teardown_install', d: 'install',  s: 'shop',        discipline: 'build',    label: 'Install · Build' },
+      { g: 'teardown_install', d: 'install',  s: 'shop',        discipline: 'wire',     label: 'Install · Wire' },
+      { g: 'teardown_install', d: 'install',  s: 'engineering', discipline: 'mech',     label: 'Install · Mechanical' },
+      { g: 'teardown_install', d: 'install',  s: 'engineering', discipline: 'controls', label: 'Install · Controls' },
+    ];
+  }
+  return [];
 }
 
 // v4.61: map a (department, sub_department) section to the team discipline
@@ -7831,6 +8444,47 @@ function setupRowCrossHighlight() {
   });
 }
 
+// Personal-view counterpart — hover an .apl-row in the personal grid, the
+// matching bar in the personal Gantt gets a translucent stripe across it
+// (same pattern as the main schedule's setupRowCrossHighlight).
+function setupPersonalRowCrossHighlight() {
+  const list = document.getElementById('actions-personal-list');
+  if (!list || list.dataset.hlWired) return;
+  list.dataset.hlWired = '1';
+  list.addEventListener('mouseover', (e) => {
+    const row = e.target.closest('.apl-row[data-id]');
+    if (!row) return;
+    if (row === list._hlRow) return;
+    list._hlRow = row;
+    highlightPersonalGanttRow(row.dataset.id);
+  });
+  list.addEventListener('mouseleave', () => {
+    list._hlRow = null;
+    highlightPersonalGanttRow(null);
+  });
+}
+
+function highlightPersonalGanttRow(taskId) {
+  const svg = document.querySelector('#actions-person-gantt .gantt');
+  if (!svg) return;
+  svg.querySelectorAll('.gantt-row-highlight').forEach(el => el.remove());
+  if (taskId == null) return;
+  const wrap = svg.querySelector(`.bar-wrapper[data-id="${taskId}"]`);
+  if (!wrap) return;
+  const bar = wrap.querySelector('.bar') || wrap.querySelector('rect');
+  if (!bar) return;
+  const y = +bar.getAttribute('y');
+  const h = +bar.getAttribute('height');
+  const w = +svg.getAttribute('width') || svg.viewBox?.baseVal?.width || 8000;
+  const rect = document.createElementNS(SVG_NS, 'rect');
+  rect.setAttribute('class', 'gantt-row-highlight');
+  rect.setAttribute('x', 0);
+  rect.setAttribute('y', y - 4);
+  rect.setAttribute('width',  w);
+  rect.setAttribute('height', h + 8);
+  svg.appendChild(rect);
+}
+
 // Draw (or clear) a translucent horizontal stripe at the Y of the bar-wrapper that
 // matches `taskId`. Inserted as the LAST child of the SVG so paint-order puts it
 // ON TOP of bars/arrows/diamonds — combined with low fill-opacity that reads as a
@@ -8118,6 +8772,7 @@ async function loadSettings() {
   if (!state.settings.section_colors)    state.settings.section_colors    = { ...SECTION_COLOR_DEFAULTS };
   if (!state.settings.hierarchy_colors)  state.settings.hierarchy_colors  = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   if (!state.settings.anchor_color)      state.settings.anchor_color      = { ...ANCHOR_COLOR_DEFAULTS };
+  if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 8;
   // Always normalize — older builds saved { key → { fill, text } } objects;
   // current shape is { key → "#hex" }. normalizePctColors handles both.
   state.settings.pct_colors = normalizePctColors(state.settings.pct_colors);
@@ -8169,7 +8824,46 @@ const _actionsPageState = {
   // v4.65: discipline picked in the Person dropdown (drives which people the
   // Person select shows). Seeded from the persisted personId on first render.
   deptForPicker: '',
+  // Personal-view pane mode: 'grid' (default, simple list), 'gantt', or 'both'.
+  // Persists in localStorage so signing back in restores the same view.
+  personalPaneMode: (() => {
+    try {
+      const v = localStorage.getItem('sdcActionsPersonalPaneMode');
+      return (v === 'gantt' || v === 'both') ? v : 'grid';
+    } catch { return 'grid'; }
+  })(),
+  // Personal-view quick filters. Independent of the global Schedule filters
+  // so toggling Overdue on the Actions tab doesn't bleed into Schedule.
+  personalFilters: (() => {
+    try {
+      const v = JSON.parse(localStorage.getItem('sdcActionsPersonalFilters') || '{}');
+      return {
+        overdue:  !!v.overdue,
+        ahead:    !!v.ahead,
+        hideDone: !!v.hideDone,
+      };
+    } catch { return { overdue: false, ahead: false, hideDone: false }; }
+  })(),
 };
+
+// Shared predicate for personal-view filters. Returns true if the task passes
+// the current Overdue / Ahead / Hide done toggles. Used by both the grid list
+// renderer and the personal Gantt task collector so the two views stay in sync.
+function personalFilterPass(task, todayISO) {
+  const pf = _actionsPageState.personalFilters || {};
+  const isDone   = (Number(task.progress) || 0) >= 100;
+  const pastDue  = !!(task.end_date && task.end_date < todayISO);
+  const futureDue = !!(task.end_date && task.end_date > todayISO);
+  if (pf.hideDone && isDone) return false;
+  // Overdue & Ahead are OR'd together when both are on (matches the main
+  // Schedule popover semantics — each toggle widens the set).
+  if (pf.overdue && pf.ahead) {
+    return (pastDue && !isDone) || (isDone && futureDue);
+  }
+  if (pf.overdue && !(pastDue && !isDone)) return false;
+  if (pf.ahead   && !(isDone   && futureDue)) return false;
+  return true;
+}
 
 // Map a task's section (dept + sub) to one of the 4 main discipline keys,
 // used for the colored department pill in the actions list + the filter
@@ -8198,25 +8892,18 @@ function renderActionsPage() {
     btn.classList.toggle('is-active', btn.dataset.bucket === _actionsPageState.bucket);
   });
 
-  // When signed in: show the personal list and hide the regular Actions
-  // page content (quick-add, filters, list, dept dashboard) via the
-  // .is-signed-in class on .actions-page. When signed out: opposite.
+  // Personal view moved to the main Schedule (the routePersonalMode flow)
+  // so the Actions tab is now ALWAYS the manager view — quick-add, filter
+  // chips, action list, dept dashboard. We don't toggle .is-signed-in
+  // anymore (which used to hide the whole Actions page when a person was
+  // signed in — leaving you with a blank screen when you clicked Actions
+  // while signed in on the Schedule view).
   const pageRoot = document.querySelector('.actions-page');
   if (pageRoot) {
-    const signedIn = _actionsPageState.personId != null;
-    pageRoot.classList.toggle('is-signed-in', signedIn);
-    if (signedIn) renderPersonalAssignments();
-    else {
-      const list = document.getElementById('actions-personal-list');
-      if (list) list.innerHTML = '';
-    }
+    pageRoot.classList.remove('is-signed-in');
   }
 
-  // v5.8: personal Gantt removed from this page. Signing in via the person
-  // picker now routes the user to the Schedule view with an assignee filter
-  // pre-applied — same look, scroll, zoom, grid + Gantt + filters as the
-  // main schedule, just scoped to their tasks. The Actions tab stays as the
-  // dept dashboard / action list view.
+  // Sign-in/sign-out controls + per-person summary strip up top.
   renderActionsPersonBar();
   renderActionsPersonSummary();
 
@@ -8248,50 +8935,44 @@ function renderActionsPage() {
   // Quick-add handlers (wire once).
   const qaCreate  = document.getElementById('actions-qa-create');
   const qaTitle   = document.getElementById('actions-qa-title');
-  const qaSection = document.getElementById('actions-qa-section');
-  const qaDept    = document.getElementById('actions-qa-dept');
+  const qaWhere   = document.getElementById('actions-qa-where');
   const qaDue     = document.getElementById('actions-qa-due');
   if (qaCreate && !qaCreate.dataset.wired) {
     qaCreate.dataset.wired = '1';
-    qaCreate._pickedSection = null;
 
-    qaSection.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const r = qaSection.getBoundingClientRect();
-      // v4.72: this picker just STASHES the section — the action gets created
-      // later when the user fills in dept/due and clicks "+ Add action".
-      // Override the picker's default "Create" button to "Done" so the user
-      // doesn't think clicking it commits the action.
-      showSectionPicker(r.left, r.bottom + 6, (g, d, s) => {
-        qaCreate._pickedSection = { g, d, s };
-        const dept = d ? (window.findDepartment(g, d)?.label || d) : '(no dept)';
-        const sub  = s ? (window.findSubDepartment(g, d, s)?.label || s) : '';
-        qaSection.textContent = `${dept}${sub ? ' · ' + sub : ''} ▾`;
-        // v4.62: auto-fill the Department dropdown from the picked section.
-        // User can still override if the mapping is ambiguous (e.g. section 40
-        // engineering → could be Mech or Controls).
-        const auto = disciplineForSection(d, s);
-        if (auto && qaDept) qaDept.value = auto;
-      }, { okLabel: 'Done', title: 'Pick the section' });
-    });
+    // Single picker with all (section + function + discipline) combos.
+    // Grouped by section via <optgroup> so the user can scan visually.
+    // Each option's value encodes the full {g, d, s, discipline} so the
+    // create handler resolves the schedule location AND assignee
+    // placeholder from one pick — no separate department field.
+    const sectionGroups = [
+      { key: 'design_build',    label: '10 — Design & Build' },
+      { key: 'machine_testing', label: '40 — Machine Testing' },
+      { key: 'teardown_install',label: '50 — Teardown & Install' },
+    ];
+    qaWhere.innerHTML = '<option value="">— pick —</option>' +
+      sectionGroups.map(g => {
+        const opts = buildFunctionOptions(g.key);
+        return `<optgroup label="${escapeHtml(g.label)}">` +
+          opts.map(o => `<option value='${escapeHtml(JSON.stringify({ g: o.g, d: o.d, s: o.s, discipline: o.discipline }))}'>${escapeHtml(o.label)}</option>`).join('') +
+          `</optgroup>`;
+      }).join('');
 
     const createNow = async () => {
       const title = (qaTitle.value || '').trim();
       const project = projSel.value;
-      const sect = qaCreate._pickedSection;
-      if (!title)   { qaTitle.focus(); return; }
-      if (!project) { projSel.focus(); alert('Pick a project for this action.'); return; }
-      if (!sect)    { qaSection.focus(); alert('Pick a section so we know where the action lives.'); return; }
-      // v4.62: discipline comes from the dropdown first (user-explicit),
-      // falling back to the section auto-map. If neither resolves we just
-      // leave the assignee blank so the manager can pick later.
-      const discKey = (qaDept && qaDept.value) || disciplineForSection(sect.d, sect.s) || '';
+      const fnRaw = qaWhere.value;
+      if (!title)    { qaTitle.focus(); return; }
+      if (!project)  { projSel.focus(); alert('Pick a project for this action.'); return; }
+      if (!fnRaw)    { qaWhere.focus(); alert('Pick where this action lives.'); return; }
+      let sect;
+      try { sect = JSON.parse(fnRaw); } catch { sect = null; }
+      if (!sect)     { qaWhere.focus(); alert('Pick where this action lives.'); return; }
+      // Discipline comes from the Function picker (most specific). Fall
+      // back to disciplineForSection for older sections that don't carry
+      // it (shouldn't happen with the new picker but defensive).
+      const discKey = sect.discipline || disciplineForSection(sect.d, sect.s) || '';
       const placeholderName = placeholderNameForDiscipline(discKey);
-      // v4.76: if the user didn't pick a due date, default it to TODAY.
-      // Why: without a date the action never shows on the personal Gantt
-      // (which requires start/end dates to position the diamond on the
-      // timeline). User explicitly asked for actions to appear as
-      // milestones on the Gantt — so every action gets a date now.
       const due = qaDue.value || new Date().toISOString().slice(0, 10);
       try {
         await api.create({
@@ -8312,12 +8993,11 @@ function renderActionsPage() {
         alert('Failed to create action: ' + (err?.message || err));
         return;
       }
-      // Reset the form.
+      // Reset only Task + Due. Project / Section / Function stay because
+      // consecutive actions usually share them — users hated re-picking
+      // those every time.
       qaTitle.value = '';
       qaDue.value   = '';
-      qaCreate._pickedSection = null;
-      qaSection.textContent = 'Section ▾';
-      if (qaDept) qaDept.value = '';
       // Force-switch back to Active so the user sees their new action even
       // if they were on Closed when they clicked Create.
       _actionsPageState.bucket = 'active';
@@ -8391,11 +9071,10 @@ function renderActionsPage() {
   if (f.project)    actions = actions.filter(t => t.project === f.project);
   if (f.assignee)   actions = actions.filter(t => t.assignee === f.assignee);
   if (f.discipline) actions = actions.filter(t => actionDisciplineKey(t) === f.discipline);
-  // v4.63: person picker filters everything to one team member when set.
-  const pickedPerson = _actionsPageState.personId
-    ? (state.team || []).find(m => m.id === _actionsPageState.personId)
-    : null;
-  if (pickedPerson) actions = actions.filter(t => (t.assignee || '').trim().toLowerCase() === pickedPerson.name.trim().toLowerCase());
+  // (Personal-view filter removed — personal view now lives on the
+  // Schedule tab. The Actions tab is always the manager view and shows
+  // every action; users filter to a specific person via the All people
+  // dropdown above, not via "signed in" state.)
   // Sort: overdue first, then by due date asc, then by id.
   actions.sort((a, b) => {
     const aOver = a.end_date && new Date(a.end_date).getTime() < todayMs && (Number(a.progress) || 0) < 100;
@@ -8657,7 +9336,7 @@ function renderActionsPersonBar() {
       if (id == null) localStorage.removeItem('sdcActionsPersonId');
       else localStorage.setItem('sdcActionsPersonId', String(id));
     } catch {}
-    renderActionsPage();
+    routePersonalMode(id);
   });
   const clearBtn = document.getElementById('actions-person-clear');
   if (clearBtn) {
@@ -8665,9 +9344,178 @@ function renderActionsPersonBar() {
       _actionsPageState.personId = null;
       _actionsPageState.deptForPicker = '';
       try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
-      renderActionsPage();
+      routePersonalMode(null);
     });
   }
+}
+
+// Personal mode routing — when a person is picked on the Actions tab, switch
+// to the main Schedule view with an assignee filter so the user sees the
+// EXACT same grid + Gantt + divider + zoom + scroll that the main schedule
+// has, just scoped to one person. When cleared, return to the Actions tab
+// and drop the assignee filter.
+function routePersonalMode(personId) {
+  if (personId != null) {
+    const member = (state.team || []).find(m => m.id === personId);
+    if (member) {
+      state.filters.assignee = member.name;
+      // Personal view spans ALL projects for this person — drop the project
+      // filter so they see everything on their plate.
+      state.filters.project = '';
+      // Personal view is most useful as Combined (tasks + actions together).
+      if (state.scheduleView) {
+        state.scheduleView.actionsMode = 'combined';
+        saveScheduleView();
+      }
+      // body.personal-mode lets CSS hide cross-project-irrelevant columns
+      // (predecessors) and tune other visuals without per-render logic.
+      document.body.classList.add('personal-mode');
+      // Personal view spans many projects — auto-show the Project column
+      // so the user knows which job each task belongs to.
+      if (state.layout && Array.isArray(state.layout.visibleCols) &&
+          !state.layout.visibleCols.includes('project')) {
+        state.layout.visibleCols.push('project');
+        try { saveLayout(); } catch {}
+      }
+      setView('schedule');
+      // Auto-fit the Gantt to this person's tasks/actions. Defer one frame
+      // so the schedule view has rendered + measured panel width before fit.
+      requestAnimationFrame(() => {
+        try { zoomToFit(); } catch (_) {}
+      });
+      return;
+    }
+  }
+  // Cleared / member not found → drop the assignee filter and return to All Projects.
+  state.filters.assignee = '';
+  document.body.classList.remove('personal-mode');
+  setView('schedule');
+}
+
+// True when the user is signed in AND currently viewing the personal view
+// (i.e. the assignee filter matches their name AND no specific project is
+// selected). When the user clicks a regular project tab while signed in,
+// personId STAYS persisted (so the personal tab keeps showing in the strip
+// and they can come back) — but isPersonalMode goes FALSE so the project
+// view shows everything in that project, not just the signed-in person's
+// work. Clicking the personal tab re-applies the assignee filter and
+// flips this back to true.
+function isPersonalMode() {
+  if (!_actionsPageState || _actionsPageState.personId == null) return false;
+  const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
+  if (!member) return false;
+  return !state.filters.project && state.filters.assignee === member.name;
+}
+
+// Wire the "Projects" multi-select on the All-projects banner. Click the
+// button → popup with one checkbox per distinct project. Selecting a subset
+// narrows the All-projects view to just those (so a PM can see only the
+// projects they run). Empty = no filter (default).
+function wireBannerProjectsFilter() {
+  const btn = document.getElementById('btn-banner-projects');
+  const pop = document.getElementById('banner-projects-popup');
+  if (!btn || !pop) return;
+
+  // Apply a new subset WITHOUT re-rendering the banner — that would tear the
+  // popup out of the DOM and force the user to re-open it for every check.
+  // Only the grid + Gantt need to refresh.
+  const applySubset = (next) => {
+    state.filters.projectsSubset = next;
+    try { localStorage.setItem('sdcProjectsSubset', JSON.stringify(next)); } catch {}
+    // Update the button label in-place.
+    const valueEl = btn.querySelector('.banner-projects-value');
+    if (valueEl) {
+      valueEl.textContent = next.length === 0 ? 'All projects'
+                          : next.length === 1 ? '1 project'
+                          : `${next.length} projects`;
+    }
+    btn.classList.toggle('is-active', next.length > 0);
+    // Refresh the data panes (grid + Gantt) only.
+    if (state.view === 'schedule') {
+      renderTable();
+      renderGantt();
+    }
+  };
+
+  const buildPopup = () => {
+    const projects = Array.from(new Set(
+      (state.tasks || [])
+        .map(t => t.project)
+        .filter(p => !!p && !isTemplateProject(p))
+    )).sort();
+    const subset = Array.isArray(state.filters.projectsSubset) ? state.filters.projectsSubset : [];
+    const subsetSet = new Set(subset);
+    const rows = projects.map(p => `
+      <label class="bpp-row">
+        <input type="checkbox" value="${escapeHtml(p)}" ${subsetSet.has(p) ? 'checked' : ''} />
+        <span class="bpp-name">${escapeHtml(p)}</span>
+      </label>`).join('');
+    pop.innerHTML = `
+      <div class="bpp-header">
+        <button type="button" class="bpp-action" data-action="all">Select all</button>
+        <button type="button" class="bpp-action" data-action="none">Clear</button>
+      </div>
+      <div class="bpp-body">${rows || '<div class="bpp-empty">No projects available.</div>'}</div>`;
+
+    pop.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const next = Array.from(pop.querySelectorAll('input[type="checkbox"]:checked')).map(c => c.value);
+        applySubset(next);
+      });
+    });
+    pop.querySelector('[data-action="all"]').addEventListener('click', () => {
+      pop.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = true; });
+      applySubset(projects.slice());
+    });
+    pop.querySelector('[data-action="none"]').addEventListener('click', () => {
+      pop.querySelectorAll('input[type="checkbox"]').forEach(c => { c.checked = false; });
+      applySubset([]);
+    });
+  };
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = pop.classList.contains('hidden');
+    document.querySelectorAll('.dropdown-menu, .filters-popover, .banner-projects-popup').forEach(m => {
+      if (m !== pop) m.classList.add('hidden');
+    });
+    if (opening) {
+      buildPopup();
+      pop.classList.remove('hidden');
+    } else {
+      pop.classList.add('hidden');
+    }
+  });
+  const onOutside = (e) => {
+    if (pop.contains(e.target) || e.target === btn || btn.contains(e.target)) return;
+    pop.classList.add('hidden');
+  };
+  document.addEventListener('mousedown', onOutside);
+}
+
+// Personal-mode banner — sits at the top of the Schedule view when signed
+// in. Shows the person's name + their personal-filter chips (Overdue /
+// Ahead / Hide done) + a Clear button that drops the assignee filter and
+// returns to the Actions tab.
+function renderPersonalBanner() {
+  const el = document.getElementById('schedule-personal-banner');
+  if (!el) return;
+  if (!isPersonalMode()) { el.hidden = true; el.innerHTML = ''; return; }
+  const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
+  if (!member) { el.hidden = true; el.innerHTML = ''; return; }
+  // Banner is minimal — just identity + sign-out. All filters live in the
+  // regular Filters popover, no duplication.
+  el.innerHTML = `
+    <span class="spb-label">Signed in as:</span>
+    <span class="spb-name">${escapeHtml(member.name)}</span>
+    <button type="button" class="spb-clear" id="spb-clear" title="Sign out — return to the All Projects view">× Clear</button>
+  `;
+  el.hidden = false;
+  el.querySelector('#spb-clear').addEventListener('click', () => {
+    _actionsPageState.personId = null;
+    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
+    routePersonalMode(null);
+  });
 }
 
 // v4.63: stats strip + name banner for the picked person. Hidden when no one
@@ -8793,8 +9641,9 @@ function renderActionsPersonGantt() {
         && isPlaceholder(t.assignee)
         && actionDisciplineKey(t) === member.discipline;
       if (!directAssign && !placeholderForMyDiscipline) return false;
-      if (!t.is_action) return !!(t.start_date && t.end_date);
-      return true;
+      if (!t.is_action && !(t.start_date && t.end_date)) return false;
+      // Personal-view quick filters — keep grid + gantt in lockstep.
+      return personalFilterPass(t, _todayISO_);
     })
     .map(t => {
       let task = t;
@@ -8837,7 +9686,11 @@ function renderActionsPersonGantt() {
   state.scheduleView = {
     ...savedScheduleView,
     ganttOnly: true,
-    sortByStart: true,
+    // sortByStart OFF → use buildCanonicalTaskOrder so bars group by section
+    // (10 → 40 → 50) like the grid does, instead of bleeding into a flat
+    // chronological list. Matches the user's "simple timeline broken out by
+    // section" intent.
+    sortByStart: false,
     criticalOnly: false,
     criticalPath: false,
     actionsMode: 'combined',  // show scheduled tasks AND action items
@@ -8875,6 +9728,78 @@ function renderActionsPersonGantt() {
   title.className = 'apg-title';
   title.textContent = `${member.name}'s timeline`;
   wrap.insertBefore(title, wrap.firstChild);
+
+  // Align the personal Gantt's bars row-by-row to the personal grid's rows
+  // by data-id — same pattern as alignGanttToGrid for the main view.
+  // try/catch — alignment is cosmetic; never break the render path.
+  try { alignPersonalGanttToGrid(); } catch (_) {}
+}
+
+// Align personal Gantt bars to personal grid rows row-by-row and make the
+// chart LOOK like the main schedule Gantt — match SVG height to grid height
+// (kill the empty white space below the bars), and paint vertical tick
+// lines at every date column (the "graph paper" feel the main Gantt has).
+function alignPersonalGanttToGrid() {
+  const list = document.getElementById('actions-personal-list');
+  const ganttSvg = document.querySelector('#actions-person-gantt .gantt');
+  if (!list || !ganttSvg) return;
+  const svgRect = ganttSvg.getBoundingClientRect();
+  const targets = {};
+  list.querySelectorAll('.apl-row[data-id]').forEach(row => {
+    const r = row.getBoundingClientRect();
+    targets[row.dataset.id] = (r.top - svgRect.top) + (r.height / 2);
+  });
+  if (Object.keys(targets).length === 0) return;
+
+  // 1. Match SVG height to the grid height exactly. The bars are aligned to
+  //    grid-row Y's so they stay above the new bottom. Extra white space
+  //    below the chart is what made the personal view look sparse.
+  const gridHeight = list.scrollHeight;
+  ganttSvg.setAttribute('height', gridHeight);
+  const vb = ganttSvg.getAttribute('viewBox');
+  if (vb) {
+    const [vx, vy, vw] = vb.split(/\s+/).map(Number);
+    ganttSvg.setAttribute('viewBox', `${vx} ${vy} ${vw} ${gridHeight}`);
+  }
+
+  // 2. Shift each bar to match its grid row's vertical center.
+  ganttSvg.querySelectorAll('.bar-wrapper[data-id]').forEach(wrap => {
+    const id = wrap.getAttribute('data-id');
+    const targetCenterY = targets[id];
+    if (targetCenterY === undefined) return;
+    const bar = wrap.querySelector('.bar');
+    if (!bar) return;
+    const currentY = +bar.getAttribute('y');
+    const barH = +bar.getAttribute('height');
+    const desiredY = targetCenterY - barH / 2;
+    const dy = desiredY - currentY;
+    if (Math.abs(dy) < 0.5) return;
+    shiftElementY(wrap, dy);
+  });
+
+  // 3. Draw faint vertical tick lines at each date column — same as the
+  //    main schedule's alignGanttToGrid. Without these the chart background
+  //    is one flat white rectangle which is what made it look "bad".
+  const oldTicks = ganttSvg.querySelector('.sdc-tick-fill');
+  if (oldTicks) oldTicks.remove();
+  const lowerTexts = [...ganttSvg.querySelectorAll('.lower-text')];
+  if (lowerTexts.length > 1) {
+    const tickGroup = document.createElementNS(SVG_NS, 'g');
+    tickGroup.setAttribute('class', 'sdc-tick-fill');
+    ganttSvg.insertBefore(tickGroup, ganttSvg.firstChild);
+    const tickTop = 60; // bottom of the date header
+    lowerTexts.forEach(t => {
+      const x = +t.getAttribute('x') || 0;
+      const ln = document.createElementNS(SVG_NS, 'line');
+      ln.setAttribute('x1', x);
+      ln.setAttribute('x2', x);
+      ln.setAttribute('y1', tickTop);
+      ln.setAttribute('y2', gridHeight);
+      ln.setAttribute('stroke', '#f1f5f9');
+      ln.setAttribute('stroke-width', '1');
+      tickGroup.appendChild(ln);
+    });
+  }
 }
 
 function renderActionsDeptDashboard(allActions, todayMs) {
@@ -10184,6 +11109,21 @@ function renderSetup() {
 
   // (Row-height now lives in the schedule toolbar — used to be a slider here.)
 
+  // Weekday marker threshold — pixels per day at which the faint dashes +
+  // M/T/W/Th/F letters appear in the Gantt header. Defaults to 8.
+  const thrInput = document.getElementById('weekday-marker-threshold');
+  if (thrInput) {
+    thrInput.value = (d.weekday_marker_threshold != null) ? d.weekday_marker_threshold : 8;
+    if (!thrInput.dataset.wired) {
+      thrInput.dataset.wired = '1';
+      thrInput.addEventListener('change', (e) => {
+        const v = Math.max(3, Math.min(40, Math.round(Number(e.target.value) || 8)));
+        e.target.value = v;
+        state.setupDraft.weekday_marker_threshold = v;
+      });
+    }
+  }
+
   // Palette
   const list = document.getElementById('palette-list');
   list.innerHTML = (d.brand_palette || []).map((c, i) => `
@@ -10825,6 +11765,7 @@ async function saveSetup() {
       api.putSetting('pct_colors',        state.setupDraft.pct_colors || PCT_COLOR_DEFAULTS),
       api.putSetting('default_financial_milestones', state.setupDraft.default_financial_milestones || []),
       api.putSetting('project_milestone_library',    state.setupDraft.project_milestone_library || []),
+      api.putSetting('weekday_marker_threshold',     state.setupDraft.weekday_marker_threshold || 8),
     ]);
     status.textContent = 'Saved. Reloading…';
     setTimeout(() => location.reload(), 250);
@@ -10891,17 +11832,12 @@ function inferredAnchorKey(t) {
 // duration but no work content (allocation 0). Lives above section 10 with the
 // PO anchor. Detected by anchor_key='backlog' (or name fallback for legacy
 // rows). No % complete pill, no drift chip, no allocation pill.
-function isBacklogTask(t) {
-  if (!t) return false;
-  // v4.69: also match on anchor_key='backlog' — the server's estimate-create
-  // INSERT was supposed to stamp it but the actual SQL leaves anchor_key
-  // NULL (legacy oversight). Either signal counts now, so a Backlog row
-  // shows in the special spine slot even if its phase_group got set or its
-  // name was tweaked. Detection order:
-  //   1. anchor_key === 'backlog'
-  //   2. name === 'backlog' AND phase_group is null
-  if (String(t.anchor_key || '').toLowerCase() === 'backlog') return true;
-  return String(t.name || '').trim().toLowerCase() === 'backlog' && !t.phase_group;
+function isBacklogTask(_) {
+  // Gutted. Backlog is no longer a special row type — just name a row
+  // "Backlog" if you want one. Every former special-case in the codebase
+  // that calls this now flows through the normal task path (the calls
+  // remain but always evaluate false, so they're effectively dead code).
+  return false;
 }
 
 // Make sure each open project has a Receipt of PO + FAT anchor task. Anchors are real
@@ -10934,32 +11870,8 @@ async function ensureAnchorsForProject(project) {
     });
     created = true;
   }
-  // v4.69: also ensure a Backlog row exists. The estimate-create flow stamps
-  // one, but template projects (and any project where the user deleted the
-  // backlog) end up without it — and the user expects to see Backlog right
-  // under Receipt of PO. Default duration: 10 business days = 2 weeks,
-  // matching the estimate-create default. Allocation 0 (no real work).
-  // Ensure a Backlog row exists per project. Auto-create when missing,
-  // no other healing — Backlog is a regular row, user can edit/delete it
-  // however they want.
-  const hasBacklog = state.tasks.some(t => t.project === project && isBacklogTask(t));
-  if (!hasBacklog) {
-    const po = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
-    const startStr = (po && po.start_date) || todayISO();
-    await api.create({
-      name: 'Backlog',
-      project,
-      is_milestone: false,
-      phase_group: null,
-      department: null,
-      sub_department: null,
-      duration_days: 10,
-      start_date: startStr,
-      end_date: addBusinessDays(startStr, 9),
-      predecessors: po ? `${po.id}FS` : null,
-    });
-    created = true;
-  }
+  // Backlog auto-create removed — Backlog is no longer a special row. If you
+  // want a Backlog row, right-click any line and add one and name it "Backlog".
   return created;
 }
 
@@ -11139,14 +12051,15 @@ function setupScrollSync() {
 }
 
 // ---------- Layout (grid width, column widths, gantt visible) ----------
-const DEFAULT_COL_WIDTHS = { line: 36, id: 50, name: 340, assignee: 110, start: 90, finish: 90, duration: 80, pred: 110, progress: 110, allocation: 52, priority: 44, notes: 200 };
+const DEFAULT_COL_WIDTHS = { line: 36, id: 50, name: 340, project: 160, assignee: 110, start: 90, finish: 90, duration: 80, pred: 110, progress: 110, allocation: 52, priority: 44, completed: 90, notes: 200 };
 // Per-column hard floors used by the resize handle. Line column is tight enough that
 // you can't drag below "the number is still legible". Allocation only ever holds "100%"
 // in the body and "ALLOC" in the header, so its floor is just-wider-than-the-header.
-const COL_MIN_WIDTHS = { line: 30, name: 80, assignee: 60, start: 70, finish: 70, duration: 50, pred: 60, progress: 60, allocation: 44, priority: 36, notes: 100 };
+const COL_MIN_WIDTHS = { line: 30, name: 80, project: 80, assignee: 60, start: 70, finish: 70, duration: 50, pred: 60, progress: 60, allocation: 44, priority: 36, completed: 70, notes: 100 };
 const COLUMN_DEFS = [
   { key: 'line',     label: '#' },
   { key: 'name',     label: 'Task' },
+  { key: 'project',  label: 'Project' },
   { key: 'assignee', label: 'Assigned To' },
   { key: 'priority', label: 'Pri' },
   { key: 'start',    label: 'Start' },
@@ -11155,6 +12068,7 @@ const COLUMN_DEFS = [
   { key: 'pred',     label: 'Predecessors' },
   { key: 'allocation', label: 'Alloc' },
   { key: 'progress', label: '% Complete' },
+  { key: 'completed', label: 'Completed' },
   { key: 'notes',    label: 'Comments' },
 ];
 // Columns we don't auto-show when introducing a column. The user can still toggle them
@@ -11163,7 +12077,7 @@ const COLUMN_DEFS = [
 // Resources view's pill is the primary editor. Progress / allocation / duration are
 // hidden because they all live as click-to-edit pills inside the Task name column now
 // (v4.27) — the dedicated columns are redundant and just eat horizontal space.
-const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority', 'progress', 'allocation', 'duration']);
+const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority', 'progress', 'allocation', 'duration', 'project']);
 
 // Bump LAYOUT_VERSION whenever we change a default column width that existing users have
 // already cached in localStorage. The migration block below resets only the affected
@@ -11224,7 +12138,7 @@ function loadLayout() {
 }
 
 function colClass(key) {
-  return key === 'start' || key === 'finish' ? 'col-date' : `col-${key}`;
+  return (key === 'start' || key === 'finish' || key === 'completed') ? 'col-date' : `col-${key}`;
 }
 
 function renderHeaders() {
@@ -11326,10 +12240,13 @@ function loadScheduleView() {
       //   'actions'  — only action items (is_action = 1).
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
         ? saved.actionsMode
-        : 'schedule'),
+        : 'combined'),
+      // View → Hide completed items. OFF by default — completed tasks stay
+      // visible with the lime outline + hash pattern until the user opts in.
+      hideCompleted: !!saved.hideCompleted,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'schedule' };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false };
   }
 }
 function saveScheduleView() {
@@ -11466,6 +12383,15 @@ function applyGanttVisibility() {
 
 function applyColumnVisibility() {
   const visible = new Set(state.layout.visibleCols);
+  // Project column is contextual:
+  //   - On a single-project tab: every row would show the same project name
+  //     in every cell — pure noise. Force-hide.
+  //   - On All Projects view OR in personal mode (which spans many projects):
+  //     show it so the user can see which job each task belongs to.
+  // This overrides whatever's in state.layout.visibleCols.
+  const onSingleProject = !!state.filters.project;
+  if (onSingleProject) visible.delete('project');
+  else if (isPersonalMode() || !state.filters.project) visible.add('project');
   document.querySelectorAll('#tasks-table [data-col]').forEach(el => {
     el.classList.toggle('col-hidden', !visible.has(el.dataset.col));
   });
@@ -11493,6 +12419,9 @@ function renderColumnsMenu() {
   menu.innerHTML = orderedKeys.map(key => {
     const def = COLUMN_DEFS.find(d => d.key === key);
     if (!def) return '';
+    // Project column is purely contextual (visible only on All Projects
+    // or in personal mode) — don't expose it as a user-toggleable entry.
+    if (def.key === 'project') return '';
     const isName = def.key === 'name';
     return `
       <div class="col-menu-row ${isName ? 'is-locked' : ''}" data-col="${def.key}" draggable="${!isName}" title="${isName ? 'Task column is always shown and always first — can\'t reorder or hide.' : 'Drag to reorder. Checkbox toggles visibility.'}">
@@ -11822,6 +12751,7 @@ function renderViewModeMenu() {
        <span class="dropdown-item-check">${active ? '✓' : ''}</span>
        <span>${label}</span>
      </button>`;
+  const hideDone = !!state.scheduleView?.hideCompleted;
   menu.innerHTML = `
     <div class="view-mode-section">
       ${item(pane === 'grid',  'grid',  'Grid only',  'pane')}
@@ -11833,6 +12763,10 @@ function renderViewModeMenu() {
       ${item(am === 'schedule', 'schedule', 'Schedule (duration tasks only)',         'actions')}
       ${item(am === 'combined', 'combined', 'Combined (scheduled + action items)',    'actions')}
       ${item(am === 'actions',  'actions',  'Actions (ad-hoc to-do items only)',      'actions')}
+    </div>
+    <div class="dropdown-sep"></div>
+    <div class="view-mode-section">
+      ${item(hideDone, 'hide-completed', 'Hide completed items', 'toggle')}
     </div>`;
   menu.querySelectorAll('[data-pane]').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -11853,6 +12787,17 @@ function renderViewModeMenu() {
         // render() doesn't touch the dropdown — sync the button label and
         // re-render the menu so the new active row gets its checkmark + tint.
         syncViewModeButton();
+        renderViewModeMenu();
+      }
+    });
+  });
+  menu.querySelectorAll('[data-toggle]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (btn.dataset.toggle === 'hide-completed') {
+        state.scheduleView.hideCompleted = !state.scheduleView.hideCompleted;
+        saveScheduleView();
+        render();
         renderViewModeMenu();
       }
     });
@@ -12045,28 +12990,64 @@ function setupPaneSegControl() {
   });
   syncPaneSegControl();
 }
+// Mode is now a dropdown — single button shows the current mode label,
+// click opens a menu with the 3 options. Combined is the default; Schedule
+// and Actions are alternate views you rarely need.
 function syncModeSegControl() {
-  const mode = state.scheduleView?.actionsMode || 'schedule';
-  document.querySelectorAll('#mode-seg .seg-btn').forEach(btn => {
-    btn.classList.toggle('is-active', btn.dataset.actionsMode === mode);
+  const btn = document.getElementById('btn-mode-menu');
+  if (!btn) return;
+  const mode = state.scheduleView?.actionsMode || 'combined';
+  const labels = { schedule: 'Schedule', combined: 'Combined', actions: 'Actions' };
+  btn.textContent = `${labels[mode] || 'Combined'} ▾`;
+}
+function renderModeMenu() {
+  const menu = document.getElementById('mode-menu');
+  if (!menu) return;
+  const mode = state.scheduleView?.actionsMode || 'combined';
+  const item = (val, label, desc) =>
+    `<button type="button" class="dropdown-item ${mode === val ? 'is-active' : ''}" data-mode="${val}" title="${escapeHtml(desc)}">
+       <span class="dropdown-item-check">${mode === val ? '✓' : ''}</span>
+       <span>${label}</span>
+     </button>`;
+  menu.innerHTML = `
+    ${item('combined', 'Combined', 'Schedule rows AND action items together — the default view.')}
+    ${item('schedule', 'Schedule', 'Only the duration-based scheduled tasks.')}
+    ${item('actions',  'Actions',  'Only the ad-hoc to-do action items.')}
+  `;
+  menu.querySelectorAll('[data-mode]').forEach(b => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const m = b.dataset.mode;
+      if (state.scheduleView.actionsMode !== m) {
+        state.scheduleView.actionsMode = m;
+        saveScheduleView();
+        syncModeSegControl();
+        renderModeMenu();
+        render();
+      }
+      menu.classList.add('hidden');
+    });
   });
 }
 function setupModeSegControl() {
-  const seg = document.getElementById('mode-seg');
-  if (!seg) return;
-  seg.querySelectorAll('.seg-btn[data-actions-mode]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const m = btn.dataset.actionsMode;
-      if (!['schedule', 'combined', 'actions'].includes(m)) return;
-      if (state.scheduleView.actionsMode === m) return;
-      state.scheduleView.actionsMode = m;
-      saveScheduleView();
-      syncModeSegControl();
-      render();
-    });
-  });
+  const btn = document.getElementById('btn-mode-menu');
+  const menu = document.getElementById('mode-menu');
+  if (!btn || !menu) return;
   syncModeSegControl();
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const opening = menu.classList.contains('hidden');
+    document.querySelectorAll('.dropdown-menu').forEach(m => { if (m !== menu) m.classList.add('hidden'); });
+    if (opening) {
+      renderModeMenu();
+      menu.classList.remove('hidden');
+    } else {
+      menu.classList.add('hidden');
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.contains(e.target) && e.target !== btn) menu.classList.add('hidden');
+  });
 }
 
 function setPaneMode(mode) {
@@ -12153,14 +13134,14 @@ function setupRevisionPill() {
   `;
 
   const positionPopover = () => {
-    const r = btn.getBoundingClientRect();
-    pop.style.top = (r.bottom + 6) + 'px';
-    // Anchor to the right edge of the button, then clamp into the viewport.
-    const popW = pop.offsetWidth || 380;
-    let left = r.right - popW;
-    if (left < 8) left = 8;
-    if (left + popW > window.innerWidth - 8) left = window.innerWidth - popW - 8;
-    pop.style.left = left + 'px';
+    // Center on the viewport so the popover is always fully visible —
+    // previously we anchored it BELOW the button, which on smaller
+    // screens (or with a long topbar) put the popover off the bottom
+    // of the page where it couldn't be reached.
+    const popW = pop.offsetWidth || 480;
+    const popH = pop.offsetHeight || Math.min(window.innerHeight * 0.7, 600);
+    pop.style.left = Math.max(8, Math.round((window.innerWidth - popW) / 2)) + 'px';
+    pop.style.top  = Math.max(8, Math.round((window.innerHeight - popH) / 2)) + 'px';
   };
 
   btn.addEventListener('click', (e) => {
@@ -12570,6 +13551,26 @@ async function init() {
     redoBtn.addEventListener('click', performRedo);
     syncRedoButton();
   }
+  // Refresh button — re-fetches task data from the server WITHOUT a full
+  // page reload. Collapsed-section state, scroll position, layout, and
+  // filters all stay where they are because collapsedGroups + layout +
+  // filters all live in-memory (not in localStorage that gets re-read on
+  // boot). Use this when someone adds an action from elsewhere and you
+  // want it to appear on your schedule, without losing your view.
+  const refreshBtn = document.getElementById('btn-refresh');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      refreshBtn.disabled = true;
+      const orig = refreshBtn.textContent;
+      refreshBtn.textContent = '…';
+      try {
+        await loadTasks();
+      } finally {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = orig;
+      }
+    });
+  }
   // "👤 For Customer" — toggles a clean customer-facing view by adding the
   // body.customer-view class. CSS hides the toolbar / tabs / extra columns;
   // JS forces pane=both and runs zoomToFit so the customer sees grid + Gantt
@@ -12655,9 +13656,15 @@ async function init() {
     if (zoomScheduled) return;
     zoomScheduled = true;
     requestAnimationFrame(() => {
-      setZoom(state.zoomPercent * pendingFactor);
-      pendingFactor = 1;
-      zoomScheduled = false;
+      // try/finally so any exception inside setZoom or the rendering chain
+      // doesn't leave zoomScheduled stuck at true forever — that bug froze
+      // the wheel zoom after the first scroll.
+      try {
+        setZoom(state.zoomPercent * pendingFactor);
+      } finally {
+        pendingFactor = 1;
+        zoomScheduled = false;
+      }
     });
   };
   document.getElementById('schedule-gantt').addEventListener('wheel', onZoomWheel, { passive: false });
@@ -12670,7 +13677,14 @@ async function init() {
   });
 
   loadTasks();
-  loadTeam();
+  // After team loads, if a personId is persisted from a prior session,
+  // route into personal mode (assignee filter + schedule view + banner).
+  // Team has to be loaded first so the member name can be resolved.
+  loadTeam().then(() => {
+    if (_actionsPageState.personId != null) {
+      routePersonalMode(_actionsPageState.personId);
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

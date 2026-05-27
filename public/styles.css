@@ -532,7 +532,20 @@ body {
 .project-tab-dot-active { background: #befa4f; }   /* SDC lime */
 .project-tab-dot-sales  { background: #AACEE8; }   /* SDC light blue */
 .project-tab-dot-closed { background: #FFDE51; }   /* SDC yellow */
+.project-tab-dot-personal { background: var(--sdc-primary, #1574c4); } /* SDC blue */
 .project-tab.is-all { font-style: italic; }
+/* Personal-mode tab — distinguishes a "signed in" pseudo-tab from regular
+   project tabs. Pinned at position 0, with a blue accent that matches the
+   personal banner. Active state gets a thicker lime underline so it's
+   unmistakably the current view. */
+.project-tab.is-personal {
+  font-weight: 700;
+  color: #0f172a;
+}
+.project-tab.is-personal.active {
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 14%, white);
+  border-bottom: 2px solid var(--sdc-primary, #1574c4);
+}
 /* Drag-to-reorder states. The All-projects pseudo-tab is non-draggable so
    these never apply to it. */
 .project-tab[draggable="true"] { cursor: grab; }
@@ -1435,10 +1448,11 @@ body.customer-view .customer-view-flatten.is-active {
   color: var(--text);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28);
   padding: 0;
-  width: 380px;
-  max-height: 70vh;
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  max-height: 80vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -2060,6 +2074,16 @@ input[type="number"] {
 .schedule-split.gantt-hidden .schedule-divider,
 .schedule-split.gantt-hidden .schedule-gantt { display: none; }
 .schedule-split.gantt-hidden .schedule-grid { width: 100% !important; flex: 1; }
+/* In Grid-only mode the table needs to fill the full panel width so the
+   row backgrounds + striping + borders extend all the way across — no
+   "table ends here, empty panel starts" visual gap on the right.
+   applyColWidths sets table.style.width to the EXACT sum of column
+   widths (e.g. 870px), which is why the table was looking cropped.
+   Override that inline width with 100% via !important; col widths from
+   the colgroup are still respected, browser distributes any extra width
+   into the trailing space inside the table (so the row stripes/borders
+   extend cleanly to the right edge). */
+.schedule-split.gantt-hidden #tasks-table { width: 100% !important; }
 
 /* Gantt-only mode — symmetric with gantt-hidden, but the OTHER direction: the grid
    panel and the split-divider disappear, and the Gantt expands to fill the panel. */
@@ -2660,41 +2684,12 @@ body.duration-link-pick-mode .name-cell-dur:hover {
   background: rgba(190, 250, 79, 0.25);
 }
 
-/* v4.45: completed (progress >= 100) DURATION tasks render with the
-   SDC-lime outline + diagonal hash pattern across every cell so the
-   entire row reads as "done" at a glance. The Filters popover "Show
-   completed" toggle controls whether they're filtered out entirely;
-   when shown, this styling makes them visually distinct from active
-   work. */
-tbody tr.task-done td {
-  background: repeating-linear-gradient(
-    -45deg,
-    transparent 0,
-    transparent 6px,
-    rgba(190, 250, 79, 0.22) 6px,
-    rgba(190, 250, 79, 0.22) 10px
-  );
-  box-shadow:
-    inset 0 1px 0 var(--anchor-fill, #befa4f),
-    inset 0 -1px 0 var(--anchor-fill, #befa4f);
-}
-/* First and last TDs in the row get the side lime borders too so the
-   outline wraps the whole row uniformly. */
-tbody tr.task-done td:first-child {
-  box-shadow:
-    inset 0 1px 0 var(--anchor-fill, #befa4f),
-    inset 0 -1px 0 var(--anchor-fill, #befa4f),
-    inset 1px 0 0 var(--anchor-fill, #befa4f);
-}
-tbody tr.task-done td:last-child {
-  box-shadow:
-    inset 0 1px 0 var(--anchor-fill, #befa4f),
-    inset 0 -1px 0 var(--anchor-fill, #befa4f),
-    inset -1px 0 0 var(--anchor-fill, #befa4f);
-}
-/* The matching Gantt bar gets the lime outline + hash pattern too —
-   see drawScheduleStatus / clipBarLabels for the corresponding paint
-   when the bar has class .is-done (frappe-gantt adds it). */
+/* Completed (progress >= 100) DURATION tasks: the row itself stays
+   identical to active work — no hash pattern, no lime border across the
+   cells. The green-check % pill on the name column already signals
+   "done" in the grid. The matching Gantt bar gets the lime outline (see
+   injectPhaseStyles' doneRule) which is where the visual "this is done"
+   actually belongs. */
 
 /* v4.46/v4.47: action items render with an italic + SDC-BLUE task name
    so they pop visibly against the scheduled rows (regular black, upright).
@@ -3992,13 +3987,29 @@ body.customer-view .schedule-footer { display: none; }
    field-stacks so the inputs line up with the list columns visually. */
 .actions-quickadd {
   display: flex;
-  align-items: flex-end;
+  /* align-items: stretch keeps all fields at the same TOP edge so their
+     LABELS line up perfectly across the row. flex-end (previous) was
+     anchoring each field to the bottom — selects and inputs have
+     slightly different intrinsic heights, so the labels floated up to
+     mismatched positions (visible as the "WHERE label sticks up"
+     problem). stretch + uniform control height fixes it. */
+  align-items: stretch;
   gap: 8px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 12px;
-  flex-wrap: wrap;
+  /* Stay on ONE line. Fields shrink if needed; the title field absorbs
+     the remaining width. Add Action button never falls to a second row. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+/* Uniform control height inside the quick-add bar so all rows line up. */
+.actions-quickadd input,
+.actions-quickadd select,
+.actions-quickadd button {
+  height: 34px;
+  box-sizing: border-box;
 }
 .actions-qa-field {
   display: flex;
@@ -4007,8 +4018,8 @@ body.customer-view .schedule-footer { display: none; }
   flex: 0 0 auto;
 }
 .actions-qa-field-title {
-  flex: 1 1 240px;
-  min-width: 180px;
+  flex: 5 1 380px;
+  min-width: 280px;
 }
 .actions-qa-field-submit { justify-content: flex-end; }
 .actions-qa-label {
@@ -4229,12 +4240,235 @@ body.customer-view .schedule-footer { display: none; }
 }
 .actions-person-gantt:empty { display: none; }
 
+/* Sign-in entry point moved to the All-projects banner — hide the entire
+   stale "top section" of the Actions tab. The Departments dashboard /
+   action list below stays as the manager view. */
+.actions-person-bar,
+.actions-person-summary,
+.actions-personal-wrap,
+.actions-page > .actions-section-divider { display: none !important; }
+
+/* Sign-in picker on the All-projects banner — entry point into personal
+   mode. Sits inline with the "All projects" label and the optional
+   "Save all as one project" button. */
+.banner-signin-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 14px;
+  padding: 4px 10px;
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 8%, white);
+  border: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 35%, transparent);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.banner-signin-label { font-weight: 700; color: #334155; text-transform: uppercase; letter-spacing: 0.04em; }
+.banner-signin-pick {
+  padding: 4px 8px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 5px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Multi-project filter button + popup on the All-projects banner. */
+.banner-projects-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  padding: 4px 10px;
+  background: white;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  position: relative;
+}
+.banner-projects-btn:hover { background: #f1f5f9; }
+.banner-projects-btn.is-active {
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 30%, white);
+  border-color: color-mix(in srgb, var(--sdc-accent, #c1f53e) 60%, black);
+}
+.banner-projects-label { font-weight: 700; color: #334155; text-transform: uppercase; letter-spacing: 0.04em; }
+.banner-projects-value { color: #0f172a; font-weight: 600; }
+.banner-projects-caret { color: #64748b; font-size: 10px; }
+.banner-projects-popup {
+  position: absolute;
+  z-index: 50;
+  min-width: 280px;
+  max-width: 480px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: white;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.15);
+  padding: 0;
+  margin-top: 4px;
+}
+.banner-projects-popup.hidden { display: none; }
+.bpp-header {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 8px 8px 0 0;
+}
+.bpp-action {
+  padding: 3px 10px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  color: #334155;
+}
+.bpp-action:hover { background: #e2e8f0; }
+.bpp-body { padding: 4px 0; }
+.bpp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.bpp-row:hover { background: #f1f5f9; }
+.bpp-name { color: #0f172a; }
+.bpp-empty {
+  padding: 12px;
+  font-style: italic;
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* Personal mode: hide the Predecessors column. We're looking at one
+   person across many projects — predecessors are intra-project relationships
+   that don't carry meaning here. Hides both the header cell and every body
+   cell at once via the [data-col="pred"] attribute. */
+body.personal-mode #tasks-table [data-col="pred"] { display: none !important; }
+body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !important; }
+
+/* Personal-mode banner on the main Schedule view — visible only when
+   signed in via the Actions tab person picker. Sticky-feel strip above the
+   toolbar with the person's name, personal-filter chips, and a Clear
+   button to return to the regular Actions tab. */
+.schedule-personal-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 22%, white);
+  border-bottom: 2px solid color-mix(in srgb, var(--sdc-accent, #c1f53e) 60%, transparent);
+  font-size: 13px;
+}
+.schedule-personal-banner[hidden] { display: none; }
+.spb-label { font-weight: 700; color: #334155; text-transform: uppercase; font-size: 11px; letter-spacing: 0.04em; }
+.spb-name { font-weight: 700; color: #0f172a; font-size: 14px; }
+.spb-chip {
+  padding: 4px 10px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+  color: #334155;
+}
+.spb-chip:hover { background: #f1f5f9; }
+.spb-chip.is-active {
+  background: var(--sdc-accent, #c1f53e);
+  border-color: color-mix(in srgb, var(--sdc-accent, #c1f53e) 60%, black);
+  color: #1a1f0a;
+}
+.spb-clear {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #475569;
+}
+.spb-clear:hover { background: #fee2e2; border-color: #fca5a5; color: #b91c1c; }
+
+/* Personal-view wrapper holds the toolbar + the grid/gantt split. The
+   wrapper is empty (no toolbar, no panes) when nobody is signed in. */
+.actions-personal-wrap:empty { display: none; }
+.actions-personal-wrap { margin: 14px 0 8px; }
+.actions-personal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 18%, white);
+  border-radius: 8px 8px 0 0;
+  border: 1px solid color-mix(in srgb, var(--sdc-accent, #c1f53e) 40%, transparent);
+  border-bottom: none;
+}
+.actions-personal-toolbar:empty { display: none; }
+.apl-pane-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  margin-right: 4px;
+}
+.apl-pane-btn {
+  padding: 4px 12px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+  color: #334155;
+}
+.apl-pane-btn:hover { background: #f1f5f9; }
+.apl-pane-btn.is-active {
+  background: var(--sdc-accent, #c1f53e);
+  border-color: color-mix(in srgb, var(--sdc-accent, #c1f53e) 60%, black);
+  color: #1a1f0a;
+}
+.actions-personal-split {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  align-items: stretch;
+}
+.actions-personal-wrap.is-both .actions-personal-list,
+.actions-personal-wrap.is-both .actions-personal-gantt {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+.actions-personal-wrap.is-grid  .actions-personal-list  { flex: 1; }
+.actions-personal-wrap.is-gantt .actions-personal-gantt { flex: 1; }
+/* Visibility — driven by the wrapper's pane class. */
+.actions-personal-wrap.is-grid  .actions-personal-gantt { display: none; }
+.actions-personal-wrap.is-gantt .actions-personal-list  { display: none; }
+.actions-personal-gantt {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 280px;
+  /* Click-drag panning needs a scrollable ancestor to walk into. */
+  overflow: auto;
+  cursor: grab;
+}
+.actions-personal-gantt.panning { cursor: grabbing; }
+
 /* Personal Assignments list — shown on the Actions tab when a person
    is signed in. Simple grouped list of their tasks + actions by
    section. No department headers, no extras. */
 .actions-personal-list:empty { display: none; }
 .actions-personal-list {
-  margin: 14px 0 8px;
+  margin: 0;
 }
 .apl-title-row {
   display: flex;
@@ -4292,6 +4526,25 @@ body.customer-view .schedule-footer { display: none; }
   display: flex;
   flex-direction: column;
 }
+.apl-col-header {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) 60px 90px;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 12px;
+  background: #f1f5f9;
+  border-bottom: 2px solid var(--border, #cbd5e1);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.apl-col-header > span:nth-child(3),
+.apl-col-header > span:nth-child(4) { text-align: right; }
 .apl-row {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) 60px 90px;
