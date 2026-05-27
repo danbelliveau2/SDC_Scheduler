@@ -1,4 +1,4 @@
-/* SDC Scheduler theme. Brand colors come from /api/settings (seeded with sdcautomation.com palette).
+﻿/* SDC Scheduler theme. Brand colors come from /api/settings (seeded with sdcautomation.com palette).
    These :root values are fallbacks before settings load. */
 :root {
   /* Brand (overridden by JS from settings.theme) */
@@ -2145,8 +2145,8 @@ input[type="number"] {
   font-weight: 600;
 }
 /* Gantt panel is grabbable for click-and-drag pan; bars get their own cursor. */
-.schedule-gantt { cursor: grab; }
-.schedule-gantt.panning { cursor: grabbing; }
+.schedule-gantt { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M20 8.5V14c0 3.31-2.69 6-6 6h-2.5A5.5 5.5 0 0 1 6 14.5V9c0-.83.67-1.5 1.5-1.5S9 8.17 9 9v3c0 .28.22.5.5.5s.5-.22.5-.5V6c0-.83.67-1.5 1.5-1.5S13 5.17 13 6v6c0 .28.22.5.5.5s.5-.22.5-.5V5c0-.83.67-1.5 1.5-1.5S17 4.17 17 5v7c0 .28.22.5.5.5s.5-.22.5-.5V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5z'/%3E%3C/svg%3E") 8 0, grab; }
+.schedule-gantt.panning { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M21 12.5v2c0 3.31-2.69 6-6 6H12.5A5.5 5.5 0 0 1 7 15v-2.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v2z'/%3E%3C/svg%3E") 8 8, grabbing; }
 /* While drag-panning the grid, lock out text selection across the whole panel so
    headers / group rows don't pick up a blue highlight when the drag hits the
    scroll edge. Inputs / textareas re-enable selection naturally so cell editing
@@ -3250,8 +3250,8 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 }
 
 /* Grid click-drag pan: change cursor while panning, suppress text selection. */
-.schedule-grid.panning { cursor: grabbing; user-select: none; }
-.schedule-grid.panning * { cursor: grabbing !important; user-select: none; }
+.schedule-grid.panning { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M21 12.5v2c0 3.31-2.69 6-6 6H12.5A5.5 5.5 0 0 1 7 15v-2.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v2z'/%3E%3C/svg%3E") 8 8, grabbing; user-select: none; }
+.schedule-grid.panning * { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M21 12.5v2c0 3.31-2.69 6-6 6H12.5A5.5 5.5 0 0 1 7 15v-2.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v2z'/%3E%3C/svg%3E") 8 8, grabbing !important; user-select: none; }
 
 /* Section picker popover (anchored to + New Task button) */
 .section-picker {
@@ -4459,9 +4459,9 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
   min-height: 280px;
   /* Click-drag panning needs a scrollable ancestor to walk into. */
   overflow: auto;
-  cursor: grab;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M20 8.5V14c0 3.31-2.69 6-6 6h-2.5A5.5 5.5 0 0 1 6 14.5V9c0-.83.67-1.5 1.5-1.5S9 8.17 9 9v3c0 .28.22.5.5.5s.5-.22.5-.5V6c0-.83.67-1.5 1.5-1.5S13 5.17 13 6v6c0 .28.22.5.5.5s.5-.22.5-.5V5c0-.83.67-1.5 1.5-1.5S17 4.17 17 5v7c0 .28.22.5.5.5s.5-.22.5-.5V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5z'/%3E%3C/svg%3E") 8 0, grab;
 }
-.actions-personal-gantt.panning { cursor: grabbing; }
+.actions-personal-gantt.panning { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M21 12.5v2c0 3.31-2.69 6-6 6H12.5A5.5 5.5 0 0 1 7 15v-2.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v2z'/%3E%3C/svg%3E") 8 8, grabbing; }
 
 /* Personal Assignments list — shown on the Actions tab when a person
    is signed in. Simple grouped list of their tasks + actions by
@@ -6577,10 +6577,10 @@ td.sales-suppressed {
   padding: 4px 0 12px;
   background: var(--surface);
   position: relative;
-  cursor: grab;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M20 8.5V14c0 3.31-2.69 6-6 6h-2.5A5.5 5.5 0 0 1 6 14.5V9c0-.83.67-1.5 1.5-1.5S9 8.17 9 9v3c0 .28.22.5.5.5s.5-.22.5-.5V6c0-.83.67-1.5 1.5-1.5S13 5.17 13 6v6c0 .28.22.5.5.5s.5-.22.5-.5V5c0-.83.67-1.5 1.5-1.5S17 4.17 17 5v7c0 .28.22.5.5.5s.5-.22.5-.5V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5z'/%3E%3C/svg%3E") 8 0, grab;
 }
 .resources-body.panning,
-.resources-body.panning * { cursor: grabbing !important; user-select: none; }
+.resources-body.panning * { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath fill='%23000' d='M21 12.5v2c0 3.31-2.69 6-6 6H12.5A5.5 5.5 0 0 1 7 15v-2.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v-1c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v2z'/%3E%3C/svg%3E") 8 8, grabbing !important; user-select: none; }
 /* Keep the cursor pointing at things you can actually click — don't grab on the name col. */
 .resources-name-cell, .resources-name-cell * { cursor: default; }
 .res-bar { cursor: pointer; }

@@ -1,4 +1,4 @@
-const api = {
+﻿const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
   create: (data) => fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
   update: (id, data) => fetch(`/api/tasks/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
@@ -4792,10 +4792,8 @@ function loadProjectTabs() {
   if (Array.isArray(saved) && saved.length) {
     state.openProjects = saved.includes('') ? saved : ['', ...saved];
   } else {
-    // First-time seed: show All + every project that already has tasks. After this we
-    // never auto-modify; the user explicitly opens/closes from the picker.
-    const existing = uniqueValues('project');
-    state.openProjects = ['', ...existing];
+    // First-time seed: only open the All-projects pseudo-tab.
+    state.openProjects = [''];
   }
   const savedActive = localStorage.getItem('sdcActiveProject');
   state.filters.project = (savedActive != null && state.openProjects.includes(savedActive))
@@ -13485,7 +13483,7 @@ async function init() {
   // a schedule. Right-click → legacy picker fallback (the estimate +
   // Smartsheet flows still live there until they're migrated to the panel).
   document.getElementById('btn-add-project').addEventListener('click', () => {
-    openSidebarPanel('workspaces');
+    showProjectAddPicker();
   });
   document.getElementById('btn-add-project').addEventListener('contextmenu', (e) => {
     e.preventDefault();
