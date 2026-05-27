@@ -4789,10 +4789,18 @@ function renderFilters() {
 function loadProjectTabs() {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('sdcOpenProjects') || 'null'); } catch {}
+  // v2 migration: trim bloated tab lists left over from the old auto-seed behaviour.
+  // Runs once per browser — keeps All projects + the last active project only.
+  if (localStorage.getItem('sdcTabsVersion') !== '2') {
+    const activeBeforeMigration = localStorage.getItem('sdcActiveProject');
+    if (Array.isArray(saved) && saved.length > 2) {
+      saved = activeBeforeMigration ? ['', activeBeforeMigration] : [''];
+    }
+    localStorage.setItem('sdcTabsVersion', '2');
+  }
   if (Array.isArray(saved) && saved.length) {
     state.openProjects = saved.includes('') ? saved : ['', ...saved];
   } else {
-    // First-time seed: only open the All-projects pseudo-tab.
     state.openProjects = [''];
   }
   const savedActive = localStorage.getItem('sdcActiveProject');
