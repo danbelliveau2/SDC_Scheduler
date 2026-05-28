@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '7.2',
+    date: '2026-05-28',
+    notes: [
+      'Zoom range bump + fix Month/Week mode-flip jump.',
+      '',
+      '   ▸ Friendly zoom range widened: zoom 1 = 10% (was 15%), zoom 10 = 145% (was 135%). Wheel + stepper both clamp to the new bounds.',
+      '   ▸ Fixed: zooming from level 2 to 3 used to "jump" the chart sideways because the Month→Week mode flip uses a different gantt_start and the scroll-restore math was based on calendar-day positions, but the work-day compression had already shifted everything. Scroll restoration now uses work-day offset so the same date stays under the viewport center across mode flips.',
+      '',
+    ],
+  },
+  {
     version: '7.1',
     date: '2026-05-28',
     notes: [

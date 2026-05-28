@@ -423,8 +423,8 @@ const VIEW_MODE_STEP_DAYS = { Day: 1, Week: 7, Month: 30 };
 // stepper so the user can't scroll past either end. ZOOM_MIN_PCT and
 // ZOOM_MAX_PCT below mirror this so the friendly stepper stays in
 // sync — adjust both together if you change the range.
-const ZOOM_MIN = 15;
-const ZOOM_MAX = 135;
+const ZOOM_MIN = 10;
+const ZOOM_MAX = 145;
 const ZOOM_STEP = 10;
 
 // 100% = 20 px/day (matches frappe-gantt's Week default of 140 / 7).
@@ -4424,8 +4424,22 @@ function setZoom(percent) {
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
     if (pxPerDay > 0) {
-      const daysFromStart = oldCenterPx / pxPerDay;
-      centerDateMs = oldStartMs + daysFromStart * 86400000;
+      // Work-day Gantt: pixel x maps to work-day index, not calendar
+      // day index. Convert by walking work days forward from gantt_start
+      // until we've accumulated the equivalent of oldCenterPx.
+      const workDaysFromStart = oldCenterPx / pxPerDay;
+      let count = 0;
+      let cursorMs = oldStartMs;
+      const targetIntegerWorkDays = Math.floor(workDaysFromStart);
+      while (count < targetIntegerWorkDays) {
+        cursorMs += 86400000;
+        const dow = new Date(cursorMs).getUTCDay();
+        if (dow !== 0 && dow !== 6) count++;
+      }
+      // Add the fractional part (within a single work day, no weekend
+      // crossing possible).
+      const fractionMs = (workDaysFromStart - targetIntegerWorkDays) * 86400000;
+      centerDateMs = cursorMs + fractionMs;
     }
   }
 
@@ -4440,19 +4454,20 @@ function setZoom(percent) {
   }
 
   // Now find that same date on the new chart and scroll so it sits at the
-  // viewport center. If gantt_start changed (mode flip can shift the padding
-  // boundary), the math still works because we re-derive everything from the
-  // new gantt's start + cw + step.
+  // viewport center. Use WORK-DAY x positioning (the same logic the bars
+  // and headers use after compressGanttToWorkDays) — otherwise a Month→
+  // Week mode flip leaves the chart visually shifted by the weekend
+  // compression delta.
   const newScroller = getGanttScroller();
   if (newScroller && centerDateMs != null && state.gantt?.gantt_start) {
     const g = state.gantt;
-    const newStartMs = new Date(g.gantt_start).getTime();
     const cw = g.options.column_width;
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
     if (pxPerDay > 0) {
-      const targetPx = ((centerDateMs - newStartMs) / 86400000) * pxPerDay;
+      const dateStr = new Date(centerDateMs).toISOString().slice(0, 10);
+      const targetPx = workDayOffset(dateStr, g.gantt_start) * pxPerDay;
       newScroller.scrollLeft = Math.max(0, targetPx - viewW / 2);
     }
   }
@@ -14258,8 +14273,8 @@ function setupViewModeDropdown() {
 //   • Zoom 10 = ~125% (max useful zoom-in)
 // Must match ZOOM_MIN / ZOOM_MAX above so wheel zoom hits the same
 // stops the +/- stepper does.
-const ZOOM_FRIENDLY_MIN_PCT = 15;
-const ZOOM_FRIENDLY_MAX_PCT = 135;
+const ZOOM_FRIENDLY_MIN_PCT = 10;
+const ZOOM_FRIENDLY_MAX_PCT = 145;
 const ZOOM_FRIENDLY_MAX_LEVEL = 10;
 const ZOOM_FRIENDLY_MULTIPLIER = Math.pow(
   ZOOM_FRIENDLY_MAX_PCT / ZOOM_FRIENDLY_MIN_PCT,
