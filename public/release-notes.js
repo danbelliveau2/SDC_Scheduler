@@ -4,6 +4,24 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '7.1',
+    date: '2026-05-28',
+    notes: [
+      'Zoom range + header polish.',
+      '',
+      'ZOOM RANGE:',
+      '   ▸ Re-scoped friendly zoom 1-10 to the useful band: zoom 1 = 15% (Month view, all months visible), zoom 10 = 135% (max useful zoom-in).',
+      '   ▸ Wheel zoom now clamps to the same range as the +/- stepper. Can\'t scroll past zoom 1 or zoom 10 in either direction.',
+      '',
+      'HEADER ADAPTIVE LABELS:',
+      '   ▸ All-or-nothing density (never every-other). Date numbers either show on EVERY Monday or none. Same for day letters.',
+      '   ▸ weekW ≥ 25 → Monday date numbers appear (~zoom 5).',
+      '   ▸ pxPerDay ≥ 12 → day letters M T W Th F appear (~zoom 7).',
+      '   ▸ Month names abbreviate progressively as columns narrow: "November" → "Nov" → "N" → hidden. Adjacent months never overlap.',
+      '',
+    ],
+  },
+  {
     version: '7.0',
     date: '2026-05-28',
     notes: [

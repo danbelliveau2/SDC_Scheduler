@@ -419,8 +419,12 @@ if (window.Gantt && !Gantt.prototype._sdcPatched) {
 // from "show me everything" all the way to "show me one day" without picking a mode.
 const VIEW_MODE_BASE_CW = { Day: 38, Week: 140, Month: 120 };
 const VIEW_MODE_STEP_DAYS = { Day: 1, Week: 7, Month: 30 };
-const ZOOM_MIN = 5;
-const ZOOM_MAX = 500;
+// Wheel + setZoom() clamp to the SAME range as the friendly 1-10
+// stepper so the user can't scroll past either end. ZOOM_MIN_PCT and
+// ZOOM_MAX_PCT below mirror this so the friendly stepper stays in
+// sync — adjust both together if you change the range.
+const ZOOM_MIN = 15;
+const ZOOM_MAX = 135;
 const ZOOM_STEP = 10;
 
 // 100% = 20 px/day (matches frappe-gantt's Week default of 140 / 7).
@@ -3029,31 +3033,43 @@ function compressGanttToWorkDays() {
 
     // Walk Mondays from the first full-week Monday through the chart's
     // right edge. For each Monday: draw a label + a vertical tick line.
+    //
+    // Adaptive density rules (all-or-nothing — never every-other):
+    //   weekW = 5 * pxPerDay (one full work-week wide on screen).
+    //   - weekW >= 25px: date numbers shown (kicks in ~zoom 3)
+    //   - weekW <  25px: date numbers SKIPPED (would crowd & overlap)
+    //   For month names, computed AFTER walking based on each month's
+    //   visible width — if < 70px, switch to short "Nov" form; if even
+    //   that doesn't fit, fall back to truncated text.
     const startMs = new Date(ganttStart).getTime();
     const startDow = new Date(startMs).getUTCDay();
     const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
+    const weekW = 5 * pxPerDay;
+    const showDateNumbers = weekW >= 25;
     let walkMs = startMs + daysToFirstMonday * 86400000;
     let lastMonthLabel = '';
-    let lastMonthStartX = -1;
-    const monthLabels = []; // [{ x, label, endX }]
+    const monthLabels = []; // [{ startX, label, monthIndex, endX }]
     while (true) {
       const walkDate = new Date(walkMs);
       const dateStr = walkDate.toISOString().slice(0, 10);
       const mondayX = workDayOffset(dateStr, ganttStart) * pxPerDay;
       if (mondayX > (+svg.getAttribute('width') || 8000)) break;
-      // Date label (day of month, with leading zero stripped)
-      const dayNum = walkDate.getUTCDate();
-      const text = document.createElementNS(SVG_NS, 'text');
-      text.setAttribute('class', 'lower-text');
-      text.setAttribute('x', String(mondayX));
-      text.setAttribute('y', String(lowerY));
-      text.style.fontFamily = 'sans-serif';
-      text.style.fontSize = '12px';
-      text.style.fontWeight = '500';
-      text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('fill', '#475569');
-      text.textContent = String(dayNum);
-      svg.appendChild(text);
+      // Date number — only when there's enough room. All-or-nothing
+      // (every Monday, or none).
+      if (showDateNumbers) {
+        const dayNum = walkDate.getUTCDate();
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('class', 'lower-text');
+        text.setAttribute('x', String(mondayX));
+        text.setAttribute('y', String(lowerY));
+        text.style.fontFamily = 'sans-serif';
+        text.style.fontSize = '12px';
+        text.style.fontWeight = '500';
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('fill', '#475569');
+        text.textContent = String(dayNum);
+        svg.appendChild(text);
+      }
       // Solid tick line at Monday
       const tick = document.createElementNS(SVG_NS, 'path');
       tick.setAttribute('class', 'tick thick');
@@ -3063,31 +3079,45 @@ function compressGanttToWorkDays() {
       svg.insertBefore(tick, svg.firstChild);
       // Track month transition for the upper strip
       const monthName = walkDate.toLocaleString(undefined, { month: 'long', timeZone: 'UTC' });
+      const monthShort = walkDate.toLocaleString(undefined, { month: 'short', timeZone: 'UTC' });
       if (monthName !== lastMonthLabel) {
-        if (lastMonthLabel) monthLabels[monthLabels.length - 1].endX = mondayX;
-        monthLabels.push({ x: mondayX, label: monthName, endX: 0 });
+        if (monthLabels.length) monthLabels[monthLabels.length - 1].endX = mondayX;
+        monthLabels.push({ startX: mondayX, label: monthName, short: monthShort, endX: 0 });
         lastMonthLabel = monthName;
-        lastMonthStartX = mondayX;
       }
       walkMs += 7 * 86400000;
     }
     // Close the last month label
     if (monthLabels.length) {
-      monthLabels[monthLabels.length - 1].endX = +svg.getAttribute('width') || (lastMonthStartX + 400);
+      monthLabels[monthLabels.length - 1].endX = +svg.getAttribute('width') || (monthLabels[monthLabels.length - 1].startX + weekW * 4);
     }
-    // Draw month strip
+    // Draw month strip with adaptive label form. Measure each month's
+    // available width and pick: full name / short name / single letter /
+    // hidden. Truncate with a left-anchored ellipsis if even single
+    // letters can't fit (rare).
     for (const m of monthLabels) {
+      const w = m.endX - m.startX;
+      // Estimated character width at 13px sans-serif: ~7px per character.
+      const fullW  = m.label.length * 7 + 8;
+      const shortW = m.short.length * 7 + 8;
+      let labelText = '';
+      let fontSize = '13px';
+      if (w >= fullW)       labelText = m.label;
+      else if (w >= shortW) labelText = m.short;
+      else if (w >= 12)     { labelText = m.short.charAt(0); fontSize = '12px'; }
+      else                  labelText = ''; // skip — too tight
+      if (!labelText) continue;
       const text = document.createElementNS(SVG_NS, 'text');
       text.setAttribute('class', 'upper-text');
-      const cx = (m.x + m.endX) / 2;
+      const cx = (m.startX + m.endX) / 2;
       text.setAttribute('x', String(cx));
       text.setAttribute('y', String(upperY));
       text.style.fontFamily = 'sans-serif';
-      text.style.fontSize = '13px';
+      text.style.fontSize = fontSize;
       text.style.fontWeight = '600';
       text.setAttribute('text-anchor', 'middle');
       text.setAttribute('fill', '#0f172a');
-      text.textContent = m.label;
+      text.textContent = labelText;
       svg.appendChild(text);
     }
 
@@ -3129,11 +3159,14 @@ function drawWeekdayLetters() {
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
-    // Threshold (px/day) at which the markers appear. Configurable on
-    // Setup → Gantt Weekday Markers. Default 8.
+    // Day letters appear only when one full work-week occupies enough
+    // pixels to read M T W Th F without overlap. weekW = 5 * pxPerDay.
+    // Threshold of 60 = pxPerDay 12 — that's around zoom level 7 in
+    // the friendly stepper, which matches what the user expects.
+    // Configurable on Setup → Gantt Weekday Markers (default 12 px/day).
     const threshold = (state.settings?.weekday_marker_threshold != null)
       ? Number(state.settings.weekday_marker_threshold)
-      : 8;
+      : 12;
     if (pxPerDay < threshold) return;
 
     const totalWidth = +svg.getAttribute('width') ||
@@ -10093,7 +10126,7 @@ async function loadSettings() {
   if (!state.settings.section_colors)    state.settings.section_colors    = { ...SECTION_COLOR_DEFAULTS };
   if (!state.settings.hierarchy_colors)  state.settings.hierarchy_colors  = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   if (!state.settings.anchor_color)      state.settings.anchor_color      = { ...ANCHOR_COLOR_DEFAULTS };
-  if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 8;
+  if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 12;
   // Always normalize — older builds saved { key → { fill, text } } objects;
   // current shape is { key → "#hex" }. normalizePctColors handles both.
   state.settings.pct_colors = normalizePctColors(state.settings.pct_colors);
@@ -14217,8 +14250,16 @@ function setupViewModeDropdown() {
 //     10 → 225.6%
 //   getZoomConfig auto-switches Month/Week/Day based on pct, so the time
 //   scale follows the zoom level automatically without a separate selector.
-const ZOOM_FRIENDLY_MIN_PCT = 5;
-const ZOOM_FRIENDLY_MAX_PCT = 250;
+// Friendly zoom range — 10 steps mapped exponentially over the
+// "usable" pct range. Anchored so that:
+//   • Zoom 1  = ~25% (Week mode, months still fit without overlap)
+//   • Zoom 3  = ~36% (Monday date numbers start appearing — weekW ≥ 35)
+//   • Zoom 6-7 = ~60-73% (day letters T/W/Th/F start appearing — weekW ≥ 60)
+//   • Zoom 10 = ~125% (max useful zoom-in)
+// Must match ZOOM_MIN / ZOOM_MAX above so wheel zoom hits the same
+// stops the +/- stepper does.
+const ZOOM_FRIENDLY_MIN_PCT = 15;
+const ZOOM_FRIENDLY_MAX_PCT = 135;
 const ZOOM_FRIENDLY_MAX_LEVEL = 10;
 const ZOOM_FRIENDLY_MULTIPLIER = Math.pow(
   ZOOM_FRIENDLY_MAX_PCT / ZOOM_FRIENDLY_MIN_PCT,
