@@ -1,4 +1,4 @@
-﻿const api = {
+const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
   create: (data) => fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
   update: (id, data) => fetch(`/api/tasks/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
@@ -79,6 +79,19 @@ const state = {
   tasks: [],
   team: [],
   view: 'schedule',
+  // Active machine-clone session. When set, every source-machine row in
+  // the grid becomes click-selectable (single click toggles inclusion,
+  // double-click on a selected row opens an inline editor for a custom
+  // predecessor string). A sticky banner sits at the top with the name
+  // input + Complete / Cancel buttons. Shape:
+  //   {
+  //     sourceMachine,
+  //     targetName,
+  //     includeIds: Set<number>,
+  //     customPredecessors: Map<number, string>,  // source task id → typed pred
+  //   }
+  // null when not cloning.
+  cloneMode: null,
   filters: {
     search: '', project: '', phase: '', assignee: '',
     // PM view: when on the All-projects tab, narrow to a subset of projects.
@@ -89,6 +102,13 @@ const state = {
       try { return JSON.parse(localStorage.getItem('sdcProjectsSubset') || '[]') || []; }
       catch { return []; }
     })(),
+    // Multi-machine projects: when active project has machine-tagged tasks,
+    // sub-tabs let the user filter to one or more machines. Empty = "All
+    // machines" (shows every task in the project including shared work).
+    // Non-empty = show only tasks whose machine value is in the subset PLUS
+    // all shared (machine=null) work. Stored per-project in localStorage
+    // since each project's machine set is independent.
+    machinesSubset: [],
     // Quick chip filters in the popover — each is a boolean toggle. Anchors are
     // exempt (always shown) so the schedule spine stays visible when filtering.
     quick: { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false },
@@ -227,7 +247,12 @@ function predParse(displayString) {
 // operations, so predecessor displays never flip to "?id" just because a section is
 // folded up.
 function buildCanonicalTaskOrder() {
-  const filtered = applyFilters(state.tasks);
+  // Line numbers should stay STABLE when the user flips between machine
+  // pills (All / M1 / M2). Otherwise M2.Builder-1 would be "line 1" in
+  // M2 view and "line 24" in All view — and the user references those
+  // numbers in predecessors, so they have to point to the same row
+  // either way.
+  const filtered = applyFilters(state.tasks, { ignoreMachineSubset: true });
   const buckets = {};
   // Mech 1 Release + Machine Power-Up flow through their hierarchy bucket; all
   // other anchors render at fixed spine positions outside the walk.
@@ -254,9 +279,27 @@ function buildCanonicalTaskOrder() {
     const list = candidates.filter(([, k]) => k === key).map(([t]) => t);
     return list.length ? list.reduce((a, b) => (a.id < b.id ? a : b)) : null;
   };
-  const receiptAnchor = pickOldest('receipt_of_po');
-  const fatAnchor     = pickOldest('fat');
-  const shipAnchor    = pickOldest('ship_machine');
+  // Spine anchors: in a multi-machine project, each machine has its OWN
+  // FAT / Ship Machine / Power-Up. We need ALL of them in the canonical
+  // order, not just the oldest one (otherwise M2's FAT etc. never make
+  // it onto the Gantt). Receipt of PO stays shared so a single instance
+  // is fine. Sort each set by machine name (with shared/null first) so
+  // they render in a predictable order at their spine slot.
+  const pickAll = (key) => {
+    const list = candidates.filter(([, k]) => k === key).map(([t]) => t);
+    return list.sort((a, b) => {
+      // Shared (machine=null) comes first, then numeric-aware machine name.
+      const ma = a.machine || '';
+      const mb = b.machine || '';
+      if (ma === mb) return a.id - b.id;
+      if (!ma) return -1;
+      if (!mb) return  1;
+      return ma.localeCompare(mb, undefined, { numeric: true });
+    });
+  };
+  const receiptAnchor = pickOldest('receipt_of_po'); // single shared anchor
+  const fatAnchors    = pickAll('fat');
+  const shipAnchors   = pickAll('ship_machine');
 
   const order = [];
   if (receiptAnchor) order.push(receiptAnchor.id);
@@ -281,19 +324,21 @@ function buildCanonicalTaskOrder() {
       sortBucket(sectionTasks);
       let shipDropped = false;
       for (const t of sectionTasks) {
-        if (group.key === 'teardown_install' && shipAnchor && !shipDropped && t.department === 'install') {
-          order.push(shipAnchor.id);
+        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
+          for (const s of shipAnchors) order.push(s.id);
           shipDropped = true;
         }
         order.push(t.id);
       }
-      if (group.key === 'teardown_install' && shipAnchor && !shipDropped) order.push(shipAnchor.id);
+      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
+        for (const s of shipAnchors) order.push(s.id);
+      }
     } else {
       const groupLevelTasks = buckets[groupPath(group.key)] || [];
       for (const t of groupLevelTasks) order.push(t.id);
       for (const dept of group.departments) {
-        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchor) {
-          order.push(shipAnchor.id);
+        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length) {
+          for (const s of shipAnchors) order.push(s.id);
         }
         const dPath = groupPath(group.key, dept.key);
         if (dept.subs.length > 0) {
@@ -308,7 +353,9 @@ function buildCanonicalTaskOrder() {
         }
       }
     }
-    if (group.key === 'machine_testing' && fatAnchor) order.push(fatAnchor.id);
+    if (group.key === 'machine_testing' && fatAnchors.length) {
+      for (const f of fatAnchors) order.push(f.id);
+    }
   }
   return order;
 }
@@ -727,9 +774,17 @@ function uniqueValues(field) {
 //     durations yet (fresh project).
 //   - fatVariance: business-day signed offset between current FAT anchor's
 //     start_date and its baseline_start_date. null when no baseline is set.
-function computeProjectStats(project) {
+function computeProjectStats(project, machine) {
+  // When `machine` is set (e.g. 'M2'), restrict % complete + FAT to that
+  // machine's tasks. Shared (machine=null) tasks always count for the
+  // overall project stats. With no machine arg, behaves as before.
   if (!project) return { percentComplete: null, fatVariance: null };
-  const tasks = state.tasks.filter(t => t.project === project);
+  const allTasks = state.tasks.filter(t => t.project === project);
+  // For per-machine view: count only that machine's tasks. For all-machine
+  // view, count every project task.
+  const tasks = machine
+    ? allTasks.filter(t => t.machine === machine)
+    : allTasks;
   // % complete (labor-weighted)
   let weighted = 0, total = 0;
   for (const t of tasks) {
@@ -742,8 +797,13 @@ function computeProjectStats(project) {
     weighted += d * p;
   }
   const percentComplete = total > 0 ? Math.round(weighted / total) : null;
+  // FAT for this machine (or any FAT if no machine specified — fall back
+  // to the oldest one project-wide).
+  const fatCandidates = allTasks.filter(t => inferredAnchorKey(t) === 'fat');
+  let fat = null;
+  if (machine) fat = fatCandidates.find(t => t.machine === machine) || null;
+  if (!fat && !machine) fat = fatCandidates.length ? fatCandidates.reduce((a, b) => (a.id < b.id ? a : b)) : null;
   // FAT variance — current FAT vs baseline FAT, in business days.
-  const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
   let fatVariance = null;
   if (fat && fat.baseline_start_date && fat.start_date) {
     if (fat.baseline_start_date === fat.start_date) {
@@ -757,7 +817,7 @@ function computeProjectStats(project) {
       fatVariance = sign * Math.max(0, days - 1);
     }
   }
-  return { percentComplete, fatVariance };
+  return { percentComplete, fatVariance, fat };
 }
 
 // Compute how far ahead/behind a task is. Returns business-day integer:
@@ -811,8 +871,14 @@ function taskScheduleDelta(task) {
   }
 }
 
-function applyFilters(tasks) {
-  const { search, project, phase, assignee, quick, projectsSubset } = state.filters;
+function applyFilters(tasks, opts = {}) {
+  const { search, project, phase, assignee, quick, projectsSubset, machinesSubset } = state.filters;
+  // ignoreMachineSubset: when computing canonical line numbers, we want
+  // the order to stay stable across "All / M1 / M2" pill clicks — so
+  // M2's Builder-1 keeps its overall line number even when filtered
+  // down to just M2's rows. Caller passes { ignoreMachineSubset: true }
+  // for that path.
+  const skipMachineSubset = !!opts.ignoreMachineSubset;
   const q = (search || '').trim().toLowerCase();
   const qf = quick || {};
   const personal = isPersonalMode();
@@ -821,9 +887,49 @@ function applyFilters(tasks) {
   // active). Empty subset = no filter; non-empty = whitelist.
   const useSubset = !project && subset.length > 0;
   const subsetSet = useSubset ? new Set(subset) : null;
+  // Machine subset: only meaningful inside a SINGLE project tab. Non-empty
+  // means "show ONLY tasks belonging to these machines" — shared
+  // (machine=null) tasks are hidden too. The user wants per-machine views
+  // to show JUST that machine's work; shared design / procurement /
+  // anchors are only visible in the "All" view. Empty subset = no
+  // filter (All machines + shared).
+  // Strip any subset entries that don't actually exist as machines in the
+  // current project — otherwise the strict filter would hide every row
+  // when a previously-saved machine has since been deleted.
+  let machSubset = Array.isArray(machinesSubset) ? machinesSubset : [];
+  if (project && machSubset.length > 0) {
+    const existing = new Set(tasks.filter(t => t.project === project && t.machine).map(t => t.machine));
+    const cleaned = machSubset.filter(m => existing.has(m));
+    if (cleaned.length !== machSubset.length) {
+      machSubset = cleaned;
+      // Persist the cleanup so reloads don't keep re-loading the stale data.
+      state.filters.machinesSubset = machSubset;
+      try {
+        const key = 'sdcMachinesSubset:' + project;
+        if (machSubset.length === 0) localStorage.removeItem(key);
+        else localStorage.setItem(key, JSON.stringify(machSubset));
+      } catch (_) {}
+    }
+  }
+  const useMachineFilter = !!project && machSubset.length > 0 && !skipMachineSubset;
+  // In clone mode the user is BUILDING the new machine off the source —
+  // they need to see the shared rows (design, anchors) so they can
+  // reference them as predecessors. Soften the strict rule during clone.
+  const cloneSoftenFilter = !!state.cloneMode;
+  const machineSet = useMachineFilter ? new Set(machSubset) : null;
   return tasks.filter(t => {
     if (project && t.project !== project) return false;
     if (useSubset && !subsetSet.has(t.project)) return false;
+    // Machine subset filter:
+    //   - In clone mode: pass shared (machine=null) OR in-subset.
+    //   - Otherwise: STRICT — only in-subset rows pass.
+    if (useMachineFilter) {
+      if (t.machine == null) {
+        if (!cloneSoftenFilter) return false;
+      } else if (!machineSet.has(t.machine)) {
+        return false;
+      }
+    }
     if (phase && t.phase !== phase) return false;
     // Personal mode + All Projects view: hide TEMPLATE tasks and
     // SALES-workspace tasks. Templates are scaffolding for cloning into
@@ -1012,7 +1118,19 @@ function cellHtml(t, key) {
       // absolutely-placed siblings. This guarantees that body alloc lines
       // up pixel-for-pixel with the header ALOC label, since both use the
       // same absolute coordinates from the cell edge.
-      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
+      //
+      // Multi-machine: any row tagged with a machine gets a small pill
+      // before its name (e.g. "M2" before "Builder 1") so the user can
+      // tell duplicates apart at a glance. Suppressed when the project
+      // has only one machine (no point) OR when the M view-pill is off.
+      // Color comes from getMachineColor (user-pickable, SDC palette).
+      let machineChip = '';
+      if (t.machine && shouldShowMachineVisuals()) {
+        const c = getMachineColor(t.project, t.machine);
+        const style = `background:${c.hex};color:${c.text};border-color:${c.hex};`;
+        machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="${style}">${escapeHtml(t.machine)}</span> `;
+      }
+      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
       // SALES workspaces blank out the assignee — pre-quote work isn't
@@ -1275,7 +1393,15 @@ function renderTable() {
       if (k === 'name') {
         const check = (isDone && !isBacklog) ? '<span class="anchor-done-check">✓</span> ' : '';
         const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}`;
-        return `<td data-col="name"><span class="${chipCls}">${check}${escapeHtml(t.name || '')}</span></td>`;
+        // Multi-machine: prepend the M1/M2/M3 pill on anchor rows too, so
+        // M2.FAT visually reads as "M2" before the green FAT chip. Hidden
+        // on single-machine projects + when the M view-pill is off.
+        let machineChip = '';
+        if (t.machine && shouldShowMachineVisuals()) {
+          const c = getMachineColor(t.project, t.machine);
+          machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="background:${c.hex};color:${c.text};border-color:${c.hex};">${escapeHtml(t.machine)}</span> `;
+        }
+        return `<td data-col="name">${machineChip}<span class="${chipCls}">${check}${escapeHtml(t.name || '')}</span></td>`;
       }
       return cellHtml(t, k);
     }).join('');
@@ -1296,9 +1422,25 @@ function renderTable() {
     if (list.length === 0) return null;
     return list.reduce((a, b) => (a.id < b.id ? a : b));
   };
+  // pickAll: in multi-machine projects each machine has its own FAT /
+  // Ship Machine anchor (Power-Up flows through Section 10's inline
+  // walk). Return all of them sorted shared-first then by machine name,
+  // so the grid renders M1.FAT, M2.FAT, … side by side at the spine
+  // slot. Receipt of PO stays shared so the single-pick is right.
+  const pickAll = (key) => {
+    const list = candidates.filter(([, k]) => k === key).map(([t]) => t);
+    return list.sort((a, b) => {
+      const ma = a.machine || '';
+      const mb = b.machine || '';
+      if (ma === mb) return a.id - b.id;
+      if (!ma) return -1;
+      if (!mb) return  1;
+      return ma.localeCompare(mb, undefined, { numeric: true });
+    });
+  };
   const receiptAnchor = pickOldest('receipt_of_po');
-  const fatAnchor     = pickOldest('fat');
-  const shipAnchor    = pickOldest('ship_machine');
+  const fatAnchors    = pickAll('fat');
+  const shipAnchors   = pickAll('ship_machine');
   // Receipt of PO — top of the schedule, above section 10.
   if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
   // Every non-anchor task with no phase_group renders above section 10,
@@ -1334,21 +1476,21 @@ function renderTable() {
       const sectionTasks = flatBySection[group.key] || [];
       let shipDropped = false;
       for (const t of sectionTasks) {
-        // For section 50, splice the Ship Machine anchor in once we cross from
-        // teardown work to install work (or as the last row if everything is
-        // teardown). Sort-by-date naturally orders it correctly.
-        if (group.key === 'teardown_install' && shipAnchor && !shipDropped && t.department === 'install') {
-          html += anchorRowHtml(shipAnchor);
+        // For section 50, splice the Ship Machine anchors in once we cross from
+        // teardown work to install work (or as the last rows if everything is
+        // teardown). Sort-by-date naturally orders them correctly.
+        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
+          for (const s of shipAnchors) html += anchorRowHtml(s);
           shipDropped = true;
         }
         html += renderTaskRow(t, 2);
       }
-      if (group.key === 'teardown_install' && shipAnchor && !shipDropped) {
-        html += anchorRowHtml(shipAnchor);
+      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
+        for (const s of shipAnchors) html += anchorRowHtml(s);
       }
-      // FAT at the end of section 40 even in flatten mode (collapses with the section).
-      if (group.key === 'machine_testing' && fatAnchor) {
-        html += anchorRowHtml(fatAnchor);
+      // FAT anchors at the end of section 40 even in flatten mode (collapses with the section).
+      if (group.key === 'machine_testing' && fatAnchors.length) {
+        for (const f of fatAnchors) html += anchorRowHtml(f);
       }
       continue;
     }
@@ -1359,8 +1501,9 @@ function renderTable() {
     for (const dept of group.departments) {
       // Ship Machine sits between TEARDOWN and INSTALL inside section 50 — it's the
       // gate where the disassembled machine leaves SDC for the customer's site.
-      if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchor) {
-        html += anchorRowHtml(shipAnchor);
+      // Multi-machine: render one Ship row per machine.
+      if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length) {
+        for (const s of shipAnchors) html += anchorRowHtml(s);
       }
       const dPath = groupPath(group.key, dept.key);
       const dCollapsed = collapsedGroups.has(dPath);
@@ -1393,11 +1536,11 @@ function renderTable() {
         for (const t of tasks) html += renderTaskRow(t, 3);
       }
     }
-    // FAT closes section 40 — it's the gate that ends machine testing. Rendered INSIDE
-    // section 40's iteration so that collapsing the section also tucks FAT away. Falls
-    // after every dept walk so it's the last row in section 40.
-    if (group.key === 'machine_testing' && fatAnchor) {
-      html += anchorRowHtml(fatAnchor);
+    // FAT anchors close section 40 — they're the gate that ends machine testing.
+    // Rendered INSIDE section 40's iteration so that collapsing the section also
+    // tucks them away. Multi-machine: one row per machine.
+    if (group.key === 'machine_testing' && fatAnchors.length) {
+      for (const f of fatAnchors) html += anchorRowHtml(f);
     }
   }
 
@@ -1525,7 +1668,219 @@ function attachRowDragHandlers(tbody) {
   });
 }
 
+// Clone-mode click handler. In clone mode the schedule grid becomes a
+// row-selection tool — NO cell editors open, no pills, no drag handles.
+// Every click on a tbody row is eaten. Source-machine rows toggle their
+// membership in includeIds; other rows (shared anchors etc.) are inert.
+// The ONLY interactive element we let through is the inline
+// .clone-pred-editor (the input + OK / ✕ buttons), so the user can
+// type into it without it being eaten by row-selection.
+//
+// Returns true when the event was handled (caller skips its other
+// branches). Returns false ONLY when the click was inside an active
+// .clone-pred-editor, so the editor's own handlers can run.
+function handleCloneModeRowClick(e) {
+  const cm = state.cloneMode;
+  if (!cm) return false;
+  // Let the inline pred editor keep its own click semantics.
+  if (e.target.closest('.clone-pred-editor')) return false;
+  // Anything else inside the table body is eaten in clone mode. Even
+  // clicks on shared-anchor rows (machine=null) are blocked — the
+  // user is focused on the M1 → M2 flow and shouldn't be opening
+  // random cell editors mid-clone.
+  e.preventDefault();
+  e.stopPropagation();
+  if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return true;   // empty area inside tbody — still eat the click
+  const id = Number(tr.dataset.id);
+  const t = state.tasks.find(x => x.id === id);
+  // Any task in the project is togglable — including shared anchors above
+  // the Build line (PO, Mech Release, Design tasks). Source-machine rows
+  // are pre-selected when clone mode opens; shared rows start unselected
+  // and the user opts in by clicking.
+  if (!t || t.project !== state.filters.project) return true;
+  if (cm.includeIds.has(id)) {
+    cm.includeIds.delete(id);
+    tr.classList.remove('clone-selected');
+    // Hide the chip but keep the stored value — if the user clicks the
+    // row back ON we restore their previous custom pred. Orphan customs
+    // are filtered out by includeIds in confirmMachineClone, so leaving
+    // them in the Map is harmless.
+    const chip = tr.querySelector('.clone-pred-chip');
+    if (chip) chip.remove();
+  } else {
+    cm.includeIds.add(id);
+    tr.classList.add('clone-selected');
+    // Re-paint the chip if there's a stored value from before.
+    paintClonePredChip(tr, id);
+  }
+  renderMachineCloneBanner();
+  return true;
+}
+
+// Clone-mode row double-click: opens a small inline editor for a custom
+// predecessor string on this row. The typed value goes into
+// state.cloneMode.customPredecessors (NOT to the server — it's applied
+// when the user hits Complete).
+function handleCloneModeRowDblClick(e) {
+  const cm = state.cloneMode;
+  if (!cm) return;
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return;
+  const id = Number(tr.dataset.id);
+  const t = state.tasks.find(x => x.id === id);
+  if (!t || t.project !== state.filters.project) return;
+  // Only selected rows can take a custom predecessor (you have to bring
+  // the row into the new machine first).
+  if (!cm.includeIds.has(id)) {
+    cm.includeIds.add(id);
+    tr.classList.add('clone-selected');
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  openCustomPredecessorEditor(tr, id);
+}
+
+// Floating popup that hangs off the clicked row. Appended to document.body
+// (NOT inside the row) so the row's opacity / background can't bleed
+// through. Anchored to the row's bounding rect — sits just below the
+// row, left-aligned with the task name cell. White opaque background,
+// drop shadow, clearly a popup. Click outside closes (commits).
+function openCustomPredecessorEditor(tr, id) {
+  const cm = state.cloneMode;
+  if (!cm) return;
+  const existing = cm.customPredecessors.get(id) || '';
+  // Tear down any prior popup so back-to-back dblclicks don't stack.
+  document.getElementById('clone-pred-popup')?.remove();
+  const task = state.tasks.find(x => x.id === id);
+  const taskName = task?.name || '(unnamed)';
+  const popup = document.createElement('div');
+  popup.id = 'clone-pred-popup';
+  popup.className = 'clone-pred-popup';
+  popup.innerHTML = `
+    <div class="clone-pred-popup-header">
+      <span class="clone-pred-popup-label">New predecessor for</span>
+      <strong class="clone-pred-popup-task">${escapeHtml(taskName)}</strong>
+    </div>
+    <div class="clone-pred-popup-body">
+      <input type="text" class="clone-pred-popup-input"
+             placeholder="e.g. 12FS or 8FS+2"
+             value="${escapeHtml(existing)}" />
+      <button type="button" class="clone-pred-popup-ok"    title="Save (Enter)">Save</button>
+      <button type="button" class="clone-pred-popup-clear" title="Clear (no predecessor)">Clear</button>
+      <button type="button" class="clone-pred-popup-cancel" title="Cancel (Esc)">Cancel</button>
+    </div>
+    <div class="clone-pred-popup-hint">Use line numbers visible in this view. Blank or "Clear" removes the pred.</div>
+  `;
+  document.body.appendChild(popup);
+  // Position the popup just below the row, left-aligned with its left
+  // edge (clamped to viewport so it doesn't overflow).
+  const rect = tr.getBoundingClientRect();
+  const popW = popup.offsetWidth;
+  const popH = popup.offsetHeight;
+  const margin = 6;
+  let left = Math.max(margin, rect.left);
+  if (left + popW > window.innerWidth - margin) {
+    left = Math.max(margin, window.innerWidth - popW - margin);
+  }
+  let top = rect.bottom + margin;
+  if (top + popH > window.innerHeight - margin) {
+    // Not enough room below; flip above the row.
+    top = Math.max(margin, rect.top - popH - margin);
+  }
+  popup.style.left = left + 'px';
+  popup.style.top  = top + 'px';
+
+  const input = popup.querySelector('.clone-pred-popup-input');
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (commit, clear = false) => {
+    if (done) return;
+    done = true;
+    document.removeEventListener('mousedown', onOutside, true);
+    if (commit) {
+      if (clear) {
+        cm.customPredecessors.delete(id);
+      } else {
+        const val = input.value.trim();
+        if (val) cm.customPredecessors.set(id, val);
+        else cm.customPredecessors.delete(id);
+      }
+    }
+    popup.remove();
+    // Re-paint the chip on this row so the user can see what they entered.
+    paintClonePredChip(tr, id);
+    renderMachineCloneBanner();
+  };
+  const onOutside = (ev) => {
+    if (popup.contains(ev.target)) return;
+    finish(true);
+  };
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter')  { ev.preventDefault(); finish(true); }
+    if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+  });
+  popup.querySelector('.clone-pred-popup-ok').addEventListener('click',     () => finish(true));
+  popup.querySelector('.clone-pred-popup-clear').addEventListener('click',  () => finish(true, true));
+  popup.querySelector('.clone-pred-popup-cancel').addEventListener('click', () => finish(false));
+  document.addEventListener('mousedown', onOutside, true);
+}
+
+// Render / refresh the small "pred: 12FS" chip on a selected row in
+// clone mode. The chip lives INSIDE the .name-cell-main span (right
+// after the task name + drift chip) so it's in the natural inline flow
+// and doesn't fight with the absolutely-positioned % / duration pills
+// at the right edge of the cell. Tears down the previous chip first
+// so toggling is clean.
+function paintClonePredChip(tr, id) {
+  const cm = state.cloneMode;
+  const old = tr.querySelector('.clone-pred-chip');
+  if (old) old.remove();
+  if (!cm) return;
+  const val = cm.customPredecessors.get(id);
+  if (!val) return;
+  // Prefer the .name-cell-main span (inline with the name + drift chip);
+  // fall back to the name td directly if the cell has no main span
+  // (anchor / milestone rows render a simpler structure).
+  const host = tr.querySelector('td[data-col="name"] .name-cell-main')
+    || tr.querySelector('td[data-col="name"]')
+    || tr.querySelector('td');
+  if (!host) return;
+  const chip = document.createElement('span');
+  chip.className = 'clone-pred-chip';
+  chip.title = 'Custom predecessor for the new machine — double-click row to edit';
+  chip.textContent = ` pred: ${val}`;
+  host.appendChild(chip);
+}
+
+// Re-decorate the visible rows after a re-render so selected rows show
+// their lime tint + any custom-pred chips. Called from render().
+function decorateCloneModeRows() {
+  const cm = state.cloneMode;
+  const tbody = document.getElementById('tasks-tbody');
+  if (!tbody) return;
+  // Clear any leftover decoration first (handles exit-cloning too).
+  tbody.querySelectorAll('tr.clone-selected').forEach(tr => tr.classList.remove('clone-selected'));
+  tbody.querySelectorAll('.clone-pred-chip').forEach(el => el.remove());
+  if (!cm) return;
+  tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+    const id = Number(tr.dataset.id);
+    const t = state.tasks.find(x => x.id === id);
+    if (!t || t.project !== state.filters.project) return;
+    if (cm.includeIds.has(id)) tr.classList.add('clone-selected');
+    paintClonePredChip(tr, id);
+  });
+}
+
 function handleCellClick(e) {
+  // Machine clone-mode: a capture-phase listener wired on the tbody
+  // already ate the click and toggled the row's inclusion. By the time
+  // we get here, the event is fully suppressed (stopImmediatePropagation),
+  // so this branch only fires when cloneMode is null. Belt-and-suspenders
+  // bail in case the capture-phase pass somehow missed.
+  if (state.cloneMode) return;
   const delBtn = e.target.closest('.row-delete');
   if (delBtn) {
     e.stopPropagation();
@@ -2309,12 +2664,14 @@ function renderGantt() {
   // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
   // grid rows do — Receipt of PO at top, Backlog under it, section 10
   // bucket walk, FAT closing section 40, Ship Machine inside section 50.
-  // The previous sortByPhaseThenOrder ranked anchors / orphans by their
-  // `phase` field, which has anchors phase=null → rank 99 → bottom of
-  // chart. That's why FAT appeared above PO and Ship above Power-Up in
-  // Gantt-only view.
-  // buildCanonicalTaskOrder() ALREADY applies filters internally, so we
-  // don't call applyFilters again.
+  //
+  // IMPORTANT: buildCanonicalTaskOrder ignores the machine-subset filter
+  // (so line numbers stay stable across "All / M1 / M2"). After we have
+  // the canonical order, we MUST intersect it with the actually-visible
+  // task set from applyFilters() — otherwise the Gantt renders bars for
+  // every machine even when the grid is narrowed to one (the visual mess
+  // the user saw with M2 selected: M1 bars still painting on the right
+  // side of the chart).
   let ordered;
   if (state.scheduleView?.sortByStart) {
     ordered = [...applyFilters(state.tasks)].sort((a, b) =>
@@ -2322,8 +2679,12 @@ function renderGantt() {
       || (a.sort_order || 0) - (b.sort_order || 0));
   } else {
     const canonicalIds = buildCanonicalTaskOrder();
+    const visibleIds = new Set(applyFilters(state.tasks).map(t => t.id));
     const byId = Object.fromEntries(state.tasks.map(t => [t.id, t]));
-    ordered = canonicalIds.map(id => byId[id]).filter(Boolean);
+    ordered = canonicalIds
+      .filter(id => visibleIds.has(id))
+      .map(id => byId[id])
+      .filter(Boolean);
   }
   // Same Only-critical filter renderTable applies, mirrored here so the Gantt only
   // shows the critical bars + anchor markers when the toggle is on.
@@ -2485,6 +2846,15 @@ function renderGantt() {
   if (zoomModeEl && zoomModeEl.value !== mode) zoomModeEl.value = mode;
 
   cleanGanttHeaders();
+  // ── Work-day compression ─────────────────────────────────────────────
+  // frappe-gantt positions bars by calendar day (7-day weeks). The SDC
+  // schedule only operates Mon-Fri, so we squeeze Sat/Sun out: every bar,
+  // arrow, today-line, milestone, header label re-anchors to its
+  // work-day index instead of its calendar-day index. The downstream
+  // drawers (drawCustomArrows / drawTodayLine / drawMilestoneDiamonds /
+  // etc.) read positions FROM the .bar elements, so once bars are
+  // repositioned here, everything else follows automatically.
+  compressGanttToWorkDays();
   // alignGanttToGrid relies on the grid's row offsetTops to position bars row-by-row.
   // In Gantt-only mode the grid is hidden (display:none) so its offsets are zero —
   // skip alignment and let frappe-gantt's natural layout drive bar positions.
@@ -2501,7 +2871,246 @@ function renderGantt() {
   drawWeekdayLetters();
   drawFinancialOverlay();
   drawBarMeta();
+  drawMachineBorders();
   renderProjectStatsPopup();
+}
+
+// ── Work-day Gantt helpers ───────────────────────────────────────────
+// workDayOffset: count of business days (Mon-Fri) from ganttStart to
+// the given date. Used to re-anchor every X position so the weekend
+// columns collapse to zero.
+function workDayOffset(dateStr, ganttStart) {
+  if (!dateStr || !ganttStart) return 0;
+  const startMs = new Date(ganttStart).getTime();
+  const endStr = typeof dateStr === 'string' ? (dateStr.length > 10 ? dateStr.slice(0, 10) : dateStr) : dateStr;
+  const endMs  = new Date(endStr + 'T00:00:00Z').getTime();
+  if (endMs <= startMs) return 0;
+  // Walk day by day, counting Mon-Fri only.
+  let count = 0;
+  for (let ms = startMs; ms < endMs; ms += 86400000) {
+    const dow = new Date(ms).getUTCDay();
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  return count;
+}
+
+// Same idea but returns the work-day x for an arbitrary calendar-day x
+// (in original frappe-gantt coords). Used to translate paths that were
+// drawn in calendar space (e.g. existing arrow logic) to work-day space.
+function calXToWorkDayX(calX, pxPerDay, ganttStart) {
+  if (!ganttStart || pxPerDay <= 0) return calX;
+  const days = calX / pxPerDay;
+  const startMs = new Date(ganttStart).getTime();
+  const dateMs = startMs + Math.round(days) * 86400000;
+  const dateStr = new Date(dateMs).toISOString().slice(0, 10);
+  return workDayOffset(dateStr, ganttStart) * pxPerDay;
+}
+
+// Reposition every bar (and its inner label / progress / handles) to
+// the work-day grid. The convention per Dan's rule:
+//   • Bar's left edge sits at the START day's column line.
+//   • Bar's right edge sits at the END day's column line.
+//   • A 1-day task (start == end) gets a minimum visible width.
+//   • Fractional durations round UP to the next full day.
+function compressGanttToWorkDays() {
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg) return;
+    const g = state.gantt;
+    if (!g || !g.gantt_start) return;
+    const cw = g.options.column_width;
+    const mode = g.options.view_mode || 'Week';
+    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+    const pxPerDay = cw / step;          // px per CALENDAR day
+    const pxPerWorkDay = pxPerDay;       // we keep the column width — chart shrinks horizontally
+    const ganttStart = g.gantt_start;
+    // 1-day tasks (start == end) get a slim "marker" bar centered on
+    // their day's line — wide enough to see, but doesn't claim to span
+    // any range. All other bars snap EXACTLY to start-day-line and
+    // end-day-line (no clamp), so they always end on a day's line.
+    const oneDayMarkerW = Math.max(3, pxPerWorkDay * 0.18);
+
+    const wdoCache = {};
+    const wdo = (s) => {
+      if (s in wdoCache) return wdoCache[s];
+      wdoCache[s] = workDayOffset(s, ganttStart);
+      return wdoCache[s];
+    };
+
+    // Track each bar's old + new x so the downstream drawers can be told.
+    state._workDayMap = { pxPerDay, ganttStart };
+
+    for (const wrap of svg.querySelectorAll('.bar-wrapper')) {
+      const id = Number(wrap.dataset.id);
+      const t = state.tasks.find(x => x.id === id);
+      if (!t || !t.start_date) continue;
+      const startOff = wdo(t.start_date);
+      const endOff   = t.end_date ? wdo(t.end_date) : startOff;
+      const isMilestone = !!t.is_milestone || !!inferredAnchorKey(t);
+      let newX = startOff * pxPerWorkDay;
+      let newW = (endOff - startOff) * pxPerWorkDay;
+      if (newW === 0) {
+        if (isMilestone) {
+          // Milestones render as diamonds via drawMilestoneDiamonds, but
+          // frappe-gantt's underlying .bar still needs SOMETHING — use
+          // a centered marker so the diamond drawer has a reliable
+          // anchor point.
+          newW = Math.max(8, pxPerWorkDay);
+          newX -= newW / 2;
+        } else {
+          // Regular 1-day task: thin marker centered on the day's line.
+          newW = oneDayMarkerW;
+          newX -= oneDayMarkerW / 2;
+        }
+      }
+
+      const bar      = wrap.querySelector('.bar');
+      const progress = wrap.querySelector('.bar-progress');
+      const label    = wrap.querySelector('.bar-label');
+      const handleL  = wrap.querySelector('.handle.left');
+      const handleR  = wrap.querySelector('.handle.right');
+      const handleP  = wrap.querySelector('.handle.progress');
+      if (!bar) continue;
+
+      const oldX = +bar.getAttribute('x');
+      const oldW = +bar.getAttribute('width');
+      const oldProgressW = progress ? +progress.getAttribute('width') : 0;
+      const oldLabelX = label ? +label.getAttribute('x') : 0;
+
+      // Update bar
+      bar.setAttribute('x', newX);
+      bar.setAttribute('width', newW);
+
+      // Progress: keep proportion if both originals had width, else 0
+      if (progress) {
+        const ratio = oldW > 0 ? (oldProgressW / oldW) : 0;
+        progress.setAttribute('x', newX);
+        progress.setAttribute('width', Math.max(0, newW * ratio));
+      }
+
+      // Label: shift by the SAME delta the bar moved, then clipBarLabels
+      // (called later in the chain) will repaint based on the new bar
+      // geometry anyway. Just keeps it visible during the transition.
+      if (label) {
+        const dx = newX - oldX;
+        label.setAttribute('x', oldLabelX + dx);
+      }
+
+      // Handles
+      if (handleL) handleL.setAttribute('x', newX + 1);
+      if (handleR) handleR.setAttribute('x', newX + newW - 9);
+      if (handleP) {
+        // progress handle sits at the progress right edge
+        const cx = newX + (progress ? +progress.getAttribute('width') : 0);
+        handleP.setAttribute('points', `${cx-5},${+handleP.getAttribute('points').split(',')[1] || 0} ${cx+5},${+(handleP.getAttribute('points').split(' ')[1]||'').split(',')[1] || 0} ${cx},${+(handleP.getAttribute('points').split(' ')[2]||'').split(',')[1] || 0}`);
+      }
+
+      // Cache the new geometry on the wrapper for downstream consumers
+      // (drawCustomArrows reads bar x/width directly from the DOM).
+      wrap.dataset.workDayX = String(newX);
+      wrap.dataset.workDayW = String(newW);
+    }
+
+    // Replace frappe-gantt's date labels — it labels every 7 calendar
+    // days starting from gantt_start, which gives Thursday dates when
+    // gantt_start is a Thursday. We want EVERY label to be a Monday.
+    // Strategy: remove its lower-text labels + ticks, then redraw our
+    // own at each Monday's work-day x. Same for upper-text (month
+    // strip) — redraw with proper month boundaries.
+    for (const el of svg.querySelectorAll('.lower-text, .upper-text, .tick')) el.remove();
+    // Find rows for label Y positions. frappe-gantt typically uses
+    // header_height: 38 with the upper-text near top and lower-text just
+    // above the bars. Steal Y from any leftover header element, fall
+    // back to sensible defaults.
+    const lowerY = 28;
+    const upperY = 12;
+    const tickTop = 36;
+    const svgH = +svg.getAttribute('height') || 800;
+
+    // Walk Mondays from the first full-week Monday through the chart's
+    // right edge. For each Monday: draw a label + a vertical tick line.
+    const startMs = new Date(ganttStart).getTime();
+    const startDow = new Date(startMs).getUTCDay();
+    const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
+    let walkMs = startMs + daysToFirstMonday * 86400000;
+    let lastMonthLabel = '';
+    let lastMonthStartX = -1;
+    const monthLabels = []; // [{ x, label, endX }]
+    while (true) {
+      const walkDate = new Date(walkMs);
+      const dateStr = walkDate.toISOString().slice(0, 10);
+      const mondayX = workDayOffset(dateStr, ganttStart) * pxPerDay;
+      if (mondayX > (+svg.getAttribute('width') || 8000)) break;
+      // Date label (day of month, with leading zero stripped)
+      const dayNum = walkDate.getUTCDate();
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('class', 'lower-text');
+      text.setAttribute('x', String(mondayX));
+      text.setAttribute('y', String(lowerY));
+      text.style.fontFamily = 'sans-serif';
+      text.style.fontSize = '12px';
+      text.style.fontWeight = '500';
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('fill', '#475569');
+      text.textContent = String(dayNum);
+      svg.appendChild(text);
+      // Solid tick line at Monday
+      const tick = document.createElementNS(SVG_NS, 'path');
+      tick.setAttribute('class', 'tick thick');
+      tick.setAttribute('d', `M ${mondayX} ${tickTop} v ${svgH - tickTop}`);
+      tick.setAttribute('stroke', '#cbd5e1');
+      tick.setAttribute('stroke-width', '1');
+      svg.insertBefore(tick, svg.firstChild);
+      // Track month transition for the upper strip
+      const monthName = walkDate.toLocaleString(undefined, { month: 'long', timeZone: 'UTC' });
+      if (monthName !== lastMonthLabel) {
+        if (lastMonthLabel) monthLabels[monthLabels.length - 1].endX = mondayX;
+        monthLabels.push({ x: mondayX, label: monthName, endX: 0 });
+        lastMonthLabel = monthName;
+        lastMonthStartX = mondayX;
+      }
+      walkMs += 7 * 86400000;
+    }
+    // Close the last month label
+    if (monthLabels.length) {
+      monthLabels[monthLabels.length - 1].endX = +svg.getAttribute('width') || (lastMonthStartX + 400);
+    }
+    // Draw month strip
+    for (const m of monthLabels) {
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('class', 'upper-text');
+      const cx = (m.x + m.endX) / 2;
+      text.setAttribute('x', String(cx));
+      text.setAttribute('y', String(upperY));
+      text.style.fontFamily = 'sans-serif';
+      text.style.fontSize = '13px';
+      text.style.fontWeight = '600';
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('fill', '#0f172a');
+      text.textContent = m.label;
+      svg.appendChild(text);
+    }
+
+    // Trim the SVG's right edge so we don't leave a giant empty gantt area
+    // past the last bar. Compute the rightmost work-day x across all bars
+    // and pad a couple of columns of breathing room.
+    let maxRight = 0;
+    for (const bar of svg.querySelectorAll('.bar')) {
+      const r = (+bar.getAttribute('x') || 0) + (+bar.getAttribute('width') || 0);
+      if (r > maxRight) maxRight = r;
+    }
+    if (maxRight > 0) {
+      const newWidth = maxRight + pxPerWorkDay * 4;
+      svg.setAttribute('width', String(newWidth));
+      // Update viewBox too if set
+      if (svg.viewBox && svg.viewBox.baseVal) {
+        svg.viewBox.baseVal.width = newWidth;
+      }
+    }
+  } catch (err) {
+    // Don't break the render chain if anything goes sideways.
+    console.warn('[compressGanttToWorkDays]', err);
+  }
 }
 
 // When zoomed in enough that each day occupies enough pixels to fit a
@@ -2556,26 +3165,34 @@ function drawWeekdayLetters() {
     lettersGroup.style.pointerEvents = 'none';
     svg.appendChild(lettersGroup);
 
-    // g.gantt_start is a Date OBJECT — pass to new Date() directly.
+    // Work-day Gantt: each work day is one column, no weekend space.
+    // Iterate Mondays from gantt_start forward; for each, draw 5 dashed
+    // ticks (M T W Th F) at consecutive work-day positions. The Mon line
+    // is solid (drawn by the header), the next 4 are dashed.
     const startMs = new Date(g.gantt_start).getTime();
-    const startDow = new Date(startMs).getUTCDay(); // 0=Sun .. 6=Sat
-    // Find the day-index (relative to gantt_start) of the most recent
-    // Monday on or before gantt_start. Mon=1, Tue=2…Sun=0.
-    // Distance back to Monday: Mon→0, Tue→-1, Wed→-2, …, Sun→-6.
-    const daysToMonday = startDow === 0 ? -6 : -(startDow - 1);
-    const pxPerWeek = pxPerDay * 7;
+    const startDow = new Date(startMs).getUTCDay();
+    // Days from gantt_start to its first full-week Monday.
+    const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
+    // 5 letters per week (M T W Th F) at column-line positions —
+    // evenly spaced one pxPerDay apart. M sits ON the Monday solid
+    // line (next to the date number). T, W, Th, F sit on the four
+    // dashed lines between Mondays.
     const letters5 = ['M', 'T', 'W', 'Th', 'F'];
 
-    // Five evenly-distributed positions per week. Each position is the
-    // CENTER of a 1.4-day "slot" — so the 5 marks span the full 7-day
-    // week with equal half-slot padding on the left and right (no big
-    // weekend gap clustering them to the start). Ticks AND letters share
-    // the SAME x positions so they read as a single unit.
-    for (let weekDayIdx = daysToMonday; weekDayIdx * pxPerDay < totalWidth; weekDayIdx += 7) {
-      const weekStartX = weekDayIdx * pxPerDay;
+    // walkMs steps Monday-by-Monday through the chart range.
+    let walkMs = startMs + daysToFirstMonday * 86400000;
+    while (true) {
+      const walkDate = new Date(walkMs);
+      const dateStr = walkDate.toISOString().slice(0, 10);
+      const mondayX = workDayOffset(dateStr, g.gantt_start) * pxPerDay;
+      if (mondayX > totalWidth) break;
+      // Place each letter AT the column boundary (j * pxPerDay from
+      // Monday). Bars also end at these boundary positions, so a bar
+      // ending Tuesday lands precisely on the T letter's line.
       for (let j = 0; j < 5; j++) {
-        const x = weekStartX + (j + 0.5) * (pxPerWeek / 5);
-        if (x < 0 || x > totalWidth) continue;
+        const x = mondayX + j * pxPerDay;
+        if (x < 0) continue;
+        if (x > totalWidth) break;
 
         // Dashed faint tick.
         const tick = document.createElementNS(SVG_NS, 'line');
@@ -2609,6 +3226,7 @@ function drawWeekdayLetters() {
         text.textContent = letters5[j];
         lettersGroup.appendChild(text);
       }
+      walkMs += 7 * 86400000;  // advance to next Monday
     }
   } catch (_) { /* swallow — cosmetic, never break render chain */ }
 }
@@ -2716,6 +3334,42 @@ function drawDoneHashOverlay() {
 //      arrows (rare; only happens when the bar has an arrow entering its top
 //      AND an arrow exiting its bottom).
 //
+// Paint a colored border around every Gantt bar / milestone whose task
+// has a `machine` tag. Border color matches the per-machine palette used
+// by .name-machine-chip in the grid (M1=blue, M2=amber, M3=green, …) so
+// the user can tell duplicates apart on the chart at a glance — without
+// overlaying any text on top of the bar (the old chip approach covered
+// labels + duration markers and was unreadable). Bar fill (phase color)
+// stays untouched.
+//
+// Defensive (try/catch) per CLAUDE.md — must NEVER break the render
+// chain; bar-meta + zoom restore live downstream.
+function drawMachineBorders() {
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg) return;
+    // Clear any prior border treatments so re-render is clean.
+    svg.querySelectorAll('.bar[data-machine-bordered]').forEach(el => {
+      el.removeAttribute('data-machine-bordered');
+      el.style.stroke = '';
+      el.style.strokeWidth = '';
+    });
+    // Gated by the M view-pill + project must actually have 2+ machines.
+    if (!shouldShowMachineVisuals()) return;
+    for (const task of state.tasks) {
+      if (!task.machine) continue;
+      const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
+      if (!wrap) continue;
+      const bar = wrap.querySelector('.bar');
+      if (!bar) continue;
+      const color = getMachineColor(task.project, task.machine).hex;
+      bar.style.stroke = color;
+      bar.style.strokeWidth = '2';
+      bar.setAttribute('data-machine-bordered', task.machine);
+    }
+  } catch (_) { /* swallow — cosmetic, must not break render chain */ }
+}
+
 // Skipped for milestones, anchors, and backlog. Runs AFTER drawCustomArrows
 // so the arrow <path> elements exist in the DOM and we can query their bboxes
 // for collision detection.
@@ -3033,19 +3687,47 @@ function renderProjectStatsPopup() {
     popup.className = 'project-stats-popup';
     split.appendChild(popup);
   }
-  const stats = computeProjectStats(project);
-  // Duration: PO → FAT (calendar weeks, rounded). Falls back to "—" if either
-  // anchor doesn't have a date yet.
+  // Single-machine view? Then Duration / Complete / FAT all scope to
+  // that machine. Empty subset or multi-machine = whole-project view.
+  const subset = state.filters.machinesSubset || [];
+  const activeMachine = subset.length === 1 ? subset[0] : null;
+  const stats = computeProjectStats(project, activeMachine);
   const tasks = state.tasks.filter(t => t.project === project);
-  const po  = tasks.find(t => inferredAnchorKey(t) === 'receipt_of_po');
-  const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
+  const po = tasks.find(t => inferredAnchorKey(t) === 'receipt_of_po');
+  // FAT for the active scope. stats.fat returns the machine-specific
+  // anchor when activeMachine is set; falls back to oldest project FAT.
+  const fat = stats.fat || tasks.find(t => inferredAnchorKey(t) === 'fat');
+  // Duration: PO → (active machine's) FAT.
   let durationLabel = '—';
   if (po && fat && po.start_date && fat.start_date) {
     const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
     const weeks = Math.max(0, Math.round(days / 7));
     durationLabel = `${weeks} wk${weeks === 1 ? '' : 's'}`;
   }
+  // If we're viewing a per-machine FAT and there's a PREVIOUS machine
+  // (e.g. viewing M2 → compare to M1.FAT), show a small delta chip
+  // "+N wks vs M1" — that's the typical "one machine every 3 weeks"
+  // staggered-delivery view.
+  let machineDeltaChip = '';
+  if (activeMachine) {
+    const allMachines = Array.from(new Set(tasks.filter(t => t.machine).map(t => t.machine)))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const idx = allMachines.indexOf(activeMachine);
+    if (idx > 0) {
+      const prevMachine = allMachines[idx - 1];
+      const prevFat = tasks.find(t => t.machine === prevMachine && inferredAnchorKey(t) === 'fat');
+      if (prevFat && prevFat.start_date && fat && fat.start_date) {
+        const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(prevFat.start_date + 'T00:00:00')) / 86400000);
+        const wks = Math.round(days / 7);
+        if (wks !== 0) {
+          machineDeltaChip = ` <span class="popup-machine-delta" title="${escapeHtml(activeMachine)}.FAT vs ${escapeHtml(prevMachine)}.FAT">${wks >= 0 ? '+' : ''}${wks} wk${Math.abs(wks) === 1 ? '' : 's'} vs ${escapeHtml(prevMachine)}</span>`;
+        }
+      }
+    }
+  }
   const pctLabel = stats.percentComplete != null ? `${stats.percentComplete}%` : '—';
+  // Header label — show which machine (if any) the stats scope to.
+  const scopeLabel = activeMachine ? `${activeMachine} only` : 'All machines';
   // FAT row: show the actual date plus an optional variance chip when a
   // baseline is set. Variance rounds DAYS → WEEKS (5 business days per week)
   // so the chip reads as "+1 wk / -2 wks / 0 wks" instead of "+3d late /
@@ -3065,18 +3747,25 @@ function renderProjectStatsPopup() {
     else                  fatVarChip = `<span class="popup-fat-var stat-early">${wks} wk${wks === -1 ? '' : 's'}</span>`;
   }
 
+  // Multi-machine projects: tell the user what these numbers cover.
+  // Single-machine project: no scope header (looks the same as before).
+  const hasMultiMachine = isMultiMachineProject();
+  const scopeHeader = hasMultiMachine
+    ? `<div class="popup-scope">${escapeHtml(scopeLabel)}</div>`
+    : '';
   popup.innerHTML = `
+    ${scopeHeader}
     <div class="popup-row">
       <span class="popup-label">Duration</span>
-      <span class="popup-value" title="Receipt of PO → FAT, in calendar weeks (rounded).">${durationLabel}</span>
+      <span class="popup-value" title="Receipt of PO → ${activeMachine ? activeMachine + '.' : ''}FAT, in calendar weeks (rounded).">${durationLabel}${machineDeltaChip}</span>
     </div>
     <div class="popup-row">
       <span class="popup-label">Complete</span>
-      <span class="popup-value" title="Labor-weighted: SUM(duration × progress) ÷ SUM(duration) across non-milestone tasks.">${pctLabel}</span>
+      <span class="popup-value" title="Labor-weighted across ${activeMachine || 'all'} tasks: SUM(duration × progress) ÷ SUM(duration).">${pctLabel}</span>
     </div>
     <div class="popup-row">
       <span class="popup-label">FAT</span>
-      <span class="popup-value" title="FAT anchor start date (M/D/YY). The chip on the right shows baseline variance in business days, if a baseline is set.">
+      <span class="popup-value" title="${activeMachine ? activeMachine + '.' : ''}FAT anchor start date. Chip on the right shows baseline variance, if a baseline is set.">
         ${fatDateLabel}${fatVarChip}
       </span>
     </div>
@@ -3101,16 +3790,20 @@ function drawTodayLine() {
   const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
   const pxPerDay = cw / step;
 
-  // Snap "today" to the same UTC start-of-day frappe-gantt uses internally so
-  // the line lands at the same X position the date-axis ticks are anchored to.
-  const todayMs = Date.UTC(
-    new Date().getUTCFullYear(),
-    new Date().getUTCMonth(),
-    new Date().getUTCDate(),
-  );
+  // Snap "today" to start-of-day. If today is a weekend, snap forward to
+  // Monday (no work happens on weekends anyway, so the today line lives
+  // on Monday's column).
+  const todayDt = new Date();
+  let todayMs = Date.UTC(todayDt.getUTCFullYear(), todayDt.getUTCMonth(), todayDt.getUTCDate());
+  let todayDow = new Date(todayMs).getUTCDay();
+  if (todayDow === 6) todayMs += 2 * 86400000;     // Sat → Mon
+  else if (todayDow === 0) todayMs += 1 * 86400000;// Sun → Mon
   const days = (todayMs - startMs) / 86400000;
   if (days < 0) return; // today is BEFORE the chart's earliest date
-  const x = days * pxPerDay;
+  // Use work-day offset so the today line lands on the right column in
+  // the compressed work-day Gantt.
+  const todayStr = new Date(todayMs).toISOString().slice(0, 10);
+  const x = workDayOffset(todayStr, g.gantt_start) * pxPerDay;
   const svgW = +svg.getAttribute('width') || 8000;
   if (x > svgW) return;  // today is past the right edge of the chart
 
@@ -4789,19 +5482,13 @@ function renderFilters() {
 function loadProjectTabs() {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('sdcOpenProjects') || 'null'); } catch {}
-  // v2 migration: trim bloated tab lists left over from the old auto-seed behaviour.
-  // Runs once per browser — keeps All projects + the last active project only.
-  if (localStorage.getItem('sdcTabsVersion') !== '2') {
-    const activeBeforeMigration = localStorage.getItem('sdcActiveProject');
-    if (Array.isArray(saved) && saved.length > 2) {
-      saved = activeBeforeMigration ? ['', activeBeforeMigration] : [''];
-    }
-    localStorage.setItem('sdcTabsVersion', '2');
-  }
   if (Array.isArray(saved) && saved.length) {
     state.openProjects = saved.includes('') ? saved : ['', ...saved];
   } else {
-    state.openProjects = [''];
+    // First-time seed: show All + every project that already has tasks. After this we
+    // never auto-modify; the user explicitly opens/closes from the picker.
+    const existing = uniqueValues('project');
+    state.openProjects = ['', ...existing];
   }
   const savedActive = localStorage.getItem('sdcActiveProject');
   state.filters.project = (savedActive != null && state.openProjects.includes(savedActive))
@@ -5667,6 +6354,10 @@ function renderProjectTabs() {
         document.body.classList.remove('personal-mode');
       }
       state.filters.project = btn.dataset.project;
+      // Load this project's machine-subset filter (each project remembers
+      // its own machine selection so switching tabs doesn't bleed filters).
+      loadMachinesSubset(state.filters.project);
+      loadMachineColors(state.filters.project);
       saveProjectTabs();
       // Always switch to the schedule view when a project tab is clicked.
       // Without this, clicking a tab while on the Projects page (or any other
@@ -5835,36 +6526,498 @@ function renderProjectTabs() {
   }
 }
 
-// Right-click menu on a project tab. Lets the user rename, duplicate, merge, mark
-// as template, close the tab (UI-only), or fully delete the project's data.
-function showProjectTabMenu(x, y, project) {
-  const isTemplate = isTemplateProject(project);
-  const currentWs = projectWorkspace(project);
-  const items = [
-    { label: 'Rename project…',          onClick: () => renameProject(project) },
-    { label: 'Duplicate to new project…', onClick: () => duplicateProject(project) },
-    { label: 'Merge another project into this…', onClick: () => mergeAnotherProjectInto(project, x, y) },
-    { label: 'Financial milestones…',     onClick: () => openFinancialsModal(project) },
-    { label: '⚖ Quote vs Schedule…',      onClick: () => openQuoteCompareModal(project) },
-    { label: isTemplate ? 'Unmark as template' : 'Mark as template ★', onClick: () => toggleTemplate(project) },
-  ];
-  // Move-to-workspace entries — flat (no submenu) since we only have three.
-  // The current workspace shows a ✓ prefix; others move the project on click.
-  // Templates can be moved too, but their "Templates" group in the picker is
-  // driven by the template flag, not by workspace.
-  for (const ws of WORKSPACES) {
-    const isCurrent = ws === currentWs;
-    items.push({
-      label: (isCurrent ? '✓ ' : '   ') + `Workspace: ${ws}`,
-      onClick: isCurrent ? () => {} : () => {
-        setProjectWorkspace(project, ws);
-        renderProjectTabs();
-      },
+// Machine sub-tab strip — sits below the project tab strip and only shows
+// when the active project has multi-machine tasks (any task with machine !=
+// null). Pills: All · M1 · M2 · … · + (add new machine) · Duplicate.
+function renderMachineSubTabs() {
+  const bar = document.getElementById('machine-tab-bar');
+  if (!bar) return;
+  const activeProject = state.filters.project;
+  if (!activeProject || state.view !== 'schedule') { bar.hidden = true; bar.innerHTML = ''; return; }
+  // In clone mode, the orange banner takes over the top strip — hide the
+  // sub-tab bar so the banner sits flush below the project tabs (no gray
+  // gap). The user is focused on building the new machine, not switching
+  // between machines.
+  if (state.cloneMode) { bar.hidden = true; bar.innerHTML = ''; return; }
+  // Collect distinct non-null machine values for this project.
+  const machines = Array.from(new Set(
+    (state.tasks || [])
+      .filter(t => t.project === activeProject && t.machine)
+      .map(t => t.machine)
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (machines.length < 2) {
+    // A single machine doesn't need a switcher — the schedule IS that
+    // machine. The bar only appears once 2+ machines exist (when there's
+    // something to switch between). The user adds a second machine by
+    // right-clicking the project tab → "+ Add another machine."
+    bar.hidden = true;
+    bar.innerHTML = '';
+    return;
+  }
+  const subset = Array.isArray(state.filters.machinesSubset) ? state.filters.machinesSubset : [];
+  const subsetSet = new Set(subset);
+  const isAllActive = subset.length === 0;
+  // All pills look identical so on/off state is obvious. Per-machine
+  // colors only show in the grid/Gantt — the sub-tab strip stays neutral
+  // (right-click any pill to change its color or delete it).
+  const pillHtml = (label, active, dataAttr) =>
+    `<button type="button" class="machine-tab ${active ? 'is-active' : ''}" ${dataAttr}>${escapeHtml(label)}</button>`;
+  bar.innerHTML = `
+    <span class="machine-tab-label">Machines:</span>
+    ${pillHtml('All', isAllActive, 'data-machine-all="1"')}
+    ${machines.map(m => pillHtml(m, !isAllActive && subsetSet.has(m), `data-machine="${escapeHtml(m)}" title="Click to toggle ${escapeHtml(m)} (right-click for color / delete)"`)).join('')}
+    <button type="button" class="machine-tab-action" id="btn-add-machine" title="Add another machine — clone an existing one and pick which lines to include + which connect to the source.">+ Add another machine</button>
+  `;
+  // CRITICAL: clear the `hidden` attribute that earlier render calls set
+  // (e.g. when clone mode was active, when the project had no machines,
+  // when the user was on a non-schedule view). Without this, the bar
+  // stays display:none even though innerHTML is populated.
+  bar.hidden = false;
+  wireMachineSubTabButtons();
+}
+
+function wireMachineSubTabButtons() {
+  const bar = document.getElementById('machine-tab-bar');
+  if (!bar) return;
+  // "All" — clear the subset.
+  const allBtn = bar.querySelector('[data-machine-all]');
+  if (allBtn) {
+    allBtn.addEventListener('click', () => {
+      state.filters.machinesSubset = [];
+      saveMachinesSubset();
+      render();
     });
   }
+  // Per-machine pill — clicks ALWAYS toggle membership in the subset.
+  // (No shift-modifier needed.) So clicking M1 then M2 shows both
+  // together; clicking M2 again removes it; if the subset goes empty
+  // the "All" pill lights up.
+  bar.querySelectorAll('[data-machine]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const m = btn.dataset.machine;
+      const subset = Array.isArray(state.filters.machinesSubset) ? [...state.filters.machinesSubset] : [];
+      const idx = subset.indexOf(m);
+      if (idx === -1) subset.push(m);
+      else subset.splice(idx, 1);
+      state.filters.machinesSubset = subset;
+      saveMachinesSubset();
+      render();
+    });
+    // Right-click → context menu with all SDC color options inline +
+    // delete at the bottom. One click to change color, no submenu.
+    btn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const m = btn.dataset.machine;
+      const project = state.filters.project;
+      const current = getMachineColor(project, m).hex.toLowerCase();
+      const items = MACHINE_PALETTE.map(p => ({
+        label: p.name,
+        swatch: p.hex,
+        swatchActive: p.hex.toLowerCase() === current,
+        onClick: () => { setMachineColor(project, m, p.hex); render(); },
+      }));
+      items.push({ separator: true });
+      items.push({
+        label: 'Reset to default color',
+        onClick: () => {
+          if (state.machineColors?.[project]) {
+            delete state.machineColors[project][m];
+            try { localStorage.setItem('sdcMachineColors:' + project, JSON.stringify(state.machineColors[project])); } catch (_) {}
+          }
+          render();
+        },
+      });
+      items.push({ separator: true });
+      items.push({
+        label: `Delete machine ${m} (all its tasks)`,
+        danger: true,
+        onClick: () => deleteMachineFromProject(project, m),
+      });
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
+  // + Add another machine — single entry point. Cloning flow.
+  const addBtn = bar.querySelector('#btn-add-machine');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => openAddMachineDialog());
+  }
+}
+
+// Delete every task tagged with `machine` in `project`. Used by the
+// machine-pill right-click menu so the user can wipe a bad clone and
+// retry. Confirms before deleting.
+async function deleteMachineFromProject(project, machine) {
+  if (!project || !machine) return;
+  const taskCount = (state.tasks || []).filter(t => t.project === project && t.machine === machine).length;
+  const yes = confirm(`Delete machine "${machine}" from ${project}?\n\nThis removes ${taskCount} task${taskCount === 1 ? '' : 's'} from the schedule. Cannot be undone.`);
+  if (!yes) return;
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}`, { method: 'DELETE' });
+    const bodyText = await r.text();
+    let body = null;
+    try { body = bodyText ? JSON.parse(bodyText) : null; } catch (_) {}
+    if (!r.ok) {
+      showToast(`Failed to delete machine: ${(body && body.error) || bodyText || r.statusText}`, { kind: 'error' });
+      return;
+    }
+    // If we were filtered to the deleted machine, clear the filter.
+    const subset = state.filters.machinesSubset || [];
+    if (subset.includes(machine)) {
+      state.filters.machinesSubset = subset.filter(m => m !== machine);
+      saveMachinesSubset();
+    }
+    await loadTasks();
+    showToast(`Deleted machine "${machine}" — removed ${body?.deleted ?? taskCount} tasks.`, { kind: 'success' });
+  } catch (err) {
+    showToast('Failed to delete machine: ' + (err.message || err), { kind: 'error' });
+  }
+}
+
+// True if a task is the kind of work that belongs to one specific machine.
+function isPerMachineTask(task) {
+  if (!task) return false;
+  const ak = task.anchor_key;
+  if (ak === 'machine_power_up' || ak === 'fat' || ak === 'ship_machine') return true;
+  if (ak === 'receipt_of_po'    || ak === 'mech_release_1')               return false;
+  if (task.phase_group === 'design_build')     return task.department === 'shop'; // Build/Wire
+  if (task.phase_group === 'machine_testing')  return true;
+  if (task.phase_group === 'teardown_install') return true;
+  return false;
+}
+
+// Auto-tag every untagged task in a project as the given machine. Used
+// when the project doesn't have machines yet — clicking "+ Add another
+// machine" silently converts the entire project to M1 first, then opens
+// the M2 clone dialog. M1 represents the WHOLE first machine (PO,
+// Design, Build, FAT, Ship — all of it); M2 is the SUBSET the user
+// explicitly picks for duplication.
+async function autoTagAsM1(project, machineName) {
+  const candidates = (state.tasks || [])
+    .filter(t => t.project === project && !t.machine);
+  await Promise.all(candidates.map(t => api.update(t.id, { machine: machineName })));
+  await loadTasks();
+}
+
+// Add-machine flow. Clicking + Add machine on a project ALWAYS means
+// "add the next machine" — never the first one. If the project has no
+// machines yet, we silently auto-tag the existing work as M1 first. Then
+// the user enters CLONE MODE: the schedule stays in place, but each row
+// from the source machine gets two checkboxes (Include / Connect to M1)
+// and a sticky banner appears at the top with the new machine name +
+// Confirm / Cancel.
+async function openAddMachineDialog() {
+  const activeProject = state.filters.project;
+  if (!activeProject) return;
+  let existing = Array.from(new Set(
+    (state.tasks || [])
+      .filter(t => t.project === activeProject && t.machine)
+      .map(t => t.machine)
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (existing.length === 0) {
+    await autoTagAsM1(activeProject, 'M1');
+    existing = ['M1'];
+  }
+  const source = existing[existing.length - 1];
+  const nums = existing
+    .map(m => { const mm = String(m).match(/^M(\d+)$/i); return mm ? Number(mm[1]) : null; })
+    .filter(n => n != null);
+  const nextNum = nums.length ? Math.max(...nums) + 1 : existing.length + 1;
+  const target = `M${nextNum}`;
+  enterMachineCloneMode(source, target);
+}
+
+function enterMachineCloneMode(sourceMachine, targetName) {
+  // Start with NOTHING selected. The user clicks each row they want to
+  // duplicate into the new machine — typically just the build/wire/test
+  // work specific to a second physical machine, not the shared PO /
+  // design / mech-release rows. Double-click a selected row to set a
+  // custom predecessor (e.g. "wait for M1's Build to finish first").
+  state.cloneMode = {
+    sourceMachine,
+    targetName,
+    includeIds: new Set(),
+    customPredecessors: new Map(),
+  };
+  // Show the source machine's view so the user has a clean list of
+  // rows to click into the new machine. M1 = the whole project, so all
+  // candidate rows are visible.
+  state.filters.machinesSubset = [sourceMachine];
+  saveMachinesSubset();
+  document.body.classList.add('machine-clone-mode');
+  render();
+}
+
+function exitMachineCloneMode() {
+  state.cloneMode = null;
+  document.body.classList.remove('machine-clone-mode');
+  render();
+}
+
+function renderMachineCloneBanner() {
+  const el = document.getElementById('machine-clone-banner');
+  if (!el) return;
+  const cm = state.cloneMode;
+  if (!cm) { el.hidden = true; el.innerHTML = ''; return; }
+  const includeCount = cm.includeIds.size;
+  const predCount    = cm.customPredecessors.size;
+  el.hidden = false;
+  el.innerHTML = `
+    <span class="mcb-label">New machine cloning from <strong>${escapeHtml(cm.sourceMachine)}</strong>:</span>
+    <label class="mcb-name-wrap">
+      Name
+      <input type="text" id="mcb-name" value="${escapeHtml(cm.targetName)}" maxlength="20" />
+    </label>
+    <span class="mcb-hint">Click each row you want in the new machine · double-click to set a custom predecessor</span>
+    <span class="mcb-status">${includeCount} selected${predCount ? ` · ${predCount} custom pred` : ''}</span>
+    <button type="button" class="mcb-btn" id="mcb-cancel">Cancel</button>
+    <button type="button" class="mcb-btn mcb-btn-confirm" id="mcb-confirm">Complete</button>
+  `;
+  el.querySelector('#mcb-name').addEventListener('input', (e) => {
+    cm.targetName = e.target.value;
+  });
+  el.querySelector('#mcb-cancel').addEventListener('click', () => exitMachineCloneMode());
+  el.querySelector('#mcb-confirm').addEventListener('click', confirmMachineClone);
+}
+
+async function confirmMachineClone() {
+  const cm = state.cloneMode;
+  if (!cm) return;
+  const finalName = (cm.targetName || '').trim();
+  if (!finalName) { showToast('Pick a name for the new machine.', { kind: 'error' }); return; }
+  if (cm.includeIds.size === 0) { showToast('Pick at least one line to include.', { kind: 'error' }); return; }
+  // customPredecessors is a Map<id, string> the user typed referencing
+  // source-machine LINE NUMBERS (what they see on screen). Convert each
+  // string from line-number form → task-ID form via predParse so the
+  // server stores stable IDs. Empty strings explicitly clear the pred.
+  const customPredsObj = {};
+  for (const [id, raw] of cm.customPredecessors.entries()) {
+    if (!cm.includeIds.has(id)) continue;
+    const trimmed = (raw || '').trim();
+    customPredsObj[String(id)] = trimmed ? predParse(trimmed) : '';
+  }
+  const project = state.filters.project;
+  let result;
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(project)}/duplicate-machine`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceMachine: cm.sourceMachine,
+        targetMachine: finalName,
+        includeTaskIds: Array.from(cm.includeIds),
+        customPredecessors: customPredsObj,
+      }),
+    });
+    // Always read the body so we can show the server's actual message
+    // even on 5xx / 4xx responses.
+    const bodyText = await r.text();
+    let body = null;
+    try { body = bodyText ? JSON.parse(bodyText) : null; } catch (_) { /* keep raw */ }
+    if (!r.ok) {
+      const msg = (body && body.error) || bodyText || r.statusText || `HTTP ${r.status}`;
+      showToast(`Failed to clone: ${msg}`, { kind: 'error' });
+      return;
+    }
+    result = body || {};
+  } catch (err) {
+    showToast('Failed to clone (network error): ' + (err.message || err), { kind: 'error' });
+    return;
+  }
+  // Verify the server actually created something. If `cloned` is 0 or
+  // missing, surface it so the user isn't left wondering where the new
+  // machine went.
+  const clonedCount = Number(result?.cloned) || 0;
+  if (clonedCount === 0) {
+    showToast(`Server reported no tasks cloned. Response: ${JSON.stringify(result)}`, { kind: 'error', duration: 8000 });
+    // Don't exit clone mode — let the user retry / cancel.
+    return;
+  }
+  try {
+    await loadTasks();
+  } catch (err) {
+    showToast('Clone succeeded but reloading the task list failed: ' + (err.message || err), { kind: 'error' });
+    return;
+  }
+  // Sanity-check that the new machine actually shows up in the refreshed data.
+  const machineExists = (state.tasks || []).some(t => t.project === project && t.machine === finalName);
+  if (!machineExists) {
+    showToast(`Clone reported success (${clonedCount} tasks) but no tasks tagged with "${finalName}" were found after reload.`, { kind: 'error', duration: 8000 });
+    return;
+  }
+  state.filters.machinesSubset = [finalName];
+  saveMachinesSubset();
+  exitMachineCloneMode();
+  // Quick confirmation that fades after a few seconds.
+  showToast(`Created machine "${finalName}" with ${clonedCount} cloned tasks.`, { kind: 'success' });
+}
+
+
+function saveMachinesSubset() {
+  // Per-project machine subset persistence keyed by project name.
+  try {
+    const key = 'sdcMachinesSubset:' + (state.filters.project || '');
+    localStorage.setItem(key, JSON.stringify(state.filters.machinesSubset || []));
+  } catch {}
+}
+
+function loadMachinesSubset(project) {
+  if (!project) { state.filters.machinesSubset = []; return; }
+  try {
+    const raw = localStorage.getItem('sdcMachinesSubset:' + project);
+    state.filters.machinesSubset = raw ? JSON.parse(raw) : [];
+  } catch {
+    state.filters.machinesSubset = [];
+  }
+}
+
+// Per-machine color overrides. Keyed by project, then by machine name.
+// Falls back to MACHINE_PALETTE_DEFAULT if the user hasn't picked one.
+// Persisted in localStorage as `sdcMachineColors:<project>` = JSON.
+const MACHINE_PALETTE = [
+  { name: 'SDC Blue',        hex: '#1574c4', text: '#ffffff' },
+  { name: 'SDC Yellow',      hex: '#ffde51', text: '#1a1f0a' },
+  { name: 'SDC Green',       hex: '#74c415', text: '#0c1f00' },
+  { name: 'SDC Navy',        hex: '#061d39', text: '#ffffff' },
+  { name: 'SDC Green Light', hex: '#befa4f', text: '#1c2300' },
+  { name: 'SDC Blue Light',  hex: '#aacee8', text: '#0c2438' },
+  { name: 'Orange',          hex: '#ea580c', text: '#ffffff' },
+  { name: 'Pink',            hex: '#db2777', text: '#ffffff' },
+  { name: 'Violet',          hex: '#7c3aed', text: '#ffffff' },
+  { name: 'Rose',            hex: '#e11d48', text: '#ffffff' },
+];
+// Default cycle assignment when a machine doesn't have a user-chosen
+// color. M1→SDC Blue, M2→SDC Yellow, M3→SDC Green, etc.
+function defaultMachineColor(machine) {
+  if (!machine) return MACHINE_PALETTE[0];
+  const m = String(machine).match(/^M(\d+)$/i);
+  const idx = m ? (Number(m[1]) - 1) % MACHINE_PALETTE.length : 0;
+  return MACHINE_PALETTE[Math.max(0, idx)];
+}
+function getMachineColor(project, machine) {
+  if (!project || !machine) return defaultMachineColor(machine);
+  const overrides = state.machineColors?.[project] || {};
+  if (overrides[machine]) {
+    const found = MACHINE_PALETTE.find(p => p.hex.toLowerCase() === String(overrides[machine]).toLowerCase());
+    if (found) return found;
+    // Custom non-palette hex: derive text color (white if dark, dark if light)
+    return { hex: overrides[machine], text: pickContrastText(overrides[machine]) };
+  }
+  return defaultMachineColor(machine);
+}
+function pickContrastText(hex) {
+  const h = String(hex).replace('#', '');
+  if (h.length !== 6) return '#ffffff';
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  // YIQ luminance — bright background → dark text.
+  const yiq = (r * 299 + g * 587 + b * 114) / 1000;
+  return yiq >= 160 ? '#0f172a' : '#ffffff';
+}
+function setMachineColor(project, machine, hex) {
+  if (!project || !machine) return;
+  state.machineColors = state.machineColors || {};
+  state.machineColors[project] = state.machineColors[project] || {};
+  state.machineColors[project][machine] = hex;
+  try {
+    localStorage.setItem('sdcMachineColors:' + project, JSON.stringify(state.machineColors[project]));
+  } catch (_) {}
+}
+function loadMachineColors(project) {
+  if (!project) return;
+  state.machineColors = state.machineColors || {};
+  try {
+    const raw = localStorage.getItem('sdcMachineColors:' + project);
+    state.machineColors[project] = raw ? JSON.parse(raw) : {};
+  } catch {
+    state.machineColors[project] = {};
+  }
+}
+
+// Color picker popup anchored at (x, y). Lays out the SDC + extended
+// palette as click-to-pick swatches plus a small clear option to revert
+// to the default cycle color.
+function openMachineColorPicker(x, y, project, machine) {
+  document.getElementById('machine-color-popup')?.remove();
+  const current = getMachineColor(project, machine).hex;
+  const swatches = MACHINE_PALETTE.map(p => `
+    <button type="button" class="mcp-swatch ${p.hex.toLowerCase() === String(current).toLowerCase() ? 'is-active' : ''}"
+            data-hex="${p.hex}"
+            style="background:${p.hex};"
+            title="${escapeHtml(p.name)} (${p.hex})"></button>
+  `).join('');
+  const pop = document.createElement('div');
+  pop.id = 'machine-color-popup';
+  pop.className = 'machine-color-popup';
+  pop.innerHTML = `
+    <div class="mcp-header">
+      <span class="mcp-title">${escapeHtml(machine)} color</span>
+      <button type="button" class="mcp-close" aria-label="Close">×</button>
+    </div>
+    <div class="mcp-swatches">${swatches}</div>
+    <button type="button" class="mcp-reset" title="Use the default cycle color">↺ Reset to default</button>
+  `;
+  document.body.appendChild(pop);
+  // Anchor & clamp
+  const pad = 8;
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = Math.max(pad, Math.min(window.innerWidth - w - pad, x));
+  let top  = Math.max(pad, Math.min(window.innerHeight - h - pad, y));
+  pop.style.left = left + 'px';
+  pop.style.top  = top  + 'px';
+
+  const close = () => { pop.remove(); document.removeEventListener('mousedown', onOutside, true); };
+  const onOutside = (ev) => { if (!pop.contains(ev.target)) close(); };
+  pop.querySelector('.mcp-close').addEventListener('click', close);
+  pop.querySelectorAll('.mcp-swatch').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setMachineColor(project, machine, btn.dataset.hex);
+      close();
+      render();
+    });
+  });
+  pop.querySelector('.mcp-reset').addEventListener('click', () => {
+    if (state.machineColors?.[project]) {
+      delete state.machineColors[project][machine];
+      try { localStorage.setItem('sdcMachineColors:' + project, JSON.stringify(state.machineColors[project])); } catch (_) {}
+    }
+    close();
+    render();
+  });
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+}
+
+// Right-click menu on a project tab. Slimmed down per user feedback:
+// the multi-machine entry is the headline action, followed by basics
+// (rename / duplicate / merge), then destructive operations. Things
+// with other entry points (Quote vs Schedule toolbar button, workspace
+// drag-and-drop) live elsewhere and aren't duplicated here.
+function showProjectTabMenu(x, y, project) {
+  const isTemplate = isTemplateProject(project);
+  const items = [];
+  // 1) Headline: multi-machine entry point. Always first.
+  //    openAddMachineDialog handles the no-machines case internally
+  //    (auto-tags existing per-machine work as M1 + opens M2 clone).
+  items.push({
+    label: '🔧 + Add another machine',
+    primary: true,
+    onClick: () => {
+      state.filters.project = project;
+      saveProjectTabs();
+      openAddMachineDialog();
+    },
+  });
+  items.push({ separator: true });
+  // 2) Project basics — no other entry points for these.
+  items.push({ label: 'Rename project…',                    onClick: () => renameProject(project) });
+  items.push({ label: 'Duplicate to new project…',          onClick: () => duplicateProject(project) });
+  items.push({ label: 'Merge another project into this…',   onClick: () => mergeAnotherProjectInto(project, x, y) });
+  items.push({ label: isTemplate ? 'Unmark as template' : 'Mark as template ★', onClick: () => toggleTemplate(project) });
+  // 3) Destructive — only on non-template tabs.
   if (!isTemplate) {
-    items.push({ label: 'Close tab', onClick: () => closeProjectTab(project) });
-    items.push({ label: 'Delete project (and all its tasks)…', onClick: () => deleteProject(project) });
+    items.push({ separator: true });
+    items.push({ label: 'Close tab',                          onClick: () => closeProjectTab(project) });
+    items.push({ label: 'Delete project (and all its tasks)…', danger: true, onClick: () => deleteProject(project) });
   }
   showContextMenu(x, y, items);
 }
@@ -7166,6 +8319,8 @@ function showEstimateFeasibilityModal(parsed) {
 
 function render() {
   renderProjectTabs();
+  renderMachineSubTabs();
+  renderMachineCloneBanner();
   renderFilters();
   // Keep the Baseline buttons' labels (Set/Reset) and disabled state aligned
   // with the active project after every render — covers project-tab switches
@@ -7176,6 +8331,9 @@ function render() {
   if (state.view === 'schedule') {
     renderTable();
     renderGantt();
+    // After tbody is rebuilt, re-paint clone-mode selection state +
+    // custom-pred chips on the source-machine rows.
+    decorateCloneModeRows();
   } else if (state.view === 'team') {
     renderTeam();
   }
@@ -7391,7 +8549,12 @@ function newTaskInline() {
   const r = btn.getBoundingClientRect();
   showSectionPicker(r.right - 280, r.bottom + 6, async (g, d, s) => {
     const project = state.filters.project;
-    const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project });
+    // If the user is currently filtered to exactly ONE machine, tag the
+    // new task with that machine so it lands in the active view instead
+    // of as an untagged shared row.
+    const subset = state.filters.machinesSubset || [];
+    const machine = (subset.length === 1) ? subset[0] : null;
+    const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project, machine });
     await loadTasks();
     const tr = document.querySelector(`tr[data-id="${created.id}"]`);
     if (!tr) return;
@@ -7588,8 +8751,101 @@ function handleRowContextMenu(e) {
     items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
   }
   items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
+  // Copy to another machine — for filling in rows the user missed during
+  // the original clone (e.g. M1.FAT didn't get clicked into M2). Lists
+  // every OTHER machine in the project as a target.
+  if (task && task.project) {
+    const allMachines = Array.from(new Set(
+      (state.tasks || []).filter(t => t.project === task.project && t.machine).map(t => t.machine)
+    )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const otherMachines = allMachines.filter(m => m !== task.machine);
+    if (otherMachines.length > 0) {
+      items.push({
+        label: 'Copy to another machine',
+        onClick: () => copyTaskToMachineInline(id, cx, cy, otherMachines),
+      });
+    }
+  }
   items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
   showContextMenu(cx, cy, items);
+}
+
+// Inline picker: pick a machine to COPY this row into. Creates a clone of
+// the task (same fields, dates, anchor_key, etc.) tagged with the chosen
+// machine. Used to fill rows the user missed during the original clone.
+function copyTaskToMachineInline(taskId, x, y, machines) {
+  const task = state.tasks.find(t => t.id === taskId);
+  if (!task) return;
+  const items = machines.map(m => ({
+    label: `Copy to ${m}`,
+    onClick: async () => {
+      // Clone the task into the target machine. Predecessor is BLANK on
+      // copy — the user explicitly wires it up in the new machine's
+      // context (otherwise they inherit the source machine's chain and
+      // the new row anchors to the wrong place).
+      const payload = {
+        name: task.name,
+        project: task.project,
+        phase: task.phase,
+        phase_group: task.phase_group,
+        department: task.department,
+        sub_department: task.sub_department,
+        assignee: task.assignee,
+        start_date: task.start_date,
+        end_date: task.end_date,
+        duration_days: task.duration_days,
+        predecessors: null,
+        is_milestone: task.is_milestone,
+        progress: 0,
+        allocation: task.allocation,
+        notes: task.notes,
+        anchor_key: task.anchor_key,
+        is_action: task.is_action,
+        machine: m,
+      };
+      try {
+        await api.create(payload);
+        await loadTasks();
+      } catch (err) {
+        alert('Failed to copy: ' + (err.message || err));
+      }
+    },
+  }));
+  showContextMenu(x, y, items);
+}
+
+// Inline machine picker — shows existing machines in the project + the
+// "Shared" option (null) + "New machine…" so the user can tag the row.
+function setTaskMachineInline(taskId, x, y) {
+  const task = state.tasks.find(t => t.id === taskId);
+  if (!task) return;
+  const existing = Array.from(new Set(
+    (state.tasks || [])
+      .filter(t => t.project === task.project && t.machine)
+      .map(t => t.machine)
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const items = [
+    { label: task.machine == null ? '✓ Shared' : 'Shared', onClick: async () => {
+      await api.update(taskId, { machine: null });
+      await loadTasks();
+    }},
+  ];
+  for (const m of existing) {
+    items.push({
+      label: task.machine === m ? `✓ ${m}` : m,
+      onClick: async () => {
+        await api.update(taskId, { machine: m });
+        await loadTasks();
+      },
+    });
+  }
+  items.push({ label: 'New machine…', onClick: async () => {
+    const name = (prompt('Machine identifier (e.g. M2)') || '').trim();
+    if (!name) return;
+    await api.update(taskId, { machine: name });
+    await loadTasks();
+  }});
+  showContextMenu(x, y, items);
 }
 
 // Create a new row directly below the given task. Inherits section info
@@ -7608,6 +8864,9 @@ async function createTaskBelow(taskId) {
     phase_group: t.phase_group || null,
     department: t.department || null,
     sub_department: t.sub_department || null,
+    // Inherit machine tag too — adding a row below an M2 task should put
+    // the new row IN M2, not silently make it shared.
+    machine: t.machine || null,
     sort_order: sortOrder,
   });
   if (!created || created.error) return;
@@ -7738,10 +8997,30 @@ function showContextMenu(x, y, items) {
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
   for (const item of items) {
+    // Visual separator — a thin horizontal rule between menu groups.
+    if (item && item.separator) {
+      const hr = document.createElement('hr');
+      hr.className = 'context-menu-sep';
+      menu.appendChild(hr);
+      continue;
+    }
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.textContent = item.label;
     if (item.danger) btn.classList.add('danger');
+    if (item.primary) btn.classList.add('primary');
+    // Color swatch support — when item.swatch is set, render a colored
+    // square before the label. Used for the per-machine color menu so
+    // the SDC palette can be picked inline (no submenu).
+    if (item.swatch) {
+      const sw = document.createElement('span');
+      sw.className = 'context-menu-swatch';
+      sw.style.background = item.swatch;
+      if (item.swatchActive) sw.classList.add('is-active');
+      btn.appendChild(sw);
+    }
+    const labelSpan = document.createElement('span');
+    labelSpan.textContent = item.label;
+    btn.appendChild(labelSpan);
     btn.addEventListener('click', () => { menu.remove(); item.onClick(); });
     menu.appendChild(btn);
   }
@@ -7758,6 +9037,42 @@ function showContextMenu(x, y, items) {
 }
 
 // In-app confirmation popup anchored next to a click point. Replaces native
+// In-app toast notification. Replaces native alert() for non-blocking
+// confirmations + errors. Positioned center-top of the schedule area
+// (NOT the very top of the browser), styled with the app's palette,
+// auto-dismisses after a few seconds. Click to dismiss early.
+//
+// Usage:
+//   showToast('Created machine M2 with 12 tasks.', { kind: 'success' });
+//   showToast('Failed to clone: ...', { kind: 'error', duration: 6000 });
+//
+// kind: 'success' (default green) | 'error' (red) | 'info' (blue)
+// duration: ms before auto-dismiss. 0 = stay until clicked.
+function showToast(message, opts = {}) {
+  document.getElementById('sdc-toast')?.remove();
+  const kind = opts.kind || 'info';
+  const duration = opts.duration != null ? opts.duration : (kind === 'error' ? 6000 : 3500);
+  const toast = document.createElement('div');
+  toast.id = 'sdc-toast';
+  toast.className = `sdc-toast sdc-toast-${kind}`;
+  const iconChar = kind === 'success' ? '✓' : kind === 'error' ? '⚠' : 'ℹ';
+  toast.innerHTML = `
+    <span class="sdc-toast-icon">${iconChar}</span>
+    <span class="sdc-toast-msg"></span>
+    <button type="button" class="sdc-toast-close" aria-label="Dismiss">×</button>
+  `;
+  // textContent (not innerHTML) so the message can't inject markup.
+  toast.querySelector('.sdc-toast-msg').textContent = message;
+  document.body.appendChild(toast);
+  const dismiss = () => { toast.classList.add('is-leaving'); setTimeout(() => toast.remove(), 200); };
+  toast.querySelector('.sdc-toast-close').addEventListener('click', dismiss);
+  toast.addEventListener('click', (e) => {
+    if (e.target.closest('.sdc-toast-close')) return;
+    dismiss();
+  });
+  if (duration > 0) setTimeout(dismiss, duration);
+}
+
 // `confirm()` (which opens a centered browser-chrome dialog far from wherever
 // the user clicked — disorienting). Returns a Promise<boolean>: resolves true
 // if Confirm was clicked, false if Cancel or clicking outside.
@@ -11890,22 +13205,23 @@ async function ensureAnchorsForProject(project) {
 // restructures so the rest of the app sees clean, current-shape data even before the
 // server is restarted (which is when the persistent SQL migrations actually run).
 function dedupAnchors(all) {
-  // Dedup PER PROJECT — anchors are scoped to a project, so an "older" anchor in
-  // a different project doesn't outrank a fresh import in this one. Previously
-  // this was global, which meant imported projects lost their Receipt of PO / FAT
-  // / Ship Machine to the template's older anchors and showed up empty in the UI.
-  const oldest = {}; // key = `${project}::${anchor_key}` → lowest id
+  // Dedup PER (project, machine, anchor_key). Anchors are scoped to a project,
+  // AND for per-machine anchors (FAT / Ship Machine / Power-Up) also scoped to
+  // a machine. So a multi-machine project can have FAT-M1, FAT-M2, etc. side
+  // by side without one shadowing the other. machine='' = shared (PO,
+  // Mech Release) which stays one-per-project.
+  const oldest = {}; // key = `${project}::${machine}::${anchor_key}` → lowest id
   for (const t of all) {
     const k = inferredAnchorKey(t);
     if (!k) continue;
-    const scope = `${t.project || ''}::${k}`;
+    const scope = `${t.project || ''}::${t.machine || ''}::${k}`;
     if (!(scope in oldest) || t.id < oldest[scope]) oldest[scope] = t.id;
   }
   return all
     .filter(t => {
       const k = inferredAnchorKey(t);
       if (!k) return true;
-      return t.id === oldest[`${t.project || ''}::${k}`];
+      return t.id === oldest[`${t.project || ''}::${t.machine || ''}::${k}`];
     })
     .map(t => {
       // Legacy section-50 split ('teardown' or 'install' as their own phase_group)
@@ -11954,6 +13270,9 @@ async function loadTasks() {
   // projects the user already had data for. Subsequent loads are a no-op (saved tabs win).
   if (!state._tabsHydrated) {
     loadProjectTabs();
+    // Restore the machine subset + color overrides for the current project.
+    loadMachinesSubset(state.filters.project);
+    loadMachineColors(state.filters.project);
     state._tabsHydrated = true;
   }
   // Refresh financial milestones for projects whose data we already cached. The
@@ -12234,6 +13553,11 @@ function loadScheduleView() {
       // user enables it when they want to see allocation/duration at a glance
       // without having to read the grid.
       showBarMeta:   !!saved.showBarMeta,
+      // Multi-machine highlighting (M1/M2/M3 pill in grid + colored Gantt
+      // bar borders). Default ON so multi-machine projects look distinct
+      // out of the box. The pill auto-hides per-project when only one
+      // machine exists, regardless of this setting.
+      showMachineColors: saved.showMachineColors === undefined ? true : !!saved.showMachineColors,
       // v4.30: inline allocation prefix in the Task column ("85%  Task Name").
       // Defaults to ON since the user explicitly asked for it; the View pill's
       // α icon turns it off when presenting to a customer or anyone else
@@ -12252,7 +13576,7 @@ function loadScheduleView() {
       hideCompleted: !!saved.hideCompleted,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true };
   }
 }
 function saveScheduleView() {
@@ -12293,6 +13617,31 @@ function syncViewPill() {
   setActive('btn-view-financials', state.showFinancials);
   setActive('btn-view-lags',       sv.showArrowLags !== false);
   setActive('btn-view-bar-meta',   sv.showBarMeta);
+  // The M pill always looks like the other pills (dark blue when active).
+  // Its preference is saved regardless of project; the per-project
+  // auto-hide rule in shouldShowMachineVisuals() handles whether the
+  // chips/borders actually paint.
+  setActive('btn-view-machine', sv.showMachineColors !== false);
+}
+
+// True when the visible task set spans 2+ distinct machine tags. Drives
+// the auto-hide rule: single-machine projects suppress chip + bar
+// borders even when the M pill is "on."
+function isMultiMachineProject() {
+  const project = state.filters?.project;
+  if (!project) return false;
+  const machines = new Set();
+  for (const t of state.tasks || []) {
+    if (t.project === project && t.machine) machines.add(t.machine);
+  }
+  return machines.size >= 2;
+}
+
+// Single switch every render path consults: should machine pills / borders
+// paint? Combines the user's view toggle with the per-project auto-hide.
+function shouldShowMachineVisuals() {
+  if (!isMultiMachineProject()) return false;
+  return state.scheduleView?.showMachineColors !== false;
 }
 function toggleScheduleView(key) {
   state.scheduleView[key] = !state.scheduleView[key];
@@ -13274,6 +14623,7 @@ async function init() {
   wireViewToggle('btn-view-financials', 'financials');
   wireViewToggle('btn-view-lags',       'showArrowLags');
   wireViewToggle('btn-view-bar-meta',   'showBarMeta');
+  wireViewToggle('btn-view-machine',    'showMachineColors');
   syncViewPill();
 
   // Baseline — dropdown menu. The menu rebuilds on every open so its items
@@ -13443,7 +14793,27 @@ async function init() {
   // Cell-edit handler is attached once here — renderTable rebuilds tbody.innerHTML so the
   // tbody element survives across renders and accumulating listeners is wasteful.
   const tbodyEl = document.getElementById('tasks-tbody');
+  // Clone-mode click trap, registered in CAPTURE phase so it beats any
+  // nested element-level handlers (pill mousedown, cell editors). When
+  // cloneMode is null the trap is a no-op so normal editing still works.
+  tbodyEl.addEventListener('click', (e) => {
+    if (state.cloneMode) handleCloneModeRowClick(e);
+  }, true);
   tbodyEl.addEventListener('click', handleCellClick);
+  tbodyEl.addEventListener('dblclick', (e) => {
+    if (state.cloneMode) handleCloneModeRowDblClick(e);
+  });
+  // Also trap mousedown in capture phase — some editors (enterPillEdit)
+  // wire their own document-level mousedown listeners on first interaction,
+  // which would fire BEFORE our click handler. Eating the mousedown stops
+  // them in their tracks too.
+  tbodyEl.addEventListener('mousedown', (e) => {
+    if (!state.cloneMode) return;
+    if (e.target.closest('.clone-pred-editor')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+  }, true);
   tbodyEl.addEventListener('contextmenu', handleRowContextMenu);
   setupGridPan();
   setupRowCrossHighlight();
@@ -13491,7 +14861,7 @@ async function init() {
   // a schedule. Right-click → legacy picker fallback (the estimate +
   // Smartsheet flows still live there until they're migrated to the panel).
   document.getElementById('btn-add-project').addEventListener('click', () => {
-    showProjectAddPicker();
+    openSidebarPanel('workspaces');
   });
   document.getElementById('btn-add-project').addEventListener('contextmenu', (e) => {
     e.preventDefault();

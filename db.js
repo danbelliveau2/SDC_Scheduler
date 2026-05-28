@@ -240,6 +240,12 @@ const migrations = [
   // drops back below 100. Editable via the API so the user can backfill
   // a missed checkoff. Drives variance reports (completed_on vs end_date).
   { col: 'completed_on', sql: 'ALTER TABLE tasks ADD COLUMN completed_on TEXT' },
+  // v6.x: multi-machine projects. Tasks belonging to a SPECIFIC machine
+  // within a multi-machine project get a machine tag (e.g. "M1", "M2").
+  // null = shared across all machines (PO, design phase, procurement,
+  // Mech Release). Filter sub-tabs use this to scope the schedule view
+  // to one or more machines.
+  { col: 'machine', sql: 'ALTER TABLE tasks ADD COLUMN machine TEXT' },
 ];
 for (const m of migrations) {
   if (!columnExists('tasks', m.col)) db.exec(m.sql);

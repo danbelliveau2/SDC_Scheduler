@@ -97,6 +97,17 @@
     <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule in a new tab">+ New tab</button>
   </div>
 
+  <!-- Machine sub-tab strip — only visible when the active project has
+       multi-machine tasks. Rendered by renderMachineSubTabs(). Pills:
+       All · M1 · M2 · … · + add · Filter (multi-select). -->
+  <div class="machine-tab-bar" id="machine-tab-bar" hidden></div>
+
+  <!-- Clone-machine banner: visible only when state.machineCloneMode is
+       active. Lets the user pick lines directly on the schedule (checkboxes
+       appear in a temporary column on each source-machine row). Confirm
+       sends to the duplicate-machine endpoint. -->
+  <div class="machine-clone-banner" id="machine-clone-banner" hidden></div>
+
   <main>
     <!-- Projects landing page — list of every workspace with collapsible
          sections. Click a workspace header to expand / collapse its projects.
@@ -183,6 +194,7 @@
             <button id="btn-view-financials" class="view-bracket-icon" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$</button>
             <button id="btn-view-lags"       class="view-bracket-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
             <button id="btn-view-bar-meta"   class="view-bracket-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below.">%</button>
+            <button id="btn-view-machine"    class="view-bracket-icon" type="button" title="Highlight which machine each row belongs to — colored pill in the grid + matching border on the Gantt bar. Auto-hides on single-machine projects.">M</button>
           </div>
 
           <div class="toolbar-divider"></div>
