@@ -482,6 +482,380 @@ body {
   flex: 1 1 auto;
   min-width: 0;
 }
+
+/* Machine sub-tab strip — appears below the project tabs when the active
+   project has multi-machine tasks. Smaller, inset pills. */
+.machine-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: color-mix(in srgb, var(--sdc-dark, #061d39) 88%, white);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  position: sticky;
+  top: 36px;
+  z-index: 10;
+  overflow-x: auto;
+  overflow-y: hidden;
+  font-size: 12px;
+}
+.machine-tab-bar[hidden] { display: none; }
+.machine-tab-label {
+  color: rgba(255,255,255,0.55);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 4px;
+}
+.machine-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  background: rgba(255,255,255,0.08);
+  color: white;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.machine-tab:hover { background: rgba(255,255,255,0.16); }
+.machine-tab.is-active {
+  background: var(--sdc-accent, #c1f53e);
+  color: #1a1f0a;
+  font-weight: 700;
+}
+.machine-tab.machine-tab-color {
+  /* per-machine colored pills override the default via inline style */
+  border-width: 1px;
+  border-style: solid;
+  padding-left: 8px;
+}
+.machine-tab-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.15) inset;
+}
+.machine-color-popup {
+  position: fixed;
+  z-index: 400;
+  background: white;
+  border: 1px solid var(--border-strong, #94a3b8);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.28);
+  padding: 10px 12px;
+  min-width: 220px;
+  font-size: 13px;
+  color: #0f172a;
+}
+.mcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.mcp-title {
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #475569;
+}
+.mcp-close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  font-weight: 700;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.mcp-close:hover { color: #0f172a; }
+.mcp-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.mcp-swatch {
+  width: 32px;
+  height: 32px;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.1) inset;
+}
+.mcp-swatch:hover { transform: scale(1.06); }
+.mcp-swatch.is-active {
+  border-color: var(--sdc-dark, #061d39);
+  box-shadow: 0 0 0 2px white inset, 0 0 0 4px var(--sdc-dark, #061d39) inset;
+}
+.mcp-reset {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border, #cbd5e1);
+  background: white;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #475569;
+}
+.mcp-reset:hover { background: #f1f5f9; color: #0f172a; }
+.machine-tab-action {
+  padding: 3px 8px;
+  background: transparent;
+  color: rgba(255,255,255,0.7);
+  border: 1px dashed rgba(255,255,255,0.3);
+  border-radius: 12px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.machine-tab-action:hover {
+  background: rgba(255,255,255,0.08);
+  color: white;
+  border-color: rgba(255,255,255,0.5);
+}
+
+/* Clone-machine BANNER — sticky bar at top of schedule when in clone mode.
+   Sits flush under the project tab strip (36px tall). The machine sub-tab
+   strip is hidden in clone mode so there's no gray gap. */
+.machine-clone-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 35%, white);
+  border-bottom: 2px solid color-mix(in srgb, var(--sdc-accent, #c1f53e) 70%, transparent);
+  font-size: 13px;
+  position: sticky;
+  top: 36px;
+  z-index: 12;
+}
+.machine-clone-banner[hidden] { display: none; }
+.mcb-label { color: #0f172a; }
+.mcb-name-wrap { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #334155; }
+.mcb-name-wrap input { padding: 4px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 500; text-transform: none; letter-spacing: normal; width: 110px; }
+.mcb-status { color: #475569; margin-left: auto; }
+.mcb-btn {
+  padding: 6px 14px;
+  border: 1px solid #cbd5e1;
+  background: white;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #334155;
+}
+.mcb-btn:hover { background: #f1f5f9; }
+.mcb-btn-confirm {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: white;
+}
+.mcb-btn-confirm:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 85%, black); }
+
+/* Hint text in the clone banner — sits between the name input and the
+   status counter. Kept understated so the input + counts stay primary. */
+.mcb-hint {
+  color: #475569;
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Clone-mode row UX.
+   When body.machine-clone-mode is set, every row in the grid becomes
+   click-selectable. Single click toggles inclusion, double-click
+   opens a floating popup (.clone-pred-popup, appended to body) for
+   a custom predecessor. Every interactive sub-element inside the row
+   (pills, milestone checkboxes, drag handles) is forced inert with
+   `pointer-events: none` so clicks pass through to the row and don't
+   open cell editors. */
+body.machine-clone-mode #tasks-tbody tr[data-id] { cursor: pointer; }
+/* Unselected rows go dim so the lime selection POPS. Source rows that
+   are unselected look "ghosted" — visible but clearly not part of the
+   new machine. */
+body.machine-clone-mode #tasks-tbody tr[data-id]:not(.clone-selected) {
+  opacity: 0.55;
+}
+body.machine-clone-mode #tasks-tbody tr[data-id]:not(.clone-selected):hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 18%, white);
+}
+body.machine-clone-mode #tasks-tbody tr.clone-selected td {
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 35%, white) !important;
+}
+body.machine-clone-mode #tasks-tbody tr.clone-selected {
+  box-shadow: inset 5px 0 0 var(--sdc-accent, #c1f53e);
+}
+body.machine-clone-mode #tasks-tbody tr.clone-selected:hover td {
+  background: color-mix(in srgb, var(--sdc-accent, #c1f53e) 50%, white) !important;
+}
+/* Make every interactive sub-element inert so the click ALWAYS bubbles
+   to the row. The popup editor lives on document.body so it's outside
+   this scope and stays fully interactive. */
+body.machine-clone-mode #tasks-tbody [data-edit-pill],
+body.machine-clone-mode #tasks-tbody [data-toggle-milestone],
+body.machine-clone-mode #tasks-tbody .row-drag,
+body.machine-clone-mode #tasks-tbody .row-delete,
+body.machine-clone-mode #tasks-tbody .name-edit-pill,
+body.machine-clone-mode #tasks-tbody .name-cell-alloc-pre,
+body.machine-clone-mode #tasks-tbody .name-cell-dur,
+body.machine-clone-mode #tasks-tbody .name-pct-pill,
+body.machine-clone-mode #tasks-tbody input[type="checkbox"] {
+  pointer-events: none;
+}
+/* Machine identifier pill that sits before the task name on rows tagged
+   with a machine. Helps the user tell duplicate names apart (M1 "Builder 1"
+   vs M2 "Builder 1"). Color cycles by machine name so each machine gets
+   a stable, distinct accent. */
+.name-machine-chip {
+  display: inline-block;
+  padding: 0 6px;
+  margin-right: 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  background: #e0e7ff;
+  color: #3730a3;
+  border: 1px solid #c7d2fe;
+  white-space: nowrap;
+}
+/* Per-machine accent colors. Cycle so M4, M5, ... reuse the palette. */
+.name-machine-chip[data-machine="M1"] { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+.name-machine-chip[data-machine="M2"] { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.name-machine-chip[data-machine="M3"] { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+.name-machine-chip[data-machine="M4"] { background: #fce7f3; color: #9d174d; border-color: #f9a8d4; }
+.name-machine-chip[data-machine="M5"] { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
+.name-machine-chip[data-machine="M6"] { background: #ffe4e6; color: #9f1239; border-color: #fda4af; }
+
+.clone-pred-chip {
+  display: inline-block;
+  position: relative;
+  z-index: 20;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1.5px solid var(--sdc-primary, #1574c4);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sdc-primary, #1574c4);
+  white-space: nowrap;
+  vertical-align: middle;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+  pointer-events: none;
+}
+/* The .name-cell-main span has overflow:hidden which would clip a long
+   chip. In clone mode let the chip overflow past the column's right
+   edge so it stays readable, and bring it above any absolutely-
+   positioned siblings (% pill, duration). */
+body.machine-clone-mode #tasks-tbody td[data-col="name"] {
+  overflow: visible !important;
+}
+body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
+  overflow: visible;
+}
+/* Floating popup for editing a clone-mode custom predecessor. Appended
+   to document.body and positioned absolutely so row opacity / cell
+   background can't bleed through. Opaque white card with shadow. */
+.clone-pred-popup {
+  position: fixed;
+  z-index: 1000;
+  background: #ffffff;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.35);
+  padding: 12px 14px;
+  min-width: 360px;
+  max-width: 480px;
+  font-size: 13px;
+  color: #0f172a;
+}
+.clone-pred-popup-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.clone-pred-popup-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+  font-weight: 700;
+}
+.clone-pred-popup-task {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+.clone-pred-popup-body {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.clone-pred-popup-input {
+  flex: 1 1 auto;
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  background: #f8fafc;
+  color: #0f172a;
+  outline: none;
+}
+.clone-pred-popup-input:focus {
+  border-color: var(--sdc-primary, #1574c4);
+  background: white;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sdc-primary, #1574c4) 22%, transparent);
+}
+.clone-pred-popup-ok,
+.clone-pred-popup-clear,
+.clone-pred-popup-cancel {
+  border: 1px solid #cbd5e1;
+  background: white;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #334155;
+  white-space: nowrap;
+}
+.clone-pred-popup-ok {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: white;
+}
+.clone-pred-popup-ok:hover     { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 85%, black); }
+.clone-pred-popup-clear:hover  { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
+.clone-pred-popup-cancel:hover { background: #f1f5f9; }
+.clone-pred-popup-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #64748b;
+  font-style: italic;
+}
 .project-tab {
   display: inline-flex;
   align-items: center;
@@ -1975,6 +2349,30 @@ input[type="number"] {
 .project-stats-popup .popup-value.stat-early   { color: #3730a3; }
 .project-stats-popup .popup-value.stat-ok      { color: #14532d; }
 .project-stats-popup .popup-value.stat-neutral { color: var(--text-muted); font-size: 11px; font-weight: 600; }
+/* Scope header — appears on multi-machine projects to clarify whether
+   the numbers below cover All machines or just one. */
+.project-stats-popup .popup-scope {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--sdc-primary, #1574c4);
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+/* +N wks vs M1 — staggered-delivery delta chip on per-machine views. */
+.popup-machine-delta {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, white);
+  color: var(--sdc-primary, #1574c4);
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+}
 /* FAT variance chip — sits next to the date (M/D/YY), giving a quick "how far
    off baseline are we?" signal without taking over the row. */
 .project-stats-popup .popup-fat-var {
@@ -3141,6 +3539,94 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 .context-menu button:hover { background: var(--row-hover); }
 .context-menu button.danger { color: #dc2626; }
 .context-menu button.danger:hover { background: #fee2e2; }
+.context-menu button.primary {
+  font-weight: 700;
+  color: var(--sdc-primary, #1574c4);
+}
+.context-menu button.primary:hover {
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 10%, white);
+}
+.context-menu-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 2px;
+}
+.context-menu button { display: flex; align-items: center; gap: 8px; }
+.context-menu-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.15) inset;
+  flex-shrink: 0;
+}
+.context-menu-swatch.is-active {
+  box-shadow: 0 0 0 2px var(--sdc-dark, #061d39);
+}
+
+/* In-app toast notification. Replaces native alert() so success/error
+   confirmations look like part of the app instead of a browser chrome
+   dialog ("localhost:3000 says…"). Positioned at the top-center of the
+   schedule area (under the project + sub-tab bars), animates in, fades
+   on dismiss. */
+.sdc-toast {
+  position: fixed;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 10px 12px;
+  min-width: 280px;
+  max-width: 600px;
+  background: #ffffff;
+  border-left: 5px solid #1e293b;
+  border-radius: 8px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.28);
+  font-size: 13px;
+  font-weight: 500;
+  color: #0f172a;
+  cursor: pointer;
+  animation: sdc-toast-in 180ms ease-out;
+}
+.sdc-toast.is-leaving {
+  animation: sdc-toast-out 180ms ease-in forwards;
+}
+@keyframes sdc-toast-in {
+  from { opacity: 0; transform: translate(-50%, -12px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes sdc-toast-out {
+  to { opacity: 0; transform: translate(-50%, -12px); }
+}
+.sdc-toast-success { border-left-color: #16a34a; }
+.sdc-toast-success .sdc-toast-icon { color: #16a34a; }
+.sdc-toast-error   { border-left-color: #dc2626; }
+.sdc-toast-error   .sdc-toast-icon { color: #dc2626; }
+.sdc-toast-info    { border-left-color: var(--sdc-primary, #1574c4); }
+.sdc-toast-info    .sdc-toast-icon { color: var(--sdc-primary, #1574c4); }
+.sdc-toast-icon {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+.sdc-toast-msg {
+  flex: 1 1 auto;
+  line-height: 1.4;
+}
+.sdc-toast-close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  font-weight: 700;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.sdc-toast-close:hover { color: #0f172a; }
 
 /* In-app confirmation popup. Anchored next to the click point that triggered
    the action (vs. native confirm() which opens centered chrome dialogs far

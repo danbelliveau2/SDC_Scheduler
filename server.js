@@ -15,7 +15,7 @@ app.use((req, res, next) => {
 });
 app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false }));
 
-const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'completed_on'];
+const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'completed_on', 'machine'];
 
 // ---------- Schedule auto-computation (FS/SS/FF/SF + lag) ----------
 // All scheduling is done in BUSINESS DAYS (Mon–Fri). Weekends are skipped: a task
@@ -219,7 +219,7 @@ app.post('/api/tasks', (req, res) => {
   // v4.46: include is_action in the INSERT columns so + Add action can
   // flag a row as an action item at creation time. Defaults to 0 (regular
   // scheduled task) for everything else.
-  const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action'];
+  const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'machine'];
   const values = [
     name,
     req.body.project || null,
@@ -240,6 +240,7 @@ app.post('/api/tasks', (req, res) => {
     insertSortOrder,
     req.body.anchor_key || null,
     req.body.is_action ? 1 : 0,
+    req.body.machine || null,
   ];
   const placeholders = cols.map(() => '?').join(', ');
   const stmt = db.prepare(`INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders})`);
@@ -1605,6 +1606,240 @@ app.post('/api/baseline/clear', (req, res) => {
     WHERE project = ?
   `).run(project);
   res.json({ ok: true, cleared: result.changes });
+});
+
+// ---------- Multi-machine: duplicate one machine's tasks into another ----------
+// POST /api/projects/:project/duplicate-machine
+// Body: {
+//   sourceMachine, targetMachine,
+//   includeTaskIds?:        number[],            // optional subset of source IDs
+//   customPredecessors?:    { [sourceId]: string } // per-task override; bypasses idMap
+// }
+//
+// Clones every task tagged with `machine = sourceMachine` in the given project
+// to new rows tagged `machine = targetMachine`. Predecessors that point WITHIN
+// the source machine's task set are rewritten to point at the corresponding
+// new clone (e.g. M2's Build → M2's Wire). Predecessors that point at shared
+// or other-machine tasks are preserved as-is so cross-machine + shared
+// relationships still work.
+//
+// `customPredecessors` lets the user override individual cloned tasks'
+// predecessor strings — typically used to add a cross-machine link
+// ("M2.Wire waits for M1.Wire"). The override is treated as-is (already
+// expressed as task IDs), so it points at exactly what the user typed.
+app.post('/api/projects/:project/duplicate-machine', (req, res) => {
+  const project = req.params.project;
+  const {
+    sourceMachine,
+    targetMachine,
+    chainPredecessors,        // legacy: chain ALL cloned tasks to their source
+    includeTaskIds,           // optional array of source task IDs to clone. If absent/empty → all.
+    chainTaskIds,             // legacy: tasks whose clones should FS-depend on the source task.
+    customPredecessors,       // map: sourceId → pred string (overrides auto-rewrite)
+  } = req.body || {};
+  if (!project || !sourceMachine || !targetMachine) {
+    return res.status(400).json({ error: 'project, sourceMachine, targetMachine required' });
+  }
+  if (sourceMachine === targetMachine) {
+    return res.status(400).json({ error: 'sourceMachine and targetMachine must differ' });
+  }
+  // Reject if target already has tasks in this project (avoid accidental merging).
+  const existing = db.prepare('SELECT COUNT(*) AS c FROM tasks WHERE project = ? AND machine = ?').get(project, targetMachine).c;
+  if (existing > 0) {
+    return res.status(409).json({ error: `Machine "${targetMachine}" already has ${existing} tasks in this project.` });
+  }
+  // Pick the rows to clone. When the client sends includeTaskIds, those
+  // IDs win and may include rows outside the source machine (shared
+  // anchors, design rows above the Build line — the user explicitly
+  // clicked them in the schedule). Without includeTaskIds, fall back
+  // to "every row tagged with sourceMachine" (legacy behavior).
+  let sourceTasks;
+  const includeSet = Array.isArray(includeTaskIds) && includeTaskIds.length
+    ? new Set(includeTaskIds.map(Number))
+    : null;
+  if (includeSet) {
+    sourceTasks = db.prepare('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id').all(project)
+      .filter(t => includeSet.has(t.id));
+    if (sourceTasks.length === 0) {
+      return res.status(400).json({ error: 'includeTaskIds did not match any tasks in this project.' });
+    }
+  } else {
+    sourceTasks = db.prepare('SELECT * FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id').all(project, sourceMachine);
+    if (sourceTasks.length === 0) {
+      return res.status(404).json({ error: `No tasks found for machine "${sourceMachine}" in project "${project}".` });
+    }
+  }
+  const chainSet = Array.isArray(chainTaskIds) && chainTaskIds.length
+    ? new Set(chainTaskIds.map(Number))
+    : null;
+  // customPredecessors: per-source-id override map. After the auto-rewrite
+  // pass, if a cloned row's source ID has an override, we replace the
+  // pred string with the user-typed value verbatim — the user has direct
+  // control. The keys may arrive as numbers OR strings depending on JSON.
+  const customPredMap = (customPredecessors && typeof customPredecessors === 'object')
+    ? Object.fromEntries(Object.entries(customPredecessors).map(([k, v]) => [Number(k), v]))
+    : null;
+  const cloneCols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'completed_on', 'machine'];
+  const insert = db.prepare(`INSERT INTO tasks (${cloneCols.join(', ')}) VALUES (${cloneCols.map(() => '?').join(', ')})`);
+  // sort_order for new tasks: push to end of project so they don't tangle.
+  const maxSort = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project = ?').get(project).m;
+
+  db.exec('BEGIN');
+  try {
+    const idMap = {};                  // oldId → newId
+    const newTasks = [];               // pairs of (oldTask, newId) for predecessor rewrite
+    let sortCursor = maxSort + 10;
+    for (const t of sourceTasks) {
+      const values = [
+        t.name,
+        t.project,
+        t.phase,
+        t.phase_group,
+        t.department,
+        t.sub_department,
+        t.assignee,
+        t.start_date,
+        t.end_date,
+        t.duration_days,
+        null, // predecessors: rewritten in the second pass
+        t.is_milestone,
+        0,    // progress resets — duplicates haven't been done yet
+        t.allocation,
+        t.priority,
+        t.notes,
+        sortCursor,
+        t.anchor_key,
+        t.is_action,
+        null, // completed_on resets
+        targetMachine,
+      ];
+      const r = insert.run(...values);
+      idMap[t.id] = r.lastInsertRowid;
+      newTasks.push({ oldTask: t, newId: r.lastInsertRowid });
+      sortCursor += 10;
+    }
+    // Second pass: rewrite predecessors using idMap. References to source-
+    // machine tasks become references to the new tasks. Other references
+    // (shared anchors, other machines) pass through unchanged.
+    const updatePred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
+    for (const { oldTask, newId } of newTasks) {
+      if (!oldTask.predecessors) continue;
+      const rewritten = String(oldTask.predecessors)
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(ref => {
+          const m = ref.match(/^(\d+)(.*)$/);
+          if (!m) return ref;
+          const oldId = Number(m[1]);
+          const suffix = m[2] || '';
+          if (idMap[oldId]) {
+            return idMap[oldId] + suffix;
+          }
+          // Optionally chain to source machine — only relevant when the
+          // predecessor in the source pointed to a non-source-machine task
+          // (e.g. a shared anchor). For the chain case we'd add an
+          // explicit reference to the corresponding source task instead.
+          return ref;
+        })
+        .join(', ');
+      if (rewritten !== oldTask.predecessors) {
+        updatePred.run(rewritten || null, newId);
+      } else {
+        updatePred.run(oldTask.predecessors, newId);
+      }
+    }
+    // Chain: add a FS link from the new task to its source-machine
+    // counterpart. Two modes:
+    //   • chainPredecessors=true (legacy / all-or-nothing) — every cloned
+    //     task chains to source.
+    //   • chainTaskIds (per-task) — only tasks whose source ID is in the
+    //     list chain to source. This is what the per-task dialog sends.
+    const shouldChain = (oldId) => {
+      if (chainPredecessors) return true;
+      if (chainSet) return chainSet.has(Number(oldId));
+      return false;
+    };
+    for (const { oldTask, newId } of newTasks) {
+      if (!shouldChain(oldTask.id)) continue;
+      const row = db.prepare('SELECT predecessors FROM tasks WHERE id = ?').get(newId);
+      const existing = row.predecessors ? row.predecessors + ', ' : '';
+      updatePred.run(`${existing}${oldTask.id}FS`, newId);
+    }
+    // Per-task custom predecessor overrides. The user typed these directly
+    // referencing source-machine line numbers (already parsed to task IDs
+    // on the client). We honor them verbatim — no idMap rewriting — so
+    // the user can intentionally point at the source machine ("M2.Build
+    // waits for M1.Build to finish"). Empty string clears the pred.
+    if (customPredMap) {
+      console.log(`[duplicate-machine] ${project} → ${targetMachine}: customPredMap keys=${Object.keys(customPredMap).join(',')}`);
+      for (const { oldTask, newId } of newTasks) {
+        if (!(oldTask.id in customPredMap)) continue;
+        const raw = customPredMap[oldTask.id];
+        const v = (raw == null) ? '' : String(raw).trim();
+        console.log(`[duplicate-machine]   override: srcId=${oldTask.id} (${oldTask.name}) newId=${newId} pred="${v}"`);
+        updatePred.run(v ? v : null, newId);
+      }
+    }
+    // Final-state dump: what every cloned row ends up with after rewrite + override.
+    console.log(`[duplicate-machine] ${project} → ${targetMachine}: ${newTasks.length} cloned`);
+    for (const { oldTask, newId } of newTasks) {
+      const row = db.prepare('SELECT predecessors, name FROM tasks WHERE id = ?').get(newId);
+      console.log(`[duplicate-machine]   ${newId} ${row.name}: pred="${row.predecessors || ''}" (from srcId=${oldTask.id}, srcPred="${oldTask.predecessors || ''}")`);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    return res.status(500).json({ error: String(err.message || err) });
+  }
+  // After commit, recompute start/end dates from every task's predecessors.
+  // Without this the new cloned rows keep the source machine's dates even
+  // though their predecessors now point at different tasks (or have new
+  // lags). Cascade iterates to convergence so chained dependencies all
+  // settle together (M2.Wire shifts because M2.Build shifted).
+  cascadeSchedule();
+  // Log post-cascade dates so we can verify the schedule moved as expected.
+  const final = db.prepare('SELECT id, name, predecessors, start_date, end_date FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id').all(project, targetMachine);
+  console.log(`[duplicate-machine] ${project} → ${targetMachine}: post-cascade dates:`);
+  for (const r of final) {
+    console.log(`[duplicate-machine]   ${r.id} ${r.name}: ${r.start_date} → ${r.end_date}  pred="${r.predecessors || ''}"`);
+  }
+  res.json({ ok: true, cloned: sourceTasks.length });
+});
+
+// DELETE /api/projects/:project/machines/:machine
+//
+// Removes every task tagged with `machine = :machine` in the given project.
+// Used by the sub-tab bar's right-click "Delete machine X" option so the
+// user can clean up bad clones and retry. Returns the count deleted.
+//
+// We also clear `anchor_key` first so the regular DELETE guard (which
+// protects anchor rows) doesn't block us — deleting a whole machine
+// should remove ALL of its rows, including its FAT / Ship / PowerUp.
+app.delete('/api/projects/:project/machines/:machine', (req, res) => {
+  const project = req.params.project;
+  const machine = req.params.machine;
+  if (!project || !machine) {
+    return res.status(400).json({ error: 'project and machine are required' });
+  }
+  try {
+    const rows = db.prepare('SELECT id FROM tasks WHERE project = ? AND machine = ?').all(project, machine);
+    if (rows.length === 0) {
+      return res.json({ ok: true, deleted: 0 });
+    }
+    db.exec('BEGIN');
+    const clearAnchor = db.prepare('UPDATE tasks SET anchor_key = NULL WHERE id = ?');
+    const del = db.prepare('DELETE FROM tasks WHERE id = ?');
+    for (const r of rows) {
+      clearAnchor.run(r.id);
+      del.run(r.id);
+    }
+    db.exec('COMMIT');
+    return res.json({ ok: true, deleted: rows.length });
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
+    return res.status(500).json({ error: String(err.message || err) });
+  }
 });
 
 // ---------- Project financial milestones ----------
