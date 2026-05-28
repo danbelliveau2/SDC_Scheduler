@@ -1,19 +1,34 @@
 const express = require('express');
 const path = require('path');
 const XLSX = require('xlsx');
+const compression = require('compression');
 const db = require('./db');
+const azureSync = require('./azureSync');
+
+// Fire-and-forget Azure sync after writes — never blocks the HTTP response.
+function sync(...tables) {
+  for (const t of tables) azureSync.syncTable(t);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ── Gzip all responses (cuts JSON payload ~70%) ────────────────────────────
+app.use(compression());
+
 app.use(express.json({ limit: '10mb' }));
 
-// Disable caching for static assets so dev edits show up on plain refresh
+// Static assets: versioned files get long cache; HTML stays no-store so reloads
+// always pick up the latest app.js / styles.css without a hard-refresh.
 app.use((req, res, next) => {
-  res.set('Cache-Control', 'no-store');
+  if (req.path.match(/\.(js|css|svg|png|jpg|ico|woff2?)(\?|$)/)) {
+    res.set('Cache-Control', 'public, max-age=3600'); // 1 hour for assets
+  } else {
+    res.set('Cache-Control', 'no-store');
+  }
   next();
 });
-app.use(express.static(path.join(__dirname, 'public'), { etag: false, lastModified: false }));
+app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true }));
 
 const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'completed_on', 'machine'];
 
@@ -252,6 +267,7 @@ app.post('/api/tasks', (req, res) => {
   cascadeSchedule();
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
   res.json(task);
+  sync('tasks');
 });
 
 app.put('/api/tasks/:id', (req, res) => {
@@ -348,6 +364,7 @@ app.put('/api/tasks/:id', (req, res) => {
 
   const updated = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   res.json(updated);
+  sync('tasks');
 });
 
 app.delete('/api/tasks/:id', (req, res) => {
@@ -366,6 +383,7 @@ app.delete('/api/tasks/:id', (req, res) => {
   if (t && t.assignee) compactPrioritiesForAssignee(t.assignee);
   cascadeSchedule();
   res.json({ ok: true });
+  sync('tasks');
 });
 
 app.get('/api/settings', (req, res) => {
@@ -385,6 +403,7 @@ app.put('/api/settings/:key', (req, res) => {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
   `).run(key, value);
   res.json({ ok: true });
+  sync('settings');
 });
 
 // ---------- Team members ----------
@@ -404,6 +423,7 @@ app.post('/api/team', (req, res) => {
   const result = db.prepare('INSERT INTO team_members (name, discipline, sort_order) VALUES (?, ?, ?)').run(name, discipline, maxOrder + 1);
   const row = db.prepare('SELECT * FROM team_members WHERE id = ?').get(result.lastInsertRowid);
   res.json(row);
+  sync('team_members');
 });
 
 app.put('/api/team/:id', (req, res) => {
@@ -425,17 +445,20 @@ app.put('/api/team/:id', (req, res) => {
   // If name changed, propagate to existing tasks so the existing assignee strings stay consistent.
   if (updates.name && updates.name !== existing.name) {
     db.prepare('UPDATE tasks SET assignee = ? WHERE assignee = ?').run(updates.name, existing.name);
+    sync('tasks');
   }
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE team_members SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
   const updated = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
   res.json(updated);
+  sync('team_members');
 });
 
 app.delete('/api/team/:id', (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM team_members WHERE id = ?').run(id);
   res.json({ ok: true });
+  sync('team_members');
 });
 
 app.post('/api/team/reorder', (req, res) => {
@@ -852,6 +875,7 @@ app.post('/api/import/smartsheet', (req, res) => {
       tasksCreated: items.length,
       addedMembers,
     });
+    sync('tasks', 'team_members');
   } catch (err) {
     console.error('Smartsheet import failed:', err);
     res.status(500).json({ error: err.message || 'Import failed' });
@@ -1571,9 +1595,169 @@ app.post('/api/estimate/create', (req, res) => {
             ? `Computed FAT is ${Math.abs(scheduleVariance)} days BEFORE the quoted date — testing was extended to absorb slack but couldn't fill the full window. Check schedule.`
             : 'Schedule fits the delivery window.',
     });
+    sync('tasks', 'settings');
   } catch (err) {
     console.error('Estimate create failed:', err);
     res.status(500).json({ error: err.message || 'Create failed' });
+  }
+});
+
+// ---------- Schedule import (round-trip of our own Export format) ----------
+// Accepts the .xlsx or .csv produced by the frontend Export button.
+// Columns (case-insensitive, order-independent):
+//   Line | Task | Project | Phase | Department | Sub-Dept | Assignee |
+//   Start | Finish | Duration (d) | % Complete | Predecessors | Notes
+//
+// Behaviour:
+//   • project name comes from the request body (user confirms before upload)
+//   • if the project already has tasks, we UPSERT by row order (existing tasks
+//     updated, extras appended, rows removed if the file has fewer rows)
+//   • line numbers in the Predecessors column are REMAPPED to the real task IDs
+//     of the rows created/updated in this import so cross-row refs stay valid
+//   • all other fields default gracefully when missing
+
+app.post('/api/import/schedule', (req, res) => {
+  try {
+    const projectName = (req.body.project || '').toString().trim();
+    const file        = req.body.file;   // base64 string
+    const mode        = req.body.mode || 'replace'; // 'replace' | 'merge'
+    if (!projectName) return res.status(400).json({ error: 'project name required' });
+    if (!file)        return res.status(400).json({ error: 'file (base64) required' });
+
+    const buf = Buffer.from(file, 'base64');
+    const wb  = XLSX.read(buf, { type: 'buffer', cellDates: true, raw: false });
+    if (!wb.SheetNames.length) return res.status(400).json({ error: 'workbook has no sheets' });
+
+    // Use the first sheet
+    const ws   = wb.Sheets[wb.SheetNames[0]];
+    const raw  = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
+
+    // Find header row (contains "Task" or "task")
+    const headerIdx = raw.findIndex(r =>
+      Array.isArray(r) && r.some(c => /^task$/i.test(String(c || '').trim()))
+    );
+    if (headerIdx < 0) return res.status(400).json({ error: 'no header row with a "Task" column found' });
+
+    const headers = raw[headerIdx].map(h => String(h || '').trim().toLowerCase());
+    const col = (label) => {
+      const patterns = {
+        'task':         [/^task$/i],
+        'project':      [/^project$/i],
+        'phase':        [/^phase$/i],
+        'department':   [/^department$/i, /^dept$/i],
+        'sub_department':[/^sub.?dept$/i, /^sub.?department$/i],
+        'assignee':     [/^assignee$/i, /^assigned to$/i],
+        'start_date':   [/^start$/i, /^start date$/i],
+        'end_date':     [/^finish$/i, /^end$/i, /^finish date$/i, /^end date$/i],
+        'duration_days':[/^duration/i],
+        'progress':     [/^%\s*complete$/i, /^progress$/i],
+        'predecessors': [/^predecessors$/i, /^pred$/i],
+        'notes':        [/^notes$/i, /^comments$/i],
+      };
+      const pats = patterns[label] || [new RegExp(`^${label}$`, 'i')];
+      for (let i = 0; i < headers.length; i++) {
+        if (pats.some(p => p.test(headers[i]))) return i;
+      }
+      return -1;
+    };
+
+    const COLS = {
+      task:        col('task'),
+      project:     col('project'),
+      phase:       col('phase'),
+      department:  col('department'),
+      sub_dept:    col('sub_department'),
+      assignee:    col('assignee'),
+      start:       col('start_date'),
+      end:         col('end_date'),
+      duration:    col('duration_days'),
+      progress:    col('progress'),
+      preds:       col('predecessors'),
+      notes:       col('notes'),
+    };
+
+    if (COLS.task < 0) return res.status(400).json({ error: '"Task" column not found in header row' });
+
+    // Parse data rows
+    const dataRows = [];
+    for (let i = headerIdx + 1; i < raw.length; i++) {
+      const r = raw[i];
+      if (!r) continue;
+      const name = COLS.task >= 0 ? String(r[COLS.task] || '').trim() : '';
+      if (!name) continue;
+      dataRows.push({
+        _line:        i - headerIdx,   // 1-based line in the file (used for pred remapping)
+        name,
+        project:      projectName,     // always override with the confirmed project name
+        phase:        COLS.phase       >= 0 ? (String(r[COLS.phase]       || '').trim() || null) : null,
+        department:   COLS.department  >= 0 ? (String(r[COLS.department]  || '').trim() || null) : null,
+        sub_department: COLS.sub_dept  >= 0 ? (String(r[COLS.sub_dept]    || '').trim() || null) : null,
+        assignee:     COLS.assignee    >= 0 ? (String(r[COLS.assignee]    || '').trim() || null) : null,
+        start_date:   COLS.start       >= 0 ? parseSmartsheetDate(r[COLS.start])  : null,
+        end_date:     COLS.end         >= 0 ? parseSmartsheetDate(r[COLS.end])    : null,
+        duration_days:COLS.duration    >= 0 ? (parseInt(r[COLS.duration], 10) || null) : null,
+        progress:     COLS.progress    >= 0 ? (parseInt(r[COLS.progress], 10) || 0) : 0,
+        _rawPreds:    COLS.preds       >= 0 ? (String(r[COLS.preds] || '').trim()) : '',
+        notes:        COLS.notes       >= 0 ? (String(r[COLS.notes] || '').trim() || null) : null,
+        is_milestone: 0,
+        allocation:   100,
+        priority:     1,
+        sort_order:   0,
+      });
+    }
+
+    if (dataRows.length === 0) return res.status(400).json({ error: 'no data rows found in file' });
+
+    // If replacing: delete existing tasks for this project first
+    if (mode === 'replace') {
+      db.prepare('DELETE FROM tasks WHERE project = ?').run(projectName);
+      db.prepare('DELETE FROM project_financials WHERE project = ?').run(projectName);
+    }
+
+    // Insert rows and build line→id map for predecessor remapping
+    const lineToId = {};  // file line number → new task id
+    const insertStmt = db.prepare(`
+      INSERT INTO tasks
+        (name, project, phase, department, sub_department, assignee,
+         start_date, end_date, duration_days, progress, notes,
+         is_milestone, allocation, priority, sort_order)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `);
+
+    for (const row of dataRows) {
+      const result = insertStmt.run(
+        row.name, row.project, row.phase, row.department, row.sub_department,
+        row.assignee, row.start_date, row.end_date, row.duration_days,
+        row.progress, row.notes, row.is_milestone, row.allocation,
+        row.priority, row.sort_order
+      );
+      lineToId[row._line] = result.lastInsertRowid;
+    }
+
+    // Remap predecessors: file uses line numbers → translate to real task IDs
+    const updatePred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
+    for (const row of dataRows) {
+      if (!row._rawPreds) continue;
+      const remapped = row._rawPreds.split(',').map(s => {
+        const m = s.trim().match(/^(\d+)(.*)$/);
+        if (!m) return null;
+        const fileLine = parseInt(m[1], 10);
+        const targetId = lineToId[fileLine];
+        if (!targetId) return null;
+        return targetId + (m[2] || '');
+      }).filter(Boolean).join(', ');
+      if (remapped) updatePred.run(remapped, lineToId[row._line]);
+    }
+
+    // Ensure project record exists
+    db.prepare('INSERT OR IGNORE INTO projects (name) VALUES (?)').run(projectName);
+
+    const inserted = dataRows.length;
+    res.json({ ok: true, project: projectName, inserted, mode });
+    sync('tasks', 'projects');
+  } catch (err) {
+    console.error('[import/schedule]', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1594,6 +1778,7 @@ app.post('/api/baseline/set', (req, res) => {
     WHERE project = ?
   `).run(project);
   res.json({ ok: true, baselined: result.changes });
+  sync('tasks');
 });
 
 app.post('/api/baseline/clear', (req, res) => {
@@ -1606,6 +1791,7 @@ app.post('/api/baseline/clear', (req, res) => {
     WHERE project = ?
   `).run(project);
   res.json({ ok: true, cleared: result.changes });
+  sync('tasks');
 });
 
 // ---------- Multi-machine: duplicate one machine's tasks into another ----------
@@ -1878,6 +2064,7 @@ app.post('/api/financials', (req, res) => {
   );
   const row = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(result.lastInsertRowid);
   res.json(row);
+  sync('project_financials');
 });
 
 app.put('/api/financials/:id', (req, res) => {
@@ -1898,12 +2085,14 @@ app.put('/api/financials/:id', (req, res) => {
   db.prepare(`UPDATE project_financials SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
   const row = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(id);
   res.json(row);
+  sync('project_financials');
 });
 
 app.delete('/api/financials/:id', (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM project_financials WHERE id = ?').run(id);
   res.json({ ok: true });
+  sync('project_financials');
 });
 
 // Seed the default financial milestones onto a project that has none yet. Idempotent:
@@ -1934,6 +2123,132 @@ app.post('/api/financials/seed', (req, res) => {
   res.json({ ok: true, seeded: defaults.length });
 });
 
-app.listen(PORT, () => {
-  console.log(`SDC Scheduler running at http://localhost:${PORT}`);
+// ── Server-Sent Events — real-time push to all open browser tabs ──────────────
+const _sseClients = new Set();
+
+app.get('/api/events', (req, res) => {
+  res.set({
+    'Content-Type':  'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection':    'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  // Heartbeat every 25 s keeps the connection alive through proxies/load-balancers.
+  const heartbeat = setInterval(() => res.write(':ping\n\n'), 25000);
+  _sseClients.add(res);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    _sseClients.delete(res);
+  });
 });
+
+function notifyClients(type, extra = {}) {
+  if (_sseClients.size === 0) return;
+  const data = JSON.stringify({ type, ...extra });
+  for (const client of _sseClients) {
+    client.write(`data: ${data}\n\n`);
+  }
+}
+
+// ── Projects API ───────────────────────────────────────────────────────────────
+app.get('/api/projects', (_req, res) => {
+  const rows = db.prepare('SELECT * FROM projects ORDER BY name ASC').all();
+  res.json(rows);
+});
+
+app.post('/api/projects', (req, res) => {
+  const name = (req.body.name || '').toString().trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const existing = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
+  if (existing) return res.json(existing);
+  db.prepare(`
+    INSERT INTO projects (name, status, is_template, job_number, workspace)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    name,
+    req.body.status     || 'active',
+    req.body.is_template ? 1 : 0,
+    req.body.job_number || null,
+    req.body.workspace  || 'default',
+  );
+  const row = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
+  res.status(201).json(row);
+  sync('projects');
+  notifyClients('projects_changed');
+});
+
+app.put('/api/projects/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+
+  const allowed = ['name', 'status', 'is_template', 'job_number', 'workspace'];
+  const updates = {};
+  for (const k of allowed) {
+    if (req.body[k] !== undefined) {
+      updates[k] = k === 'is_template' ? (req.body[k] ? 1 : 0) : req.body[k];
+    }
+  }
+  if (Object.keys(updates).length === 0) return res.json(existing);
+
+  // If renaming, propagate the new name to all tasks
+  if (updates.name && updates.name !== existing.name) {
+    db.prepare('UPDATE tasks SET project = ? WHERE project = ?').run(updates.name, existing.name);
+    db.prepare('UPDATE project_financials SET project = ? WHERE project = ?').run(updates.name, existing.name);
+    sync('tasks', 'project_financials');
+  }
+
+  const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE projects SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  res.json(row);
+  sync('projects');
+  notifyClients('projects_changed');
+});
+
+app.delete('/api/projects/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  db.prepare('DELETE FROM tasks WHERE project = ?').run(existing.name);
+  db.prepare('DELETE FROM project_financials WHERE project = ?').run(existing.name);
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  res.json({ ok: true });
+  sync('tasks', 'project_financials', 'projects');
+  notifyClients('projects_changed');
+});
+
+// Ensure a project record exists for a given name (idempotent). Used by the
+// frontend after loading tasks to register any project name not yet in the table.
+app.post('/api/projects/ensure', (req, res) => {
+  const name = (req.body.name || '').toString().trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  db.prepare('INSERT OR IGNORE INTO projects (name) VALUES (?)').run(name);
+  const row = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
+  res.json(row);
+});
+
+// Health check — used by Electron shell to detect server readiness
+app.get('/health', (_req, res) => res.json({ ok: true, service: 'scheduler' }));
+
+// ── Exportable entry point (used by Electron in-process execution) ────────────
+function startServer({ port } = {}) {
+  const p = port || PORT;
+  const server = app.listen(p, '0.0.0.0', () => {
+    console.log(`[scheduler] Running at http://localhost:${p}`);
+  });
+  server.on('error', err => console.error('[scheduler] Server error:', err.message));
+  // Init Azure sync in background — does not block server startup or requests.
+  azureSync.init(db).catch(err => console.warn('[AzureSync] Background init error:', err.message));
+  return server;
+}
+
+if (require.main === module) {
+  const server = startServer();
+  process.on('SIGTERM', () => {
+    console.log('[scheduler] SIGTERM — shutting down gracefully');
+    server.close(() => process.exit(0));
+  });
+}
+module.exports = { startServer };

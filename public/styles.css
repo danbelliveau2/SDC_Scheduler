@@ -1446,6 +1446,36 @@ body.customer-view .customer-view-flatten.is-active {
   box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
 
+/* Auto-save status chip */
+.save-indicator {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+  transition: opacity 0.3s;
+  opacity: 0;
+  pointer-events: none;
+}
+.save-indicator.saving {
+  opacity: 1;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+.save-indicator.saved {
+  opacity: 1;
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #86efac;
+}
+.save-indicator.save-error {
+  opacity: 1;
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
 /* Toolbar toggle buttons — Flatten / By date. Outlined when off, filled blue when on. */
 .toolbar-toggle-btn {
   border: 1px solid var(--border-strong, #94a3b8);

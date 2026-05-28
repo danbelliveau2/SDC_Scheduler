@@ -207,6 +207,18 @@
             <div id="filters-popover" class="filters-popover hidden"></div>
           </div>
 
+          <!-- Auto-save status indicator -->
+          <span id="save-indicator" class="save-indicator" title="All changes are saved automatically to the server"></span>
+
+          <!-- Export current project to Excel -->
+          <button id="btn-export" class="toolbar-toggle-btn" type="button" title="Export the current project schedule to Excel (.xlsx)">⬇ Export</button>
+
+          <!-- Import from exported Excel/CSV -->
+          <button id="btn-import" class="toolbar-toggle-btn" type="button" title="Import a schedule from an exported Excel or CSV file">⬆ Import</button>
+          <input id="import-file-input" type="file" accept=".xlsx,.csv" style="display:none" />
+
+          <div class="toolbar-divider"></div>
+
           <!-- Flex gap pushes the right-edge tools to the far right. -->
           <div class="toolbar-flex-gap"></div>
 
@@ -733,8 +745,10 @@
   <button id="btn-customer-view-exit" class="customer-view-exit" type="button" title="Exit customer view and return to the full editing layout.">✕ Exit customer view</button>
 
   <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="phases.js"></script>
   <script src="release-notes.js"></script>
   <script src="app.js"></script>
+  <script src="app-local.js"></script>
 </body>
 </html>

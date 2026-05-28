@@ -68,6 +68,18 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_financials_project ON project_financials(project);
+
+  CREATE TABLE IF NOT EXISTS projects (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    status     TEXT DEFAULT 'active',
+    is_template INTEGER DEFAULT 0,
+    job_number TEXT,
+    workspace  TEXT DEFAULT 'default',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
 `);
 
 // project_financials migrations — add columns to existing tables without dropping data.
@@ -482,6 +494,17 @@ if (!someoneHasPriority) {
   if (r.changes > 0) {
     console.log(`Migrated ${r.changes} Backlog task(s) out of section 10 → above-section spine.`);
   }
+}
+
+// Backfill projects table from existing tasks — runs once for any project name not yet
+// in the projects table. Idempotent — INSERT OR IGNORE skips duplicates.
+{
+  const backfill = db.prepare(`
+    INSERT OR IGNORE INTO projects (name)
+    SELECT DISTINCT project FROM tasks
+    WHERE project IS NOT NULL AND project <> ''
+  `);
+  backfill.run();
 }
 
 module.exports = db;
