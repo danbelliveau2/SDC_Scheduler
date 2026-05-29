@@ -1,9 +1,41 @@
+/**
+ * server.js — SDC Scheduler Express + Socket.io app.
+ *
+ * Single-file backend. Sections in order of appearance:
+ *
+ *   1. Setup        — express, http.Server, socket.io, presence, middleware
+ *   2. Auth routes  — /api/auth/login, /me, /register  (public — before guard)
+ *   3. Scheduling   — parsePredecessorRef, addBusinessDays, cascadeSchedule
+ *   4. CRUD         — /api/tasks/* (GET/POST/PUT/DELETE) + history + comments
+ *   5. Settings     — /api/settings/*
+ *   6. Team         — /api/team/*
+ *   7. Projects     — /api/projects/*  (machines, duplicate, baseline, etc.)
+ *   8. Estimates    — /api/estimate/*  (xlsx parsing + project auto-generation)
+ *   9. Financials   — /api/financials/*
+ *  10. Azure manual — /api/azure/push, /api/azure/pull (admin)
+ *  11. Bootstrap    — startServer(), SIGTERM handler
+ *
+ * Conventions for new routes:
+ *   - Guard writes with `requireRole('editor' | 'admin')`
+ *   - End task mutations with `io.emit('tasks:updated', { project })`
+ *   - Call `sync('tasks')` (or the relevant table) for Azure push
+ *   - Use `logHistory(taskId, project, action, …)` for audit trail
+ */
 const express = require('express');
+const http    = require('http');
 const path = require('path');
 const XLSX = require('xlsx');
 const compression = require('compression');
+const bcrypt = require('bcryptjs');
+const { Server: SocketIO } = require('socket.io');
 const db = require('./db');
 const azureSync = require('./azureSync');
+const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
+// emailService is optional — when nodemailer isn't installed or SMTP_HOST is
+// empty, it returns a no-op stub so the comment POST handler doesn't crash.
+let emailSvc;
+try { emailSvc = require('./emailService'); }
+catch (_) { emailSvc = { sendMentionEmail: () => {}, sendDigest: () => {} }; }
 
 // Fire-and-forget Azure sync after writes — never blocks the HTTP response.
 function sync(...tables) {
@@ -12,6 +44,40 @@ function sync(...tables) {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Phase 4 (Socket.io): wrap the Express app in an HTTP server and attach
+// Socket.io for real-time pushes ('tasks:updated', 'team:updated', etc.).
+// Clients reconnect automatically; we only emit invalidate events, the
+// client re-fetches over REST. Keeps the payload tiny + idempotent.
+const server = http.createServer(app);
+const io = new SocketIO(server, { cors: { origin: '*' } });
+
+// Presence tracking: project → Map<socketId, { name, avatar_color, id }>.
+// 'presence:join' adds, 'presence:leave' / 'disconnect' removes. Whenever
+// the set changes, broadcast the new list. Used by the comment panel /
+// future "who's editing" pills.
+const _presence = new Map();
+io.on('connection', (socket) => {
+  socket.on('presence:join', ({ project, user }) => {
+    if (!project || !user) return;
+    if (!_presence.has(project)) _presence.set(project, new Map());
+    _presence.get(project).set(socket.id, { name: user.name, avatar_color: user.avatar_color || '#1574c4', id: user.id });
+    io.emit('presence:update', { project, users: [..._presence.get(project).values()] });
+  });
+  socket.on('presence:leave', ({ project }) => {
+    if (!project || !_presence.has(project)) return;
+    _presence.get(project).delete(socket.id);
+    io.emit('presence:update', { project, users: [..._presence.get(project).values()] });
+  });
+  socket.on('disconnect', () => {
+    for (const [project, users] of _presence.entries()) {
+      if (users.has(socket.id)) {
+        users.delete(socket.id);
+        io.emit('presence:update', { project, users: [...users.values()] });
+      }
+    }
+  });
+});
 
 // ── Gzip all responses (cuts JSON payload ~70%) ────────────────────────────
 app.use(compression());
@@ -29,6 +95,65 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true }));
+
+// ─── Phase 3 (Auth): public auth routes — defined BEFORE the global
+// requireAuth middleware so they don't need a token. /api/auth/me is also
+// gated by requireAuth itself so callers with expired/missing tokens get 401.
+// ──────────────────────────────────────────────────────────────────────────
+app.post('/api/auth/login', (req, res) => {
+  const email    = (req.body.email    || '').toString().trim().toLowerCase();
+  const password = (req.body.password || '').toString();
+  if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+  const user = db.prepare('SELECT * FROM users WHERE email = ? AND active = 1').get(email);
+  if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
+  if (!bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+  db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(new Date().toISOString(), user.id);
+  const token = signToken(user);
+  res.json({
+    token,
+    user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },
+  });
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  // requireAuth populates req.authUser. With AUTH_ENABLED=false it's the
+  // synthetic admin; with auth on, it's the JWT payload.
+  res.json({ user: req.authUser, auth_enabled: AUTH_ENABLED });
+});
+
+app.post('/api/auth/register', (req, res) => {
+  // Self-registration. When auth is off this just inserts a user record;
+  // when on, the first user to register gets editor unless they hit
+  // create-admin.js first. Hardened against UNIQUE conflicts.
+  const email    = (req.body.email    || '').toString().trim().toLowerCase();
+  const name     = (req.body.name     || '').toString().trim();
+  const password = (req.body.password || '').toString();
+  if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
+  if (password.length < 6)           return res.status(400).json({ error: 'password must be at least 6 chars' });
+  try {
+    const hash = bcrypt.hashSync(password, 12);
+    const r = db.prepare(`
+      INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'editor')
+    `).run(email, name, hash);
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid);
+    const token = signToken(user);
+    io.emit('users:updated');
+    res.status(201).json({
+      token,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },
+    });
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });
+    res.status(500).json({ error: 'Failed to register: ' + e.message });
+  }
+});
+
+// Global auth guard — every /api/* request below this line goes through it.
+// PUBLIC_PATHS in auth.js exempts /api/auth/login + /api/auth/register +
+// /health. When AUTH_ENABLED=false the middleware is a no-op passthrough.
+app.use(requireAuth);
 
 const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'completed_on', 'machine'];
 
@@ -196,12 +321,51 @@ function compactPrioritiesForAssignee(assignee) {
   });
 }
 
+// ── Audit trail (task_history) ─────────────────────────────────────────────
+// Every task create / update / delete writes a row capturing who, what, when,
+// and full before / after snapshots. Used by GET /api/tasks/history below.
+// Non-fatal: a logging failure is warned but never blocks the underlying
+// mutation, so the schedule write always wins over the audit write.
+//
+// changedBy: identifier of the user who did the change (e.g. email). null when
+//   auth is disabled — we'll populate this when Phase 3 (auth) lands.
+// before/after: full row objects from db.prepare('SELECT * FROM tasks WHERE
+//   id = ?').get(id); pass null for create (no "before") and null for delete
+//   (no "after").
+// changedFields: optional array of column names that differ between before
+//   and after. For update events the route can compute this and pass it; we
+//   auto-derive it below if both before + after are objects.
+const _stmtInsertHistory = db.prepare(
+  `INSERT INTO task_history (task_id, project, action, changed_by, before_json, after_json, changed_fields)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`
+);
+function logHistory(taskId, project, action, changedBy, before, after, changedFields) {
+  try {
+    let fields = changedFields;
+    if (!fields && before && after) {
+      fields = [];
+      const all = new Set([...Object.keys(before), ...Object.keys(after)]);
+      for (const k of all) {
+        if (before[k] !== after[k]) fields.push(k);
+      }
+    }
+    _stmtInsertHistory.run(
+      taskId, project, action, changedBy || null,
+      before ? JSON.stringify(before) : null,
+      after  ? JSON.stringify(after)  : null,
+      Array.isArray(fields) && fields.length ? fields.join(',') : null
+    );
+  } catch (e) {
+    console.warn('[history] log failed (non-fatal):', e.message);
+  }
+}
+
 app.get('/api/tasks', (req, res) => {
   const tasks = db.prepare('SELECT * FROM tasks ORDER BY sort_order, id').all();
   res.json(tasks);
 });
 
-app.post('/api/tasks', (req, res) => {
+app.post('/api/tasks', requireRole('editor'), (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
 
@@ -266,14 +430,30 @@ app.post('/api/tasks', (req, res) => {
   if (req.body.assignee) compactPrioritiesForAssignee(req.body.assignee);
   cascadeSchedule();
   const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
+  logHistory(task.id, task.project, 'create', null, null, task, null);
   res.json(task);
+  io.emit('tasks:updated', { project: task.project || null });
   sync('tasks');
 });
 
-app.put('/api/tasks/:id', (req, res) => {
+app.put('/api/tasks/:id', requireRole('editor'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
+
+  // Phase 5 (conflict detection): client passes the version it last saw on
+  // req.body.version. Server compares to existing.version — mismatch means
+  // somebody else saved in between, so we return 409 with the latest row.
+  // Clients without the version key (older callers) bypass the check.
+  if (req.body.version != null && existing.version != null
+      && Number(req.body.version) !== Number(existing.version)) {
+    return res.status(409).json({
+      error: 'This task was modified by another user. Refresh to see the latest version.',
+      code: 'STALE_VERSION',
+      server_version: existing.version,
+      server_row: existing,
+    });
+  }
 
   const updates = {};
   for (const f of FIELDS) {
@@ -301,6 +481,11 @@ app.put('/api/tasks/:id', (req, res) => {
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   const values = Object.values(updates);
   db.prepare(`UPDATE tasks SET ${setClause} WHERE id = ?`).run(...values, id);
+
+  // Phase 5 conflict-detection: bump version once per successful direct edit.
+  // cascadeSchedule() may modify other tasks too, but those are derived — we
+  // only bump on the row the user explicitly PUT.
+  db.prepare('UPDATE tasks SET version = COALESCE(version,1) + 1 WHERE id = ?').run(id);
 
   // Priority is PER-ASSIGNEE (each person has their own 1, 2, 3 … list). Two cases
   // to keep that invariant:
@@ -363,12 +548,16 @@ app.put('/api/tasks/:id', (req, res) => {
   cascadeSchedule();
 
   const updated = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  logHistory(id, updated.project, 'update', null, existing, updated, null);
   res.json(updated);
+  io.emit('tasks:updated', { project: updated.project || null });
   sync('tasks');
 });
 
-app.delete('/api/tasks/:id', (req, res) => {
+app.delete('/api/tasks/:id', requireRole('editor'), (req, res) => {
   const id = Number(req.params.id);
+  // Capture full row BEFORE delete so the audit trail can show what was there.
+  const before = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   // Real anchor milestones (Receipt of PO, Machine Power-Up, FAT, Mech 1
   // Release, Ship Machine) are project-spine markers and can't be removed
   // — only edited. Backlog (anchor_key='backlog') is allowed to delete
@@ -378,11 +567,13 @@ app.delete('/api/tasks/:id', (req, res) => {
     return res.status(400).json({ error: 'Anchor milestones cannot be deleted.' });
   }
   db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+  if (before) logHistory(id, before.project, 'delete', null, before, null, null);
   // Collapse the freed slot in the previous owner's per-person priority list so
   // the next task they get doesn't jump over it.
   if (t && t.assignee) compactPrioritiesForAssignee(t.assignee);
   cascadeSchedule();
   res.json({ ok: true });
+  io.emit('tasks:updated', { project: before?.project || null });
   sync('tasks');
 });
 
@@ -395,7 +586,7 @@ app.get('/api/settings', (req, res) => {
   res.json(out);
 });
 
-app.put('/api/settings/:key', (req, res) => {
+app.put('/api/settings/:key', requireRole('admin'), (req, res) => {
   const key = req.params.key;
   const value = JSON.stringify(req.body);
   db.prepare(`
@@ -403,6 +594,7 @@ app.put('/api/settings/:key', (req, res) => {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
   `).run(key, value);
   res.json({ ok: true });
+  io.emit('settings:updated', { key });
   sync('settings');
 });
 
@@ -414,7 +606,7 @@ app.get('/api/team', (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/team', (req, res) => {
+app.post('/api/team', requireRole('editor'), (req, res) => {
   const name = (req.body.name || '').trim();
   const discipline = req.body.discipline;
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -423,10 +615,11 @@ app.post('/api/team', (req, res) => {
   const result = db.prepare('INSERT INTO team_members (name, discipline, sort_order) VALUES (?, ?, ?)').run(name, discipline, maxOrder + 1);
   const row = db.prepare('SELECT * FROM team_members WHERE id = ?').get(result.lastInsertRowid);
   res.json(row);
+  io.emit('team:updated');
   sync('team_members');
 });
 
-app.put('/api/team/:id', (req, res) => {
+app.put('/api/team/:id', requireRole('editor'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -451,17 +644,19 @@ app.put('/api/team/:id', (req, res) => {
   db.prepare(`UPDATE team_members SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
   const updated = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
   res.json(updated);
+  io.emit('team:updated');
   sync('team_members');
 });
 
-app.delete('/api/team/:id', (req, res) => {
+app.delete('/api/team/:id', requireRole('editor'), (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM team_members WHERE id = ?').run(id);
   res.json({ ok: true });
+  io.emit('team:updated');
   sync('team_members');
 });
 
-app.post('/api/team/reorder', (req, res) => {
+app.post('/api/team/reorder', requireRole('editor'), (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
   const stmt = db.prepare('UPDATE team_members SET sort_order = ? WHERE id = ?');
@@ -476,7 +671,7 @@ app.post('/api/team/reorder', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/tasks/reorder', (req, res) => {
+app.post('/api/tasks/reorder', requireRole('editor'), (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
 
@@ -595,7 +790,7 @@ function parseSmartsheetDate(val) {
   return null;
 }
 
-app.post('/api/import/smartsheet', (req, res) => {
+app.post('/api/import/smartsheet', requireRole('admin'), (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const file = req.body.file;
@@ -934,9 +1129,74 @@ function parseEstimateWorkbook(buf) {
     }
     return out;
   };
-  const section10 = extractHours(findSection('10-'));
-  const section40 = extractHours(findSection('40-'));
-  const section50 = extractHours(findSection('50-'));
+  let section10 = extractHours(findSection('10-'));
+  let section40 = extractHours(findSection('40-'));
+  let section50 = extractHours(findSection('50-'));
+
+  // Fallback: the SDC pricing-sheet template (Active Proposals) uses a
+  // horizontal grid instead of "10-/40-/50-" prefixed rows. Detect that
+  // layout (header at rows 1-3, data at row 4, named columns: "PM", "ME
+  // General", "Design and Drawings", "Software", "HMI", "Robot",
+  // "Vision", "Database and Device", "Mechanical Build", "Electrical
+  // Build", "MFG", then Testing/Teardown/Install pairs of "ME & CE" +
+  // "MB & EB") and roll its hours into the same section_10/40/50 shape.
+  const looksHorizontal = !findSection('10-') && rows.length >= 5 && rows[3] &&
+    rows[3].some(c => /\bME General\b/i.test(String(c || ''))) &&
+    rows[3].some(c => /\bMechanical Build\b/i.test(String(c || '')));
+  if (looksHorizontal) {
+    const header  = rows[3] || [];
+    const dataRow = rows[4] || [];
+    const colByLabel = (labelRe) => header.findIndex(c => labelRe.test(String(c || '').trim()));
+    const val = (col) => col < 0 ? 0 : (Number(dataRow[col]) || 0);
+    // Map each named header column. Multiple "ME & CE" / "MB & EB"
+    // columns appear (Testing, Teardown, Install). Walk them in order.
+    const allMeCe = header.map((c, i) => (/^ME & CE$/i.test(String(c || '').trim()) ? i : -1)).filter(i => i >= 0);
+    const allMbEb = header.map((c, i) => (/^MB & EB$/i.test(String(c || '').trim()) ? i : -1)).filter(i => i >= 0);
+    // Section 10 — design + build labor
+    section10 = {
+      parts:       0,
+      mech_eng:    val(colByLabel(/^ME General$/i)),
+      ce_design:   val(colByLabel(/^Design and Drawings$/i)),
+      ce_software: val(colByLabel(/^Software$/i)),
+      ce_database: 0,
+      gen_hmi:     val(colByLabel(/^HMI$/i)),
+      gen_robot:   val(colByLabel(/^Robot$/i)),
+      gen_vision:  val(colByLabel(/^Vision$/i)),
+      gen_device:  val(colByLabel(/Database/i)),
+      mech_build:  val(colByLabel(/^Mechanical Build$/i)),
+      elec_build:  val(colByLabel(/^Electrical Build$/i)),
+    };
+    // Section 40 — Testing engineering (first ME & CE) + Testing shop
+    // (first MB & EB). Dumps the lump into mech_eng / mech_build —
+    // the variance modal sums those keys for the test_debug bucket so
+    // the totals end up correct without needing per-discipline breakdown.
+    section40 = {
+      parts: 0, mech_eng: 0, ce_design: 0, ce_software: 0, ce_database: 0,
+      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0,
+      mech_build: 0, elec_build: 0,
+    };
+    if (allMeCe[0] >= 0) section40.mech_eng   = val(allMeCe[0]);
+    if (allMbEb[0] >= 0) section40.mech_build = val(allMbEb[0]);
+    // Section 50 — Teardown engineering + shop (2nd ME&CE + MB&EB),
+    // Install engineering + shop (3rd ME&CE + MB&EB). Sum eng-side
+    // into mech_eng, shop-side into mech_build. Same lump approach.
+    section50 = {
+      parts: 0, mech_eng: 0, ce_design: 0, ce_software: 0, ce_database: 0,
+      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0,
+      mech_build: 0, elec_build: 0,
+    };
+    if (allMeCe[1] >= 0) section50.mech_eng   += val(allMeCe[1]); // teardown eng
+    if (allMbEb[1] >= 0) section50.mech_build += val(allMbEb[1]); // teardown shop
+    if (allMeCe[2] >= 0) section50.mech_eng   += val(allMeCe[2]); // install eng
+    if (allMbEb[2] >= 0) section50.mech_build += val(allMbEb[2]); // install shop
+    // Parts cost — last numeric column with a big value (the "Parts Cost" header
+    // sits to the right of the labor columns). Pick the FIRST data-row value
+    // that's > 1000 past column 16.
+    for (let i = 16; i < dataRow.length; i++) {
+      const v = Number(dataRow[i]);
+      if (Number.isFinite(v) && v > 1000) { section10.parts = v; break; }
+    }
+  }
 
   // Roll up to the five scheduling disciplines the team page tracks.
   const totals = {
@@ -974,7 +1234,7 @@ function parseEstimateWorkbook(buf) {
   };
 }
 
-app.post('/api/estimate/parse', (req, res) => {
+app.post('/api/estimate/parse', requireRole('editor'), (req, res) => {
   try {
     const file = req.body.file;
     if (!file) return res.status(400).json({ error: 'file (base64) required' });
@@ -1045,7 +1305,7 @@ app.get('/api/project/:project/quote', (req, res) => {
 // Attach (or replace) the saved quote on an existing project. Lets a user pick
 // the estimate xlsx in the Quote vs Schedule modal and persist it without
 // re-creating the project.
-app.post('/api/project/:project/quote', (req, res) => {
+app.post('/api/project/:project/quote', requireRole('editor'), (req, res) => {
   const key = `project_quote:${req.params.project}`;
   const value = JSON.stringify(req.body || {});
   db.prepare(`
@@ -1054,12 +1314,12 @@ app.post('/api/project/:project/quote', (req, res) => {
   `).run(key, value);
   res.json({ ok: true });
 });
-app.delete('/api/project/:project/quote', (req, res) => {
+app.delete('/api/project/:project/quote', requireRole('editor'), (req, res) => {
   db.prepare('DELETE FROM settings WHERE key = ?').run(`project_quote:${req.params.project}`);
   res.json({ ok: true });
 });
 
-app.post('/api/estimate/create', (req, res) => {
+app.post('/api/estimate/create', requireRole('admin'), (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const poDate      = (req.body.po_date || '').toString().trim();
@@ -1616,7 +1876,7 @@ app.post('/api/estimate/create', (req, res) => {
 //     of the rows created/updated in this import so cross-row refs stay valid
 //   • all other fields default gracefully when missing
 
-app.post('/api/import/schedule', (req, res) => {
+app.post('/api/import/schedule', requireRole('admin'), (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const file        = req.body.file;   // base64 string
@@ -1768,7 +2028,7 @@ app.post('/api/import/schedule', (req, res) => {
 // the Gantt and shows a drift chip so the user can see how much each bar has
 // moved relative to the snapshot.
 
-app.post('/api/baseline/set', (req, res) => {
+app.post('/api/baseline/set', requireRole('editor'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const result = db.prepare(`
@@ -1781,7 +2041,7 @@ app.post('/api/baseline/set', (req, res) => {
   sync('tasks');
 });
 
-app.post('/api/baseline/clear', (req, res) => {
+app.post('/api/baseline/clear', requireRole('editor'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const result = db.prepare(`
@@ -1813,7 +2073,7 @@ app.post('/api/baseline/clear', (req, res) => {
 // predecessor strings — typically used to add a cross-machine link
 // ("M2.Wire waits for M1.Wire"). The override is treated as-is (already
 // expressed as task IDs), so it points at exactly what the user typed.
-app.post('/api/projects/:project/duplicate-machine', (req, res) => {
+app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), (req, res) => {
   const project = req.params.project;
   const {
     sourceMachine,
@@ -1985,10 +2245,13 @@ app.post('/api/projects/:project/duplicate-machine', (req, res) => {
   // settle together (M2.Wire shifts because M2.Build shifted).
   cascadeSchedule();
   // Log post-cascade dates so we can verify the schedule moved as expected.
-  const final = db.prepare('SELECT id, name, predecessors, start_date, end_date FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id').all(project, targetMachine);
+  const final = db.prepare('SELECT * FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id').all(project, targetMachine);
   console.log(`[duplicate-machine] ${project} → ${targetMachine}: post-cascade dates:`);
   for (const r of final) {
     console.log(`[duplicate-machine]   ${r.id} ${r.name}: ${r.start_date} → ${r.end_date}  pred="${r.predecessors || ''}"`);
+    // Audit trail: each cloned row gets a 'create' entry tagged with the
+    // source machine so the history view can show "cloned from M1 → M2".
+    logHistory(r.id, r.project, 'create', null, null, r, ['cloned_from:' + sourceMachine]);
   }
   res.json({ ok: true, cloned: sourceTasks.length });
 });
@@ -2002,14 +2265,16 @@ app.post('/api/projects/:project/duplicate-machine', (req, res) => {
 // We also clear `anchor_key` first so the regular DELETE guard (which
 // protects anchor rows) doesn't block us — deleting a whole machine
 // should remove ALL of its rows, including its FAT / Ship / PowerUp.
-app.delete('/api/projects/:project/machines/:machine', (req, res) => {
+app.delete('/api/projects/:project/machines/:machine', requireRole('editor'), (req, res) => {
   const project = req.params.project;
   const machine = req.params.machine;
   if (!project || !machine) {
     return res.status(400).json({ error: 'project and machine are required' });
   }
   try {
-    const rows = db.prepare('SELECT id FROM tasks WHERE project = ? AND machine = ?').all(project, machine);
+    // Fetch full rows up front so the audit trail captures everything that
+    // was deleted (snapshot before mutation, just like /api/tasks/:id).
+    const rows = db.prepare('SELECT * FROM tasks WHERE project = ? AND machine = ?').all(project, machine);
     if (rows.length === 0) {
       return res.json({ ok: true, deleted: 0 });
     }
@@ -2021,11 +2286,146 @@ app.delete('/api/projects/:project/machines/:machine', (req, res) => {
       del.run(r.id);
     }
     db.exec('COMMIT');
+    for (const r of rows) {
+      logHistory(r.id, r.project, 'delete', null, r, null, ['machine_deleted:' + machine]);
+    }
     return res.json({ ok: true, deleted: rows.length });
   } catch (err) {
     try { db.exec('ROLLBACK'); } catch (_) {}
     return res.status(500).json({ error: String(err.message || err) });
   }
+});
+
+// ---------- Task comments + @mentions ----------
+// Per-task threaded discussion. Comments are scoped to a task but also
+// stamp the project for fast "all comments in this project" queries.
+// @Name mentions in the body are extracted at POST time and stored as
+// a JSON array — once Phase 3 (auth) + Phase 6 (email) land, each
+// mention triggers a notification.
+//
+// Routes:
+//   GET    /api/tasks/comment-counts?project=X — { taskId: count } map
+//   GET    /api/tasks/:id/comments              — list comments for a task
+//   POST   /api/tasks/:id/comments              — add a comment
+//   DELETE /api/comments/:id                    — delete a comment
+
+// Per-project comment counts in one query — fuels the small badge on
+// each grid row without N+1 fetches.
+app.get('/api/tasks/comment-counts', (req, res) => {
+  const project = (req.query.project || '').toString().trim();
+  if (!project) return res.json({});
+  const rows = db.prepare(`
+    SELECT c.task_id, COUNT(*) AS cnt
+    FROM task_comments c
+    JOIN tasks t ON t.id = c.task_id
+    WHERE t.project = ?
+    GROUP BY c.task_id
+  `).all(project);
+  const map = {};
+  for (const r of rows) map[r.task_id] = r.cnt;
+  res.json(map);
+});
+
+// Comments for a single task, oldest first (chronological reading).
+app.get('/api/tasks/:id/comments', (req, res) => {
+  const taskId = Number(req.params.id);
+  const rows = db.prepare('SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC').all(taskId);
+  res.json(rows);
+});
+
+// Post a new comment. Auth (Phase 3) will set req.authUser; until then
+// the author is anonymous. @Name mentions are detected against active
+// team_members. Notifications are dropped to a notification_log row
+// for future email delivery (Phase 6).
+app.post('/api/tasks/:id/comments', requireRole('viewer'), (req, res) => {
+  const taskId = Number(req.params.id);
+  const task = db.prepare('SELECT name, project FROM tasks WHERE id = ?').get(taskId);
+  if (!task) return res.status(404).json({ error: 'task not found' });
+
+  const body = (req.body.body || '').toString().trim();
+  if (!body) return res.status(400).json({ error: 'body required' });
+
+  // When AUTH_ENABLED=false, requireAuth fills req.authUser with the synthetic
+  // dev user (id=0, name='anonymous'). Prefer the caller-supplied author_name
+  // in that mode so client-side identity ("signed in" via /api/team) still
+  // attributes correctly. Once auth lands, the real JWT name wins.
+  const synthetic  = req.authUser && req.authUser.id === 0;
+  const authorName = (!synthetic && req.authUser && req.authUser.name)
+                     || (req.body.author_name || '').trim()
+                     || (req.authUser && req.authUser.name)
+                     || 'anonymous';
+  const authorId   = (req.authUser && req.authUser.id) || null;
+
+  // Extract @mentions against team-member names (longest first so a
+  // multi-word name like "Sam Iyer Jr" matches before "Sam Iyer"). When
+  // Phase 3 lands we'll also check the users table.
+  const knownNames = db.prepare('SELECT name FROM team_members WHERE active = 1').all().map(r => r.name).filter(Boolean);
+  knownNames.sort((a, b) => b.length - a.length);
+  const mentions = [];
+  for (const name of knownNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp('@' + escaped + '(?=[^a-zA-Z]|$)', 'i').test(body) && !mentions.includes(name)) {
+      mentions.push(name);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const r = db.prepare(`
+    INSERT INTO task_comments (task_id, project, author_id, author_name, body, mentions, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(taskId, task.project, authorId, authorName, body, JSON.stringify(mentions), now, now);
+
+  const comment = db.prepare('SELECT * FROM task_comments WHERE id = ?').get(r.lastInsertRowid);
+  res.status(201).json(comment);
+
+  // Phase 4: fan out a real-time event so other tabs refresh the badge count.
+  io.emit('comments:updated', { taskId, project: task.project });
+
+  // Phase 7: fire a mention email per @mentioned user. Looks up the user's
+  // email from the users table by exact name match. Falls back to the
+  // team_members row if no user account exists yet. Best-effort — failures
+  // never block the comment POST.
+  for (const name of mentions) {
+    try {
+      const userRow = db.prepare('SELECT email FROM users WHERE name = ? AND active = 1').get(name);
+      const to = userRow?.email;
+      if (to && emailSvc && emailSvc.sendMentionEmail) {
+        emailSvc.sendMentionEmail({
+          db, to, taskId, taskName: task.name, project: task.project,
+          commentBody: body, authorName,
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+});
+
+// Delete a comment. Until auth lands anyone can delete (single-user
+// trust model); Phase 3 adds an own-comment-or-admin gate.
+app.delete('/api/comments/:id', requireRole('viewer'), (req, res) => {
+  const id = Number(req.params.id);
+  const comment = db.prepare('SELECT * FROM task_comments WHERE id = ?').get(id);
+  if (!comment) return res.status(404).json({ error: 'not found' });
+  db.prepare('DELETE FROM task_comments WHERE id = ?').run(id);
+  res.json({ ok: true });
+});
+
+// ---------- Audit trail (task_history) ----------
+// Chronological log of every task create / update / delete. Each row
+// has the full BEFORE and AFTER snapshot plus a comma-separated list
+// of which columns changed. Use this to answer "who changed what when"
+// or to roll a project back to a prior state.
+//
+// GET /api/tasks/history?project=<name>&limit=<n>
+//   project — required; filter to one project.
+//   limit   — optional; max rows to return (default 200, max 1000).
+app.get('/api/tasks/history', (req, res) => {
+  const project = (req.query.project || '').toString().trim();
+  if (!project) return res.status(400).json({ error: 'project required' });
+  const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
+  const rows = db.prepare(
+    'SELECT * FROM task_history WHERE project = ? ORDER BY changed_at DESC LIMIT ?'
+  ).all(project, limit);
+  res.json(rows);
 });
 
 // ---------- Project financial milestones ----------
@@ -2042,7 +2442,7 @@ app.get('/api/financials', (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/financials', (req, res) => {
+app.post('/api/financials', requireRole('editor'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const name = (req.body.name || '').toString().trim();
@@ -2067,7 +2467,7 @@ app.post('/api/financials', (req, res) => {
   sync('project_financials');
 });
 
-app.put('/api/financials/:id', (req, res) => {
+app.put('/api/financials/:id', requireRole('editor'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -2088,7 +2488,7 @@ app.put('/api/financials/:id', (req, res) => {
   sync('project_financials');
 });
 
-app.delete('/api/financials/:id', (req, res) => {
+app.delete('/api/financials/:id', requireRole('editor'), (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM project_financials WHERE id = ?').run(id);
   res.json({ ok: true });
@@ -2098,7 +2498,7 @@ app.delete('/api/financials/:id', (req, res) => {
 // Seed the default financial milestones onto a project that has none yet. Idempotent:
 // running this on a project that already has any financials is a no-op. Reads the
 // defaults from the default_financial_milestones setting (editable on Setup).
-app.post('/api/financials/seed', (req, res) => {
+app.post('/api/financials/seed', requireRole('editor'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const existing = db.prepare('SELECT COUNT(*) AS n FROM project_financials WHERE project = ?').get(project).n;
@@ -2157,7 +2557,7 @@ app.get('/api/projects', (_req, res) => {
   res.json(rows);
 });
 
-app.post('/api/projects', (req, res) => {
+app.post('/api/projects', requireRole('editor'), (req, res) => {
   const name = (req.body.name || '').toString().trim();
   if (!name) return res.status(400).json({ error: 'name required' });
   const existing = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
@@ -2178,7 +2578,7 @@ app.post('/api/projects', (req, res) => {
   notifyClients('projects_changed');
 });
 
-app.put('/api/projects/:id', (req, res) => {
+app.put('/api/projects/:id', requireRole('editor'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -2207,7 +2607,7 @@ app.put('/api/projects/:id', (req, res) => {
   notifyClients('projects_changed');
 });
 
-app.delete('/api/projects/:id', (req, res) => {
+app.delete('/api/projects/:id', requireRole('admin'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -2221,7 +2621,7 @@ app.delete('/api/projects/:id', (req, res) => {
 
 // Ensure a project record exists for a given name (idempotent). Used by the
 // frontend after loading tasks to register any project name not yet in the table.
-app.post('/api/projects/ensure', (req, res) => {
+app.post('/api/projects/ensure', requireRole('editor'), (req, res) => {
   const name = (req.body.name || '').toString().trim();
   if (!name) return res.status(400).json({ error: 'name required' });
   db.prepare('INSERT OR IGNORE INTO projects (name) VALUES (?)').run(name);
@@ -2232,23 +2632,55 @@ app.post('/api/projects/ensure', (req, res) => {
 // Health check — used by Electron shell to detect server readiness
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'scheduler' }));
 
+// ─── Phase 6 — Azure SQL manual sync (admin only) ─────────────────────────
+// POST /api/azure/push  → overwrite Azure with local
+// POST /api/azure/pull  → overwrite local with Azure (destructive)
+// GET  /api/azure/status → connection state + last-sync info
+app.get('/api/azure/status', (req, res) => {
+  res.json({
+    enabled: azureSync.ENABLED,
+    push_on_boot: process.env.AZURE_PUSH_ON_BOOT === 'true',
+    pull_on_boot: process.env.AZURE_PULL_ON_BOOT === 'true',
+  });
+});
+app.post('/api/azure/push', requireRole('admin'), async (_req, res) => {
+  if (!azureSync.ENABLED) return res.status(400).json({ error: 'Azure SQL not configured' });
+  try { await azureSync.pushAll(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/azure/pull', requireRole('admin'), async (_req, res) => {
+  if (!azureSync.ENABLED) return res.status(400).json({ error: 'Azure SQL not configured' });
+  try { await azureSync.pullAll(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Exportable entry point (used by Electron in-process execution) ────────────
 function startServer({ port } = {}) {
   const p = port || PORT;
-  const server = app.listen(p, '0.0.0.0', () => {
+  // Phase 4: listen on the http.Server we wrapped above so Socket.io's
+  // upgrade handler is attached. Express alone won't carry the socket layer.
+  server.listen(p, '0.0.0.0', () => {
     console.log(`[scheduler] Running at http://localhost:${p}`);
+    if (AUTH_ENABLED) console.log('[scheduler] Auth: ENABLED — JWT required for /api/*');
+    else              console.log('[scheduler] Auth: DISABLED — set AUTH_ENABLED=true in .env to require login');
   });
   server.on('error', err => console.error('[scheduler] Server error:', err.message));
   // Init Azure sync in background — does not block server startup or requests.
   azureSync.init(db).catch(err => console.warn('[AzureSync] Background init error:', err.message));
+  // Phase 7 (email): kick off any scheduled cron jobs (digest emails etc.).
+  // Wrapped in typeof check so a missing cronJobs.js doesn't crash boot.
+  try {
+    const cron = require('./cronJobs');
+    if (cron && typeof cron.start === 'function') cron.start({ db, emailSvc });
+  } catch (_) { /* cronJobs.js is optional */ }
   return server;
 }
 
 if (require.main === module) {
-  const server = startServer();
+  const _server = startServer();
   process.on('SIGTERM', () => {
     console.log('[scheduler] SIGTERM — shutting down gracefully');
-    server.close(() => process.exit(0));
+    _server.close(() => process.exit(0));
   });
 }
 module.exports = { startServer };

@@ -1,8 +1,43 @@
 const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
-  create: (data) => fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
-  update: (id, data) => fetch(`/api/tasks/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
-  remove: (id) => fetch(`/api/tasks/${id}`, { method: 'DELETE' }).then(r => r.json()),
+  create: (data) => {
+    window._lastLocalEdit = Date.now();
+    return fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+  },
+  // Phase 5 (conflict detection) wrapper: inject the current version from
+  // state.tasks so the server can detect "somebody else saved first" and
+  // return 409. On 409, surface a toast + trigger a refresh so the user
+  // sees the latest data instead of overwriting it.
+  update: async (id, data) => {
+    window._lastLocalEdit = Date.now();
+    if (data && data.version == null) {
+      try {
+        const current = (typeof state !== 'undefined' && state.tasks)
+          ? state.tasks.find(t => t.id === id) : null;
+        if (current && current.version != null) data = { ...data, version: current.version };
+      } catch (_) {}
+    }
+    const r = await fetch(`/api/tasks/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const body = await r.json();
+    if (r.status === 409) {
+      if (typeof showToast === 'function') {
+        showToast('Someone else just edited this row. Reloading…', { kind: 'warn' });
+      }
+      try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
+      // Hand the server's authoritative row back to the caller so chained
+      // .then() consumers don't choke on undefined.
+      return body.server_row || body;
+    }
+    return body;
+  },
+  remove: (id) => {
+    window._lastLocalEdit = Date.now();
+    return fetch(`/api/tasks/${id}`, { method: 'DELETE' }).then(r => r.json());
+  },
   getSettings: () => fetch('/api/settings').then(r => r.json()),
   putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(r => r.json()),
   team: {
@@ -2479,7 +2514,15 @@ function parseDurationInput(s) {
   const n = parseFloat(m[1]);
   const unit = m[2] || 'd';
   // Duration is in BUSINESS days. "1w" = 5 business days (Mon–Fri), "3d" = 3.
-  return Math.round(unit === 'w' ? n * 5 : n);
+  // Weeks support half-week granularity (0.5w = 2.5 days, 1.5w = 7.5 days).
+  // Days input always rounds to whole days — fractional days don't make
+  // sense in our work-day grid (you can't end mid-day).
+  if (unit === 'w') {
+    // Snap to 0.5-week increments — SDC doesn't think in finer than half weeks.
+    const halfWeeks = Math.round(n * 2);
+    return halfWeeks * 2.5;
+  }
+  return Math.round(n);
 }
 
 // ---------- Column reorder (drag-and-drop) ----------
@@ -3070,10 +3113,13 @@ function compressGanttToWorkDays() {
         text.textContent = String(dayNum);
         svg.appendChild(text);
       }
-      // Solid tick line at Monday
+      // Solid tick line at Monday. Use a tall fixed height (10000) instead
+      // of svgH — alignGanttToGrid (called LATER in the render chain) can
+      // grow the SVG to match the grid, and we'd otherwise leave the
+      // ticks too short. SVG clips anything past the viewBox naturally.
       const tick = document.createElementNS(SVG_NS, 'path');
       tick.setAttribute('class', 'tick thick');
-      tick.setAttribute('d', `M ${mondayX} ${tickTop} v ${svgH - tickTop}`);
+      tick.setAttribute('d', `M ${mondayX} ${tickTop} v 10000`);
       tick.setAttribute('stroke', '#cbd5e1');
       tick.setAttribute('stroke-width', '1');
       svg.insertBefore(tick, svg.firstChild);
@@ -3233,7 +3279,10 @@ function drawWeekdayLetters() {
         tick.setAttribute('x1', x);
         tick.setAttribute('x2', x);
         tick.setAttribute('y1', tickTop);
-        tick.setAttribute('y2', svgHeight);
+        // Use a tall fixed value so the dashed tick reaches past the bottom
+        // of the chart even if alignGanttToGrid grew the SVG after the
+        // header drawer captured svgHeight. Clipped naturally by viewBox.
+        tick.setAttribute('y2', 10000);
         tick.setAttribute('stroke', '#e2e8f0');
         tick.setAttribute('stroke-width', '0.5');
         tick.setAttribute('stroke-dasharray', '2 4');
@@ -4519,24 +4568,38 @@ function zoomToFit() {
   const filtered = applyFilters(state.tasks).filter(t => t.start_date && t.end_date);
   if (filtered.length === 0 || target <= 0) return;
 
-  const minStart = Math.min(...filtered.map(t => new Date(t.start_date).getTime()));
-  const maxEnd   = Math.max(...filtered.map(t => new Date(t.end_date).getTime()));
-  const projectDays = Math.max(1, (maxEnd - minStart) / 86400000 + 1);
+  const minStartStr = filtered.reduce((s, t) => t.start_date < s ? t.start_date : s, filtered[0].start_date);
+  const maxEndStr   = filtered.reduce((e, t) => t.end_date   > e ? t.end_date   : e, filtered[0].end_date);
+  // The Gantt now uses WORK-DAY positioning (Sat/Sun compressed out),
+  // so the visible span is the work-day count between min start and
+  // max end. Using calendar days here gave a too-small px/day and left
+  // a big empty area on the right.
+  const minStartMs = new Date(minStartStr + 'T00:00:00Z');
+  const workDaysSpan = Math.max(1, workDayOffset(maxEndStr, minStartMs));
 
-  const PAD_DAYS = 14;
-  const requiredPxPerDay = target / (projectDays + PAD_DAYS);
+  // Label-overflow budget — Receipt of PO renders its date (~60px) to
+  // the LEFT of its diamond, and long task names overflow ~80-120px
+  // past the RIGHT of their bars. Reserve room so neither gets clipped.
+  const LABEL_PAD_LEFT  = 70;
+  const LABEL_PAD_RIGHT = 120;
+  const EDGE_PAD        = 10;
+  const usableWidth = Math.max(50, target - LABEL_PAD_LEFT - LABEL_PAD_RIGHT - EDGE_PAD * 2);
+
+  const requiredPxPerDay = usableWidth / workDaysSpan;
   state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (requiredPxPerDay / 20) * 100));
   renderGantt();
 
-  // Synchronously scroll so the earliest real task sits near the left edge.
+  // Scroll so the earliest task's bar sits LABEL_PAD_LEFT + EDGE_PAD
+  // from the viewport's left edge — that's enough room for the date
+  // label hanging off the leftmost anchor.
   const earliest = filtered.reduce((min, t) =>
-    new Date(t.start_date).getTime() < new Date(min.start_date).getTime() ? t : min);
+    t.start_date < min.start_date ? t : min);
   const wrap = document.querySelector(`#gantt-container .bar-wrapper[data-id="${earliest.id}"]`);
   const bar = wrap && wrap.querySelector('.bar');
   if (bar) {
     const firstX = +bar.getAttribute('x');
     const scroller = getGanttScroller();
-    if (scroller) scroller.scrollLeft = Math.max(0, firstX - 24);
+    if (scroller) scroller.scrollLeft = Math.max(0, firstX - LABEL_PAD_LEFT - EDGE_PAD);
   }
 }
 
@@ -9334,14 +9397,36 @@ async function openQuoteCompareModal(project, providedQuote) {
     const test = (re) => re.test(base) || re.test(raw);
     const pg = t.phase_group, d = t.department, sd = t.sub_department;
     if (test(/^configure machine/i))                return 'configure';
-    if (test(/test\/?debug.*engineer/i))            return 'test_debug';
-    if (test(/^shop debug/i))                       return 'shop_debug';
+    // Engineering Testing — catches "Test/Debug Engineer 1/2", "Test/Debug
+    // Machine", "Engineering Testing", "ME & CE Testing", etc. — anything
+    // that's the testing-engineering phase regardless of how it's named
+    // on the schedule.
+    if (test(/^(engineering\s*testing|me\s*(&|and)\s*ce.*test)/i)) return 'test_debug';
+    if (test(/test\/?debug.*(engineer|machine)/i))   return 'test_debug';
+    if (pg === 'machine_testing' && d === 'engineering') return 'test_debug';
+    // Shop Testing — "Shop Debug" (detailed template), "Shop Testing"
+    // (sales mode), "MB & EB Testing", anything in section_40 shop.
+    if (test(/^(shop\s*debug|shop\s*testing)/i))    return 'shop_debug';
+    if (test(/^mb\s*(&|and)\s*eb.*test/i))          return 'shop_debug';
+    if (pg === 'machine_testing' && d === 'shop')   return 'shop_debug';
+    // Combined "Controls Engineering" — sales-mode single bar; tasks
+    // named just "Controls Engineering" or "Controls Eng" route to a
+    // single bucket. The detailed-mode keys (ce_software/design/drawings)
+    // still take precedence above.
+    if (test(/^(controls|ce)\s*(engineering|eng)\b/i)) return 'ce_engineering';
     if (test(/^(controls|ce)[\s\-_]?software/i))    return 'ce_software';
     if (test(/^(controls|ce)[\s\-_]?design/i))      return 'ce_design';
     if (test(/^(controls|ce)[\s\-_]?drawings?/i))   return 'ce_drawings';
     if (test(/^hmi/i))                              return 'gen_hmi';
     if (test(/^robot/i))                            return 'gen_robot';
     if (test(/^vision/i))                           return 'gen_vision';
+    // Combined "Device Programming" / "General Machine Programming" /
+    // "General Engineering" — sales-mode single bar covering HMI +
+    // Robot + Vision + device work.
+    if (test(/^(device|general)\s*(programming|engineering)|general machine programming/i)) return 'gen_engineering';
+    // Combined "Electrical Build" — sales-mode single bar covering
+    // both panel build and machine wiring.
+    if (test(/^electrical\s*build/i))               return 'elec_build';
     // Wire panel — both word orders ("Build and Wire Panel", "Wire Panel",
     // "Panel Build", "Panel Wiring") roll into wire_panel.
     if (test(/wire[\s\-_]?panel|panel[\s\-_]?(build|wir)/i)) return 'wire_panel';
@@ -9353,6 +9438,8 @@ async function openQuoteCompareModal(project, providedQuote) {
     if (test(/^(mech|mechanical)[\s\-_]?(design|eng)/i) && pg === 'design_build') return 'mech_eng';
     // Sub-department fallbacks for anything that didn't match by name.
     if (pg === 'design_build' && sd === 'mech')     return 'mech_eng';
+    if (pg === 'design_build' && sd === 'controls') return 'ce_engineering';
+    if (pg === 'design_build' && sd === 'general')  return 'gen_engineering';
     if (pg === 'design_build' && sd === 'build')    return 'build';
     if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
     if (pg === 'teardown_install' && d === 'teardown') return 'teardown';
@@ -9361,19 +9448,44 @@ async function openQuoteCompareModal(project, providedQuote) {
   };
   // Per-bucket: scheduled hours + remaining hours (scheduled × (1 - progress/100)
   // summed per task, so partial-completion across multiple tasks rolls up cleanly).
-  const scheduled = {};
-  const remaining = {};
+  // basicScheduled = duration × 8 × alloc, BEFORE the people-count multiplier.
+  // The People # column in the modal multiplies basicScheduled[k] × people to
+  // get the actual labor demand — lets the user model "this phase has 2 people
+  // even though we only show 1 bar on the sales schedule."
+  // bucketTaskIds[k] tracks which tasks contribute to each bucket so the
+  // Weeks column can write durations back proportionally on edit.
+  const basicScheduled = {};
+  const basicRemaining = {};
+  const bucketWorkDays = {};
+  const bucketTaskIds = {};
   for (const t of state.tasks) {
     if (t.project !== project) continue;
     if (t.is_milestone || t.anchor_key) continue;
     if (isBacklogTask(t)) continue;
     const k = TASK_BUCKET(t);
     if (!k) continue;
-    const hrs = (Number(t.duration_days) || 0) * 8 * ((Number(t.allocation) || 90) / 100);
+    const days = Number(t.duration_days) || 0;
+    const hrs = days * 8 * ((Number(t.allocation) || 90) / 100);
     const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
     const remHrs = hrs * (1 - pct / 100);
-    scheduled[k] = (scheduled[k] || 0) + hrs;
-    remaining[k] = (remaining[k] || 0) + remHrs;
+    basicScheduled[k] = (basicScheduled[k] || 0) + hrs;
+    basicRemaining[k] = (basicRemaining[k] || 0) + remHrs;
+    bucketWorkDays[k] = (bucketWorkDays[k] || 0) + days;
+    (bucketTaskIds[k] ||= []).push(t.id);
+  }
+  // People # per bucket — persisted on the project's saved quote object.
+  // Defaults to 1 for every bucket. Editing this in the modal recomputes
+  // scheduled = basic × people and updates the variance chip live.
+  const peopleBreakdown = (quote && quote.people_breakdown) || {};
+  const peopleFor = (k) => Math.max(1, Math.round(Number(peopleBreakdown[k]) || 1));
+  // Apply the people multiplier so the rest of the rendering code reads
+  // the same `scheduled` / `remaining` maps it always did.
+  const scheduled = {};
+  const remaining = {};
+  for (const k of Object.keys(basicScheduled)) {
+    const ppl = peopleFor(k);
+    scheduled[k] = basicScheduled[k] * ppl;
+    remaining[k] = basicRemaining[k] * ppl;
   }
 
   // Pull the quoted hours by the same bucket. Quote stores hours_breakdown
@@ -9406,13 +9518,24 @@ async function openQuoteCompareModal(project, providedQuote) {
   // Configure Machine = 5% of testing engineering hours.
   quoted.configure = Math.round(quoted.test_debug * 0.05);
   quoted.test_debug = quoted.test_debug - quoted.configure;
+  // Per-bucket Quoted overrides — when the user edits a Quoted cell in
+  // the modal we stash the new value in quote.quoted_overrides so it
+  // wins over the auto-derived hours_breakdown sums above.
+  const overrides = (quote && quote.quoted_overrides) || {};
+  for (const k of Object.keys(overrides)) {
+    const v = Number(overrides[k]);
+    if (Number.isFinite(v) && v >= 0) quoted[k] = Math.round(v);
+  }
 
-  // Rows grouped by section (matches the SDC_Template + estimate-sheet
-  // hierarchy: 10 → Design & Build, 40 → Machine Testing/Debug, 50 →
-  // Teardown & Install). Each section is a header row; the bucket rows live
-  // underneath it. Same bucket model as before — totals across all sections
-  // for that discipline — just organized for reading.
-  const SECTIONS = [
+  const isSales = projectWorkspace(project) === 'Sales';
+  // SECTIONS define the row breakdown shown in the modal. Each row carries
+  // either a single `k` bucket OR a `keys` array that sums multiple buckets
+  // into ONE displayed row — used for sales schedules where the user wants
+  // a coarser view (one Controls Engineering bar, not three sub-rows).
+  // The first key in `keys` (or `k` itself) is also the STORAGE KEY for
+  // people_breakdown + quoted_overrides, so the persisted value tracks the
+  // combined row consistently.
+  const SECTIONS_DETAILED = [
     {
       title: 'Section 10 — Design & Build',
       rows: [
@@ -9444,39 +9567,146 @@ async function openQuoteCompareModal(project, providedQuote) {
       ],
     },
   ];
+  const SECTIONS_SALES = [
+    {
+      title: 'Section 10 — Design & Build',
+      rows: [
+        { k: 'mech_eng',       label: 'Mechanical Engineering' },
+        { k: 'ce_engineering', label: 'Controls Engineering',
+          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'] },
+        { k: 'gen_engineering', label: 'Device Programming',
+          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'] },
+        { k: 'build',          label: 'Mechanical Build' },
+        { k: 'elec_build',     label: 'Electrical Build',
+          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'] },
+      ],
+    },
+    {
+      title: 'Section 40 — Machine Testing / Debug',
+      rows: [
+        { k: 'configure',  label: 'Configure Machine' },
+        { k: 'test_debug', label: 'Engineering Testing' },
+        { k: 'shop_debug', label: 'Shop Testing' },
+      ],
+    },
+    {
+      title: 'Section 50 — Teardown & Install',
+      rows: [
+        { k: 'teardown', label: 'Teardown' },
+        { k: 'install',  label: 'Install' },
+      ],
+    },
+  ];
+  const SECTIONS = isSales ? SECTIONS_SALES : SECTIONS_DETAILED;
+  const rowsByKey = {};
+  SECTIONS.forEach(s => s.rows.forEach(r => { rowsByKey[r.k] = r; }));
+  // Column count varies — sales projects hide the Remaining column.
+  const colCount = isSales ? 5 : 6;
 
-  let totalQ = 0, totalS = 0, totalR = 0;
-  const rowHtml = (r) => {
-    const q = quoted[r.k] || 0;
-    const s = Math.round(scheduled[r.k] || 0);
-    const rem = Math.round(remaining[r.k] || 0);
-    totalQ += q; totalS += s; totalR += rem;
-    const variance = s - q;
-    // Color the variance: green when scheduled is below quote (under-budget),
-    // amber when within 10% over quote, red when more than 10% over.
+  // PENDING STATE — edits live here until Done is pressed. Keyed by row
+  // storage key (r.k). Undefined means "no override; use base value."
+  // This gives the user a sandbox: tweak numbers, see chips recompute,
+  // commit when satisfied.
+  const pendingPeople = {};
+  const pendingQuoted = {};
+  const pendingWeeks  = {};
+
+  // basicScheduled comes from real task durations × 8 × alloc (no people
+  // multiplier). For "what does this row look like right now in pending
+  // state?" we apply pendingWeeks as a scaling factor on basicScheduled
+  // and then multiply by pendingPeople. This lets the user model "if I
+  // bumped Mechanical Engineering to 8 wks with 2 people, my actual hrs
+  // would be …" without touching the schedule yet.
+  function computeRowState(r) {
+    const keys = r.keys || [r.k];
+    const baseQuoted = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
+    const q = pendingQuoted[r.k] !== undefined ? pendingQuoted[r.k] : baseQuoted;
+    const basePpl   = peopleFor(r.k);
+    const ppl       = pendingPeople[r.k] !== undefined ? pendingPeople[r.k] : basePpl;
+    const baseDays  = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+    const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+    const weeks     = pendingWeeks[r.k] !== undefined ? pendingWeeks[r.k] : baseWeeks;
+    const baseSched = keys.reduce((sum, k) => sum + (basicScheduled[k] || 0), 0);
+    const baseRem   = keys.reduce((sum, k) => sum + (basicRemaining[k] || 0), 0);
+    const scaleFactor = (pendingWeeks[r.k] !== undefined && baseDays > 0)
+      ? ((pendingWeeks[r.k] * 5) / baseDays)
+      : 1;
+    const s   = Math.round(baseSched * scaleFactor * ppl);
+    const rem = Math.round(baseRem   * scaleFactor * ppl);
+    const allTaskIds = keys.flatMap(k => bucketTaskIds[k] || []);
+    return { keys, q, weeks, ppl, s, rem, baseDays, taskIds: allTaskIds };
+  }
+
+  function rowHtml(r) {
+    const st = computeRowState(r);
+    const taskCount = st.taskIds.length;
+    const variance = st.s - st.q;
     let varCls = 'var-zero';
-    if (q > 0) {
+    if (st.q > 0) {
       if (variance < 0) varCls = 'var-under';
-      else if (variance > q * 0.10) varCls = 'var-over';
+      else if (variance > st.q * 0.10) varCls = 'var-over';
       else if (variance > 0) varCls = 'var-near';
     }
-    const varText = q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
-    return `<tr>
+    const varText = st.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    const weeksTitle = taskCount === 0
+      ? 'No tasks in this bucket yet — add a task to the schedule first.'
+      : (taskCount === 1
+          ? 'Click to edit this phase’s duration in weeks.'
+          : `${taskCount} tasks in this bucket — editing scales each proportionally.`);
+    const weeksDisabled = taskCount === 0 ? 'disabled' : '';
+    const pendingMark = (pendingPeople[r.k] !== undefined || pendingQuoted[r.k] !== undefined || pendingWeeks[r.k] !== undefined) ? ' is-pending' : '';
+    return `<tr class="quote-row${pendingMark}" data-row-key="${escapeHtml(r.k)}">
       <td>${escapeHtml(r.label)}</td>
+      <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
+      <td class="num"><input type="number" min="1" max="99" step="1" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${st.ppl}" title="People assigned to this phase. Scheduled hrs = Weeks × 40 × allocation × People." /></td>
       <td class="num quote-sched-cell">
-        <span class="quote-sched-q">${q ? q.toLocaleString() : '—'}</span>
+        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override." />
         <span class="quote-sched-slash">/</span>
-        <span class="quote-sched-s">${s.toLocaleString()}</span>
+        <span class="quote-sched-s">${st.s.toLocaleString()}</span>
       </td>
       <td class="num quote-variance ${varCls}">${varText}</td>
-      <td class="num">${rem.toLocaleString()}</td>
+      ${isSales ? '' : `<td class="num">${st.rem.toLocaleString()}</td>`}
     </tr>`;
-  };
-  const rowsHtml = SECTIONS.map(section => `
-    <tr class="section-head"><td colspan="4">${escapeHtml(section.title)}</td></tr>
-    ${section.rows.map(rowHtml).join('')}
-  `).join('');
-  const totalV = totalS - totalQ;
+  }
+
+  function buildRowsHtml() {
+    return SECTIONS.map(section => `
+      <tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>
+      ${section.rows.map(rowHtml).join('')}
+    `).join('');
+  }
+  function computeTotals() {
+    let totalQ = 0, totalS = 0, totalR = 0;
+    for (const section of SECTIONS) {
+      for (const r of section.rows) {
+        const st = computeRowState(r);
+        totalQ += st.q; totalS += st.s; totalR += st.rem;
+      }
+    }
+    return { totalQ, totalS, totalR };
+  }
+  function buildFooterHtml() {
+    const { totalQ, totalS, totalR } = computeTotals();
+    const totalV = totalS - totalQ;
+    const varCls = totalQ === 0 ? 'var-zero'
+      : (totalV < 0 ? 'var-under'
+        : (totalV > totalQ * 0.10 ? 'var-over'
+          : (totalV > 0 ? 'var-near' : 'var-zero')));
+    return `
+      <tr class="totals-row">
+        <td>Total</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+        <td class="num quote-sched-cell">
+          <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
+          <span class="quote-sched-slash">/</span>
+          <span class="quote-sched-s">${totalS.toLocaleString()}</span>
+        </td>
+        <td class="num quote-variance ${varCls}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
+        ${isSales ? '' : `<td class="num">${totalR.toLocaleString()}</td>`}
+      </tr>`;
+  }
+  const rowsHtml = buildRowsHtml();
 
   const overlay = document.createElement('div');
   overlay.id = 'quote-compare-modal';
@@ -9509,28 +9739,21 @@ async function openQuoteCompareModal(project, providedQuote) {
           <thead>
             <tr>
               <th style="text-align:left;">Discipline</th>
-              <th class="num" title="Quoted (from estimate sheet) / Scheduled (live SUM of duration_days × 8 × allocation% per task in this bucket). — means no quote attached.">Quoted / Scheduled</th>
-              <th class="num" title="Scheduled minus Quoted. Negative = under budget. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
-              <th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs × (1 − task_progress%/100)) per bucket.">Remaining</th>
+              <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations. Multi-task buckets scale proportionally.">Weeks</th>
+              <th class="num" title="People assigned to this phase. Defaults to 1. Scheduled hrs = Weeks × 40 × allocation × People.">People #</th>
+              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted / Scheduled</th>
+              <th class="num" title="Scheduled − Quoted. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
+              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs × (1 − task_progress%/100)) per bucket × people#.">Remaining</th>`}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
-          <tfoot>
-            <tr class="totals-row">
-              <td>Total</td>
-              <td class="num quote-sched-cell">
-                <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
-                <span class="quote-sched-slash">/</span>
-                <span class="quote-sched-s">${totalS.toLocaleString()}</span>
-              </td>
-              <td class="num quote-variance ${totalQ === 0 ? 'var-zero' : (totalV < 0 ? 'var-under' : (totalV > totalQ * 0.10 ? 'var-over' : (totalV > 0 ? 'var-near' : 'var-zero')))}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
-              <td class="num">${totalR.toLocaleString()}</td>
-            </tr>
-          </tfoot>
+          <tfoot>${buildFooterHtml()}</tfoot>
         </table>
       </div>
       <div class="modal-foot">
-        <button type="button" class="btn-primary" data-action="close">Close</button>
+        <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
+        <button type="button" class="btn-secondary" data-action="close">Cancel</button>
+        <button type="button" class="btn-primary" data-action="apply" id="quote-apply-btn" disabled>Apply</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -9546,6 +9769,116 @@ async function openQuoteCompareModal(project, providedQuote) {
     openFinancialsModal(project);
   };
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  // Refresh the table in-place without reopening the modal — used after
+  // every input change. Re-applies event handlers since innerHTML wipes
+  // the old listeners.
+  function refreshTable() {
+    const tbody = overlay.querySelector('.quote-compare-table tbody');
+    const tfoot = overlay.querySelector('.quote-compare-table tfoot');
+    if (tbody) tbody.innerHTML = buildRowsHtml();
+    if (tfoot) tfoot.innerHTML = buildFooterHtml();
+    wireInputs();
+    updateApplyButtonState();
+  }
+
+  function updateApplyButtonState() {
+    const hasPending = Object.keys(pendingPeople).length > 0
+      || Object.keys(pendingQuoted).length > 0
+      || Object.keys(pendingWeeks).length > 0;
+    const btn = overlay.querySelector('#quote-apply-btn');
+    const hint = overlay.querySelector('#quote-pending-hint');
+    if (btn) btn.disabled = !hasPending;
+    if (hint) hint.hidden = !hasPending;
+  }
+
+  function wireInputs() {
+    overlay.querySelectorAll('.quote-people-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const bucket = input.dataset.bucket;
+        const val = Math.max(1, Math.min(99, Math.round(Number(input.value) || 1)));
+        const baseVal = peopleFor(bucket);
+        if (val === baseVal) delete pendingPeople[bucket];
+        else pendingPeople[bucket] = val;
+        refreshTable();
+      });
+    });
+    overlay.querySelectorAll('.quote-q-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const bucket = input.dataset.bucket;
+        const val = Math.max(0, Math.round(Number(input.value) || 0));
+        const r = rowsByKey[bucket];
+        const keys = r ? (r.keys || [r.k]) : [bucket];
+        const baseVal = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
+        if (val === baseVal) delete pendingQuoted[bucket];
+        else pendingQuoted[bucket] = val;
+        refreshTable();
+      });
+    });
+    overlay.querySelectorAll('.quote-weeks-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const bucket = input.dataset.bucket;
+        const newWeeks = Math.max(0, Math.round(Number(input.value) * 2) / 2);
+        const r = rowsByKey[bucket];
+        const keys = r ? (r.keys || [r.k]) : [bucket];
+        const baseDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+        if (newWeeks === baseWeeks) delete pendingWeeks[bucket];
+        else pendingWeeks[bucket] = newWeeks;
+        refreshTable();
+      });
+    });
+  }
+  wireInputs();
+
+  // Apply button — write all pending edits to the server: people +
+  // quoted overrides land in the saved quote; weeks edits go to the
+  // underlying tasks' duration_days (scaled proportionally for
+  // multi-task buckets) and trigger a server cascadeSchedule on save.
+  async function applyChanges() {
+    try {
+      // 1) Quote (people + quoted_overrides)
+      if (Object.keys(pendingPeople).length || Object.keys(pendingQuoted).length) {
+        const updated = { ...(quote || {}) };
+        updated.people_breakdown = { ...(updated.people_breakdown || {}) };
+        updated.quoted_overrides = { ...(updated.quoted_overrides || {}) };
+        for (const [k, v] of Object.entries(pendingPeople)) updated.people_breakdown[k] = v;
+        for (const [k, v] of Object.entries(pendingQuoted)) updated.quoted_overrides[k] = v;
+        await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updated),
+        });
+      }
+      // 2) Weeks → task duration_days (proportional across multi-task buckets)
+      for (const [rowKey, newWeeks] of Object.entries(pendingWeeks)) {
+        const r = rowsByKey[rowKey];
+        if (!r) continue;
+        const keys = r.keys || [r.k];
+        const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
+        if (taskIds.length === 0) continue;
+        const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const newDays = newWeeks * 5;
+        if (taskIds.length === 1 || currentTotalDays === 0) {
+          await api.update(taskIds[0], { duration_days: newDays });
+        } else {
+          for (const id of taskIds) {
+            const t = state.tasks.find(x => x.id === id);
+            if (!t) continue;
+            const oldD = Number(t.duration_days) || 0;
+            const scaled = (oldD / currentTotalDays) * newDays;
+            await api.update(id, { duration_days: scaled });
+          }
+        }
+      }
+      await loadTasks();
+      showToast('Schedule updated.', { kind: 'success' });
+      close();
+    } catch (err) {
+      showToast('Failed to apply: ' + (err.message || err), { kind: 'error' });
+    }
+  }
+  overlay.querySelector('[data-action="apply"]').addEventListener('click', applyChanges);
 
   // "Load estimate file…" — pick an xlsx, parse it, PERSIST the quote on the
   // project so future opens of this modal show the comparison without
@@ -13330,6 +13663,14 @@ async function loadTasks() {
     await loadFinancialsForAllOpenProjects();
   }
   render();
+  // Phase 2 (Abhi port): refresh 💬 badge counts for the active project after
+  // every render so newly-loaded rows pick up their comment counts and saves
+  // don't leave stale badges behind. Wrapped in typeof check — comments-ui.js
+  // is loaded as a separate script after app.js and may be unavailable in
+  // pared-down embedded views.
+  if (typeof loadCommentCounts === 'function' && state.filters?.project) {
+    try { loadCommentCounts(state.filters.project); } catch (_) {}
+  }
 }
 
 // Walk each assignee's tasks in priority order, building a day → cumulative-alloc map.
@@ -15117,6 +15458,13 @@ async function init() {
       routePersonalMode(_actionsPageState.personId);
     }
   });
+  // Phase 2 (Abhi port): boot the comments UI once. It attaches a
+  // MutationObserver to #tasks-tbody and re-injects 💬 badges after every
+  // render with a 120 ms debounce. Wrapped in typeof check so a missing
+  // comments-ui.js (e.g. paint-deferred load) doesn't break boot.
+  if (typeof initCommentsUI === 'function') {
+    try { initCommentsUI(); } catch (_) {}
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
