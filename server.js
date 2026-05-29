@@ -1,11 +1,140 @@
-const express = require('express');
-const path = require('path');
-const XLSX = require('xlsx');
+require('dotenv').config();
+const express  = require('express');
+const http     = require('http');
+const path     = require('path');
+const fs       = require('fs');
+const XLSX     = require('xlsx');
+const bcrypt   = require('bcryptjs');
 const compression = require('compression');
+const { Server: SocketIO } = require('socket.io');
 const db = require('./db');
+require('./db-extensions'); // users, task_comments, task_history, notification_log tables
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// ── Self-healing custom-public/ ───────────────────────────────────────────────
+// custom-public/ is served BEFORE public/ so our patches override Dan's files.
+// Since the auto-updater can wipe this directory, server.js regenerates it on
+// every startup from the source-of-truth inside public/ + our patches.
+// This means the fixes survive even if custom-public/ is completely deleted.
+(function ensureCustomPublic() {
+  const customDir = path.join(__dirname, 'custom-public');
+  const publicDir = path.join(__dirname, 'public');
+  if (!fs.existsSync(customDir)) fs.mkdirSync(customDir, { recursive: true });
+
+  // ── auth-ui.js: patch minlength 6→1 + fix + New tab button ──────────────
+  const authUiSrc = path.join(publicDir, 'auth-ui.js');
+  if (fs.existsSync(authUiSrc)) {
+    let authUi = fs.readFileSync(authUiSrc, 'utf8');
+    // 1. Minimum password length: 6 → 1
+    authUi = authUi.replace(/minlength="6"/g, 'minlength="1"');
+    // 2. Fix + New tab button (openSidebarPanel silently fails; use showProjectAddPicker)
+    if (!authUi.includes('fixNewTabButton')) {
+      authUi += `
+// ── SDC Automation: fix + New tab button ─────────────────────────────────────
+(function fixNewTabButton() {
+  function patch() {
+    const btn = document.getElementById('btn-add-project');
+    if (!btn || btn._sdcPatched) return;
+    btn._sdcPatched = true;
+    const fresh = btn.cloneNode(true);
+    btn.parentNode.replaceChild(fresh, btn);
+    fresh._sdcPatched = true;
+    fresh.addEventListener('click', e => {
+      e.stopPropagation();
+      if (typeof showProjectAddPicker === 'function') showProjectAddPicker();
+    });
+    fresh.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      if (typeof showProjectAddPicker === 'function') showProjectAddPicker();
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(patch, 200));
+  } else {
+    setTimeout(patch, 200);
+  }
+})();
+`;
+    }
+    fs.writeFileSync(path.join(customDir, 'auth-ui.js'), authUi, 'utf8');
+  }
+
+  // ── auth-ui.css: move user pill beside + New tab button ──────────────────
+  const authCssSrc = path.join(publicDir, 'auth-ui.css');
+  if (fs.existsSync(authCssSrc)) {
+    let authCss = fs.readFileSync(authCssSrc, 'utf8');
+    // Move pill to top: 8px right: 105px (beside + New tab)
+    authCss = authCss
+      .replace(/\.sdc-auth-pill\s*\{([^}]*?)top:\s*\d+px/s,
+               m => m.replace(/top:\s*\d+px/, 'top: 8px'))
+      .replace(/\.sdc-auth-pill\s*\{([^}]*?)right:\s*\d+px/s,
+               m => m.replace(/right:\s*\d+px/, 'right: 105px'));
+    fs.writeFileSync(path.join(customDir, 'auth-ui.css'), authCss, 'utf8');
+  }
+
+  console.log('[SDC] custom-public/ patches applied (minlength=1, pill position, +New tab fix).');
+})();
+
+// Auth helpers
+const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
+
+// Azure SQL is the PRIMARY store. Writes go to SQLite first (fast local cache),
+// then immediately to Azure SQL. syncToAzure() is awaited before the HTTP
+// response so the client only gets confirmation once both stores are written.
+// Falls back gracefully if Azure is unreachable — local SQLite keeps working.
+let azureSync;
+try { azureSync = require('./azureSync'); } catch (_) { azureSync = { init: ()=>{}, syncTable: ()=>Promise.resolve() }; }
+
+// Write-through sync: push to Azure SQL after every mutation.
+// Capped at 8 s so a slow Azure connection never freezes the UI.
+// Uses fire-and-forget pattern so responses stay fast — but Azure gets
+// every write within milliseconds under normal conditions.
+function sync(...tables) {
+  for (const t of tables) {
+    Promise.race([
+      azureSync.syncTable(t),
+      new Promise(resolve => setTimeout(resolve, 8000)),
+    ]).catch(e => console.warn(`[AzureSync] ${t} sync warning:`, e.message));
+  }
+}
+
+// Hook res.json on mutation routes to auto-sync after every successful response.
+// Applied as a per-route middleware so Azure always gets the write.
+function withSync(...tables) {
+  return (req, res, next) => {
+    const _origJson = res.json.bind(res);
+    res.json = function(body) {
+      _origJson(body);
+      if (res.statusCode < 400) sync(...tables);
+    };
+    next();
+  };
+}
+
+const app        = express();
+const httpServer = http.createServer(app);
+const io         = new SocketIO(httpServer, { cors: { origin: '*' } });
+const PORT       = process.env.PORT || 4003;
+
+// Presence tracking
+const _presence = new Map();
+io.on('connection', socket => {
+  socket.on('presence:join', ({ project, user }) => {
+    if (!project || !user?.name) return;
+    if (!_presence.has(project)) _presence.set(project, new Map());
+    _presence.get(project).set(socket.id, { name: user.name, avatar_color: user.avatar_color || '#1574c4', id: user.id });
+    io.emit('presence:update', { project, users: [..._presence.get(project).values()] });
+  });
+  socket.on('presence:leave', ({ project }) => {
+    if (!project || !_presence.has(project)) return;
+    _presence.get(project).delete(socket.id);
+    io.emit('presence:update', { project, users: [..._presence.get(project).values()] });
+  });
+  socket.on('disconnect', () => {
+    for (const [project, users] of _presence.entries()) {
+      if (users.has(socket.id)) { users.delete(socket.id); io.emit('presence:update', { project, users: [...users.values()] }); }
+    }
+  });
+});
 
 // ── Gzip all responses (cuts JSON payload ~70%) ────────────────────────────
 app.use(compression());
@@ -22,7 +151,87 @@ app.use((req, res, next) => {
   }
   next();
 });
-app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true }));
+// custom-public/ overrides served BEFORE public/ — our patches survive auto-updates
+app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, lastModified: true }));
+app.use(express.static(path.join(__dirname, 'public'),        { etag: true, lastModified: true }));
+
+// ── Auth routes (public — before requireAuth middleware) ──────────────────────
+
+app.post('/api/auth/login', (req, res) => {
+  const email    = (req.body.email    || '').toString().trim().toLowerCase();
+  const password = (req.body.password || '').toString();
+  if (!email || !password) return res.status(400).json({ error: 'email and password required' });
+  if (!AUTH_ENABLED) {
+    const fake = { id: 0, email, name: email.split('@')[0], role: 'admin', avatar_color: '#1574c4' };
+    return res.json({ token: signToken(fake), user: fake });
+  }
+  const user = db.prepare('SELECT * FROM users WHERE email = ? AND active = 1').get(email);
+  if (!user || !bcrypt.compareSync(password, user.password_hash))
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(new Date().toISOString(), user.id);
+  const { password_hash, ...safe } = user;
+  res.json({ token: signToken(safe), user: safe });
+});
+
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ user: req.authUser, auth_enabled: AUTH_ENABLED });
+});
+
+app.post('/api/auth/register', (req, res) => {
+  const { email, name, password } = req.body || {};
+  if (!email || !name || !password) return res.status(400).json({ error: 'Name, email and password required.' });
+  if (password.length < 1) return res.status(400).json({ error: 'Password cannot be empty.' });
+  const hash = bcrypt.hashSync(password, 12);
+  try {
+    const r = db.prepare(
+      `INSERT INTO users (email, name, password_hash, role, active, avatar_color) VALUES (?, ?, ?, 'admin', 1, ?)`
+    ).run(email.toLowerCase().trim(), name.trim(), hash, _randomColor(name));
+    const user = db.prepare('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?').get(r.lastInsertRowid);
+    io.emit('users:updated');
+    res.status(201).json({ token: signToken(user), user });
+  } catch (e) {
+    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });
+    throw e;
+  }
+});
+
+function _randomColor(name) {
+  const p = ['#1574c4','#7c3aed','#059669','#dc2626','#d97706','#0891b2','#be185d','#65a30d'];
+  let h = 0; for (let i = 0; i < (name||'').length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  return p[Math.abs(h) % p.length];
+}
+
+// ── Global auth guard (after static files, before API routes) ────────────────
+app.use(requireAuth);
+
+// ── User management ───────────────────────────────────────────────────────────
+app.get('/api/users', requireRole('admin'), (req, res) => {
+  res.json(db.prepare('SELECT id,email,name,role,active,created_at,last_login,avatar_color FROM users ORDER BY name').all());
+});
+app.post('/api/users', requireRole('admin'), (req, res) => {
+  const { email, name, password, role='editor', avatar_color='#1574c4' } = req.body || {};
+  if (!email||!name||!password) return res.status(400).json({ error: 'email, name, password required' });
+  try {
+    const r = db.prepare('INSERT INTO users (email,name,password_hash,role,active,avatar_color) VALUES (?,?,?,?,1,?)')
+      .run(email.toLowerCase().trim(), name.trim(), bcrypt.hashSync(password,12), role, avatar_color);
+    res.status(201).json(db.prepare('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?').get(r.lastInsertRowid));
+  } catch(e) { if(e.message.includes('UNIQUE')) return res.status(409).json({error:'Email already registered.'}); throw e; }
+});
+app.put('/api/users/:id', requireRole('admin'), (req, res) => {
+  const id = Number(req.params.id);
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+  if (!u) return res.status(404).json({error:'not found'});
+  const allowed = ['email','name','role','active','avatar_color'];
+  const upd = {}; for(const k of allowed) if(req.body[k]!==undefined) upd[k]=k==='active'?(req.body[k]?1:0):req.body[k];
+  if(req.body.password) upd.password_hash = bcrypt.hashSync(req.body.password,12);
+  if(!Object.keys(upd).length) return res.json(u);
+  db.prepare(`UPDATE users SET ${Object.keys(upd).map(k=>k+'=?').join(',')} WHERE id=?`).run(...Object.values(upd),id);
+  res.json(db.prepare('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?').get(id));
+});
+app.delete('/api/users/:id', requireRole('admin'), (req, res) => {
+  db.prepare('UPDATE users SET active=0 WHERE id=?').run(Number(req.params.id));
+  res.json({ok:true});
+});
 
 const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id'];
 
@@ -206,7 +415,7 @@ app.get('/api/tasks', (req, res) => {
   res.json(tasks);
 });
 
-app.post('/api/tasks', (req, res) => {
+app.post('/api/tasks', withSync('tasks'), (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
 
@@ -254,7 +463,7 @@ app.post('/api/tasks', (req, res) => {
   res.json(task);
 });
 
-app.put('/api/tasks/:id', (req, res) => {
+app.put('/api/tasks/:id', withSync('tasks'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -330,7 +539,7 @@ app.put('/api/tasks/:id', (req, res) => {
   res.json(updated);
 });
 
-app.delete('/api/tasks/:id', (req, res) => {
+app.delete('/api/tasks/:id', withSync('tasks'), (req, res) => {
   const id = Number(req.params.id);
   // Anchor milestones (Receipt of PO, Machine Power-Up, FAT, Ship Machine) are
   // project-spine markers and can't be removed — only edited. Reject with a clear
@@ -356,7 +565,7 @@ app.get('/api/settings', (req, res) => {
   res.json(out);
 });
 
-app.put('/api/settings/:key', (req, res) => {
+app.put('/api/settings/:key', withSync('settings'), (req, res) => {
   const key = req.params.key;
   const value = JSON.stringify(req.body);
   db.prepare(`
@@ -374,7 +583,7 @@ app.get('/api/team', (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/team', (req, res) => {
+app.post('/api/team', withSync('team_members'), (req, res) => {
   const name = (req.body.name || '').trim();
   const discipline = req.body.discipline;
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -385,7 +594,7 @@ app.post('/api/team', (req, res) => {
   res.json(row);
 });
 
-app.put('/api/team/:id', (req, res) => {
+app.put('/api/team/:id', withSync('team_members'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -411,13 +620,13 @@ app.put('/api/team/:id', (req, res) => {
   res.json(updated);
 });
 
-app.delete('/api/team/:id', (req, res) => {
+app.delete('/api/team/:id', withSync('team_members'), (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM team_members WHERE id = ?').run(id);
   res.json({ ok: true });
 });
 
-app.post('/api/team/reorder', (req, res) => {
+app.post('/api/team/reorder', withSync('team_members'), (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
   const stmt = db.prepare('UPDATE team_members SET sort_order = ? WHERE id = ?');
@@ -432,7 +641,7 @@ app.post('/api/team/reorder', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/tasks/reorder', (req, res) => {
+app.post('/api/tasks/reorder', withSync('tasks'), (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
 
@@ -551,7 +760,7 @@ function parseSmartsheetDate(val) {
   return null;
 }
 
-app.post('/api/import/smartsheet', (req, res) => {
+app.post('/api/import/smartsheet', withSync('tasks','team_members'), (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const file = req.body.file;
@@ -1014,7 +1223,7 @@ app.delete('/api/project/:project/quote', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/estimate/create', (req, res) => {
+app.post('/api/estimate/create', withSync('tasks'), (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const poDate      = (req.body.po_date || '').toString().trim();
@@ -1550,7 +1759,7 @@ app.post('/api/estimate/create', (req, res) => {
 // the Gantt and shows a drift chip so the user can see how much each bar has
 // moved relative to the snapshot.
 
-app.post('/api/baseline/set', (req, res) => {
+app.post('/api/baseline/set', withSync('tasks'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const result = db.prepare(`
@@ -1562,7 +1771,7 @@ app.post('/api/baseline/set', (req, res) => {
   res.json({ ok: true, baselined: result.changes });
 });
 
-app.post('/api/baseline/clear', (req, res) => {
+app.post('/api/baseline/clear', withSync('tasks'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const result = db.prepare(`
@@ -1588,7 +1797,7 @@ app.get('/api/financials', (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/financials', (req, res) => {
+app.post('/api/financials', withSync('project_financials'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const name = (req.body.name || '').toString().trim();
@@ -1612,7 +1821,7 @@ app.post('/api/financials', (req, res) => {
   res.json(row);
 });
 
-app.put('/api/financials/:id', (req, res) => {
+app.put('/api/financials/:id', withSync('project_financials'), (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -1632,7 +1841,7 @@ app.put('/api/financials/:id', (req, res) => {
   res.json(row);
 });
 
-app.delete('/api/financials/:id', (req, res) => {
+app.delete('/api/financials/:id', withSync('project_financials'), (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM project_financials WHERE id = ?').run(id);
   res.json({ ok: true });
@@ -1641,7 +1850,7 @@ app.delete('/api/financials/:id', (req, res) => {
 // Seed the default financial milestones onto a project that has none yet. Idempotent:
 // running this on a project that already has any financials is a no-op. Reads the
 // defaults from the default_financial_milestones setting (editable on Setup).
-app.post('/api/financials/seed', (req, res) => {
+app.post('/api/financials/seed', withSync('project_financials'), (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const existing = db.prepare('SELECT COUNT(*) AS n FROM project_financials WHERE project = ?').get(project).n;
@@ -1672,11 +1881,16 @@ app.get('/health', (_req, res) => res.json({ ok: true, service: 'scheduler' }));
 // ── Exportable entry point (used by Electron in-process execution) ────────────
 function startServer({ port } = {}) {
   const p = port || PORT;
-  const server = app.listen(p, '0.0.0.0', () => {
+  // Use httpServer (not app) so Socket.io upgrade handler is attached
+  httpServer.listen(p, '0.0.0.0', () => {
     console.log(`[scheduler] Running at http://localhost:${p}`);
+    console.log(`[scheduler] Auth: ${AUTH_ENABLED ? 'ENABLED' : 'DISABLED'}`);
   });
-  server.on('error', err => console.error('[scheduler] Server error:', err.message));
-  return server;
+  httpServer.on('error', err => console.error('[scheduler] Server error:', err.message));
+  // Azure sync + cron jobs (non-blocking)
+  azureSync.init(db).catch(e => console.warn('[AzureSync] init failed:', e.message));
+  try { const cron = require('./cronJobs'); if(cron?.startCronJobs) cron.startCronJobs(db, require('./emailService')); } catch(_) {}
+  return httpServer;
 }
 
 if (require.main === module) {

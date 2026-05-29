@@ -1,7 +1,33 @@
+/**
+ * db.js — SQLite schema bootstrap.
+ *
+ * Uses Node's built-in `node:sqlite` (experimental flag — module name is
+ * experimental, the engine is rock-solid). Every CREATE TABLE is guarded by
+ * IF NOT EXISTS; every additive column uses `ALTER TABLE … ADD COLUMN` inside
+ * a small migration block so existing DBs pick up new columns on next boot.
+ *
+ * Schema overview (full DDL further down):
+ *   tasks                 — the everything-table (185+ rows in prod)
+ *   team_members          — assignee list, scoped by discipline
+ *   settings              — key/value JSON (palette, phases, milestones)
+ *   project_financials    — payment milestones per project
+ *   projects              — project metadata + workspace
+ *   task_history          — Phase 1 audit trail (full before/after JSON)
+ *   task_comments         — Phase 2 per-task threads
+ *   notification_log      — Phase 7 email dedupe ledger
+ *   users                 — Phase 3 auth (bcrypt hashes + roles)
+ *
+ * Default settings (palette, phases, milestone library, theme, default
+ * financial milestones) are seeded on first boot from DEFAULT_SETTINGS
+ * further down.
+ */
 const { DatabaseSync } = require('node:sqlite');
 const path = require('path');
 
 const db = new DatabaseSync(path.join(__dirname, 'scheduler.db'));
+// WAL gives us concurrent reads alongside the active writer (better than the
+// default DELETE journal). foreign_keys = ON enforces ON DELETE CASCADE on
+// task_comments → tasks.
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 
@@ -68,7 +94,95 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_financials_project ON project_financials(project);
+
+  CREATE TABLE IF NOT EXISTS projects (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    status     TEXT DEFAULT 'active',
+    is_template INTEGER DEFAULT 0,
+    job_number TEXT,
+    workspace  TEXT DEFAULT 'default',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
+
+  -- v7.3: audit trail — records every create / update / delete on tasks.
+  -- before_json / after_json store the FULL row at the time of the change so
+  -- we can show diffs in a future review UI. changed_fields is a comma-list
+  -- of column names that differed between before + after (empty for create /
+  -- delete events). Indexed by project + changed_at so a typical query
+  -- "history for THIS project, newest first" stays fast.
+  CREATE TABLE IF NOT EXISTS task_history (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id        INTEGER,
+    project        TEXT,
+    action         TEXT NOT NULL,           -- 'create' | 'update' | 'delete'
+    changed_by     TEXT,                    -- user identifier; null when auth not enabled
+    changed_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+    before_json    TEXT,
+    after_json     TEXT,
+    changed_fields TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_history_project    ON task_history(project);
+  CREATE INDEX IF NOT EXISTS idx_history_changed_at ON task_history(changed_at);
+
+  -- v7.3: per-task comment thread. ON DELETE CASCADE so deleting a task
+  -- removes its comments automatically. mentions is a JSON array of
+  -- team-member names referenced via @Name in the body.
+  CREATE TABLE IF NOT EXISTS task_comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    project     TEXT,
+    author_id   INTEGER,
+    author_name TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    mentions    TEXT,
+    created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_task_id ON task_comments(task_id);
+  CREATE INDEX IF NOT EXISTS idx_comments_project ON task_comments(project);
+
+  -- v7.3: notification dedupe log — once Phase 6 (email) lands this stops
+  -- duplicate "you were mentioned" emails per mention event. Pre-allocated
+  -- here so the comments POST handler can safely reference it.
+  CREATE TABLE IF NOT EXISTS notification_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email    TEXT NOT NULL,
+    type          TEXT NOT NULL,
+    task_id       INTEGER,
+    sent_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+    reference_key TEXT UNIQUE
+  );
+
+  -- v7.4 Phase 3 (Auth): users table for email + bcrypt password + role.
+  -- Created even when AUTH_ENABLED=false so create-admin.js still works.
+  -- Roles: 'viewer' (read-only) | 'editor' (CRUD tasks/team) | 'admin' (settings).
+  -- avatar_color is a hex for the comment / presence chip; defaults to SDC Blue.
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT UNIQUE NOT NULL,
+    name          TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role          TEXT DEFAULT 'editor',
+    avatar_color  TEXT DEFAULT '#1574c4',
+    active        INTEGER DEFAULT 1,
+    created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_login    TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 `);
+
+// Phase 5 conflict-detection: version column on tasks. Bumped on every UPDATE.
+// Client sends the version it loaded; server returns 409 when stale. Migration
+// ALTER so existing DBs pick the column up on next boot.
+{
+  const cols = db.prepare('PRAGMA table_info(tasks)').all().map(r => r.name);
+  if (!cols.includes('version')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN version INTEGER DEFAULT 1');
+  }
+}
 
 // project_financials migrations — add columns to existing tables without dropping data.
 {
@@ -482,6 +596,17 @@ if (!someoneHasPriority) {
   if (r.changes > 0) {
     console.log(`Migrated ${r.changes} Backlog task(s) out of section 10 → above-section spine.`);
   }
+}
+
+// Backfill projects table from existing tasks — runs once for any project name not yet
+// in the projects table. Idempotent — INSERT OR IGNORE skips duplicates.
+{
+  const backfill = db.prepare(`
+    INSERT OR IGNORE INTO projects (name)
+    SELECT DISTINCT project FROM tasks
+    WHERE project IS NOT NULL AND project <> ''
+  `);
+  backfill.run();
 }
 
 module.exports = db;

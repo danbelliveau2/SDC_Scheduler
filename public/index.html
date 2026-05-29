@@ -6,6 +6,7 @@
   <title>SDC Scheduler</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="auth-ui.css" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -206,6 +207,18 @@
             <button id="btn-filters" class="toolbar-toggle-btn" type="button" title="Filter the schedule. For Customer mode also lives here.">⌕ Filters <span class="filter-chip-count" id="filter-chip-count" hidden></span> ▾</button>
             <div id="filters-popover" class="filters-popover hidden"></div>
           </div>
+
+          <!-- Auto-save status indicator -->
+          <span id="save-indicator" class="save-indicator" title="All changes are saved automatically to the server"></span>
+
+          <!-- Export current project to Excel -->
+          <button id="btn-export" class="toolbar-toggle-btn" type="button" title="Export the current project schedule to Excel (.xlsx)">⬇ Export</button>
+
+          <!-- Import from exported Excel/CSV -->
+          <button id="btn-import" class="toolbar-toggle-btn" type="button" title="Import a schedule from an exported Excel or CSV file">⬆ Import</button>
+          <input id="import-file-input" type="file" accept=".xlsx,.csv" style="display:none" />
+
+          <div class="toolbar-divider"></div>
 
           <!-- Flex gap pushes the right-edge tools to the far right. -->
           <div class="toolbar-flex-gap"></div>
@@ -733,8 +746,24 @@
   <button id="btn-customer-view-exit" class="customer-view-exit" type="button" title="Exit customer view and return to the full editing layout.">✕ Exit customer view</button>
 
   <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
+  <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
+       so the auth Bearer token is attached to every subsequent /api/* fetch
+       from app.js / comments-ui.js. -->
+  <script src="auth-ui.js"></script>
   <script src="phases.js"></script>
   <script src="release-notes.js"></script>
   <script src="app.js"></script>
+  <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
+       grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
+       panel for the active task. Loaded last so window.openCommentPanel,
+       loadCommentCounts, and initCommentsUI are available to app.js. -->
+  <script src="comments-ui.js"></script>
+  <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
+       broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
+  <script src="realtime-ui.js"></script>
+  <!-- Phase 4.1: "who's editing" presence pills, top-right under the user pill. -->
+  <script src="presence-ui.js"></script>
 </body>
 </html>

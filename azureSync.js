@@ -52,7 +52,10 @@ async function syncTable(table) {
   }
 }
 
-// ── Bootstrap: decide direction (Azure → SQLite  or  SQLite → Azure) ─────────
+// ── Bootstrap: Azure SQL is ALWAYS the primary source of truth ───────────────
+// On every startup we pull from Azure first. SQLite is just a local cache.
+// Only falls back to pushing local → Azure on the very first boot when
+// Azure is completely empty (brand-new install).
 
 async function _bootstrapData() {
   const pool   = await azureDb.getPool();
@@ -60,14 +63,14 @@ async function _bootstrapData() {
   const azCount = azRows.recordset[0].n;
 
   if (azCount > 0) {
-    // Azure has data → pull down to SQLite (Azure is authoritative)
-    console.log('[AzureSync] Pulling data from Azure SQL → SQLite …');
+    // Azure has data → ALWAYS pull to SQLite (Azure is the primary store)
+    console.log('[AzureSync] Azure SQL is primary — pulling latest data to local cache…');
     await _pullFromAzure();
   } else {
-    // Azure is empty → push SQLite up (first-time migration)
+    // Azure is empty → first-time setup, push local → Azure
     const localRow = db.prepare('SELECT COUNT(*) AS n FROM tasks').get();
     if (localRow.n > 0) {
-      console.log('[AzureSync] First migration: pushing SQLite → Azure SQL …');
+      console.log('[AzureSync] First-time setup — pushing local data to Azure SQL…');
       await _pushAllToAzure();
     }
   }
