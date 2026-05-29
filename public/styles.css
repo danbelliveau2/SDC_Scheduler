@@ -269,7 +269,7 @@ body {
 }
 .projects-row.is-open { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 5%, white); }
 .projects-row-star {
-  color: var(--sdc-green, #74c415);
+  color: var(--text-muted, #94a3b8);
   font-size: 14px;
   width: 14px;
 }
@@ -283,31 +283,30 @@ body {
   padding: 2px 6px;
   border-radius: 3px;
 }
-/* Templates row inside each workspace — visually distinct from regular
-   schedules so a "Templates" group reads as the head of the workspace
-   (heavy left border + tinted background). Templates are starred (★) and
-   protected from accidental deletion. */
+/* Templates subsection at the top of each workspace. Plain black text + a
+   solid divider line beneath separating them from the regular project rows.
+   No green tint, no heavy left border — templates read as a small group
+   header, not as a highlighted call-out. */
 .projects-templates-row {
-  border-bottom: 1px solid var(--border, #cbd5e1);
-  background: color-mix(in srgb, var(--anchor-fill, #befa4f) 14%, white);
-  border-left: 4px solid var(--anchor-fill, #befa4f);
+  background: transparent;
+  border-bottom: 2px solid var(--border, #cbd5e1);
+  padding-bottom: 4px;
+  margin-bottom: 4px;
 }
 .projects-templates-label {
-  padding: 6px 14px 0;
+  padding: 6px 14px 2px;
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #15803d;
+  color: var(--text, #1f2937);
 }
 .projects-templates-row .projects-row {
   background: transparent;
   border-top: none;
-  font-weight: 700;
+  font-weight: 600;
 }
-.projects-row.is-template {
-  font-weight: 700;
-}
+.projects-row.is-template { font-weight: 600; }
 /* Favorite ★ button on each row — light + outlined when unfavorited,
    solid gold when favorited. Sits at the right edge of the row. */
 .projects-row-favbtn {
@@ -6352,6 +6351,20 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .quote-row.is-pending td {
   background: color-mix(in srgb, var(--sdc-accent, #ffde51) 18%, white);
+}
+/* Milestone line items in the sales quote modal — info rows, no hours.
+   Muted text + diamond glyph so they read as anchors, not editable rows. */
+.quote-row.is-milestone td {
+  color: var(--text-muted, #94a3b8);
+  font-style: italic;
+}
+.quote-row.is-milestone .quote-milestone-cell {
+  color: var(--text-muted, #94a3b8);
+}
+.quote-milestone-glyph {
+  color: var(--anchor-fill, #74c415);
+  font-size: 11px;
+  margin-right: 4px;
 }
 .quote-pending-hint {
   font-size: 12px;

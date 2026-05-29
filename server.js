@@ -288,17 +288,41 @@ function cascadeDurationLinks() {
 function cascadeSchedule() {
   // Iteratively recompute every task's dates from its predecessors until stable
   // (or hit iteration cap to break any accidental cycles).
+  //
+  // Two passes per iteration:
+  //   (a) Predecessor-driven: tasks with `predecessors` get start/end computed
+  //       from upstream rows via FS/SS/FF/SF + lag.
+  //   (b) Standalone-with-duration: tasks WITHOUT predecessors that have a
+  //       duration_days but a stale end_date (e.g. Backlog rows where end=start).
+  //       Compute end_date = start_date + (duration_days - 1) business days.
+  //       Skipped for milestones (start===end is correct there) and for rows
+  //       missing start_date entirely.
   for (let iter = 0; iter < 50; iter++) {
     const all = db.prepare('SELECT * FROM tasks').all();
     const byId = Object.fromEntries(all.map(t => [t.id, t]));
     let changed = false;
     for (const t of all) {
-      if (!t.predecessors) continue;
-      const next = computeDatesFromPreds(t, byId);
-      if (next && (next.start_date !== t.start_date || next.end_date !== t.end_date)) {
-        db.prepare('UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?')
-          .run(next.start_date, next.end_date, t.id);
-        changed = true;
+      if (t.predecessors) {
+        const next = computeDatesFromPreds(t, byId);
+        if (next && (next.start_date !== t.start_date || next.end_date !== t.end_date)) {
+          db.prepare('UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?')
+            .run(next.start_date, next.end_date, t.id);
+          changed = true;
+        }
+      } else if (
+        t.start_date && !t.is_milestone &&
+        t.duration_days != null && Number(t.duration_days) > 0
+      ) {
+        // Standalone row with a known duration — keep end_date in sync with
+        // (start + duration - 1) business days. Fixes the legacy Backlog rows
+        // that were created with start===end.
+        const dur = Number(t.duration_days);
+        const wantedEnd = addBusinessDaysISO(t.start_date, dur - 1);
+        if (wantedEnd !== t.end_date) {
+          db.prepare('UPDATE tasks SET end_date = ? WHERE id = ?')
+            .run(wantedEnd, t.id);
+          changed = true;
+        }
       }
     }
     if (!changed) break;

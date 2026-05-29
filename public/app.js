@@ -9567,33 +9567,45 @@ async function openQuoteCompareModal(project, providedQuote) {
       ],
     },
   ];
+  // Sales-mode line items — mirror the SDC_Sales_Template schedule rows.
+  // Section 40 / 50 do NOT split engineering vs shop here: in a sales schedule,
+  // shop time = engineering time (same duration), so we collapse them into a
+  // single "Test and Debug Machine" row to keep the timeline readable.
+  // FAT and Ship Machine show as milestone markers (info rows) so the modal
+  // mirrors the schedule structure end-to-end.
   const SECTIONS_SALES = [
     {
       title: 'Section 10 — Design & Build',
       rows: [
-        { k: 'mech_eng',       label: 'Mechanical Engineering' },
-        { k: 'ce_engineering', label: 'Controls Engineering',
+        { k: 'mech_eng',       label: 'Mechanical Design' },
+        { k: 'ce_engineering', label: 'Controls Design',
           keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'] },
         { k: 'gen_engineering', label: 'Device Programming',
           keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'] },
-        { k: 'build',          label: 'Mechanical Build' },
-        { k: 'elec_build',     label: 'Electrical Build',
+        { k: 'build',          label: 'Mechanical Assembly' },
+        { k: 'elec_build',     label: 'Electrical Assembly',
           keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'] },
       ],
     },
     {
-      title: 'Section 40 — Machine Testing / Debug',
+      title: 'Section 40 — Machine Testing',
       rows: [
         { k: 'configure',  label: 'Configure Machine' },
-        { k: 'test_debug', label: 'Engineering Testing' },
-        { k: 'shop_debug', label: 'Shop Testing' },
+        // Test/Debug Machine — single row covering BOTH the engineering and
+        // shop sides of section 40 testing.
+        { k: 'test_debug', label: 'Test and Debug Machine',
+          keys: ['test_debug', 'shop_debug'] },
+        // FAT — milestone anchor. Shows as an info row with no hours.
+        { k: 'fat',        label: 'FAT', milestone: true },
       ],
     },
     {
       title: 'Section 50 — Teardown & Install',
       rows: [
-        { k: 'teardown', label: 'Teardown' },
-        { k: 'install',  label: 'Install' },
+        { k: 'teardown',     label: 'Teardown' },
+        // Ship Machine — milestone anchor between teardown and install.
+        { k: 'ship_machine', label: 'Ship Machine', milestone: true },
+        { k: 'install',      label: 'Install' },
       ],
     },
   ];
@@ -9638,6 +9650,20 @@ async function openQuoteCompareModal(project, providedQuote) {
   }
 
   function rowHtml(r) {
+    // Milestone rows (FAT / Ship Machine in sales mode) are info-only line
+    // items — no hours, no editable Weeks/People/Quoted cells. Render as a
+    // muted label row so the modal mirrors the schedule structure without
+    // implying any hours comparison.
+    if (r.milestone) {
+      return `<tr class="quote-row is-milestone" data-row-key="${escapeHtml(r.k)}">
+        <td><span class="quote-milestone-glyph" title="Schedule milestone — no hours">◆</span> ${escapeHtml(r.label)}</td>
+        <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
+        ${isSales ? '' : '<td class="num quote-milestone-cell">—</td>'}
+      </tr>`;
+    }
     const st = computeRowState(r);
     const taskCount = st.taskIds.length;
     const variance = st.s - st.q;
@@ -9679,6 +9705,7 @@ async function openQuoteCompareModal(project, providedQuote) {
     let totalQ = 0, totalS = 0, totalR = 0;
     for (const section of SECTIONS) {
       for (const r of section.rows) {
+        if (r.milestone) continue; // milestone rows have no hours to total
         const st = computeRowState(r);
         totalQ += st.q; totalS += st.s; totalR += st.rem;
       }
