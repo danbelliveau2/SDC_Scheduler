@@ -45,9 +45,16 @@ function injectCommentBadges() {
     badge.textContent = count > 0 ? `💬 ${count}` : '💬';
     badge.addEventListener('click', e => {
       e.stopPropagation();
-      const nameEl = tr.querySelector('td[data-col="name"]');
-      const taskName = nameEl?.textContent?.trim() || `Task #${id}`;
-      const project  = (typeof state !== 'undefined' && state.filters?.project) || '';
+      // Prefer the canonical name from state.tasks[id] — the cell text
+      // includes machine chips, drift chips, badge glyph, alloc % etc.
+      // which would all leak into the panel title otherwise.
+      let taskName = `Task #${id}`;
+      try {
+        const t = (typeof state !== 'undefined' && state.tasks)
+                ? state.tasks.find(x => x.id === id) : null;
+        if (t && t.name) taskName = t.name;
+      } catch (_) {}
+      const project = (typeof state !== 'undefined' && state.filters?.project) || '';
       openCommentPanel({ id, name: taskName, project });
     });
     // Append badge into the name cell so it sits next to the task name.
@@ -59,13 +66,24 @@ function injectCommentBadges() {
 
 // Watch the tasks tbody for re-renders triggered by loadTasks(); re-inject
 // badges after a short debounce so the comment column doesn't blank on
-// every save.
+// every save. Also detect project switches and re-fetch the count map for
+// the new project (the grid re-renders but the cached _commentCounts is
+// still keyed to the previous project's task IDs).
+let _lastBadgeProject = null;
 function watchForTableRender() {
   const tbody = document.getElementById('tasks-tbody');
   if (!tbody) { setTimeout(watchForTableRender, 800); return; }
   const obs = new MutationObserver(() => {
     clearTimeout(watchForTableRender._timer);
-    watchForTableRender._timer = setTimeout(injectCommentBadges, 120);
+    watchForTableRender._timer = setTimeout(async () => {
+      const project = (typeof state !== 'undefined' && state.filters?.project) || '';
+      if (project && project !== _lastBadgeProject) {
+        _lastBadgeProject = project;
+        await loadCommentCounts(project); // calls injectCommentBadges itself
+      } else {
+        injectCommentBadges();
+      }
+    }, 120);
   });
   obs.observe(tbody, { childList: true, subtree: true });
 }
