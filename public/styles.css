@@ -6306,15 +6306,25 @@ body[data-view="setup"] #btn-add { display: none; }
 /* Quote vs Schedule comparison table. Shows quoted hours from the estimate
    side-by-side with the live scheduled hours computed from task durations.
    Δ column: green when on target (±10%), amber when off, slate when no quote. */
-.quote-compare-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-/* Discipline column needs room for the long combined labels like
-   "Test/Debug Engineer (lead + secondary)". Set a generous min-width
-   and don't let it shrink below it. */
+.quote-compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  /* Honor the <colgroup> widths so every header fits without truncation —
+     `table-layout: fixed` stops the browser from auto-expanding cells to
+     match content, which used to push "Quoted / Scheduled" off-screen
+     and leave Discipline / Variance with extra dead space. */
+  table-layout: fixed;
+}
+/* Discipline column — long labels like "Test/Debug Engineer (lead + secondary)"
+   still need a hard minimum so the colgroup widths don't squash them. */
 .quote-compare-table th:first-child,
 .quote-compare-table td:first-child {
   min-width: 220px;
   white-space: nowrap;
   padding-right: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .quote-compare-table th {
   text-align: left;
