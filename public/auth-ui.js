@@ -114,7 +114,7 @@ function _openModal() {
           <input type="email" name="email" required autocomplete="username" />
         </label>
         <label>Password
-          <input type="password" name="password" required autocomplete="current-password" minlength="6" />
+          <input type="password" name="password" required autocomplete="current-password" minlength="1" />
         </label>
         <p class="sdc-auth-error" id="sdc-auth-error" hidden></p>
         <button type="submit" class="btn-primary">Sign in</button>
