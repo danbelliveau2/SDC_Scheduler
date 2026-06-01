@@ -10008,11 +10008,15 @@ async function openQuoteCompareModal(project, providedQuote) {
         apply.push({ r, newWeeks: weeks });
         processedKeys.add(r.k);
       }
+      // Snap duration_days to the nearest 2.5 — Dan rule: weeks display as
+      // whole or half values ONLY. 2.5 work-days = 0.5 work-weeks; anything
+      // else produces awkward 9.6W / 6.2W / 1.6W cells.
+      const snapHalfWeek = (days) => Math.max(0, Math.round(Number(days) / 2.5) * 2.5);
       for (const { r, newWeeks } of apply) {
         const keys = r.keys || [r.k];
         const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
         if (taskIds.length === 0) continue;
-        const newDays = newWeeks * 5;
+        const newDays = snapHalfWeek(newWeeks * 5);
 
         const shouldConsolidate = isSales && r.consolidateAs && taskIds.length > 1;
         if (shouldConsolidate) {
@@ -10039,7 +10043,8 @@ async function openQuoteCompareModal(project, providedQuote) {
         } else {
           // Multi-task bucket without consolidation (detailed mode, or a
           // sales row without a canonical target) — scale proportionally
-          // so each contributing task keeps its share of the total.
+          // so each contributing task keeps its share of the total. Snap
+          // each scaled duration to the nearest half-week.
           const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
           if (currentTotalDays === 0) {
             await api.update(taskIds[0], { duration_days: newDays });
@@ -10048,7 +10053,7 @@ async function openQuoteCompareModal(project, providedQuote) {
               const t = state.tasks.find(x => x.id === id);
               if (!t) continue;
               const oldD = Number(t.duration_days) || 0;
-              const scaled = (oldD / currentTotalDays) * newDays;
+              const scaled = snapHalfWeek((oldD / currentTotalDays) * newDays);
               await api.update(id, { duration_days: scaled });
             }
           }
