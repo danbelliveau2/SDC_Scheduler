@@ -1063,7 +1063,11 @@ function cellHtml(t, key) {
         const ahead = drift > 0;
         driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
       }
-      const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
+      // Backlog rows derive % from today's position between start/end (it's
+      // not real work, just calendar ramp). All other rows read the stored
+      // t.progress. Helper handles both cases.
+      const pct       = getEffectiveProgress(t);
+      const isBacklog = isBacklogRow(t);
       let rightWidget = '';
       if (!t.is_milestone && !isAnchor) {
         // Duration task: pill renders as a small PROGRESS BAR. The fill width
@@ -1087,7 +1091,14 @@ function cellHtml(t, key) {
         // whole pill via CSS anyway, but we still set width here so 99 → 100
         // transitions render correctly.
         const fillW = Math.max(0, Math.min(100, pct));
-        rightWidget = `<span class="name-edit-pill name-pct-pill ${pctClass}" data-edit-pill data-edit-col="progress" data-task-id="${t.id}" title="% complete — click to edit">`
+        // Backlog has its % auto-derived from the calendar — disable the
+        // click-to-edit data-attrs so we don't enter inline-edit mode, and
+        // update the tooltip so it's clear why.
+        const pillDataAttrs = isBacklog
+          ? `title="Backlog auto-tracks today's date between start and end — change duration instead to adjust"`
+          : `data-edit-pill data-edit-col="progress" data-task-id="${t.id}" title="% complete — click to edit"`;
+        const autoCls = isBacklog ? ' is-auto' : '';
+        rightWidget = `<span class="name-edit-pill name-pct-pill ${pctClass}${autoCls}" ${pillDataAttrs}>`
           + `<span class="name-pct-fill" style="width:${fillW}%"></span>`
           + `<span class="name-pct-text">${pctText}</span>`
           + `</span>`;
@@ -2803,8 +2814,10 @@ function renderGantt() {
     // 100% complete DURATION task: tag .is-done. CSS adds a LIME BORDER around
     // the bar — preserves the hierarchy color underneath (Build task stays
     // Build-tan when done, etc.) and the lime stroke makes "complete" pop
-    // visually without recoloring the bar.
-    if (!t.is_milestone && !isBacklogTask(t) && (t.progress || 0) >= 100) classes.push('is-done');
+    // visually without recoloring the bar. Uses getEffectiveProgress so the
+    // Backlog row picks up the same lime border + hash overlay once today
+    // crosses its end_date.
+    if (!t.is_milestone && getEffectiveProgress(t) >= 100) classes.push('is-done');
     if (state.overAllocatedTaskIds.has(t.id)) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
@@ -2812,7 +2825,9 @@ function renderGantt() {
       name: t.name,
       start: t.start_date,
       end: t.end_date,
-      progress: t.progress || 0,
+      // Backlog rows: progress derived from today's position; everything
+      // else reads stored t.progress. getEffectiveProgress handles both.
+      progress: getEffectiveProgress(t),
       dependencies: '', // custom arrows below
       custom_class: classes.join(' '),
     };
@@ -4721,15 +4736,26 @@ function drawMilestoneDiamonds() {
       dStroke = '#1574c4'; // SDC primary
       dStrokeW = '1.5';
     }
+    // Done milestone: KEEP the diamond's original fill (slate for non-anchor,
+    // lime for anchor) — flipping the whole shape green made a done non-anchor
+    // look identical to a fresh anchor, which is exactly the wrong signal.
+    // Done state is communicated by a deep-green stroke + the ✓ overlay only.
+    if (isDone) {
+      dStroke  = '#1d4220';     // deep forest-green border
+      dStrokeW = '2';
+    }
     diamond.setAttribute('fill',   dFill);
     diamond.setAttribute('stroke', dStroke);
     diamond.setAttribute('stroke-width', dStrokeW);
     wrap.appendChild(diamond);
 
     // Checkmark glyph rendered on top of the diamond for done milestones.
-    // Sized to fit comfortably inside the inner shape, centered. Color is
-    // slate-800 — reads cleanly on both the lime anchor fill and the slate
-    // non-anchor fill (both have enough luminance difference from dark slate).
+    // Sized at ~55% of the diamond — the diamond's inscribed square is only
+    // ~0.71×size, so a 0.9×size glyph spilled to the points and looked aligned
+    // with the diamond outline rather than centered inside it. 0.55 leaves
+    // clear breathing room on all four sides so the ✓ reads as "inside the
+    // shape" instead of "stretched across the shape." Color is dark slate
+    // (anchor lime fill) or white (non-anchor slate fill) for contrast.
     if (isDone) {
       const check = document.createElementNS(SVG_NS, 'text');
       check.setAttribute('x', cx);
@@ -4738,7 +4764,7 @@ function drawMilestoneDiamonds() {
       check.setAttribute('text-anchor', 'middle');
       check.setAttribute('dominant-baseline', 'central');
       check.setAttribute('fill', isAnchor ? CHECK_COLOR : '#ffffff');
-      check.setAttribute('font-size', String(Math.round(size * 0.9)));
+      check.setAttribute('font-size', String(Math.round(size * 0.55)));
       check.setAttribute('font-weight', '900');
       check.setAttribute('pointer-events', 'none');
       check.textContent = '✓';
@@ -13580,6 +13606,32 @@ function isBacklogTask(_) {
   // that calls this now flows through the normal task path (the calls
   // remain but always evaluate false, so they're effectively dead code).
   return false;
+}
+
+// Name-only detector for rows that should derive their % complete from the
+// calendar instead of being manually entered. Currently only "Backlog" —
+// it has no real work content, just calendar ramp-up time before Receipt
+// of PO. Compares case-insensitively against the trimmed name.
+function isBacklogRow(t) {
+  return String(t?.name || '').trim().toLowerCase() === 'backlog';
+}
+
+// Returns the effective % complete for the row at render time.
+// For Backlog rows: linearly interpolates today's position between
+// start_date and end_date. 0% before start, 100% after end.
+// For every other row: the stored t.progress (clamped 0-100).
+function getEffectiveProgress(t) {
+  const raw = Math.max(0, Math.min(100, Number(t?.progress) || 0));
+  if (!isBacklogRow(t)) return raw;
+  if (!t.start_date || !t.end_date) return raw;
+  const today = new Date().toISOString().slice(0, 10);
+  if (today >= t.end_date)   return 100;
+  if (today <= t.start_date) return 0;
+  const ms = (s) => new Date(s + 'T00:00:00Z').getTime();
+  const span = ms(t.end_date) - ms(t.start_date);
+  if (span <= 0) return 0;
+  const elapsed = ms(today) - ms(t.start_date);
+  return Math.max(0, Math.min(100, Math.round((elapsed / span) * 100)));
 }
 
 // Make sure each open project has a Receipt of PO + FAT anchor task. Anchors are real
