@@ -3094,8 +3094,8 @@ function compressGanttToWorkDays() {
     //
     // Adaptive density rules (all-or-nothing — never every-other):
     //   weekW = 5 * pxPerDay (one full work-week wide on screen).
-    //   - weekW >= 25px: date numbers shown (kicks in ~zoom 3)
-    //   - weekW <  25px: date numbers SKIPPED (would crowd & overlap)
+    //   - weekW >= 14px: date numbers shown (kicks in ~zoom 2)
+    //   - weekW <  14px: date numbers SKIPPED (would crowd & overlap)
     //   For month names, computed AFTER walking based on each month's
     //   visible width — if < 70px, switch to short "Nov" form; if even
     //   that doesn't fit, fall back to truncated text.
@@ -3103,7 +3103,7 @@ function compressGanttToWorkDays() {
     const startDow = new Date(startMs).getUTCDay();
     const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
     const weekW = 5 * pxPerDay;
-    const showDateNumbers = weekW >= 25;
+    const showDateNumbers = weekW >= 14;
     let walkMs = startMs + daysToFirstMonday * 86400000;
     let lastMonthLabel = '';
     const monthLabels = []; // [{ startX, label, monthIndex, endX }]
