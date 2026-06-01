@@ -4739,10 +4739,12 @@ function drawMilestoneDiamonds() {
     // Done milestone: KEEP the diamond's original fill (slate for non-anchor,
     // lime for anchor) — flipping the whole shape green made a done non-anchor
     // look identical to a fresh anchor, which is exactly the wrong signal.
-    // Done state is communicated by a deep-green stroke + the ✓ overlay only.
+    // Done state is communicated by a bright SDC-lime stroke at 2.5px + the
+    // ✓ overlay. Brighter than the earlier deep-green border so a done
+    // milestone reads at a glance against the slate (or lime) fill.
     if (isDone) {
-      dStroke  = '#1d4220';     // deep forest-green border
-      dStrokeW = '2';
+      dStroke  = '#74c415';     // SDC green — same lime used on done bars
+      dStrokeW = '2.5';
     }
     diamond.setAttribute('fill',   dFill);
     diamond.setAttribute('stroke', dStroke);
@@ -9516,7 +9518,13 @@ async function openQuoteCompareModal(project, providedQuote) {
   // Defaults to 1 for every bucket. Editing this in the modal recomputes
   // scheduled = basic × people and updates the variance chip live.
   const peopleBreakdown = (quote && quote.people_breakdown) || {};
-  const peopleFor = (k) => Math.max(1, Math.round(Number(peopleBreakdown[k]) || 1));
+  // Fractional people are valid: e.g. 1.25 = one full-timer + one quarter-time
+  // helper. Allowed range 0.25 – 99 in 0.25 steps. Used to default to integer
+  // 1+ via Math.round which destroyed any user-typed fractional input.
+  const peopleFor = (k) => {
+    const v = Number(peopleBreakdown[k]);
+    return Number.isFinite(v) && v > 0 ? Math.max(0.25, v) : 1;
+  };
   // Apply the people multiplier so the rest of the rendering code reads
   // the same `scheduled` / `remaining` maps it always did.
   const scheduled = {};
@@ -9723,7 +9731,7 @@ async function openQuoteCompareModal(project, providedQuote) {
     return `<tr class="quote-row${pendingMark}" data-row-key="${escapeHtml(r.k)}">
       <td>${escapeHtml(r.label)}</td>
       <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
-      <td class="num"><input type="number" min="1" max="99" step="1" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${st.ppl}" title="People assigned to this phase. Scheduled hrs = Weeks × 40 × allocation × People." /></td>
+      <td class="num"><input type="number" min="0.25" max="99" step="0.25" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${(+st.ppl).toFixed(2).replace(/\.?0+$/, '')}" title="People assigned to this phase. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People." /></td>
       <td class="num quote-sched-cell">
         <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override." />
         <span class="quote-sched-slash">/</span>
@@ -9778,7 +9786,7 @@ async function openQuoteCompareModal(project, providedQuote) {
   overlay.id = 'quote-compare-modal';
   overlay.className = 'modal-overlay app-dialog-overlay';
   overlay.innerHTML = `
-    <div class="modal-card" style="max-width: 720px;">
+    <div class="modal-card" style="max-width: 880px;">
       <div class="modal-head">
         <h2>Quote vs Schedule — ${escapeHtml(project)}</h2>
         <button class="modal-close" type="button">×</button>
@@ -9802,12 +9810,24 @@ async function openQuoteCompareModal(project, providedQuote) {
               </label>
             </div>`}
         <table class="quote-compare-table">
+          <!-- Column widths sized so every header fits without truncation,
+               while wide-content cells (Quoted / Scheduled is two numbers +
+               a slash) get the real estate they need. Sums to 100% so the
+               table is responsive inside the wider 880px modal card. -->
+          <colgroup>
+            <col style="width: ${isSales ? '34%' : '28%'};">  <!-- Discipline -->
+            <col style="width: 10%;">                          <!-- Weeks -->
+            <col style="width: 11%;">                          <!-- People # -->
+            <col style="width: ${isSales ? '32%' : '28%'};">   <!-- Quoted / Scheduled -->
+            <col style="width: 13%;">                          <!-- Variance -->
+            ${isSales ? '' : '<col style="width: 13%;">'}      <!-- Remaining -->
+          </colgroup>
           <thead>
             <tr>
               <th style="text-align:left;">Discipline</th>
               <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations. Multi-task buckets scale proportionally.">Weeks</th>
-              <th class="num" title="People assigned to this phase. Defaults to 1. Scheduled hrs = Weeks × 40 × allocation × People.">People #</th>
-              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted / Scheduled</th>
+              <th class="num" title="People assigned to this phase. Defaults to 1. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People.">People&nbsp;#</th>
+              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted&nbsp;/&nbsp;Scheduled</th>
               <th class="num" title="Scheduled − Quoted. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
               ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs × (1 − task_progress%/100)) per bucket × people#.">Remaining</th>`}
             </tr>
@@ -9862,9 +9882,14 @@ async function openQuoteCompareModal(project, providedQuote) {
     overlay.querySelectorAll('.quote-people-input').forEach(input => {
       input.addEventListener('change', () => {
         const bucket = input.dataset.bucket;
-        const val = Math.max(1, Math.min(99, Math.round(Number(input.value) || 1)));
+        // Quantize to the 0.25 step the input enforces, clamped to [0.25, 99].
+        // Fractional people are valid — 1.25 means "one full-timer + one at
+        // 25%". Round-to-nearest-quarter so we never store 1.234 noise.
+        const raw = Number(input.value);
+        const quant = Number.isFinite(raw) ? Math.round(raw * 4) / 4 : 1;
+        const val = Math.max(0.25, Math.min(99, quant));
         const baseVal = peopleFor(bucket);
-        if (val === baseVal) delete pendingPeople[bucket];
+        if (Math.abs(val - baseVal) < 1e-6) delete pendingPeople[bucket];
         else pendingPeople[bucket] = val;
         refreshTable();
       });
