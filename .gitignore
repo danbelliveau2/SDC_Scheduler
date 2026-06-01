@@ -30,3 +30,4 @@ Smartsheet Schedules/
 .env.local
 .env.*.local
 azure-backup-*.json
+scripts/auto-pull.log
