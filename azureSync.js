@@ -1,18 +1,19 @@
 /**
  * azureSync.js — Azure SQL sync layer for SDC Scheduler.
  *
- * Strategy: SQLite is the fast local working DB (synchronous, in-process).
- *           Azure SQL is the authoritative persistent store shared across machines.
+ * Strategy: Azure SQL is the authoritative persistent store.
+ *           SQLite is a fast local read cache kept in sync with Azure.
  *
  * On startup:
  *   1. Connect to Azure SQL and create schema if needed.
  *   2. Pull all data from Azure SQL → overwrite SQLite.
  *      (If Azure SQL is empty and SQLite has data → push SQLite → Azure SQL.)
+ *   3. Start a periodic pull (every 60s) to stay in sync with other machines.
  *
  * On write (tasks / team_members / settings / project_financials):
- *   - Caller fires syncTable(table) — async, fire-and-forget.
- *   - Bulk-replaces all rows in Azure SQL for that table with current SQLite state.
- *   - Never blocks a response.
+ *   - syncTable(table) pushes the updated SQLite table to Azure SQL.
+ *   - Awaited by server.js so Azure SQL is confirmed before the HTTP response.
+ *   - If Azure SQL is unavailable, logs a warning and continues (graceful degradation).
  */
 'use strict';
 
@@ -20,6 +21,7 @@ const azureDb = require('./azureDb');
 
 let db         = null; // set by init()
 let _syncReady = false;
+const PULL_INTERVAL_MS = 60 * 1000; // pull from Azure every 60s
 
 // ── Public: initialise ────────────────────────────────────────────────────────
 
@@ -29,7 +31,12 @@ async function init(sqliteDb) {
     await azureDb.ensureSchema();
     await _bootstrapData();
     _syncReady = true;
-    console.log('[AzureSync] Ready — Azure SQL is the authoritative store.');
+    console.log('[AzureSync] Ready — Azure SQL is the primary store.');
+    // Periodic pull to stay in sync with other machines writing to Azure.
+    setInterval(async () => {
+      try { await _pullFromAzure(); }
+      catch (err) { console.warn('[AzureSync] Periodic pull failed:', err.message); }
+    }, PULL_INTERVAL_MS);
   } catch (err) {
     console.warn('[AzureSync] Could not connect to Azure SQL (running local-only):', err.message);
   }
@@ -257,4 +264,14 @@ async function _syncProjectFinancials() {
   }
 }
 
-module.exports = { init, syncTable };
+async function pullAll() {
+  if (!_syncReady) throw new Error('Azure SQL not connected');
+  await _pullFromAzure();
+}
+
+async function pushAll() {
+  if (!_syncReady) throw new Error('Azure SQL not connected');
+  await _pushAllToAzure();
+}
+
+module.exports = { init, syncTable, pullAll, pushAll, get ENABLED() { return _syncReady; } };
