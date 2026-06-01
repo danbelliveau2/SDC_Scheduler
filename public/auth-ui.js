@@ -181,10 +181,11 @@ function _renderUserPill() {
     <span class="sdc-auth-avatar" style="background:${u.avatar_color || '#1574c4'};">${initials}</span>
     <span class="sdc-auth-name">${u.name}</span>
     <span class="sdc-auth-role">${u.role}</span>
+    <button type="button" class="sdc-auth-changepw" title="Change password">🔑</button>
     <button type="button" class="sdc-auth-signout" title="Sign out">×</button>
   `;
   pill.querySelector('.sdc-auth-signout').addEventListener('click', () => window.sdcAuth.signOut());
-  pill.querySelector('.sdc-auth-avatar').addEventListener('click', () => _showChangePasswordModal());
+  pill.querySelector('.sdc-auth-changepw').addEventListener('click', () => _showChangePasswordModal());
 
   document.body.appendChild(pill);
 }

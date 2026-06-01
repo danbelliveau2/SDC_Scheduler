@@ -139,6 +139,18 @@
 }
 .sdc-auth-signout:hover { background: #f1f5f9; color: #dc2626; }
 
+.sdc-auth-changepw {
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 50%;
+  opacity: 0.6;
+}
+.sdc-auth-changepw:hover { background: #f1f5f9; opacity: 1; }
+
 /* Phase 4.1 — "who's editing" presence strip. Sits just to the right of
    the user pill at the bottom-left; one circle per active collaborator
    (excluding self). */
