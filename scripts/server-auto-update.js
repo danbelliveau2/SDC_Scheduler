@@ -56,21 +56,30 @@ function storeSha(sha) {
   fs.writeFileSync(SHA_FILE, sha, 'utf8');
 }
 
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
-    mod.get(url, {
-      headers: {
-        'User-Agent': 'SDC-Tools-Scheduler-Updater/1.0',
-        'Accept':     'application/vnd.github.v3+json',
-      },
-    }, (res) => {
+    const headers = {
+      'User-Agent': 'SDC-Tools-Scheduler-Updater/1.0',
+      'Accept':     'application/vnd.github.v3+json',
+    };
+    if (GITHUB_TOKEN) headers['Authorization'] = `Bearer ${GITHUB_TOKEN}`;
+    mod.get(url, { headers }, (res) => {
       if (res.statusCode === 301 || res.statusCode === 302)
         return fetchJson(res.headers.location).then(resolve).catch(reject);
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.message && !parsed.sha) {
+            reject(new Error(`GitHub API: ${parsed.message}`));
+          } else {
+            resolve(parsed);
+          }
+        }
         catch (e) { reject(new Error(`JSON parse failed: ${e.message}`)); }
       });
     }).on('error', reject);
