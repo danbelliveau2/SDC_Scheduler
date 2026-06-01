@@ -134,7 +134,7 @@ app.post('/api/auth/register', (req, res) => {
   const name     = (req.body.name     || '').toString().trim();
   const password = (req.body.password || '').toString();
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
-  if (password.length < 6)           return res.status(400).json({ error: 'password must be at least 6 chars' });
+  if (password.length < 1)           return res.status(400).json({ error: 'password is required' });
   try {
     const hash = bcrypt.hashSync(password, 12);
     const r = db.prepare(`
@@ -2670,7 +2670,7 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   const { email, name, password, role = 'editor', avatar_color = '#1574c4' } = req.body || {};
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
   if (!['viewer', 'editor', 'admin'].includes(role)) return res.status(400).json({ error: 'invalid role' });
-  if (String(password).length < 6) return res.status(400).json({ error: 'password must be at least 6 chars' });
+  if (String(password).length < 1) return res.status(400).json({ error: 'password is required' });
   try {
     const r = db.prepare(
       'INSERT INTO users (email,name,password_hash,role,active,avatar_color) VALUES (?,?,?,?,1,?)'
