@@ -1557,6 +1557,16 @@ function renderTable() {
       }
       const dPath = groupPath(group.key, dept.key);
       const dCollapsed = collapsedGroups.has(dPath);
+      // Count tasks at the dept level + every sub-dept underneath. If the
+      // total is zero, skip rendering the dept header entirely — sales
+      // schedules + section 50 / install / teardown live at the section
+      // level with no dept, and the empty SHOP / ENGINEERING / TEARDOWN
+      // skeleton headers were just noise.
+      const deptTaskCount =
+        (buckets[dPath]?.length || 0)
+        + dept.subs.reduce((sum, sub) =>
+            sum + (buckets[groupPath(group.key, dept.key, sub.key)]?.length || 0), 0);
+      if (deptTaskCount === 0) continue;
       // For section 10, the Engineering and Shop departments are pure containers —
       // every task lives in a sub-department under them. The container header reads as
       // visual noise, so we skip it and let the sub-deps render directly under the
@@ -1574,11 +1584,14 @@ function renderTable() {
         for (const t of deptLevelTasks) html += renderTaskRow(t, 3);
         for (const sub of dept.subs) {
           const sPath = groupPath(group.key, dept.key, sub.key);
+          const tasks = buckets[sPath] || [];
+          // Skip empty sub-dept headers — same rule as dept-level above:
+          // no tasks → no header. Keeps sales projects clean.
+          if (tasks.length === 0) continue;
           const sCollapsed = collapsedGroups.has(sPath);
           html += headerRowHtml(3, sub.label, sPath, sCollapsed,
             { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key });
           if (sCollapsed) continue;
-          const tasks = buckets[sPath] || [];
           for (const t of tasks) html += renderTaskRow(t, 4);
         }
       } else {
@@ -9645,12 +9658,12 @@ async function openQuoteCompareModal(project, providedQuote) {
     {
       title: 'Section 40 — Machine Testing',
       rows: [
-        { k: 'configure',  label: 'Configure Machine' },
-        // Test/Debug Machine — single row covering BOTH the engineering and
-        // shop sides of section 40 testing.
-        { k: 'test_debug', label: 'Test and Debug Machine',
-          keys: ['test_debug', 'shop_debug'],
-          consolidateAs: 'Test/Debug Machine' },
+        // Complete Machine Testing — ONE row covering Configure Machine +
+        // the engineering/shop Test/Debug. Sales schedules don't break
+        // these out; the single bar reads cleaner against the timeline.
+        { k: 'test_debug', label: 'Complete Machine Testing',
+          keys: ['configure', 'test_debug', 'shop_debug'],
+          consolidateAs: 'Complete Machine Testing' },
         // FAT — milestone anchor. Shows as an info row with no hours.
         { k: 'fat',        label: 'FAT', milestone: true },
       ],
