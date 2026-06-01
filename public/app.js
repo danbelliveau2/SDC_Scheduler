@@ -351,28 +351,34 @@ function buildCanonicalTaskOrder() {
   for (const group of HIERARCHY) {
     if (state.scheduleView?.flatten || isPersonalMode()) {
       // Same INLINE_ANCHORS rule as the table walk.
-      const sectionTasks = filtered.filter(t => {
+      let sectionTasks = filtered.filter(t => {
         if (t.phase_group !== group.key) return false;
         const k = inferredAnchorKey(t);
         return !k || INLINE_ANCHORS.has(k);
       });
       sortBucket(sectionTasks);
-      let shipDropped = false;
-      for (const t of sectionTasks) {
-        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
-          for (const s of shipAnchors) order.push(s.id);
-          shipDropped = true;
-        }
-        order.push(t.id);
+      // Splice Ship Machine into section 50 by sort_order so line numbers
+      // land Teardown / Ship Machine / Install even when tasks carry a
+      // null department (sales template suppresses subheaders that way).
+      if (group.key === 'teardown_install' && shipAnchors.length) {
+        sectionTasks = [...sectionTasks, ...shipAnchors]
+          .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
       }
-      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
-        for (const s of shipAnchors) order.push(s.id);
-      }
+      for (const t of sectionTasks) order.push(t.id);
     } else {
-      const groupLevelTasks = buckets[groupPath(group.key)] || [];
+      let groupLevelTasks = buckets[groupPath(group.key)] || [];
+      // Sales-mode section 50: merge Ship Machine anchors into the
+      // group-level list by sort_order. Skips the dept-loop ship-insert
+      // below so we don't double-count.
+      let shipDroppedAtGroupLevelOrd = false;
+      if (group.key === 'teardown_install' && shipAnchors.length && groupLevelTasks.length) {
+        groupLevelTasks = [...groupLevelTasks, ...shipAnchors]
+          .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+        shipDroppedAtGroupLevelOrd = true;
+      }
       for (const t of groupLevelTasks) order.push(t.id);
       for (const dept of group.departments) {
-        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length) {
+        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length && !shipDroppedAtGroupLevelOrd) {
           for (const s of shipAnchors) order.push(s.id);
         }
         const dPath = groupPath(group.key, dept.key);
@@ -1523,21 +1529,22 @@ function renderTable() {
     const renderTaskRow = (t, depth) => inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, depth);
 
     if (flattenEffective) {
-      const sectionTasks = flatBySection[group.key] || [];
-      let shipDropped = false;
-      for (const t of sectionTasks) {
-        // For section 50, splice the Ship Machine anchors in once we cross from
-        // teardown work to install work (or as the last rows if everything is
-        // teardown). Sort-by-date naturally orders them correctly.
-        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
-          for (const s of shipAnchors) html += anchorRowHtml(s);
-          shipDropped = true;
-        }
-        html += renderTaskRow(t, 2);
+      let sectionTasks = flatBySection[group.key] || [];
+      // For section 50, merge Ship Machine anchors into the section list and
+      // sort by start_date so it lands between Teardown and Install regardless
+      // of whether the tasks carry department='install' (sales schedules
+      // clear department to suppress the subheaders, breaking the old
+      // dept-based splice trigger).
+      if (group.key === 'teardown_install' && shipAnchors.length) {
+        const cmp = (a, b) => {
+          const ad = String(a.start_date || '');
+          const bd = String(b.start_date || '');
+          if (ad && bd && ad !== bd) return ad < bd ? -1 : 1;
+          return (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
+        };
+        sectionTasks = [...sectionTasks, ...shipAnchors].sort(cmp);
       }
-      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
-        for (const s of shipAnchors) html += anchorRowHtml(s);
-      }
+      for (const t of sectionTasks) html += renderTaskRow(t, 2);
       // FAT anchors at the end of section 40 even in flatten mode (collapses with the section).
       if (group.key === 'machine_testing' && fatAnchors.length) {
         for (const f of fatAnchors) html += anchorRowHtml(f);
