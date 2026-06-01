@@ -9877,13 +9877,43 @@ async function openQuoteCompareModal(project, providedQuote) {
     updateApplyButtonState();
   }
 
+  // Returns the combined sales-mode rows that currently have >1 contributing
+  // task. These get auto-consolidated on Apply even when the user didn't
+  // edit Weeks/People/Quoted — opening the modal on a schedule with broken-out
+  // HMI/Robot/Vision and hitting Apply should still collapse them.
+  function pendingConsolidationRows() {
+    if (!isSales) return [];
+    const out = [];
+    for (const section of SECTIONS) {
+      for (const r of section.rows) {
+        if (!r.consolidateAs) continue;
+        const keys = r.keys || [r.k];
+        const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
+        if (taskIds.length > 1) out.push(r);
+      }
+    }
+    return out;
+  }
   function updateApplyButtonState() {
-    const hasPending = Object.keys(pendingPeople).length > 0
+    const hasEdits = Object.keys(pendingPeople).length > 0
       || Object.keys(pendingQuoted).length > 0
       || Object.keys(pendingWeeks).length > 0;
+    const consolidation = pendingConsolidationRows();
+    const hasPending = hasEdits || consolidation.length > 0;
     const btn = overlay.querySelector('#quote-apply-btn');
     const hint = overlay.querySelector('#quote-pending-hint');
-    if (btn) btn.disabled = !hasPending;
+    if (btn) {
+      btn.disabled = !hasPending;
+      // When the only "pending" thing is consolidation, surface it on the
+      // button so the user knows what Apply is about to do.
+      if (!hasEdits && consolidation.length > 0) {
+        btn.textContent = `Apply (consolidate ${consolidation.length} row${consolidation.length > 1 ? 's' : ''})`;
+        btn.title = 'Lump broken-out sub-tasks into a single task per combined row: ' + consolidation.map(r => r.label).join(', ');
+      } else {
+        btn.textContent = 'Apply';
+        btn.title = '';
+      }
+    }
     if (hint) hint.hidden = !hasPending;
   }
 
@@ -9956,9 +9986,29 @@ async function openQuoteCompareModal(project, providedQuote) {
       // Otherwise: detailed mode (or single-task bucket) just scales
       // duration_days proportionally across the existing tasks.
       let consolidatedCount = 0;
-      for (const [rowKey, newWeeks] of Object.entries(pendingWeeks)) {
+      // Build a unified list of rows to process:
+      //   - every row the user edited Weeks on
+      //   - every sales combined row with >1 contributing task (consolidates
+      //     even when the user didn't manually edit weeks)
+      const processedKeys = new Set();
+      const apply = [];
+      for (const [rowKey, w] of Object.entries(pendingWeeks)) {
         const r = rowsByKey[rowKey];
         if (!r) continue;
+        apply.push({ r, newWeeks: w });
+        processedKeys.add(rowKey);
+      }
+      for (const r of pendingConsolidationRows()) {
+        if (processedKeys.has(r.k)) continue;
+        // No explicit weeks edit — use the current totalWeeks for this row
+        // (computed from the current scheduled days across keys).
+        const keys = r.keys || [r.k];
+        const days = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const weeks = days > 0 ? days / 5 : 0;
+        apply.push({ r, newWeeks: weeks });
+        processedKeys.add(r.k);
+      }
+      for (const { r, newWeeks } of apply) {
         const keys = r.keys || [r.k];
         const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
         if (taskIds.length === 0) continue;
