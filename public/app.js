@@ -8877,6 +8877,19 @@ function handleRowContextMenu(e) {
       });
     }
   }
+  if (typeof openCommentPanel === 'function') {
+    items.push({
+      label: '💬 Comments…',
+      onClick: () => {
+        let taskName = `Task #${id}`;
+        try {
+          if (task && task.name) taskName = task.name;
+        } catch (_) {}
+        const project = (state.filters?.project) || '';
+        openCommentPanel({ id, name: taskName, project });
+      },
+    });
+  }
   items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
   showContextMenu(cx, cy, items);
 }
