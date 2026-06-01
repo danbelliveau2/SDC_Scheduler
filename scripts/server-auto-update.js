@@ -56,30 +56,21 @@ function storeSha(sha) {
   fs.writeFileSync(SHA_FILE, sha, 'utf8');
 }
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
-
 function fetchJson(url) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
-    const headers = {
-      'User-Agent': 'SDC-Tools-Scheduler-Updater/1.0',
-      'Accept':     'application/vnd.github.v3+json',
-    };
-    if (GITHUB_TOKEN) headers['Authorization'] = `Bearer ${GITHUB_TOKEN}`;
-    mod.get(url, { headers }, (res) => {
+    mod.get(url, {
+      headers: {
+        'User-Agent': 'SDC-Tools-Scheduler-Updater/1.0',
+        'Accept':     'application/vnd.github.v3+json',
+      },
+    }, (res) => {
       if (res.statusCode === 301 || res.statusCode === 302)
         return fetchJson(res.headers.location).then(resolve).catch(reject);
       let data = '';
       res.on('data', d => data += d);
       res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.message && !parsed.sha) {
-            reject(new Error(`GitHub API: ${parsed.message}`));
-          } else {
-            resolve(parsed);
-          }
-        }
+        try { resolve(JSON.parse(data)); }
         catch (e) { reject(new Error(`JSON parse failed: ${e.message}`)); }
       });
     }).on('error', reject);
@@ -119,13 +110,23 @@ async function checkAndUpdate() {
 
   let remoteSha;
   try {
-    const data = await fetchJson(
-      `https://api.github.com/repos/${GITHUB_REPO}/commits/${GITHUB_BRANCH}`
-    );
-    remoteSha = data.sha;
-  } catch (e) {
-    log(`GitHub API error: ${e.message}`);
-    return;
+    // Use git ls-remote — avoids GitHub API rate limits and DNS issues.
+    // Falls back to GitHub API if git is unavailable.
+    const lsOut = require('child_process').execSync(
+      `git ls-remote https://github.com/${GITHUB_REPO}.git refs/heads/${GITHUB_BRANCH}`,
+      { timeout: 15000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+    ).toString().trim();
+    remoteSha = lsOut.split(/\s+/)[0];
+  } catch (gitErr) {
+    try {
+      const data = await fetchJson(
+        `https://api.github.com/repos/${GITHUB_REPO}/commits/${GITHUB_BRANCH}`
+      );
+      remoteSha = data.sha;
+    } catch (e) {
+      log(`Could not read remote SHA: ${e.message}`);
+      return;
+    }
   }
 
   if (!remoteSha) { log('Could not read remote SHA.'); return; }
