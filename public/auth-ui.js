@@ -234,7 +234,9 @@ function _showChangePasswordModal() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      const body = await r.json();
+      let body;
+      try { body = await r.json(); }
+      catch (_) { throw new Error('Server error — please refresh the page and try again'); }
       if (!r.ok) throw new Error(body.error || 'Update failed');
       okEl.hidden = false;
       e.target.reset();
