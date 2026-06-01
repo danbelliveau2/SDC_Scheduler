@@ -70,8 +70,12 @@ async function syncRepo() {
 
     git(`commit -m "chore(scheduler): sync from danbelliveau2@${danSha}"`);
 
-    // Pull latest before push to avoid fast-forward failures
-    try { git('pull --rebase origin master'); } catch (e) { log(`Pull warning: ${e.message}`); }
+    // Pull latest before push — stash any unstaged changes first to avoid rebase block
+    try {
+      git('stash --include-untracked');
+      git('pull --rebase origin master');
+      git('stash pop');
+    } catch (e) { log(`Pull warning: ${e.message}`); }
 
     git('push origin master');
     log(`Committed and pushed scheduler sync (danbelliveau2@${danSha}).`);

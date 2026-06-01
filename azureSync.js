@@ -106,7 +106,9 @@ async function _pullFromAzure() {
 
   // Write everything to SQLite in a single transaction — atomic, so concurrent
   // reads never see a half-empty table between the DELETE and re-insert.
-  db.transaction(() => {
+  // Uses explicit BEGIN/COMMIT for compatibility with node:sqlite and better-sqlite3.
+  db.exec('BEGIN');
+  try {
     // tasks
     db.exec('DELETE FROM tasks');
     const insT = db.prepare(`
@@ -175,7 +177,12 @@ async function _pullFromAzure() {
       insC.run(c.id, c.task_id, c.project, c.author_id, c.author_name,
         c.body, c.mentions, c.created_at, c.updated_at);
     }
-  })();
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 
   console.log(`[AzureSync] Pulled ${tasks.length} tasks, ${members.length} members, ${projects.length} projects, ${comments.length} comments from Azure SQL.`);
 }
