@@ -87,11 +87,15 @@ app.use(compression());
 
 app.use(express.json({ limit: '10mb' }));
 
-// Static assets: versioned files get long cache; HTML stays no-store so reloads
-// always pick up the latest app.js / styles.css without a hard-refresh.
+// Static assets: use `no-cache` (NOT no-store) so the browser revalidates
+// every request via ETag / Last-Modified. Server returns 304 when nothing
+// has changed (no bytes transferred), and full 200 when a file moves —
+// so every push from origin/main shows up on next refresh without users
+// having to hard-refresh past a 1-hour stale cache window. HTML stays
+// no-store to guarantee the shell reloads cleanly.
 app.use((req, res, next) => {
   if (req.path.match(/\.(js|css|svg|png|jpg|ico|woff2?)(\?|$)/)) {
-    res.set('Cache-Control', 'public, max-age=3600'); // 1 hour for assets
+    res.set('Cache-Control', 'no-cache');
   } else {
     res.set('Cache-Control', 'no-store');
   }
