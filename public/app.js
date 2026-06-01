@@ -4736,21 +4736,13 @@ function drawMilestoneDiamonds() {
       dStroke = '#1574c4'; // SDC primary
       dStrokeW = '1.5';
     }
-    // Done milestone: override the fill with SDC lime so the diamond visibly
-    // matches the lime border / hash overlay we use on completed duration
-    // bars. Anchors keep their normal lime fill but switch to a darker
-    // forest-green stroke so the "done" anchor still reads as distinct from
-    // a fresh anchor (which uses the slate anchor-text stroke). Non-anchor
-    // milestones flip from slate to lime entirely.
+    // Done milestone: KEEP the diamond's original fill (slate for non-anchor,
+    // lime for anchor) — flipping the whole shape green made a done non-anchor
+    // look identical to a fresh anchor, which is exactly the wrong signal.
+    // Done state is communicated by a deep-green stroke + the ✓ overlay only.
     if (isDone) {
-      if (isAnchor) {
-        dStroke  = '#1d4220';   // deep green stroke marks "done" anchor
-        dStrokeW = '2';
-      } else {
-        dFill    = '#befa4f';   // SDC lime fill
-        dStroke  = '#1d4220';   // deep green stroke for contrast
-        dStrokeW = '1.75';
-      }
+      dStroke  = '#1d4220';     // deep forest-green border
+      dStrokeW = '2';
     }
     diamond.setAttribute('fill',   dFill);
     diamond.setAttribute('stroke', dStroke);
@@ -4758,8 +4750,12 @@ function drawMilestoneDiamonds() {
     wrap.appendChild(diamond);
 
     // Checkmark glyph rendered on top of the diamond for done milestones.
-    // Sized to fit comfortably inside the inner shape, centered. Color is
-    // dark slate — reads cleanly on the lime fill (whether anchor or not).
+    // Sized at ~55% of the diamond — the diamond's inscribed square is only
+    // ~0.71×size, so a 0.9×size glyph spilled to the points and looked aligned
+    // with the diamond outline rather than centered inside it. 0.55 leaves
+    // clear breathing room on all four sides so the ✓ reads as "inside the
+    // shape" instead of "stretched across the shape." Color is dark slate
+    // (anchor lime fill) or white (non-anchor slate fill) for contrast.
     if (isDone) {
       const check = document.createElementNS(SVG_NS, 'text');
       check.setAttribute('x', cx);
@@ -4767,8 +4763,8 @@ function drawMilestoneDiamonds() {
       check.setAttribute('class', 'milestone-check');
       check.setAttribute('text-anchor', 'middle');
       check.setAttribute('dominant-baseline', 'central');
-      check.setAttribute('fill', CHECK_COLOR);
-      check.setAttribute('font-size', String(Math.round(size * 0.9)));
+      check.setAttribute('fill', isAnchor ? CHECK_COLOR : '#ffffff');
+      check.setAttribute('font-size', String(Math.round(size * 0.55)));
       check.setAttribute('font-weight', '900');
       check.setAttribute('pointer-events', 'none');
       check.textContent = '✓';
