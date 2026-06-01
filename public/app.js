@@ -3881,16 +3881,23 @@ function renderProjectStatsPopup() {
   const scopeHeader = hasMultiMachine
     ? `<div class="popup-scope">${escapeHtml(scopeLabel)}</div>`
     : '';
+  // Sales projects are estimates, not live work — there's no real
+  // % complete to roll up, so drop the Complete row entirely on the
+  // Sales workspace. Duration + FAT still show because those are
+  // schedule-level facts the user always wants.
+  const isSalesProject = projectWorkspace(project) === 'Sales';
+  const completeRow = isSalesProject ? '' : `
+    <div class="popup-row">
+      <span class="popup-label">Complete</span>
+      <span class="popup-value" title="Labor-weighted across ${activeMachine || 'all'} tasks: SUM(duration × progress) ÷ SUM(duration).">${pctLabel}</span>
+    </div>`;
   popup.innerHTML = `
     ${scopeHeader}
     <div class="popup-row">
       <span class="popup-label">Duration</span>
       <span class="popup-value" title="Receipt of PO → ${activeMachine ? activeMachine + '.' : ''}FAT, in calendar weeks (rounded).">${durationLabel}${machineDeltaChip}</span>
     </div>
-    <div class="popup-row">
-      <span class="popup-label">Complete</span>
-      <span class="popup-value" title="Labor-weighted across ${activeMachine || 'all'} tasks: SUM(duration × progress) ÷ SUM(duration).">${pctLabel}</span>
-    </div>
+    ${completeRow}
     <div class="popup-row">
       <span class="popup-label">FAT</span>
       <span class="popup-value" title="${activeMachine ? activeMachine + '.' : ''}FAT anchor start date. Chip on the right shows baseline variance, if a baseline is set.">
