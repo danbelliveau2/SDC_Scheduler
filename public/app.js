@@ -9620,18 +9620,26 @@ async function openQuoteCompareModal(project, providedQuote) {
   // single "Test and Debug Machine" row to keep the timeline readable.
   // FAT and Ship Machine show as milestone markers (info rows) so the modal
   // mirrors the schedule structure end-to-end.
+  // `consolidateAs` (sales mode only): when the user clicks Apply and the
+  // schedule has more than one task contributing to this combined row, the
+  // extra tasks are DELETED and the survivor is renamed to this canonical
+  // name. Matches the SDC_Sales_Template naming so a multi-task project
+  // collapses to the same shape as a freshly-stamped sales schedule.
   const SECTIONS_SALES = [
     {
       title: 'Section 10 — Design & Build',
       rows: [
         { k: 'mech_eng',       label: 'Mechanical Design' },
         { k: 'ce_engineering', label: 'Controls Design',
-          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'] },
+          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'],
+          consolidateAs: 'Controls Design and Machine Software' },
         { k: 'gen_engineering', label: 'Device Programming',
-          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'] },
+          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'],
+          consolidateAs: 'Device Programming' },
         { k: 'build',          label: 'Mechanical Assembly' },
         { k: 'elec_build',     label: 'Electrical Assembly',
-          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'] },
+          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'],
+          consolidateAs: 'Electrical Assembly/Machine Wiring' },
       ],
     },
     {
@@ -9641,7 +9649,8 @@ async function openQuoteCompareModal(project, providedQuote) {
         // Test/Debug Machine — single row covering BOTH the engineering and
         // shop sides of section 40 testing.
         { k: 'test_debug', label: 'Test and Debug Machine',
-          keys: ['test_debug', 'shop_debug'] },
+          keys: ['test_debug', 'shop_debug'],
+          consolidateAs: 'Test/Debug Machine' },
         // FAT — milestone anchor. Shows as an info row with no hours.
         { k: 'fat',        label: 'FAT', milestone: true },
       ],
@@ -9941,29 +9950,65 @@ async function openQuoteCompareModal(project, providedQuote) {
           body: JSON.stringify(updated),
         });
       }
-      // 2) Weeks → task duration_days (proportional across multi-task buckets)
+      // 2) Weeks → task duration_days (and optionally consolidation).
+      // Sales mode + a row with consolidateAs + 2+ tasks in the bucket →
+      // collapse to a single task whose duration matches the new weeks.
+      // Otherwise: detailed mode (or single-task bucket) just scales
+      // duration_days proportionally across the existing tasks.
+      let consolidatedCount = 0;
       for (const [rowKey, newWeeks] of Object.entries(pendingWeeks)) {
         const r = rowsByKey[rowKey];
         if (!r) continue;
         const keys = r.keys || [r.k];
         const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
         if (taskIds.length === 0) continue;
-        const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
         const newDays = newWeeks * 5;
-        if (taskIds.length === 1 || currentTotalDays === 0) {
+
+        const shouldConsolidate = isSales && r.consolidateAs && taskIds.length > 1;
+        if (shouldConsolidate) {
+          // Pick the survivor: prefer a task whose name already matches the
+          // canonical consolidated name; otherwise take the lowest-id task
+          // (deterministic, won't pick a clone). Rename + resize the
+          // survivor; delete the rest.
+          const tasks = taskIds
+            .map(id => state.tasks.find(x => x.id === id))
+            .filter(Boolean);
+          let survivor = tasks.find(t => (t.name || '').trim() === r.consolidateAs);
+          if (!survivor) survivor = tasks.reduce((a, b) => (a.id <= b.id ? a : b));
+          await api.update(survivor.id, {
+            duration_days: newDays,
+            name: r.consolidateAs,
+          });
+          for (const t of tasks) {
+            if (t.id === survivor.id) continue;
+            await api.remove(t.id);
+            consolidatedCount++;
+          }
+        } else if (taskIds.length === 1) {
           await api.update(taskIds[0], { duration_days: newDays });
         } else {
-          for (const id of taskIds) {
-            const t = state.tasks.find(x => x.id === id);
-            if (!t) continue;
-            const oldD = Number(t.duration_days) || 0;
-            const scaled = (oldD / currentTotalDays) * newDays;
-            await api.update(id, { duration_days: scaled });
+          // Multi-task bucket without consolidation (detailed mode, or a
+          // sales row without a canonical target) — scale proportionally
+          // so each contributing task keeps its share of the total.
+          const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+          if (currentTotalDays === 0) {
+            await api.update(taskIds[0], { duration_days: newDays });
+          } else {
+            for (const id of taskIds) {
+              const t = state.tasks.find(x => x.id === id);
+              if (!t) continue;
+              const oldD = Number(t.duration_days) || 0;
+              const scaled = (oldD / currentTotalDays) * newDays;
+              await api.update(id, { duration_days: scaled });
+            }
           }
         }
       }
       await loadTasks();
-      showToast('Schedule updated.', { kind: 'success' });
+      const msg = consolidatedCount > 0
+        ? `Schedule updated — ${consolidatedCount} task(s) consolidated.`
+        : 'Schedule updated.';
+      showToast(msg, { kind: 'success' });
       close();
     } catch (err) {
       showToast('Failed to apply: ' + (err.message || err), { kind: 'error' });
