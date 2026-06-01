@@ -37,9 +37,12 @@ let emailSvc;
 try { emailSvc = require('./emailService'); }
 catch (_) { emailSvc = { sendMentionEmail: () => {}, sendDigest: () => {} }; }
 
-// Fire-and-forget Azure sync after writes — never blocks the HTTP response.
-function sync(...tables) {
-  for (const t of tables) azureSync.syncTable(t);
+// Await Azure SQL sync after every write — Azure SQL is the primary store.
+// Errors are caught and logged so a transient Azure outage never breaks the response.
+async function sync(...tables) {
+  await Promise.all(tables.map(t => azureSync.syncTable(t).catch(err =>
+    console.warn(`[sync] ${t} failed (non-fatal):`, err.message)
+  )));
 }
 
 const app = express();
@@ -389,7 +392,7 @@ app.get('/api/tasks', (req, res) => {
   res.json(tasks);
 });
 
-app.post('/api/tasks', requireRole('editor'), (req, res) => {
+app.post('/api/tasks', requireRole('editor'), async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
 
@@ -457,10 +460,10 @@ app.post('/api/tasks', requireRole('editor'), (req, res) => {
   logHistory(task.id, task.project, 'create', null, null, task, null);
   res.json(task);
   io.emit('tasks:updated', { project: task.project || null });
-  sync('tasks');
+  await sync('tasks');
 });
 
-app.put('/api/tasks/:id', requireRole('editor'), (req, res) => {
+app.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -575,10 +578,10 @@ app.put('/api/tasks/:id', requireRole('editor'), (req, res) => {
   logHistory(id, updated.project, 'update', null, existing, updated, null);
   res.json(updated);
   io.emit('tasks:updated', { project: updated.project || null });
-  sync('tasks');
+  await sync('tasks');
 });
 
-app.delete('/api/tasks/:id', requireRole('editor'), (req, res) => {
+app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   // Capture full row BEFORE delete so the audit trail can show what was there.
   const before = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
@@ -598,7 +601,7 @@ app.delete('/api/tasks/:id', requireRole('editor'), (req, res) => {
   cascadeSchedule();
   res.json({ ok: true });
   io.emit('tasks:updated', { project: before?.project || null });
-  sync('tasks');
+  await sync('tasks');
 });
 
 app.get('/api/settings', (req, res) => {
@@ -610,7 +613,7 @@ app.get('/api/settings', (req, res) => {
   res.json(out);
 });
 
-app.put('/api/settings/:key', requireRole('admin'), (req, res) => {
+app.put('/api/settings/:key', requireRole('admin'), async (req, res) => {
   const key = req.params.key;
   const value = JSON.stringify(req.body);
   db.prepare(`
@@ -619,7 +622,7 @@ app.put('/api/settings/:key', requireRole('admin'), (req, res) => {
   `).run(key, value);
   res.json({ ok: true });
   io.emit('settings:updated', { key });
-  sync('settings');
+  await sync('settings');
 });
 
 // ---------- Team members ----------
@@ -630,7 +633,7 @@ app.get('/api/team', (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/team', requireRole('editor'), (req, res) => {
+app.post('/api/team', requireRole('editor'), async (req, res) => {
   const name = (req.body.name || '').trim();
   const discipline = req.body.discipline;
   if (!name) return res.status(400).json({ error: 'name required' });
@@ -640,10 +643,10 @@ app.post('/api/team', requireRole('editor'), (req, res) => {
   const row = db.prepare('SELECT * FROM team_members WHERE id = ?').get(result.lastInsertRowid);
   res.json(row);
   io.emit('team:updated');
-  sync('team_members');
+  await sync('team_members');
 });
 
-app.put('/api/team/:id', requireRole('editor'), (req, res) => {
+app.put('/api/team/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -662,25 +665,25 @@ app.put('/api/team/:id', requireRole('editor'), (req, res) => {
   // If name changed, propagate to existing tasks so the existing assignee strings stay consistent.
   if (updates.name && updates.name !== existing.name) {
     db.prepare('UPDATE tasks SET assignee = ? WHERE assignee = ?').run(updates.name, existing.name);
-    sync('tasks');
+    await sync('tasks');
   }
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE team_members SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
   const updated = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
   res.json(updated);
   io.emit('team:updated');
-  sync('team_members');
+  await sync('team_members');
 });
 
-app.delete('/api/team/:id', requireRole('editor'), (req, res) => {
+app.delete('/api/team/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM team_members WHERE id = ?').run(id);
   res.json({ ok: true });
   io.emit('team:updated');
-  sync('team_members');
+  await sync('team_members');
 });
 
-app.post('/api/team/reorder', requireRole('editor'), (req, res) => {
+app.post('/api/team/reorder', requireRole('editor'), async (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
   const stmt = db.prepare('UPDATE team_members SET sort_order = ? WHERE id = ?');
@@ -695,7 +698,7 @@ app.post('/api/team/reorder', requireRole('editor'), (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/tasks/reorder', requireRole('editor'), (req, res) => {
+app.post('/api/tasks/reorder', requireRole('editor'), async (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
 
@@ -814,7 +817,7 @@ function parseSmartsheetDate(val) {
   return null;
 }
 
-app.post('/api/import/smartsheet', requireRole('admin'), (req, res) => {
+app.post('/api/import/smartsheet', requireRole('admin'), async (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const file = req.body.file;
@@ -1094,7 +1097,7 @@ app.post('/api/import/smartsheet', requireRole('admin'), (req, res) => {
       tasksCreated: items.length,
       addedMembers,
     });
-    sync('tasks', 'team_members');
+    await sync('tasks', 'team_members');
   } catch (err) {
     console.error('Smartsheet import failed:', err);
     res.status(500).json({ error: err.message || 'Import failed' });
@@ -1258,7 +1261,7 @@ function parseEstimateWorkbook(buf) {
   };
 }
 
-app.post('/api/estimate/parse', requireRole('editor'), (req, res) => {
+app.post('/api/estimate/parse', requireRole('editor'), async (req, res) => {
   try {
     const file = req.body.file;
     if (!file) return res.status(400).json({ error: 'file (base64) required' });
@@ -1329,7 +1332,7 @@ app.get('/api/project/:project/quote', (req, res) => {
 // Attach (or replace) the saved quote on an existing project. Lets a user pick
 // the estimate xlsx in the Quote vs Schedule modal and persist it without
 // re-creating the project.
-app.post('/api/project/:project/quote', requireRole('editor'), (req, res) => {
+app.post('/api/project/:project/quote', requireRole('editor'), async (req, res) => {
   const key = `project_quote:${req.params.project}`;
   const value = JSON.stringify(req.body || {});
   db.prepare(`
@@ -1338,12 +1341,12 @@ app.post('/api/project/:project/quote', requireRole('editor'), (req, res) => {
   `).run(key, value);
   res.json({ ok: true });
 });
-app.delete('/api/project/:project/quote', requireRole('editor'), (req, res) => {
+app.delete('/api/project/:project/quote', requireRole('editor'), async (req, res) => {
   db.prepare('DELETE FROM settings WHERE key = ?').run(`project_quote:${req.params.project}`);
   res.json({ ok: true });
 });
 
-app.post('/api/estimate/create', requireRole('admin'), (req, res) => {
+app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const poDate      = (req.body.po_date || '').toString().trim();
@@ -1879,7 +1882,7 @@ app.post('/api/estimate/create', requireRole('admin'), (req, res) => {
             ? `Computed FAT is ${Math.abs(scheduleVariance)} days BEFORE the quoted date — testing was extended to absorb slack but couldn't fill the full window. Check schedule.`
             : 'Schedule fits the delivery window.',
     });
-    sync('tasks', 'settings');
+    await sync('tasks', 'settings');
   } catch (err) {
     console.error('Estimate create failed:', err);
     res.status(500).json({ error: err.message || 'Create failed' });
@@ -1900,7 +1903,7 @@ app.post('/api/estimate/create', requireRole('admin'), (req, res) => {
 //     of the rows created/updated in this import so cross-row refs stay valid
 //   • all other fields default gracefully when missing
 
-app.post('/api/import/schedule', requireRole('admin'), (req, res) => {
+app.post('/api/import/schedule', requireRole('admin'), async (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
     const file        = req.body.file;   // base64 string
@@ -2038,7 +2041,7 @@ app.post('/api/import/schedule', requireRole('admin'), (req, res) => {
 
     const inserted = dataRows.length;
     res.json({ ok: true, project: projectName, inserted, mode });
-    sync('tasks', 'projects');
+    await sync('tasks', 'projects');
   } catch (err) {
     console.error('[import/schedule]', err);
     res.status(500).json({ error: err.message });
@@ -2052,7 +2055,7 @@ app.post('/api/import/schedule', requireRole('admin'), (req, res) => {
 // the Gantt and shows a drift chip so the user can see how much each bar has
 // moved relative to the snapshot.
 
-app.post('/api/baseline/set', requireRole('editor'), (req, res) => {
+app.post('/api/baseline/set', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const result = db.prepare(`
@@ -2062,10 +2065,10 @@ app.post('/api/baseline/set', requireRole('editor'), (req, res) => {
     WHERE project = ?
   `).run(project);
   res.json({ ok: true, baselined: result.changes });
-  sync('tasks');
+  await sync('tasks');
 });
 
-app.post('/api/baseline/clear', requireRole('editor'), (req, res) => {
+app.post('/api/baseline/clear', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const result = db.prepare(`
@@ -2075,7 +2078,7 @@ app.post('/api/baseline/clear', requireRole('editor'), (req, res) => {
     WHERE project = ?
   `).run(project);
   res.json({ ok: true, cleared: result.changes });
-  sync('tasks');
+  await sync('tasks');
 });
 
 // ---------- Multi-machine: duplicate one machine's tasks into another ----------
@@ -2097,7 +2100,7 @@ app.post('/api/baseline/clear', requireRole('editor'), (req, res) => {
 // predecessor strings — typically used to add a cross-machine link
 // ("M2.Wire waits for M1.Wire"). The override is treated as-is (already
 // expressed as task IDs), so it points at exactly what the user typed.
-app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), (req, res) => {
+app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), async (req, res) => {
   const project = req.params.project;
   const {
     sourceMachine,
@@ -2289,7 +2292,7 @@ app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), (req
 // We also clear `anchor_key` first so the regular DELETE guard (which
 // protects anchor rows) doesn't block us — deleting a whole machine
 // should remove ALL of its rows, including its FAT / Ship / PowerUp.
-app.delete('/api/projects/:project/machines/:machine', requireRole('editor'), (req, res) => {
+app.delete('/api/projects/:project/machines/:machine', requireRole('editor'), async (req, res) => {
   const project = req.params.project;
   const machine = req.params.machine;
   if (!project || !machine) {
@@ -2361,7 +2364,7 @@ app.get('/api/tasks/:id/comments', (req, res) => {
 // the author is anonymous. @Name mentions are detected against active
 // team_members. Notifications are dropped to a notification_log row
 // for future email delivery (Phase 6).
-app.post('/api/tasks/:id/comments', requireRole('viewer'), (req, res) => {
+app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
   const taskId = Number(req.params.id);
   const task = db.prepare('SELECT name, project FROM tasks WHERE id = ?').get(taskId);
   if (!task) return res.status(404).json({ error: 'task not found' });
@@ -2425,7 +2428,7 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), (req, res) => {
 
 // Delete a comment. Until auth lands anyone can delete (single-user
 // trust model); Phase 3 adds an own-comment-or-admin gate.
-app.delete('/api/comments/:id', requireRole('viewer'), (req, res) => {
+app.delete('/api/comments/:id', requireRole('viewer'), async (req, res) => {
   const id = Number(req.params.id);
   const comment = db.prepare('SELECT * FROM task_comments WHERE id = ?').get(id);
   if (!comment) return res.status(404).json({ error: 'not found' });
@@ -2466,7 +2469,7 @@ app.get('/api/financials', (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/financials', requireRole('editor'), (req, res) => {
+app.post('/api/financials', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const name = (req.body.name || '').toString().trim();
@@ -2488,10 +2491,10 @@ app.post('/api/financials', requireRole('editor'), (req, res) => {
   );
   const row = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(result.lastInsertRowid);
   res.json(row);
-  sync('project_financials');
+  await sync('project_financials');
 });
 
-app.put('/api/financials/:id', requireRole('editor'), (req, res) => {
+app.put('/api/financials/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -2509,20 +2512,20 @@ app.put('/api/financials/:id', requireRole('editor'), (req, res) => {
   db.prepare(`UPDATE project_financials SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
   const row = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(id);
   res.json(row);
-  sync('project_financials');
+  await sync('project_financials');
 });
 
-app.delete('/api/financials/:id', requireRole('editor'), (req, res) => {
+app.delete('/api/financials/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   db.prepare('DELETE FROM project_financials WHERE id = ?').run(id);
   res.json({ ok: true });
-  sync('project_financials');
+  await sync('project_financials');
 });
 
 // Seed the default financial milestones onto a project that has none yet. Idempotent:
 // running this on a project that already has any financials is a no-op. Reads the
 // defaults from the default_financial_milestones setting (editable on Setup).
-app.post('/api/financials/seed', requireRole('editor'), (req, res) => {
+app.post('/api/financials/seed', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const existing = db.prepare('SELECT COUNT(*) AS n FROM project_financials WHERE project = ?').get(project).n;
@@ -2581,7 +2584,7 @@ app.get('/api/projects', (_req, res) => {
   res.json(rows);
 });
 
-app.post('/api/projects', requireRole('editor'), (req, res) => {
+app.post('/api/projects', requireRole('editor'), async (req, res) => {
   const name = (req.body.name || '').toString().trim();
   if (!name) return res.status(400).json({ error: 'name required' });
   const existing = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
@@ -2598,11 +2601,11 @@ app.post('/api/projects', requireRole('editor'), (req, res) => {
   );
   const row = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
   res.status(201).json(row);
-  sync('projects');
+  await sync('projects');
   notifyClients('projects_changed');
 });
 
-app.put('/api/projects/:id', requireRole('editor'), (req, res) => {
+app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -2620,18 +2623,18 @@ app.put('/api/projects/:id', requireRole('editor'), (req, res) => {
   if (updates.name && updates.name !== existing.name) {
     db.prepare('UPDATE tasks SET project = ? WHERE project = ?').run(updates.name, existing.name);
     db.prepare('UPDATE project_financials SET project = ? WHERE project = ?').run(updates.name, existing.name);
-    sync('tasks', 'project_financials');
+    await sync('tasks', 'project_financials');
   }
 
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   db.prepare(`UPDATE projects SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
   res.json(row);
-  sync('projects');
+  await sync('projects');
   notifyClients('projects_changed');
 });
 
-app.delete('/api/projects/:id', requireRole('admin'), (req, res) => {
+app.delete('/api/projects/:id', requireRole('admin'), async (req, res) => {
   const id = Number(req.params.id);
   const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
   if (!existing) return res.status(404).json({ error: 'not found' });
@@ -2639,13 +2642,13 @@ app.delete('/api/projects/:id', requireRole('admin'), (req, res) => {
   db.prepare('DELETE FROM project_financials WHERE project = ?').run(existing.name);
   db.prepare('DELETE FROM projects WHERE id = ?').run(id);
   res.json({ ok: true });
-  sync('tasks', 'project_financials', 'projects');
+  await sync('tasks', 'project_financials', 'projects');
   notifyClients('projects_changed');
 });
 
 // Ensure a project record exists for a given name (idempotent). Used by the
 // frontend after loading tasks to register any project name not yet in the table.
-app.post('/api/projects/ensure', requireRole('editor'), (req, res) => {
+app.post('/api/projects/ensure', requireRole('editor'), async (req, res) => {
   const name = (req.body.name || '').toString().trim();
   if (!name) return res.status(400).json({ error: 'name required' });
   db.prepare('INSERT OR IGNORE INTO projects (name) VALUES (?)').run(name);
@@ -2663,7 +2666,7 @@ app.get('/api/users', requireRole('admin'), (_req, res) => {
   ).all());
 });
 
-app.post('/api/users', requireRole('admin'), (req, res) => {
+app.post('/api/users', requireRole('admin'), async (req, res) => {
   const { email, name, password, role = 'editor', avatar_color = '#1574c4' } = req.body || {};
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
   if (!['viewer', 'editor', 'admin'].includes(role)) return res.status(400).json({ error: 'invalid role' });
@@ -2682,7 +2685,7 @@ app.post('/api/users', requireRole('admin'), (req, res) => {
   }
 });
 
-app.put('/api/users/:id', requireRole('admin'), (req, res) => {
+app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const id = Number(req.params.id);
   const u  = db.prepare('SELECT * FROM users WHERE id=?').get(id);
   if (!u) return res.status(404).json({ error: 'not found' });
@@ -2700,7 +2703,7 @@ app.put('/api/users/:id', requireRole('admin'), (req, res) => {
   res.json(db.prepare('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?').get(id));
 });
 
-app.delete('/api/users/:id', requireRole('admin'), (req, res) => {
+app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
   // Soft-delete — flip active=0 instead of removing the row so historical
   // comments / audit-trail entries authored by this user keep attribution.
   db.prepare('UPDATE users SET active=0 WHERE id=?').run(Number(req.params.id));
