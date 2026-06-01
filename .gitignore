@@ -29,3 +29,7 @@ Smartsheet Schedules/
 .env
 .env.local
 .env.*.local
+azure-backup-*.json
+
+# Auto-updater sync state — runtime, not source
+.update-sha

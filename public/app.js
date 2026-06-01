@@ -1,8 +1,43 @@
 const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
-  create: (data) => fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
-  update: (id, data) => fetch(`/api/tasks/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
-  remove: (id) => fetch(`/api/tasks/${id}`, { method: 'DELETE' }).then(r => r.json()),
+  create: (data) => {
+    window._lastLocalEdit = Date.now();
+    return fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+  },
+  // Phase 5 (conflict detection) wrapper: inject the current version from
+  // state.tasks so the server can detect "somebody else saved first" and
+  // return 409. On 409, surface a toast + trigger a refresh so the user
+  // sees the latest data instead of overwriting it.
+  update: async (id, data) => {
+    window._lastLocalEdit = Date.now();
+    if (data && data.version == null) {
+      try {
+        const current = (typeof state !== 'undefined' && state.tasks)
+          ? state.tasks.find(t => t.id === id) : null;
+        if (current && current.version != null) data = { ...data, version: current.version };
+      } catch (_) {}
+    }
+    const r = await fetch(`/api/tasks/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const body = await r.json();
+    if (r.status === 409) {
+      if (typeof showToast === 'function') {
+        showToast('Someone else just edited this row. Reloading…', { kind: 'warn' });
+      }
+      try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
+      // Hand the server's authoritative row back to the caller so chained
+      // .then() consumers don't choke on undefined.
+      return body.server_row || body;
+    }
+    return body;
+  },
+  remove: (id) => {
+    window._lastLocalEdit = Date.now();
+    return fetch(`/api/tasks/${id}`, { method: 'DELETE' }).then(r => r.json());
+  },
   getSettings: () => fetch('/api/settings').then(r => r.json()),
   putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(r => r.json()),
   team: {
@@ -419,8 +454,12 @@ if (window.Gantt && !Gantt.prototype._sdcPatched) {
 // from "show me everything" all the way to "show me one day" without picking a mode.
 const VIEW_MODE_BASE_CW = { Day: 38, Week: 140, Month: 120 };
 const VIEW_MODE_STEP_DAYS = { Day: 1, Week: 7, Month: 30 };
-const ZOOM_MIN = 5;
-const ZOOM_MAX = 500;
+// Wheel + setZoom() clamp to the SAME range as the friendly 1-10
+// stepper so the user can't scroll past either end. ZOOM_MIN_PCT and
+// ZOOM_MAX_PCT below mirror this so the friendly stepper stays in
+// sync — adjust both together if you change the range.
+const ZOOM_MIN = 10;
+const ZOOM_MAX = 145;
 const ZOOM_STEP = 10;
 
 // 100% = 20 px/day (matches frappe-gantt's Week default of 140 / 7).
@@ -2475,7 +2514,15 @@ function parseDurationInput(s) {
   const n = parseFloat(m[1]);
   const unit = m[2] || 'd';
   // Duration is in BUSINESS days. "1w" = 5 business days (Mon–Fri), "3d" = 3.
-  return Math.round(unit === 'w' ? n * 5 : n);
+  // Weeks support half-week granularity (0.5w = 2.5 days, 1.5w = 7.5 days).
+  // Days input always rounds to whole days — fractional days don't make
+  // sense in our work-day grid (you can't end mid-day).
+  if (unit === 'w') {
+    // Snap to 0.5-week increments — SDC doesn't think in finer than half weeks.
+    const halfWeeks = Math.round(n * 2);
+    return halfWeeks * 2.5;
+  }
+  return Math.round(n);
 }
 
 // ---------- Column reorder (drag-and-drop) ----------
@@ -3029,65 +3076,94 @@ function compressGanttToWorkDays() {
 
     // Walk Mondays from the first full-week Monday through the chart's
     // right edge. For each Monday: draw a label + a vertical tick line.
+    //
+    // Adaptive density rules (all-or-nothing — never every-other):
+    //   weekW = 5 * pxPerDay (one full work-week wide on screen).
+    //   - weekW >= 25px: date numbers shown (kicks in ~zoom 3)
+    //   - weekW <  25px: date numbers SKIPPED (would crowd & overlap)
+    //   For month names, computed AFTER walking based on each month's
+    //   visible width — if < 70px, switch to short "Nov" form; if even
+    //   that doesn't fit, fall back to truncated text.
     const startMs = new Date(ganttStart).getTime();
     const startDow = new Date(startMs).getUTCDay();
     const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
+    const weekW = 5 * pxPerDay;
+    const showDateNumbers = weekW >= 25;
     let walkMs = startMs + daysToFirstMonday * 86400000;
     let lastMonthLabel = '';
-    let lastMonthStartX = -1;
-    const monthLabels = []; // [{ x, label, endX }]
+    const monthLabels = []; // [{ startX, label, monthIndex, endX }]
     while (true) {
       const walkDate = new Date(walkMs);
       const dateStr = walkDate.toISOString().slice(0, 10);
       const mondayX = workDayOffset(dateStr, ganttStart) * pxPerDay;
       if (mondayX > (+svg.getAttribute('width') || 8000)) break;
-      // Date label (day of month, with leading zero stripped)
-      const dayNum = walkDate.getUTCDate();
-      const text = document.createElementNS(SVG_NS, 'text');
-      text.setAttribute('class', 'lower-text');
-      text.setAttribute('x', String(mondayX));
-      text.setAttribute('y', String(lowerY));
-      text.style.fontFamily = 'sans-serif';
-      text.style.fontSize = '12px';
-      text.style.fontWeight = '500';
-      text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('fill', '#475569');
-      text.textContent = String(dayNum);
-      svg.appendChild(text);
-      // Solid tick line at Monday
+      // Date number — only when there's enough room. All-or-nothing
+      // (every Monday, or none).
+      if (showDateNumbers) {
+        const dayNum = walkDate.getUTCDate();
+        const text = document.createElementNS(SVG_NS, 'text');
+        text.setAttribute('class', 'lower-text');
+        text.setAttribute('x', String(mondayX));
+        text.setAttribute('y', String(lowerY));
+        text.style.fontFamily = 'sans-serif';
+        text.style.fontSize = '12px';
+        text.style.fontWeight = '500';
+        text.setAttribute('text-anchor', 'middle');
+        text.setAttribute('fill', '#475569');
+        text.textContent = String(dayNum);
+        svg.appendChild(text);
+      }
+      // Solid tick line at Monday. Use a tall fixed height (10000) instead
+      // of svgH — alignGanttToGrid (called LATER in the render chain) can
+      // grow the SVG to match the grid, and we'd otherwise leave the
+      // ticks too short. SVG clips anything past the viewBox naturally.
       const tick = document.createElementNS(SVG_NS, 'path');
       tick.setAttribute('class', 'tick thick');
-      tick.setAttribute('d', `M ${mondayX} ${tickTop} v ${svgH - tickTop}`);
+      tick.setAttribute('d', `M ${mondayX} ${tickTop} v 10000`);
       tick.setAttribute('stroke', '#cbd5e1');
       tick.setAttribute('stroke-width', '1');
       svg.insertBefore(tick, svg.firstChild);
       // Track month transition for the upper strip
       const monthName = walkDate.toLocaleString(undefined, { month: 'long', timeZone: 'UTC' });
+      const monthShort = walkDate.toLocaleString(undefined, { month: 'short', timeZone: 'UTC' });
       if (monthName !== lastMonthLabel) {
-        if (lastMonthLabel) monthLabels[monthLabels.length - 1].endX = mondayX;
-        monthLabels.push({ x: mondayX, label: monthName, endX: 0 });
+        if (monthLabels.length) monthLabels[monthLabels.length - 1].endX = mondayX;
+        monthLabels.push({ startX: mondayX, label: monthName, short: monthShort, endX: 0 });
         lastMonthLabel = monthName;
-        lastMonthStartX = mondayX;
       }
       walkMs += 7 * 86400000;
     }
     // Close the last month label
     if (monthLabels.length) {
-      monthLabels[monthLabels.length - 1].endX = +svg.getAttribute('width') || (lastMonthStartX + 400);
+      monthLabels[monthLabels.length - 1].endX = +svg.getAttribute('width') || (monthLabels[monthLabels.length - 1].startX + weekW * 4);
     }
-    // Draw month strip
+    // Draw month strip with adaptive label form. Measure each month's
+    // available width and pick: full name / short name / single letter /
+    // hidden. Truncate with a left-anchored ellipsis if even single
+    // letters can't fit (rare).
     for (const m of monthLabels) {
+      const w = m.endX - m.startX;
+      // Estimated character width at 13px sans-serif: ~7px per character.
+      const fullW  = m.label.length * 7 + 8;
+      const shortW = m.short.length * 7 + 8;
+      let labelText = '';
+      let fontSize = '13px';
+      if (w >= fullW)       labelText = m.label;
+      else if (w >= shortW) labelText = m.short;
+      else if (w >= 12)     { labelText = m.short.charAt(0); fontSize = '12px'; }
+      else                  labelText = ''; // skip — too tight
+      if (!labelText) continue;
       const text = document.createElementNS(SVG_NS, 'text');
       text.setAttribute('class', 'upper-text');
-      const cx = (m.x + m.endX) / 2;
+      const cx = (m.startX + m.endX) / 2;
       text.setAttribute('x', String(cx));
       text.setAttribute('y', String(upperY));
       text.style.fontFamily = 'sans-serif';
-      text.style.fontSize = '13px';
+      text.style.fontSize = fontSize;
       text.style.fontWeight = '600';
       text.setAttribute('text-anchor', 'middle');
       text.setAttribute('fill', '#0f172a');
-      text.textContent = m.label;
+      text.textContent = labelText;
       svg.appendChild(text);
     }
 
@@ -3129,11 +3205,14 @@ function drawWeekdayLetters() {
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
-    // Threshold (px/day) at which the markers appear. Configurable on
-    // Setup → Gantt Weekday Markers. Default 8.
+    // Day letters appear only when one full work-week occupies enough
+    // pixels to read M T W Th F without overlap. weekW = 5 * pxPerDay.
+    // Threshold of 60 = pxPerDay 12 — that's around zoom level 7 in
+    // the friendly stepper, which matches what the user expects.
+    // Configurable on Setup → Gantt Weekday Markers (default 12 px/day).
     const threshold = (state.settings?.weekday_marker_threshold != null)
       ? Number(state.settings.weekday_marker_threshold)
-      : 8;
+      : 12;
     if (pxPerDay < threshold) return;
 
     const totalWidth = +svg.getAttribute('width') ||
@@ -3200,7 +3279,10 @@ function drawWeekdayLetters() {
         tick.setAttribute('x1', x);
         tick.setAttribute('x2', x);
         tick.setAttribute('y1', tickTop);
-        tick.setAttribute('y2', svgHeight);
+        // Use a tall fixed value so the dashed tick reaches past the bottom
+        // of the chart even if alignGanttToGrid grew the SVG after the
+        // header drawer captured svgHeight. Clipped naturally by viewBox.
+        tick.setAttribute('y2', 10000);
         tick.setAttribute('stroke', '#e2e8f0');
         tick.setAttribute('stroke-width', '0.5');
         tick.setAttribute('stroke-dasharray', '2 4');
@@ -4391,8 +4473,22 @@ function setZoom(percent) {
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
     if (pxPerDay > 0) {
-      const daysFromStart = oldCenterPx / pxPerDay;
-      centerDateMs = oldStartMs + daysFromStart * 86400000;
+      // Work-day Gantt: pixel x maps to work-day index, not calendar
+      // day index. Convert by walking work days forward from gantt_start
+      // until we've accumulated the equivalent of oldCenterPx.
+      const workDaysFromStart = oldCenterPx / pxPerDay;
+      let count = 0;
+      let cursorMs = oldStartMs;
+      const targetIntegerWorkDays = Math.floor(workDaysFromStart);
+      while (count < targetIntegerWorkDays) {
+        cursorMs += 86400000;
+        const dow = new Date(cursorMs).getUTCDay();
+        if (dow !== 0 && dow !== 6) count++;
+      }
+      // Add the fractional part (within a single work day, no weekend
+      // crossing possible).
+      const fractionMs = (workDaysFromStart - targetIntegerWorkDays) * 86400000;
+      centerDateMs = cursorMs + fractionMs;
     }
   }
 
@@ -4407,19 +4503,20 @@ function setZoom(percent) {
   }
 
   // Now find that same date on the new chart and scroll so it sits at the
-  // viewport center. If gantt_start changed (mode flip can shift the padding
-  // boundary), the math still works because we re-derive everything from the
-  // new gantt's start + cw + step.
+  // viewport center. Use WORK-DAY x positioning (the same logic the bars
+  // and headers use after compressGanttToWorkDays) — otherwise a Month→
+  // Week mode flip leaves the chart visually shifted by the weekend
+  // compression delta.
   const newScroller = getGanttScroller();
   if (newScroller && centerDateMs != null && state.gantt?.gantt_start) {
     const g = state.gantt;
-    const newStartMs = new Date(g.gantt_start).getTime();
     const cw = g.options.column_width;
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
     if (pxPerDay > 0) {
-      const targetPx = ((centerDateMs - newStartMs) / 86400000) * pxPerDay;
+      const dateStr = new Date(centerDateMs).toISOString().slice(0, 10);
+      const targetPx = workDayOffset(dateStr, g.gantt_start) * pxPerDay;
       newScroller.scrollLeft = Math.max(0, targetPx - viewW / 2);
     }
   }
@@ -4471,24 +4568,38 @@ function zoomToFit() {
   const filtered = applyFilters(state.tasks).filter(t => t.start_date && t.end_date);
   if (filtered.length === 0 || target <= 0) return;
 
-  const minStart = Math.min(...filtered.map(t => new Date(t.start_date).getTime()));
-  const maxEnd   = Math.max(...filtered.map(t => new Date(t.end_date).getTime()));
-  const projectDays = Math.max(1, (maxEnd - minStart) / 86400000 + 1);
+  const minStartStr = filtered.reduce((s, t) => t.start_date < s ? t.start_date : s, filtered[0].start_date);
+  const maxEndStr   = filtered.reduce((e, t) => t.end_date   > e ? t.end_date   : e, filtered[0].end_date);
+  // The Gantt now uses WORK-DAY positioning (Sat/Sun compressed out),
+  // so the visible span is the work-day count between min start and
+  // max end. Using calendar days here gave a too-small px/day and left
+  // a big empty area on the right.
+  const minStartMs = new Date(minStartStr + 'T00:00:00Z');
+  const workDaysSpan = Math.max(1, workDayOffset(maxEndStr, minStartMs));
 
-  const PAD_DAYS = 14;
-  const requiredPxPerDay = target / (projectDays + PAD_DAYS);
+  // Label-overflow budget — Receipt of PO renders its date (~60px) to
+  // the LEFT of its diamond, and long task names overflow ~80-120px
+  // past the RIGHT of their bars. Reserve room so neither gets clipped.
+  const LABEL_PAD_LEFT  = 70;
+  const LABEL_PAD_RIGHT = 120;
+  const EDGE_PAD        = 10;
+  const usableWidth = Math.max(50, target - LABEL_PAD_LEFT - LABEL_PAD_RIGHT - EDGE_PAD * 2);
+
+  const requiredPxPerDay = usableWidth / workDaysSpan;
   state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (requiredPxPerDay / 20) * 100));
   renderGantt();
 
-  // Synchronously scroll so the earliest real task sits near the left edge.
+  // Scroll so the earliest task's bar sits LABEL_PAD_LEFT + EDGE_PAD
+  // from the viewport's left edge — that's enough room for the date
+  // label hanging off the leftmost anchor.
   const earliest = filtered.reduce((min, t) =>
-    new Date(t.start_date).getTime() < new Date(min.start_date).getTime() ? t : min);
+    t.start_date < min.start_date ? t : min);
   const wrap = document.querySelector(`#gantt-container .bar-wrapper[data-id="${earliest.id}"]`);
   const bar = wrap && wrap.querySelector('.bar');
   if (bar) {
     const firstX = +bar.getAttribute('x');
     const scroller = getGanttScroller();
-    if (scroller) scroller.scrollLeft = Math.max(0, firstX - 24);
+    if (scroller) scroller.scrollLeft = Math.max(0, firstX - LABEL_PAD_LEFT - EDGE_PAD);
   }
 }
 
@@ -8766,6 +8877,19 @@ function handleRowContextMenu(e) {
       });
     }
   }
+  if (typeof openCommentPanel === 'function') {
+    items.push({
+      label: '💬 Comments…',
+      onClick: () => {
+        let taskName = `Task #${id}`;
+        try {
+          if (task && task.name) taskName = task.name;
+        } catch (_) {}
+        const project = (state.filters?.project) || '';
+        openCommentPanel({ id, name: taskName, project });
+      },
+    });
+  }
   items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
   showContextMenu(cx, cy, items);
 }
@@ -9286,14 +9410,36 @@ async function openQuoteCompareModal(project, providedQuote) {
     const test = (re) => re.test(base) || re.test(raw);
     const pg = t.phase_group, d = t.department, sd = t.sub_department;
     if (test(/^configure machine/i))                return 'configure';
-    if (test(/test\/?debug.*engineer/i))            return 'test_debug';
-    if (test(/^shop debug/i))                       return 'shop_debug';
+    // Engineering Testing — catches "Test/Debug Engineer 1/2", "Test/Debug
+    // Machine", "Engineering Testing", "ME & CE Testing", etc. — anything
+    // that's the testing-engineering phase regardless of how it's named
+    // on the schedule.
+    if (test(/^(engineering\s*testing|me\s*(&|and)\s*ce.*test)/i)) return 'test_debug';
+    if (test(/test\/?debug.*(engineer|machine)/i))   return 'test_debug';
+    if (pg === 'machine_testing' && d === 'engineering') return 'test_debug';
+    // Shop Testing — "Shop Debug" (detailed template), "Shop Testing"
+    // (sales mode), "MB & EB Testing", anything in section_40 shop.
+    if (test(/^(shop\s*debug|shop\s*testing)/i))    return 'shop_debug';
+    if (test(/^mb\s*(&|and)\s*eb.*test/i))          return 'shop_debug';
+    if (pg === 'machine_testing' && d === 'shop')   return 'shop_debug';
+    // Combined "Controls Engineering" — sales-mode single bar; tasks
+    // named just "Controls Engineering" or "Controls Eng" route to a
+    // single bucket. The detailed-mode keys (ce_software/design/drawings)
+    // still take precedence above.
+    if (test(/^(controls|ce)\s*(engineering|eng)\b/i)) return 'ce_engineering';
     if (test(/^(controls|ce)[\s\-_]?software/i))    return 'ce_software';
     if (test(/^(controls|ce)[\s\-_]?design/i))      return 'ce_design';
     if (test(/^(controls|ce)[\s\-_]?drawings?/i))   return 'ce_drawings';
     if (test(/^hmi/i))                              return 'gen_hmi';
     if (test(/^robot/i))                            return 'gen_robot';
     if (test(/^vision/i))                           return 'gen_vision';
+    // Combined "Device Programming" / "General Machine Programming" /
+    // "General Engineering" — sales-mode single bar covering HMI +
+    // Robot + Vision + device work.
+    if (test(/^(device|general)\s*(programming|engineering)|general machine programming/i)) return 'gen_engineering';
+    // Combined "Electrical Build" — sales-mode single bar covering
+    // both panel build and machine wiring.
+    if (test(/^electrical\s*build/i))               return 'elec_build';
     // Wire panel — both word orders ("Build and Wire Panel", "Wire Panel",
     // "Panel Build", "Panel Wiring") roll into wire_panel.
     if (test(/wire[\s\-_]?panel|panel[\s\-_]?(build|wir)/i)) return 'wire_panel';
@@ -9305,6 +9451,8 @@ async function openQuoteCompareModal(project, providedQuote) {
     if (test(/^(mech|mechanical)[\s\-_]?(design|eng)/i) && pg === 'design_build') return 'mech_eng';
     // Sub-department fallbacks for anything that didn't match by name.
     if (pg === 'design_build' && sd === 'mech')     return 'mech_eng';
+    if (pg === 'design_build' && sd === 'controls') return 'ce_engineering';
+    if (pg === 'design_build' && sd === 'general')  return 'gen_engineering';
     if (pg === 'design_build' && sd === 'build')    return 'build';
     if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
     if (pg === 'teardown_install' && d === 'teardown') return 'teardown';
@@ -9313,19 +9461,44 @@ async function openQuoteCompareModal(project, providedQuote) {
   };
   // Per-bucket: scheduled hours + remaining hours (scheduled × (1 - progress/100)
   // summed per task, so partial-completion across multiple tasks rolls up cleanly).
-  const scheduled = {};
-  const remaining = {};
+  // basicScheduled = duration × 8 × alloc, BEFORE the people-count multiplier.
+  // The People # column in the modal multiplies basicScheduled[k] × people to
+  // get the actual labor demand — lets the user model "this phase has 2 people
+  // even though we only show 1 bar on the sales schedule."
+  // bucketTaskIds[k] tracks which tasks contribute to each bucket so the
+  // Weeks column can write durations back proportionally on edit.
+  const basicScheduled = {};
+  const basicRemaining = {};
+  const bucketWorkDays = {};
+  const bucketTaskIds = {};
   for (const t of state.tasks) {
     if (t.project !== project) continue;
     if (t.is_milestone || t.anchor_key) continue;
     if (isBacklogTask(t)) continue;
     const k = TASK_BUCKET(t);
     if (!k) continue;
-    const hrs = (Number(t.duration_days) || 0) * 8 * ((Number(t.allocation) || 90) / 100);
+    const days = Number(t.duration_days) || 0;
+    const hrs = days * 8 * ((Number(t.allocation) || 90) / 100);
     const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
     const remHrs = hrs * (1 - pct / 100);
-    scheduled[k] = (scheduled[k] || 0) + hrs;
-    remaining[k] = (remaining[k] || 0) + remHrs;
+    basicScheduled[k] = (basicScheduled[k] || 0) + hrs;
+    basicRemaining[k] = (basicRemaining[k] || 0) + remHrs;
+    bucketWorkDays[k] = (bucketWorkDays[k] || 0) + days;
+    (bucketTaskIds[k] ||= []).push(t.id);
+  }
+  // People # per bucket — persisted on the project's saved quote object.
+  // Defaults to 1 for every bucket. Editing this in the modal recomputes
+  // scheduled = basic × people and updates the variance chip live.
+  const peopleBreakdown = (quote && quote.people_breakdown) || {};
+  const peopleFor = (k) => Math.max(1, Math.round(Number(peopleBreakdown[k]) || 1));
+  // Apply the people multiplier so the rest of the rendering code reads
+  // the same `scheduled` / `remaining` maps it always did.
+  const scheduled = {};
+  const remaining = {};
+  for (const k of Object.keys(basicScheduled)) {
+    const ppl = peopleFor(k);
+    scheduled[k] = basicScheduled[k] * ppl;
+    remaining[k] = basicRemaining[k] * ppl;
   }
 
   // Pull the quoted hours by the same bucket. Quote stores hours_breakdown
@@ -9358,13 +9531,24 @@ async function openQuoteCompareModal(project, providedQuote) {
   // Configure Machine = 5% of testing engineering hours.
   quoted.configure = Math.round(quoted.test_debug * 0.05);
   quoted.test_debug = quoted.test_debug - quoted.configure;
+  // Per-bucket Quoted overrides — when the user edits a Quoted cell in
+  // the modal we stash the new value in quote.quoted_overrides so it
+  // wins over the auto-derived hours_breakdown sums above.
+  const overrides = (quote && quote.quoted_overrides) || {};
+  for (const k of Object.keys(overrides)) {
+    const v = Number(overrides[k]);
+    if (Number.isFinite(v) && v >= 0) quoted[k] = Math.round(v);
+  }
 
-  // Rows grouped by section (matches the SDC_Template + estimate-sheet
-  // hierarchy: 10 → Design & Build, 40 → Machine Testing/Debug, 50 →
-  // Teardown & Install). Each section is a header row; the bucket rows live
-  // underneath it. Same bucket model as before — totals across all sections
-  // for that discipline — just organized for reading.
-  const SECTIONS = [
+  const isSales = projectWorkspace(project) === 'Sales';
+  // SECTIONS define the row breakdown shown in the modal. Each row carries
+  // either a single `k` bucket OR a `keys` array that sums multiple buckets
+  // into ONE displayed row — used for sales schedules where the user wants
+  // a coarser view (one Controls Engineering bar, not three sub-rows).
+  // The first key in `keys` (or `k` itself) is also the STORAGE KEY for
+  // people_breakdown + quoted_overrides, so the persisted value tracks the
+  // combined row consistently.
+  const SECTIONS_DETAILED = [
     {
       title: 'Section 10 — Design & Build',
       rows: [
@@ -9396,39 +9580,173 @@ async function openQuoteCompareModal(project, providedQuote) {
       ],
     },
   ];
+  // Sales-mode line items — mirror the SDC_Sales_Template schedule rows.
+  // Section 40 / 50 do NOT split engineering vs shop here: in a sales schedule,
+  // shop time = engineering time (same duration), so we collapse them into a
+  // single "Test and Debug Machine" row to keep the timeline readable.
+  // FAT and Ship Machine show as milestone markers (info rows) so the modal
+  // mirrors the schedule structure end-to-end.
+  const SECTIONS_SALES = [
+    {
+      title: 'Section 10 — Design & Build',
+      rows: [
+        { k: 'mech_eng',       label: 'Mechanical Design' },
+        { k: 'ce_engineering', label: 'Controls Design',
+          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'] },
+        { k: 'gen_engineering', label: 'Device Programming',
+          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'] },
+        { k: 'build',          label: 'Mechanical Assembly' },
+        { k: 'elec_build',     label: 'Electrical Assembly',
+          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'] },
+      ],
+    },
+    {
+      title: 'Section 40 — Machine Testing',
+      rows: [
+        { k: 'configure',  label: 'Configure Machine' },
+        // Test/Debug Machine — single row covering BOTH the engineering and
+        // shop sides of section 40 testing.
+        { k: 'test_debug', label: 'Test and Debug Machine',
+          keys: ['test_debug', 'shop_debug'] },
+        // FAT — milestone anchor. Shows as an info row with no hours.
+        { k: 'fat',        label: 'FAT', milestone: true },
+      ],
+    },
+    {
+      title: 'Section 50 — Teardown & Install',
+      rows: [
+        { k: 'teardown',     label: 'Teardown' },
+        // Ship Machine — milestone anchor between teardown and install.
+        { k: 'ship_machine', label: 'Ship Machine', milestone: true },
+        { k: 'install',      label: 'Install' },
+      ],
+    },
+  ];
+  const SECTIONS = isSales ? SECTIONS_SALES : SECTIONS_DETAILED;
+  const rowsByKey = {};
+  SECTIONS.forEach(s => s.rows.forEach(r => { rowsByKey[r.k] = r; }));
+  // Column count varies — sales projects hide the Remaining column.
+  const colCount = isSales ? 5 : 6;
 
-  let totalQ = 0, totalS = 0, totalR = 0;
-  const rowHtml = (r) => {
-    const q = quoted[r.k] || 0;
-    const s = Math.round(scheduled[r.k] || 0);
-    const rem = Math.round(remaining[r.k] || 0);
-    totalQ += q; totalS += s; totalR += rem;
-    const variance = s - q;
-    // Color the variance: green when scheduled is below quote (under-budget),
-    // amber when within 10% over quote, red when more than 10% over.
+  // PENDING STATE — edits live here until Done is pressed. Keyed by row
+  // storage key (r.k). Undefined means "no override; use base value."
+  // This gives the user a sandbox: tweak numbers, see chips recompute,
+  // commit when satisfied.
+  const pendingPeople = {};
+  const pendingQuoted = {};
+  const pendingWeeks  = {};
+
+  // basicScheduled comes from real task durations × 8 × alloc (no people
+  // multiplier). For "what does this row look like right now in pending
+  // state?" we apply pendingWeeks as a scaling factor on basicScheduled
+  // and then multiply by pendingPeople. This lets the user model "if I
+  // bumped Mechanical Engineering to 8 wks with 2 people, my actual hrs
+  // would be …" without touching the schedule yet.
+  function computeRowState(r) {
+    const keys = r.keys || [r.k];
+    const baseQuoted = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
+    const q = pendingQuoted[r.k] !== undefined ? pendingQuoted[r.k] : baseQuoted;
+    const basePpl   = peopleFor(r.k);
+    const ppl       = pendingPeople[r.k] !== undefined ? pendingPeople[r.k] : basePpl;
+    const baseDays  = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+    const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+    const weeks     = pendingWeeks[r.k] !== undefined ? pendingWeeks[r.k] : baseWeeks;
+    const baseSched = keys.reduce((sum, k) => sum + (basicScheduled[k] || 0), 0);
+    const baseRem   = keys.reduce((sum, k) => sum + (basicRemaining[k] || 0), 0);
+    const scaleFactor = (pendingWeeks[r.k] !== undefined && baseDays > 0)
+      ? ((pendingWeeks[r.k] * 5) / baseDays)
+      : 1;
+    const s   = Math.round(baseSched * scaleFactor * ppl);
+    const rem = Math.round(baseRem   * scaleFactor * ppl);
+    const allTaskIds = keys.flatMap(k => bucketTaskIds[k] || []);
+    return { keys, q, weeks, ppl, s, rem, baseDays, taskIds: allTaskIds };
+  }
+
+  function rowHtml(r) {
+    // Milestone rows (FAT / Ship Machine in sales mode) are info-only line
+    // items — no hours, no editable Weeks/People/Quoted cells. Render as a
+    // muted label row so the modal mirrors the schedule structure without
+    // implying any hours comparison.
+    if (r.milestone) {
+      return `<tr class="quote-row is-milestone" data-row-key="${escapeHtml(r.k)}">
+        <td><span class="quote-milestone-glyph" title="Schedule milestone — no hours">◆</span> ${escapeHtml(r.label)}</td>
+        <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
+        ${isSales ? '' : '<td class="num quote-milestone-cell">—</td>'}
+      </tr>`;
+    }
+    const st = computeRowState(r);
+    const taskCount = st.taskIds.length;
+    const variance = st.s - st.q;
     let varCls = 'var-zero';
-    if (q > 0) {
+    if (st.q > 0) {
       if (variance < 0) varCls = 'var-under';
-      else if (variance > q * 0.10) varCls = 'var-over';
+      else if (variance > st.q * 0.10) varCls = 'var-over';
       else if (variance > 0) varCls = 'var-near';
     }
-    const varText = q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
-    return `<tr>
+    const varText = st.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    const weeksTitle = taskCount === 0
+      ? 'No tasks in this bucket yet — add a task to the schedule first.'
+      : (taskCount === 1
+          ? 'Click to edit this phase’s duration in weeks.'
+          : `${taskCount} tasks in this bucket — editing scales each proportionally.`);
+    const weeksDisabled = taskCount === 0 ? 'disabled' : '';
+    const pendingMark = (pendingPeople[r.k] !== undefined || pendingQuoted[r.k] !== undefined || pendingWeeks[r.k] !== undefined) ? ' is-pending' : '';
+    return `<tr class="quote-row${pendingMark}" data-row-key="${escapeHtml(r.k)}">
       <td>${escapeHtml(r.label)}</td>
+      <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
+      <td class="num"><input type="number" min="1" max="99" step="1" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${st.ppl}" title="People assigned to this phase. Scheduled hrs = Weeks × 40 × allocation × People." /></td>
       <td class="num quote-sched-cell">
-        <span class="quote-sched-q">${q ? q.toLocaleString() : '—'}</span>
+        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override." />
         <span class="quote-sched-slash">/</span>
-        <span class="quote-sched-s">${s.toLocaleString()}</span>
+        <span class="quote-sched-s">${st.s.toLocaleString()}</span>
       </td>
       <td class="num quote-variance ${varCls}">${varText}</td>
-      <td class="num">${rem.toLocaleString()}</td>
+      ${isSales ? '' : `<td class="num">${st.rem.toLocaleString()}</td>`}
     </tr>`;
-  };
-  const rowsHtml = SECTIONS.map(section => `
-    <tr class="section-head"><td colspan="4">${escapeHtml(section.title)}</td></tr>
-    ${section.rows.map(rowHtml).join('')}
-  `).join('');
-  const totalV = totalS - totalQ;
+  }
+
+  function buildRowsHtml() {
+    return SECTIONS.map(section => `
+      <tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>
+      ${section.rows.map(rowHtml).join('')}
+    `).join('');
+  }
+  function computeTotals() {
+    let totalQ = 0, totalS = 0, totalR = 0;
+    for (const section of SECTIONS) {
+      for (const r of section.rows) {
+        if (r.milestone) continue; // milestone rows have no hours to total
+        const st = computeRowState(r);
+        totalQ += st.q; totalS += st.s; totalR += st.rem;
+      }
+    }
+    return { totalQ, totalS, totalR };
+  }
+  function buildFooterHtml() {
+    const { totalQ, totalS, totalR } = computeTotals();
+    const totalV = totalS - totalQ;
+    const varCls = totalQ === 0 ? 'var-zero'
+      : (totalV < 0 ? 'var-under'
+        : (totalV > totalQ * 0.10 ? 'var-over'
+          : (totalV > 0 ? 'var-near' : 'var-zero')));
+    return `
+      <tr class="totals-row">
+        <td>Total</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+        <td class="num quote-sched-cell">
+          <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
+          <span class="quote-sched-slash">/</span>
+          <span class="quote-sched-s">${totalS.toLocaleString()}</span>
+        </td>
+        <td class="num quote-variance ${varCls}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
+        ${isSales ? '' : `<td class="num">${totalR.toLocaleString()}</td>`}
+      </tr>`;
+  }
+  const rowsHtml = buildRowsHtml();
 
   const overlay = document.createElement('div');
   overlay.id = 'quote-compare-modal';
@@ -9461,28 +9779,21 @@ async function openQuoteCompareModal(project, providedQuote) {
           <thead>
             <tr>
               <th style="text-align:left;">Discipline</th>
-              <th class="num" title="Quoted (from estimate sheet) / Scheduled (live SUM of duration_days × 8 × allocation% per task in this bucket). — means no quote attached.">Quoted / Scheduled</th>
-              <th class="num" title="Scheduled minus Quoted. Negative = under budget. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
-              <th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs × (1 − task_progress%/100)) per bucket.">Remaining</th>
+              <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations. Multi-task buckets scale proportionally.">Weeks</th>
+              <th class="num" title="People assigned to this phase. Defaults to 1. Scheduled hrs = Weeks × 40 × allocation × People.">People #</th>
+              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted / Scheduled</th>
+              <th class="num" title="Scheduled − Quoted. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
+              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs × (1 − task_progress%/100)) per bucket × people#.">Remaining</th>`}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
-          <tfoot>
-            <tr class="totals-row">
-              <td>Total</td>
-              <td class="num quote-sched-cell">
-                <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
-                <span class="quote-sched-slash">/</span>
-                <span class="quote-sched-s">${totalS.toLocaleString()}</span>
-              </td>
-              <td class="num quote-variance ${totalQ === 0 ? 'var-zero' : (totalV < 0 ? 'var-under' : (totalV > totalQ * 0.10 ? 'var-over' : (totalV > 0 ? 'var-near' : 'var-zero')))}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
-              <td class="num">${totalR.toLocaleString()}</td>
-            </tr>
-          </tfoot>
+          <tfoot>${buildFooterHtml()}</tfoot>
         </table>
       </div>
       <div class="modal-foot">
-        <button type="button" class="btn-primary" data-action="close">Close</button>
+        <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
+        <button type="button" class="btn-secondary" data-action="close">Cancel</button>
+        <button type="button" class="btn-primary" data-action="apply" id="quote-apply-btn" disabled>Apply</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -9498,6 +9809,116 @@ async function openQuoteCompareModal(project, providedQuote) {
     openFinancialsModal(project);
   };
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  // Refresh the table in-place without reopening the modal — used after
+  // every input change. Re-applies event handlers since innerHTML wipes
+  // the old listeners.
+  function refreshTable() {
+    const tbody = overlay.querySelector('.quote-compare-table tbody');
+    const tfoot = overlay.querySelector('.quote-compare-table tfoot');
+    if (tbody) tbody.innerHTML = buildRowsHtml();
+    if (tfoot) tfoot.innerHTML = buildFooterHtml();
+    wireInputs();
+    updateApplyButtonState();
+  }
+
+  function updateApplyButtonState() {
+    const hasPending = Object.keys(pendingPeople).length > 0
+      || Object.keys(pendingQuoted).length > 0
+      || Object.keys(pendingWeeks).length > 0;
+    const btn = overlay.querySelector('#quote-apply-btn');
+    const hint = overlay.querySelector('#quote-pending-hint');
+    if (btn) btn.disabled = !hasPending;
+    if (hint) hint.hidden = !hasPending;
+  }
+
+  function wireInputs() {
+    overlay.querySelectorAll('.quote-people-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const bucket = input.dataset.bucket;
+        const val = Math.max(1, Math.min(99, Math.round(Number(input.value) || 1)));
+        const baseVal = peopleFor(bucket);
+        if (val === baseVal) delete pendingPeople[bucket];
+        else pendingPeople[bucket] = val;
+        refreshTable();
+      });
+    });
+    overlay.querySelectorAll('.quote-q-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const bucket = input.dataset.bucket;
+        const val = Math.max(0, Math.round(Number(input.value) || 0));
+        const r = rowsByKey[bucket];
+        const keys = r ? (r.keys || [r.k]) : [bucket];
+        const baseVal = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
+        if (val === baseVal) delete pendingQuoted[bucket];
+        else pendingQuoted[bucket] = val;
+        refreshTable();
+      });
+    });
+    overlay.querySelectorAll('.quote-weeks-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const bucket = input.dataset.bucket;
+        const newWeeks = Math.max(0, Math.round(Number(input.value) * 2) / 2);
+        const r = rowsByKey[bucket];
+        const keys = r ? (r.keys || [r.k]) : [bucket];
+        const baseDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+        if (newWeeks === baseWeeks) delete pendingWeeks[bucket];
+        else pendingWeeks[bucket] = newWeeks;
+        refreshTable();
+      });
+    });
+  }
+  wireInputs();
+
+  // Apply button — write all pending edits to the server: people +
+  // quoted overrides land in the saved quote; weeks edits go to the
+  // underlying tasks' duration_days (scaled proportionally for
+  // multi-task buckets) and trigger a server cascadeSchedule on save.
+  async function applyChanges() {
+    try {
+      // 1) Quote (people + quoted_overrides)
+      if (Object.keys(pendingPeople).length || Object.keys(pendingQuoted).length) {
+        const updated = { ...(quote || {}) };
+        updated.people_breakdown = { ...(updated.people_breakdown || {}) };
+        updated.quoted_overrides = { ...(updated.quoted_overrides || {}) };
+        for (const [k, v] of Object.entries(pendingPeople)) updated.people_breakdown[k] = v;
+        for (const [k, v] of Object.entries(pendingQuoted)) updated.quoted_overrides[k] = v;
+        await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updated),
+        });
+      }
+      // 2) Weeks → task duration_days (proportional across multi-task buckets)
+      for (const [rowKey, newWeeks] of Object.entries(pendingWeeks)) {
+        const r = rowsByKey[rowKey];
+        if (!r) continue;
+        const keys = r.keys || [r.k];
+        const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
+        if (taskIds.length === 0) continue;
+        const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const newDays = newWeeks * 5;
+        if (taskIds.length === 1 || currentTotalDays === 0) {
+          await api.update(taskIds[0], { duration_days: newDays });
+        } else {
+          for (const id of taskIds) {
+            const t = state.tasks.find(x => x.id === id);
+            if (!t) continue;
+            const oldD = Number(t.duration_days) || 0;
+            const scaled = (oldD / currentTotalDays) * newDays;
+            await api.update(id, { duration_days: scaled });
+          }
+        }
+      }
+      await loadTasks();
+      showToast('Schedule updated.', { kind: 'success' });
+      close();
+    } catch (err) {
+      showToast('Failed to apply: ' + (err.message || err), { kind: 'error' });
+    }
+  }
+  overlay.querySelector('[data-action="apply"]').addEventListener('click', applyChanges);
 
   // "Load estimate file…" — pick an xlsx, parse it, PERSIST the quote on the
   // project so future opens of this modal show the comparison without
@@ -10093,7 +10514,7 @@ async function loadSettings() {
   if (!state.settings.section_colors)    state.settings.section_colors    = { ...SECTION_COLOR_DEFAULTS };
   if (!state.settings.hierarchy_colors)  state.settings.hierarchy_colors  = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   if (!state.settings.anchor_color)      state.settings.anchor_color      = { ...ANCHOR_COLOR_DEFAULTS };
-  if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 8;
+  if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 12;
   // Always normalize — older builds saved { key → { fill, text } } objects;
   // current shape is { key → "#hex" }. normalizePctColors handles both.
   state.settings.pct_colors = normalizePctColors(state.settings.pct_colors);
@@ -13282,6 +13703,14 @@ async function loadTasks() {
     await loadFinancialsForAllOpenProjects();
   }
   render();
+  // Phase 2 (Abhi port): refresh 💬 badge counts for the active project after
+  // every render so newly-loaded rows pick up their comment counts and saves
+  // don't leave stale badges behind. Wrapped in typeof check — comments-ui.js
+  // is loaded as a separate script after app.js and may be unavailable in
+  // pared-down embedded views.
+  if (typeof loadCommentCounts === 'function' && state.filters?.project) {
+    try { loadCommentCounts(state.filters.project); } catch (_) {}
+  }
 }
 
 // Walk each assignee's tasks in priority order, building a day → cumulative-alloc map.
@@ -14217,8 +14646,16 @@ function setupViewModeDropdown() {
 //     10 → 225.6%
 //   getZoomConfig auto-switches Month/Week/Day based on pct, so the time
 //   scale follows the zoom level automatically without a separate selector.
-const ZOOM_FRIENDLY_MIN_PCT = 5;
-const ZOOM_FRIENDLY_MAX_PCT = 250;
+// Friendly zoom range — 10 steps mapped exponentially over the
+// "usable" pct range. Anchored so that:
+//   • Zoom 1  = ~25% (Week mode, months still fit without overlap)
+//   • Zoom 3  = ~36% (Monday date numbers start appearing — weekW ≥ 35)
+//   • Zoom 6-7 = ~60-73% (day letters T/W/Th/F start appearing — weekW ≥ 60)
+//   • Zoom 10 = ~125% (max useful zoom-in)
+// Must match ZOOM_MIN / ZOOM_MAX above so wheel zoom hits the same
+// stops the +/- stepper does.
+const ZOOM_FRIENDLY_MIN_PCT = 10;
+const ZOOM_FRIENDLY_MAX_PCT = 145;
 const ZOOM_FRIENDLY_MAX_LEVEL = 10;
 const ZOOM_FRIENDLY_MULTIPLIER = Math.pow(
   ZOOM_FRIENDLY_MAX_PCT / ZOOM_FRIENDLY_MIN_PCT,
@@ -15061,6 +15498,13 @@ async function init() {
       routePersonalMode(_actionsPageState.personId);
     }
   });
+  // Phase 2 (Abhi port): boot the comments UI once. It attaches a
+  // MutationObserver to #tasks-tbody and re-injects 💬 badges after every
+  // render with a 120 ms debounce. Wrapped in typeof check so a missing
+  // comments-ui.js (e.g. paint-deferred load) doesn't break boot.
+  if (typeof initCommentsUI === 'function') {
+    try { initCommentsUI(); } catch (_) {}
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
