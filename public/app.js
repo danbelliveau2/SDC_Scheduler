@@ -1545,14 +1545,25 @@ function renderTable() {
       continue;
     }
 
-    // Tasks pinned at the phase_group level (no department)
-    const groupLevelTasks = buckets[gPath] || [];
+    // Tasks pinned at the phase_group level (no department).
+    // Sales-mode section 50 puts every row at the group level (Teardown /
+    // Ship Machine / Install with no dept subheaders), so splice Ship
+    // Machine anchors in by sort_order here. Set a flag so the dept loop
+    // below doesn't render Ship Machine a second time.
+    let groupLevelTasks = buckets[gPath] || [];
+    let shipDroppedAtGroupLevel = false;
+    if (group.key === 'teardown_install' && shipAnchors.length && groupLevelTasks.length) {
+      groupLevelTasks = [...groupLevelTasks, ...shipAnchors]
+        .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+      shipDroppedAtGroupLevel = true;
+    }
     for (const t of groupLevelTasks) html += renderTaskRow(t, 2);
     for (const dept of group.departments) {
       // Ship Machine sits between TEARDOWN and INSTALL inside section 50 — it's the
       // gate where the disassembled machine leaves SDC for the customer's site.
-      // Multi-machine: render one Ship row per machine.
-      if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length) {
+      // Multi-machine: render one Ship row per machine. Skip if we already
+      // dropped them at the group level (sales schedules).
+      if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length && !shipDroppedAtGroupLevel) {
         for (const s of shipAnchors) html += anchorRowHtml(s);
       }
       const dPath = groupPath(group.key, dept.key);
