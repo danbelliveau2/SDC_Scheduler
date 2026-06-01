@@ -165,7 +165,10 @@ function _openModal() {
   });
 }
 
-// ── user pill in top corner ─────────────────────────────────────────────
+// ── user pill in the bottom footer ───────────────────────────────────────
+// Lives in #schedule-footer next to the Quote vs Schedule button. Falls
+// back to body-fixed bottom-left if the footer isn't on the page (e.g.
+// the user opens a non-schedule view first).
 function _renderUserPill() {
   if (!window.sdcAuth.authEnabled || !window.sdcAuth.user) return;
   if (document.getElementById('sdc-auth-pill')) return;
@@ -181,5 +184,9 @@ function _renderUserPill() {
     <button type="button" class="sdc-auth-signout" title="Sign out">×</button>
   `;
   pill.querySelector('.sdc-auth-signout').addEventListener('click', () => window.sdcAuth.signOut());
+
+  // Fixed at the bottom-left of the main content area — just past the
+  // sidebar, on the same row as the Quote vs Schedule button and the
+  // sidebar's Rev pin. Always visible regardless of which view is active.
   document.body.appendChild(pill);
 }
