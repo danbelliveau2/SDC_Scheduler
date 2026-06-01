@@ -1,80 +1,64 @@
 'use strict';
-const cron = require('node-cron');
+/**
+ * cronJobs.js — Phase 7 scheduled background work.
+ *
+ * Currently registers a single weekday-9am digest that emails each active user
+ * a list of their open tasks. No-ops when emailService.ENABLED is false.
+ *
+ * start({ db, emailSvc }) is called once from server.js. Safe to call without
+ * node-cron installed — falls back to a 30-min setInterval that checks the
+ * clock and fires once per qualifying window.
+ */
 
-// Add N business days to an ISO date string
-function addBizDays(dateStr, n) {
-  const d = new Date(dateStr + 'T00:00:00Z');
-  let rem = Math.abs(n);
-  const dir = n >= 0 ? 1 : -1;
-  while (rem > 0) {
-    d.setUTCDate(d.getUTCDate() + dir);
-    const day = d.getUTCDay();
-    if (day !== 0 && day !== 6) rem--;
-  }
-  return d.toISOString().slice(0, 10);
-}
+function start({ db, emailSvc }) {
+  if (!db) return;
+  let cron;
+  try { cron = require('node-cron'); }
+  catch (_) { cron = null; }
 
-async function runDueDateNotifications(db, emailService) {
-  const today = new Date().toISOString().slice(0, 10);
-  const horizon = addBizDays(today, 3);
-
-  // Tasks due within 3 business days, incomplete, with an assignee
-  const tasks = db.prepare(`
-    SELECT id, name, project, end_date, assignee, progress
-    FROM   tasks
-    WHERE  assignee IS NOT NULL
-      AND  end_date  IS NOT NULL
-      AND  progress  < 100
-      AND  end_date >= ?
-      AND  end_date <= ?
-    ORDER  BY end_date ASC
-  `).all(today, horizon);
-
-  if (tasks.length === 0) {
-    console.log('[Cron] Due-date check: no upcoming tasks.');
-    return;
-  }
-
-  // Group by assignee
-  const byAssignee = {};
-  for (const t of tasks) {
-    (byAssignee[t.assignee] = byAssignee[t.assignee] || []).push(t);
-  }
-
-  for (const [assigneeName, assigneeTasks] of Object.entries(byAssignee)) {
-    const user = db.prepare('SELECT email FROM users WHERE name = ? AND active = 1').get(assigneeName);
-    if (!user) continue;
-
-    // Dedup: only send once per assignee per calendar day
-    const key = `due_soon:${assigneeName}:${today}`;
-    const already = db.prepare('SELECT 1 FROM notification_log WHERE reference_key = ?').get(key);
-    if (already) continue;
-
+  const tickAtNineAmWeekdays = async () => {
+    if (!emailSvc || !emailSvc.ENABLED) return; // SMTP not configured
     try {
-      await emailService.sendDueSoonDigest({
-        toEmail: user.email,
-        toName:  assigneeName,
-        tasks:   assigneeTasks,
-      });
-      db.prepare(
-        `INSERT OR IGNORE INTO notification_log (user_email, type, reference_key) VALUES (?, 'due_soon', ?)`
-      ).run(user.email, key);
-    } catch (err) {
-      console.error(`[Cron] Failed to notify ${user.email}:`, err.message);
+      const users = db.prepare('SELECT email FROM users WHERE active = 1 AND email IS NOT NULL').all();
+      for (const u of users) {
+        // Open tasks where the user is the assignee. Limit to 25 so the
+        // email body stays readable.
+        const items = db.prepare(`
+          SELECT id, name, end_date FROM tasks
+          WHERE assignee = (SELECT name FROM users WHERE email = ?) AND COALESCE(progress, 0) < 100
+          ORDER BY end_date ASC LIMIT 25
+        `).all(u.email);
+        if (items.length > 0) {
+          await emailSvc.sendDigest({ db, to: u.email, items });
+        }
+      }
+    } catch (e) {
+      console.warn('[cron] digest tick failed:', e.message);
     }
+  };
+
+  if (cron) {
+    // Every weekday at 09:00 local time.
+    cron.schedule('0 9 * * 1-5', tickAtNineAmWeekdays, { timezone: 'America/New_York' });
+    console.log('[cron] Registered: weekday digest at 09:00 ET');
+  } else {
+    // Fallback: poll every 30 min, fire only when the local clock just
+    // crossed into 9 a.m. on a weekday. Coarser but no extra dep needed.
+    let lastFired = '';
+    setInterval(() => {
+      const now = new Date();
+      const day = now.getDay();
+      if (day === 0 || day === 6) return;
+      if (now.getHours() === 9 && now.getMinutes() < 30) {
+        const tag = now.toISOString().slice(0, 10);
+        if (lastFired !== tag) {
+          lastFired = tag;
+          tickAtNineAmWeekdays();
+        }
+      }
+    }, 30 * 60 * 1000);
+    console.log('[cron] node-cron not installed — using 30m setInterval fallback');
   }
-
-  console.log(`[Cron] Due-date notifications done — ${tasks.length} tasks, ${Object.keys(byAssignee).length} assignees.`);
 }
 
-function startCronJobs(db, emailService) {
-  // Daily at 8:00 AM local server time, Mon–Fri
-  cron.schedule('0 8 * * 1-5', () => {
-    console.log('[Cron] Running daily due-date notifications…');
-    runDueDateNotifications(db, emailService)
-      .catch(err => console.error('[Cron] Error:', err.message));
-  });
-  console.log('[Cron] Due-date notification job scheduled — daily 8am Mon–Fri.');
-}
-
-module.exports = { startCronJobs, runDueDateNotifications };
+module.exports = { start };
