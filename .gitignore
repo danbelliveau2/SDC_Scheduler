@@ -31,3 +31,6 @@ Smartsheet Schedules/
 .env.*.local
 azure-backup-*.json
 scripts/auto-pull.log
+
+# Auto-updater sync state (runtime, not source)
+.update-sha
