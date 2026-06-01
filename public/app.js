@@ -2814,8 +2814,10 @@ function renderGantt() {
     // 100% complete DURATION task: tag .is-done. CSS adds a LIME BORDER around
     // the bar — preserves the hierarchy color underneath (Build task stays
     // Build-tan when done, etc.) and the lime stroke makes "complete" pop
-    // visually without recoloring the bar.
-    if (!t.is_milestone && !isBacklogTask(t) && (t.progress || 0) >= 100) classes.push('is-done');
+    // visually without recoloring the bar. Uses getEffectiveProgress so the
+    // Backlog row picks up the same lime border + hash overlay once today
+    // crosses its end_date.
+    if (!t.is_milestone && getEffectiveProgress(t) >= 100) classes.push('is-done');
     if (state.overAllocatedTaskIds.has(t.id)) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
@@ -4734,6 +4736,22 @@ function drawMilestoneDiamonds() {
       dStroke = '#1574c4'; // SDC primary
       dStrokeW = '1.5';
     }
+    // Done milestone: override the fill with SDC lime so the diamond visibly
+    // matches the lime border / hash overlay we use on completed duration
+    // bars. Anchors keep their normal lime fill but switch to a darker
+    // forest-green stroke so the "done" anchor still reads as distinct from
+    // a fresh anchor (which uses the slate anchor-text stroke). Non-anchor
+    // milestones flip from slate to lime entirely.
+    if (isDone) {
+      if (isAnchor) {
+        dStroke  = '#1d4220';   // deep green stroke marks "done" anchor
+        dStrokeW = '2';
+      } else {
+        dFill    = '#befa4f';   // SDC lime fill
+        dStroke  = '#1d4220';   // deep green stroke for contrast
+        dStrokeW = '1.75';
+      }
+    }
     diamond.setAttribute('fill',   dFill);
     diamond.setAttribute('stroke', dStroke);
     diamond.setAttribute('stroke-width', dStrokeW);
@@ -4741,8 +4759,7 @@ function drawMilestoneDiamonds() {
 
     // Checkmark glyph rendered on top of the diamond for done milestones.
     // Sized to fit comfortably inside the inner shape, centered. Color is
-    // slate-800 — reads cleanly on both the lime anchor fill and the slate
-    // non-anchor fill (both have enough luminance difference from dark slate).
+    // dark slate — reads cleanly on the lime fill (whether anchor or not).
     if (isDone) {
       const check = document.createElementNS(SVG_NS, 'text');
       check.setAttribute('x', cx);
@@ -4750,7 +4767,7 @@ function drawMilestoneDiamonds() {
       check.setAttribute('class', 'milestone-check');
       check.setAttribute('text-anchor', 'middle');
       check.setAttribute('dominant-baseline', 'central');
-      check.setAttribute('fill', isAnchor ? CHECK_COLOR : '#ffffff');
+      check.setAttribute('fill', CHECK_COLOR);
       check.setAttribute('font-size', String(Math.round(size * 0.9)));
       check.setAttribute('font-weight', '900');
       check.setAttribute('pointer-events', 'none');
