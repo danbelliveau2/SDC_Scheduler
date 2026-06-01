@@ -351,28 +351,34 @@ function buildCanonicalTaskOrder() {
   for (const group of HIERARCHY) {
     if (state.scheduleView?.flatten || isPersonalMode()) {
       // Same INLINE_ANCHORS rule as the table walk.
-      const sectionTasks = filtered.filter(t => {
+      let sectionTasks = filtered.filter(t => {
         if (t.phase_group !== group.key) return false;
         const k = inferredAnchorKey(t);
         return !k || INLINE_ANCHORS.has(k);
       });
       sortBucket(sectionTasks);
-      let shipDropped = false;
-      for (const t of sectionTasks) {
-        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
-          for (const s of shipAnchors) order.push(s.id);
-          shipDropped = true;
-        }
-        order.push(t.id);
+      // Splice Ship Machine into section 50 by sort_order so line numbers
+      // land Teardown / Ship Machine / Install even when tasks carry a
+      // null department (sales template suppresses subheaders that way).
+      if (group.key === 'teardown_install' && shipAnchors.length) {
+        sectionTasks = [...sectionTasks, ...shipAnchors]
+          .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
       }
-      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
-        for (const s of shipAnchors) order.push(s.id);
-      }
+      for (const t of sectionTasks) order.push(t.id);
     } else {
-      const groupLevelTasks = buckets[groupPath(group.key)] || [];
+      let groupLevelTasks = buckets[groupPath(group.key)] || [];
+      // Sales-mode section 50: merge Ship Machine anchors into the
+      // group-level list by sort_order. Skips the dept-loop ship-insert
+      // below so we don't double-count.
+      let shipDroppedAtGroupLevelOrd = false;
+      if (group.key === 'teardown_install' && shipAnchors.length && groupLevelTasks.length) {
+        groupLevelTasks = [...groupLevelTasks, ...shipAnchors]
+          .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+        shipDroppedAtGroupLevelOrd = true;
+      }
       for (const t of groupLevelTasks) order.push(t.id);
       for (const dept of group.departments) {
-        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length) {
+        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length && !shipDroppedAtGroupLevelOrd) {
           for (const s of shipAnchors) order.push(s.id);
         }
         const dPath = groupPath(group.key, dept.key);
