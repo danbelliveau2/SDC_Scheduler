@@ -1523,21 +1523,22 @@ function renderTable() {
     const renderTaskRow = (t, depth) => inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, depth);
 
     if (flattenEffective) {
-      const sectionTasks = flatBySection[group.key] || [];
-      let shipDropped = false;
-      for (const t of sectionTasks) {
-        // For section 50, splice the Ship Machine anchors in once we cross from
-        // teardown work to install work (or as the last rows if everything is
-        // teardown). Sort-by-date naturally orders them correctly.
-        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
-          for (const s of shipAnchors) html += anchorRowHtml(s);
-          shipDropped = true;
-        }
-        html += renderTaskRow(t, 2);
+      let sectionTasks = flatBySection[group.key] || [];
+      // For section 50, merge Ship Machine anchors into the section list and
+      // sort by start_date so it lands between Teardown and Install regardless
+      // of whether the tasks carry department='install' (sales schedules
+      // clear department to suppress the subheaders, breaking the old
+      // dept-based splice trigger).
+      if (group.key === 'teardown_install' && shipAnchors.length) {
+        const cmp = (a, b) => {
+          const ad = String(a.start_date || '');
+          const bd = String(b.start_date || '');
+          if (ad && bd && ad !== bd) return ad < bd ? -1 : 1;
+          return (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
+        };
+        sectionTasks = [...sectionTasks, ...shipAnchors].sort(cmp);
       }
-      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
-        for (const s of shipAnchors) html += anchorRowHtml(s);
-      }
+      for (const t of sectionTasks) html += renderTaskRow(t, 2);
       // FAT anchors at the end of section 40 even in flatten mode (collapses with the section).
       if (group.key === 'machine_testing' && fatAnchors.length) {
         for (const f of fatAnchors) html += anchorRowHtml(f);
