@@ -30,11 +30,11 @@ const GITHUB_REPO       = 'danbelliveau2/SDC_Scheduler';
 const GITHUB_BRANCH     = 'main';
 const CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const APP_DIR           = path.join(__dirname, '..');
-const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync'];
+const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync', 'sdc-scheduler-updater'];
 const SHA_FILE          = path.join(APP_DIR, '.update-sha');
 
 // Directories to wholesale replace from upstream
-const SAFE_DIRS = ['public'];
+const SAFE_DIRS = ['public', 'scripts'];
 
 // Individual files safe to replace
 const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore', 'server.js',
