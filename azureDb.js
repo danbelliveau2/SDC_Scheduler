@@ -114,6 +114,36 @@ async function ensureSchema() {
     );
   `);
 
+  await pool.request().query(`
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                   WHERE TABLE_SCHEMA = 'scheduler' AND TABLE_NAME = 'projects')
+    CREATE TABLE [scheduler].[projects] (
+      id          INT PRIMARY KEY,
+      name        NVARCHAR(255) NOT NULL,
+      status      NVARCHAR(50)  DEFAULT 'active',
+      is_template BIT           DEFAULT 0,
+      job_number  NVARCHAR(100),
+      workspace   NVARCHAR(100) DEFAULT 'default',
+      created_at  NVARCHAR(50)
+    );
+  `);
+
+  await pool.request().query(`
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                   WHERE TABLE_SCHEMA = 'scheduler' AND TABLE_NAME = 'task_comments')
+    CREATE TABLE [scheduler].[task_comments] (
+      id          INT PRIMARY KEY,
+      task_id     INT NOT NULL,
+      project     NVARCHAR(255),
+      author_id   INT,
+      author_name NVARCHAR(255) NOT NULL,
+      body        NVARCHAR(MAX) NOT NULL,
+      mentions    NVARCHAR(MAX),
+      created_at  NVARCHAR(50),
+      updated_at  NVARCHAR(50)
+    );
+  `);
+
   console.log('[AzureDB:scheduler] Schema ready.');
 }
 
