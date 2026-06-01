@@ -37,7 +37,9 @@ const SHA_FILE          = path.join(APP_DIR, '.update-sha');
 const SAFE_DIRS = ['public'];
 
 // Individual files safe to replace
-const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore'];
+const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore', 'server.js',
+                    'auth.js', 'cronJobs.js', 'emailService.js',
+                    'azureSync.js', 'azureDb.js'];
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
