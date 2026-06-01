@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SDC Scheduler</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css" />
-  <link rel="stylesheet" href="auth-ui.css" />
+  <link rel="stylesheet" href="styles.css?v=20260601-2" />
+  <link rel="stylesheet" href="auth-ui.css?v=20260601-2" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -748,22 +748,25 @@
   <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
+  <!-- Cache-bust local scripts via a ?v= query string. The number gets
+       bumped any time a Dan-side render fix needs to forcibly invalidate
+       a browser's cached copy of app.js / phases.js / etc. -->
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->
-  <script src="auth-ui.js"></script>
-  <script src="phases.js"></script>
-  <script src="release-notes.js"></script>
-  <script src="app.js"></script>
+  <script src="auth-ui.js?v=20260601-2"></script>
+  <script src="phases.js?v=20260601-2"></script>
+  <script src="release-notes.js?v=20260601-2"></script>
+  <script src="app.js?v=20260601-2"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
        loadCommentCounts, and initCommentsUI are available to app.js. -->
-  <script src="comments-ui.js"></script>
+  <script src="comments-ui.js?v=20260601-2"></script>
   <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
        broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
-  <script src="realtime-ui.js"></script>
+  <script src="realtime-ui.js?v=20260601-2"></script>
   <!-- Phase 4.1: "who's editing" presence pills, top-right under the user pill. -->
-  <script src="presence-ui.js"></script>
+  <script src="presence-ui.js?v=20260601-2"></script>
 </body>
 </html>
