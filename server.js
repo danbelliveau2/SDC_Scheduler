@@ -126,6 +126,22 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ user: req.authUser, auth_enabled: AUTH_ENABLED });
 });
 
+app.put('/api/auth/password', requireAuth, (req, res) => {
+  const { current_password, new_password } = req.body || {};
+  if (!current_password || !new_password)
+    return res.status(400).json({ error: 'current_password and new_password are required' });
+  if (String(new_password).length < 1)
+    return res.status(400).json({ error: 'new password cannot be empty' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.authUser.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!bcrypt.compareSync(current_password, user.password_hash))
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  const hash = bcrypt.hashSync(String(new_password), 12);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, user.id);
+  sync('task_comments'); // keep Azure in sync (users table via push)
+  res.json({ ok: true, message: 'Password updated successfully' });
+});
+
 app.post('/api/auth/register', (req, res) => {
   // Self-registration. When auth is off this just inserts a user record;
   // when on, the first user to register gets editor unless they hit

@@ -181,12 +181,70 @@ function _renderUserPill() {
     <span class="sdc-auth-avatar" style="background:${u.avatar_color || '#1574c4'};">${initials}</span>
     <span class="sdc-auth-name">${u.name}</span>
     <span class="sdc-auth-role">${u.role}</span>
+    <button type="button" class="sdc-auth-changepw" title="Change password">🔑</button>
     <button type="button" class="sdc-auth-signout" title="Sign out">×</button>
   `;
   pill.querySelector('.sdc-auth-signout').addEventListener('click', () => window.sdcAuth.signOut());
+  pill.querySelector('.sdc-auth-changepw').addEventListener('click', () => _showChangePasswordModal());
 
-  // Fixed at the bottom-left of the main content area — just past the
-  // sidebar, on the same row as the Quote vs Schedule button and the
-  // sidebar's Rev pin. Always visible regardless of which view is active.
   document.body.appendChild(pill);
+}
+
+// ── Change password modal ─────────────────────────────────────────────────
+function _showChangePasswordModal() {
+  document.getElementById('sdc-change-pw-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.id = 'sdc-change-pw-modal';
+  modal.className = 'sdc-auth-modal-backdrop is-open';
+  modal.innerHTML = `
+    <div class="sdc-auth-modal" role="dialog" aria-label="Change password">
+      <h2>Change password</h2>
+      <p class="sdc-auth-modal-sub">Signed in as ${window.sdcAuth.user?.name || ''}</p>
+      <form id="sdc-change-pw-form">
+        <label>Current password
+          <input type="password" name="current_password" required autocomplete="current-password" />
+        </label>
+        <label>New password
+          <input type="password" name="new_password" required autocomplete="new-password" minlength="1" />
+        </label>
+        <p class="sdc-auth-error" id="sdc-change-pw-error" hidden></p>
+        <p id="sdc-change-pw-ok" hidden style="color:#059669;font-size:13px;margin:8px 0;">Password updated!</p>
+        <div style="display:flex;gap:8px;margin-top:4px;">
+          <button type="submit" class="btn-primary" style="flex:1;">Update</button>
+          <button type="button" id="sdc-change-pw-cancel" style="flex:1;">Cancel</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.querySelector('#sdc-change-pw-cancel').addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  modal.querySelector('#sdc-change-pw-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const data   = Object.fromEntries(new FormData(e.target).entries());
+    const errEl  = modal.querySelector('#sdc-change-pw-error');
+    const okEl   = modal.querySelector('#sdc-change-pw-ok');
+    const btn    = modal.querySelector('button[type="submit"]');
+    errEl.hidden = true;
+    okEl.hidden  = true;
+    btn.disabled = true;
+    try {
+      const r = await fetch('/api/auth/password', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || 'Update failed');
+      okEl.hidden = false;
+      e.target.reset();
+      setTimeout(() => modal.remove(), 1500);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  modal.querySelector('input[name="current_password"]').focus();
 }
