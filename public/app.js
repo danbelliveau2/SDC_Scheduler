@@ -1557,6 +1557,16 @@ function renderTable() {
       }
       const dPath = groupPath(group.key, dept.key);
       const dCollapsed = collapsedGroups.has(dPath);
+      // Count tasks at the dept level + every sub-dept underneath. If the
+      // total is zero, skip rendering the dept header entirely — sales
+      // schedules + section 50 / install / teardown live at the section
+      // level with no dept, and the empty SHOP / ENGINEERING / TEARDOWN
+      // skeleton headers were just noise.
+      const deptTaskCount =
+        (buckets[dPath]?.length || 0)
+        + dept.subs.reduce((sum, sub) =>
+            sum + (buckets[groupPath(group.key, dept.key, sub.key)]?.length || 0), 0);
+      if (deptTaskCount === 0) continue;
       // For section 10, the Engineering and Shop departments are pure containers —
       // every task lives in a sub-department under them. The container header reads as
       // visual noise, so we skip it and let the sub-deps render directly under the
@@ -1574,11 +1584,14 @@ function renderTable() {
         for (const t of deptLevelTasks) html += renderTaskRow(t, 3);
         for (const sub of dept.subs) {
           const sPath = groupPath(group.key, dept.key, sub.key);
+          const tasks = buckets[sPath] || [];
+          // Skip empty sub-dept headers — same rule as dept-level above:
+          // no tasks → no header. Keeps sales projects clean.
+          if (tasks.length === 0) continue;
           const sCollapsed = collapsedGroups.has(sPath);
           html += headerRowHtml(3, sub.label, sPath, sCollapsed,
             { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key });
           if (sCollapsed) continue;
-          const tasks = buckets[sPath] || [];
           for (const t of tasks) html += renderTaskRow(t, 4);
         }
       } else {
@@ -3094,8 +3107,8 @@ function compressGanttToWorkDays() {
     //
     // Adaptive density rules (all-or-nothing — never every-other):
     //   weekW = 5 * pxPerDay (one full work-week wide on screen).
-    //   - weekW >= 25px: date numbers shown (kicks in ~zoom 3)
-    //   - weekW <  25px: date numbers SKIPPED (would crowd & overlap)
+    //   - weekW >= 14px: date numbers shown (kicks in ~zoom 2)
+    //   - weekW <  14px: date numbers SKIPPED (would crowd & overlap)
     //   For month names, computed AFTER walking based on each month's
     //   visible width — if < 70px, switch to short "Nov" form; if even
     //   that doesn't fit, fall back to truncated text.
@@ -3103,7 +3116,7 @@ function compressGanttToWorkDays() {
     const startDow = new Date(startMs).getUTCDay();
     const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
     const weekW = 5 * pxPerDay;
-    const showDateNumbers = weekW >= 25;
+    const showDateNumbers = weekW >= 14;
     let walkMs = startMs + daysToFirstMonday * 86400000;
     let lastMonthLabel = '';
     const monthLabels = []; // [{ startX, label, monthIndex, endX }]
@@ -9620,28 +9633,37 @@ async function openQuoteCompareModal(project, providedQuote) {
   // single "Test and Debug Machine" row to keep the timeline readable.
   // FAT and Ship Machine show as milestone markers (info rows) so the modal
   // mirrors the schedule structure end-to-end.
+  // `consolidateAs` (sales mode only): when the user clicks Apply and the
+  // schedule has more than one task contributing to this combined row, the
+  // extra tasks are DELETED and the survivor is renamed to this canonical
+  // name. Matches the SDC_Sales_Template naming so a multi-task project
+  // collapses to the same shape as a freshly-stamped sales schedule.
   const SECTIONS_SALES = [
     {
       title: 'Section 10 — Design & Build',
       rows: [
         { k: 'mech_eng',       label: 'Mechanical Design' },
         { k: 'ce_engineering', label: 'Controls Design',
-          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'] },
+          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'],
+          consolidateAs: 'Controls Design and Machine Software' },
         { k: 'gen_engineering', label: 'Device Programming',
-          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'] },
+          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'],
+          consolidateAs: 'Device Programming' },
         { k: 'build',          label: 'Mechanical Assembly' },
         { k: 'elec_build',     label: 'Electrical Assembly',
-          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'] },
+          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'],
+          consolidateAs: 'Electrical Assembly/Machine Wiring' },
       ],
     },
     {
       title: 'Section 40 — Machine Testing',
       rows: [
-        { k: 'configure',  label: 'Configure Machine' },
-        // Test/Debug Machine — single row covering BOTH the engineering and
-        // shop sides of section 40 testing.
-        { k: 'test_debug', label: 'Test and Debug Machine',
-          keys: ['test_debug', 'shop_debug'] },
+        // Complete Machine Testing — ONE row covering Configure Machine +
+        // the engineering/shop Test/Debug. Sales schedules don't break
+        // these out; the single bar reads cleaner against the timeline.
+        { k: 'test_debug', label: 'Complete Machine Testing',
+          keys: ['configure', 'test_debug', 'shop_debug'],
+          consolidateAs: 'Complete Machine Testing' },
         // FAT — milestone anchor. Shows as an info row with no hours.
         { k: 'fat',        label: 'FAT', milestone: true },
       ],
@@ -9868,13 +9890,43 @@ async function openQuoteCompareModal(project, providedQuote) {
     updateApplyButtonState();
   }
 
+  // Returns the combined sales-mode rows that currently have >1 contributing
+  // task. These get auto-consolidated on Apply even when the user didn't
+  // edit Weeks/People/Quoted — opening the modal on a schedule with broken-out
+  // HMI/Robot/Vision and hitting Apply should still collapse them.
+  function pendingConsolidationRows() {
+    if (!isSales) return [];
+    const out = [];
+    for (const section of SECTIONS) {
+      for (const r of section.rows) {
+        if (!r.consolidateAs) continue;
+        const keys = r.keys || [r.k];
+        const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
+        if (taskIds.length > 1) out.push(r);
+      }
+    }
+    return out;
+  }
   function updateApplyButtonState() {
-    const hasPending = Object.keys(pendingPeople).length > 0
+    const hasEdits = Object.keys(pendingPeople).length > 0
       || Object.keys(pendingQuoted).length > 0
       || Object.keys(pendingWeeks).length > 0;
+    const consolidation = pendingConsolidationRows();
+    const hasPending = hasEdits || consolidation.length > 0;
     const btn = overlay.querySelector('#quote-apply-btn');
     const hint = overlay.querySelector('#quote-pending-hint');
-    if (btn) btn.disabled = !hasPending;
+    if (btn) {
+      btn.disabled = !hasPending;
+      // When the only "pending" thing is consolidation, surface it on the
+      // button so the user knows what Apply is about to do.
+      if (!hasEdits && consolidation.length > 0) {
+        btn.textContent = `Apply (consolidate ${consolidation.length} row${consolidation.length > 1 ? 's' : ''})`;
+        btn.title = 'Lump broken-out sub-tasks into a single task per combined row: ' + consolidation.map(r => r.label).join(', ');
+      } else {
+        btn.textContent = 'Apply';
+        btn.title = '';
+      }
+    }
     if (hint) hint.hidden = !hasPending;
   }
 
@@ -9941,29 +9993,90 @@ async function openQuoteCompareModal(project, providedQuote) {
           body: JSON.stringify(updated),
         });
       }
-      // 2) Weeks → task duration_days (proportional across multi-task buckets)
-      for (const [rowKey, newWeeks] of Object.entries(pendingWeeks)) {
+      // 2) Weeks → task duration_days (and optionally consolidation).
+      // Sales mode + a row with consolidateAs + 2+ tasks in the bucket →
+      // collapse to a single task whose duration matches the new weeks.
+      // Otherwise: detailed mode (or single-task bucket) just scales
+      // duration_days proportionally across the existing tasks.
+      let consolidatedCount = 0;
+      // Build a unified list of rows to process:
+      //   - every row the user edited Weeks on
+      //   - every sales combined row with >1 contributing task (consolidates
+      //     even when the user didn't manually edit weeks)
+      const processedKeys = new Set();
+      const apply = [];
+      for (const [rowKey, w] of Object.entries(pendingWeeks)) {
         const r = rowsByKey[rowKey];
         if (!r) continue;
+        apply.push({ r, newWeeks: w });
+        processedKeys.add(rowKey);
+      }
+      for (const r of pendingConsolidationRows()) {
+        if (processedKeys.has(r.k)) continue;
+        // No explicit weeks edit — use the current totalWeeks for this row
+        // (computed from the current scheduled days across keys).
+        const keys = r.keys || [r.k];
+        const days = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const weeks = days > 0 ? days / 5 : 0;
+        apply.push({ r, newWeeks: weeks });
+        processedKeys.add(r.k);
+      }
+      // Snap duration_days to the nearest 2.5 — Dan rule: weeks display as
+      // whole or half values ONLY. 2.5 work-days = 0.5 work-weeks; anything
+      // else produces awkward 9.6W / 6.2W / 1.6W cells.
+      const snapHalfWeek = (days) => Math.max(0, Math.round(Number(days) / 2.5) * 2.5);
+      for (const { r, newWeeks } of apply) {
         const keys = r.keys || [r.k];
         const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
         if (taskIds.length === 0) continue;
-        const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
-        const newDays = newWeeks * 5;
-        if (taskIds.length === 1 || currentTotalDays === 0) {
+        const newDays = snapHalfWeek(newWeeks * 5);
+
+        const shouldConsolidate = isSales && r.consolidateAs && taskIds.length > 1;
+        if (shouldConsolidate) {
+          // Pick the survivor: prefer a task whose name already matches the
+          // canonical consolidated name; otherwise take the lowest-id task
+          // (deterministic, won't pick a clone). Rename + resize the
+          // survivor; delete the rest.
+          const tasks = taskIds
+            .map(id => state.tasks.find(x => x.id === id))
+            .filter(Boolean);
+          let survivor = tasks.find(t => (t.name || '').trim() === r.consolidateAs);
+          if (!survivor) survivor = tasks.reduce((a, b) => (a.id <= b.id ? a : b));
+          await api.update(survivor.id, {
+            duration_days: newDays,
+            name: r.consolidateAs,
+          });
+          for (const t of tasks) {
+            if (t.id === survivor.id) continue;
+            await api.remove(t.id);
+            consolidatedCount++;
+          }
+        } else if (taskIds.length === 1) {
           await api.update(taskIds[0], { duration_days: newDays });
         } else {
-          for (const id of taskIds) {
-            const t = state.tasks.find(x => x.id === id);
-            if (!t) continue;
-            const oldD = Number(t.duration_days) || 0;
-            const scaled = (oldD / currentTotalDays) * newDays;
-            await api.update(id, { duration_days: scaled });
+          // Multi-task bucket without consolidation (detailed mode, or a
+          // sales row without a canonical target) — scale proportionally
+          // so each contributing task keeps its share of the total. Snap
+          // each scaled duration to the nearest half-week.
+          const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+          if (currentTotalDays === 0) {
+            await api.update(taskIds[0], { duration_days: newDays });
+          } else {
+            for (const id of taskIds) {
+              const t = state.tasks.find(x => x.id === id);
+              if (!t) continue;
+              const oldD = Number(t.duration_days) || 0;
+              const scaled = snapHalfWeek((oldD / currentTotalDays) * newDays);
+              await api.update(id, { duration_days: scaled });
+            }
           }
         }
       }
       await loadTasks();
-      showToast('Schedule updated.', { kind: 'success' });
+      const msg = consolidatedCount > 0
+        ? `Schedule updated — ${consolidatedCount} task(s) consolidated.`
+        : 'Schedule updated.';
+      showToast(msg, { kind: 'success' });
       close();
     } catch (err) {
       showToast('Failed to apply: ' + (err.message || err), { kind: 'error' });
