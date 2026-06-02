@@ -5820,6 +5820,96 @@ function syncBaselineButtons() {
 // workspace as a collapsible section; click the header row to expand /
 // collapse. Project rows inside each section open as a tab on click.
 // "+ New schedule" button per workspace (disabled for Closed).
+// Sales → detailed project promote modal. Prompts for the new project
+// name, calls the server's /api/project/:source/promote, then opens
+// the freshly-stamped project as the active tab.
+function openPromoteModal(sourceProject) {
+  const existing = document.getElementById('promote-modal');
+  if (existing) existing.remove();
+  // Default name: `<sales> — detailed`. Strip a trailing " — detailed" if
+  // somehow the user is promoting an already-promoted project so we don't
+  // end up with " — detailed — detailed".
+  const baseName = sourceProject.replace(/ — detailed$/, '');
+  const suggestedName = `${baseName} — detailed`;
+  const overlay = document.createElement('div');
+  overlay.id = 'promote-modal';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-head">
+        <h2>Promote to detailed project</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 12px;font-size:13px;color:#334155;">
+          Stamps a fresh schedule from <code>SDC_StandardProject_Template</code>
+          and copies <strong>${escapeHtml(sourceProject)}</strong>'s saved
+          quote across — hours per bucket, People # (incl. fractional
+          values like 1.25), and any manual Quoted-hours overrides.
+        </p>
+        <p style="margin:0 0 16px;font-size:12px;color:#64748b;">
+          People-math: a sales value of <em>1.25 ce_engineering</em>
+          becomes 1 CE row @ 85% + 1 helper row @ 25% on the detailed
+          schedule. Durations recompute so total hours per discipline
+          match the sales quote, then cascadeSchedule fills in dates.
+        </p>
+        <label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:6px;">
+          New project name
+        </label>
+        <input type="text" id="promote-name-input" value="${escapeHtml(suggestedName)}"
+               style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:4px;font-size:14px;font-family:inherit;" />
+        <p class="promote-error" id="promote-error" style="background:#fee2e2;color:#991b1b;padding:8px 10px;border-radius:4px;font-size:13px;margin:10px 0 0;display:none;"></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+        <button type="button" class="btn-primary" data-action="confirm" id="promote-confirm-btn">Promote</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector('.modal-close').onclick = close;
+  overlay.querySelector('[data-action="cancel"]').onclick = close;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const input    = overlay.querySelector('#promote-name-input');
+  const errorEl  = overlay.querySelector('#promote-error');
+  const showErr  = (msg) => { errorEl.textContent = msg; errorEl.style.display = ''; };
+  const hideErr  = () => { errorEl.style.display = 'none'; };
+  input.addEventListener('input', hideErr);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') overlay.querySelector('[data-action="confirm"]').click(); });
+  setTimeout(() => input.select(), 50);
+  overlay.querySelector('[data-action="confirm"]').addEventListener('click', async () => {
+    const newName = input.value.trim();
+    if (!newName) { showErr('Name is required.'); return; }
+    if (newName === sourceProject) { showErr('New name must differ from the source.'); return; }
+    const btn = overlay.querySelector('#promote-confirm-btn');
+    btn.disabled = true;
+    btn.textContent = 'Promoting…';
+    try {
+      const r = await fetch(`/api/project/${encodeURIComponent(sourceProject)}/promote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newName }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || 'Promotion failed');
+      close();
+      if (typeof showToast === 'function') showToast(`Created "${newName}" from ${sourceProject}.`, { kind: 'success' });
+      // Open the new project as the active tab.
+      if (!state.openProjects.includes(newName)) state.openProjects.push(newName);
+      state.filters.project = newName;
+      state.activeWorkspace = 'Active';
+      recordRecentProject(newName);
+      saveProjectTabs();
+      await loadTasks();
+      setView('schedule');
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Promote';
+      showErr(err.message || String(err));
+    }
+  });
+}
+
 function renderProjectsPage() {
   const root = document.getElementById('projects-page');
   if (!root) return;
@@ -5849,9 +5939,18 @@ function renderProjectsPage() {
       ? '<span class="projects-row-star" title="Template">★</span>'
       : '<span class="projects-row-star" style="visibility:hidden">★</span>';
     const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? '★' : '☆'}</button>`;
+    // Sales-mode projects (non-templates in the Sales workspace) get an
+    // inline "→ Project" promotion button. Clicking it stamps a fresh
+    // detailed schedule from SDC_StandardProject_Template and carries
+    // the saved quote across so Quote vs Schedule lights up immediately.
+    const isSalesProject = !isTmpl && projectWorkspace(p) === 'Sales';
+    const promoteBtn = isSalesProject
+      ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project. Stamps SDC_StandardProject_Template tasks, copies the saved quote (hours + people #), and applies the sales people-math (e.g. 1.25 people → 1 @ 85% + 1 @ 25%).">→ Project</button>`
+      : '';
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
       ${star}<span class="projects-row-name">${escapeHtml(p)}</span>
       ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
+      ${promoteBtn}
       ${favBtn}
     </div>`;
   };
@@ -5916,6 +6015,13 @@ function renderProjectsPage() {
     row.addEventListener('click', (e) => {
       // Star button intercept — toggles favorite, doesn't open the project.
       if (e.target.closest('[data-action="toggle-fav"]')) return;
+      // Promote button intercept — opens the sales → detailed promote modal.
+      if (e.target.closest('[data-action="promote"]')) {
+        e.stopPropagation();
+        const p = e.target.closest('[data-action="promote"]').dataset.project;
+        if (p) openPromoteModal(p);
+        return;
+      }
       const p = row.dataset.project;
       if (!p) return;
       if (!state.openProjects.includes(p)) state.openProjects.push(p);
@@ -9775,7 +9881,12 @@ async function openQuoteCompareModal(project, providedQuote) {
           : `${taskCount} tasks in this bucket — editing scales each proportionally.`);
     const weeksDisabled = taskCount === 0 ? 'disabled' : '';
     const pendingMark = (pendingPeople[r.k] !== undefined || pendingQuoted[r.k] !== undefined || pendingWeeks[r.k] !== undefined) ? ' is-pending' : '';
-    return `<tr class="quote-row${pendingMark}" data-row-key="${escapeHtml(r.k)}">
+    // Highlight rows where the schedule has tasks BUT no quoted hours
+    // have been entered yet — that's a sales-promoted detailed bucket
+    // whose hours the user still needs to type in. Amber stripe + the
+    // tooltip on the Quoted cell hints at what to do.
+    const needsQuoteMark = (st.q === 0 && taskCount > 0 && !r.milestone) ? ' needs-quote' : '';
+    return `<tr class="quote-row${pendingMark}${needsQuoteMark}" data-row-key="${escapeHtml(r.k)}">
       <td>${escapeHtml(r.label)}</td>
       <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
       <td class="num"><input type="number" min="0.25" max="99" step="0.25" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${(+st.ppl).toFixed(2).replace(/\.?0+$/, '')}" title="People assigned to this phase. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People." /></td>

@@ -2676,6 +2676,244 @@ app.post('/api/projects/ensure', requireRole('editor'), async (req, res) => {
   res.json(row);
 });
 
+// ─── Sales → detailed project promotion ────────────────────────────────────
+// Takes an existing sales schedule, stamps a fresh project from
+// SDC_StandardProject_Template, carries the saved quote over, and applies
+// people-math: sales `1.25 mech_eng` people becomes 1 ME row at standard
+// allocation + 1 ME row at 25% allocation (Dan rule). Durations recompute
+// so total hours per discipline match the sales quote, then cascadeSchedule
+// fills in start/end dates.
+//
+// POST /api/project/:source/promote
+// Body: { newName }
+function _serverTaskBucket(t) {
+  const raw = String(t.name || '').trim();
+  const base = raw.replace(/[\s\-_]\d+\s*$/, '').trim();
+  const test = (re) => re.test(base) || re.test(raw);
+  const pg = t.phase_group, d = t.department, sd = t.sub_department;
+  if (test(/^configure machine/i))                return 'configure';
+  if (test(/^(engineering\s*testing|me\s*(&|and)\s*ce.*test)/i)) return 'test_debug';
+  if (test(/test\/?debug.*(engineer|machine)/i))   return 'test_debug';
+  if (pg === 'machine_testing' && d === 'engineering') return 'test_debug';
+  if (test(/^(shop\s*debug|shop\s*testing)/i))    return 'shop_debug';
+  if (test(/^mb\s*(&|and)\s*eb.*test/i))          return 'shop_debug';
+  if (pg === 'machine_testing' && d === 'shop')   return 'shop_debug';
+  if (test(/^(controls|ce)\s*(engineering|eng)\b/i)) return 'ce_engineering';
+  if (test(/^(controls|ce)[\s\-_]?software/i))    return 'ce_software';
+  if (test(/^(controls|ce)[\s\-_]?design/i))      return 'ce_design';
+  if (test(/^(controls|ce)[\s\-_]?drawings?/i))   return 'ce_drawings';
+  if (test(/^hmi/i))                              return 'gen_hmi';
+  if (test(/^robot/i))                            return 'gen_robot';
+  if (test(/^vision/i))                           return 'gen_vision';
+  if (test(/^(device|general)\s*(programming|engineering)|general machine programming/i)) return 'gen_engineering';
+  if (test(/^electrical\s*build/i))               return 'elec_build';
+  if (test(/wire[\s\-_]?panel|panel[\s\-_]?(build|wir)/i)) return 'wire_panel';
+  if (test(/wire[\s\-_]?machine|machine[\s\-_]?wir/i))    return 'wire_machine';
+  if (test(/^(build|builder)\b/i) && pg === 'design_build')                  return 'build';
+  if (test(/^(mech|mechanical)[\s\-_]?(design|eng)/i) && pg === 'design_build') return 'mech_eng';
+  if (pg === 'design_build' && sd === 'mech')     return 'mech_eng';
+  if (pg === 'design_build' && sd === 'controls') return 'ce_engineering';
+  if (pg === 'design_build' && sd === 'general')  return 'gen_engineering';
+  if (pg === 'design_build' && sd === 'build')    return 'build';
+  if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
+  if (pg === 'teardown_install' && d === 'teardown') return 'teardown';
+  if (pg === 'teardown_install' && d === 'install')  return 'install';
+  return null;
+}
+
+// Sales-mode bucket sums. A sales-mode "ce_engineering" people # rolls down
+// to all detailed CE buckets (design / drawings / software); same for
+// gen_engineering → hmi/robot/vision and elec_build → wire_panel/wire_machine.
+const _PROMOTE_PEOPLE_FANOUT = {
+  ce_engineering:  ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'],
+  gen_engineering: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'],
+  elec_build:      ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'],
+};
+
+// Discipline-default allocation per bucket (Dan rule). Engineering disciplines
+// run at 85%; shop/build/wire run at 90%; testing engineering at 85%; shop
+// testing at 90%. These match the standard template's defaults.
+function _promoteDefaultAlloc(bucket) {
+  if (!bucket) return 90;
+  if (bucket === 'configure' || bucket === 'test_debug') return 85;
+  if (bucket === 'shop_debug') return 90;
+  if (bucket === 'mech_eng' || bucket.startsWith('ce_') || bucket.startsWith('gen_')) return 85;
+  return 90;
+}
+
+app.post('/api/project/:source/promote', requireRole('editor'), async (req, res) => {
+  const source  = (req.params.source || '').toString().trim();
+  const newName = (req.body.newName || '').toString().trim();
+  if (!source || !newName) return res.status(400).json({ error: 'source + newName required' });
+  if (source === newName) return res.status(400).json({ error: 'newName must differ from source' });
+
+  // Sanity: source must exist (any project), and newName must not collide.
+  const sourceExists = db.prepare('SELECT 1 FROM projects WHERE name = ?').get(source)
+    || db.prepare('SELECT 1 FROM tasks WHERE project = ? LIMIT 1').get(source);
+  if (!sourceExists) return res.status(404).json({ error: `source project '${source}' not found` });
+  const collide = db.prepare('SELECT 1 FROM projects WHERE name = ?').get(newName)
+    || db.prepare('SELECT 1 FROM tasks WHERE project = ? LIMIT 1').get(newName);
+  if (collide) return res.status(409).json({ error: `project '${newName}' already exists` });
+
+  // Template lookup.
+  const TEMPLATE = 'SDC_StandardProject_Template';
+  const templateTasks = db.prepare('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id').all(TEMPLATE);
+  if (!templateTasks.length) return res.status(500).json({ error: `${TEMPLATE} has no tasks — can't promote` });
+
+  // Source quote (may be null if estimate never attached).
+  const quoteRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(`project_quote:${source}`);
+  let quote = null;
+  if (quoteRow) { try { quote = JSON.parse(quoteRow.value); } catch (_) { quote = null; } }
+  const peopleBreakdown = (quote && quote.people_breakdown) || {};
+  const overrides       = (quote && quote.quoted_overrides) || {};
+
+  // Hours per bucket from the parsed estimate sheet — same math as the
+  // Quote vs Schedule modal does at render time.
+  const safe = (v) => Math.round(v || 0);
+  const hb   = (quote && quote.hours_breakdown) || {};
+  const s10 = hb.section_10 || {}, s40 = hb.section_40 || {}, s50 = hb.section_50 || {};
+  const bucketHours = {
+    mech_eng:     safe(s10.mech) + safe(s50.mech),
+    ce_design:    safe(s10.ce_des),
+    ce_drawings:  safe(s10.ce_drw),
+    ce_software:  safe(s10.ce_sw),
+    gen_hmi:      safe(s10.hmi)    + safe(s40.hmi),
+    gen_robot:    safe(s10.robot)  + safe(s40.robot),
+    gen_vision:   safe(s10.vision) + safe(s40.vision),
+    build:        safe(s10.build),
+    wire_panel:   safe(s10.wire_panel),
+    wire_machine: safe(s10.wire_machine),
+    test_debug:   safe(s40.mech) + safe(s40.ce_des) + safe(s40.ce_drw) + safe(s40.ce_sw)
+                  + safe(s40.hmi) + safe(s40.robot) + safe(s40.vision),
+    configure:    0,
+    shop_debug:   safe(s40.build) + safe(s40.wire_panel) + safe(s40.wire_machine),
+    teardown:     safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine),
+    install:      safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
+                  + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision),
+  };
+  bucketHours.configure  = Math.round(bucketHours.test_debug * 0.05);
+  bucketHours.test_debug = bucketHours.test_debug - bucketHours.configure;
+  for (const k of Object.keys(overrides)) {
+    const v = Number(overrides[k]);
+    if (Number.isFinite(v) && v >= 0) bucketHours[k] = Math.round(v);
+  }
+
+  // Resolve effective people count per detailed bucket — fans out the
+  // sales-mode aggregate disciplines (ce_engineering / gen_engineering /
+  // elec_build) to their detailed sub-buckets when the user typed the
+  // sales-level value but the template uses the detailed names.
+  const effectivePeople = (bucket) => {
+    if (!bucket) return 1;
+    const direct = Number(peopleBreakdown[bucket]);
+    if (Number.isFinite(direct) && direct > 0) return direct;
+    for (const [salesKey, fanout] of Object.entries(_PROMOTE_PEOPLE_FANOUT)) {
+      if (fanout.includes(bucket)) {
+        const v = Number(peopleBreakdown[salesKey]);
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+    }
+    return 1;
+  };
+
+  // ── Begin promotion ─────────────────────────────────────────────────────
+  db.prepare('INSERT INTO projects (name, workspace) VALUES (?, ?) ON CONFLICT(name) DO NOTHING')
+    .run(newName, 'Active');
+
+  // Map old template task IDs → newly-inserted IDs so we can re-point
+  // predecessors after the copy.
+  const idMap = new Map();
+  const insertCols = ['name','project','phase','phase_group','department','sub_department','assignee','start_date','end_date','duration_days','predecessors','is_milestone','progress','allocation','priority','notes','sort_order','anchor_key','baseline_start_date','baseline_end_date','duration_link_task_id','is_action','completed_on','machine'];
+  const insertStmt = db.prepare(`INSERT INTO tasks (${insertCols.join(',')}) VALUES (${insertCols.map(() => '?').join(',')})`);
+
+  // Phase 1: stamp tasks (predecessors will be remapped in pass 2).
+  for (const t of templateTasks) {
+    const r = insertStmt.run(
+      t.name, newName, t.phase, t.phase_group, t.department, t.sub_department,
+      t.assignee, t.start_date, t.end_date, t.duration_days, null /* preds remapped pass 2 */,
+      t.is_milestone ? 1 : 0, 0, t.allocation, t.priority, t.notes, t.sort_order,
+      t.anchor_key, null, null, null, t.is_action ? 1 : 0, null, 'M1'
+    );
+    idMap.set(t.id, r.lastInsertRowid);
+  }
+
+  // Phase 2: remap predecessors using the same FS/SS/FF/SF + lag tokens but
+  // with the new IDs. Tokens that reference IDs we didn't copy (extremely
+  // rare for templates) get dropped silently.
+  const updPred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
+  for (const t of templateTasks) {
+    const newId = idMap.get(t.id);
+    if (!newId || !t.predecessors) continue;
+    const remapped = String(t.predecessors).split(',').map(s => s.trim()).filter(Boolean).map(tok => {
+      const m = tok.match(/^(\d+)(.*)$/);
+      if (!m) return tok;
+      const oldRef = Number(m[1]);
+      const newRef = idMap.get(oldRef);
+      return newRef ? `${newRef}${m[2]}` : null;
+    }).filter(Boolean).join(',');
+    if (remapped) updPred.run(remapped, newId);
+  }
+
+  // Phase 3: people-math + duration recompute per discipline bucket.
+  // Group new project tasks by bucket; for each bucket, apply Dan's rule.
+  const newTasks = db.prepare('SELECT * FROM tasks WHERE project = ? AND (is_milestone IS NULL OR is_milestone = 0) AND anchor_key IS NULL ORDER BY sort_order, id').all(newName);
+  const tasksByBucket = {};
+  for (const t of newTasks) {
+    const b = _serverTaskBucket(t);
+    if (!b) continue;
+    (tasksByBucket[b] ||= []).push(t);
+  }
+  const updTask = db.prepare('UPDATE tasks SET duration_days = ?, allocation = ? WHERE id = ?');
+  const snapHalfWeek = (days) => Math.max(0, Math.round(Number(days) / 2.5) * 2.5);
+  for (const [bucket, tasks] of Object.entries(tasksByBucket)) {
+    const hours  = bucketHours[bucket] || 0;
+    const people = effectivePeople(bucket);
+    const baseAlloc = _promoteDefaultAlloc(bucket);
+    // People-allocation distribution. Each task in the bucket gets one
+    // "slot." Slots 1..floor(people) get baseAlloc; slot floor+1 (if a
+    // fractional remainder exists) gets fractional*100; remaining slots
+    // get baseAlloc too (template might have more rows than we expected;
+    // safer to keep them at default than to zero them out).
+    const fullSlots = Math.floor(people);
+    const fracSlot  = Math.round((people - fullSlots) * 100);
+    let dailyHourCapacity = 0;
+    const slotAllocs = tasks.map((_, idx) => {
+      if (idx < fullSlots)            return baseAlloc;
+      if (idx === fullSlots && fracSlot > 0) return fracSlot;
+      return baseAlloc;
+    });
+    for (const a of slotAllocs) dailyHourCapacity += 8 * (a / 100);
+    // Skip duration override when we have no quoted hours OR no capacity
+    // (leave template defaults in place — the user can dial it in via the
+    // Quote vs Schedule modal).
+    const newDays = (hours > 0 && dailyHourCapacity > 0)
+      ? snapHalfWeek(hours / dailyHourCapacity)
+      : null;
+    tasks.forEach((t, idx) => {
+      const alloc = slotAllocs[idx];
+      const dur   = newDays != null ? newDays : t.duration_days;
+      updTask.run(dur, alloc, t.id);
+    });
+  }
+
+  // Phase 4: copy the saved quote (hours_breakdown, people_breakdown,
+  // quoted_overrides). The new project gets the same dollar-value
+  // baseline so Quote vs Schedule on the detailed view reads correctly.
+  if (quote) {
+    const newQuoteKey = `project_quote:${newName}`;
+    db.prepare(`
+      INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+    `).run(newQuoteKey, JSON.stringify(quote));
+  }
+
+  // Phase 5: cascade so dates flow from the new durations + predecessors.
+  cascadeSchedule();
+
+  res.json({ project: newName });
+  io.emit('tasks:updated', { project: newName });
+  sync('tasks');
+});
+
 // ─── Phase 3 (Auth) — user management (admin only) ────────────────────────
 // Ported from Abhi's feature/smartsheet-architecture branch. Lets an admin
 // list, create, edit, and soft-delete (active=0) users without touching the
