@@ -5774,12 +5774,14 @@ function setProjectWorkspace(p, workspace) {
   if (!p) return;
   if (!WORKSPACES.includes(workspace)) return;
   state.projectWorkspaces = state.projectWorkspaces || {};
-  if (workspace === DEFAULT_WORKSPACE) {
-    // Keep the map clean — default-workspace projects don\'t need an entry.
-    delete state.projectWorkspaces[p];
-  } else {
-    state.projectWorkspaces[p] = workspace;
-  }
+  // ALWAYS write the explicit value — even 'Active'. The auto-detect by
+  // name (used as a fallback in projectWorkspace) returns 'Sales' for any
+  // name matching /_sales/, which used to override an explicit 'Active'
+  // setting because we'd clear the map entry. e.g. "Test_Sales — Project"
+  // was being auto-tagged as Sales after promote despite the server
+  // setting workspace='Active'. Recording every explicit assignment fixes
+  // this; the trade-off is a slightly larger map.
+  state.projectWorkspaces[p] = workspace;
   saveProjectTabs();
 }
 
@@ -5894,6 +5896,12 @@ function openPromoteModal(sourceProject) {
       if (!r.ok) throw new Error(body.error || 'Promotion failed');
       close();
       if (typeof showToast === 'function') showToast(`Created "${newName}" from ${sourceProject}.`, { kind: 'success' });
+      // Pin the new project to the Active workspace explicitly. Without
+      // this, projectWorkspace's name-based auto-detect tags anything
+      // matching /_sales/ as Sales — so "Test_Sales — Project" would
+      // open with the sales-mode (combined) Quote vs Schedule rows
+      // instead of the detailed breakdown we just stamped.
+      setProjectWorkspace(newName, 'Active');
       // Open the new project as the active tab.
       if (!state.openProjects.includes(newName)) state.openProjects.push(newName);
       state.filters.project = newName;
@@ -15283,6 +15291,30 @@ function setupRevisionPill() {
 
 async function init() {
   await loadSettings();
+  // One-time sync: pull workspace assignments from the projects table so
+  // explicit DB values (e.g. a promoted project we just stamped as
+  // 'Active') win over the name-based auto-detect in projectWorkspace().
+  // Fire-and-forget; the modal/sales detection works fine without it on
+  // first boot, this just keeps the state.projectWorkspaces map fresh.
+  try {
+    const resp = await fetch('/api/projects');
+    if (resp.ok) {
+      const projects = await resp.json();
+      state.projectWorkspaces = state.projectWorkspaces || {};
+      for (const p of projects) {
+        if (!p || !p.name) continue;
+        // Server stores the legacy literal 'default' for projects that
+        // never had an explicit workspace set; map that to our canonical
+        // DEFAULT_WORKSPACE ('Active'). Anything else must be in the
+        // WORKSPACES list to count.
+        const raw = p.workspace || '';
+        const ws  = (raw === 'default' || raw === '') ? DEFAULT_WORKSPACE : raw;
+        if (!WORKSPACES.includes(ws)) continue;
+        state.projectWorkspaces[p.name] = ws;
+      }
+      try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
+    }
+  } catch (_) {}
 
   document.getElementById('btn-save-setup').addEventListener('click', saveSetup);
   document.getElementById('btn-reset-setup').addEventListener('click', discardSetup);
