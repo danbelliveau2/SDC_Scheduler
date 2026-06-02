@@ -10006,6 +10006,40 @@ async function openQuoteCompareModal(project, providedQuote) {
     </tr>`;
   }
 
+  // Compute totals for a set of rows (used for group-total rows + grand
+  // total). Skips milestones since they have no hours.
+  function computeRowsTotals(rows) {
+    let q = 0, s = 0, rem = 0;
+    for (const r of rows) {
+      if (r.milestone) continue;
+      const st = computeRowState(r);
+      q += st.q; s += st.s; rem += st.rem;
+    }
+    return { q, s, rem };
+  }
+  function buildGroupTotalRow(groupLabel, rows) {
+    const t = computeRowsTotals(rows);
+    const variance = t.s - t.q;
+    let varCls = 'var-zero';
+    if (t.q > 0) {
+      if (variance < 0) varCls = 'var-under';
+      else if (variance > t.q * 0.10) varCls = 'var-over';
+      else if (variance > 0) varCls = 'var-near';
+    }
+    const varText = t.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    return `<tr class="quote-row quote-group-total-row">
+      <td class="quote-group-total-label">${escapeHtml(groupLabel || 'Group')} total</td>
+      <td class="num">—</td>
+      <td class="num">—</td>
+      <td class="num quote-sched-cell">
+        <span class="quote-sched-q">${t.q ? t.q.toLocaleString() : '—'}</span>
+        <span class="quote-sched-slash">/</span>
+        <span class="quote-sched-s">${t.s.toLocaleString()}</span>
+      </td>
+      <td class="num quote-variance ${varCls}">${varText}</td>
+      ${isSales ? '' : `<td class="num">${t.rem.toLocaleString()}</td>`}
+    </tr>`;
+  }
   function buildRowsHtml() {
     return SECTIONS.map(section => {
       const head = `<tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>`;
@@ -10018,18 +10052,30 @@ async function openQuoteCompareModal(project, providedQuote) {
             ? `<tr class="quote-subsection-head"><td colspan="${colCount}">${escapeHtml(g.label)}</td></tr>`
             : '';
           const groupRows = g.rows.map(rowHtml).join('');
-          // "+ Add resource" sits at the end of each sub-group so the
-          // new task lands in the right bucket (e.g. clicking inside
-          // MECHANICAL ENGINEERING duplicates an ME task, not a CE one).
-          const lastTaskRow = [...g.rows].reverse().find(r => r.taskId);
-          const addRow = lastTaskRow
+          // Group total row — what Dan actually compares against the
+          // quote. Sums every row's Quoted / Scheduled / Variance /
+          // Remaining within the group. Sits below the rows + above
+          // the "+ Add resource" footer.
+          const totalRow = buildGroupTotalRow(g.label, g.rows);
+          // "+ Add resource" sits at the end of each sub-group with a
+          // dropdown listing the tasks in this group so the user picks
+          // which one to duplicate (instead of always cloning the last).
+          const optionsHtml = g.rows
+            .filter(r => r.taskId)
+            .map(r => `<option value="${r.taskId}">Duplicate "${escapeHtml(r.label)}"</option>`)
+            .join('');
+          const pickerRow = optionsHtml
             ? `<tr class="quote-row quote-add-resource-row">
                 <td colspan="${colCount}">
-                  <button type="button" class="quote-row-add" data-after-task-id="${lastTaskRow.taskId}">+ Add resource to ${escapeHtml(g.label || 'this group')}</button>
+                  <span style="font-size:12px;color:#475569;">+ Add resource to ${escapeHtml(g.label || 'this group')}:</span>
+                  <select class="quote-add-resource-select" data-group-key="${escapeHtml(g.key || '')}">
+                    <option value="">— pick a task to duplicate —</option>
+                    ${optionsHtml}
+                  </select>
                 </td>
               </tr>`
             : '';
-          return subHead + groupRows + addRow;
+          return subHead + groupRows + totalRow + pickerRow;
         }).join('');
       }
       // Sales mode (flat row list).
@@ -10285,61 +10331,70 @@ async function openQuoteCompareModal(project, providedQuote) {
         openQuoteCompareModal(project);
       });
     });
-    // Detailed mode: per-section "+ Add resource" button. Duplicates the
-    // last task in the section (auto-numbers its name if a numeric
-    // suffix exists) at the same allocation + sort_order tail.
+    // Shared helper — duplicates `sourceId` task in-place, auto-numbering
+    // the name based on the highest existing N-suffix in the same
+    // section, then re-renders the modal.
+    async function duplicateTaskInGroup(sourceId) {
+      const source = state.tasks.find(x => x.id === sourceId);
+      if (!source) return;
+      const match = String(source.name || '').match(/^(.*?)([\s\-_]?)(\d+)\s*$/);
+      let newName;
+      if (match) {
+        const stem = match[1].trim();
+        const sameStem = state.tasks
+          .filter(t => t.project === project && t.phase_group === source.phase_group)
+          .filter(t => String(t.name || '').startsWith(stem))
+          .map(t => {
+            const m = String(t.name).match(/(\d+)\s*$/);
+            return m ? Number(m[1]) : 0;
+          });
+        const next = Math.max(0, ...sameStem) + 1;
+        newName = `${stem} ${next}`;
+      } else {
+        newName = `${source.name} 2`;
+      }
+      const payload = {
+        name: newName,
+        project: source.project,
+        phase: source.phase,
+        phase_group: source.phase_group,
+        department: source.department,
+        sub_department: source.sub_department,
+        assignee: source.assignee,
+        duration_days: source.duration_days,
+        predecessors: source.predecessors,
+        is_milestone: 0,
+        progress: 0,
+        allocation: source.allocation,
+        priority: source.priority,
+        notes: source.notes,
+        sort_order: (Number(source.sort_order) || 0) + 0.5,
+        machine: source.machine,
+      };
+      await api.create(payload);
+      if (typeof showToast === 'function') showToast(`Added "${newName}".`, { kind: 'success' });
+      await loadTasks();
+      close();
+      openQuoteCompareModal(project);
+    }
+    // Detailed mode: per-group "+ Add resource" picker. Dropdown lists
+    // each task in the group; selecting one duplicates THAT specific
+    // task (instead of always cloning the last row).
+    overlay.querySelectorAll('.quote-add-resource-select').forEach(sel => {
+      sel.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        const sourceId = Number(sel.value);
+        if (!sourceId) return;
+        sel.disabled = true;
+        await duplicateTaskInGroup(sourceId);
+      });
+    });
+    // Legacy button path (kept for backward compat / future use).
     overlay.querySelectorAll('.quote-row-add').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const sourceId = Number(btn.dataset.afterTaskId);
-        const source = state.tasks.find(x => x.id === sourceId);
-        if (!source) return;
-        // Pick a new name: if source ends in " N" or similar, increment;
-        // else append " 2".
-        const match = String(source.name || '').match(/^(.*?)([\s\-_]?)(\d+)\s*$/);
-        let newName;
-        if (match) {
-          // Find the highest existing suffix in the same project + bucket
-          // and add one.
-          const stem = match[1].trim();
-          const sameStem = state.tasks
-            .filter(t => t.project === project && t.phase_group === source.phase_group)
-            .filter(t => String(t.name || '').startsWith(stem))
-            .map(t => {
-              const m = String(t.name).match(/(\d+)\s*$/);
-              return m ? Number(m[1]) : 0;
-            });
-          const next = Math.max(0, ...sameStem) + 1;
-          newName = `${stem} ${next}`;
-        } else {
-          newName = `${source.name} 2`;
-        }
-        // POST a clone — drops baseline / completed fields, keeps the
-        // section / dept / allocation / predecessors so it slots in
-        // alongside the source task.
-        const payload = {
-          name: newName,
-          project: source.project,
-          phase: source.phase,
-          phase_group: source.phase_group,
-          department: source.department,
-          sub_department: source.sub_department,
-          assignee: source.assignee,
-          duration_days: source.duration_days,
-          predecessors: source.predecessors,
-          is_milestone: 0,
-          progress: 0,
-          allocation: source.allocation,
-          priority: source.priority,
-          notes: source.notes,
-          sort_order: (Number(source.sort_order) || 0) + 0.5,
-          machine: source.machine,
-        };
-        const created = await api.create(payload);
-        if (typeof showToast === 'function') showToast(`Added "${newName}".`, { kind: 'success' });
-        await loadTasks();
-        close();
-        openQuoteCompareModal(project);
+        await duplicateTaskInGroup(sourceId);
       });
     });
   }
