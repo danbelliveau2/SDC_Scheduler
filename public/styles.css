@@ -6457,6 +6457,20 @@ body[data-view="setup"] #btn-add { display: none; }
 .quote-row.is-milestone .quote-milestone-cell {
   color: var(--text-muted, #94a3b8);
 }
+
+/* Sub-section header rows inside a Quote vs Schedule section (detailed
+   mode). Matches the schedule grid's depth-2 dept-header look — small
+   uppercase muted text on a faint surface. */
+.quote-compare-table .quote-subsection-head td {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #64748b);
+  background: var(--surface-alt, #f8fafc);
+  padding: 6px 8px 4px 18px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
 .quote-milestone-glyph {
   color: var(--anchor-fill, #74c415);
   font-size: 11px;
