@@ -163,9 +163,13 @@ app.post('/api/auth/register', (req, res) => {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid);
     const token = signToken(user);
     io.emit('users:updated');
+    const roleNote = req.body.role && req.body.role !== 'editor'
+      ? 'Requested role ignored — all self-registered accounts start as editor. Contact an admin to change your role.'
+      : undefined;
     res.status(201).json({
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },
+      ...(roleNote ? { note: roleNote } : {}),
     });
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });

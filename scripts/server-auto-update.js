@@ -33,13 +33,17 @@ const APP_DIR           = path.join(__dirname, '..');
 const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync', 'sdc-scheduler-updater'];
 const SHA_FILE          = path.join(APP_DIR, '.update-sha');
 
-// Directories to wholesale replace from upstream
-const SAFE_DIRS = ['public', 'scripts'];
+// Directories to wholesale replace from upstream.
+// 'scripts' is intentionally excluded — this updater script lives here and must
+// not be overwritten by upstream on every pull (that would erase the local-patch
+// logic below). Dan's repo-sync script is pulled individually via SAFE_FILES.
+const SAFE_DIRS = ['public'];
 
-// Individual files safe to replace
+// Individual files safe to replace from upstream
 const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore', 'server.js',
                     'auth.js', 'cronJobs.js', 'emailService.js',
-                    'azureSync.js', 'azureDb.js'];
+                    'azureSync.js', 'azureDb.js',
+                    'scripts/repo-sync.js'];  // pulled individually since scripts/ is excluded
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -100,6 +104,36 @@ function run(cmd, cwd) {
     const detail = e.stderr ? e.stderr.toString().trim() : (e.stdout ? e.stdout.toString().trim() : '');
     throw new Error(`Command failed: ${cmd}\n${detail}`);
   }
+}
+
+// ─── local patches ───────────────────────────────────────────────────────────
+// Applied after every upstream pull. Add any persistent local modifications here.
+// Each patch is idempotent: checks before applying so re-runs are safe.
+
+function applyLocalPatches(appDir) {
+  // Patch 1: register route — surface a note when caller submits a role that
+  // gets silently ignored (all self-registrations are clamped to 'editor').
+  const serverPath = path.join(appDir, 'server.js');
+  if (!fs.existsSync(serverPath)) return;
+
+  let src = fs.readFileSync(serverPath, 'utf8');
+
+  if (src.includes('Requested role ignored')) {
+    log('Local patches: already applied, skipping.');
+    return;
+  }
+
+  const before = `    io.emit('users:updated');\n    res.status(201).json({\n      token,\n      user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },\n    });`;
+  const after  = `    io.emit('users:updated');\n    // Surface a note when the caller submitted a role we ignored (always 'editor').\n    const roleNote = req.body.role && req.body.role !== 'editor'\n      ? 'Requested role ignored — all self-registered accounts start as editor. Contact an admin to change your role.'\n      : undefined;\n    res.status(201).json({\n      token,\n      user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },\n      ...(roleNote ? { note: roleNote } : {}),\n    });`;
+
+  if (!src.includes(before.split('\n')[0])) {
+    log('Local patches: register handler not found in expected format — skipping note patch.');
+    return;
+  }
+
+  src = src.replace(before, after);
+  fs.writeFileSync(serverPath, src, 'utf8');
+  log('Local patches: applied register role note to server.js');
 }
 
 // ─── update flow ─────────────────────────────────────────────────────────────
@@ -198,7 +232,11 @@ async function checkAndUpdate() {
       }
     }
 
-    // 5. Restart PM2 apps
+    // 5. Apply local patches on top of upstream files — runs after every pull so
+    //    fixes survive upstream updates without forking Dan's repo.
+    applyLocalPatches(APP_DIR);
+
+    // 6. Restart PM2 apps
     for (const name of PM2_APP_NAMES) {
       log(`Restarting ${name}…`);
       try { run(`pm2 restart ${name} --update-env`); }
