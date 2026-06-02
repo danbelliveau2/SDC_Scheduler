@@ -6448,6 +6448,41 @@ body[data-view="setup"] #btn-add { display: none; }
   font-family: inherit;
   text-align: right;
 }
+
+/* Group-total row — sums Quoted / Scheduled / Variance / Remaining for
+   every task row inside a sub-section (MECHANICAL ENGINEERING etc.).
+   Bold + a thin top divider + light-blue tint so it reads as a roll-up
+   without being mistaken for an editable row. */
+.quote-row.quote-group-total-row td {
+  font-weight: 700;
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, white);
+  border-top: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 40%, white);
+}
+.quote-group-total-label {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #0c4a6e;
+}
+.quote-row.quote-group-total-row .quote-sched-q {
+  font-weight: 700;
+}
+
+/* Add-resource picker dropdown — inline with the section sub-label. */
+.quote-add-resource-select {
+  margin-left: 8px;
+  padding: 3px 8px;
+  border: 1px dashed #1574c4;
+  border-radius: 4px;
+  background: white;
+  color: #1574c4;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.quote-add-resource-select:hover {
+  background: #e0f2fe;
+}
 /* Milestone line items in the sales quote modal — info rows, no hours.
    Muted text + diamond glyph so they read as anchors, not editable rows. */
 .quote-row.is-milestone td {
