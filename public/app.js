@@ -9750,7 +9750,23 @@ async function openQuoteCompareModal(project, providedQuote) {
   // header (e.g. "MECHANICAL ENGINEERING", "CONTROLS ENGINEERING",
   // "PROCUREMENT", "BUILD", "WIRE"). Walks HIERARCHY's dept/sub-dept
   // tree so labels stay in sync with phases.js automatically.
+  //
+  // Section 50 special case: regrouped by DISCIPLINE (engineering vs
+  // shop) instead of by PHASE (teardown vs install). Estimate sheets
+  // budget section-50 hours by discipline — there's no "engineering
+  // teardown" line, and install has both eng + shop. So in the modal:
+  //   - Teardown (any) → SHOP
+  //   - Install w/ sub_department='shop' → SHOP
+  //   - Install w/ sub_department='engineering' → ENGINEERING
+  // The schedule grid keeps the phase-based layout (TEARDOWN → INSTALL
+  // with shop / engineering nested under INSTALL); only this modal
+  // regroups for the quote comparison.
   function detailedGroupForTask(t) {
+    if (t.phase_group === 'teardown_install') {
+      const isEng = (t.department === 'install' && t.sub_department === 'engineering');
+      if (isEng) return { key: 'teardown_install/__discipline/engineering', label: 'ENGINEERING' };
+      return       { key: 'teardown_install/__discipline/shop',        label: 'SHOP' };
+    }
     const group = HIERARCHY.find(g => g.key === t.phase_group);
     if (!group) return { key: '__none__', label: '' };
     const dept = (group.departments || []).find(d => d.key === t.department);
@@ -9759,9 +9775,9 @@ async function openQuoteCompareModal(project, providedQuote) {
       const sub = dept.subs.find(s => s.key === t.sub_department);
       if (sub) return { key: `${t.phase_group}/${dept.key}/${sub.key}`, label: sub.label };
     }
-    // Dept-level task (no sub-department, e.g. procurement / teardown /
-    // install). Use the dept label as the sub-header so a single task
-    // doesn't drift up to the section header alone.
+    // Dept-level task (no sub-department, e.g. procurement). Use the
+    // dept label as the sub-header so a single task doesn't drift up
+    // to the section header alone.
     return { key: `${t.phase_group}/${dept.key}`, label: dept.label };
   }
   function buildDetailedTaskSections() {
@@ -9774,24 +9790,29 @@ async function openQuoteCompareModal(project, providedQuote) {
     for (const sectionKey of order) {
       const inSection = projectTasks.filter(t => t.phase_group === sectionKey);
       if (inSection.length === 0) continue;
-      // Pre-seed the group order from HIERARCHY so sub-sections always
-      // render mech → controls → general → procurement → build → wire
-      // inside section 10 regardless of task sort_order (and the
-      // equivalent canonical order for sections 40 / 50). Without this,
-      // a CONTROLS task with a low sort_order would float its sub-header
-      // ABOVE the mech sub-header just because it appeared first.
+      // Pre-seed the group order so sub-sections always render in the
+      // canonical sequence regardless of task sort_order.
+      //   Section 10: mech → controls → general → procurement → build → wire
+      //   Section 40: engineering → shop
+      //   Section 50: ENGINEERING → SHOP (discipline-based, matches the
+      //     estimate sheet's columns; see detailedGroupForTask comment)
       const groupMap = new Map(); // key → { label, rows: [] }
-      const sectionDef = HIERARCHY.find(g => g.key === sectionKey);
-      if (sectionDef) {
-        for (const dept of sectionDef.departments || []) {
-          if (dept.subs && dept.subs.length > 0) {
-            for (const sub of dept.subs) {
-              const key = `${sectionKey}/${dept.key}/${sub.key}`;
-              groupMap.set(key, { key, label: sub.label, rows: [] });
+      if (sectionKey === 'teardown_install') {
+        groupMap.set('teardown_install/__discipline/engineering', { key: 'teardown_install/__discipline/engineering', label: 'ENGINEERING', rows: [] });
+        groupMap.set('teardown_install/__discipline/shop',        { key: 'teardown_install/__discipline/shop',        label: 'SHOP',        rows: [] });
+      } else {
+        const sectionDef = HIERARCHY.find(g => g.key === sectionKey);
+        if (sectionDef) {
+          for (const dept of sectionDef.departments || []) {
+            if (dept.subs && dept.subs.length > 0) {
+              for (const sub of dept.subs) {
+                const key = `${sectionKey}/${dept.key}/${sub.key}`;
+                groupMap.set(key, { key, label: sub.label, rows: [] });
+              }
+            } else {
+              const key = `${sectionKey}/${dept.key}`;
+              groupMap.set(key, { key, label: dept.label, rows: [] });
             }
-          } else {
-            const key = `${sectionKey}/${dept.key}`;
-            groupMap.set(key, { key, label: dept.label, rows: [] });
           }
         }
       }
