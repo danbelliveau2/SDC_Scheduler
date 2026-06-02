@@ -31,12 +31,18 @@ async function init(sqliteDb) {
     await azureDb.ensureSchema();
     await _bootstrapData();
     _syncReady = true;
-    console.log('[AzureSync] Ready — Azure SQL is the primary store.');
-    // Periodic pull to stay in sync with other machines writing to Azure.
-    setInterval(async () => {
-      try { await _pullFromAzure(); }
-      catch (err) { console.warn('[AzureSync] Periodic pull failed:', err.message); }
-    }, PULL_INTERVAL_MS);
+    console.log('[AzureSync] Ready — startup sync complete.');
+    // Periodic pull DISABLED. Abhi's design polled Azure every 60s and
+    // overwrote any direct SQLite edits — including in-flight UI changes
+    // that hadn't yet round-tripped through Azure. Direct writes via
+    // /api/tasks/* still push to Azure via syncTable() and remain the
+    // source of truth. When multi-user editing actually becomes a real
+    // workflow, re-introduce a smarter pull (diff-based, last-modified
+    // aware, not whole-table replace).
+    // setInterval(async () => {
+    //   try { await _pullFromAzure(); }
+    //   catch (err) { console.warn('[AzureSync] Periodic pull failed:', err.message); }
+    // }, PULL_INTERVAL_MS);
   } catch (err) {
     console.warn('[AzureSync] Could not connect to Azure SQL (running local-only):', err.message);
   }

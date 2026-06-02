@@ -1,4 +1,14 @@
 'use strict';
+// Phase 3 (Auth) — JWT-based login + role guards. Ported from Abhi's
+// feature/smartsheet-architecture branch.
+//
+// AUTH_ENABLED env flag controls whether the middleware actually gates the
+// API. When false (default), every request gets a synthetic admin authUser
+// so the existing app keeps working without anyone signed in. Flip to true
+// after running `node create-admin.js` to create the first admin.
+//
+// Roles: viewer < editor < admin. requireRole('editor') is the typical
+// guard for write endpoints; settings/admin endpoints use 'admin'.
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 
@@ -22,20 +32,17 @@ function verifyToken(token) {
   catch { return null; }
 }
 
-// Global auth middleware.
-// When AUTH_ENABLED=false: stamps req.authUser with a passthrough admin identity so
-// all role checks pass, and existing req.user (from X-User header) is preserved.
-// When AUTH_ENABLED=true: validates Bearer token, returns 401 on failure.
-// Paths that are always public regardless of AUTH_ENABLED
-// /api/auth/me is intentionally NOT listed here — it must validate the token
-// so callers with no/expired token get 401, and valid callers get their user identity.
+// Paths that are always public regardless of AUTH_ENABLED. /api/auth/me is
+// intentionally NOT in here — it must validate the token so callers with no
+// or expired token get 401, and valid callers get their user identity back.
 const PUBLIC_PATHS = new Set(['/health', '/api/auth/login', '/api/auth/register']);
 
 function requireAuth(req, res, next) {
   if (PUBLIC_PATHS.has(req.path)) return next();
 
   if (!AUTH_ENABLED) {
-    // Passthrough — set a synthetic authUser so role checks work
+    // Passthrough — synthetic authUser so role checks pass. Existing
+    // req.user (from X-User header) is preserved for logHistory attribution.
     req.authUser = {
       id: 0,
       email: 'local@sdc',
@@ -57,11 +64,10 @@ function requireAuth(req, res, next) {
   }
 
   req.authUser = payload;
-  req.user     = payload.name; // keep req.user in sync for existing logHistory calls
+  req.user     = payload.name; // keep req.user in sync for logHistory
   next();
 }
 
-// Role guard middleware factory. minRole is 'viewer' | 'editor' | 'admin'.
 function requireRole(minRole) {
   return (req, res, next) => {
     if (!AUTH_ENABLED) return next();
