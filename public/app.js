@@ -9774,10 +9774,30 @@ async function openQuoteCompareModal(project, providedQuote) {
     for (const sectionKey of order) {
       const inSection = projectTasks.filter(t => t.phase_group === sectionKey);
       if (inSection.length === 0) continue;
-      // Group tasks within the section by their sub-section label.
-      // Preserve first-encountered order so the layout matches the
-      // grid (e.g. mechanical → controls → general inside section 10).
+      // Pre-seed the group order from HIERARCHY so sub-sections always
+      // render mech → controls → general → procurement → build → wire
+      // inside section 10 regardless of task sort_order (and the
+      // equivalent canonical order for sections 40 / 50). Without this,
+      // a CONTROLS task with a low sort_order would float its sub-header
+      // ABOVE the mech sub-header just because it appeared first.
       const groupMap = new Map(); // key → { label, rows: [] }
+      const sectionDef = HIERARCHY.find(g => g.key === sectionKey);
+      if (sectionDef) {
+        for (const dept of sectionDef.departments || []) {
+          if (dept.subs && dept.subs.length > 0) {
+            for (const sub of dept.subs) {
+              const key = `${sectionKey}/${dept.key}/${sub.key}`;
+              groupMap.set(key, { key, label: sub.label, rows: [] });
+            }
+          } else {
+            const key = `${sectionKey}/${dept.key}`;
+            groupMap.set(key, { key, label: dept.label, rows: [] });
+          }
+        }
+      }
+      // Now drop tasks into their slot. Unrecognised group keys (task
+      // with a department / sub-dept that doesn't exist in HIERARCHY)
+      // get appended at the end so they're still visible.
       for (const t of inSection) {
         const g = detailedGroupForTask(t);
         if (!groupMap.has(g.key)) groupMap.set(g.key, { key: g.key, label: g.label, rows: [] });
@@ -9791,6 +9811,7 @@ async function openQuoteCompareModal(project, providedQuote) {
           groupKey: g.key,
         });
       }
+      // Drop any pre-seeded sub-groups that ended up empty.
       const groups = [...groupMap.values()].filter(g => g.rows.length > 0);
       result.push({ title: SECTION_TITLES_DETAILED[sectionKey], groups });
     }
