@@ -9746,6 +9746,24 @@ async function openQuoteCompareModal(project, providedQuote) {
     'machine_testing':  'Section 40 — Machine Testing / Debug',
     'teardown_install': 'Section 50 — Teardown & Install',
   };
+  // Group label for a task, matching the schedule grid's sub-section
+  // header (e.g. "MECHANICAL ENGINEERING", "CONTROLS ENGINEERING",
+  // "PROCUREMENT", "BUILD", "WIRE"). Walks HIERARCHY's dept/sub-dept
+  // tree so labels stay in sync with phases.js automatically.
+  function detailedGroupForTask(t) {
+    const group = HIERARCHY.find(g => g.key === t.phase_group);
+    if (!group) return { key: '__none__', label: '' };
+    const dept = (group.departments || []).find(d => d.key === t.department);
+    if (!dept) return { key: `${t.phase_group}/__none__`, label: '' };
+    if (dept.subs && dept.subs.length > 0 && t.sub_department) {
+      const sub = dept.subs.find(s => s.key === t.sub_department);
+      if (sub) return { key: `${t.phase_group}/${dept.key}/${sub.key}`, label: sub.label };
+    }
+    // Dept-level task (no sub-department, e.g. procurement / teardown /
+    // install). Use the dept label as the sub-header so a single task
+    // doesn't drift up to the section header alone.
+    return { key: `${t.phase_group}/${dept.key}`, label: dept.label };
+  }
   function buildDetailedTaskSections() {
     const projectTasks = state.tasks
       .filter(t => t.project === project)
@@ -9756,15 +9774,25 @@ async function openQuoteCompareModal(project, providedQuote) {
     for (const sectionKey of order) {
       const inSection = projectTasks.filter(t => t.phase_group === sectionKey);
       if (inSection.length === 0) continue;
-      const rows = inSection.map(t => ({
-        k: `task_${t.id}`,
-        label: t.name,
-        taskId: t.id,
-        bucket: TASK_BUCKET(t),
-        baseAllocation: Number(t.allocation) || 90,
-        section: sectionKey,
-      }));
-      result.push({ title: SECTION_TITLES_DETAILED[sectionKey], rows });
+      // Group tasks within the section by their sub-section label.
+      // Preserve first-encountered order so the layout matches the
+      // grid (e.g. mechanical → controls → general inside section 10).
+      const groupMap = new Map(); // key → { label, rows: [] }
+      for (const t of inSection) {
+        const g = detailedGroupForTask(t);
+        if (!groupMap.has(g.key)) groupMap.set(g.key, { key: g.key, label: g.label, rows: [] });
+        groupMap.get(g.key).rows.push({
+          k: `task_${t.id}`,
+          label: t.name,
+          taskId: t.id,
+          bucket: TASK_BUCKET(t),
+          baseAllocation: Number(t.allocation) || 90,
+          section: sectionKey,
+          groupKey: g.key,
+        });
+      }
+      const groups = [...groupMap.values()].filter(g => g.rows.length > 0);
+      result.push({ title: SECTION_TITLES_DETAILED[sectionKey], groups });
     }
     return result;
   }
@@ -9821,8 +9849,11 @@ async function openQuoteCompareModal(project, providedQuote) {
     },
   ];
   const SECTIONS = isSales ? SECTIONS_SALES : SECTIONS_DETAILED;
+  // Flatten all rows (across sub-groups in detailed mode) for the rowsByKey
+  // lookup that wireInputs / applyChanges / consolidation logic reads.
+  const allRows = (sec) => sec.groups ? sec.groups.flatMap(g => g.rows) : (sec.rows || []);
   const rowsByKey = {};
-  SECTIONS.forEach(s => s.rows.forEach(r => { rowsByKey[r.k] = r; }));
+  SECTIONS.forEach(s => allRows(s).forEach(r => { rowsByKey[r.k] = r; }));
   // Column count varies — sales projects hide the Remaining column.
   const colCount = isSales ? 5 : 6;
 
@@ -9978,30 +10009,37 @@ async function openQuoteCompareModal(project, providedQuote) {
   function buildRowsHtml() {
     return SECTIONS.map(section => {
       const head = `<tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>`;
-      const rows = section.rows.map(rowHtml).join('');
-      // Detailed mode adds a "+ Resource" footer row per section so the
-      // user can spin up another Builder / ME / Wire task from inside
-      // the modal. The button picks a sensible template task in the
-      // section to clone (the last task by sort_order — usually the
-      // bucket's existing resource).
-      let addBtnRow = '';
-      if (!isSales && section.rows.some(r => r.taskId)) {
-        const lastTaskRow = [...section.rows].reverse().find(r => r.taskId);
-        if (lastTaskRow) {
-          addBtnRow = `<tr class="quote-row quote-add-resource-row">
-            <td colspan="${colCount}">
-              <button type="button" class="quote-row-add" data-after-task-id="${lastTaskRow.taskId}" data-section-key="${escapeHtml(section.title)}">+ Add resource to this section</button>
-            </td>
-          </tr>`;
-        }
+      // Detailed mode: section.groups is an array of sub-sections matching
+      // the schedule's HIERARCHY (MECHANICAL ENGINEERING / CONTROLS / etc.).
+      // Sales mode keeps section.rows flat.
+      if (section.groups) {
+        return head + section.groups.map(g => {
+          const subHead = g.label
+            ? `<tr class="quote-subsection-head"><td colspan="${colCount}">${escapeHtml(g.label)}</td></tr>`
+            : '';
+          const groupRows = g.rows.map(rowHtml).join('');
+          // "+ Add resource" sits at the end of each sub-group so the
+          // new task lands in the right bucket (e.g. clicking inside
+          // MECHANICAL ENGINEERING duplicates an ME task, not a CE one).
+          const lastTaskRow = [...g.rows].reverse().find(r => r.taskId);
+          const addRow = lastTaskRow
+            ? `<tr class="quote-row quote-add-resource-row">
+                <td colspan="${colCount}">
+                  <button type="button" class="quote-row-add" data-after-task-id="${lastTaskRow.taskId}">+ Add resource to ${escapeHtml(g.label || 'this group')}</button>
+                </td>
+              </tr>`
+            : '';
+          return subHead + groupRows + addRow;
+        }).join('');
       }
-      return head + rows + addBtnRow;
+      // Sales mode (flat row list).
+      return head + section.rows.map(rowHtml).join('');
     }).join('');
   }
   function computeTotals() {
     let totalQ = 0, totalS = 0, totalR = 0;
     for (const section of SECTIONS) {
-      for (const r of section.rows) {
+      for (const r of allRows(section)) {
         if (r.milestone) continue; // milestone rows have no hours to total
         const st = computeRowState(r);
         totalQ += st.q; totalS += st.s; totalR += st.rem;
