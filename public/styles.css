@@ -323,6 +323,27 @@ body {
 .projects-row-favbtn:hover { color: #ca8a04; background: rgba(0,0,0,0.04); }
 .projects-row-favbtn.is-fav { color: #eab308; }
 
+/* "→ Project" button on each sales project row. Promotes the sales
+   schedule to a fresh detailed project stamped from the standard
+   template. Sits just left of the favorite ★ button. */
+.projects-row-promotebtn {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1574c4;
+  background: white;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 4px;
+  padding: 3px 10px;
+  margin-right: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.projects-row-promotebtn:hover {
+  background: var(--surface-alt, #f1f5f9);
+  color: #0c5fa3;
+  border-color: #1574c4;
+}
+
 /* ---------- Project tab bar (open schedules) ---------- */
 /* ==========================================================================
    Workspace landing page (#view-workspace). Shown when the user clicks a
@@ -6361,6 +6382,18 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .quote-row.is-pending td {
   background: color-mix(in srgb, var(--sdc-accent, #ffde51) 18%, white);
+}
+/* Promoted-from-sales rows where the user hasn't typed Quoted hours yet.
+   Amber stripe on the first cell + a soft amber tint on the Quoted cell
+   so missing-data rows pop without overwhelming the table. */
+.quote-row.needs-quote td:first-child {
+  border-left: 3px solid #d97706;
+}
+.quote-row.needs-quote .quote-sched-cell {
+  background: #fef3c7;
+}
+.quote-row.needs-quote .quote-q-input {
+  border-color: #d97706;
 }
 /* Milestone line items in the sales quote modal — info rows, no hours.
    Muted text + diamond glyph so they read as anchors, not editable rows. */
