@@ -9734,38 +9734,41 @@ async function openQuoteCompareModal(project, providedQuote) {
   // The first key in `keys` (or `k` itself) is also the STORAGE KEY for
   // people_breakdown + quoted_overrides, so the persisted value tracks the
   // combined row consistently.
-  const SECTIONS_DETAILED = [
-    {
-      title: 'Section 10 — Design & Build',
-      rows: [
-        { k: 'mech_eng',     label: 'Mechanical Engineering' },
-        { k: 'ce_design',    label: 'Controls Design' },
-        { k: 'ce_drawings',  label: 'Controls Drawings' },
-        { k: 'ce_software',  label: 'Controls Software' },
-        { k: 'gen_hmi',      label: 'HMI Programming' },
-        { k: 'gen_robot',    label: 'Robot Programming' },
-        { k: 'gen_vision',   label: 'Vision Programming' },
-        { k: 'build',        label: 'Mechanical Build' },
-        { k: 'wire_panel',   label: 'Build and Wire Panel' },
-        { k: 'wire_machine', label: 'Wire Machine' },
-      ],
-    },
-    {
-      title: 'Section 40 — Machine Testing / Debug',
-      rows: [
-        { k: 'configure',  label: 'Configure Machine' },
-        { k: 'test_debug', label: 'Test/Debug Engineer (lead + secondary)' },
-        { k: 'shop_debug', label: 'Shop Debug' },
-      ],
-    },
-    {
-      title: 'Section 50 — Teardown & Install',
-      rows: [
-        { k: 'teardown', label: 'Teardown' },
-        { k: 'install',  label: 'Install' },
-      ],
-    },
-  ];
+  // Detailed mode: rows mirror the schedule EXACTLY — one row per task.
+  // Built from the current project's tasks (non-milestone, non-anchor),
+  // grouped by phase_group, sorted by sort_order. Labels are the literal
+  // task names, so "Panel" / "ME Concept" / "Builder 1" all show up
+  // verbatim instead of being rolled into a generic "Mechanical Engineering"
+  // bucket. r.taskId carries the row's target so Weeks / Alloc / Quoted
+  // edits hit that specific task.
+  const SECTION_TITLES_DETAILED = {
+    'design_build':     'Section 10 — Design & Build',
+    'machine_testing':  'Section 40 — Machine Testing / Debug',
+    'teardown_install': 'Section 50 — Teardown & Install',
+  };
+  function buildDetailedTaskSections() {
+    const projectTasks = state.tasks
+      .filter(t => t.project === project)
+      .filter(t => !t.is_milestone && !t.anchor_key && t.phase_group)
+      .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+    const order = ['design_build', 'machine_testing', 'teardown_install'];
+    const result = [];
+    for (const sectionKey of order) {
+      const inSection = projectTasks.filter(t => t.phase_group === sectionKey);
+      if (inSection.length === 0) continue;
+      const rows = inSection.map(t => ({
+        k: `task_${t.id}`,
+        label: t.name,
+        taskId: t.id,
+        bucket: TASK_BUCKET(t),
+        baseAllocation: Number(t.allocation) || 90,
+        section: sectionKey,
+      }));
+      result.push({ title: SECTION_TITLES_DETAILED[sectionKey], rows });
+    }
+    return result;
+  }
+  const SECTIONS_DETAILED = buildDetailedTaskSections();
   // Sales-mode line items — mirror the SDC_Sales_Template schedule rows.
   // Section 40 / 50 do NOT split engineering vs shop here: in a sales schedule,
   // shop time = engineering time (same duration), so we collapse them into a
@@ -9830,6 +9833,28 @@ async function openQuoteCompareModal(project, providedQuote) {
   const pendingPeople = {};
   const pendingQuoted = {};
   const pendingWeeks  = {};
+  // Detailed mode: per-task allocation overrides. Each task can carry its
+  // own % (e.g. ME 2 at 25% acting as a helper). Sales mode doesn't use
+  // this — its rows aggregate buckets and use People # for the same effect.
+  const pendingAlloc  = {};
+
+  // Per-task quoted override key helpers — when the user types a Quoted
+  // value on a task row, it lives under `quoted_overrides[task_<id>]` so
+  // change-orders stick to the specific task and survive subsequent renders.
+  function quotedForTaskRow(r) {
+    // Prefer a per-task override; otherwise split the parent bucket's
+    // quoted hours evenly across the tasks contributing to that bucket
+    // so newly-promoted projects show non-zero defaults per row.
+    const taskOverride = overrides[r.k];
+    if (taskOverride !== undefined && Number.isFinite(Number(taskOverride))) {
+      return Math.round(Number(taskOverride));
+    }
+    if (!r.bucket) return 0;
+    const bucketTotal = Number(quoted[r.bucket] || 0);
+    if (!bucketTotal) return 0;
+    const tasksInBucket = (bucketTaskIds[r.bucket] || []).length || 1;
+    return Math.round(bucketTotal / tasksInBucket);
+  }
 
   // basicScheduled comes from real task durations × 8 × alloc (no people
   // multiplier). For "what does this row look like right now in pending
@@ -9838,6 +9863,27 @@ async function openQuoteCompareModal(project, providedQuote) {
   // bumped Mechanical Engineering to 8 wks with 2 people, my actual hrs
   // would be …" without touching the schedule yet.
   function computeRowState(r) {
+    // Per-task rows (detailed mode) — `r.taskId` is set when the row
+    // represents a single schedule task. Weeks → that task's duration;
+    // Alloc → that task's allocation; Quoted → per-task quoted_overrides.
+    if (r.taskId) {
+      const t = state.tasks.find(x => x.id === r.taskId);
+      const baseDays  = t ? (Number(t.duration_days) || 0) : 0;
+      const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+      const weeks     = pendingWeeks[r.k] !== undefined ? pendingWeeks[r.k] : baseWeeks;
+      const baseAlloc = r.baseAllocation || 90;
+      const alloc     = pendingAlloc[r.k]  !== undefined ? pendingAlloc[r.k]  : baseAlloc;
+      const s         = Math.round(weeks * 5 * 8 * (alloc / 100));
+      const progress  = t ? Math.max(0, Math.min(100, Number(t.progress) || 0)) : 0;
+      const rem       = Math.round(s * (1 - progress / 100));
+      const baseQuoted = quotedForTaskRow(r);
+      const q          = pendingQuoted[r.k] !== undefined ? pendingQuoted[r.k] : baseQuoted;
+      return {
+        keys: [r.bucket].filter(Boolean), q, weeks, ppl: 1, alloc,
+        s, rem, baseDays, taskIds: [r.taskId],
+      };
+    }
+    // Sales / bucket-aggregated rows — unchanged from the original logic.
     const keys = r.keys || [r.k];
     const baseQuoted = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
     const q = pendingQuoted[r.k] !== undefined ? pendingQuoted[r.k] : baseQuoted;
@@ -9884,22 +9930,43 @@ async function openQuoteCompareModal(project, providedQuote) {
     const varText = st.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
     const weeksTitle = taskCount === 0
       ? 'No tasks in this bucket yet — add a task to the schedule first.'
-      : (taskCount === 1
-          ? 'Click to edit this phase’s duration in weeks.'
-          : `${taskCount} tasks in this bucket — editing scales each proportionally.`);
+      : (r.taskId
+          ? 'Click to edit this task’s duration in weeks.'
+          : (taskCount === 1
+              ? 'Click to edit this phase’s duration in weeks.'
+              : `${taskCount} tasks in this bucket — editing scales each proportionally.`));
     const weeksDisabled = taskCount === 0 ? 'disabled' : '';
-    const pendingMark = (pendingPeople[r.k] !== undefined || pendingQuoted[r.k] !== undefined || pendingWeeks[r.k] !== undefined) ? ' is-pending' : '';
+    const pendingMark = (pendingPeople[r.k] !== undefined || pendingQuoted[r.k] !== undefined || pendingWeeks[r.k] !== undefined || pendingAlloc[r.k] !== undefined) ? ' is-pending' : '';
     // Highlight rows where the schedule has tasks BUT no quoted hours
     // have been entered yet — that's a sales-promoted detailed bucket
     // whose hours the user still needs to type in. Amber stripe + the
     // tooltip on the Quoted cell hints at what to do.
     const needsQuoteMark = (st.q === 0 && taskCount > 0 && !r.milestone) ? ' needs-quote' : '';
+    // Detailed mode (r.taskId set): replace People # with Alloc % and
+    // append a tiny `×` button to delete the underlying task. Sales mode
+    // keeps the People # input + people-math.
+    let peopleOrAllocCell;
+    if (r.taskId) {
+      peopleOrAllocCell = `<td class="num"><input type="number" min="0" max="100" step="5" class="quote-alloc-input" data-bucket="${escapeHtml(r.k)}" value="${st.alloc}" title="Allocation %. Drop to 25 (or whatever) to model a helper resource at part-time." /></td>`;
+    } else {
+      peopleOrAllocCell = `<td class="num"><input type="number" min="0.25" max="99" step="0.25" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${(+st.ppl).toFixed(2).replace(/\.?0+$/, '')}" title="People assigned to this phase. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People." /></td>`;
+    }
+    // Detailed mode: row label gets a small "delete this task" button on
+    // the right so the user can drop a 2nd builder / ME 2 / etc. when
+    // not needed. Sales mode rows aggregate so the per-task delete
+    // doesn't apply.
+    const deleteBtn = r.taskId
+      ? `<button type="button" class="quote-row-delete" data-task-id="${r.taskId}" title="Remove this task from the schedule (e.g. you don't need a second builder).">×</button>`
+      : '';
+    const labelCell = r.taskId
+      ? `<td class="quote-row-label-cell">${escapeHtml(r.label)} ${deleteBtn}</td>`
+      : `<td>${escapeHtml(r.label)}</td>`;
     return `<tr class="quote-row${pendingMark}${needsQuoteMark}" data-row-key="${escapeHtml(r.k)}">
-      <td>${escapeHtml(r.label)}</td>
+      ${labelCell}
       <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
-      <td class="num"><input type="number" min="0.25" max="99" step="0.25" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${(+st.ppl).toFixed(2).replace(/\.?0+$/, '')}" title="People assigned to this phase. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People." /></td>
+      ${peopleOrAllocCell}
       <td class="num quote-sched-cell">
-        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override." />
+        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override. Saved per-task in detailed mode, per-bucket in sales mode." />
         <span class="quote-sched-slash">/</span>
         <span class="quote-sched-s">${st.s.toLocaleString()}</span>
       </td>
@@ -9909,10 +9976,27 @@ async function openQuoteCompareModal(project, providedQuote) {
   }
 
   function buildRowsHtml() {
-    return SECTIONS.map(section => `
-      <tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>
-      ${section.rows.map(rowHtml).join('')}
-    `).join('');
+    return SECTIONS.map(section => {
+      const head = `<tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>`;
+      const rows = section.rows.map(rowHtml).join('');
+      // Detailed mode adds a "+ Resource" footer row per section so the
+      // user can spin up another Builder / ME / Wire task from inside
+      // the modal. The button picks a sensible template task in the
+      // section to clone (the last task by sort_order — usually the
+      // bucket's existing resource).
+      let addBtnRow = '';
+      if (!isSales && section.rows.some(r => r.taskId)) {
+        const lastTaskRow = [...section.rows].reverse().find(r => r.taskId);
+        if (lastTaskRow) {
+          addBtnRow = `<tr class="quote-row quote-add-resource-row">
+            <td colspan="${colCount}">
+              <button type="button" class="quote-row-add" data-after-task-id="${lastTaskRow.taskId}" data-section-key="${escapeHtml(section.title)}">+ Add resource to this section</button>
+            </td>
+          </tr>`;
+        }
+      }
+      return head + rows + addBtnRow;
+    }).join('');
   }
   function computeTotals() {
     let totalQ = 0, totalS = 0, totalR = 0;
@@ -9991,11 +10075,13 @@ async function openQuoteCompareModal(project, providedQuote) {
           <thead>
             <tr>
               <th style="text-align:left;">Discipline</th>
-              <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations. Multi-task buckets scale proportionally.">Weeks</th>
-              <th class="num" title="People assigned to this phase. Defaults to 1. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People.">People&nbsp;#</th>
+              <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations.">Weeks</th>
+              ${isSales
+                ? `<th class="num" title="People assigned to this phase. Defaults to 1. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People.">People&nbsp;#</th>`
+                : `<th class="num" title="Allocation % for this task. Each row = one resource. Drop to 25% to model a part-time helper, or use the + Add resource button at the end of the section to add another full-time person.">Alloc&nbsp;%</th>`}
               <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted&nbsp;/&nbsp;Scheduled</th>
               <th class="num" title="Scheduled − Quoted. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
-              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs × (1 − task_progress%/100)) per bucket × people#.">Remaining</th>`}
+              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: scheduled_hrs × (1 − task_progress%/100).">Remaining</th>`}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -10054,7 +10140,8 @@ async function openQuoteCompareModal(project, providedQuote) {
   function updateApplyButtonState() {
     const hasEdits = Object.keys(pendingPeople).length > 0
       || Object.keys(pendingQuoted).length > 0
-      || Object.keys(pendingWeeks).length > 0;
+      || Object.keys(pendingWeeks).length > 0
+      || Object.keys(pendingAlloc).length > 0;
     const consolidation = pendingConsolidationRows();
     const hasPending = hasEdits || consolidation.length > 0;
     const btn = overlay.querySelector('#quote-apply-btn');
@@ -10090,29 +10177,131 @@ async function openQuoteCompareModal(project, providedQuote) {
         refreshTable();
       });
     });
+    overlay.querySelectorAll('.quote-alloc-input').forEach(input => {
+      input.addEventListener('change', () => {
+        const rowKey = input.dataset.bucket;
+        const raw = Number(input.value);
+        const val = Math.max(0, Math.min(100, Math.round(raw / 5) * 5));
+        const r = rowsByKey[rowKey];
+        const baseVal = r?.baseAllocation || 90;
+        if (val === baseVal) delete pendingAlloc[rowKey];
+        else pendingAlloc[rowKey] = val;
+        refreshTable();
+      });
+    });
     overlay.querySelectorAll('.quote-q-input').forEach(input => {
       input.addEventListener('change', () => {
-        const bucket = input.dataset.bucket;
+        const rowKey = input.dataset.bucket;
         const val = Math.max(0, Math.round(Number(input.value) || 0));
-        const r = rowsByKey[bucket];
-        const keys = r ? (r.keys || [r.k]) : [bucket];
-        const baseVal = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
-        if (val === baseVal) delete pendingQuoted[bucket];
-        else pendingQuoted[bucket] = val;
+        const r = rowsByKey[rowKey];
+        // For per-task rows, the base value comes from quotedForTaskRow
+        // (per-task override, then bucket-split fallback). For bucket
+        // rows, sum the parent keys' quoted totals.
+        let baseVal;
+        if (r && r.taskId) {
+          baseVal = quotedForTaskRow(r);
+        } else {
+          const keys = r ? (r.keys || [r.k]) : [rowKey];
+          baseVal = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
+        }
+        if (val === baseVal) delete pendingQuoted[rowKey];
+        else pendingQuoted[rowKey] = val;
         refreshTable();
       });
     });
     overlay.querySelectorAll('.quote-weeks-input').forEach(input => {
       input.addEventListener('change', () => {
-        const bucket = input.dataset.bucket;
+        const rowKey = input.dataset.bucket;
         const newWeeks = Math.max(0, Math.round(Number(input.value) * 2) / 2);
-        const r = rowsByKey[bucket];
-        const keys = r ? (r.keys || [r.k]) : [bucket];
-        const baseDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
-        const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
-        if (newWeeks === baseWeeks) delete pendingWeeks[bucket];
-        else pendingWeeks[bucket] = newWeeks;
+        const r = rowsByKey[rowKey];
+        let baseWeeks;
+        if (r && r.taskId) {
+          const t = state.tasks.find(x => x.id === r.taskId);
+          const baseDays = t ? (Number(t.duration_days) || 0) : 0;
+          baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+        } else {
+          const keys = r ? (r.keys || [r.k]) : [rowKey];
+          const baseDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+          baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+        }
+        if (newWeeks === baseWeeks) delete pendingWeeks[rowKey];
+        else pendingWeeks[rowKey] = newWeeks;
         refreshTable();
+      });
+    });
+    // Detailed mode: per-row delete button. Confirms then removes the
+    // underlying task from the schedule via api.remove. The modal
+    // re-renders so the row disappears.
+    overlay.querySelectorAll('.quote-row-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const taskId = Number(btn.dataset.taskId);
+        const t = state.tasks.find(x => x.id === taskId);
+        if (!t) return;
+        if (!confirm(`Remove "${t.name}" from the schedule?`)) return;
+        await api.remove(taskId);
+        if (typeof showToast === 'function') showToast(`Removed "${t.name}".`, { kind: 'success' });
+        await loadTasks();
+        // Re-render the modal — close + reopen with the same project.
+        close();
+        openQuoteCompareModal(project);
+      });
+    });
+    // Detailed mode: per-section "+ Add resource" button. Duplicates the
+    // last task in the section (auto-numbers its name if a numeric
+    // suffix exists) at the same allocation + sort_order tail.
+    overlay.querySelectorAll('.quote-row-add').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const sourceId = Number(btn.dataset.afterTaskId);
+        const source = state.tasks.find(x => x.id === sourceId);
+        if (!source) return;
+        // Pick a new name: if source ends in " N" or similar, increment;
+        // else append " 2".
+        const match = String(source.name || '').match(/^(.*?)([\s\-_]?)(\d+)\s*$/);
+        let newName;
+        if (match) {
+          // Find the highest existing suffix in the same project + bucket
+          // and add one.
+          const stem = match[1].trim();
+          const sameStem = state.tasks
+            .filter(t => t.project === project && t.phase_group === source.phase_group)
+            .filter(t => String(t.name || '').startsWith(stem))
+            .map(t => {
+              const m = String(t.name).match(/(\d+)\s*$/);
+              return m ? Number(m[1]) : 0;
+            });
+          const next = Math.max(0, ...sameStem) + 1;
+          newName = `${stem} ${next}`;
+        } else {
+          newName = `${source.name} 2`;
+        }
+        // POST a clone — drops baseline / completed fields, keeps the
+        // section / dept / allocation / predecessors so it slots in
+        // alongside the source task.
+        const payload = {
+          name: newName,
+          project: source.project,
+          phase: source.phase,
+          phase_group: source.phase_group,
+          department: source.department,
+          sub_department: source.sub_department,
+          assignee: source.assignee,
+          duration_days: source.duration_days,
+          predecessors: source.predecessors,
+          is_milestone: 0,
+          progress: 0,
+          allocation: source.allocation,
+          priority: source.priority,
+          notes: source.notes,
+          sort_order: (Number(source.sort_order) || 0) + 0.5,
+          machine: source.machine,
+        };
+        const created = await api.create(payload);
+        if (typeof showToast === 'function') showToast(`Added "${newName}".`, { kind: 'success' });
+        await loadTasks();
+        close();
+        openQuoteCompareModal(project);
       });
     });
   }
@@ -10169,7 +10358,21 @@ async function openQuoteCompareModal(project, providedQuote) {
       // whole or half values ONLY. 2.5 work-days = 0.5 work-weeks; anything
       // else produces awkward 9.6W / 6.2W / 1.6W cells.
       const snapHalfWeek = (days) => Math.max(0, Math.round(Number(days) / 2.5) * 2.5);
+      // Detailed mode: also apply pendingAlloc — each row maps to one task,
+      // each task can carry its own allocation %.
+      for (const [rowKey, alloc] of Object.entries(pendingAlloc)) {
+        const r = rowsByKey[rowKey];
+        if (!r || !r.taskId) continue;
+        await api.update(r.taskId, { allocation: alloc });
+      }
       for (const { r, newWeeks } of apply) {
+        // Detailed mode path — single task per row. Update that task's
+        // duration_days directly, no proportional scaling needed.
+        if (r.taskId) {
+          const newDays = snapHalfWeek(newWeeks * 5);
+          await api.update(r.taskId, { duration_days: newDays });
+          continue;
+        }
         const keys = r.keys || [r.k];
         const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
         if (taskIds.length === 0) continue;
