@@ -9895,6 +9895,13 @@ function render() {
   } else if (state.view === 'team') {
     renderTeam();
   }
+  // Refresh the footer Financials button AFTER renderTable —
+  // renderTable populates taskIdByLine, which the financial row check
+  // needs to resolve line-number Triggers (e.g. "16" → task at line
+  // 16). The first call from renderProjectTabs above runs BEFORE
+  // taskIdByLine is rebuilt for the new project, so a line-number
+  // Trigger that should resolve fails and the button stays stuck red.
+  try { refreshFinancialsButtonState(); } catch (_) {}
 }
 
 function renderAssigneeFilterBanner() { /* removed — personal view is a simple list in the Actions tab */ }
