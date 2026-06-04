@@ -42,9 +42,23 @@ const api = {
   putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(r => r.json()),
   team: {
     list:   () => fetch('/api/team').then(r => r.json()),
-    create: (data) => fetch('/api/team', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
-    update: (id, data) => fetch(`/api/team/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
-    remove: (id) => fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json()),
+    // Stamp _lastLocalEdit on every write so the realtime-ui Socket listener
+    // skips the immediate echo. Without this stamp, the socket's debounced
+    // loadTeam() fires 250 ms after the local save and tears down whatever
+    // input the user was typing in — which manifests as "I typed a name and
+    // it didn't save" because the input element gets destroyed mid-edit.
+    create: (data) => {
+      window._lastLocalEdit = Date.now();
+      return fetch('/api/team', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+    },
+    update: (id, data) => {
+      window._lastLocalEdit = Date.now();
+      return fetch(`/api/team/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+    },
+    remove: (id) => {
+      window._lastLocalEdit = Date.now();
+      return fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json());
+    },
   },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
@@ -169,7 +183,18 @@ const state = {
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
-  resources: { discipline: 'mech', project: '', zoomPercent: 100, focusMemberId: null },
+  // Resources timeline state. zoomPercent + barHeight mirror the Schedule
+  // Gantt's friendly 1-10 zoom / 0-10 row-height ranges so the steppers
+  // feel the same. statusFilter is per-bucket: each flag determines
+  // whether tasks in that schedule-status bucket render.
+  resources: {
+    discipline: 'mech',
+    project: '',
+    zoomPercent: 60,
+    focusMemberId: null,
+    barHeight: 16,
+    statusFilter: { zero: true, behind: true, ontrack: true, done: true },
+  },
   overAllocatedTaskIds: new Set(),
   // Open project schedules — like browser tabs. The empty string acts as the "All
   // projects" pseudo-tab so the user can always step back to the global view. Persisted
@@ -201,6 +226,10 @@ const state = {
   // Financials modal opens or the $ Financial overlay is enabled. Each value is the
   // full array from /api/financials?project=… in display order (sort_order, then id).
   financials: {},
+  // Per-project quote payload cache, keyed by project name. Populated
+  // lazily on first read (via loadProjectQuote). Used by the stats
+  // popup to read sold_delivery_weeks for the Duration row.
+  projectQuotes: {},
   // Toggle for the $ Financial Gantt overlay. Persisted to localStorage via
   // saveScheduleView so it sticks across reloads.
   showFinancials: false,
@@ -232,6 +261,26 @@ const ROW_H_FRIENDLY_MIN_PX = 16;
 const ROW_H_FRIENDLY_MAX_PX = 30;
 const ROW_H_DEFAULT = 26;
 const BAR_H_MIN = 10;
+
+// Departments-tab resource bars use a tighter, denser scale than the
+// Schedule grid because the user just wants bar-thickness control on the
+// timeline — not row spacing inside an editable table. Per Dan's request
+// the friendly scale is 0-10 (steps of 1), with row 0 SMALLER than the
+// Schedule's row 0 and row 10 equivalent to Schedule's row 50/100.
+//   Schedule's row 50/100 = 16 + 0.5 * (30-16) = 23 px
+//   So MAX = 23, MIN = 12 (smaller than Schedule's 16).
+const RES_BAR_H_MIN_PX  = 12;
+const RES_BAR_H_MAX_PX  = 23;
+const RES_BAR_H_LEVELS  = 10;
+function pxToFriendlyResRow(px) {
+  const clamped = Math.max(RES_BAR_H_MIN_PX, Math.min(RES_BAR_H_MAX_PX, px));
+  const t = (clamped - RES_BAR_H_MIN_PX) / (RES_BAR_H_MAX_PX - RES_BAR_H_MIN_PX);
+  return Math.round(t * RES_BAR_H_LEVELS);
+}
+function friendlyResRowToPx(friendly) {
+  const t = Math.max(0, Math.min(RES_BAR_H_LEVELS, friendly)) / RES_BAR_H_LEVELS;
+  return Math.round(RES_BAR_H_MIN_PX + t * (RES_BAR_H_MAX_PX - RES_BAR_H_MIN_PX));
+}
 // Row-height +/- step. Fixed 2px/click is fine-grained enough for the typical 14–60
 // range; small enough to make tight 1-row-difference adjustments without
 // overshooting, big enough that holding the button doesn't feel sluggish.
@@ -651,9 +700,14 @@ function durationLabel(task) {
   if (nHalfWeeks >= 1 && Math.ceil(nHalfWeeks * 2.5) === d) {
     return `${nHalfWeeks / 2}w`;
   }
-  // Fallback for arbitrary day counts: decimal weeks if ≥ 10 days, else "Nd".
-  if (d >= 10) return `${(d / 5).toFixed(1)}w`;
-  return `${d}d`;
+  // Half-week snap for ANY other day count — Dan's hard rule: week
+  // values only ever read as 0.5, 1, 1.5, 2, ... never 0.6 / 0.8 /
+  // 1.4. Falls back to "0d" / "1d" only when the duration is below
+  // half a work-week (3 days) so we don't lose precision on single-
+  // day rows.
+  if (d <= 2) return `${d}d`;
+  const halfWeeks = Math.max(1, Math.round((d / 5) * 2));
+  return `${halfWeeks / 2}w`;
 }
 
 function sortByPhaseThenOrder(tasks) {
@@ -1138,7 +1192,9 @@ function cellHtml(t, key) {
       if (!t.is_milestone && !isAnchor) {
         const allocVal = t.allocation == null ? null : Number(t.allocation);
         const durDays  = Number(t.duration_days) || 0;
-        const wks = durDays > 0 ? Math.round(durDays / 5 * 10) / 10 : 0;  // 1 decimal week
+        // Half-week snap — Dan's rule applies EVERYWHERE: weeks values
+        // round to the nearest 0.5, never 0.1 or 0.2 increments.
+        const wks = durDays > 0 ? Math.round((durDays / 5) * 2) / 2 : 0;
         const allocText = allocVal != null && allocVal > 0 ? `${allocVal}%` : '—%';
         // v4.43: uppercase W in duration text per user request — "10W" not "10w".
         const wksText   = wks > 0 ? `${wks}W` : '—W';
@@ -1447,7 +1503,13 @@ function renderTable() {
     const backlogExpired = isBacklog && t.end_date && new Date(t.end_date).getTime() < todayMs;
     const cells = order.map(k => {
       if (k === 'name') {
-        const check = (isDone && !isBacklog) ? '<span class="anchor-done-check">✓</span> ' : '';
+        // Click-to-toggle check pinned to the RIGHT of the name cell,
+        // same slot regular milestones use (via name-cell-pills) so
+        // every checkable row reads consistently. Backlog rows skip the
+        // check — they're a duration spine, not a checkable event.
+        const checkBtn = !isBacklog
+          ? `<span class="name-cell-pills"><button type="button" class="name-milestone-check ${isDone ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${isDone ? 'Mark not complete' : 'Mark complete'}">${isDone ? '✓' : ''}</button></span>`
+          : '';
         const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}`;
         // Multi-machine: prepend the M1/M2/M3 pill on anchor rows too, so
         // M2.FAT visually reads as "M2" before the green FAT chip. Hidden
@@ -1457,7 +1519,8 @@ function renderTable() {
           const c = getMachineColor(t.project, t.machine);
           machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="background:${c.hex};color:${c.text};border-color:${c.hex};">${escapeHtml(t.machine)}</span> `;
         }
-        return `<td data-col="name">${machineChip}<span class="${chipCls}">${check}${escapeHtml(t.name || '')}</span></td>`;
+        const tdCls = checkBtn ? 'has-pills' : '';
+        return `<td data-col="name" class="${tdCls}">${machineChip}<span class="${chipCls}">${escapeHtml(t.name || '')}</span>${checkBtn}</td>`;
       }
       return cellHtml(t, k);
     }).join('');
@@ -2963,6 +3026,7 @@ function renderGantt() {
   drawDoneHashOverlay();
   drawWeekdayLetters();
   drawFinancialOverlay();
+  drawPenaltyClauseLine();
   drawBarMeta();
   drawMachineBorders();
   renderProjectStatsPopup();
@@ -3825,12 +3889,93 @@ function renderProjectStatsPopup() {
   // FAT for the active scope. stats.fat returns the machine-specific
   // anchor when activeMachine is set; falls back to oldest project FAT.
   const fat = stats.fat || tasks.find(t => inferredAnchorKey(t) === 'fat');
-  // Duration: PO → (active machine's) FAT.
+  // Duration — current AND quoted. Quoted comes from (in priority):
+  //   1. quote.sold_delivery_weeks — the explicit number Dan enters in
+  //      the Quote vs Schedule modal ("this is what we sold").
+  //   2. baseline_PO → baseline_FAT span (calculated from the saved
+  //      baseline snapshot).
+  //   3. nothing — falls back to scheduled-only.
+  // Format: "Q / S" with quoted muted, scheduled bold. Falls back to
+  // a single number when there's no quoted reference. Half-week
+  // rounding per the no-arbitrary-week-fractions rule.
+  const _toHalfWeek = (days) => Math.round((days / 7) * 2) / 2;
+  // Kick off async quote load — re-renders this popup when it
+  // resolves so the next paint includes sold_delivery_weeks.
+  if (!(project in state.projectQuotes)) {
+    loadProjectQuote(project).then(() => {
+      try { renderProjectStatsPopup(); } catch (_) {}
+    });
+  }
+  const _quote = state.projectQuotes[project] || null;
+  const _soldW = _quote && Number.isFinite(Number(_quote.sold_delivery_weeks))
+    ? Number(_quote.sold_delivery_weeks)
+    : null;
   let durationLabel = '—';
   if (po && fat && po.start_date && fat.start_date) {
     const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
-    const weeks = Math.max(0, Math.round(days / 7));
-    durationLabel = `${weeks} wk${weeks === 1 ? '' : 's'}`;
+    const schedW = Math.max(0, _toHalfWeek(days));
+    let quotedW = null;
+    if (_soldW != null && _soldW > 0) {
+      quotedW = Math.round(_soldW * 2) / 2;
+    } else if (po.baseline_start_date && fat.baseline_start_date) {
+      const qDays = Math.round((new Date(fat.baseline_start_date + 'T00:00:00') - new Date(po.baseline_start_date + 'T00:00:00')) / 86400000);
+      quotedW = Math.max(0, _toHalfWeek(qDays));
+    }
+    // Always show Q / S when a quoted reference exists — even when
+    // they match — so the PM can confirm the sold value was saved.
+    // Was showing only the scheduled number when they were equal,
+    // which made Dan think the sold input didn't stick.
+    if (quotedW != null) {
+      durationLabel = `<span class="popup-vs"><span class="popup-vs-q">${quotedW}W</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${schedW}W</span></span>`;
+    } else {
+      durationLabel = `${schedW}W`;
+    }
+  }
+  // Quoted FAT — computed as PO start + (sold weeks × 7 calendar days)
+  // when a sold duration is set, OR baseline_FAT date when a baseline
+  // exists. Used in the FAT row alongside the live scheduled date so
+  // the PM sees "FAT we sold vs FAT we'll hit".
+  let quotedFatDate = null;
+  if (po && po.start_date) {
+    if (_soldW != null && _soldW > 0) {
+      // PO start + N*7 calendar days (calendar weeks, matches how the
+      // sold duration was negotiated with the customer).
+      const t = new Date(po.start_date + 'T00:00:00');
+      t.setDate(t.getDate() + Math.round(_soldW * 7));
+      quotedFatDate = t.toISOString().slice(0, 10);
+    } else if (fat && fat.baseline_start_date) {
+      quotedFatDate = fat.baseline_start_date;
+    }
+  }
+  // Expected % at today's date — labor-weighted across all tasks. For
+  // each task, expected % = (elapsed business days from start / total
+  // business days) × 100, clamped to 0-100. Roll up the same way the
+  // actual % does (weighted by duration). Done tasks count as 100%
+  // expected since their window is past.
+  let expectedPct = null;
+  {
+    let wSum = 0, dSum = 0;
+    for (const t of tasks) {
+      if (t.is_milestone) continue;
+      if (inferredAnchorKey(t)) continue;
+      const d = Number(t.duration_days);
+      if (!d || d <= 0) continue;
+      if (!t.start_date || !t.end_date) continue;
+      const sMs = new Date(t.start_date + 'T00:00:00').getTime();
+      const eMs = new Date(t.end_date + 'T00:00:00').getTime();
+      const todayLocal = new Date(); todayLocal.setHours(0, 0, 0, 0);
+      const tMs = todayLocal.getTime();
+      let pct = 0;
+      if (tMs >= eMs) pct = 100;
+      else if (tMs <= sMs) pct = 0;
+      else {
+        const span = Math.max(1, eMs - sMs);
+        pct = Math.round(((tMs - sMs) / span) * 100);
+      }
+      dSum += d;
+      wSum += d * pct;
+    }
+    expectedPct = dSum > 0 ? Math.round(wSum / dSum) : null;
   }
   // If we're viewing a per-machine FAT and there's a PREVIOUS machine
   // (e.g. viewing M2 → compare to M1.FAT), show a small delta chip
@@ -3846,9 +3991,11 @@ function renderProjectStatsPopup() {
       const prevFat = tasks.find(t => t.machine === prevMachine && inferredAnchorKey(t) === 'fat');
       if (prevFat && prevFat.start_date && fat && fat.start_date) {
         const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(prevFat.start_date + 'T00:00:00')) / 86400000);
-        const wks = Math.round(days / 7);
+        // Half-week snap — Dan's rule: week values must end in 0 or
+        // .5 only. Never show 0.6W / 1.2W / 6.8W etc.
+        const wks = Math.round((days / 7) * 2) / 2;
         if (wks !== 0) {
-          machineDeltaChip = ` <span class="popup-machine-delta" title="${escapeHtml(activeMachine)}.FAT vs ${escapeHtml(prevMachine)}.FAT">${wks >= 0 ? '+' : ''}${wks} wk${Math.abs(wks) === 1 ? '' : 's'} vs ${escapeHtml(prevMachine)}</span>`;
+          machineDeltaChip = ` <span class="popup-machine-delta" title="${escapeHtml(activeMachine)}.FAT vs ${escapeHtml(prevMachine)}.FAT">${wks >= 0 ? '+' : ''}${wks}W vs ${escapeHtml(prevMachine)}</span>`;
         }
       }
     }
@@ -3866,13 +4013,26 @@ function renderProjectStatsPopup() {
   //   3-7 days → 1 wk
   //   8-12 days → 2 wks
   //   ...
-  let fatDateLabel = fat?.start_date ? fmtDate(fat.start_date) : '—';
+  // FAT row — show Quoted / Scheduled when there's a quoted FAT to
+  // compare against, otherwise just the scheduled date. Same Q/S
+  // visual pattern as Duration.
+  const schedFatStr = fat?.start_date ? fmtDate(fat.start_date) : '—';
+  let fatDateLabel;
+  if (quotedFatDate && quotedFatDate !== fat?.start_date) {
+    fatDateLabel = `<span class="popup-vs"><span class="popup-vs-q">${escapeHtml(fmtDate(quotedFatDate))}</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${escapeHtml(schedFatStr)}</span></span>`;
+  } else if (quotedFatDate) {
+    // Same date — still show the pair so the PM can confirm.
+    fatDateLabel = `<span class="popup-vs"><span class="popup-vs-q">${escapeHtml(fmtDate(quotedFatDate))}</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${escapeHtml(schedFatStr)}</span></span>`;
+  } else {
+    fatDateLabel = schedFatStr;
+  }
   let fatVarChip = '';
   if (stats.fatVariance != null) {
-    const wks = Math.round(stats.fatVariance / 5);  // 5 business days = 1 week
-    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok">0 wks</span>';
-    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late">+${wks} wk${wks === 1 ? '' : 's'}</span>`;
-    else                  fatVarChip = `<span class="popup-fat-var stat-early">${wks} wk${wks === -1 ? '' : 's'}</span>`;
+    // Half-week snap per Dan's no-arbitrary-week-fractions rule.
+    const wks = Math.round((stats.fatVariance / 5) * 2) / 2;
+    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok">0W</span>';
+    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late">+${wks}W</span>`;
+    else                  fatVarChip = `<span class="popup-fat-var stat-early">${wks}W</span>`;
   }
 
   // Multi-machine projects: tell the user what these numbers cover.
@@ -3886,25 +4046,120 @@ function renderProjectStatsPopup() {
   // Sales workspace. Duration + FAT still show because those are
   // schedule-level facts the user always wants.
   const isSalesProject = projectWorkspace(project) === 'Sales';
+  // Complete row — Q on LEFT (expected, muted), S on RIGHT (actual,
+  // bold). Same column order as Duration and FAT so the header row
+  // at the top of the popup applies consistently.
+  let completeLabel = pctLabel;
+  if (stats.percentComplete != null && expectedPct != null) {
+    const actualW = `${stats.percentComplete}%`;
+    const expectedW = `${expectedPct}%`;
+    completeLabel = `<span class="popup-vs"><span class="popup-vs-q">${expectedW}</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${actualW}</span></span>`;
+  }
   const completeRow = isSalesProject ? '' : `
     <div class="popup-row">
       <span class="popup-label">Complete</span>
-      <span class="popup-value" title="Labor-weighted across ${activeMachine || 'all'} tasks: SUM(duration × progress) ÷ SUM(duration).">${pctLabel}</span>
+      <span class="popup-value" title="Expected % at today's date (left, muted) / Actual % complete (right, bold). Labor-weighted across non-anchor tasks.">${completeLabel}</span>
     </div>`;
-  popup.innerHTML = `
-    ${scopeHeader}
-    <div class="popup-row">
-      <span class="popup-label">Duration</span>
-      <span class="popup-value" title="Receipt of PO → ${activeMachine ? activeMachine + '.' : ''}FAT, in calendar weeks (rounded).">${durationLabel}${machineDeltaChip}</span>
-    </div>
-    ${completeRow}
-    <div class="popup-row">
-      <span class="popup-label">FAT</span>
-      <span class="popup-value" title="${activeMachine ? activeMachine + '.' : ''}FAT anchor start date. Chip on the right shows baseline variance, if a baseline is set.">
-        ${fatDateLabel}${fatVarChip}
+  // Penalty clause row — appears when the quote has has_penalty_clause
+  // checked. Date = PO receipt date + penalty_clause_weeks calendar
+  // weeks. Single value (no Q/S split since this is just a calendar
+  // event derived from the contract).
+  let penaltyRow = '';
+  if (_quote && _quote.has_penalty_clause && _quote.penalty_clause_weeks != null && po && po.start_date) {
+    const wks = Number(_quote.penalty_clause_weeks);
+    if (Number.isFinite(wks) && wks > 0) {
+      const d = new Date(po.start_date + 'T00:00:00');
+      d.setDate(d.getDate() + Math.round(wks * 7));
+      const dateStr = fmtDate(d.toISOString().slice(0, 10));
+      const isPast = fat?.start_date && fat.start_date > d.toISOString().slice(0, 10);
+      penaltyRow = `
+        <div class="popup-row">
+          <span class="popup-label">Penalty</span>
+          <span class="popup-value" title="Penalty clause start date — PO + ${wks} weeks. Set on Quote vs Schedule → 'Has penalty clause'.">${escapeHtml(dateStr)}${isPast ? ' <span class="popup-fat-var stat-late">past</span>' : ''}</span>
+        </div>`;
+    }
+  }
+  // Column header — appears at the top of the popup so the user knows
+  // which side is Quoted vs Scheduled. Skipped when no row has a
+  // Q/S split (i.e. no baseline + no sold value).
+  const hasAnyVs = (durationLabel.includes('popup-vs') || completeLabel.includes('popup-vs') || fatDateLabel.includes('popup-vs'));
+  const colHeader = hasAnyVs ? `
+    <div class="popup-row popup-row-header">
+      <span class="popup-label"></span>
+      <span class="popup-value popup-header-cols">
+        <span class="popup-vs-q">Quoted</span>
+        <span class="popup-vs-sep">/</span>
+        <span class="popup-vs-s">Scheduled</span>
       </span>
-    </div>
-  `;
+    </div>` : '';
+  // Simple vs Advanced mode — persisted in localStorage. Simple
+  // shows only the live scheduled values (Duration / Complete / FAT)
+  // — no Q/S split, no header, no penalty row. Advanced shows the
+  // full comparison + penalty. Per Dan's request: default simple,
+  // expand to advanced via the toggle in the top-right.
+  let popupMode = 'simple';
+  try { popupMode = localStorage.getItem('sdcStatsPopupMode') || 'simple'; } catch (_) {}
+  if (popupMode !== 'advanced') popupMode = 'simple';
+  const toggleLabel = popupMode === 'advanced' ? '▾ Simple' : '▸ Advanced';
+  const toggleTitle = popupMode === 'advanced'
+    ? 'Collapse — show only the live schedule numbers.'
+    : 'Expand — show Quoted vs Scheduled comparison + penalty clause.';
+
+  if (popupMode === 'simple') {
+    // Simple = just the scheduled values, single column per row.
+    const schedDur = (() => {
+      if (!po || !fat || !po.start_date || !fat.start_date) return '—';
+      const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
+      return `${Math.max(0, _toHalfWeek(days))}W`;
+    })();
+    const simpleCompleteRow = isSalesProject ? '' : `
+      <div class="popup-row">
+        <span class="popup-label">Complete</span>
+        <span class="popup-value">${pctLabel}</span>
+      </div>`;
+    popup.innerHTML = `
+      <button type="button" class="popup-mode-toggle" data-action="popup-toggle" title="${escapeHtml(toggleTitle)}">${escapeHtml(toggleLabel)}</button>
+      ${scopeHeader}
+      <div class="popup-row">
+        <span class="popup-label">Duration</span>
+        <span class="popup-value">${schedDur}${machineDeltaChip}</span>
+      </div>
+      ${simpleCompleteRow}
+      <div class="popup-row">
+        <span class="popup-label">FAT</span>
+        <span class="popup-value">${schedFatStr}${fatVarChip}</span>
+      </div>
+    `;
+  } else {
+    popup.innerHTML = `
+      <button type="button" class="popup-mode-toggle" data-action="popup-toggle" title="${escapeHtml(toggleTitle)}">${escapeHtml(toggleLabel)}</button>
+      ${scopeHeader}
+      ${colHeader}
+      <div class="popup-row">
+        <span class="popup-label">Duration</span>
+        <span class="popup-value" title="Sold delivery (left, muted) / Current scheduled PO→FAT span (right, bold). Half-week steps.">${durationLabel}${machineDeltaChip}</span>
+      </div>
+      ${completeRow}
+      <div class="popup-row">
+        <span class="popup-label">FAT</span>
+        <span class="popup-value" title="Sold FAT (PO + sold weeks; or baseline FAT) on the left, scheduled ${activeMachine ? activeMachine + '.' : ''}FAT on the right. Chip shows variance.">
+          ${fatDateLabel}${fatVarChip}
+        </span>
+      </div>
+      ${penaltyRow}
+    `;
+  }
+  // Wire the toggle button — flips mode + re-renders so the new
+  // markup paints in place. localStorage persists across reloads.
+  const toggleBtn = popup.querySelector('[data-action="popup-toggle"]');
+  if (toggleBtn && !toggleBtn.dataset.bound) {
+    toggleBtn.dataset.bound = '1';
+    toggleBtn.addEventListener('click', () => {
+      const next = popupMode === 'advanced' ? 'simple' : 'advanced';
+      try { localStorage.setItem('sdcStatsPopupMode', next); } catch (_) {}
+      renderProjectStatsPopup();
+    });
+  }
 }
 
 // ---------- Today line ----------
@@ -4100,6 +4355,123 @@ function drawBaselineGhosts() {
 // and SOLID once the Sent checkbox is on (the `paid` DB field is reused for this
 // flag — name's legacy). A small label at the top names the milestone + percent.
 // Renders ON TOP of bars/arrows so it's always readable.
+// Short red vertical line at the penalty-clause start date — appears
+// only when the active project's quote has has_penalty_clause checked
+// AND penalty_clause_weeks set. Spans ~2 rows above and below the
+// FAT bar (full-height would dominate the chart) with a "Penalty
+// starts" label so the PM sees both the date and what it means.
+// Wrapped in try/catch per CLAUDE.md — render chain must continue
+// even if anything in here throws.
+function drawPenaltyClauseLine() {
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg) return;
+    svg.querySelectorAll('.sdc-penalty-line').forEach(el => el.remove());
+    if (!state.gantt || !state.gantt.gantt_start) return;
+    const project = state.filters.project;
+    if (!project) return;
+    // Self-load the quote on cache miss so the penalty line shows on
+    // the first Gantt render, not just after the user opens the
+    // Quote modal. Re-draws when the fetch resolves.
+    if (!(project in state.projectQuotes)) {
+      loadProjectQuote(project).then(() => {
+        try { drawPenaltyClauseLine(); } catch (_) {}
+      });
+      return;
+    }
+    const quote = state.projectQuotes[project];
+    if (!quote || !quote.has_penalty_clause) return;
+    const wks = Number(quote.penalty_clause_weeks);
+    if (!Number.isFinite(wks) || wks <= 0) return;
+    // PO start anchors the date math (penalty = PO + N weeks). FAT
+    // bar anchors the VERTICAL extent (~2 rows above to 2 below).
+    const tasks = state.tasks.filter(t => t.project === project);
+    const po = tasks.find(t => inferredAnchorKey(t) === 'receipt_of_po');
+    const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
+    if (!po || !po.start_date) return;
+    const penaltyDateObj = new Date(po.start_date + 'T00:00:00');
+    penaltyDateObj.setDate(penaltyDateObj.getDate() + Math.round(wks * 7));
+    const penaltyISO = penaltyDateObj.toISOString().slice(0, 10);
+    const g = state.gantt;
+    const cw = g.options.column_width;
+    const mode = g.options.view_mode || 'Week';
+    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+    const pxPerDay = cw / step;
+    // Work-day positioning so the line lands on the same column as
+    // a task ending on that date (matches compressGanttToWorkDays).
+    const x = workDayOffset(penaltyISO, g.gantt_start) * pxPerDay;
+    if (x < 0) return;
+    // Find the FAT bar's y to anchor the line. If FAT isn't rendered
+    // (filtered out), fall back to mid-chart.
+    const svgH = +svg.getAttribute('height') || svg.viewBox?.baseVal?.height || 600;
+    let fatY = svgH / 2;
+    let rowH = 28;
+    if (fat) {
+      const wrap = svg.querySelector(`.bar-wrapper[data-id="${fat.id}"]`);
+      const bar = wrap && wrap.querySelector('.bar');
+      if (bar) {
+        fatY = +bar.getAttribute('y');
+        rowH = +bar.getAttribute('height') || rowH;
+      }
+    }
+    // Span: 2 rows ABOVE FAT to 2 rows BELOW — short enough not to
+    // dominate the chart, long enough to read as "this matters
+    // around delivery". Each row is roughly rowH + a few px padding.
+    const ROW_STRIDE = rowH + 8;
+    const yTop = Math.max(40, fatY - 2 * ROW_STRIDE);
+    const yBottom = fatY + 3 * ROW_STRIDE;
+
+    const layer = document.createElementNS(SVG_NS, 'g');
+    layer.setAttribute('class', 'sdc-penalty-line');
+    layer.style.pointerEvents = 'none';
+    svg.appendChild(layer);
+    // Vertical red line.
+    const line = document.createElementNS(SVG_NS, 'line');
+    line.setAttribute('x1', x);
+    line.setAttribute('x2', x);
+    line.setAttribute('y1', yTop);
+    line.setAttribute('y2', yBottom);
+    line.setAttribute('stroke', '#dc2626');
+    line.setAttribute('stroke-width', '2.2');
+    layer.appendChild(line);
+    // Label — "Penalty starts" + date. Positioned to the RIGHT of
+    // the line and vertically centered between the line's top and
+    // bottom so it doesn't sit ON TOP of any task bar (centering it
+    // above the line was overlapping with bars in busy areas like
+    // Test/Debug rows).
+    const labelText = `Penalty starts ${fmtDate(penaltyISO)}`;
+    const padX = 6;
+    const approxCharW = 6.2;
+    const labelW = labelText.length * approxCharW + padX * 2;
+    const labelH = 16;
+    const rectX = x + 6;
+    const rectY = ((yTop + yBottom) / 2) - (labelH / 2);
+    const rect = document.createElementNS(SVG_NS, 'rect');
+    rect.setAttribute('x', rectX);
+    rect.setAttribute('y', rectY);
+    rect.setAttribute('width', labelW);
+    rect.setAttribute('height', labelH);
+    rect.setAttribute('rx', '3');
+    rect.setAttribute('fill', '#fff');
+    rect.setAttribute('stroke', '#dc2626');
+    rect.setAttribute('stroke-width', '1.4');
+    layer.appendChild(rect);
+    const text = document.createElementNS(SVG_NS, 'text');
+    // Anchor text to the LEFT edge of the pill (since the pill sits
+    // to the right of the line now, not centered above it).
+    text.setAttribute('x', rectX + labelW / 2);
+    text.setAttribute('y', rectY + labelH / 2 + 1);
+    text.setAttribute('text-anchor', 'middle');
+    text.setAttribute('dominant-baseline', 'central');
+    text.setAttribute('fill', '#b91c1c');
+    text.style.fontFamily = 'sans-serif';
+    text.style.fontSize = '11px';
+    text.style.fontWeight = '700';
+    text.textContent = labelText;
+    layer.appendChild(text);
+  } catch (_) { /* swallow — render chain must continue */ }
+}
+
 function drawFinancialOverlay() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
@@ -4172,12 +4544,18 @@ function drawFinancialOverlay() {
   const LANE_GAP_X = 10;   // min horizontal gap before two labels can share a lane
   const laneEndX = [];
   const laneByMarker = new Map();
+  // The schedule Gantt is WORK-DAY compressed (Sat/Sun collapsed) via
+  // compressGanttToWorkDays — so bar positions use workDayOffset, not
+  // calendar-day math. The overlay must do the same or markers land
+  // weeks-to-months off because every weekend along the way adds 2
+  // calendar days that don't exist on the chart.
   for (const m of sortedMarkers) {
-    const date = new Date(m.due_date + 'T00:00:00');
-    if (Number.isNaN(date.getTime())) continue;
-    const x = ((date.getTime() - startMs) / (86400 * 1000)) * pxPerDay;
+    if (!m.due_date) continue;
+    const x = workDayOffset(m.due_date, g.gantt_start) * pxPerDay;
     const pct = m.percent != null ? ` ${Number(m.percent)}%` : '';
-    const labelW = ((m.name || '').length + pct.length) * APPROX_CHAR + 12; // +pill padding
+    // Width estimate uses the abbreviation (matches what the label
+    // actually renders), not the full name.
+    const labelW = (_pdashFinAbbrev(m).length + pct.length) * APPROX_CHAR + 12;
     let lane = 0;
     for (; lane < laneEndX.length; lane++) {
       if (laneEndX[lane] + LANE_GAP_X < x) break;
@@ -4187,10 +4565,10 @@ function drawFinancialOverlay() {
   }
 
   for (const m of markers) {
-    const date = new Date(m.due_date + 'T00:00:00');
-    if (Number.isNaN(date.getTime())) continue;
-    const days = (date.getTime() - startMs) / (86400 * 1000);
-    const x = days * pxPerDay;
+    if (!m.due_date) continue;
+    // Same work-day-based x positioning as the lane loop above —
+    // matches the bar positions in the compressed Gantt.
+    const x = workDayOffset(m.due_date, g.gantt_start) * pxPerDay;
     const sent = !!m.paid;
     const lane = laneByMarker.get(m) || 0;
     // Labels sit BELOW the dates (yTop already accounts for both header rows),
@@ -4211,7 +4589,10 @@ function drawFinancialOverlay() {
     layer.appendChild(line);
 
     // Build label text first so we can measure for the pill backdrop.
+    // Use the SDC abbreviation (PO / MC / FAT / SAT) — matches the
+    // dashboard tile so PMs read the same shorthand in both places.
     const pct = m.percent != null ? ` ${Number(m.percent)}%` : '';
+    const abbrev = _pdashFinAbbrev(m);
     const text = document.createElementNS(SVG_NS, 'text');
     text.setAttribute('x', x + 6);
     text.setAttribute('y', labelY);
@@ -4219,7 +4600,7 @@ function drawFinancialOverlay() {
     text.setAttribute('font-size', '11');
     text.setAttribute('font-weight', '700');
     text.setAttribute('fill', '#14532d');         // green-900 — strong contrast
-    text.textContent = (m.name || '') + pct;
+    text.textContent = abbrev + pct;
     layer.appendChild(text);
 
     // White pill backdrop behind each label so the label is readable even when
@@ -5719,6 +6100,7 @@ function toggleFavoriteProject(name) {
   saveProjectTabs();
   // Re-render whichever view is showing so the star flips immediately.
   if (state.view === 'projects')  renderProjectsPage();
+  if (state.view === 'dashboard') renderDashboard();
   if (state.view === 'favorites') renderFavoritesPage();
   if (state.view === 'recents')   renderRecentsPage();
 }
@@ -5915,6 +6297,884 @@ function openPromoteModal(sourceProject) {
       btn.textContent = 'Promote';
       showErr(err.message || String(err));
     }
+  });
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Dashboard — at-a-glance status across one or many projects, organized
+// by department (the disciplines that actually do the work).
+//
+// Layout, top to bottom:
+//   1. Filters row: Project picker (multi-select dropdown) + "Coming due
+//      in N weeks" number input. Both persist in localStorage.
+//   2. Key Milestones strip — one row per selected project, showing the
+//      5 spine anchors (PO / Mech 1 / Power-Up / FAT / Ship) as a visual
+//      timeline with done/upcoming/overdue states.
+//   3. Overall Health — single donut chart + counts for all open work
+//      tasks across the selected projects (done / on-time / ahead / behind).
+//   4. By Department — one card per ownership bucket (Mechanical, Controls,
+//      General, Procurement, Build, Wire, Testing, Teardown, Install).
+//      Each card has:
+//        • Progress bar comparing actual % done vs expected % done. The
+//          expected % is the fraction of THIS DEPT'S tasks whose end_date
+//          has already passed — i.e. "should be finished by now" by count,
+//          not by elapsed calendar time. Per Dan's spec.
+//        • Donut showing the dept's ahead/on-time/behind split.
+//        • Three short lists: Coming due (within the N-week window),
+//          Behind, Ahead.
+//
+// "Ownership bucket" is computed from (phase_group, department,
+// sub_department) so Mechanical Engineering tasks live with their own
+// kind, not lumped under generic 'engineering'.
+//
+// Built straight off state.tasks so it always reflects whatever the
+// schedule already loaded. No new server endpoints — pure derived view.
+
+// Map a task to its ownership bucket — group by ASSIGNEE'S team
+// discipline, not by the task's section/department. Dan's spec:
+// "People are assigned to departments. Right? Not tasks. So in that
+// case, you only have four departments… mechanical engineering,
+// controls engineering, wiring, building. I guess you could put in
+// p m there." The team-discipline values come from DISCIPLINES at the
+// top of the file: pm, mech, controls, build, wire.
+function _pdashOwnershipKey(t) {
+  if (!t.assignee) return 'unassigned';
+  const member = (state.team || []).find(m => m.name === t.assignee);
+  if (!member || !member.discipline) return 'unassigned';
+  return member.discipline;
+}
+
+// Five team disciplines + the catch-all unassigned bucket. Labels match
+// DISCIPLINE_BY_KEY so the dashboard and Departments tab read the same.
+const _PDASH_OWNERSHIP = [
+  { key: 'mech',       label: 'Mechanical Engineering' },
+  { key: 'controls',   label: 'Controls Engineering' },
+  { key: 'pm',         label: 'Project Management' },
+  { key: 'build',      label: 'Build' },
+  { key: 'wire',       label: 'Wire' },
+  { key: 'unassigned', label: 'Unassigned' },
+];
+// Map a financial milestone (by name OR predecessor) to its short
+// abbreviation used in the dashboard tile + the Gantt overlay label.
+// Dan's canonical set: PO, MC, FAT, SAT. Anything not in the standard
+// four falls back to the first 3-4 chars of the name uppercased.
+function _pdashFinAbbrev(f) {
+  const name = String(f && f.name || '').trim();
+  const pred = String(f && f.predecessors || '').trim().toLowerCase();
+  const n = name.toLowerCase();
+  if (/\bpo\b|receipt of po|down payment/.test(n) || pred === 'po') return 'PO';
+  if (/major commercial|mid payment|\bmc\b/.test(n))                 return 'MC';
+  if (/\bfat\b|acceptance at sdc/.test(n) || pred === 'fat')         return 'FAT';
+  if (/\bsat\b|acceptance at customer/.test(n) || /^ship/i.test(pred)) return 'SAT';
+  // Fallback — first non-space chunk uppercased, max 4 chars.
+  const fallback = (name.match(/[A-Za-z0-9]+/g) || []).join('').slice(0, 4);
+  return fallback.toUpperCase() || '$';
+}
+
+// Canonical order for the dashboard milestone strip — PO, MC, FAT, SAT.
+// Anything else falls to the tail end, sorted by date.
+function _pdashFinOrder(f) {
+  return ({ PO: 0, MC: 1, FAT: 2, SAT: 3 })[_pdashFinAbbrev(f)] ?? 99;
+}
+
+// Short month-year string from an ISO date — "2026-05-08" → "May '26".
+// Used by the milestone-strip financial badges so the PM sees the
+// target month at a glance without the full M/D/Y. Returns '' for an
+// unparseable or empty date.
+function _pdashFinMonth(isoDate) {
+  if (!isoDate) return '';
+  const d = new Date(String(isoDate) + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return '';
+  const monthShort = d.toLocaleString('en-US', { month: 'short' });
+  const yearShort  = String(d.getFullYear()).slice(2);
+  return `${monthShort} '${yearShort}`;
+}
+
+// Convert a (calendar) day count to a half-week-snapped string like
+// "0.5W" / "1W" / "1.5W". Per Dan's spec: the dashboard never shows raw
+// days, and any week value is rounded to the nearest 0.5 — no 0.2 / 0.4
+// / 0.6 fractions even when the underlying math would produce them.
+// Five work days = one work week is the SDC convention used throughout
+// the schedule.
+function _pdashDaysToWeeks(days) {
+  const w = (Math.abs(days) || 0) / 5;
+  const snapped = Math.round(w * 2) / 2;
+  // Round-trip is intentional: tiny values that would render "0W" still
+  // count as "0.5W" minimum, so a 1-day slip reads "0.5W late" not "0W".
+  const out = snapped === 0 && Math.abs(days) > 0 ? 0.5 : snapped;
+  // Drop trailing ".0" so 2.0 → "2", but keep "0.5".
+  return out % 1 === 0 ? String(out) : String(out);
+}
+
+// Month-range picker used by the Financial Milestones section.
+// Returns HTML for two <input type="month"> fields side by side. The
+// data-action="set-fin-month-from|to" attrs are read by the change
+// handler wired in renderDashboard.
+function _pdashFinMonthControls(from, to) {
+  return `<label class="pdash-fin-month">From <input type="month" data-action="set-fin-month-from" value="${escapeHtml(from || '')}"/></label>
+          <label class="pdash-fin-month">To <input type="month" data-action="set-fin-month-to" value="${escapeHtml(to || '')}"/></label>
+          <button type="button" class="btn-ghost btn-tight" data-action="clear-fin-months">Clear</button>`;
+}
+
+function renderDashboard() {
+  const root = document.getElementById('dashboard-page');
+  if (!root) return;
+
+  // ── Filters: selected projects + coming-due horizon (weeks). Persisted. ──
+  let selected;
+  try { selected = JSON.parse(localStorage.getItem('sdcDashboardProjects') || '[]'); }
+  catch (_) { selected = []; }
+  if (!Array.isArray(selected)) selected = [];
+  let comingDueWeeks = parseFloat(localStorage.getItem('sdcDashboardComingWeeks') || '2');
+  if (!Number.isFinite(comingDueWeeks) || comingDueWeeks <= 0) comingDueWeeks = 2;
+
+  // Dashboard is for ACTIVE work only — drop templates (scaffolding) and
+  // Sales-workspace projects (pre-quote, not real schedules yet).
+  const allProjects = uniqueValues('project')
+    .filter(p => p && p.trim().length > 0)
+    .filter(p => !isTemplateProject(p))
+    .filter(p => projectWorkspace(p) !== 'Sales')
+    .sort();
+  // Default to currently-open projects when nothing's persisted yet.
+  if (selected.length === 0) {
+    selected = (state.openProjects || []).filter(p => p && allProjects.includes(p));
+    if (selected.length === 0 && allProjects.length > 0) selected = [allProjects[0]];
+  } else {
+    selected = selected.filter(p => allProjects.includes(p));
+  }
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayMs   = today.getTime();
+  const todayISO  = today.toISOString().slice(0, 10);
+  const comingDueMs = todayMs + comingDueWeeks * 7 * 86400000;
+
+  // Pool tasks across the selected projects, separating real work from
+  // spine milestones (anchors).
+  const pool = state.tasks.filter(t =>
+    selected.includes(t.project) &&
+    !isBacklogTask(t)
+  );
+  const work = pool.filter(t => !t.is_milestone && !t.anchor_key);
+  const milestoneTasks = pool.filter(t => t.is_milestone || t.anchor_key);
+
+  // Load financial milestones for each selected project (cached in
+  // state.financials[project]). Skipping the await chain — kick off the
+  // fetches if they haven't happened, and use whatever's already
+  // cached for this render. The next render after the fetches resolve
+  // will paint the financial dots and section.
+  for (const p of selected) {
+    if (!state.financials[p]) {
+      loadFinancialsForProject(p).then(() => {
+        // Only re-render if the dashboard is still the active view.
+        if (state.view === 'dashboard') renderDashboard();
+      }).catch(() => {});
+    }
+  }
+  // Flat list of financial rows across the selection. Each row carries
+  // { project, name, due_date, paid, amount, percent }.
+  const financials = selected.flatMap(p =>
+    (state.financials[p] || []).map(r => ({ ...r, project: p }))
+  );
+
+  // ── Per-task health: actual vs expected % complete + status bucket. ──
+  // Expected = time elapsed between start and end (linear). On-time means
+  // |expected − actual| < 15. Beyond that, ahead or behind.
+  function taskStatus(t) {
+    const actual = Math.max(0, Math.min(100, Number(t.progress) || 0));
+    if (actual >= 100) return { actual, expected: 100, status: 'done', lag: 0 };
+    if (!t.start_date || !t.end_date)
+      return { actual, expected: actual, status: 'on-time', lag: 0 };
+    const startMs = new Date(t.start_date + 'T00:00:00').getTime();
+    const endMs   = new Date(t.end_date   + 'T00:00:00').getTime();
+    if (todayMs <= startMs)
+      return { actual, expected: 0, status: 'on-time', lag: 0 };
+    const total = Math.max(1, endMs - startMs);
+    const elapsed = Math.min(total, todayMs - startMs);
+    const expected = Math.round((elapsed / total) * 100);
+    const lag = expected - actual;
+    if (lag >= 15)  return { actual, expected, status: 'behind', lag };
+    if (lag <= -15) return { actual, expected, status: 'ahead',  lag };
+    return            { actual, expected, status: 'on-time', lag };
+  }
+
+  // ── Bucket counts for a task set: done / on-time / ahead / behind. ──
+  function bucketCounts(tasks) {
+    let done = 0, behind = 0, ahead = 0, ontime = 0, shouldBeDone = 0;
+    for (const t of tasks) {
+      const s = taskStatus(t);
+      if (s.status === 'done')        done++;
+      else if (s.status === 'behind') behind++;
+      else if (s.status === 'ahead')  ahead++;
+      else                            ontime++;
+      // "should be done by now" = count of tasks whose end_date has
+      // already passed. Per Dan's spec: expected % is tasks-based, not
+      // calendar-based.
+      if (t.end_date && t.end_date < todayISO) shouldBeDone++;
+    }
+    return { total: tasks.length, done, behind, ahead, ontime, shouldBeDone };
+  }
+
+  // ── Group work tasks by ownership bucket. ──
+  const tasksByOwner = new Map();
+  for (const t of work) {
+    const k = _pdashOwnershipKey(t);
+    if (!tasksByOwner.has(k)) tasksByOwner.set(k, []);
+    tasksByOwner.get(k).push(t);
+  }
+
+  // Render order: known buckets first (in our canonical order), then any
+  // strays (alphabetical). Buckets with zero tasks are skipped.
+  const knownKeys = new Set(_PDASH_OWNERSHIP.map(o => o.key));
+  const knownInOrder = _PDASH_OWNERSHIP.filter(o => tasksByOwner.has(o.key));
+  const strays = [...tasksByOwner.keys()].filter(k => !knownKeys.has(k)).sort()
+    .map(k => ({ key: k, label: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) }));
+  const renderOrder = [...knownInOrder, ...strays];
+
+  const overall = bucketCounts(work);
+
+  // ── SVG donut chart. Three segments: ahead / on-time / behind, with
+  //    done shown as a separate inner ring (slightly darker green). ──
+  function donutSvg(stats, size = 130) {
+    const cx = size / 2, cy = size / 2;
+    const ringR = size * 0.36;
+    const stroke = size * 0.16;
+    const C = 2 * Math.PI * ringR;
+    const total = Math.max(1, stats.done + stats.ontime + stats.behind + stats.ahead);
+    // SDC palette per Dan's spec: dark blue, light blue, lime, yellow.
+    //   done   → SDC green (#74c415)
+    //   ontime → SDC dark blue (#1574c4)
+    //   ahead  → SDC lime light (#befa4f)
+    //   behind → red (warning state — kept from palette outside the four
+    //            so behind reads as alarming, not just "different blue")
+    const segs = [
+      { val: stats.done,   color: '#74c415' },
+      { val: stats.ontime, color: '#1574c4' },
+      { val: stats.ahead,  color: '#befa4f' },
+      { val: stats.behind, color: '#dc2626' },
+    ];
+    let acc = 0;
+    const arcs = segs.filter(s => s.val > 0).map(seg => {
+      const len = (seg.val / total) * C;
+      const gap = C - len;
+      const out = `<circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="${seg.color}" stroke-width="${stroke}" stroke-dasharray="${len} ${gap}" stroke-dashoffset="${-acc}" transform="rotate(-90 ${cx} ${cy})"/>`;
+      acc += len;
+      return out;
+    }).join('');
+    const centerPct = total > 0 ? Math.round((stats.done / total) * 100) : 0;
+    return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="pdash-donut-svg">
+      <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
+      ${arcs}
+      <text x="${cx}" y="${cy - 4}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.20}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${centerPct}%</text>
+      <text x="${cx}" y="${cy + size * 0.12}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.08}" fill="#64748b" style="font-family:sans-serif">done</text>
+    </svg>`;
+  }
+
+  // ── Progress bar: actual filled vs expected tick. ──
+  function progressBar(actualPct, expectedPct) {
+    actualPct   = Math.max(0, Math.min(100, actualPct));
+    expectedPct = Math.max(0, Math.min(100, expectedPct));
+    let tone = 'good';
+    if      (actualPct < expectedPct - 15) tone = 'bad';
+    else if (actualPct < expectedPct - 5)  tone = 'mid';
+    return `<div class="pdash-progress" data-tone="${tone}">
+      <div class="pdash-progress-track">
+        <div class="pdash-progress-bar" style="width:${actualPct}%"></div>
+        <div class="pdash-progress-tick" style="left:${expectedPct}%" title="Expected by now: ${expectedPct}%"></div>
+      </div>
+      <div class="pdash-progress-readout">
+        <strong>${actualPct}%</strong> done
+        <span class="pdash-progress-expected">vs. ${expectedPct}% expected</span>
+      </div>
+    </div>`;
+  }
+
+  // ── Per-project milestone strip (5 spine anchors). ──
+  const KEY_ANCHORS = [
+    { key: 'receipt_of_po',    short: 'PO' },
+    { key: 'mech_release_1',   short: 'Mech 1' },
+    { key: 'machine_power_up', short: 'Power' },
+    { key: 'fat',              short: 'FAT' },
+    { key: 'ship_machine',     short: 'Ship' },
+  ];
+  function milestoneStripForProject(project) {
+    // Map each financial milestone abbreviation to the spine cell it
+    // SHARES. The badge becomes a sibling item inside that cell (same
+    // icon/label/date stack as the anchor) — keeps all the main
+    // anchor dots horizontally aligned across rows and reads as one
+    // continuous left-to-right timeline.
+    //   MC was previously dropped into the Power-Up cell as a leading
+    //   badge, but that pushed the Power-Up dot out of alignment.
+    //   Moved MC into Mech 1's cell instead — sits AFTER Mech 1's
+    //   mini-column but BEFORE the Power-Up cell, which matches Dan's
+    //   "Proceed to major commercials, just before power up" spec
+    //   without disturbing the anchor row.
+    const FIN_TO_ANCHOR = {
+      PO:  'receipt_of_po',
+      MC:  'mech_release_1',
+      FAT: 'fat',
+      SAT: 'ship_machine',
+    };
+    const finByAnchor = new Map();
+    for (const f of (state.financials[project] || [])) {
+      const ak = FIN_TO_ANCHOR[_pdashFinAbbrev(f)] || null;
+      if (!ak) continue;
+      if (!finByAnchor.has(ak)) finByAnchor.set(ak, []);
+      finByAnchor.get(ak).push(f);
+    }
+    const projFinancials = (state.financials[project] || []).slice().sort((a, b) => {
+      // Canonical SDC billing order — PO, MC, FAT, SAT — regardless of
+      // dates. Custom milestones outside the standard four fall to the
+      // end and sort by date among themselves.
+      const oa = _pdashFinOrder(a);
+      const ob = _pdashFinOrder(b);
+      if (oa !== ob) return oa - ob;
+      const da = computeFinancialTriggerDate(a.predecessors, project) || a.due_date || '';
+      const db = computeFinancialTriggerDate(b.predecessors, project) || b.due_date || '';
+      return da.localeCompare(db);
+    });
+
+    const items = KEY_ANCHORS.map(a => {
+      const t = milestoneTasks.find(m => m.project === project && inferredAnchorKey(m) === a.key);
+      if (!t) return { ...a, missing: true };
+      const done = (Number(t.progress) || 0) >= 100;
+      // Three possible dates per Dan's spec:
+      //   baselineDate = when the project ORIGINALLY committed to this date
+      //   currentDate  = what's in the schedule today (PM-adjusted)
+      //   actualDate   = when the milestone actually completed (if done)
+      // For display: show baseline → (actual|current) when they differ.
+      // For slip:    compare baseline → (actual if done, else current).
+      const baselineDate = t.baseline_end_date || t.baseline_start_date || null;
+      const currentDate  = t.start_date || t.end_date || null;
+      const actualDate   = done ? (t.completed_on || currentDate) : null;
+      const displayDate  = actualDate || currentDate;
+      const overdue = !done && currentDate && currentDate < todayISO;
+      let slipDays = null;
+      if (baselineDate && displayDate) {
+        const baseMs = new Date(baselineDate + 'T00:00:00').getTime();
+        const dateMs = new Date(displayDate + 'T00:00:00').getTime();
+        slipDays = Math.round((dateMs - baseMs) / 86400000);
+      }
+      return { ...a, task: t, done, overdue, baselineDate, currentDate, actualDate, displayDate, slipDays };
+    });
+
+    // Each item is positioned ABSOLUTELY at a fixed left% inside the
+    // track. This is the key to alignment: anchors live at the same
+    // 10/30/50/70/90% across every project row, regardless of which
+    // financial milestones happen to exist. Financials slot in at
+    // their own dedicated percentages BETWEEN the anchors — no
+    // pushing, no shifting.
+    const ANCHOR_POS = {
+      receipt_of_po:    10,
+      mech_release_1:   30,
+      machine_power_up: 53,
+      fat:              72,
+      ship_machine:     90,
+    };
+    const FIN_POS = {
+      PO:  18,   // just to the right of the PO anchor (10%)
+      MC:  44,   // between Mech 1 (30%) and Power-Up (53%), closer to Power
+      FAT: 80,   // just to the right of FAT (72%)
+      SAT: 96,   // just past Ship (90%)
+    };
+
+    function _mileItem(kind, cls, iconHtml, label, dateHtml, slipChip, leftPct, dataAttrs, tipText) {
+      return `<div class="pdash-mile-item pdash-mile-${kind} ${cls}" style="left:${leftPct}%" ${dataAttrs}${tipText ? ` title="${escapeHtml(tipText)}"` : ''}>
+        <div class="pdash-mile-icon">${iconHtml}</div>
+        <div class="pdash-mile-label">${escapeHtml(label)}</div>
+        ${dateHtml}
+        ${slipChip || ''}
+      </div>`;
+    }
+
+    const segments = items.map((a) => {
+      const cls = a.missing ? 'is-missing'
+                : a.done    ? 'is-done'
+                : a.overdue ? 'is-overdue'
+                : 'is-upcoming';
+      const icon = a.done ? '✓' : (a.overdue ? '!' : '');
+
+      let dateHtml;
+      if (a.missing) {
+        dateHtml = '<div class="pdash-mile-date">—</div>';
+      } else if (!a.baselineDate || a.baselineDate === a.displayDate) {
+        dateHtml = `<div class="pdash-mile-date">${escapeHtml(a.displayDate ? fmtDate(a.displayDate) : '—')}</div>`;
+      } else {
+        const baseStr = fmtDate(a.baselineDate);
+        const dispStr = a.displayDate ? fmtDate(a.displayDate) : '—';
+        dateHtml = `<div class="pdash-mile-dates" title="Baseline ${baseStr} → ${a.done ? 'Actual' : 'Revised'} ${dispStr}">
+          <span class="pdash-date-baseline">${escapeHtml(baseStr)}</span>
+          <span class="pdash-date-current">${escapeHtml(dispStr)}</span>
+        </div>`;
+      }
+
+      let slipChip = '';
+      if (a.slipDays != null && a.slipDays !== 0) {
+        const isEarly = a.slipDays < 0;
+        const tone = isEarly ? 'is-early' : 'is-late';
+        const wks = _pdashDaysToWeeks(a.slipDays);
+        slipChip = `<div class="pdash-mile-slip ${tone}" title="Vs original baseline">${wks}W ${isEarly ? 'early' : 'late'}</div>`;
+      }
+
+      const anchorAttrs = `data-project="${escapeHtml(project)}"${a.task ? ` data-task-id="${a.task.id}"` : ''}`;
+      return _mileItem('anchor', cls, icon, a.short, dateHtml, slipChip,
+        ANCHOR_POS[a.key] != null ? ANCHOR_POS[a.key] : 50, anchorAttrs, '');
+    }).join('');
+
+    // Financial mini-columns — rendered as siblings of the anchor
+    // items inside the track, each at its own fixed left%. Uses the
+    // exact same icon/label/date stack so a $-tile reads visually
+    // identical to a ●-tile (just the icon differs).
+    let finItemsHtml = '';
+    for (const f of (state.financials[project] || [])) {
+      const fAbbrev = _pdashFinAbbrev(f);
+      const leftPct = FIN_POS[fAbbrev];
+      if (leftPct == null) continue;   // custom milestones — skip strip
+      const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
+      const fPaid = !!f.paid;
+      const fOverdue = !fPaid && fd && fd < todayISO;
+      let fCls = 'is-upcoming';
+      if (fPaid)         fCls = 'is-paid';
+      else if (!fd)      fCls = 'is-no-date';
+      else if (fOverdue) fCls = 'is-overdue';
+      const monthStr = fd ? _pdashFinMonth(fd) : '—';
+      const fDateFull = fd ? fmtDate(fd) : 'no date';
+      const fPctTip = f.percent ? ` · ${f.percent}%` : '';
+      const fStatusTip = fPaid ? ' · paid'
+        : (!fd ? ' · no date set'
+        : (fOverdue ? ' · past due' : ''));
+      const finDateHtml = `<div class="pdash-mile-date">${escapeHtml(monthStr)}</div>`;
+      finItemsHtml += _mileItem('fin', fCls, '$', fAbbrev, finDateHtml, '', leftPct, '',
+        (f.name || fAbbrev) + fPctTip + ' · ' + fDateFull + fStatusTip);
+    }
+
+    return `
+      <div class="pdash-milestone-row">
+        <div class="pdash-milestone-project" title="${escapeHtml(project)}">${escapeHtml(project)}</div>
+        <div class="pdash-milestone-track">${segments}${finItemsHtml}</div>
+      </div>
+    `;
+  }
+
+  // ── Build one department card. ──
+  function renderDeptCard(def, tasks) {
+    const stats = bucketCounts(tasks);
+    const actualPct   = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
+    const expectedPct = stats.total > 0 ? Math.round((stats.shouldBeDone / stats.total) * 100) : 0;
+
+    // Current-month window — used for "tasks due this month".
+    const cmStart = new Date(); cmStart.setHours(0, 0, 0, 0);
+    cmStart.setDate(1);
+    const cmEndDate = new Date(cmStart.getFullYear(), cmStart.getMonth() + 1, 0);
+    cmEndDate.setHours(23, 59, 59, 999);
+    const cmStartMs = cmStart.getTime();
+    const cmEndMs   = cmEndDate.getTime();
+    const currentMonthLabel = cmStart.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
+    // Tasks due in the current calendar month (not yet complete).
+    const dueThisMonth = tasks
+      .filter(t => (Number(t.progress) || 0) < 100 && t.end_date)
+      .filter(t => {
+        const endMs = new Date(t.end_date + 'T00:00:00').getTime();
+        return endMs >= cmStartMs && endMs <= cmEndMs;
+      })
+      .sort((a, b) => (a.end_date || '').localeCompare(b.end_date || ''));
+
+    const annotated = tasks.map(t => ({ task: t, status: taskStatus(t) }));
+    const behindList = annotated.filter(x => x.status.status === 'behind').sort((a, b) => b.status.lag - a.status.lag);
+
+    // ── Under / over allocated PEOPLE in this discipline ──
+    // Active team members whose discipline matches this dept. Look at
+    // their open-task load over the next ~8 weeks:
+    //   over  = computeOverloadRegions returns any region above 100%
+    //   under = no active tasks at all OR total open < 2
+    // Placeholders ("ME Placeholder", etc.) are skipped — they're role
+    // stand-ins, not real capacity to flag.
+    const deptMembers = (def.key === 'unassigned')
+      ? []
+      : (state.team || []).filter(m =>
+          m.discipline === def.key && m.active !== 0 && !isPlaceholder(m.name)
+        );
+    const windowStart = new Date(); windowStart.setHours(0, 0, 0, 0);
+    const windowMs    = windowStart.getTime();
+    const windowEnd   = windowMs + 56 * 86400000; // 8 weeks ahead
+    const underPeople = [];
+    const overPeople  = [];
+    for (const m of deptMembers) {
+      // Member's tasks in the next 8 weeks that are still open and
+      // belong to one of the selected projects.
+      const memTasks = state.tasks.filter(t =>
+        t.assignee === m.name &&
+        (Number(t.progress) || 0) < 100 &&
+        t.start_date && t.end_date &&
+        !isTemplateProject(t.project) &&
+        projectWorkspace(t.project) !== 'Sales' &&
+        selected.includes(t.project)
+      ).filter(t => {
+        const eMs = new Date(t.end_date + 'T00:00:00').getTime();
+        return eMs >= windowMs && eMs <= windowEnd + 30 * 86400000;
+      });
+      if (memTasks.length === 0) {
+        underPeople.push({ name: m.name, reason: 'no open tasks' });
+        continue;
+      }
+      const overlap = computeOverloadRegions(memTasks, windowStart);
+      if (overlap.length > 0) {
+        const peak = Math.max(...overlap.map(r => r.peak));
+        overPeople.push({ name: m.name, peak });
+        continue;
+      }
+      // Heuristic for "under": avg daily allocation across the window
+      // < 60%. Sum (task allocation × days in window) / total days × 100.
+      let totalAlloc = 0, daysCovered = 0;
+      const totalDays = 56;
+      for (const t of memTasks) {
+        const sMs = Math.max(windowMs, new Date(t.start_date + 'T00:00:00').getTime());
+        const eMs = Math.min(windowEnd, new Date(t.end_date + 'T00:00:00').getTime());
+        if (eMs < sMs) continue;
+        const days = Math.round((eMs - sMs) / 86400000) + 1;
+        const alloc = t.allocation == null ? 90 : Number(t.allocation);
+        totalAlloc += alloc * days;
+        daysCovered += days;
+      }
+      const avgAlloc = daysCovered > 0 ? totalAlloc / totalDays : 0;
+      if (avgAlloc < 60) {
+        underPeople.push({ name: m.name, reason: `${Math.round(avgAlloc)}% avg load` });
+      }
+    }
+
+    const showProjectCol = selected.length > 1;
+    const taskLine = (t, chipHtml) => {
+      const proj = showProjectCol
+        ? `<span class="pdash-tl-project">${escapeHtml(t.project || '')}</span>` : '';
+      const ass = t.assignee
+        ? `<span class="pdash-tl-assignee">${escapeHtml(t.assignee)}</span>` : '';
+      return `<li class="pdash-tl-row" data-project="${escapeHtml(t.project || '')}" data-task-id="${t.id}">
+        <span class="pdash-tl-name">${escapeHtml(t.name || '')}</span>
+        ${proj}${ass}
+        ${chipHtml || ''}
+      </li>`;
+    };
+    // Due-this-month rows show TWO chips: the % complete (with
+    // ahead/behind/done coloring) AND the days-until-due chip. So the
+    // PM sees "almost done and not until next week" vs "0% and due
+    // tomorrow" at a glance.
+    const dueLis = dueThisMonth.length === 0
+      ? `<li class="pdash-tl-empty">Nothing due in ${escapeHtml(currentMonthLabel)}.</li>`
+      : dueThisMonth.slice(0, 12).map(t => {
+          const endMs = new Date(t.end_date + 'T00:00:00').getTime();
+          const days = Math.max(0, Math.round((endMs - todayMs) / 86400000));
+          const dueCls = days <= 3 ? 'chip-danger' : (days <= 7 ? 'chip-warn' : 'chip-info');
+          const s = taskStatus(t);
+          const pct = s.actual;
+          let pctCls = 'chip-info';
+          if (pct >= 100)       pctCls = 'chip-success';
+          else if (s.status === 'behind') pctCls = 'chip-danger';
+          else if (s.status === 'ahead')  pctCls = 'chip-success';
+          else if (pct > 0)               pctCls = 'chip-info';
+          const pctChip = `<span class="pdash-chip ${pctCls}" title="Actual ${pct}% vs expected ${s.expected}%">${pct}%</span>`;
+          const dueChip = `<span class="pdash-chip ${dueCls}">${_pdashDaysToWeeks(days)}W</span>`;
+          return taskLine(t, pctChip + dueChip);
+        }).join('');
+    const behindLis = behindList.length === 0
+      ? '<li class="pdash-tl-empty">Nothing behind.</li>'
+      : behindList.slice(0, 12).map(({ task, status }) =>
+          taskLine(task, `<span class="pdash-chip chip-danger">-${status.lag}%</span>`)).join('');
+    // Under-allocated — plain text rows (no chips). Previously every
+    // row carried a yellow chip and a roster of free people looked
+    // like a wall of yellow. Now: name in normal weight + reason in
+    // muted text below, reads like a cleaner address book.
+    const underLis = underPeople.length === 0
+      ? '<li class="pdash-tl-empty">Everyone is fully booked.</li>'
+      : underPeople.map(p =>
+          `<li class="pdash-tl-person">
+            <span class="pdash-tl-person-name">${escapeHtml(p.name)}</span>
+            <span class="pdash-tl-person-reason">${escapeHtml(p.reason)}</span>
+          </li>`).join('');
+    const overLis = overPeople.length === 0
+      ? '<li class="pdash-tl-empty">No one is over-allocated.</li>'
+      : overPeople.map(p =>
+          `<li class="pdash-tl-person is-over">
+            <span class="pdash-tl-person-name">${escapeHtml(p.name)}</span>
+            <span class="pdash-tl-person-reason">peak ${p.peak}%</span>
+          </li>`).join('');
+
+    return `
+      <article class="pdash-dept-card" data-dept="${escapeHtml(def.key)}">
+        <header class="pdash-dept-head">
+          <h3>${escapeHtml(def.label)}</h3>
+          <span class="pdash-dept-count">${stats.total} task${stats.total === 1 ? '' : 's'} · ${actualPct}% complete (expected ${expectedPct}%)</span>
+        </header>
+        <div class="pdash-dept-lists pdash-dept-lists-4">
+          <section class="pdash-dept-list">
+            <h4>Under-allocated <span class="pdash-list-count">${underPeople.length}</span></h4>
+            <ul>${underLis}</ul>
+          </section>
+          <section class="pdash-dept-list">
+            <h4>Over-allocated <span class="pdash-list-count">${overPeople.length}</span></h4>
+            <ul>${overLis}</ul>
+          </section>
+          <section class="pdash-dept-list">
+            <h4>Due in ${escapeHtml(currentMonthLabel)} <span class="pdash-list-count">${dueThisMonth.length}</span></h4>
+            <ul>${dueLis}</ul>
+          </section>
+          <section class="pdash-dept-list">
+            <h4>Behind schedule <span class="pdash-list-count">${behindList.length}</span></h4>
+            <ul>${behindLis}</ul>
+          </section>
+        </div>
+      </article>
+    `;
+  }
+
+  // ── Compose ──
+  const summaryLabel = selected.length === 0
+    ? 'No projects selected.'
+    : (selected.length === 1
+        ? `1 project — grouped by department`
+        : `${selected.length} projects — combined and grouped by department`);
+
+  // ── Financial milestones table ── Per-project payment events. Sorted
+  //    by due date. Filtered by the month-range selector below.
+  //    Default = the CURRENT month so the PM lands on "what am I
+  //    invoicing this month?" rather than "everything ever". User
+  //    overrides persist in localStorage. To explicitly mean "no
+  //    filter", the Clear button stores the sentinel "any".
+  const _currentMonth = (() => {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  })();
+  const _storedFrom = localStorage.getItem('sdcDashboardFinMonthFrom');
+  const _storedTo   = localStorage.getItem('sdcDashboardFinMonthTo');
+  let finMonthFrom = _storedFrom == null ? _currentMonth : (_storedFrom === 'any' ? '' : _storedFrom);
+  let finMonthTo   = _storedTo   == null ? _currentMonth : (_storedTo   === 'any' ? '' : _storedTo);
+  const financialsTableHtml = (() => {
+    if (selected.length === 0) {
+      return '<div class="pdash-empty-block">Pick at least one project to see financial milestones.</div>';
+    }
+    // Month-range filter. "" / "" → no filter. Month strings are
+    // YYYY-MM (the value an <input type="month"> produces).
+    const monthOf = (iso) => iso ? iso.slice(0, 7) : '';
+    const rows = [...financials]
+      .filter(f => f.due_date)
+      .filter(f => {
+        if (!finMonthFrom && !finMonthTo) return true;
+        const m = monthOf(f.due_date);
+        if (finMonthFrom && m < finMonthFrom) return false;
+        if (finMonthTo   && m > finMonthTo)   return false;
+        return true;
+      })
+      .sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+    if (rows.length === 0) {
+      const filterHint = (finMonthFrom || finMonthTo)
+        ? ' in the selected month range'
+        : '';
+      return `<div class="pdash-fin-controls">
+        ${_pdashFinMonthControls(finMonthFrom, finMonthTo)}
+      </div>
+      <div class="pdash-empty-block">No financial milestones${filterHint} for the selected projects.</div>`;
+    }
+    const showProjectCol = selected.length > 1;
+    // Column order matches the financials modal (% · description ·
+    // date) but PRECEDED by Project when multiple projects are
+    // selected, so the eye lands on which schedule the row belongs
+    // to first. Status chip sits on the right. Column widths follow
+    // the CLAUDE.md grid rule — Description (Milestone) gets the
+    // remainder so long names never clip; everything else is sized
+    // to its data.
+    const colgroup = showProjectCol
+      ? `<colgroup>
+          <col style="width:240px"/>
+          <col style="width:60px"/>
+          <col style="width:auto"/>
+          <col style="width:130px"/>
+          <col style="width:130px"/>
+        </colgroup>`
+      : `<colgroup>
+          <col style="width:60px"/>
+          <col style="width:auto"/>
+          <col style="width:130px"/>
+          <col style="width:130px"/>
+        </colgroup>`;
+    const head = showProjectCol
+      ? '<thead><tr><th>Project</th><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>'
+      : '<thead><tr><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>';
+    const body = rows.map(r => {
+      const dueMs = r.due_date ? new Date(r.due_date + 'T00:00:00').getTime() : null;
+      const isPast = dueMs != null && dueMs < todayMs;
+      let chip;
+      if (r.paid) chip = '<span class="pdash-chip chip-success">Paid</span>';
+      else if (isPast) chip = '<span class="pdash-chip chip-danger">Invoice now</span>';
+      else if (dueMs != null && dueMs - todayMs <= 14 * 86400000) chip = '<span class="pdash-chip chip-warn">Due soon</span>';
+      else chip = '<span class="pdash-chip chip-info">Upcoming</span>';
+      const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '—';
+      const projCell = showProjectCol ? `<td title="${escapeHtml(r.project)}">${escapeHtml(r.project)}</td>` : '';
+      return `<tr class="pdash-fin-row" data-project="${escapeHtml(r.project)}">
+        ${projCell}
+        <td class="num">${pctVal}</td>
+        <td title="${escapeHtml(r.name || '')}">${escapeHtml(r.name || '')}</td>
+        <td>${escapeHtml(r.due_date ? fmtDate(r.due_date) : '—')}</td>
+        <td>${chip}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
+            <table class="pdash-fin-table">${colgroup}${head}<tbody>${body}</tbody></table>`;
+  })();
+
+  const milestoneStripsHtml = selected.length === 0
+    ? '<div class="pdash-empty-block">Pick at least one project to see milestone dates.</div>'
+    : selected.map(p => milestoneStripForProject(p)).join('');
+
+  const deptCardsHtml = renderOrder.length === 0
+    ? '<div class="pdash-empty-block">No work tasks in this selection.</div>'
+    : renderOrder.map(def => renderDeptCard(def, tasksByOwner.get(def.key))).join('');
+
+  const overallTotal = Math.max(1, overall.total);
+  const overallLegend = `
+    <div class="pdash-overall-legend">
+      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#74c415"></span>
+        <strong>${overall.done}</strong> done
+        <span class="pdash-legend-pct">${Math.round(overall.done/overallTotal*100)}%</span></div>
+      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#1574c4"></span>
+        <strong>${overall.ontime}</strong> on time
+        <span class="pdash-legend-pct">${Math.round(overall.ontime/overallTotal*100)}%</span></div>
+      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#befa4f"></span>
+        <strong>${overall.ahead}</strong> ahead
+        <span class="pdash-legend-pct">${Math.round(overall.ahead/overallTotal*100)}%</span></div>
+      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#dc2626"></span>
+        <strong>${overall.behind}</strong> behind
+        <span class="pdash-legend-pct">${Math.round(overall.behind/overallTotal*100)}%</span></div>
+    </div>`;
+
+  root.innerHTML = `
+    <h1 class="pdash-title">Dashboard</h1>
+    <p class="pdash-sub">${escapeHtml(summaryLabel)}</p>
+
+    <div class="pdash-filters">
+      <details class="pdash-picker">
+        <summary>📂 Projects: <strong>${
+          selected.length === 0 ? 'none'
+            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} selected`)
+        }</strong> <span class="pdash-picker-caret">▾</span></summary>
+        <div class="pdash-picker-list">
+          ${allProjects.map(p => `
+            <label class="pdash-picker-item">
+              <input type="checkbox" data-project="${escapeHtml(p)}" ${selected.includes(p) ? 'checked' : ''}/>
+              <span>${escapeHtml(p)}</span>
+            </label>`).join('')}
+        </div>
+        <div class="pdash-picker-actions">
+          <button type="button" data-action="select-all" class="btn-ghost btn-tight">Select all</button>
+          <button type="button" data-action="select-none" class="btn-ghost btn-tight">Clear</button>
+        </div>
+      </details>
+      <label class="pdash-weeks-control" title="How far ahead 'Coming due' looks, in weeks.">
+        ⏰ Coming due in
+        <input type="number" min="0.5" max="52" step="0.5" value="${comingDueWeeks}" data-action="set-weeks"/>
+        weeks
+      </label>
+    </div>
+
+    <section class="pdash-section">
+      <header class="pdash-section-head">
+        <h2>🚦 Key Milestones</h2>
+        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship, per project</span>
+      </header>
+      <div class="pdash-milestones">${milestoneStripsHtml}</div>
+    </section>
+
+    <section class="pdash-section">
+      <header class="pdash-section-head">
+        <h2>💲 Financial Milestones</h2>
+        <span class="pdash-section-sub">Invoiceable payment events across selected projects.</span>
+      </header>
+      ${financialsTableHtml}
+    </section>
+
+    <section class="pdash-section">
+      <header class="pdash-section-head">
+        <h2>📊 Overall Health</h2>
+        <span class="pdash-section-sub">${overall.total} open + done tasks across selected projects</span>
+      </header>
+      <div class="pdash-overall">
+        <div class="pdash-overall-donut">${donutSvg(overall, 170)}</div>
+        ${overallLegend}
+      </div>
+    </section>
+
+    <section class="pdash-section">
+      <header class="pdash-section-head">
+        <h2>🏢 By Department</h2>
+        <span class="pdash-section-sub">Each card: progress bar (actual vs. expected), donut, and lists by person.</span>
+      </header>
+      <div class="pdash-dept-grid">${deptCardsHtml}</div>
+    </section>
+  `;
+
+  // ── Wire handlers ──
+  root.querySelectorAll('.pdash-picker input[type="checkbox"]').forEach(box => {
+    box.addEventListener('change', () => {
+      const sel = [...root.querySelectorAll('.pdash-picker input[type="checkbox"]')]
+        .filter(b => b.checked).map(b => b.dataset.project);
+      try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(sel)); } catch (_) {}
+      renderDashboard();
+    });
+  });
+  root.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
+    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(allProjects)); } catch (_) {}
+    renderDashboard();
+  });
+  root.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
+    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
+    renderDashboard();
+  });
+  const weeksInput = root.querySelector('[data-action="set-weeks"]');
+  if (weeksInput) {
+    weeksInput.addEventListener('change', () => {
+      const w = parseFloat(weeksInput.value);
+      if (Number.isFinite(w) && w > 0) {
+        try { localStorage.setItem('sdcDashboardComingWeeks', String(w)); } catch (_) {}
+        renderDashboard();
+      }
+    });
+  }
+  // Financial milestones month-range filter — persists to localStorage,
+  // re-renders on change.
+  root.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      try { localStorage.setItem('sdcDashboardFinMonthFrom', inp.value || ''); } catch (_) {}
+      renderDashboard();
+    });
+  });
+  root.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      try { localStorage.setItem('sdcDashboardFinMonthTo', inp.value || ''); } catch (_) {}
+      renderDashboard();
+    });
+  });
+  root.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      // Sentinel "any" means "user explicitly cleared" — without it
+      // the default kicks back in (current month) on every render and
+      // the Clear button would feel broken.
+      try {
+        localStorage.setItem('sdcDashboardFinMonthFrom', 'any');
+        localStorage.setItem('sdcDashboardFinMonthTo', 'any');
+      } catch (_) {}
+      renderDashboard();
+    });
+  });
+  // Click any task row OR milestone tile → open that task's project in
+  // the schedule view.
+  root.querySelectorAll('.pdash-tl-row, .pdash-milestone, .pdash-fin-row').forEach(el => {
+    el.addEventListener('click', () => {
+      const p = el.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      saveProjectTabs();
+      setView('schedule');
+    });
   });
 }
 
@@ -6815,6 +8075,13 @@ function renderProjectTabs() {
       ? 'Pick a project tab first — quote vs schedule is per-project.'
       : `Compare quoted vs scheduled hours for ${state.filters.project}. Also exposes the financial milestones editor.`;
   }
+  // 💲 Financial Milestones — peer button. Turns red (`needs-attention`)
+  // when the active project either has no financials yet OR any row is
+  // missing both amount + percent (i.e. the dollar value isn't pinned
+  // down). Filled = normal. The check runs against the cached
+  // state.financials[project]; we kick off a load when the cache is cold
+  // so the next render reflects the real state.
+  refreshFinancialsButtonState();
 }
 
 // Machine sub-tab strip — sits below the project tab strip and only shows
@@ -9442,6 +10709,72 @@ function showConfirmAt(x, y, opts = {}) {
 // Pull the financials for one project, seeding defaults first if the project has none.
 // Caches into state.financials[project] so multiple consumers (modal + overlay) share
 // the same array and re-renders just need a refreshFinancials() call.
+// Refresh the footer Financial Milestones button's red/white state +
+// tooltip for the currently-active project. Pulled out of
+// renderProjectTabs so financial saves (which touch
+// state.financials[project] but don't re-render the tab strip) can
+// trigger the re-evaluation directly. Previously every caller used a
+// `syncToolbarProjectAction()` name that didn't exist — the calls
+// were no-ops, so the button stayed red even after dates were saved.
+function refreshFinancialsButtonState() {
+  const finBtn = document.getElementById('btn-toolbar-financials');
+  if (!finBtn) return;
+  const project = state.filters && state.filters.project;
+  const onAllProjects = !project;
+  finBtn.disabled = onAllProjects;
+  if (onAllProjects) {
+    finBtn.classList.remove('needs-attention');
+    finBtn.title = 'Pick a project tab first — financial milestones are per-project.';
+    return;
+  }
+  // Cold-cache: trigger load. Re-call once it resolves to flip the
+  // colors after the fetch returns.
+  if (!state.financials[project]) {
+    loadFinancialsForProject(project).then(() => {
+      refreshFinancialsButtonState();
+    }).catch(() => {});
+  }
+  const fins = state.financials[project] || [];
+  // A row counts as filled when it has a date — either set manually
+  // (due_date) OR derived from a Trigger predecessor that resolves.
+  // The PO row typically has no predecessor (it IS the start of the
+  // schedule), which is fine as long as someone typed its date.
+  function _finRowHasDate(f) {
+    if (f.due_date) return true;
+    return !!computeFinancialTriggerDate(f.predecessors, project);
+  }
+  const missingRows = fins.filter(f => !_finRowHasDate(f));
+  const incomplete = fins.length === 0 || missingRows.length > 0;
+  finBtn.classList.toggle('needs-attention', incomplete);
+  if (!incomplete) {
+    finBtn.title = `Edit financial milestones for ${project}.`;
+  } else if (fins.length === 0) {
+    finBtn.title = `No financial milestones yet for ${project} — click to set them up.`;
+  } else {
+    const names = missingRows.map(r => r.name || '(unnamed)').join(', ');
+    finBtn.title = `Missing date: ${names}. Click to fix.`;
+  }
+}
+
+// Lazy-load the saved quote payload for a project, cache in
+// state.projectQuotes[project]. Returns null if the project has no
+// saved quote. Used by the stats popup to read sold_delivery_weeks
+// (manual override of the baseline-derived "quoted" duration).
+async function loadProjectQuote(project) {
+  if (!project) return null;
+  if (project in state.projectQuotes) return state.projectQuotes[project];
+  try {
+    const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+    if (!r.ok) { state.projectQuotes[project] = null; return null; }
+    const data = await r.json();
+    state.projectQuotes[project] = data || null;
+    return data || null;
+  } catch (_) {
+    state.projectQuotes[project] = null;
+    return null;
+  }
+}
+
 async function loadFinancialsForProject(project) {
   if (!project) return [];
   let rows = await api.financials.list(project);
@@ -10168,6 +11501,27 @@ async function openQuoteCompareModal(project, providedQuote) {
         <button class="modal-close" type="button">×</button>
       </div>
       <div class="modal-body">
+        <!-- Sold delivery + Penalty clause — the contract terms.
+             Sold delivery → "Quoted" reference for the stats popup.
+             Penalty clause → optional date the customer can start
+             charging late fees, computed as PO + N weeks. Both
+             persist in the project's saved quote payload. -->
+        <div class="quote-sold-row">
+          <label class="quote-sold-label">
+            Sold delivery
+            <input type="number" id="quote-sold-weeks" min="0" step="0.5" placeholder="weeks" value="${quote && quote.sold_delivery_weeks != null ? Number(quote.sold_delivery_weeks) : ''}" title="The duration sold to the customer (in weeks). The schedule stats popup shows this as the 'Quoted' duration alongside the live scheduled span." />
+            <span class="quote-sold-unit">weeks</span>
+          </label>
+          <label class="quote-penalty-toggle" title="Check if the contract has a late-delivery penalty clause. The clause start date = PO date + N weeks.">
+            <input type="checkbox" id="quote-has-penalty" ${quote && quote.has_penalty_clause ? 'checked' : ''} />
+            <span>Penalty clause</span>
+          </label>
+          <label class="quote-sold-label quote-penalty-input ${quote && quote.has_penalty_clause ? '' : 'is-hidden'}">
+            Starts after
+            <input type="number" id="quote-penalty-weeks" min="0" step="0.5" placeholder="weeks" value="${quote && quote.penalty_clause_weeks != null ? Number(quote.penalty_clause_weeks) : ''}" title="Weeks after PO date when the penalty clause begins. Shown on the schedule stats popup as 'Penalty'." />
+            <span class="quote-sold-unit">weeks after PO</span>
+          </label>
+        </div>
         ${quote
           ? `<div style="margin:0 0 12px;font-size:12px;color:#475569;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="flex:1 1 auto;min-width:240px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
@@ -10232,6 +11586,55 @@ async function openQuoteCompareModal(project, providedQuote) {
   overlay.querySelector('[data-action="financials"]').onclick = () => {
     openFinancialsModal(project);
   };
+  // Helper — POST the freshly-merged quote and refresh caches/popup.
+  // Used by sold delivery, penalty toggle, and penalty weeks inputs.
+  const _saveQuoteMerge = async (patch) => {
+    const merged = Object.assign({}, quote || {}, patch);
+    try {
+      await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(merged),
+      });
+      quote = merged;
+      state.projectQuotes[project] = merged;
+      if (typeof renderProjectStatsPopup === 'function') {
+        try { renderProjectStatsPopup(); } catch (_) {}
+      }
+      // Re-draw the penalty clause line on the Gantt so toggling the
+      // checkbox or changing the weeks shows up live without closing
+      // the modal.
+      if (typeof drawPenaltyClauseLine === 'function') {
+        try { drawPenaltyClauseLine(); } catch (_) {}
+      }
+    } catch (_) {}
+  };
+
+  const soldInput = overlay.querySelector('#quote-sold-weeks');
+  if (soldInput) {
+    soldInput.addEventListener('change', () => {
+      const raw = soldInput.value.trim();
+      _saveQuoteMerge({ sold_delivery_weeks: raw === '' ? null : Number(raw) });
+    });
+  }
+  // Penalty clause checkbox — toggles whether the popup renders the
+  // Penalty row + whether the weeks input is visible.
+  const penaltyCheckbox = overlay.querySelector('#quote-has-penalty');
+  const penaltyInputWrap = overlay.querySelector('.quote-penalty-input');
+  if (penaltyCheckbox) {
+    penaltyCheckbox.addEventListener('change', () => {
+      const checked = penaltyCheckbox.checked;
+      if (penaltyInputWrap) penaltyInputWrap.classList.toggle('is-hidden', !checked);
+      _saveQuoteMerge({ has_penalty_clause: checked });
+    });
+  }
+  const penaltyWeeksInput = overlay.querySelector('#quote-penalty-weeks');
+  if (penaltyWeeksInput) {
+    penaltyWeeksInput.addEventListener('change', () => {
+      const raw = penaltyWeeksInput.value.trim();
+      _saveQuoteMerge({ penalty_clause_weeks: raw === '' ? null : Number(raw) });
+    });
+  }
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
   // Refresh the table in-place without reopening the modal — used after
@@ -10448,9 +11851,44 @@ async function openQuoteCompareModal(project, providedQuote) {
   // multi-task buckets) and trigger a server cascadeSchedule on save.
   async function applyChanges() {
     try {
-      // 1) Quote (people + quoted_overrides)
-      if (Object.keys(pendingPeople).length || Object.keys(pendingQuoted).length) {
+      // 1) Quote save — ALWAYS read the live Sold delivery input value
+      //    on Apply and merge it into the payload. Without this, the
+      //    earlier sold_delivery_weeks Dan typed gets clobbered when
+      //    Apply spreads the STALE `quote` variable (which was the
+      //    initial fetch and doesn't know about his input). Also
+      //    handles the case where Dan typed a value and clicked Apply
+      //    before the input's change event fired (no blur).
+      const soldInputEl = overlay.querySelector('#quote-sold-weeks');
+      const penaltyCheckEl = overlay.querySelector('#quote-has-penalty');
+      const penaltyWeeksEl = overlay.querySelector('#quote-penalty-weeks');
+      let liveSold = null;
+      let soldChanged = false;
+      if (soldInputEl) {
+        const raw = soldInputEl.value.trim();
+        liveSold = raw === '' ? null : Number(raw);
+        const cached = (quote && quote.sold_delivery_weeks != null) ? Number(quote.sold_delivery_weeks) : null;
+        soldChanged = liveSold !== cached;
+      }
+      const livePenalty = penaltyCheckEl ? !!penaltyCheckEl.checked : !!(quote && quote.has_penalty_clause);
+      const livePenaltyWeeks = (() => {
+        if (!penaltyWeeksEl) return quote && quote.penalty_clause_weeks != null ? Number(quote.penalty_clause_weeks) : null;
+        const raw = penaltyWeeksEl.value.trim();
+        return raw === '' ? null : Number(raw);
+      })();
+      const cachedPenalty = !!(quote && quote.has_penalty_clause);
+      const cachedPenaltyWeeks = quote && quote.penalty_clause_weeks != null ? Number(quote.penalty_clause_weeks) : null;
+      const penaltyChanged = livePenalty !== cachedPenalty || livePenaltyWeeks !== cachedPenaltyWeeks;
+      const needsQuoteSave = soldChanged
+        || penaltyChanged
+        || Object.keys(pendingPeople).length
+        || Object.keys(pendingQuoted).length;
+      if (needsQuoteSave) {
         const updated = { ...(quote || {}) };
+        // Carry all contract fields forward — sold delivery + penalty
+        // — so partial Applies don't lose what's already saved.
+        updated.sold_delivery_weeks = liveSold;
+        updated.has_penalty_clause = livePenalty;
+        updated.penalty_clause_weeks = livePenaltyWeeks;
         updated.people_breakdown = { ...(updated.people_breakdown || {}) };
         updated.quoted_overrides = { ...(updated.quoted_overrides || {}) };
         for (const [k, v] of Object.entries(pendingPeople)) updated.people_breakdown[k] = v;
@@ -10460,6 +11898,13 @@ async function openQuoteCompareModal(project, providedQuote) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updated),
         });
+        // Keep local + state cache in sync so the stats popup and a
+        // second Apply see the freshly-saved values.
+        quote = updated;
+        state.projectQuotes[project] = updated;
+        if (typeof renderProjectStatsPopup === 'function') {
+          try { renderProjectStatsPopup(); } catch (_) {}
+        }
       }
       // 2) Weeks → task duration_days (and optionally consolidation).
       // Sales mode + a row with consolidateAs + 2+ tasks in the bucket →
@@ -10651,27 +12096,45 @@ function openFinancialsModal(project) {
     <div class="financials-loading">Loading financial milestones…</div>
   `;
 
-  const close = () => backdrop.remove();
+  // Track in-flight save promises so close() can wait for them
+  // before refreshing the cache. Without this, clicking the X while
+  // a save is mid-fetch could re-load stale data from the server
+  // and leave the footer Financials button stuck red.
+  const _pendingSaves = new Set();
+  // On close — force a fresh load of state.financials[project] from
+  // the server and re-evaluate the footer Financials button. This
+  // catches the case where an input's `change` event didn't fire
+  // before the modal closed (clicked Done while still focused on a
+  // field), so the cache + button stay in sync.
+  const close = async () => {
+    // Trigger any pending blur-driven save by yanking focus.
+    if (document.activeElement && backdrop.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+    // Wait for any in-flight saves to settle before we re-fetch.
+    if (_pendingSaves.size > 0) {
+      try { await Promise.all([..._pendingSaves]); } catch (_) {}
+    }
+    backdrop.remove();
+    try { await loadFinancialsForProject(project); } catch (_) {}
+    try { refreshFinancialsButtonState(); } catch (_) {}
+  };
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
   modal.querySelector('.modal-close').addEventListener('click', close);
   document.addEventListener('keydown', function onEsc(e) {
     if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
   });
 
-  // Re-rendered on every render() so the checkbox reflects the current overlay state.
+  // Static head — Show-on-Gantt toggle dropped (v_dashboard rework).
+  // The same flag lives on the schedule toolbar's $ view-bracket icon,
+  // so a second copy here was redundant.
   const headHtml = () => `
     <div class="modal-head">
       <div class="modal-title">
         <h2>Financial milestones</h2>
         <div class="modal-subtitle">${escapeHtml(project)}</div>
       </div>
-      <div class="financials-head-actions">
-        <label class="financials-show-on-gantt" title="Overlay these milestones as $ diamonds along the top of the Gantt">
-          <input type="checkbox" id="financials-show-on-gantt" ${state.showFinancials ? 'checked' : ''} />
-          <span>Show on Gantt</span>
-        </label>
-        <button type="button" class="modal-close" title="Close">×</button>
-      </div>
+      <button type="button" class="modal-close" title="Close">×</button>
     </div>`;
 
   const render = async (opts = {}) => {
@@ -10699,14 +12162,20 @@ function openFinancialsModal(project) {
     modal.innerHTML = headHtml() + `
       <div class="financials-table-wrap">
         <table class="financials-table">
+          <colgroup>
+            <col class="col-percent" />
+            <col class="col-name" />
+            <col class="col-trigger" />
+            <col class="col-date" />
+            <col class="col-paid" />
+          </colgroup>
           <thead>
             <tr>
-              <th>Name</th>
-              <th title="Predecessor — anchor name (PO / Power-Up / FAT / Ship) or task line number, with optional lag like '+1w'.">Trigger</th>
-              <th>Date</th>
               <th class="num">%</th>
+              <th>Description</th>
+              <th title="Predecessor — same syntax as the task Predecessors column. Accepts a task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag (e.g. 'FAT +1w', '12 +3d'). Blank = no automatic date; fill in the Date column manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
+              <th>Date</th>
               <th class="paid" title="Check when the invoice has been sent. The Gantt line goes from dashed to solid.">Sent</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -10715,16 +12184,15 @@ function openFinancialsModal(project) {
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
               return `
-                <tr data-id="${r.id}">
-                  <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Down Payment" /></td>
-                  <td><input type="text" data-field="predecessors" value="${escapeHtml(r.predecessors || '')}" placeholder="e.g. FAT  or  FAT +1w" /></td>
+                <tr data-id="${r.id}" title="Right-click to add or delete a milestone">
+                  <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
+                  <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
+                  <td><input type="text" data-field="predecessors" value="${escapeHtml(r.predecessors || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                   <td>
                     <input type="date" data-field="due_date" value="${dateValue}"
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
                   </td>
-                  <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                   <td class="paid"><input type="checkbox" data-field="paid" ${r.paid ? 'checked' : ''} /></td>
-                  <td><button type="button" class="remove-btn" data-action="delete" title="Delete">×</button></td>
                 </tr>
               `;
             }).join('')}
@@ -10749,51 +12217,71 @@ function openFinancialsModal(project) {
   const bindFinancialsModalHandlers = () => {
     modal.querySelector('.modal-close').addEventListener('click', close);
     modal.querySelector('#financials-done').addEventListener('click', close);
-
-    // Show on Gantt checkbox — drives the same state.showFinancials flag the
-    // Filters popover view-options toggle uses. Re-renders the Gantt immediately
-    // so the user sees the overlay appear/disappear without closing the modal.
-    // Also refresh the filters popover so its toggle reflects the new state.
-    const showCb = modal.querySelector('#financials-show-on-gantt');
-    if (showCb) {
-      showCb.addEventListener('change', async () => {
-        state.showFinancials = showCb.checked;
-        saveScheduleView();
-        if (state.showFinancials) await loadFinancialsForAllOpenProjects();
-        renderFilters();
-        renderGantt();
-      });
-    }
+    // (Show-on-Gantt checkbox + handler removed — the $ toolbar icon
+    //  already owns state.showFinancials.)
 
     modal.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
+      // Right-click any row → context menu with Add / Delete. Replaces
+      // the per-row "×" delete column so the table stays compact.
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const items = [
+          { label: '+ Add milestone below', onClick: async () => {
+              await api.financials.create({ project, name: '' });
+              await loadFinancialsForProject(project);
+              await render({ focusLastNameInput: true });
+              if (state.showFinancials) renderGantt();
+              try { refreshFinancialsButtonState(); } catch (_) {}
+          }},
+          { separator: true },
+          { label: 'Delete this milestone…', danger: true, onClick: async () => {
+              const row = (state.financials[project] || []).find(r => r.id === id);
+              const ok = await showConfirmDialog({
+                title: 'Delete financial milestone?',
+                message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`,
+                okLabel: 'Delete',
+                danger: true,
+              });
+              if (!ok) return;
+              await api.financials.remove(id);
+              await loadFinancialsForProject(project);
+              await render();
+              if (state.showFinancials) renderGantt();
+              try { refreshFinancialsButtonState(); } catch (_) {}
+          }},
+        ];
+        showContextMenu(e.clientX, e.clientY, items);
+      });
       tr.querySelectorAll('input[data-field], select[data-field]').forEach(el => {
-        el.addEventListener('change', async () => {
+        el.addEventListener('change', () => {
           const field = el.dataset.field;
           let value;
           if (el.type === 'checkbox') value = el.checked ? 1 : 0;
           else if (el.type === 'number') value = el.value === '' ? null : Number(el.value);
           else value = el.value || null;
-          await api.financials.update(id, { [field]: value });
-          await loadFinancialsForProject(project);
-          await render();
-          if (state.showFinancials) renderGantt();
+          // Build the save promise + register it so close() can await
+          // it before refreshing state.financials. Without this, a
+          // close mid-save would re-fetch BEFORE the save committed
+          // and the footer button would stay red.
+          const savePromise = (async () => {
+            try {
+              await api.financials.update(id, { [field]: value });
+              await loadFinancialsForProject(project);
+              if (field === 'predecessors') await render();
+              if (state.showFinancials) renderGantt();
+              try { refreshFinancialsButtonState(); } catch (_) {}
+            } catch (err) {
+              console.warn('[financial save]', err);
+            }
+          })();
+          _pendingSaves.add(savePromise);
+          savePromise.finally(() => _pendingSaves.delete(savePromise));
         });
       });
-      tr.querySelector('[data-action="delete"]').addEventListener('click', async () => {
-        const row = (state.financials[project] || []).find(r => r.id === id);
-        const ok = await showConfirmDialog({
-          title: 'Delete financial milestone?',
-          message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`,
-          okLabel: 'Delete',
-          danger: true,
-        });
-        if (!ok) return;
-        await api.financials.remove(id);
-        await loadFinancialsForProject(project);
-        await render();
-        if (state.showFinancials) renderGantt();
-      });
+      // Per-row × delete button removed in v_dashboard rework — right-
+      // click context menu now handles delete (see contextmenu handler
+      // above) so the table stays a compact 5 columns instead of 6.
     });
 
     // + Add milestone — drops an empty row at the bottom of the table and focuses
@@ -12630,10 +14118,18 @@ function renderTeam() {
 // Per-person workload timeline. Pick a discipline → see every active member of that
 // discipline as a row, with their assigned tasks drawn as horizontal bars across all
 // projects/schedules. Bars stack vertically when overlapping so you can spot conflicts.
+//
+// Zoom + row-height behavior MIRRORS the Schedule Gantt:
+//   • zoomPercent 10 → 145 maps to friendly levels 1-10 via the same exponential
+//     curve (zoomToFriendly / friendlyToZoom).
+//   • 100% = 20 px/day, matching the Schedule's pxPerDay scale at 100%.
+//   • barHeight is the friendly 0-100 row-height stepper (16-30 px).
+// Keep these synced with ZOOM_FRIENDLY_MIN_PCT / MAX_PCT / MAX_LEVEL.
 const RES_PX_MIN = 1, RES_PX_MAX = 40;
 function getResourcesPxPerDay() {
-  // 100% = 6 px/day. Lets you see ~half a year on a normal-sized window.
-  return Math.max(RES_PX_MIN, Math.min(RES_PX_MAX, (state.resources.zoomPercent / 100) * 6));
+  // 100% = 20 px/day (same as Schedule). Clamp to a sensible range so very
+  // low / very high zooms still render legibly.
+  return Math.max(RES_PX_MIN, Math.min(RES_PX_MAX, (state.resources.zoomPercent / 100) * 20));
 }
 
 function projectColorFor(projectName) {
@@ -12646,6 +14142,21 @@ function projectColorFor(projectName) {
   return { fill: `hsl(${hue} 70% 78%)`, stroke: `hsl(${hue} 55% 38%)`, text: `hsl(${hue} 60% 22%)` };
 }
 
+// Bucket a task into one of four schedule-status buckets:
+//   zero    — 0% progress, not started
+//   done    — 100% progress, complete
+//   behind  — started, business-day drift is negative
+//   ontrack — started, on or ahead of plan
+// Matches the bar color logic in renderResources so the status-filter
+// chips have a one-to-one mapping with what each bar shows.
+function _resTaskStatus(t) {
+  const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
+  if (pct >= 100) return 'done';
+  if (pct === 0)  return 'zero';
+  const drift = taskScheduleDelta(t);
+  return drift < 0 ? 'behind' : 'ontrack';
+}
+
 function resourcesTasksFor(memberName) {
   // All tasks (across all projects) currently assigned to this person, that have valid
   // dates so they can be plotted on the timeline.
@@ -12653,13 +14164,17 @@ function resourcesTasksFor(memberName) {
   //   - Template projects (canonical scaffolding, not real work)
   //   - Sales workspace projects (pre-quote schedules; resourcing isn't real
   //     until they roll into Active)
+  //   - Tasks whose schedule-status bucket has been toggled OFF in the
+  //     Departments-tab status chips (see state.resources.statusFilter).
   const projFilter = state.resources.project;
+  const sf = (state.resources && state.resources.statusFilter) || { zero: true, behind: true, ontrack: true, done: true };
   return state.tasks.filter(t =>
     t.assignee === memberName &&
     t.start_date && t.end_date &&
     !isTemplateProject(t.project) &&
     projectWorkspace(t.project) !== 'Sales' &&
-    (!projFilter || t.project === projFilter)
+    (!projFilter || t.project === projFilter) &&
+    sf[_resTaskStatus(t)] !== false
   );
 }
 
@@ -13002,23 +14517,119 @@ function renderResources() {
       projects.map(p => `<option value="${escapeHtml(p)}" ${state.resources.project === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
   }
 
-  // Zoom controls
+  // ── Status filter dropdown — checkboxes per bucket. Summary text
+  //    reads "All statuses" / "3 statuses" / "Only behind" / "Behind, Done"
+  //    depending on what's checked so the user can see at a glance which
+  //    buckets are visible without opening the menu. ──
+  const statusBar = document.getElementById('resources-status-filters');
+  if (statusBar) {
+    if (!state.resources.statusFilter) {
+      state.resources.statusFilter = { zero: true, behind: true, ontrack: true, done: true };
+    }
+    const sf = state.resources.statusFilter;
+    statusBar.querySelectorAll('input[type="checkbox"][data-status]').forEach(cb => {
+      const key = cb.dataset.status;
+      cb.checked = !!sf[key];
+    });
+    if (!statusBar.dataset.bound) {
+      statusBar.dataset.bound = '1';
+      statusBar.addEventListener('change', (e) => {
+        const cb = e.target.closest('input[type="checkbox"][data-status]');
+        if (!cb) return;
+        state.resources.statusFilter[cb.dataset.status] = cb.checked;
+        renderResources();
+      });
+      // Close the <details> menu when the user clicks outside it. Native
+      // <details> only toggles on the <summary> click — clicks elsewhere
+      // on the page don't auto-close. We add a document listener that
+      // closes any open status dropdown when the click target isn't
+      // inside this element.
+      document.addEventListener('mousedown', (e) => {
+        if (!statusBar.open) return;
+        if (statusBar.contains(e.target)) return;
+        statusBar.open = false;
+      });
+    }
+  }
+
+  // Zoom controls. +/- step through friendly levels 1-10 (matching the
+  // Schedule Gantt's stepper); Fit auto-sizes; the display reads "Zoom N/10".
   const zo = document.getElementById('resources-zoom-out');
   const zi = document.getElementById('resources-zoom-in');
   const zf = document.getElementById('resources-zoom-fit');
+  // ── Zoom helper that preserves the date under the viewport center. ──
+  // Mirrors the Schedule's setZoom logic: capture the date under the
+  // center BEFORE the render, then scroll so that date sits at center
+  // AFTER the render. Without this, every zoom would jam the chart to
+  // the left and the user loses their place.
+  function _stepResourcesZoom(deltaFriendly) {
+    const body = document.getElementById('resources-body');
+    const oldPxPerDay = getResourcesPxPerDay();
+    let centerOffsetDays = null;
+    if (body && body.clientWidth > 0) {
+      const centerPx = body.scrollLeft + (body.clientWidth / 2);
+      const nameColW = 180; // matches NAME_COL_W in render
+      const trackPx = Math.max(0, centerPx - nameColW);
+      if (oldPxPerDay > 0) centerOffsetDays = trackPx / oldPxPerDay;
+    }
+    const cur = zoomToFriendly(state.resources.zoomPercent);
+    const next = Math.max(1, Math.min(ZOOM_FRIENDLY_MAX_LEVEL, cur + deltaFriendly));
+    state.resources.zoomPercent = friendlyToZoom(next);
+    state.resources.lastScrollKey = '__preserve_center__'; // suppress auto-jump
+    renderResources();
+    if (centerOffsetDays != null) {
+      const newPxPerDay = getResourcesPxPerDay();
+      const newBody = document.getElementById('resources-body');
+      if (newBody) {
+        const targetCenter = (centerOffsetDays * newPxPerDay) + 180;
+        newBody.scrollLeft = Math.max(0, targetCenter - (newBody.clientWidth / 2));
+      }
+    }
+  }
   if (zo && !zo.dataset.bound) {
     zo.dataset.bound = '1';
-    zo.addEventListener('click', () => { state.resources.zoomPercent = Math.max(10, state.resources.zoomPercent / 1.2); renderResources(); });
+    zo.addEventListener('click', () => _stepResourcesZoom(-1));
   }
   if (zi && !zi.dataset.bound) {
     zi.dataset.bound = '1';
-    zi.addEventListener('click', () => { state.resources.zoomPercent = Math.min(800, state.resources.zoomPercent * 1.2); renderResources(); });
+    zi.addEventListener('click', () => _stepResourcesZoom(+1));
   }
   if (zf && !zf.dataset.bound) {
     zf.dataset.bound = '1';
     zf.addEventListener('click', () => { fitResourcesZoom(); });
   }
-  document.getElementById('resources-zoom-percent').textContent = `${Math.round(state.resources.zoomPercent)}%`;
+  const zoomPctEl = document.getElementById('resources-zoom-percent');
+  if (zoomPctEl) {
+    const friendly = zoomToFriendly(state.resources.zoomPercent);
+    zoomPctEl.textContent = `Zoom ${friendly}/${ZOOM_FRIENDLY_MAX_LEVEL}`;
+  }
+
+  // Row-height controls — Departments uses its own tighter 0-10 scale
+  // (RES_BAR_H_*). Each click steps the friendly level by 1.
+  const rho = document.getElementById('resources-row-shrink');
+  const rhi = document.getElementById('resources-row-grow');
+  if (rho && !rho.dataset.bound) {
+    rho.dataset.bound = '1';
+    rho.addEventListener('click', () => {
+      const cur = pxToFriendlyResRow(state.resources.barHeight || 16);
+      const next = Math.max(0, cur - 1);
+      state.resources.barHeight = friendlyResRowToPx(next);
+      renderResources();
+    });
+  }
+  if (rhi && !rhi.dataset.bound) {
+    rhi.dataset.bound = '1';
+    rhi.addEventListener('click', () => {
+      const cur = pxToFriendlyResRow(state.resources.barHeight || 16);
+      const next = Math.min(RES_BAR_H_LEVELS, cur + 1);
+      state.resources.barHeight = friendlyResRowToPx(next);
+      renderResources();
+    });
+  }
+  const rhLabel = document.getElementById('resources-row-height');
+  if (rhLabel) {
+    rhLabel.textContent = `Row ${pxToFriendlyResRow(state.resources.barHeight || 16)}/${RES_BAR_H_LEVELS}`;
+  }
 
   // Build the active member list for the selected discipline. Same ordering as
   // the team cards above: placeholders FIRST (they're the template-stage
@@ -13054,6 +14665,7 @@ function renderResources() {
   if (empty) empty.classList.add('hidden');
 
   // Compute the union date range across every plotted task so all rows share an axis.
+  // Compute the union date range across every plotted task so all rows share an axis.
   const allTasks = members.flatMap(m => resourcesTasksFor(m.name));
   let firstTaskDate = null, lastTaskDate = null;
   for (const t of allTasks) {
@@ -13079,17 +14691,25 @@ function renderResources() {
   const totalDays = Math.max(1, Math.round((maxDate - minDate) / 86400000));
   const tlWidth = Math.max(400, totalDays * pxPerDay);
   const NAME_COL_W = 180;
-  const BAR_H = 16;
-  const LANE_GAP = 3;
-  const ROW_PAD = 6;
+  const BAR_H = Math.max(ROW_H_FRIENDLY_MIN_PX, state.resources.barHeight || 16);
+  const LANE_GAP = Math.max(2, Math.round(BAR_H * 0.18));
+  // ROW_PAD and the load strip both scale with BAR_H so the row actually
+  // shrinks at low row settings — otherwise a fixed 12px load strip + 12px
+  // padding floors the row at ~38px regardless of bar height.
+  const ROW_PAD = Math.max(2, Math.round(BAR_H * 0.3));
 
-  // View-mode label so the user can see at what scale they're at.
+  // View-mode label so the user can see at what scale they're at. Matches
+  // the Schedule Gantt's mode breakpoints (pxPerDay < 3 → Month, < 28 →
+  // Week, else Day) so "weeks" / "days" mean the same thing here.
   let modeLabel = 'days';
-  if (pxPerDay < 1.2) modeLabel = 'months';
-  else if (pxPerDay < 8) modeLabel = 'weeks';
-  document.getElementById('resources-mode-label').textContent = modeLabel;
+  if (pxPerDay < 3) modeLabel = 'months';
+  else if (pxPerDay < 28) modeLabel = 'weeks';
+  const modeEl = document.getElementById('resources-mode-label');
+  if (modeEl) modeEl.textContent = modeLabel;
 
-  // Build the rows. The header is a sticky date axis spanning the timeline column.
+  // Build the rows. The header is a sticky 2-row date axis: upper = month
+  // labels (centered over their span), lower = Monday dates and (at high
+  // zoom) weekday letters. Same hierarchy as the Schedule Gantt.
   const dateTicks = buildResourceDateTicks(minDate, maxDate, pxPerDay, modeLabel);
   let html = `
     <div class="resources-table" style="--name-col-w:${NAME_COL_W}px;--tl-width:${tlWidth}px;">
@@ -13099,8 +14719,9 @@ function renderResources() {
       </div>`;
 
   // Thin strip under the bars showing the running daily total per segment.
-  const STRIP_H = 12;
-  const STRIP_GAP = 2;
+  // Scales with BAR_H so very small rows actually look small.
+  const STRIP_H = Math.max(6, Math.round(BAR_H * 0.6));
+  const STRIP_GAP = Math.max(1, Math.round(BAR_H * 0.1));
 
   for (const m of members) {
     const ph = isPlaceholder(m.name);
@@ -13133,10 +14754,16 @@ function renderResources() {
     const loadHtml = loadSegs.map(s => {
       const x = s.startDay * pxPerDay;
       const w = Math.max(2, (s.endDay - s.startDay + 1) * pxPerDay);
-      const cls = s.total > 100 ? 'load-over' : (s.total === 100 ? 'load-full' : 'load-partial');
+      // Color thresholds (per Dan's spec):
+      //   > 100 → over-allocated  (red)
+      //   85 ≤ t ≤ 100 → good     (green)  ← sweet spot for engineers
+      //   < 85         → under-allocated  (yellow)
+      let cls = 'load-under';
+      if (s.total > 100)      cls = 'load-over';
+      else if (s.total >= 85) cls = 'load-good';
       const dayLabel = s.startDay === s.endDay ? '' : ` (${s.endDay - s.startDay + 1}d)`;
       return `
-        <div class="res-load-seg ${cls}" style="left:${x}px;width:${w}px;height:${STRIP_H}px;bottom:${ROW_PAD - 2}px"
+        <div class="res-load-seg ${cls}" style="left:${x}px;width:${w}px;height:${STRIP_H}px;bottom:${Math.max(0, ROW_PAD - 2)}px"
              title="${s.total}% total${dayLabel}">${s.total}%</div>`;
     }).join('');
 
@@ -13202,12 +14829,23 @@ function renderResources() {
       const priPill = showPriPill
         ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="Priority ${pri} — click to change">${pri}</span>`
         : '';
+      // Task-bar label — shows DURATION only. Per Dan's spec: the task
+      // bar is the "top section" (status color + duration); the load strip
+      // below the bars is where allocation lives (with its own
+      // under/good/over color scheme). Format: "Project · TaskName · 3w".
+      // The low-alloc CSS class on partial-allocation bars still applies,
+      // giving them a visual hatch so you can spot part-timers.
+      const durWeeks = task.duration_days
+        ? (Math.round((task.duration_days / 5) * 2) / 2)  // half-week steps
+        : Math.round((dur / 7) * 2) / 2;
+      const durStr = (!task.is_milestone && durWeeks > 0) ? ` · ${durWeeks}w` : '';
+      const enrichedLabel = `${baseLabel}${durStr}`;
       return `
         <div class="res-bar ${statusClass}${lowAllocClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;"
              title="${escapeHtml(tip)}"
              data-task-id="${task.id}">
           ${priPill}
-          <span class="res-bar-label">${escapeHtml(labelText)}</span>
+          <span class="res-bar-label">${escapeHtml(enrichedLabel)}</span>
         </div>`;
     }).join('');
     const totalDuration = tasks.reduce((sum, t) => sum + Math.max(1, Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) + 1), 0);
@@ -13297,7 +14935,12 @@ function renderResources() {
   const firstTaskOffsetDays = (firstTaskDate - minDate) / 86400000;
   const desiredLeft = Math.max(0, firstTaskOffsetDays * pxPerDay - 40);
   const scrollKey = `${state.resources.discipline}|${state.resources.project}`;
-  if (state.resources.lastScrollKey !== scrollKey) {
+  // Sentinel set by the zoom handlers — they preserve center themselves
+  // and don't want the auto-jump-to-first-task to fire over the top of
+  // their already-restored scroll position.
+  if (state.resources.lastScrollKey === '__preserve_center__') {
+    state.resources.lastScrollKey = scrollKey; // restore the real key
+  } else if (state.resources.lastScrollKey !== scrollKey) {
     state.resources.lastScrollKey = scrollKey;
     body.scrollLeft = desiredLeft;
   }
@@ -13384,36 +15027,89 @@ function openResourceBarMenu(barEl, taskId) {
   }, 0);
 }
 
-function buildResourceDateTicks(minDate, maxDate, pxPerDay, mode) {
-  // Render ticks at month, week, or day boundaries depending on the zoom level. Each tick
-  // is an absolutely-positioned label inside the axis div; pillars/grid lines come from CSS.
-  const ticks = [];
-  const start = new Date(minDate);
-  start.setHours(0, 0, 0, 0);
-  if (mode === 'months') {
-    let cur = new Date(start.getFullYear(), start.getMonth(), 1);
-    while (cur <= maxDate) {
-      const offset = (cur - minDate) / 86400000;
-      ticks.push({ x: offset * pxPerDay, label: cur.toLocaleString('en-US', { month: 'short', year: '2-digit' }) });
-      cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+function buildResourceDateTicks(minDate, maxDate, pxPerDay, _mode) {
+  // SVG-based header — uses the EXACT same SVG primitives + class names
+  // the Schedule's compressGanttToWorkDays produces:
+  //   <text class="upper-text">  — month label, y=12, anchor middle
+  //   <text class="lower-text">  — Monday day-of-month, y=28, anchor middle
+  //   <path class="tick thick">  — vertical Monday gridline, y >= 36
+  //   <text class="sdc-weekday-letter"> — M T W Th F at high zoom (≥ 12 px/day)
+  //
+  // Wrapped in an SVG with class="gantt" so frappe-gantt's stylesheet
+  // (.gantt .upper-text, .gantt .lower-text, .gantt .tick) skins it
+  // identically to the Schedule's date axis.
+  const totalDays = Math.max(1, Math.round((maxDate - minDate) / 86400000));
+  const tlWidth = Math.max(400, totalDays * pxPerDay);
+  // Header grows when weekday letters are shown so they don't get clipped
+  // outside the SVG viewBox. Earlier bug: weekday letters drew at y=50
+  // but headerH was hard-coded to 38 → letters invisible.
+  const weekW = 5 * pxPerDay;          // 5 work days wide on screen
+  const showDateNumbers = weekW >= 14; // hide when too cramped
+  const showWeekdayLetters = pxPerDay >= 12;
+  const headerH = showWeekdayLetters ? 56 : 38;
+
+  const upperY = 12;
+  const lowerY = 28;
+  const tickTop = showWeekdayLetters ? 54 : 36;
+  const weekLetterY = 46;
+
+  // Find the first Monday on/after minDate.
+  const startCur = new Date(minDate);
+  startCur.setHours(0, 0, 0, 0);
+  const dow0 = startCur.getDay();
+  const daysToMon = dow0 === 1 ? 0 : (dow0 === 0 ? 1 : 8 - dow0);
+  const firstMon = new Date(startCur);
+  firstMon.setDate(firstMon.getDate() + daysToMon);
+
+  // Walk Mondays from firstMon to maxDate. For each Monday: emit the
+  // tick + the day-of-month label. Track month transitions to know
+  // where to draw month labels.
+
+  const parts = [];
+  const monthLabels = []; // [{ startX, endX, label, short }]
+  let lastMonthLabel = '';
+
+  const cursor = new Date(firstMon);
+  while (cursor <= maxDate) {
+    const x = ((cursor - minDate) / 86400000) * pxPerDay;
+    if (showDateNumbers) {
+      parts.push(`<text class="lower-text" x="${x}" y="${lowerY}" text-anchor="middle" fill="#475569" style="font-family:sans-serif;font-size:12px;font-weight:500">${cursor.getDate()}</text>`);
     }
-  } else if (mode === 'weeks') {
-    let cur = new Date(start);
-    cur.setDate(cur.getDate() - cur.getDay()); // back to Sunday
-    while (cur <= maxDate) {
-      const offset = (cur - minDate) / 86400000;
-      ticks.push({ x: offset * pxPerDay, label: `${cur.getMonth() + 1}/${cur.getDate()}` });
-      cur.setDate(cur.getDate() + 7);
+    parts.push(`<path class="tick thick" d="M ${x} ${tickTop} v 10000" stroke="#cbd5e1" stroke-width="1"/>`);
+    if (showWeekdayLetters) {
+      const letters5 = ['M', 'T', 'W', 'Th', 'F'];
+      for (let j = 0; j < 5; j++) {
+        const xd = x + j * pxPerDay;
+        parts.push(`<text class="sdc-weekday-letter" x="${xd + pxPerDay / 2}" y="${weekLetterY}" text-anchor="middle" fill="#94a3b8" style="font-family:sans-serif;font-size:10px;font-weight:600">${letters5[j]}</text>`);
+      }
     }
-  } else {
-    let cur = new Date(start);
-    while (cur <= maxDate) {
-      const offset = (cur - minDate) / 86400000;
-      ticks.push({ x: offset * pxPerDay, label: `${cur.getMonth() + 1}/${cur.getDate()}` });
-      cur.setDate(cur.getDate() + 1);
+    const monthName  = cursor.toLocaleString('en-US', { month: 'long' });
+    const monthShort = cursor.toLocaleString('en-US', { month: 'short' });
+    if (monthName !== lastMonthLabel) {
+      if (monthLabels.length) monthLabels[monthLabels.length - 1].endX = x;
+      monthLabels.push({ startX: x, endX: tlWidth, label: monthName, short: monthShort });
+      lastMonthLabel = monthName;
     }
+    cursor.setDate(cursor.getDate() + 7);
   }
-  return ticks.map(t => `<span class="resources-tick" style="left:${t.x}px">${escapeHtml(t.label)}</span>`).join('');
+
+  // Month labels: full / short / single-letter / hidden based on width.
+  for (const m of monthLabels) {
+    const w = m.endX - m.startX;
+    const fullW  = m.label.length * 7 + 8;
+    const shortW = m.short.length * 7 + 8;
+    let labelText = '';
+    let fontSize = '13px';
+    if (w >= fullW)       labelText = m.label;
+    else if (w >= shortW) labelText = m.short;
+    else if (w >= 12)     { labelText = m.short.charAt(0); fontSize = '12px'; }
+    else                  labelText = '';
+    if (!labelText) continue;
+    const cx = (m.startX + m.endX) / 2;
+    parts.push(`<text class="upper-text" x="${cx}" y="${upperY}" text-anchor="middle" fill="#0f172a" style="font-family:sans-serif;font-size:${fontSize};font-weight:600">${escapeHtml(labelText)}</text>`);
+  }
+
+  return `<svg class="gantt resources-axis-svg" width="${tlWidth}" height="${headerH}" viewBox="0 0 ${tlWidth} ${headerH}" preserveAspectRatio="none">${parts.join('')}</svg>`;
 }
 
 // Click-and-drag horizontal/vertical pan on the resources body so the user can scroll
@@ -13423,6 +15119,44 @@ function setupResourcesPan() {
   const body = document.getElementById('resources-body');
   if (!body || body.dataset.panBound === '1') return;
   body.dataset.panBound = '1';
+
+  // ── Wheel zoom — same handler pattern as the Schedule Gantt's
+  //    onZoomWheel. Captures the date under the viewport center BEFORE
+  //    each zoom step, then scrolls the new viewport so that date stays
+  //    at center. Otherwise the chart yanks back to its left edge on
+  //    every wheel tick. ~6% per tick, rAF-throttled.
+  let _wPending = 1, _wScheduled = false;
+  const WHEEL_FACTOR = 1.06;
+  body.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    _wPending *= e.deltaY > 0 ? WHEEL_FACTOR : (1 / WHEEL_FACTOR);
+    if (_wScheduled) return;
+    _wScheduled = true;
+    requestAnimationFrame(() => {
+      try {
+        const oldPxPerDay = getResourcesPxPerDay();
+        const NAME_COL_W = 180;
+        const centerPx = body.scrollLeft + (body.clientWidth / 2);
+        const trackPx = Math.max(0, centerPx - NAME_COL_W);
+        const centerOffsetDays = oldPxPerDay > 0 ? trackPx / oldPxPerDay : null;
+        const next = state.resources.zoomPercent * _wPending;
+        state.resources.zoomPercent = Math.max(ZOOM_FRIENDLY_MIN_PCT, Math.min(ZOOM_FRIENDLY_MAX_PCT, next));
+        state.resources.lastScrollKey = '__preserve_center__';
+        renderResources();
+        if (centerOffsetDays != null) {
+          const newPxPerDay = getResourcesPxPerDay();
+          const newBody = document.getElementById('resources-body');
+          if (newBody) {
+            const targetCenter = (centerOffsetDays * newPxPerDay) + NAME_COL_W;
+            newBody.scrollLeft = Math.max(0, targetCenter - (newBody.clientWidth / 2));
+          }
+        }
+      } finally {
+        _wPending = 1;
+        _wScheduled = false;
+      }
+    });
+  }, { passive: false });
 
   body.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
@@ -13480,7 +15214,11 @@ function fitResourcesZoom() {
   }
   const totalDays = Math.max(1, Math.round((maxD - minD) / 86400000) + 14);
   const desiredPxPerDay = visibleW / totalDays;
-  state.resources.zoomPercent = Math.max(10, Math.min(800, (desiredPxPerDay / 6) * 100));
+  // 100% = 20 px/day (matches Schedule + getResourcesPxPerDay above).
+  // Clamp to the same friendly 1-10 range so Fit lands on a stop that
+  // the +/- buttons can step from.
+  const rawPct = (desiredPxPerDay / 20) * 100;
+  state.resources.zoomPercent = Math.max(ZOOM_FRIENDLY_MIN_PCT, Math.min(ZOOM_FRIENDLY_MAX_PCT, rawPct));
   renderResources();
 }
 
@@ -14453,6 +16191,7 @@ function setView(view) {
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
   else if (view === 'actions')   renderActionsPage();
+  else if (view === 'dashboard') renderDashboard();
   else render();
 }
 
@@ -16039,6 +17778,16 @@ async function init() {
       const p = state.filters.project;
       if (!p) return;
       openQuoteCompareModal(p);
+    });
+  }
+  // 💲 Financial Milestones — opens the same per-project editor that the
+  // Quote modal exposes via its "$ Financial Milestones" link.
+  const finToolbarBtn = document.getElementById('btn-toolbar-financials');
+  if (finToolbarBtn) {
+    finToolbarBtn.addEventListener('click', () => {
+      const p = state.filters.project;
+      if (!p) return;
+      openFinancialsModal(p);
     });
   }
 

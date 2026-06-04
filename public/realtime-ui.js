@@ -42,6 +42,9 @@
   });
 
   socket.on('team:updated', () => {
+    // Skip echoes from our own writes — otherwise the 250 ms-debounced reload
+    // tears down team-input rows while the user is still typing in them.
+    if (_isLocalEcho()) return;
     _debounce('team', () => {
       if (typeof loadTeam === 'function') loadTeam();
     });

@@ -30,6 +30,16 @@
 
 ## Specific UX rules
 
+### Column widths in ANY grid
+**Verbatim:** *"Anytime you build a... any kind of grid for me, the columns have to all make sense for what they are. It's a description column. It's gotta fit the descriptions. Right? If it's a percent complete, it should be a small column."*
+
+- Description / Name columns get the MOST width — `width: auto` or `1fr` so they take the remainder. Long text like `"Acceptance at Customer (SAT)"` must not clip.
+- Numeric columns (%, $, qty) get small widths (~60–80 px). They hold 2-4 digits and a percent sign — nothing more.
+- Date columns sized for the ISO `YYYY-MM-DD` input (~130–150 px).
+- Single-icon columns (checkbox, ✓/×, delete button) get tiny widths (~40–60 px). They hold one glyph.
+- **Use `table-layout: fixed`** + `<colgroup>` so the widths actually apply. Without `fixed`, browsers redistribute width based on cell content (which is exactly what causes the bug — long placeholder text in one column starves the description column).
+- Tooltips on `<th>` should `white-space: nowrap` + `text-overflow: ellipsis` so long header text doesn't push the column wider than its data needs.
+
 ### Grid + Gantt panels
 - Grid on LEFT, Gantt on RIGHT, side-by-side (not stacked).
 - Grid rows align row-by-row with Gantt bars — `alignGanttToGrid()` pattern. Personal view needs this too.
