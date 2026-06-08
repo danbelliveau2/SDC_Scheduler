@@ -248,7 +248,10 @@ const DEFAULT_SETTINGS = {
   // `predecessors` uses the same syntax as task predecessors plus anchor name aliases
   // (PO / Power-Up / FAT / Ship) so the user doesn't have to know line numbers.
   default_financial_milestones: [
-    { name: 'Down Payment',                 percent: 30, predecessors: 'PO' },
+    // Row 1: the kickoff billing event — tied to the PO spine anchor.
+    // Dan's preference: name it "Receipt of PO" (not "Down Payment")
+    // so PMs immediately see WHICH event the invoice tracks.
+    { name: 'Receipt of PO',                percent: 30, predecessors: 'PO' },
     { name: 'Major Commercials',            percent: 40, predecessors: '' },
     { name: 'Acceptance at SDC (FAT)',      percent: 20, predecessors: 'FAT' },
     { name: 'Acceptance at Customer (SAT)', percent: 10, predecessors: 'Ship' },

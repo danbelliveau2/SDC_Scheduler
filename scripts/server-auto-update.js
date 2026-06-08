@@ -30,7 +30,8 @@ const GITHUB_REPO       = 'danbelliveau2/SDC_Scheduler';
 const GITHUB_BRANCH     = 'main';
 const CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const APP_DIR           = path.join(__dirname, '..');
-const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync', 'sdc-scheduler-updater'];
+const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync'];
+const SELF_PM2_NAME     = 'sdc-scheduler-updater';
 const SHA_FILE          = path.join(APP_DIR, '.update-sha');
 
 // Directories to wholesale replace from upstream.
@@ -250,8 +251,13 @@ async function checkAndUpdate() {
     log(`Update failed: ${e.message}`);
     if (e.stack) log(e.stack.split('\n').slice(1, 3).join(' '));
   } finally {
+    // Clean up temp files BEFORE self-restart so they are never orphaned
     try { fs.unlinkSync(tmpTar); }                              catch {}
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    // Self-restart after cleanup — deferred so finally block fully completes first
+    setTimeout(() => {
+      try { run(`pm2 restart ${SELF_PM2_NAME} --update-env`); } catch {}
+    }, 500);
   }
 }
 

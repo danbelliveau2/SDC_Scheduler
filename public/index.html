@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SDC Scheduler</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260601-11" />
-  <link rel="stylesheet" href="auth-ui.css?v=20260601-11" />
+  <link rel="stylesheet" href="styles.css?v=20260601-56" />
+  <link rel="stylesheet" href="auth-ui.css?v=20260601-56" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -81,6 +81,18 @@
       </span>
       <span class="app-sidebar-label">Actions</span>
     </button>
+    <button class="app-sidebar-icon" data-view="dashboard" type="button" title="Dashboard — at-a-glance status of one project or a group of projects: coming due, behind / ahead of schedule, key milestones.">
+      <!-- Dashboard icon: 2x2 panel grid. Reads as "summary view." -->
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3"  y="3"  width="8" height="8" rx="1"/>
+          <rect x="13" y="3"  width="8" height="8" rx="1"/>
+          <rect x="3"  y="13" width="8" height="8" rx="1"/>
+          <rect x="13" y="13" width="8" height="8" rx="1"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Dashboard</span>
+    </button>
     <button class="app-sidebar-icon" data-view="setup" type="button" title="Setup — colors, defaults, estimate rules">
       <span class="app-sidebar-glyph">⚙</span>
       <span class="app-sidebar-label">Setup</span>
@@ -115,6 +127,13 @@
          Click a project row to open it as a tab + switch to the schedule view. -->
     <section id="view-projects" class="view">
       <div id="projects-page" class="projects-page"></div>
+    </section>
+    <!-- Dashboard view — at-a-glance status of a single project or a group.
+         Renders project picker + summary cards + lists of coming-due,
+         behind-schedule, ahead-of-schedule tasks + key milestones.
+         Body of each section is built by renderDashboard() in app.js. -->
+    <section id="view-dashboard" class="view">
+      <div id="dashboard-page" class="dashboard-page"></div>
     </section>
     <!-- Favorites landing page — list of starred schedules. v4.11 placeholder. -->
     <section id="view-favorites" class="view">
@@ -290,8 +309,11 @@
         </div>
       </div>
       <!-- v4.51: Quote vs Schedule moved out of the toolbar to its own
-           bottom footer strip. Right-aligned, sits below the schedule split. -->
+           bottom footer strip. Right-aligned, sits below the schedule split.
+           Financial Milestones gets a peer button so PMs can jump straight
+           to the billing editor without going through the Quote modal. -->
       <div class="schedule-footer" id="schedule-footer">
+        <button id="btn-toolbar-financials" class="toolbar-toggle-btn" type="button" title="Edit the project's financial milestones (Down Payment, Mid Payment, Final Payment, …). Button turns red when the active project's financials aren't filled out yet.">💲 Financial Milestones</button>
         <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Compare quoted hours from the estimate sheet to what's actually scheduled. Also exposes the financial milestones editor.">⚖ Quote vs Schedule</button>
       </div>
     </section>
@@ -407,12 +429,28 @@
               <select id="resources-project"><option value="">All projects</option></select>
               <span>Project</span>
             </label>
-            <div class="zoom-controls" title="Zoom timeline">
-              <button id="resources-zoom-out" class="btn-icon" type="button" title="Zoom out">−</button>
-              <span class="zoom-display"><span id="resources-zoom-percent">100%</span><span id="resources-mode-label" class="zoom-mode">weeks</span></span>
-              <button id="resources-zoom-in" class="btn-icon" type="button" title="Zoom in">+</button>
+            <details class="resources-status-dropdown" id="resources-status-filters">
+              <summary title="Show / hide tasks by schedule status. Checked buckets are visible on the timeline.">
+                ⌕ Views ▾
+              </summary>
+              <div class="resources-status-menu">
+                <label class="resources-status-item"><input type="checkbox" data-status="zero"    /><span class="status-swatch swatch-zero"></span>Not started</label>
+                <label class="resources-status-item"><input type="checkbox" data-status="behind"  /><span class="status-swatch swatch-behind"></span>Behind</label>
+                <label class="resources-status-item"><input type="checkbox" data-status="ontrack" /><span class="status-swatch swatch-ontrack"></span>On track / ahead</label>
+                <label class="resources-status-item"><input type="checkbox" data-status="done"    /><span class="status-swatch swatch-done"></span>Done</label>
+              </div>
+            </details>
+            <div class="zoom-controls" title="Zoom timeline (1-10, same scale as the Schedule Gantt)">
+              <button id="resources-zoom-out" class="btn-icon" type="button" title="Zoom out (step −1)">−</button>
+              <span class="zoom-display"><span id="resources-zoom-percent">Zoom 6/10</span><span id="resources-mode-label" class="zoom-mode">weeks</span></span>
+              <button id="resources-zoom-in" class="btn-icon" type="button" title="Zoom in (step +1)">+</button>
             </div>
             <button id="resources-zoom-fit" class="btn-ghost btn-tight" type="button">Fit</button>
+            <div class="zoom-controls" title="Row height — drag the bar height up/down so rows mirror the Schedule grid.">
+              <button id="resources-row-shrink" class="btn-icon" type="button" title="Shorter rows">▾</button>
+              <span class="zoom-display"><span id="resources-row-height">16px</span><span class="zoom-mode">row</span></span>
+              <button id="resources-row-grow" class="btn-icon" type="button" title="Taller rows">▴</button>
+            </div>
           </div>
         </div>
         <div class="resources-body" id="resources-body">
@@ -754,19 +792,19 @@
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->
-  <script src="auth-ui.js?v=20260601-11"></script>
-  <script src="phases.js?v=20260601-11"></script>
-  <script src="release-notes.js?v=20260601-11"></script>
-  <script src="app.js?v=20260601-11"></script>
+  <script src="auth-ui.js?v=20260601-56"></script>
+  <script src="phases.js?v=20260601-56"></script>
+  <script src="release-notes.js?v=20260601-56"></script>
+  <script src="app.js?v=20260601-56"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
        loadCommentCounts, and initCommentsUI are available to app.js. -->
-  <script src="comments-ui.js?v=20260601-11"></script>
+  <script src="comments-ui.js?v=20260601-56"></script>
   <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
        broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
-  <script src="realtime-ui.js?v=20260601-11"></script>
+  <script src="realtime-ui.js?v=20260601-56"></script>
   <!-- Phase 4.1: "who's editing" presence pills, top-right under the user pill. -->
-  <script src="presence-ui.js?v=20260601-11"></script>
+  <script src="presence-ui.js?v=20260601-56"></script>
 </body>
 </html>

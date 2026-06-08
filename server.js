@@ -163,6 +163,7 @@ app.post('/api/auth/register', (req, res) => {
     const user = db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid);
     const token = signToken(user);
     io.emit('users:updated');
+    // Surface a note when the caller submitted a role we ignored (always 'editor').
     const roleNote = req.body.role && req.body.role !== 'editor'
       ? 'Requested role ignored — all self-registered accounts start as editor. Contact an admin to change your role.'
       : undefined;

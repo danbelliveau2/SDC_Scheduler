@@ -2055,6 +2055,14 @@ main {
 }
 .view { display: none; }
 .view.active { display: block; flex: 1; min-height: 0; }
+/* Dashboard view needs to be vertically scrollable — `.view.active` only
+   sets flex:1 + min-height:0; without an explicit overflow:auto, any
+   content past the visible viewport gets clipped. (Bug Dan hit: Build /
+   Wire department cards were cut off at the bottom of the page.) */
+#view-dashboard.active {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 
 /* ---------- Schedule view (combined grid + gantt) ---------- */
 #view-schedule {
@@ -2356,16 +2364,14 @@ input[type="number"] {
   right: 14px;
   z-index: 8;
   background: var(--surface, #fff);
-  /* 2px SDC lime outline so the popup pops against the Gantt — same color as
-     anchor milestones so the visual language is consistent ("important
-     project-level info"). Falls back to a neutral border if the anchor color
-     hasn't loaded from settings yet. */
   border: 2px solid var(--anchor-fill, #befa4f);
   border-radius: 8px;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
-  padding: 8px 10px;
+  /* Extra padding-top so the absolute-positioned mode toggle in the
+     top-right doesn't overlap the first row's text. */
+  padding: 20px 10px 6px;
   font-size: 11px;
-  min-width: 170px;
+  min-width: 195px;
 }
 /* Hide the popup when only the grid is visible — there's no Gantt area
    for it to anchor to and it would float over the grid. */
@@ -2399,6 +2405,59 @@ input[type="number"] {
 .project-stats-popup .popup-value.stat-early   { color: #3730a3; }
 .project-stats-popup .popup-value.stat-ok      { color: #14532d; }
 .project-stats-popup .popup-value.stat-neutral { color: var(--text-muted); font-size: 11px; font-weight: 600; }
+/* "Quoted / Scheduled" dual-value rendering — quoted on the left in
+   the muted color (the original commitment), scheduled on the right
+   in the strong text color (today's plan). Mirrors the Quote vs
+   Schedule comparison layout. */
+.project-stats-popup .popup-vs { display: inline-flex; align-items: baseline; gap: 4px; }
+.project-stats-popup .popup-vs-q   { color: var(--text-muted, #64748b); font-weight: 600; }
+.project-stats-popup .popup-vs-sep { color: var(--text-muted, #64748b); font-weight: 600; }
+.project-stats-popup .popup-vs-s   { color: var(--text, #061d39); font-weight: 800; }
+/* Mode toggle — top-right corner of the popup. Flips Simple ↔
+   Advanced. Tiny so it doesn't compete with the data. */
+.project-stats-popup .popup-mode-toggle {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  background: transparent;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.project-stats-popup .popup-mode-toggle:hover {
+  color: var(--text, #1f2937);
+  background: var(--surface-alt, #f8fafc);
+}
+/* Header row above the Duration/Complete/FAT/Penalty values — small
+   uppercase labels so the PM can tell which column is Quoted vs
+   Scheduled at a glance. */
+.project-stats-popup .popup-row-header {
+  border-top: none !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 2px !important;
+}
+.project-stats-popup .popup-header-cols {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.project-stats-popup .popup-header-cols .popup-vs-q,
+.project-stats-popup .popup-header-cols .popup-vs-s,
+.project-stats-popup .popup-header-cols .popup-vs-sep {
+  font-size: 9px;
+  font-weight: 700;
+}
 /* Scope header — appears on multi-machine projects to clarify whether
    the numbers below cover All machines or just one. */
 .project-stats-popup .popup-scope {
@@ -4219,6 +4278,19 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   gap: 8px;
 }
 .schedule-footer .toolbar-toggle-btn { font-size: 12px; }
+/* needs-attention — used by the Financial Milestones footer button
+   when the active project hasn't filled out its financials yet. Bright
+   red so PMs can't miss it; reverts to standard styling once any
+   financial row carries a dollar amount or percent. */
+.schedule-footer .toolbar-toggle-btn.needs-attention {
+  background: #dc2626;
+  color: #fff;
+  border-color: #b91c1c;
+  font-weight: 700;
+}
+.schedule-footer .toolbar-toggle-btn.needs-attention:hover {
+  background: #b91c1c;
+}
 body.customer-view .schedule-footer { display: none; }
 .btn-icon {
   width: 28px;
@@ -6327,6 +6399,62 @@ body[data-view="setup"] #btn-add { display: none; }
 /* Quote vs Schedule comparison table. Shows quoted hours from the estimate
    side-by-side with the live scheduled hours computed from task durations.
    Δ column: green when on target (±10%), amber when off, slate when no quote. */
+/* Sold-delivery row at the top of the Quote vs Schedule modal — the
+   "what we committed to" input. */
+.quote-sold-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+}
+.quote-sold-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.quote-sold-label input[type="number"] {
+  width: 90px;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 700;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.quote-sold-unit {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* Penalty clause toggle + weeks input — sit next to the sold delivery
+   field in the Quote modal. Weeks input hides until the checkbox is on. */
+.quote-penalty-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding-left: 14px;
+  border-left: 1px solid var(--border, #e2e8f0);
+}
+.quote-penalty-toggle input[type="checkbox"] { margin: 0; }
+.quote-penalty-input.is-hidden { display: none; }
 .quote-compare-table {
   width: 100%;
   border-collapse: collapse;
@@ -6782,6 +6910,39 @@ body[data-view="setup"] #btn-add { display: none; }
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  /* Fixed layout so the per-column widths below actually apply — auto
+     layout used to make the long Trigger placeholder pull width away
+     from Name (descriptions like "Acceptance at Customer (SAT)" got
+     clipped). Widths chosen to match the data each column holds:
+     Name needs the most room (description), Trigger is moderate,
+     Date is sized for an ISO date input, %, Sent, and Delete are
+     tiny because they hold a number / checkbox / single button. */
+  table-layout: fixed;
+}
+/* Per-column widths matching the new column order:
+   %, Description, Trigger (predecessor), Date, Sent.
+   Description takes the remainder so long names like
+   "Acceptance at Customer (SAT)" never clip. */
+.financials-table col.col-percent { width: 60px;  }
+.financials-table col.col-name    { width: auto;  }
+.financials-table col.col-trigger { width: 140px; }
+.financials-table col.col-date    { width: 150px; }
+.financials-table col.col-paid    { width: 60px;  }
+/* Stacked header — "Trigger" on top, "(predecessor)" below — so the
+   column can stay narrow without the header text pushing it wide. */
+.financials-table .th-stacked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.05;
+}
+.financials-table .th-stacked small {
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  margin-top: 1px;
 }
 .financials-table thead th {
   position: sticky;
@@ -6795,9 +6956,12 @@ body[data-view="setup"] #btn-add { display: none; }
   color: var(--text-muted);
   font-weight: 700;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .financials-table thead th.num   { text-align: right; }
-.financials-table thead th.paid  { text-align: center; width: 60px; }
+.financials-table thead th.paid  { text-align: center; }
 .financials-table thead th.syn   { width: 160px; }
 .financials-table tbody td {
   padding: 6px 10px;
@@ -7257,7 +7421,10 @@ td.sales-suppressed {
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
+  /* Match the rest of the app's dark text — was --text-muted (light gray)
+     which made the discipline tabs look washed out next to the dropdowns
+     and dashboard text that all use --text. */
+  color: var(--text);
   cursor: pointer;
   letter-spacing: 0.02em;
 }
@@ -7319,27 +7486,108 @@ td.sales-suppressed {
   flex-direction: column;
   min-width: calc(var(--name-col-w) + var(--tl-width));
 }
+/* Status filter — single dropdown ("⌕ All statuses ▾") with checkboxes
+   for each bucket. Click to expand, check / uncheck to toggle which
+   buckets show on the timeline. */
+.resources-status-dropdown {
+  position: relative;
+  display: inline-block;
+}
+.resources-status-dropdown > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  /* Match the rest of the app — dark text on a light surface, like the
+     Project picker dropdown right next to it. The toolbar uses
+     --surface-alt as its background, so white-on-white was invisible. */
+  color: var(--text, #1f2937);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  user-select: none;
+  white-space: nowrap;
+}
+.resources-status-dropdown > summary::-webkit-details-marker { display: none; }
+.resources-status-dropdown[open] > summary {
+  background: var(--surface-alt, #f1f5f9);
+}
+.resources-status-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.15);
+  padding: 6px 4px;
+  min-width: 180px;
+}
+.resources-status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.resources-status-item:hover { background: var(--surface-alt, #f1f5f9); }
+.resources-status-item input[type="checkbox"] { margin: 0; }
+.status-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid;
+  flex: 0 0 auto;
+}
+.status-swatch.swatch-zero    { background: #e2e8f0; border-color: #94a3b8; }
+.status-swatch.swatch-behind  { background: #fee2e2; border-color: #fca5a5; }
+.status-swatch.swatch-ontrack { background: #dcfce7; border-color: #86efac; }
+.status-swatch.swatch-done    { background: #ecfccb; border-color: #bef264; }
+/* Header — single inline SVG that uses the SAME class names as the
+   Schedule's frappe-gantt header (`.upper-text`, `.lower-text`, `.tick`).
+   Wrapped in `<svg class="gantt resources-axis-svg">` so frappe-gantt's
+   stylesheet `.gantt text { ... }` skins it identically. */
 .resources-header {
   display: flex;
   align-items: stretch;
   position: sticky;
   top: 0;
-  background: var(--surface-alt);
-  border-bottom: 1px solid var(--border-strong);
+  background: #ffffff;
+  border-bottom: 1px solid #e0e0e0;
   z-index: 2;
-  height: 38px;
+  /* min-height (not fixed height) so the header grows when the inline
+     SVG renders an extra row of weekday letters at high zoom. */
+  min-height: 38px;
 }
 .resources-header .resources-name-cell {
   width: var(--name-col-w);
   flex: 0 0 var(--name-col-w);
-  border-right: 1px solid var(--border);
-  background: var(--surface-alt);
+  border-right: 1px solid #e0e0e0;
+  background: #ffffff;
 }
 .resources-axis {
   position: relative;
-  height: 38px;
+  min-height: 38px;
   flex: 0 0 var(--tl-width);
+  overflow: visible;
+  background: #ffffff;
 }
+.resources-axis-svg {
+  display: block;
+  background: #ffffff;
+}
+.resources-axis-svg .upper-text { fill: #0f172a; font-weight: 600; }
+.resources-axis-svg .lower-text { fill: #475569; font-weight: 500; }
+.resources-axis-svg .tick { stroke: #cbd5e1; }
+
+/* Backwards-compat — keep the old class so anything still using it doesn't
+   blow up. */
 .resources-tick {
   position: absolute;
   top: 4px;
@@ -7437,6 +7685,29 @@ td.sales-suppressed {
    the grid — slate / red / green / emerald — so a glance at the team page tells
    you which tasks are not started, behind, on track, or done without having to
    open a schedule. Driven by the same --pct-*-fill CSS vars set from Setup. */
+/* ── Departments Gantt (rebuilt on frappe-gantt) — same SVG bar styling
+      conventions as Schedule. Color the .bar fill by status; the .bar-
+      progress overlay uses a darker shade of the same status color. ── */
+#dept-gantt-host .gantt .bar-wrapper.dept-bar .bar          { fill: #fafbfc; stroke: #cbd5e1; stroke-width: 1; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar .bar-progress { fill: #94a3b8; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-zero .bar          { fill: var(--pct-zero-fill, #fafbfc); stroke: #cbd5e1; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-zero .bar-progress { fill: #94a3b8; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-behind .bar          { fill: var(--pct-behind-fill, #fee2e2); stroke: #dc2626; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-behind .bar-progress { fill: #dc2626; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-ontrack .bar          { fill: var(--pct-ontrack-fill, #dcfce7); stroke: #16a34a; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-ontrack .bar-progress { fill: #16a34a; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-done .bar          { fill: var(--pct-done-fill, #16a34a); stroke: #14532d; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-done .bar-progress { fill: #14532d; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.is-focused .bar { stroke-width: 2.5; }
+/* Sample swatches in the legend reuse the same fills. */
+.legend-swatch.dept-bar.status-zero    { background: var(--pct-zero-fill, #fafbfc); border: 1px solid #cbd5e1; }
+.legend-swatch.dept-bar.status-behind  { background: var(--pct-behind-fill, #fee2e2); border: 1px solid #dc2626; }
+.legend-swatch.dept-bar.status-ontrack { background: var(--pct-ontrack-fill, #dcfce7); border: 1px solid #16a34a; }
+.legend-swatch.dept-bar.status-done    { background: var(--pct-done-fill, #16a34a); border: 1px solid #14532d; }
+/* Make the Departments Gantt fill the body height. */
+#dept-gantt-host { width: 100%; }
+#dept-gantt-host .gantt-container { overflow: auto; max-height: 70vh; }
+
 .res-bar.status-zero {
   background: var(--pct-zero-fill, #fafbfc);
   border-color: color-mix(in srgb, var(--pct-zero-fill, #fafbfc) 80%, #000);
@@ -7449,12 +7720,13 @@ td.sales-suppressed {
   background: var(--pct-ontrack-fill, #dcfce7);
   border-color: color-mix(in srgb, var(--pct-ontrack-fill, #dcfce7) 80%, #000);
 }
-/* Done resource bars get white text since the default --pct-done-fill is now
-   a deep green (#16a34a) that doesn't have enough contrast with black. */
+/* Done resource bars — placeholder rule kept here for source-order
+   grouping; the real styling lives further down (after `.res-bar.low-alloc`)
+   so its background-image can override low-alloc's diagonal hash on
+   tasks that are BOTH part-time AND complete. See `.res-bar.status-done`
+   block below. */
 .res-bar.status-done {
-  background: var(--pct-done-fill, #16a34a);
-  border-color: color-mix(in srgb, var(--pct-done-fill, #16a34a) 80%, #000);
-  color: white;
+  /* see overrides below */
 }
 .res-bar-label {
   text-overflow: ellipsis;
@@ -7523,6 +7795,31 @@ td.sales-suppressed {
     );
 }
 
+/* Done bars — mirror the main Schedule's drawDoneHashOverlay treatment:
+   lime green outline (#befa4f, same color the Schedule uses on
+   `.gantt .bar-wrapper.is-done .bar { stroke: #befa4f }`) plus diagonal
+   lime hash stripes through the bar. Background goes white so the
+   description label stays readable against the lime hash. Higher source
+   order than low-alloc so a 50%-alloc done task shows the done lime
+   stripes (not the part-time white stripes). */
+.res-bar.status-done {
+  background-color: #ffffff !important;
+  border: 2.5px solid #befa4f !important;
+  color: #1f2937 !important;
+  background-image:
+    repeating-linear-gradient(
+      135deg,
+      transparent 0,
+      transparent 5px,
+      rgba(190, 250, 79, 0.7) 5px,
+      rgba(190, 250, 79, 0.7) 7px
+    ) !important;
+}
+.res-bar.status-done .res-bar-label {
+  color: #1f2937;
+  text-shadow: 0 0 2px rgba(255,255,255,0.85);
+}
+
 /* Load strip segments — thin pills under the bars showing the running daily total
    allocation. Adjacent days with the same total merge into one pill, so two 50% tasks
    overlapping for two weeks read as a single "100%" pill across that span. */
@@ -7542,11 +7839,19 @@ td.sales-suppressed {
   box-sizing: border-box;
   pointer-events: auto;
 }
+/* Load segment colors — sweet-spot bands per Dan's spec:
+   • load-under (< 85%) — light yellow, person has capacity left
+   • load-good  (85-100%) — green, well-utilized engineer
+   • load-over  (> 100%)  — red, double-booked
+   Legacy `load-partial` and `load-full` are kept as aliases so any
+   stale code paths still render sanely. */
+.res-load-seg.load-under,
 .res-load-seg.load-partial {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-  color: #475569;
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #92400e;
 }
+.res-load-seg.load-good,
 .res-load-seg.load-full {
   background: #dcfce7;
   border-color: #86efac;
@@ -7849,4 +8154,814 @@ td.sales-suppressed {
 .sdc-mention-item:hover,
 .sdc-mention-item.active {
   background: var(--surface-alt, #f1f5f9);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Project Dashboard view (Sidebar → Dashboard).
+   Class prefix `pdash-` keeps it separate from the
+   Departments-tab dashboard (which uses .dashboard-card,
+   .dashboard-row, .dashboard-chip).
+
+   Layout, top to bottom:
+     Title + sub
+     Filters row: project dropdown + "coming due in N weeks"
+     Section: Key Milestones — one strip per project
+     Section: Overall Health — donut + legend
+     Section: By Department — cards (progress bar + donut +
+              people pills + 3 lists: coming / behind / ahead)
+   ───────────────────────────────────────────────────────── */
+.dashboard-page {
+  padding: 20px 26px 40px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+.pdash-title {
+  margin: 0 0 4px;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+}
+.pdash-sub {
+  margin: 0 0 18px;
+  font-size: 13px;
+  color: var(--text-muted, #64748b);
+}
+.pdash-sub strong { color: var(--text, #1f2937); font-weight: 600; }
+
+/* ── Filters row: project picker + coming-due weeks input ── */
+.pdash-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 22px;
+}
+.pdash-picker {
+  flex: 1 1 320px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  position: relative;
+  z-index: 5;
+}
+.pdash-picker > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdash-picker > summary > strong {
+  font-weight: 600;
+}
+.pdash-picker-caret {
+  margin-left: auto;
+  color: var(--text-muted, #64748b);
+  transition: transform 120ms ease;
+}
+.pdash-picker[open] .pdash-picker-caret { transform: rotate(180deg); }
+.pdash-picker > summary::-webkit-details-marker { display: none; }
+.pdash-picker-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 4px 14px;
+  padding: 10px 14px 4px;
+  border-top: 1px solid var(--border, #e2e8f0);
+  max-height: 280px;
+  overflow-y: auto;
+}
+.pdash-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  cursor: pointer;
+  padding: 4px 0;
+}
+.pdash-picker-item input[type="checkbox"] { margin: 0; }
+.pdash-picker-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px 12px;
+}
+.pdash-weeks-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  white-space: nowrap;
+}
+.pdash-weeks-control input {
+  width: 60px;
+  padding: 4px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  text-align: center;
+}
+
+/* ── Top-level section frame ── */
+.pdash-section {
+  margin-bottom: 26px;
+}
+.pdash-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.pdash-section-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+}
+.pdash-section-sub {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+}
+.pdash-empty-block {
+  padding: 30px 16px;
+  text-align: center;
+  font-style: italic;
+  color: var(--text-muted, #94a3b8);
+  background: var(--surface, #fff);
+  border: 1px dashed var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+
+/* ── Key Milestones — one COMPACT strip per project. Used to be big
+      30-row-tall cards; squeezed down so 20–30 active projects fit on
+      screen without scrolling forever. Dot is 20px, labels are 10px,
+      and slip chip ("3d early" / "5d late") sits next to the date. ── */
+.pdash-milestones {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pdash-milestone-row {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  align-items: start;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  min-height: 48px;
+}
+.pdash-milestone-project {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text, #1f2937);
+  /* Wrap rather than truncate — was clipping
+     "1129_Schneider_Electric_Cartoner" at the old 180px column. */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.25;
+}
+.pdash-milestone-track {
+  /* Absolute-positioned items keyed off fixed left% — anchors at
+     10/30/53/72/90, financials at 18/44/80/96. This is what keeps the
+     anchor dots locked across rows: a row with no financials and a
+     row with all four put their anchors at the IDENTICAL x. */
+  position: relative;
+  min-height: 56px;
+}
+/* Spine connector line, drawn once behind the icons. Spans the
+   leftmost anchor (PO @ 10%) to the rightmost (Ship @ 90%), passing
+   through every anchor along the way. Lives below the financial $
+   icons since they sit beside the anchors at higher percentages. */
+.pdash-milestone-track::before {
+  content: '';
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 12px;
+  height: 2px;
+  background: #e2e8f0;
+  z-index: 0;
+  pointer-events: none;
+}
+/* Each mini-item is ABSOLUTELY positioned at its left% inside the
+   track. transform: translateX(-50%) centers the item on that x so
+   the icon column lines up with the percentage. */
+.pdash-mile-item {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 80ms ease;
+  z-index: 1;
+}
+.pdash-mile-item:hover { transform: translateX(-50%) translateY(-1px); }
+/* (replaced by translateX-preserving hover above) */
+.pdash-mile-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  background: #cbd5e1;
+  border: 1.5px solid #cbd5e1;
+}
+.pdash-mile-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.pdash-mile-date {
+  font-size: 10px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.pdash-mile-dates {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.pdash-mile-slip {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.pdash-mile-slip.is-early { background: #dcfce7; color: #2f6a13; border: 1px solid #74c415; }
+.pdash-mile-slip.is-late  { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+
+/* ── Anchor icon variants (●) ── */
+.pdash-mile-anchor.is-done     .pdash-mile-icon { background: #74c415; border-color: #74c415; }
+.pdash-mile-anchor.is-upcoming .pdash-mile-icon { background: #1574c4; border-color: #1574c4; }
+.pdash-mile-anchor.is-overdue  .pdash-mile-icon { background: #dc2626; border-color: #dc2626; }
+.pdash-mile-anchor.is-missing  .pdash-mile-icon { background: #fff;    border-color: #cbd5e1; color: #cbd5e1; }
+.pdash-mile-anchor.is-missing  .pdash-mile-label { color: var(--text-muted, #94a3b8); }
+
+/* ── Financial icon variants ($) — square, SDC-green outline as the
+   "family" signal; fill encodes status. ── */
+.pdash-mile-fin .pdash-mile-icon {
+  border-radius: 4px;
+  border: 1.5px solid #74c415;
+  width: 20px;
+  height: 20px;
+}
+.pdash-mile-fin.is-paid     .pdash-mile-icon { background: #74c415; }
+.pdash-mile-fin.is-no-date  .pdash-mile-icon { background: #ffde51; color: #1f2937; }
+.pdash-mile-fin.is-upcoming .pdash-mile-icon { background: #fff;    color: #2f6a13; }
+.pdash-mile-fin.is-overdue  .pdash-mile-icon { background: #dc2626; border-color: #dc2626; }
+.pdash-mile-fin .pdash-mile-label { color: #2f6a13; }
+.pdash-mile-fin.is-no-date .pdash-mile-label { color: #713f12; }
+.pdash-mile-fin.is-overdue .pdash-mile-label { color: #b91c1c; }
+
+.pdash-date-baseline { color: var(--text-muted, #64748b); text-decoration: line-through; }
+.pdash-date-current  { color: var(--text, #1f2937); font-weight: 700; }
+/* Financial milestones sub-row — sits below the spine track in each
+   project's milestone strip. Tiles flow left→right by date and color-
+   code by status (paid = dark green, upcoming = gray, past due = red).
+   Each tile is a small square-ish pill with $-icon + name + date. */
+.pdash-milestone-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+/* Financial badge — sits INLINE inside the spine anchor cell, right
+   next to the dot. All badges share an SDC-green outline so they read
+   as the "financial family" of markers; the fill color varies by
+   status (paid / no-date / past-due / upcoming). */
+.pdash-fin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding: 0 4px 0 0;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 4px;
+  border: 1.5px solid #74c415;
+  background: #fff;
+  white-space: nowrap;
+  line-height: 1;
+  cursor: default;
+}
+.pdash-fin-badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px 0 0 3px;
+  font-weight: 800;
+  font-size: 10px;
+  color: #fff;
+  background: #74c415;
+}
+.pdash-fin-badge-abbrev {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-size: 9px;
+  color: #2f6a13;
+  padding: 0 2px;
+}
+/* Target month tag — "May '26" sized to sit next to the abbreviation
+   so the PM sees billing-month context inline. Slightly lighter
+   weight than the abbreviation so the eye reads `$ PO` first. */
+.pdash-fin-badge-month {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  padding-right: 2px;
+}
+/* Status fills — SDC palette per Dan's spec: paid=SDC green,
+   no-date=SDC yellow, past-due=red, upcoming=neutral. The green
+   outline stays consistent on all four so the user reads them as
+   one family of markers. */
+.pdash-fin-badge.is-paid {
+  background: #ecfccb;
+  border-color: #74c415;
+}
+.pdash-fin-badge.is-paid .pdash-fin-badge-icon   { background: #14532d; }
+.pdash-fin-badge.is-no-date {
+  background: #fef9c3;
+  border-color: #ffde51;
+}
+.pdash-fin-badge.is-no-date .pdash-fin-badge-icon   { background: #ffde51; color: #713f12; }
+.pdash-fin-badge.is-no-date .pdash-fin-badge-abbrev { color: #713f12; }
+.pdash-fin-badge.is-upcoming {
+  background: #fff;
+  border-color: #cbd5e1;
+}
+.pdash-fin-badge.is-upcoming .pdash-fin-badge-icon   { background: #94a3b8; }
+.pdash-fin-badge.is-upcoming .pdash-fin-badge-abbrev { color: #475569; }
+.pdash-fin-badge.is-overdue {
+  background: #fee2e2;
+  border-color: #dc2626;
+}
+.pdash-fin-badge.is-overdue .pdash-fin-badge-icon   { background: #dc2626; }
+.pdash-fin-badge.is-overdue .pdash-fin-badge-abbrev { color: #b91c1c; }
+.pdash-milestone:hover { transform: translateY(-1px); }
+.pdash-milestone-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: #cbd5e1;
+  border: 1.5px solid #cbd5e1;
+  flex: 0 0 auto;
+}
+.pdash-milestone-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.pdash-milestone-date {
+  font-size: 10px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.pdash-milestone-slip {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+/* SDC palette — early = lime (SDC green), late = red. */
+.pdash-milestone-slip.is-early { background: #dcfce7; color: #2f6a13; border: 1px solid #74c415; }
+.pdash-milestone-slip.is-late  { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+.pdash-milestone.is-done .pdash-milestone-dot     { background: #74c415; border-color: #74c415; }
+.pdash-milestone.is-upcoming .pdash-milestone-dot { background: #1574c4; border-color: #1574c4; }
+.pdash-milestone.is-overdue .pdash-milestone-dot  { background: #dc2626; border-color: #dc2626; }
+.pdash-milestone.is-missing .pdash-milestone-dot  { background: #fff;    border-color: #cbd5e1; color: #cbd5e1; }
+.pdash-milestone.is-missing .pdash-milestone-label { color: var(--text-muted, #94a3b8); }
+/* Old per-segment connectors replaced by track::before single line. */
+.pdash-milestone-connector { display: none; }
+
+/* ── Overall Health: donut + legend ── */
+.pdash-overall {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 16px 20px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+.pdash-overall-donut { flex: 0 0 auto; }
+.pdash-overall-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px 22px;
+  flex: 1 1 auto;
+}
+.pdash-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+}
+.pdash-legend-item strong {
+  min-width: 28px;
+  font-weight: 700;
+  text-align: right;
+}
+.pdash-legend-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.pdash-legend-pct {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+}
+
+/* Each department gets its OWN full-width section (was a 2-col card
+   grid). Per Dan's spec: each dept reads as a band across the whole
+   page, with 4 columns of content inside (under / over / due-this-
+   month / behind). */
+.pdash-dept-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pdash-dept-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.pdash-dept-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--surface-alt, #f8fafc);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.pdash-dept-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.pdash-dept-count {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+.pdash-dept-charts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.pdash-dept-progress-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  margin-bottom: 6px;
+}
+.pdash-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pdash-progress-track {
+  position: relative;
+  height: 14px;
+  background: #f1f5f9;
+  border-radius: 999px;
+  overflow: visible;
+}
+.pdash-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  /* SDC palette: good = SDC green, mid = SDC yellow, bad = red. */
+  background: #74c415;
+  transition: width 200ms ease;
+}
+.pdash-progress[data-tone="mid"] .pdash-progress-bar { background: #ffde51; }
+.pdash-progress[data-tone="bad"] .pdash-progress-bar { background: #dc2626; }
+.pdash-progress-tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 3px;
+  background: #1f2937;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+.pdash-progress-tick::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #1f2937;
+}
+.pdash-progress-readout {
+  font-size: 12px;
+  color: var(--text, #1f2937);
+}
+.pdash-progress-readout strong { font-weight: 700; font-size: 14px; }
+.pdash-progress-expected {
+  margin-left: 8px;
+  color: var(--text-muted, #64748b);
+}
+.pdash-dept-donut {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pdash-donut-legend {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 11px;
+  color: var(--text, #1f2937);
+}
+.pdash-donut-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  white-space: nowrap;
+}
+
+/* People row: assignee pills */
+.pdash-people-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: #fafbfc;
+}
+.pdash-person-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 999px;
+}
+.pdash-person-name { font-weight: 600; color: var(--text, #1f2937); }
+.pdash-person-count {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Lists per dept: under-allocated / over-allocated / due-this-month /
+   behind. 3-col by default (Coming/Behind/Ahead legacy), 4-col when
+   the .pdash-dept-lists-4 modifier is on. */
+.pdash-dept-lists.pdash-dept-lists-4 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+}
+.pdash-dept-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0;
+}
+.pdash-dept-list {
+  padding: 12px 14px;
+  border-right: 1px solid var(--border, #e2e8f0);
+}
+.pdash-dept-list:last-child { border-right: none; }
+.pdash-dept-list h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdash-list-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  background: #e2e8f0;
+  border-radius: 999px;
+  color: var(--text, #1f2937);
+}
+.pdash-dept-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.pdash-tl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f1f5f9;
+}
+.pdash-tl-row:last-child { border-bottom: none; }
+.pdash-tl-row:hover { background: #f8fafc; }
+.pdash-tl-name {
+  flex: 1 1 auto;
+  font-weight: 500;
+  color: var(--text, #1f2937);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdash-tl-project, .pdash-tl-assignee {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  flex: 0 0 auto;
+  white-space: nowrap;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdash-tl-empty {
+  padding: 8px 0;
+  color: var(--text-muted, #94a3b8);
+  font-style: italic;
+  font-size: 12px;
+}
+/* Person row (under/over allocated) — name + muted reason text. No
+   chip, no row of yellow. Reads like a quick roster. */
+.pdash-tl-person {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 12px;
+}
+.pdash-tl-person:last-child { border-bottom: none; }
+.pdash-tl-person-name {
+  font-weight: 600;
+  color: var(--text, #1f2937);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+.pdash-tl-person-reason {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.pdash-tl-person.is-over .pdash-tl-person-reason { color: #b91c1c; font-weight: 700; }
+
+/* Chip pills used everywhere */
+.pdash-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+/* SDC palette — success/info/warn map to SDC green/blue/yellow. Danger
+   keeps red since it signals a warning state outside the four colors. */
+.pdash-chip.chip-success { background: #dcfce7; color: #2f6a13; border: 1px solid #74c415; }
+.pdash-chip.chip-warn    { background: #fef9c3; color: #713f12; border: 1px solid #ffde51; }
+.pdash-chip.chip-danger  { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+.pdash-chip.chip-info    { background: #e0effa; color: #0c4a8a; border: 1px solid #aacee8; }
+
+/* Financial milestones controls row — month-range pickers + clear. */
+.pdash-fin-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.pdash-fin-month {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text, #1f2937);
+}
+.pdash-fin-month input[type="month"] {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--text, #1f2937);
+}
+/* Financial milestones table — straightforward zebra-striped rows.
+   Uses table-layout:fixed + <colgroup> per the CLAUDE.md column-width
+   rule (description column gets the remainder, numeric/icon columns
+   sized to their content). */
+.pdash-fin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+  table-layout: fixed;
+}
+.pdash-fin-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdash-fin-table th.num,
+.pdash-fin-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pdash-fin-table thead th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  background: var(--surface-alt, #f8fafc);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.pdash-fin-table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: var(--text, #1f2937);
+}
+.pdash-fin-table tbody tr:last-child td { border-bottom: none; }
+.pdash-fin-row:hover { background: #f8fafc; cursor: pointer; }
+
+@media (max-width: 1100px) {
+  .pdash-dept-grid { grid-template-columns: 1fr; }
+  .pdash-dept-lists { grid-template-columns: 1fr; }
+  .pdash-dept-list { border-right: none; border-bottom: 1px solid var(--border, #e2e8f0); }
+  .pdash-dept-list:last-child { border-bottom: none; }
+  .pdash-milestone-project { flex: 0 0 120px; }
+}
+@media (max-width: 720px) {
+  .pdash-dept-charts { grid-template-columns: 1fr; }
+  .pdash-overall { gap: 16px; }
+  .pdash-milestone-row { flex-direction: column; align-items: flex-start; }
 }
