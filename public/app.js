@@ -6100,7 +6100,6 @@ function toggleFavoriteProject(name) {
   saveProjectTabs();
   // Re-render whichever view is showing so the star flips immediately.
   if (state.view === 'projects')  renderProjectsPage();
-  if (state.view === 'dashboard') renderDashboard();
   if (state.view === 'favorites') renderFavoritesPage();
   if (state.view === 'recents')   renderRecentsPage();
 }
@@ -6414,6 +6413,472 @@ function _pdashFinMonthControls(from, to) {
   return `<label class="pdash-fin-month">From <input type="month" data-action="set-fin-month-from" value="${escapeHtml(from || '')}"/></label>
           <label class="pdash-fin-month">To <input type="month" data-action="set-fin-month-to" value="${escapeHtml(to || '')}"/></label>
           <button type="button" class="btn-ghost btn-tight" data-action="clear-fin-months">Clear</button>`;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// DEPARTMENTS — project rollup + capacity cards.
+//
+// In v7.6 the standalone Dashboard view was merged into the Departments
+// tab. The project rollup (picker + key milestone strips + financial
+// milestones) now sits ABOVE the SDC Team grid; the capacity cards
+// (Under/Over allocated + Due this month) sit BELOW the existing team
+// dashboard cards, scoped to the active discipline + the projects
+// picked at the top.
+//
+// Selected-projects persistence reuses the old sdcDashboardProjects
+// localStorage key so users keep their picks across the upgrade.
+// ──────────────────────────────────────────────────────────────────────
+function _deptSelectedProjects() {
+  let selected;
+  try { selected = JSON.parse(localStorage.getItem('sdcDashboardProjects') || '[]'); }
+  catch (_) { selected = []; }
+  if (!Array.isArray(selected)) selected = [];
+  const allProjects = uniqueValues('project')
+    .filter(p => p && p.trim().length > 0)
+    .filter(p => !isTemplateProject(p))
+    .filter(p => projectWorkspace(p) !== 'Sales')
+    .sort();
+  if (selected.length === 0) {
+    selected = (state.openProjects || []).filter(p => p && allProjects.includes(p));
+    if (selected.length === 0 && allProjects.length > 0) selected = [allProjects[0]];
+  } else {
+    selected = selected.filter(p => allProjects.includes(p));
+  }
+  return { selected, allProjects };
+}
+
+function renderDeptProjectRollup() {
+  const root = document.getElementById('dept-project-rollup');
+  if (!root) return;
+
+  const { selected, allProjects } = _deptSelectedProjects();
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayMs  = today.getTime();
+  const todayISO = today.toISOString().slice(0, 10);
+
+  // Pool tasks across the selected projects — milestone-only subset for
+  // the strip.
+  const pool = state.tasks.filter(t => selected.includes(t.project) && !isBacklogTask(t));
+  const milestoneTasks = pool.filter(t => t.is_milestone || t.anchor_key);
+
+  // Kick off lazy financial loads for any project that hasn't been
+  // fetched yet — re-render when each resolves.
+  for (const p of selected) {
+    if (!state.financials[p]) {
+      loadFinancialsForProject(p).then(() => {
+        if (state.view === 'team') {
+          try { renderDeptProjectRollup(); } catch (_) {}
+        }
+      }).catch(() => {});
+    }
+  }
+  const financials = selected.flatMap(p =>
+    (state.financials[p] || []).map(r => ({ ...r, project: p }))
+  );
+
+  // Per-project milestone strip — 5 spine anchors at fixed left% +
+  // financial mini-columns slotted between them. (Same logic the old
+  // Dashboard view used; kept inline so the helper stays close to its
+  // only caller.)
+  function milestoneStripForProject(project) {
+    const KEY_ANCHORS = [
+      { key: 'receipt_of_po',    short: 'PO' },
+      { key: 'mech_release_1',   short: 'Mech 1' },
+      { key: 'machine_power_up', short: 'Power' },
+      { key: 'fat',              short: 'FAT' },
+      { key: 'ship_machine',     short: 'Ship' },
+    ];
+    const items = KEY_ANCHORS.map(a => {
+      const t = milestoneTasks.find(m => m.project === project && inferredAnchorKey(m) === a.key);
+      if (!t) return { ...a, missing: true };
+      const done = (Number(t.progress) || 0) >= 100;
+      const baselineDate = t.baseline_end_date || t.baseline_start_date || null;
+      const currentDate  = t.start_date || t.end_date || null;
+      const actualDate   = done ? (t.completed_on || currentDate) : null;
+      const displayDate  = actualDate || currentDate;
+      const overdue = !done && currentDate && currentDate < todayISO;
+      let slipDays = null;
+      if (baselineDate && displayDate) {
+        const baseMs = new Date(baselineDate + 'T00:00:00').getTime();
+        const dateMs = new Date(displayDate + 'T00:00:00').getTime();
+        slipDays = Math.round((dateMs - baseMs) / 86400000);
+      }
+      return { ...a, task: t, done, overdue, baselineDate, currentDate, actualDate, displayDate, slipDays };
+    });
+    // Anchors live at fixed 10/30/53/72/90% across every row so all
+    // PO/Mech-1/Power/FAT/Ship dots line up vertically regardless of
+    // which financial milestones each project has. Financials slot in
+    // at their own dedicated percentages BETWEEN the anchors — no
+    // pushing, no shifting.
+    const ANCHOR_POS = { receipt_of_po: 10, mech_release_1: 30, machine_power_up: 53, fat: 72, ship_machine: 90 };
+    const FIN_POS    = { PO: 18, MC: 44, FAT: 80, SAT: 96 };
+
+    function mileItem(kind, cls, iconHtml, label, dateHtml, slipChip, leftPct, dataAttrs, tipText) {
+      return `<div class="pdash-mile-item pdash-mile-${kind} ${cls}" style="left:${leftPct}%" ${dataAttrs}${tipText ? ` title="${escapeHtml(tipText)}"` : ''}>
+        <div class="pdash-mile-icon">${iconHtml}</div>
+        <div class="pdash-mile-label">${escapeHtml(label)}</div>
+        ${dateHtml}
+        ${slipChip || ''}
+      </div>`;
+    }
+    const segments = items.map(a => {
+      const cls = a.missing ? 'is-missing' : a.done ? 'is-done' : a.overdue ? 'is-overdue' : 'is-upcoming';
+      const icon = a.done ? '✓' : (a.overdue ? '!' : '');
+      let dateHtml;
+      if (a.missing) {
+        dateHtml = '<div class="pdash-mile-date">—</div>';
+      } else if (!a.baselineDate || a.baselineDate === a.displayDate) {
+        dateHtml = `<div class="pdash-mile-date">${escapeHtml(a.displayDate ? fmtDate(a.displayDate) : '—')}</div>`;
+      } else {
+        const baseStr = fmtDate(a.baselineDate);
+        const dispStr = a.displayDate ? fmtDate(a.displayDate) : '—';
+        dateHtml = `<div class="pdash-mile-dates" title="Baseline ${baseStr} → ${a.done ? 'Actual' : 'Revised'} ${dispStr}">
+          <span class="pdash-date-baseline">${escapeHtml(baseStr)}</span>
+          <span class="pdash-date-current">${escapeHtml(dispStr)}</span>
+        </div>`;
+      }
+      let slipChip = '';
+      if (a.slipDays != null && a.slipDays !== 0) {
+        const isEarly = a.slipDays < 0;
+        const tone = isEarly ? 'is-early' : 'is-late';
+        const wks = _pdashDaysToWeeks(a.slipDays);
+        slipChip = `<div class="pdash-mile-slip ${tone}" title="Vs original baseline">${wks}W ${isEarly ? 'early' : 'late'}</div>`;
+      }
+      const anchorAttrs = `data-project="${escapeHtml(project)}"${a.task ? ` data-task-id="${a.task.id}"` : ''}`;
+      return mileItem('anchor', cls, icon, a.short, dateHtml, slipChip,
+        ANCHOR_POS[a.key] != null ? ANCHOR_POS[a.key] : 50, anchorAttrs, '');
+    }).join('');
+
+    let finItemsHtml = '';
+    for (const f of (state.financials[project] || [])) {
+      const fAbbrev = _pdashFinAbbrev(f);
+      const leftPct = FIN_POS[fAbbrev];
+      if (leftPct == null) continue;
+      const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
+      const fPaid = !!f.paid;
+      const fOverdue = !fPaid && fd && fd < todayISO;
+      let fCls = 'is-upcoming';
+      if (fPaid)         fCls = 'is-paid';
+      else if (!fd)      fCls = 'is-no-date';
+      else if (fOverdue) fCls = 'is-overdue';
+      const monthStr = fd ? _pdashFinMonth(fd) : '—';
+      const fDateFull = fd ? fmtDate(fd) : 'no date';
+      const fPctTip = f.percent ? ` · ${f.percent}%` : '';
+      const fStatusTip = fPaid ? ' · paid'
+        : (!fd ? ' · no date set'
+        : (fOverdue ? ' · past due' : ''));
+      const finDateHtml = `<div class="pdash-mile-date">${escapeHtml(monthStr)}</div>`;
+      finItemsHtml += mileItem('fin', fCls, '$', fAbbrev, finDateHtml, '', leftPct, '',
+        (f.name || fAbbrev) + fPctTip + ' · ' + fDateFull + fStatusTip);
+    }
+    return `
+      <div class="pdash-milestone-row">
+        <div class="pdash-milestone-project" title="${escapeHtml(project)}">${escapeHtml(project)}</div>
+        <div class="pdash-milestone-track">${segments}${finItemsHtml}</div>
+      </div>`;
+  }
+
+  // ── Financial milestones table ── Per-project payment events. Sorted
+  //    by due date. Default month filter = the CURRENT month so the PM
+  //    lands on "what am I invoicing this month?" rather than
+  //    "everything ever". Clear button stores the sentinel "any".
+  const _currentMonth = (() => {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  })();
+  const _storedFrom = localStorage.getItem('sdcDashboardFinMonthFrom');
+  const _storedTo   = localStorage.getItem('sdcDashboardFinMonthTo');
+  const finMonthFrom = _storedFrom == null ? _currentMonth : (_storedFrom === 'any' ? '' : _storedFrom);
+  const finMonthTo   = _storedTo   == null ? _currentMonth : (_storedTo   === 'any' ? '' : _storedTo);
+  const financialsTableHtml = (() => {
+    if (selected.length === 0) {
+      return '<div class="pdash-empty-block">Pick at least one project to see financial milestones.</div>';
+    }
+    const monthOf = (iso) => iso ? iso.slice(0, 7) : '';
+    const rows = [...financials]
+      .filter(f => f.due_date)
+      .filter(f => {
+        if (!finMonthFrom && !finMonthTo) return true;
+        const m = monthOf(f.due_date);
+        if (finMonthFrom && m < finMonthFrom) return false;
+        if (finMonthTo   && m > finMonthTo)   return false;
+        return true;
+      })
+      .sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+    if (rows.length === 0) {
+      const filterHint = (finMonthFrom || finMonthTo) ? ' in the selected month range' : '';
+      return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
+        <div class="pdash-empty-block">No financial milestones${filterHint} for the selected projects.</div>`;
+    }
+    const showProjectCol = selected.length > 1;
+    const colgroup = showProjectCol
+      ? `<colgroup><col style="width:240px"/><col style="width:60px"/><col style="width:auto"/><col style="width:130px"/><col style="width:130px"/></colgroup>`
+      : `<colgroup><col style="width:60px"/><col style="width:auto"/><col style="width:130px"/><col style="width:130px"/></colgroup>`;
+    const head = showProjectCol
+      ? '<thead><tr><th>Project</th><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>'
+      : '<thead><tr><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>';
+    const body = rows.map(r => {
+      const dueMs = r.due_date ? new Date(r.due_date + 'T00:00:00').getTime() : null;
+      const isPast = dueMs != null && dueMs < todayMs;
+      let chip;
+      if (r.paid) chip = '<span class="pdash-chip chip-success">Paid</span>';
+      else if (isPast) chip = '<span class="pdash-chip chip-danger">Invoice now</span>';
+      else if (dueMs != null && dueMs - todayMs <= 14 * 86400000) chip = '<span class="pdash-chip chip-warn">Due soon</span>';
+      else chip = '<span class="pdash-chip chip-info">Upcoming</span>';
+      const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '—';
+      const projCell = showProjectCol ? `<td title="${escapeHtml(r.project)}">${escapeHtml(r.project)}</td>` : '';
+      return `<tr class="pdash-fin-row" data-project="${escapeHtml(r.project)}">
+        ${projCell}
+        <td class="num">${pctVal}</td>
+        <td title="${escapeHtml(r.name || '')}">${escapeHtml(r.name || '')}</td>
+        <td>${escapeHtml(r.due_date ? fmtDate(r.due_date) : '—')}</td>
+        <td>${chip}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
+            <table class="pdash-fin-table">${colgroup}${head}<tbody>${body}</tbody></table>`;
+  })();
+
+  const milestoneStripsHtml = selected.length === 0
+    ? '<div class="pdash-empty-block">Pick at least one project to see milestone dates.</div>'
+    : selected.map(p => milestoneStripForProject(p)).join('');
+
+  // ── Compose ──
+  root.innerHTML = `
+    <div class="pdash-filters">
+      <details class="pdash-picker">
+        <summary>📂 Projects: <strong>${
+          selected.length === 0 ? 'none'
+            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} selected`)
+        }</strong> <span class="pdash-picker-caret">▾</span></summary>
+        <div class="pdash-picker-list">
+          ${allProjects.map(p => `
+            <label class="pdash-picker-item">
+              <input type="checkbox" data-project="${escapeHtml(p)}" ${selected.includes(p) ? 'checked' : ''}/>
+              <span>${escapeHtml(p)}</span>
+            </label>`).join('')}
+        </div>
+        <div class="pdash-picker-actions">
+          <button type="button" data-action="select-all" class="btn-ghost btn-tight">Select all</button>
+          <button type="button" data-action="select-none" class="btn-ghost btn-tight">Clear</button>
+        </div>
+      </details>
+    </div>
+
+    <section class="pdash-section">
+      <header class="pdash-section-head">
+        <h2>🚦 Key Milestones</h2>
+        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship, per project</span>
+      </header>
+      <div class="pdash-milestones">${milestoneStripsHtml}</div>
+    </section>
+
+    <section class="pdash-section">
+      <header class="pdash-section-head">
+        <h2>💲 Financial Milestones</h2>
+        <span class="pdash-section-sub">Invoiceable payment events across selected projects.</span>
+      </header>
+      ${financialsTableHtml}
+    </section>
+  `;
+
+  // ── Wire handlers ──
+  root.querySelectorAll('.pdash-picker input[type="checkbox"]').forEach(box => {
+    box.addEventListener('change', () => {
+      const sel = [...root.querySelectorAll('.pdash-picker input[type="checkbox"]')]
+        .filter(b => b.checked).map(b => b.dataset.project);
+      try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(sel)); } catch (_) {}
+      renderDeptProjectRollup();
+      try { renderDeptCapacityCards(); } catch (_) {}
+    });
+  });
+  root.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
+    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(allProjects)); } catch (_) {}
+    renderDeptProjectRollup();
+    try { renderDeptCapacityCards(); } catch (_) {}
+  });
+  root.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
+    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
+    renderDeptProjectRollup();
+    try { renderDeptCapacityCards(); } catch (_) {}
+  });
+  root.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      try { localStorage.setItem('sdcDashboardFinMonthFrom', inp.value || ''); } catch (_) {}
+      renderDeptProjectRollup();
+    });
+  });
+  root.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
+    inp.addEventListener('change', () => {
+      try { localStorage.setItem('sdcDashboardFinMonthTo', inp.value || ''); } catch (_) {}
+      renderDeptProjectRollup();
+    });
+  });
+  root.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      try {
+        localStorage.setItem('sdcDashboardFinMonthFrom', 'any');
+        localStorage.setItem('sdcDashboardFinMonthTo', 'any');
+      } catch (_) {}
+      renderDeptProjectRollup();
+    });
+  });
+  // Click a milestone tile or a financial row → jump to that project on
+  // the schedule view.
+  root.querySelectorAll('.pdash-mile-item, .pdash-fin-row').forEach(el => {
+    el.addEventListener('click', () => {
+      const p = el.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      saveProjectTabs();
+      setView('schedule');
+    });
+  });
+}
+
+// Capacity cards — scope: state.resources.discipline + selected
+// projects (same localStorage key as the rollup). Three card bodies:
+//   #dept-capacity-under-body   → people with light or no load
+//   #dept-capacity-over-body    → people whose load peaks above 100%
+//   #dept-capacity-month-body   → tasks due in the current calendar month
+function renderDeptCapacityCards() {
+  const disc = state.resources?.discipline;
+  if (!disc) return;
+  const { selected } = _deptSelectedProjects();
+
+  // Members in this discipline (skip placeholders — they're role stand-ins,
+  // not real capacity to flag).
+  const deptMembers = (state.team || []).filter(m =>
+    m.discipline === disc && m.active !== 0 && !isPlaceholder(m.name)
+  );
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayMs = today.getTime();
+  const windowMs  = todayMs;
+  const windowEnd = todayMs + 56 * 86400000; // 8 weeks ahead
+
+  const underPeople = [];
+  const overPeople  = [];
+  for (const m of deptMembers) {
+    const memTasks = state.tasks.filter(t =>
+      t.assignee === m.name &&
+      (Number(t.progress) || 0) < 100 &&
+      t.start_date && t.end_date &&
+      !isTemplateProject(t.project) &&
+      projectWorkspace(t.project) !== 'Sales' &&
+      selected.includes(t.project)
+    ).filter(t => {
+      const eMs = new Date(t.end_date + 'T00:00:00').getTime();
+      return eMs >= windowMs && eMs <= windowEnd + 30 * 86400000;
+    });
+    if (memTasks.length === 0) {
+      underPeople.push({ name: m.name, reason: 'no open tasks' });
+      continue;
+    }
+    const overlap = computeOverloadRegions(memTasks, today);
+    if (overlap.length > 0) {
+      const peak = Math.max(...overlap.map(r => r.peak));
+      overPeople.push({ name: m.name, peak });
+      continue;
+    }
+    // "Under" heuristic: avg daily allocation across the 8-week window
+    // below 60% (sum of allocation × days / total days).
+    let totalAlloc = 0;
+    const totalDays = 56;
+    for (const t of memTasks) {
+      const sMs = Math.max(windowMs, new Date(t.start_date + 'T00:00:00').getTime());
+      const eMs = Math.min(windowEnd, new Date(t.end_date + 'T00:00:00').getTime());
+      if (eMs < sMs) continue;
+      const days = Math.round((eMs - sMs) / 86400000) + 1;
+      const alloc = t.allocation == null ? 90 : Number(t.allocation);
+      totalAlloc += alloc * days;
+    }
+    const avgAlloc = totalDays > 0 ? totalAlloc / totalDays : 0;
+    if (avgAlloc < 60) {
+      underPeople.push({ name: m.name, reason: `${Math.round(avgAlloc)}% avg load` });
+    }
+  }
+
+  // --- Under card ---
+  const underBody = document.getElementById('dept-capacity-under-body');
+  if (underBody) {
+    if (underPeople.length === 0) {
+      underBody.innerHTML = '<p class="dashboard-empty">Everyone in this discipline is fully booked.</p>';
+    } else {
+      underBody.innerHTML = underPeople.map(p =>
+        `<div class="dashboard-row dashboard-row-person">
+          <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
+          <span class="dashboard-row-assignee">${escapeHtml(p.reason)}</span>
+        </div>`).join('');
+    }
+  }
+
+  // --- Over card ---
+  const overBody = document.getElementById('dept-capacity-over-body');
+  if (overBody) {
+    if (overPeople.length === 0) {
+      overBody.innerHTML = '<p class="dashboard-empty">No one in this discipline is over-allocated.</p>';
+    } else {
+      overBody.innerHTML = overPeople.map(p =>
+        `<div class="dashboard-row dashboard-row-person is-over">
+          <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
+          <span class="dashboard-chip chip-danger">peak ${p.peak}%</span>
+        </div>`).join('');
+    }
+  }
+
+  // --- Due this month ---
+  const monthBody = document.getElementById('dept-capacity-month-body');
+  const monthTitleEl = document.getElementById('dept-capacity-month-title');
+  if (monthBody) {
+    const cmStart = new Date(); cmStart.setHours(0, 0, 0, 0);
+    cmStart.setDate(1);
+    const cmEndDate = new Date(cmStart.getFullYear(), cmStart.getMonth() + 1, 0);
+    cmEndDate.setHours(23, 59, 59, 999);
+    const cmStartMs = cmStart.getTime();
+    const cmEndMs   = cmEndDate.getTime();
+    const currentMonthLabel = cmStart.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    if (monthTitleEl) monthTitleEl.textContent = `Due in ${currentMonthLabel}`;
+
+    const memberSet = new Set(deptMembers.map(m => m.name));
+    const due = state.tasks.filter(t =>
+      memberSet.has(t.assignee) &&
+      (Number(t.progress) || 0) < 100 &&
+      t.end_date &&
+      !isTemplateProject(t.project) &&
+      projectWorkspace(t.project) !== 'Sales' &&
+      selected.includes(t.project)
+    ).filter(t => {
+      const endMs = new Date(t.end_date + 'T00:00:00').getTime();
+      return endMs >= cmStartMs && endMs <= cmEndMs;
+    }).sort((a, b) => (a.end_date || '').localeCompare(b.end_date || ''));
+
+    if (due.length === 0) {
+      monthBody.innerHTML = `<p class="dashboard-empty">Nothing due in ${escapeHtml(currentMonthLabel)} for this discipline.</p>`;
+    } else {
+      monthBody.innerHTML = due.slice(0, 20).map(t => {
+        const endMs = new Date(t.end_date + 'T00:00:00').getTime();
+        const days = Math.max(0, Math.round((endMs - todayMs) / 86400000));
+        const dueCls = days <= 3 ? 'chip-danger' : (days <= 7 ? 'chip-warn' : 'chip-info');
+        return `<button type="button" class="dashboard-row" data-task-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
+          <span class="dashboard-row-project">${escapeHtml(t.project || '—')}</span>
+          <span class="dashboard-row-name">${escapeHtml(t.name || '')}</span>
+          <span class="dashboard-row-assignee">${escapeHtml(t.assignee || '')}</span>
+          <span class="dashboard-chip ${dueCls}">${_pdashDaysToWeeks(days)}W</span>
+        </button>`;
+      }).join('');
+      monthBody.querySelectorAll('.dashboard-row').forEach(row => {
+        row.addEventListener('click', () => {
+          const id = Number(row.dataset.taskId);
+          const t = state.tasks.find(x => x.id === id);
+          if (t) jumpToTask(t);
+        });
+      });
+    }
+  }
 }
 
 function renderDashboard() {
@@ -13896,6 +14361,11 @@ function renderPersonDashboard() {
 }
 
 function renderTeam() {
+  // Project rollup sits ABOVE the team grid — picker, key milestone
+  // strips, and the financial milestones table. Rendered first so it
+  // appears at the top even when the rest of the page is still loading.
+  try { renderDeptProjectRollup(); } catch (_) {}
+
   const grid = document.getElementById('team-grid');
   if (!grid) return;
 
@@ -14371,6 +14841,12 @@ function renderTeamDashboard() {
   }), keyDef
     ? 'No projects have this anchor yet.'
     : `No key-date summary configured for ${discDef.label}.`);
+
+  // Capacity cards (Under-allocated / Over-allocated / Due this month)
+  // sit BELOW the existing three cards. Scoped to the active discipline +
+  // the projects picked at the top of the page. v7.6 — formerly part of
+  // the standalone Dashboard view.
+  try { renderDeptCapacityCards(); } catch (_) {}
 }
 
 // Look up a friendly anchor name from its key.
@@ -16182,6 +16658,10 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 function setView(view) {
+  // v7.6: the Dashboard view was merged into Departments. Anyone who
+  // had state.view === 'dashboard' saved in localStorage lands on
+  // Departments instead so they don't get a blank page.
+  if (view === 'dashboard') view = 'team';
   state.view = view;
   document.body.dataset.view = view;
   // Update the legacy .tab buttons (if any still exist) and the sidebar
@@ -16198,7 +16678,6 @@ function setView(view) {
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
   else if (view === 'actions')   renderActionsPage();
-  else if (view === 'dashboard') renderDashboard();
   else render();
 }
 

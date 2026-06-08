@@ -7272,6 +7272,42 @@ td.sales-suppressed {
 @media (max-width: 1100px) {
   .team-dashboard-cards { grid-template-columns: 1fr; }
 }
+/* v7.6 — Departments page absorbed the Dashboard. Two new containers:
+   - .dept-project-rollup sits ABOVE the SDC Team grid and houses the
+     project picker + key milestone strips + financial milestones table.
+   - .dept-capacity-section sits BELOW the team-dashboard cards and
+     houses the Under-allocated / Over-allocated / Due-this-month cards
+     scoped to the active discipline. Mirrors .team-dashboard layout. */
+.dept-project-rollup {
+  padding: 22px 22px 4px;
+}
+.dept-project-rollup .pdash-section { margin-bottom: 18px; }
+.dept-project-rollup .pdash-section:last-child { margin-bottom: 8px; }
+.dept-capacity-section {
+  margin: 0 22px 22px;
+}
+.dept-capacity-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1100px) {
+  .dept-capacity-cards { grid-template-columns: 1fr; }
+}
+/* Capacity card list rows — match the dashboard-card-body item layout
+   used by the Behind/Coming-due/Key-dates cards above them. */
+.dashboard-row-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  font-size: 13px;
+}
+.dashboard-row-person:last-child { border-bottom: none; }
+.dashboard-row-person.is-over { background: rgba(220, 38, 38, 0.04); }
+.dashboard-row-person .dashboard-row-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-row-person .dashboard-row-assignee { color: var(--text-muted, #64748b); font-size: 12px; }
 .dashboard-card {
   background: var(--surface);
   border: 1px solid var(--border);
