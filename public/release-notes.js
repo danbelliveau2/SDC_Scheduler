@@ -4,6 +4,30 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '8.0',
+    date: '2026-06-09',
+    notes: [
+      'Departments tab — standalone Dashboard absorbed into one unified, SDC-styled overview below the resource Gantt, plus a Quote vs Schedule persistence fix.',
+      '',
+      'DEPARTMENT OVERVIEW (below the resource Gantt):',
+      '   ▸ Four cards on a consistent visual language — Needs attention, Upcoming, Current workload, and a discipline-specific completion card.',
+      '   ▸ Needs attention — health donut + Behind / Unstaffed / Over count tiles, then Behind-schedule, Unstaffed-but-started, and Over-allocated lists.',
+      '   ▸ Upcoming — Starting (assignee · duration · allocation %) and Ending (assignee · % complete · due date) split lists, each driven by the card\'s own time-window selector.',
+      '   ▸ Current workload — a card per person (5 across), the lead/manager pinned first with a bold border, each showing a load-% donut.',
+      '   ▸ Completion card is discipline-aware: Mechanical releases (Mech 1/2/3) · Software completion (Controls) · Power-Up (Builders + Electricians) · Ship Machine (PM). Grid layout — Project / Release / Scheduled / Done / variance — with a hide-completed filter and scheduled→actual + variance on done items.',
+      '   ▸ One shared visual language everywhere: behind/late = red, ahead/early = green, on-time = blue; identical "Nd late / Nd early / on time" pill; lime ✓ for complete in its own fixed column so names stay aligned.',
+      '',
+      'RESOURCE GANTT:',
+      '   ▸ Each task bar shows its own duration + allocation %; the rolled-up placeholder load strip removed.',
+      '   ▸ Status filter rebuilt as the main Gantt\'s segmented icon toggle (Not started / Behind / On track / Done) — Done hidden by default.',
+      '   ▸ Project filter cleaned up (no redundant label); the overview below now follows whatever project the Gantt is showing.',
+      '   ▸ Opens at a consistent default each visit — zoom 5/10, row 4/10. Two-row legend (Task status + Allocation) with correct colors.',
+      '',
+      'QUOTE VS SCHEDULE:',
+      '   ▸ Fixed Sold delivery (weeks) getting wiped on every reschedule — the cascade now MERGES computed hours into the saved quote instead of overwriting it, so sold delivery, penalty clause, and people breakdown survive. Duration + FAT Quoted/Scheduled now stick.',
+    ],
+  },
+  {
     version: '7.5',
     date: '2026-06-04',
     notes: [

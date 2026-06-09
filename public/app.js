@@ -190,10 +190,10 @@ const state = {
   resources: {
     discipline: 'mech',
     project: '',
-    zoomPercent: 60,
+    zoomPercent: 54, // friendlyToZoom(5) — default Gantt zoom 5/10
     focusMemberId: null,
-    barHeight: 16,
-    statusFilter: { zero: true, behind: true, ontrack: true, done: true },
+    barHeight: 16,   // friendlyResRowToPx(4) — default row height 4/10
+    statusFilter: { zero: true, behind: true, ontrack: true, done: false },
   },
   overAllocatedTaskIds: new Set(),
   // Open project schedules — like browser tabs. The empty string acts as the "All
@@ -6690,18 +6690,18 @@ function renderDeptProjectRollup() {
         .filter(b => b.checked).map(b => b.dataset.project);
       try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(sel)); } catch (_) {}
       renderDeptProjectRollup();
-      try { renderDeptCapacityCards(); } catch (_) {}
+      try { renderTeamDashboard(); } catch (_) {}
     });
   });
   root.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
     try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(allProjects)); } catch (_) {}
     renderDeptProjectRollup();
-    try { renderDeptCapacityCards(); } catch (_) {}
+    try { renderTeamDashboard(); } catch (_) {}
   });
   root.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
     try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
     renderDeptProjectRollup();
-    try { renderDeptCapacityCards(); } catch (_) {}
+    try { renderTeamDashboard(); } catch (_) {}
   });
   root.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
     inp.addEventListener('change', () => {
@@ -6737,148 +6737,6 @@ function renderDeptProjectRollup() {
       setView('schedule');
     });
   });
-}
-
-// Capacity cards — scope: state.resources.discipline + selected
-// projects (same localStorage key as the rollup). Three card bodies:
-//   #dept-capacity-under-body   → people with light or no load
-//   #dept-capacity-over-body    → people whose load peaks above 100%
-//   #dept-capacity-month-body   → tasks due in the current calendar month
-function renderDeptCapacityCards() {
-  const disc = state.resources?.discipline;
-  if (!disc) return;
-  const { selected } = _deptSelectedProjects();
-
-  // Members in this discipline (skip placeholders — they're role stand-ins,
-  // not real capacity to flag).
-  const deptMembers = (state.team || []).filter(m =>
-    m.discipline === disc && m.active !== 0 && !isPlaceholder(m.name)
-  );
-
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const todayMs = today.getTime();
-  const windowMs  = todayMs;
-  const windowEnd = todayMs + 56 * 86400000; // 8 weeks ahead
-
-  const underPeople = [];
-  const overPeople  = [];
-  for (const m of deptMembers) {
-    const memTasks = state.tasks.filter(t =>
-      t.assignee === m.name &&
-      (Number(t.progress) || 0) < 100 &&
-      t.start_date && t.end_date &&
-      !isTemplateProject(t.project) &&
-      projectWorkspace(t.project) !== 'Sales' &&
-      selected.includes(t.project)
-    ).filter(t => {
-      const eMs = new Date(t.end_date + 'T00:00:00').getTime();
-      return eMs >= windowMs && eMs <= windowEnd + 30 * 86400000;
-    });
-    if (memTasks.length === 0) {
-      underPeople.push({ name: m.name, reason: 'no open tasks' });
-      continue;
-    }
-    const overlap = computeOverloadRegions(memTasks, today);
-    if (overlap.length > 0) {
-      const peak = Math.max(...overlap.map(r => r.peak));
-      overPeople.push({ name: m.name, peak });
-      continue;
-    }
-    // "Under" heuristic: avg daily allocation across the 8-week window
-    // below 60% (sum of allocation × days / total days).
-    let totalAlloc = 0;
-    const totalDays = 56;
-    for (const t of memTasks) {
-      const sMs = Math.max(windowMs, new Date(t.start_date + 'T00:00:00').getTime());
-      const eMs = Math.min(windowEnd, new Date(t.end_date + 'T00:00:00').getTime());
-      if (eMs < sMs) continue;
-      const days = Math.round((eMs - sMs) / 86400000) + 1;
-      const alloc = t.allocation == null ? 90 : Number(t.allocation);
-      totalAlloc += alloc * days;
-    }
-    const avgAlloc = totalDays > 0 ? totalAlloc / totalDays : 0;
-    if (avgAlloc < 60) {
-      underPeople.push({ name: m.name, reason: `${Math.round(avgAlloc)}% avg load` });
-    }
-  }
-
-  // --- Under card ---
-  const underBody = document.getElementById('dept-capacity-under-body');
-  if (underBody) {
-    if (underPeople.length === 0) {
-      underBody.innerHTML = '<p class="dashboard-empty">Everyone in this discipline is fully booked.</p>';
-    } else {
-      underBody.innerHTML = underPeople.map(p =>
-        `<div class="dashboard-row dashboard-row-person">
-          <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
-          <span class="dashboard-row-assignee">${escapeHtml(p.reason)}</span>
-        </div>`).join('');
-    }
-  }
-
-  // --- Over card ---
-  const overBody = document.getElementById('dept-capacity-over-body');
-  if (overBody) {
-    if (overPeople.length === 0) {
-      overBody.innerHTML = '<p class="dashboard-empty">No one in this discipline is over-allocated.</p>';
-    } else {
-      overBody.innerHTML = overPeople.map(p =>
-        `<div class="dashboard-row dashboard-row-person is-over">
-          <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
-          <span class="dashboard-chip chip-danger">peak ${p.peak}%</span>
-        </div>`).join('');
-    }
-  }
-
-  // --- Due this month ---
-  const monthBody = document.getElementById('dept-capacity-month-body');
-  const monthTitleEl = document.getElementById('dept-capacity-month-title');
-  if (monthBody) {
-    const cmStart = new Date(); cmStart.setHours(0, 0, 0, 0);
-    cmStart.setDate(1);
-    const cmEndDate = new Date(cmStart.getFullYear(), cmStart.getMonth() + 1, 0);
-    cmEndDate.setHours(23, 59, 59, 999);
-    const cmStartMs = cmStart.getTime();
-    const cmEndMs   = cmEndDate.getTime();
-    const currentMonthLabel = cmStart.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-    if (monthTitleEl) monthTitleEl.textContent = `Due in ${currentMonthLabel}`;
-
-    const memberSet = new Set(deptMembers.map(m => m.name));
-    const due = state.tasks.filter(t =>
-      memberSet.has(t.assignee) &&
-      (Number(t.progress) || 0) < 100 &&
-      t.end_date &&
-      !isTemplateProject(t.project) &&
-      projectWorkspace(t.project) !== 'Sales' &&
-      selected.includes(t.project)
-    ).filter(t => {
-      const endMs = new Date(t.end_date + 'T00:00:00').getTime();
-      return endMs >= cmStartMs && endMs <= cmEndMs;
-    }).sort((a, b) => (a.end_date || '').localeCompare(b.end_date || ''));
-
-    if (due.length === 0) {
-      monthBody.innerHTML = `<p class="dashboard-empty">Nothing due in ${escapeHtml(currentMonthLabel)} for this discipline.</p>`;
-    } else {
-      monthBody.innerHTML = due.slice(0, 20).map(t => {
-        const endMs = new Date(t.end_date + 'T00:00:00').getTime();
-        const days = Math.max(0, Math.round((endMs - todayMs) / 86400000));
-        const dueCls = days <= 3 ? 'chip-danger' : (days <= 7 ? 'chip-warn' : 'chip-info');
-        return `<button type="button" class="dashboard-row" data-task-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
-          <span class="dashboard-row-project">${escapeHtml(t.project || '—')}</span>
-          <span class="dashboard-row-name">${escapeHtml(t.name || '')}</span>
-          <span class="dashboard-row-assignee">${escapeHtml(t.assignee || '')}</span>
-          <span class="dashboard-chip ${dueCls}">${_pdashDaysToWeeks(days)}W</span>
-        </button>`;
-      }).join('');
-      monthBody.querySelectorAll('.dashboard-row').forEach(row => {
-        row.addEventListener('click', () => {
-          const id = Number(row.dataset.taskId);
-          const t = state.tasks.find(x => x.id === id);
-          if (t) jumpToTask(t);
-        });
-      });
-    }
-  }
 }
 
 function renderDashboard() {
@@ -14644,7 +14502,7 @@ function resourcesTasksFor(memberName) {
   //   - Tasks whose schedule-status bucket has been toggled OFF in the
   //     Departments-tab status chips (see state.resources.statusFilter).
   const projFilter = state.resources.project;
-  const sf = (state.resources && state.resources.statusFilter) || { zero: true, behind: true, ontrack: true, done: true };
+  const sf = (state.resources && state.resources.statusFilter) || { zero: true, behind: true, ontrack: true, done: false };
   return state.tasks.filter(t =>
     t.assignee === memberName &&
     t.start_date && t.end_date &&
@@ -14748,105 +14606,494 @@ function assignTaskLanes(tasks) {
 // each discipline-manager a focused view of their team's workload across every
 // open project: what's running late, what's coming up, and (per discipline)
 // the key anchor dates that matter most to them.
+// v7.6 — Department overview below the resource Gantt. One unified, SDC-colored
+// section that replaced the old Behind/Coming-due/Key-dates + Under/Over/
+// Due-this-month card rows. A shared "Window" selector (weeks) drives the cards
+// with a natural horizon (Upcoming, Available capacity, Over-allocated). Behind
+// schedule and Release dates have no window and ignore it. Scope = the projects
+// picked at the top of the page ∩ this discipline's members.
 function renderTeamDashboard() {
   const disc = state.resources?.discipline;
   if (!disc) return;
   const discDef = DISCIPLINE_BY_KEY[disc] || { label: disc };
-  // v4.64: if a single member is focused, the dashboard cards narrow to just
-  // that person's name. Otherwise we use every name in the discipline.
+
+  // Focused member (set from the team grid) narrows every card to one person.
   const focusId = state.resources.focusMemberId;
   const focusedMember = focusId != null ? state.team.find(m => m.id === focusId) : null;
   const memberNames = focusedMember
     ? new Set([focusedMember.name])
     : new Set(state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name));
-  // Departments dashboard skips:
-  //   - Template projects (SDC_StandardProject_Template, SDC_Sales_Template, …)
-  //     — they're scaffolding, not real work to surface as behind/coming-due.
-  //   - Sales-workspace projects — sales schedules are pre-quote work that
-  //     hasn't been staffed yet, so they shouldn't show up in engineering
-  //     resource management.
-  const isProjectExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
 
-  // --- Behind schedule ----------------------------------------------------
-  // Every assigned task whose business-day drift is negative AND not a true
-  // milestone (anchor / spine). v4.64: action items (is_milestone = 1 +
-  // is_action = 1) are INCLUDED so the dashboard shows overdue actions too.
+  // Project scope follows the Gantt above: if a specific project is picked in
+  // the Gantt's project filter, the whole overview narrows to that one. Else it
+  // falls back to the rollup picker's selection. Templates + Sales are dropped.
+  const { selected } = _deptSelectedProjects();
+  const ganttProj = (state.resources && state.resources.project) || '';
+  const isExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
+  const inScope = (p) => !isExcluded(p) && (ganttProj ? p === ganttProj : selected.includes(p));
+
+  // Time window (weeks), shared across the windowed cards. Each windowed card
+  // carries its own <select class="dept-window-select">; all read/write one value
+  // so they stay in sync. Mechanical releases has no window.
+  let weeks = parseInt(localStorage.getItem('sdcDeptTimeframeWeeks') || '8', 10);
+  if (![2, 4, 8, 12].includes(weeks)) weeks = 8;
+  const WINDOW_OPTS = [2, 4, 8, 12].map(w => `<option value="${w}">Next ${w} weeks</option>`).join('');
+  document.querySelectorAll('.dept-window-select').forEach(sel => {
+    if (sel.dataset.filled !== '1') { sel.innerHTML = WINDOW_OPTS; sel.dataset.filled = '1'; }
+    sel.value = String(weeks);
+    if (!sel.dataset.bound) {
+      sel.dataset.bound = '1';
+      sel.addEventListener('change', () => {
+        try { localStorage.setItem('sdcDeptTimeframeWeeks', sel.value); } catch (_) {}
+        renderTeamDashboard();
+      });
+    }
+  });
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayMs   = today.getTime();
+  const todayISO  = today.toISOString().slice(0, 10);
+  const windowEnd = todayMs + weeks * 7 * 86400000;
+
+  const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  setText('dept-overview-sub', `${discDef.label} · ${selected.length} project${selected.length === 1 ? '' : 's'} selected`);
+  setText('dept-over-title', 'Over-allocated');
+  setText('dept-starting-title', `Starting in next ${weeks}w`);
+  setText('dept-ending-title', `Ending in next ${weeks}w`);
+  setText('dept-available-title', 'Current workload');
+
+  // ── Header chart · schedule-health donut over ACTIVE in-scope work. Done
+  //    tasks are excluded everywhere in the overview — they just pile up over
+  //    time and aren't actionable (per Dan). ──
+  const work = state.tasks.filter(t =>
+    inScope(t.project) && t.assignee && memberNames.has(t.assignee) &&
+    !t.is_milestone && !inferredAnchorKey(t) && (Number(t.progress) || 0) < 100);
+  const sc = deptStatusCounts(work, todayMs);
+  const statusLegend =
+    deptLegendDot(DEPT_STATUS_COLORS.behind, `Behind ${sc.behind}`) +
+    deptLegendDot(DEPT_STATUS_COLORS.ontime, `On-time ${sc.ontime}`) +
+    deptLegendDot(DEPT_STATUS_COLORS.ahead,  `Ahead ${sc.ahead}`);
+  const donutHtml = deptHealthDonutSvg(work, todayMs);
+
+  // ── Needs attention · three buckets: behind, unstaffed-but-started, over. ──
+  // 1) Behind schedule — REAL-assignee tasks with negative business-day drift
+  //    (placeholder tasks go to "Unstaffed" instead). Action items included.
   const behind = state.tasks
-    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && !isProjectExcluded(t.project))
+    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && !isPlaceholder(t.assignee) && inScope(t.project))
     .map(t => ({ task: t, drift: taskScheduleDelta(t) }))
     .filter(x => x.drift < 0)
     .sort((a, b) => a.drift - b.drift);
-  renderDashboardList('dashboard-behind-body', behind, ({ task, drift }) => ({
-    project: task.project,
-    name: task.name,
-    assignee: task.assignee,
-    rightChip: { text: `${drift}d`, tone: 'danger' },
-    onClick: () => jumpToTask(task),
-  }), 'No tasks behind schedule for this team.');
-
-  // --- Coming due ---------------------------------------------------------
-  // Tasks starting OR finishing within the next 14 business days (~3 weeks
-  // calendar). Helps a manager see "what's hitting the wire" for their crew.
-  const todayMs = new Date().setHours(0, 0, 0, 0);
-  const horizonMs = addBusinessDaysClient(new Date().toISOString().slice(0, 10), 14);
-  const horizonStop = horizonMs ? new Date(horizonMs + 'T23:59:59').getTime() : todayMs + 21 * 86400000;
-  const coming = state.tasks
-    .filter(t => t.assignee && memberNames.has(t.assignee) && t.start_date && t.end_date && !isProjectExcluded(t.project))
-    .map(t => {
-      const startMs = new Date(t.start_date + 'T00:00:00').getTime();
-      const endMs   = new Date(t.end_date   + 'T00:00:00').getTime();
-      const startingSoon = startMs >= todayMs && startMs <= horizonStop;
-      const finishingSoon = endMs >= todayMs && endMs <= horizonStop && !startingSoon;
-      if (!startingSoon && !finishingSoon) return null;
-      return { task: t, kind: startingSoon ? 'starts' : 'finishes', when: startingSoon ? t.start_date : t.end_date };
-    })
-    .filter(Boolean)
-    .sort((a, b) => (a.when || '').localeCompare(b.when || ''));
-  renderDashboardList('dashboard-coming-body', coming, ({ task, kind, when }) => ({
-    project: task.project,
-    name: task.name,
-    assignee: task.assignee,
-    rightChip: { text: `${kind} ${fmtDate(when)}`, tone: 'info' },
-    onClick: () => jumpToTask(task),
-  }), 'Nothing starting or finishing in the next 2 weeks.');
-
-  // --- Key dates (discipline-specific) ------------------------------------
-  // For each discipline, the anchor type that matters most to its manager.
-  // Listed once per project so they can scan across the portfolio.
-  const KEY_ANCHOR_BY_DISCIPLINE = {
-    mech:     { anchor: 'mech_release_1',   title: 'Mech 1 Release across all projects' },
-    controls: { anchor: 'fat',              title: 'FAT across all projects' },
-    pm:       { anchor: 'ship_machine',     title: 'Ship Machine across all projects' },
-    build:    { anchor: 'ship_machine',     title: 'Ship Machine across all projects' },
-    wire:     { anchor: 'machine_power_up', title: 'Machine Power-Up across all projects' },
-  };
-  const keyDef = KEY_ANCHOR_BY_DISCIPLINE[disc];
-  const keyTitleEl = document.getElementById('dashboard-keydates-title');
-  const keySubEl   = document.getElementById('dashboard-keydates-sub');
-  if (keyTitleEl) keyTitleEl.textContent = keyDef ? keyDef.title : 'Key dates';
-  if (keySubEl)   keySubEl.textContent   = keyDef
-    ? `Anchor: ${anchorLabelFor(keyDef.anchor)}` : 'No discipline-specific anchor configured.';
-  let keyItems = [];
-  if (keyDef) {
-    keyItems = state.tasks
-      .filter(t => inferredAnchorKey(t) === keyDef.anchor && !isProjectExcluded(t.project))
-      .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
+  // 2) Unstaffed & started — should be underway (start date reached, not done)
+  //    but it's parked on a placeholder, so no real person owns it = a risk.
+  const unstaffed = state.tasks
+    .filter(t => !t.is_milestone && (Number(t.progress) || 0) < 100 && inScope(t.project) &&
+      t.assignee && isPlaceholder(t.assignee) && memberNames.has(t.assignee) &&
+      t.start_date && t.start_date <= todayISO)
+    .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
+  // 3) Capacity scan over the window → over- + under-allocated REAL people.
+  const realMembers = (state.team || []).filter(m =>
+    m.discipline === disc && m.active !== 0 && !isPlaceholder(m.name) &&
+    (!focusedMember || m.id === focusedMember.id));
+  const windowDays = Math.max(1, Math.round((windowEnd - todayMs) / 86400000));
+  const overPeople = [], underPeople = [], memberLoads = [], loadByName = {};
+  for (const m of realMembers) {
+    const memTasks = state.tasks.filter(t =>
+      t.assignee === m.name && (Number(t.progress) || 0) < 100 &&
+      t.start_date && t.end_date && inScope(t.project)
+    ).filter(t => {
+      const s = new Date(t.start_date + 'T00:00:00').getTime();
+      const e = new Date(t.end_date + 'T00:00:00').getTime();
+      return e >= todayMs && s <= windowEnd; // overlaps the window
+    });
+    // Average daily allocation across the window (0 when no open tasks) — feeds
+    // both the under-allocated heuristic and the per-person availability donuts.
+    let totalAlloc = 0;
+    for (const t of memTasks) {
+      const s = Math.max(todayMs, new Date(t.start_date + 'T00:00:00').getTime());
+      const e = Math.min(windowEnd, new Date(t.end_date + 'T00:00:00').getTime());
+      if (e < s) continue;
+      const days = Math.round((e - s) / 86400000) + 1;
+      totalAlloc += (t.allocation == null ? 90 : Number(t.allocation)) * days;
+    }
+    const avg = Math.round(totalAlloc / windowDays);
+    memberLoads.push(avg);
+    loadByName[m.name] = avg;
+    const lead = !!m.is_lead;
+    if (memTasks.length === 0) { underPeople.push({ name: m.name, load: 0, lead, reason: 'no open tasks' }); continue; }
+    const overlap = computeOverloadRegions(memTasks, today);
+    if (overlap.length > 0) { overPeople.push({ name: m.name, peak: Math.max(...overlap.map(r => r.peak)) }); continue; }
+    if (avg < 60) underPeople.push({ name: m.name, load: avg, lead, reason: `${avg}% load` });
   }
-  renderDashboardList('dashboard-keydates-body', keyItems, (task) => ({
-    project: task.project,
-    name: anchorLabelFor(inferredAnchorKey(task)),
-    assignee: '',
-    rightChip: { text: fmtDate(task.start_date || task.end_date) || '—', tone: 'neutral' },
-    onClick: () => jumpToTask(task),
-  }), keyDef
-    ? 'No projects have this anchor yet.'
-    : `No key-date summary configured for ${discDef.label}.`);
+  // The discipline lead/manager (starred in the team grid) always shows in
+  // Current workload — first, with a bold border — even if fully booked.
+  const leadMember = realMembers.find(m => m.is_lead);
+  if (leadMember && !underPeople.some(p => p.name === leadMember.name)) {
+    underPeople.unshift({ name: leadMember.name, load: loadByName[leadMember.name] || 0, lead: true });
+  }
 
-  // Capacity cards (Under-allocated / Over-allocated / Due this month)
-  // sit BELOW the existing three cards. Scoped to the active discipline +
-  // the projects picked at the top of the page. v7.6 — formerly part of
-  // the standalone Dashboard view.
-  try { renderDeptCapacityCards(); } catch (_) {}
+  // Needs-attention visual — the health donut (moved here from the header) +
+  // three problem-count tiles, side by side.
+  const attnChart = document.getElementById('dept-chart-attention');
+  if (attnChart) {
+    const tiles = deptStatTilesHtml([
+      { label: 'Behind',    n: behind.length,    color: DEPT_STATUS_COLORS.behind },
+      { label: 'Unstaffed', n: unstaffed.length,  color: 'var(--sdc-primary, #1574c4)' },
+      { label: 'Over',      n: overPeople.length, color: 'var(--sdc-primary, #1574c4)' },
+    ]);
+    const donutBlock = donutHtml
+      ? `<div class="dept-attn-donut">${donutHtml}<div class="dept-chart-legend">${statusLegend}</div></div>`
+      : '';
+    attnChart.innerHTML = `<div class="dept-attn-row">${donutBlock}<div class="dept-attn-tiles">${tiles}</div></div>`;
+  }
+
+  renderDashboardList('dept-behind-body', behind, ({ task, drift }) => ({
+    project: task.project, name: task.name, assignee: task.assignee,
+    rightChip: deptVarChip(-drift), onClick: () => jumpToTask(task),
+  }), 'Nothing behind schedule. 🎉');
+  renderDashboardList('dept-unstaffed-body', unstaffed, t => ({
+    project: t.project, name: t.name, assignee: t.assignee,
+    rightChip: { text: `since ${fmtDate(t.start_date)}`, tone: 'danger' }, onClick: () => jumpToTask(t),
+  }), 'Nothing started without a real owner.');
+  deptRenderPeopleList('dept-over-body',
+    overPeople.map(p => ({ name: p.name, over: true, chip: `peak ${p.peak}%`, chipTone: 'chip-danger' })),
+    'No one over-allocated in this window.');
+  // Current workload — a card per person (5 across): name + a donut of their
+  // current allocation % over the window.
+  const workloadPeople = [...underPeople].sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0));
+  deptRenderWorkloadCards('dept-available-body',
+    workloadPeople.map(p => ({ name: p.name, load: p.load, lead: !!p.lead })),
+    'Everyone is fully booked.');
+  // Utilization gauge — average team load across the window (one rollup number).
+  const deptUtil = memberLoads.length ? Math.round(memberLoads.reduce((a, b) => a + b, 0) / memberLoads.length) : 0;
+  const gaugeEl = document.getElementById('dept-chart-available');
+  if (gaugeEl) gaugeEl.innerHTML = realMembers.length ? deptUtilGaugeSvg(deptUtil) : '';
+
+  // ── Upcoming · starting / ending within the window (by date). ──
+  const starting = state.tasks
+    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && t.start_date && inScope(t.project))
+    .filter(t => { const s = new Date(t.start_date + 'T00:00:00').getTime(); return s >= todayMs && s <= windowEnd; })
+    .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
+  renderDashboardList('dept-starting-body', starting, t => {
+    const alloc = t.allocation == null ? 90 : Number(t.allocation);
+    const dur = durationLabel(t);
+    return {
+      project: t.project, name: t.name,
+      assignee: `${t.assignee}${dur ? ' · ' + dur : ''} · ${alloc}%`,
+      rightChip: { text: fmtDate(t.start_date), tone: 'info' }, onClick: () => jumpToTask(t),
+    };
+  }, `Nothing starting in the next ${weeks} weeks.`);
+  // Upcoming visual — a timeline dot per task starting in the window (hover = name),
+  // so you see WHEN work lands and which task it is, not just a count.
+  const upChart = document.getElementById('dept-chart-upcoming');
+  if (upChart) upChart.innerHTML = deptUpcomingTimelineSvg(starting, todayMs, windowEnd);
+
+  const ending = state.tasks
+    .filter(t => (!t.is_milestone || t.is_action) && (Number(t.progress) || 0) < 100 && t.assignee && memberNames.has(t.assignee) && t.end_date && inScope(t.project))
+    .filter(t => { const e = new Date(t.end_date + 'T00:00:00').getTime(); return e >= todayMs && e <= windowEnd; })
+    .sort((a, b) => (a.end_date || '').localeCompare(b.end_date || ''));
+  renderDashboardList('dept-ending-body', ending, t => {
+    const drift = taskScheduleDelta(t); // business-day drift; negative = behind
+    const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
+    return {
+      project: t.project, name: t.name,
+      assignee: `${t.assignee} · ${pct}% · due ${fmtDate(t.end_date)}`,
+      rightChip: deptVarChip(-drift), onClick: () => jumpToTask(t),
+    };
+  }, `Nothing ending in the next ${weeks} weeks.`);
+
+  // ── Release dates · discipline-aware, all in date order, late in red. ──
+  // Mechanical shows EVERY release (Mech 1/2/3…): mech_release_1 is an anchor,
+  // but Mech 2 / Mech 3 are plain milestone tasks, so match both. Other
+  // disciplines fall back to their single key anchor across the projects.
+  // The bottom-right "completion" card is discipline-specific:
+  //   mech     → all mechanical releases (Mech 1/2/3 — anchor + milestone names)
+  //   controls → software completion (tasks named "…software…")
+  //   build    → Power-Up (machine_power_up anchor)   ← builders work toward it
+  //   wire     → Power-Up (machine_power_up anchor)   ← electricians too
+  //   pm       → Ship Machine (ship_machine anchor)
+  const KEY_ANCHOR_BY_DISCIPLINE = {
+    pm:    { anchor: 'ship_machine',     title: 'Ship Machine' },
+    build: { anchor: 'machine_power_up', title: 'Power-Up' },
+    wire:  { anchor: 'machine_power_up', title: 'Power-Up' },
+  };
+  let releaseTasks = [];
+  let releasesTitle = 'Release dates';
+  if (disc === 'mech') {
+    releasesTitle = 'Mechanical releases';
+    const isMechRelease = (t) =>
+      inferredAnchorKey(t) === 'mech_release_1' ||
+      (t.is_milestone && /mech\w*\s*\d*\s*release/i.test(t.name || ''));
+    releaseTasks = state.tasks.filter(t => inScope(t.project) && isMechRelease(t));
+  } else if (disc === 'controls') {
+    releasesTitle = 'Software completion';
+    releaseTasks = state.tasks.filter(t => inScope(t.project) && /software/i.test(t.name || ''));
+  } else {
+    const keyDef = KEY_ANCHOR_BY_DISCIPLINE[disc];
+    if (keyDef) {
+      releasesTitle = keyDef.title;
+      releaseTasks = state.tasks.filter(t => inferredAnchorKey(t) === keyDef.anchor && inScope(t.project));
+    }
+  }
+  // Hide-completed filter (default on). Bind once.
+  const hideDoneBox = document.getElementById('dept-releases-hide-done');
+  if (hideDoneBox) {
+    const stored = localStorage.getItem('sdcDeptHideDoneReleases');
+    const hideDone = stored == null ? true : stored === '1';
+    hideDoneBox.checked = hideDone;
+    if (!hideDoneBox.dataset.bound) {
+      hideDoneBox.dataset.bound = '1';
+      hideDoneBox.addEventListener('change', () => {
+        try { localStorage.setItem('sdcDeptHideDoneReleases', hideDoneBox.checked ? '1' : '0'); } catch (_) {}
+        renderTeamDashboard();
+      });
+    }
+    if (hideDone) releaseTasks = releaseTasks.filter(t => (Number(t.progress) || 0) < 100);
+  }
+  releaseTasks.sort((a, b) =>
+    ((a.start_date || a.end_date || '') + '').localeCompare((b.start_date || b.end_date || '') + ''));
+  setText('dept-releases-title', releasesTitle);
+  const releaseItems = releaseTasks.map(t => {
+    const baseName = t.name || anchorLabelFor(inferredAnchorKey(t));
+    const done = (Number(t.progress) || 0) >= 100;
+    const sched  = t.baseline_end_date || t.baseline_start_date || t.start_date || t.end_date || '';
+    const actual = done ? (t.completed_on || t.end_date || t.start_date || '') : '';
+    let v = 0;
+    if (sched && actual) v = Math.round((new Date(actual + 'T00:00:00') - new Date(sched + 'T00:00:00')) / 86400000);
+    else if (!done && sched && sched < todayISO) v = Math.round((todayMs - new Date(sched + 'T00:00:00').getTime()) / 86400000);
+    return { id: t.id, project: t.project, name: baseName, done, sched, actual, chip: deptVarChip(v) };
+  });
+  deptRenderReleaseGrid('dept-releases-body', releaseItems,
+    `No ${releasesTitle.toLowerCase()} for the selected projects.`);
+  // Release timeline — a dot per release across the date axis, late dots stand out.
+  const relChart = document.getElementById('dept-chart-releases');
+  if (relChart) relChart.innerHTML = deptReleaseTimelineSvg(releaseTasks, todayMs);
+}
+
+// Releases grid — columns spread across the card width (Project / Release /
+// Scheduled / Done / variance) instead of stacked rows, so the wide card isn't
+// mostly blank. Same variance pill + ✓-when-done convention as everywhere else.
+function deptRenderReleaseGrid(bodyId, items, emptyText) {
+  const body = document.getElementById(bodyId);
+  if (!body) return;
+  if (!items || items.length === 0) {
+    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
+    return;
+  }
+  const head = `<div class="dept-rel-row dept-rel-head">
+    <span>Project</span><span>Release</span><span>Scheduled</span><span>Done</span><span></span>
+  </div>`;
+  const rows = items.map((it, i) => `
+    <button type="button" class="dept-rel-row" data-i="${i}">
+      <span class="dept-rel-project" title="${escapeHtml(it.project || '')}">${escapeHtml(it.project || '—')}</span>
+      <span class="dept-rel-name"><span class="dept-rel-check">${it.done ? '✓' : ''}</span><span class="dept-rel-name-text">${escapeHtml(it.name)}</span></span>
+      <span class="dept-rel-date">${it.sched ? fmtDate(it.sched) : '—'}</span>
+      <span class="dept-rel-date">${it.actual ? fmtDate(it.actual) : '—'}</span>
+      <span class="dept-rel-var"><span class="dashboard-chip chip-${it.chip.tone}">${escapeHtml(it.chip.text)}</span></span>
+    </button>`).join('');
+  body.innerHTML = `<div class="dept-rel-grid">${head}${rows}</div>`;
+  body.querySelectorAll('.dept-rel-row[data-i]').forEach(row => {
+    row.addEventListener('click', () => {
+      const it = items[Number(row.dataset.i)];
+      const t = it && state.tasks.find(x => x.id === it.id);
+      if (t) jumpToTask(t);
+    });
+  });
+}
+
+// Current-workload renderer — a grid of person cards (5 across): a donut of the
+// person's current allocation % over the window + their name beneath.
+function deptRenderWorkloadCards(bodyId, people, emptyText) {
+  const body = document.getElementById(bodyId);
+  if (!body) return;
+  if (!people || people.length === 0) {
+    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
+    return;
+  }
+  body.innerHTML = `<div class="dept-workload-grid">${people.map(p => `
+    <div class="dept-workload-card${p.lead ? ' dept-workload-card--lead' : ''}" title="${escapeHtml(p.name)}${p.lead ? ' (lead)' : ''} — ${p.load}% allocated">
+      ${deptLoadDonutSvg(p.load, 52)}
+      <div class="dept-workload-name">${p.lead ? '★ ' : ''}${escapeHtml(p.name)}</div>
+    </div>`).join('')}</div>`;
+}
+
+// People-list renderer for the capacity sub-cards (Over-allocated / Available).
+// Rows have no project/task — just a person plus a one-line status or chip — so
+// they use a lighter markup than renderDashboardList.
+function deptRenderPeopleList(bodyId, people, emptyText) {
+  const body = document.getElementById(bodyId);
+  if (!body) return;
+  if (!people || people.length === 0) {
+    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
+    return;
+  }
+  body.innerHTML = people.map(p => `
+    <div class="dashboard-row dashboard-row-person${p.over ? ' is-over' : ''}"${p.reason ? ` title="${escapeHtml(p.reason)}"` : ''}>
+      ${p.donutPct != null ? deptLoadDonutSvg(p.donutPct) : ''}
+      <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
+      ${p.chip
+        ? `<span class="dashboard-chip ${p.chipTone || 'chip-info'}">${escapeHtml(p.chip)}</span>`
+        : (p.donutPct == null && p.reason ? `<span class="dashboard-row-assignee">${escapeHtml(p.reason)}</span>` : '')}
+    </div>`).join('');
+}
+
+// SDC status palette shared by every overview chart. No red — per Dan's "pills
+// on the SDC colorway" rule, "behind" reads as navy (heavy/attention), not red.
+const DEPT_STATUS_COLORS = { done: '#74c415', ontime: '#1574c4', ahead: '#befa4f', behind: '#ef4444' };
+
+// ONE variance pill, used everywhere a date is on/ahead/behind schedule
+// (upcoming-ending, releases, …). Common strategy so nothing looks bespoke:
+//   days > 0  → "Nd late"  (red)
+//   days < 0  → "Nd early" (green)
+//   days == 0 → "on time"  (blue)
+function deptVarChip(days) {
+  if (days > 0) return { text: `${days}d late`,  tone: 'danger'  };
+  if (days < 0) return { text: `${-days}d early`, tone: 'success' };
+  return { text: 'on time', tone: 'info' };
+}
+
+// Schedule status for one task: done / behind / ahead / on-time. Expected % is
+// linear time-elapsed between start and end; |expected − actual| ≥ 15 flips it.
+function deptTaskStatus(t, todayMs) {
+  const actual = Math.max(0, Math.min(100, Number(t.progress) || 0));
+  if (actual >= 100) return 'done';
+  if (!t.start_date || !t.end_date) return 'ontime';
+  const s = new Date(t.start_date + 'T00:00:00').getTime();
+  const e = new Date(t.end_date + 'T00:00:00').getTime();
+  if (todayMs <= s) return 'ontime';
+  const total = Math.max(1, e - s);
+  const expected = Math.round((Math.min(total, todayMs - s) / total) * 100);
+  const lag = expected - actual;
+  if (lag >= 15) return 'behind';
+  if (lag <= -15) return 'ahead';
+  return 'ontime';
+}
+function deptStatusCounts(tasks, todayMs) {
+  const c = { done: 0, ontime: 0, ahead: 0, behind: 0 };
+  for (const t of (tasks || [])) c[deptTaskStatus(t, todayMs)]++;
+  return c;
+}
+// Small colored-dot legend item, reused by the donut + status bar.
+function deptLegendDot(color, label) {
+  return `<span class="dept-legend-item"><span class="dept-legend-dot" style="background:${color}"></span>${escapeHtml(label)}</span>`;
+}
+
+// Schedule-health donut for the overview header. Returns '' when there's
+// nothing to chart (caller clears the slot).
+function deptHealthDonutSvg(tasks, todayMs, size = 92) {
+  if (!tasks || tasks.length === 0) return '';
+  const c = deptStatusCounts(tasks, todayMs);
+  const cx = size / 2, cy = size / 2, ringR = size * 0.36, stroke = size * 0.16;
+  const C = 2 * Math.PI * ringR;
+  const total = Math.max(1, c.done + c.ontime + c.ahead + c.behind);
+  const segs = [
+    { val: c.done,   color: DEPT_STATUS_COLORS.done },
+    { val: c.ontime, color: DEPT_STATUS_COLORS.ontime },
+    { val: c.ahead,  color: DEPT_STATUS_COLORS.ahead },
+    { val: c.behind, color: DEPT_STATUS_COLORS.behind },
+  ];
+  let acc = 0;
+  const arcs = segs.filter(s => s.val > 0).map(seg => {
+    const len = (seg.val / total) * C, gap = C - len;
+    const out = `<circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="${seg.color}" stroke-width="${stroke}" stroke-dasharray="${len} ${gap}" stroke-dashoffset="${-acc}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    acc += len; return out;
+  }).join('');
+  const pct = Math.round(((c.ontime + c.ahead) / total) * 100);
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="dept-donut-svg">
+    <title>${c.ontime} on-time · ${c.ahead} ahead · ${c.behind} behind — ${pct}% on track</title>
+    <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
+    ${arcs}
+    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.22}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}%</text>
+  </svg>`;
+}
+
+// Needs-attention chart: three problem-count tiles (Behind / Unstaffed / Over).
+// tiles = [{ label, n, color }]. A zero count greys out so problems pop.
+function deptStatTilesHtml(tiles) {
+  return `<div class="dept-stattiles">${tiles.map(t => `
+    <div class="dept-stattile" title="${escapeHtml(t.label)}: ${t.n}">
+      <div class="dept-stattile-n" style="color:${t.n > 0 ? t.color : '#94a3b8'}">${t.n}</div>
+      <div class="dept-stattile-label">${escapeHtml(t.label)}</div>
+    </div>`).join('')}</div>`;
+}
+
+// Upcoming chart: a timeline dot per task starting in the window, positioned by
+// start date (today at the left edge). Hover shows the task name + date — so it
+// answers "when does work land, and which task" rather than just a count.
+function deptUpcomingTimelineSvg(tasks, todayMs, windowEnd) {
+  if (!tasks || tasks.length === 0) return '';
+  const min = todayMs, max = Math.max(windowEnd, todayMs + 7 * 86400000);
+  const pos = (ms) => Math.max(0, Math.min(100, ((ms - min) / (max - min)) * 100));
+  const dots = tasks.map(t => {
+    const ms = new Date(t.start_date + 'T00:00:00').getTime();
+    const tip = `${t.project ? t.project + ' · ' : ''}${t.name || ''} · starts ${fmtDate(t.start_date)}`;
+    return `<span class="dept-tl-dot is-upcoming" style="left:${pos(ms)}%" title="${escapeHtml(tip)}"></span>`;
+  }).join('');
+  return `<div class="dept-timeline">
+    <div class="dept-tl-axis"></div>
+    <span class="dept-tl-today" style="left:0%" title="Today"></span>
+    ${dots}
+  </div>`;
+}
+
+// Small per-person workload ring for the Current-workload list. pct = how
+// allocated they are. Lime under 85, green 85–100, navy over 100.
+function deptLoadDonutSvg(pct, size = 34) {
+  const cx = size / 2, cy = size / 2, r = size * 0.34, sw = size * 0.18, C = 2 * Math.PI * r;
+  const frac = Math.max(0, Math.min(1, pct / 100));
+  const len = frac * C, gap = C - len;
+  const color = pct > 100 ? DEPT_STATUS_COLORS.behind : (pct >= 85 ? '#74c415' : '#befa4f');
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="dept-mini-donut">
+    <title>${pct}% allocated</title>
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="${sw}"/>
+    ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${len} ${gap}" transform="rotate(-90 ${cx} ${cy})"/>` : ''}
+    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.3}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}</text>
+  </svg>`;
+}
+
+// Available-capacity chart: a single ring gauge of average team load across the
+// window. Colour by zone — lime under 85, green 85–100, navy over 100.
+function deptUtilGaugeSvg(pct, size = 92) {
+  const cx = size / 2, cy = size / 2, ringR = size * 0.36, stroke = size * 0.16;
+  const C = 2 * Math.PI * ringR;
+  const frac = Math.max(0, Math.min(1, pct / 100));
+  const len = frac * C, gap = C - len;
+  const color = pct > 100 ? DEPT_STATUS_COLORS.behind : (pct >= 85 ? '#74c415' : '#befa4f');
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="dept-gauge-svg">
+    <title>Average team load across the window: ${pct}%</title>
+    <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
+    ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="${color}" stroke-width="${stroke}" stroke-dasharray="${len} ${gap}" stroke-dashoffset="0" transform="rotate(-90 ${cx} ${cy})" stroke-linecap="round"/>` : ''}
+    <text x="${cx}" y="${cy - 3}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.2}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}%</text>
+    <text x="${cx}" y="${cy + size * 0.17}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.1}" fill="#64748b" style="font-family:sans-serif">avg load</text>
+  </svg>`;
+}
+
+// Releases chart: a dot per release positioned by date along an axis, with a
+// dashed "today" marker. Done = green, upcoming = blue, late = navy. HTML so the
+// circular dots don't distort when the card width changes.
+function deptReleaseTimelineSvg(releaseTasks, todayMs) {
+  const dated = (releaseTasks || [])
+    .map(t => ({ t, ms: Date.parse((t.start_date || t.end_date || '') + 'T00:00:00') }))
+    .filter(x => !isNaN(x.ms))
+    .sort((a, b) => a.ms - b.ms);
+  if (!dated.length) return '';
+  let min = Math.min(todayMs, dated[0].ms);
+  let max = Math.max(todayMs, dated[dated.length - 1].ms);
+  if (max <= min) max = min + 30 * 86400000;
+  const pad = (max - min) * 0.06 || 86400000;
+  min -= pad; max += pad;
+  const pos = (ms) => ((ms - min) / (max - min)) * 100;
+  const dots = dated.map(({ t, ms }) => {
+    const done = (Number(t.progress) || 0) >= 100;
+    const late = !done && ms < todayMs;
+    const cls = done ? 'is-done' : (late ? 'is-late' : 'is-upcoming');
+    const tip = `${t.project ? t.project + ' · ' : ''}${t.name || ''} · ${fmtDate(t.start_date || t.end_date)}`;
+    return `<span class="dept-tl-dot ${cls}" style="left:${pos(ms)}%" title="${escapeHtml(tip)}"></span>`;
+  }).join('');
+  return `<div class="dept-timeline">
+    <div class="dept-tl-axis"></div>
+    <span class="dept-tl-today" style="left:${pos(todayMs)}%" title="Today"></span>
+    ${dots}
+  </div>`;
 }
 
 // Look up a friendly anchor name from its key.
@@ -14887,9 +15134,11 @@ function renderDashboardList(bodyId, items, mapper, emptyText) {
     const toneCls = `chip-${r.rightChip?.tone || 'neutral'}`;
     return `
       <button type="button" class="dashboard-row" data-i="${i}">
-        <span class="dashboard-row-project">${escapeHtml(r.project || '—')}</span>
-        <span class="dashboard-row-name">${escapeHtml(r.name || '')}</span>
-        ${r.assignee ? `<span class="dashboard-row-assignee">${escapeHtml(r.assignee)}</span>` : ''}
+        <span class="dashboard-row-main">
+          <span class="dashboard-row-project">${escapeHtml(r.project || '—')}</span>
+          <span class="dashboard-row-name">${escapeHtml(r.name || '')}</span>
+          ${r.assignee ? `<span class="dashboard-row-assignee">${escapeHtml(r.assignee)}</span>` : ''}
+        </span>
         ${r.rightChip ? `<span class="dashboard-chip ${toneCls}">${escapeHtml(r.rightChip.text)}</span>` : ''}
       </button>
     `;
@@ -15000,37 +15249,25 @@ function renderResources() {
       projects.map(p => `<option value="${escapeHtml(p)}" ${state.resources.project === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
   }
 
-  // ── Status filter dropdown — checkboxes per bucket. Summary text
-  //    reads "All statuses" / "3 statuses" / "Only behind" / "Behind, Done"
-  //    depending on what's checked so the user can see at a glance which
-  //    buckets are visible without opening the menu. ──
+  // ── Status filter — inline icon chips (click to show/hide each bucket),
+  //    same feel as the Schedule view toggle. is-on class reflects state. ──
   const statusBar = document.getElementById('resources-status-filters');
   if (statusBar) {
     if (!state.resources.statusFilter) {
-      state.resources.statusFilter = { zero: true, behind: true, ontrack: true, done: true };
+      state.resources.statusFilter = { zero: true, behind: true, ontrack: true, done: false };
     }
     const sf = state.resources.statusFilter;
-    statusBar.querySelectorAll('input[type="checkbox"][data-status]').forEach(cb => {
-      const key = cb.dataset.status;
-      cb.checked = !!sf[key];
+    statusBar.querySelectorAll('.view-bracket-icon[data-status]').forEach(chip => {
+      chip.classList.toggle('is-active', !!sf[chip.dataset.status]);
     });
     if (!statusBar.dataset.bound) {
       statusBar.dataset.bound = '1';
-      statusBar.addEventListener('change', (e) => {
-        const cb = e.target.closest('input[type="checkbox"][data-status]');
-        if (!cb) return;
-        state.resources.statusFilter[cb.dataset.status] = cb.checked;
+      statusBar.addEventListener('click', (e) => {
+        const chip = e.target.closest('.view-bracket-icon[data-status]');
+        if (!chip) return;
+        const key = chip.dataset.status;
+        state.resources.statusFilter[key] = !state.resources.statusFilter[key];
         renderResources();
-      });
-      // Close the <details> menu when the user clicks outside it. Native
-      // <details> only toggles on the <summary> click — clicks elsewhere
-      // on the page don't auto-close. We add a document listener that
-      // closes any open status dropdown when the click target isn't
-      // inside this element.
-      document.addEventListener('mousedown', (e) => {
-        if (!statusBar.open) return;
-        if (statusBar.contains(e.target)) return;
-        statusBar.open = false;
       });
     }
   }
@@ -15232,7 +15469,8 @@ function renderResources() {
     // Load segments — one pill per contiguous span of equal total allocation. Sits below
     // the bars in a 12px strip so users can see "50%, then 100% during the overlap" without
     // having to mentally add up the pieces. Pills color-code: under/full/over 100%.
-    // Placeholders skip this entirely — they're role-stand-ins, not capacity-tracked.
+    // Placeholders skip the rolled-up load strip — each task bar now shows its own
+    // duration + allocation %, so the summed "135%" strip was redundant noise.
     const loadSegs = ph ? [] : computeLoadSegments(tasks, minDate);
     const loadHtml = loadSegs.map(s => {
       const x = s.startDay * pxPerDay;
@@ -15322,7 +15560,8 @@ function renderResources() {
         ? (Math.round((task.duration_days / 5) * 2) / 2)  // half-week steps
         : Math.round((dur / 7) * 2) / 2;
       const durStr = (!task.is_milestone && durWeeks > 0) ? ` · ${durWeeks}w` : '';
-      const enrichedLabel = `${baseLabel}${durStr}`;
+      const allocStr = (alloc != null) ? ` · ${alloc}%` : '';
+      const enrichedLabel = `${baseLabel}${allocStr}${durStr}`;
       return `
         <div class="res-bar ${statusClass}${lowAllocClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;"
              title="${escapeHtml(tip)}"
@@ -15353,7 +15592,7 @@ function renderResources() {
   // older per-project color legend (bars haven't used project color since the
   // schedule-status palette took over).
   const legend = document.getElementById('resources-legend');
-  legend.innerHTML = [
+  const statusItems = [
     { cls: 'status-zero',    label: 'Not started' },
     { cls: 'status-behind',  label: 'Behind schedule' },
     { cls: 'status-ontrack', label: 'On track / ahead' },
@@ -15361,6 +15600,18 @@ function renderResources() {
   ].map(({ cls, label }) =>
     `<span class="legend-item"><span class="legend-swatch res-bar ${cls}" style="position:static;width:14px;height:14px;padding:0;display:inline-block;vertical-align:middle"></span>${escapeHtml(label)}</span>`
   ).join('');
+  // Second legend row — what the load strip / allocation colors mean (separate
+  // axis from task status above: this is how booked the person is).
+  const allocItems = [
+    { bg: '#fef3c7', bd: '#fcd34d', label: 'Under 85%' },
+    { bg: '#dcfce7', bd: '#86efac', label: 'Full 85–100%' },
+    { bg: '#fee2e2', bd: '#fca5a5', label: 'Over 100%' },
+  ].map(({ bg, bd, label }) =>
+    `<span class="legend-item"><span class="legend-swatch" style="background:${bg};border:1px solid ${bd};width:14px;height:14px;display:inline-block;border-radius:3px;vertical-align:middle"></span>${escapeHtml(label)}</span>`
+  ).join('');
+  legend.innerHTML =
+    `<div class="legend-row"><strong class="legend-title">Task</strong>${statusItems}</div>` +
+    `<div class="legend-row"><strong class="legend-title">Allocation</strong>${allocItems}</div>`;
 
   // Click a priority pill → cycle through 1..N (where N is the number of this
   // person's tasks that overlap with at least one other). Wraps N → 1. Server-side
@@ -16673,7 +16924,14 @@ function setView(view) {
   document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(t => t.classList.toggle('is-active', t.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
   if (view === 'setup') renderSetup();
-  else if (view === 'team') renderTeam();
+  else if (view === 'team') {
+    // Land on a consistent default each time the Departments page opens:
+    // Gantt zoom 5/10, row height 4/10. (Mid-session zooming still sticks —
+    // this only resets on navigation TO the page.)
+    state.resources.zoomPercent = friendlyToZoom(5);
+    state.resources.barHeight = friendlyResRowToPx(4);
+    renderTeam();
+  }
   else if (view === 'projects')  renderProjectsPage();
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
