@@ -7272,28 +7272,198 @@ td.sales-suppressed {
 @media (max-width: 1100px) {
   .team-dashboard-cards { grid-template-columns: 1fr; }
 }
-/* v7.6 — Departments page absorbed the Dashboard. Two new containers:
+/* v7.6 — Departments page absorbed the Dashboard.
    - .dept-project-rollup sits ABOVE the SDC Team grid and houses the
      project picker + key milestone strips + financial milestones table.
-   - .dept-capacity-section sits BELOW the team-dashboard cards and
-     houses the Under-allocated / Over-allocated / Due-this-month cards
-     scoped to the active discipline. Mirrors .team-dashboard layout. */
+   - .dept-overview sits BELOW the resource Gantt and is the unified,
+     SDC-colored status section (Needs attention / Upcoming / Available
+     capacity / Release dates) built by renderTeamDashboard(). */
 .dept-project-rollup {
   padding: 22px 22px 4px;
 }
 .dept-project-rollup .pdash-section { margin-bottom: 18px; }
 .dept-project-rollup .pdash-section:last-child { margin-bottom: 8px; }
-.dept-capacity-section {
-  margin: 0 22px 22px;
+
+/* ── Department overview (below the resource Gantt) ── */
+.dept-overview { margin: 18px 22px 180px; }
+.dept-releases-filter { display: block; margin-top: 4px; font-size: 11px; color: var(--text-muted, #64748b); cursor: pointer; }
+.dept-overview-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
 }
-.dept-capacity-cards {
+.dept-overview-title { flex: 1; min-width: 0; }
+.dept-overview-head h2 { margin: 0; font-size: 18px; }
+.dept-overview-sub { display: block; color: var(--text-muted, #64748b); font-size: 12px; }
+.dept-overview-donut { display: flex; align-items: center; }
+.dept-donut-svg { display: block; }
+.dept-timeframe {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.dept-timeframe select {
+  padding: 5px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--surface, #fff);
+}
+.dept-overview-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 @media (max-width: 1100px) {
-  .dept-capacity-cards { grid-template-columns: 1fr; }
+  .dept-overview-grid { grid-template-columns: 1fr; }
 }
+/* All overview cards share ONE look — no per-card color. A thin SDC-blue top
+   accent + a faint SDC-blue header tint, with the header text centered. */
+.dashboard-card.dept-card { border-top: 3px solid var(--sdc-primary, #1574c4); overflow: hidden; }
+.dept-card .dashboard-card-head {
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, white);
+  text-align: center;
+}
+/* Two-column split body (Needs attention, Upcoming). */
+.dept-card-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 14px;
+}
+@media (max-width: 720px) {
+  .dept-card-split { grid-template-columns: 1fr; }
+}
+.dept-subsection { min-width: 0; }
+.dept-subhead {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  text-align: center;
+}
+
+/* ── Overview charts (one per card) ── */
+.dept-chart { padding: 10px 14px 2px; }
+.dept-chart:empty { display: none; }
+/* Header donut + its status legend (stacked in the header cell). */
+.dept-overview-donut { flex-direction: column; gap: 4px; }
+.dept-donut-svg, .dept-gauge-svg { display: block; }
+.dept-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-muted, #64748b);
+}
+.dept-legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.dept-legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: none; }
+/* Needs-attention problem-count tiles. */
+.dept-stattiles { display: flex; gap: 8px; }
+.dept-stattile {
+  flex: 1;
+  text-align: center;
+  padding: 6px 4px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+}
+.dept-stattile-n { font-size: 22px; font-weight: 800; line-height: 1; }
+.dept-stattile-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  margin-top: 3px;
+}
+/* Per-person mini load donut in the Available-capacity list. */
+.dept-mini-donut { flex: none; display: block; }
+/* Current-workload — grid of person cards, 5 across. */
+.dept-workload-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 4px 0; }
+@media (max-width: 900px) { .dept-workload-grid { grid-template-columns: repeat(3, 1fr); } }
+.dept-workload-card {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 8px 4px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+.dept-workload-name { font-size: 11px; font-weight: 600; text-align: center; line-height: 1.15; min-width: 0; }
+.dept-workload-card--lead { border: 2px solid var(--sdc-dark, #061d39); }
+/* Releases grid — columns spread across the full card width. */
+.dept-rel-grid { width: 100%; }
+.dept-rel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.2fr) 96px 96px 80px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 7px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff);
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.dept-rel-row:last-child { border-bottom: none; }
+.dept-rel-head {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b); font-weight: 700;
+  cursor: default; background: transparent;
+}
+.dept-rel-row:not(.dept-rel-head):hover { background: var(--row-hover, #f8fafc); }
+.dept-rel-project { color: var(--text-muted, #64748b); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dept-rel-name { display: flex; align-items: center; gap: 8px; font-weight: 600; overflow: hidden; }
+/* Fixed-width check slot so the release NAME starts at the same x on every row,
+   complete or not. Lime-green check, never shifts the column. */
+.dept-rel-check { flex: none; width: 14px; text-align: center; color: var(--sdc-green, #74c415); font-weight: 800; }
+.dept-rel-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dept-rel-date { font-variant-numeric: tabular-nums; }
+.dept-rel-var { text-align: right; }
+/* Resources status filter — reuses the main Gantt's .view-bracket segmented
+   toggle (blue when active), just with smaller text labels. */
+.resources-status-bracket .view-bracket-icon { font-size: 12px; font-weight: 600; min-width: 0; padding: 0 10px; }
+/* Per-card window selector (Needs attention / Upcoming / Current workload). */
+.dept-window-select {
+  margin-top: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  font-size: 11px;
+  background: var(--surface, #fff);
+}
+/* Needs-attention chart row — donut + legend on the left, count tiles on the right. */
+.dept-attn-row { display: flex; align-items: center; gap: 14px; }
+.dept-attn-donut { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; }
+.dept-attn-tiles { flex: 1; min-width: 0; }
+/* Resources legend — two labeled rows (Task status / Allocation). */
+.legend-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 4px; }
+.legend-title { font-size: 11px; color: var(--text-muted, #64748b); margin-right: 2px; min-width: 70px; }
+/* Releases timeline — dots positioned by date along an axis. */
+.dept-timeline { position: relative; height: 32px; margin: 6px 0 2px; }
+.dept-tl-axis { position: absolute; top: 15px; left: 0; right: 0; height: 2px; background: #cbd5e1; }
+.dept-tl-today { position: absolute; top: 7px; width: 0; height: 18px; border-left: 1px dashed #94a3b8; }
+.dept-tl-dot {
+  position: absolute;
+  top: 10px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
+}
+.dept-tl-dot.is-done { background: var(--sdc-green, #74c415); }
+.dept-tl-dot.is-upcoming { background: var(--sdc-primary, #1574c4); }
+.dept-tl-dot.is-late { background: var(--sdc-dark, #061d39); }
 /* Capacity card list rows — match the dashboard-card-body item layout
    used by the Behind/Coming-due/Key-dates cards above them. */
 .dashboard-row-person {
@@ -7305,7 +7475,7 @@ td.sales-suppressed {
   font-size: 13px;
 }
 .dashboard-row-person:last-child { border-bottom: none; }
-.dashboard-row-person.is-over { background: rgba(220, 38, 38, 0.04); }
+.dashboard-row-person.is-over { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 5%, white); }
 .dashboard-row-person .dashboard-row-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-row-person .dashboard-row-assignee { color: var(--text-muted, #64748b); font-size: 12px; }
 .dashboard-card {
@@ -7371,6 +7541,9 @@ td.sales-suppressed {
   font-family: inherit;
 }
 .dashboard-row:last-child { border-bottom: none; }
+/* Left column wrapper — project / task / assignee stacked. Keeps the date pill
+   pinned to the right and vertically centered, identically on every row. */
+.dashboard-row-main { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .dashboard-row:hover { background: var(--row-hover); }
 .dashboard-row-project {
   display: block;
@@ -7407,18 +7580,27 @@ td.sales-suppressed {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.dashboard-chip.chip-danger {
-  background: #fee2e2;
-  color: #b91c1c;
+/* Uniform pill colorway — SDC palette only: light blue (dates / info),
+   lime green (good / done / available), dark blue (attention: behind / over
+   / late), white (neutral). Same shape / size / font for every pill across
+   every overview card. */
+.dashboard-chip.chip-info,
+.dashboard-chip.chip-warn {
+  background: var(--sdc-blue-light, #aacee8);
+  color: var(--sdc-dark, #061d39);
 }
-.dashboard-chip.chip-info {
-  background: #dbeafe;
-  color: #1e40af;
+.dashboard-chip.chip-success {
+  background: var(--sdc-green-light, #befa4f);
+  color: var(--sdc-dark, #061d39);
+}
+.dashboard-chip.chip-danger {
+  background: #ef4444;
+  color: #fff;
 }
 .dashboard-chip.chip-neutral {
-  background: var(--surface-alt);
-  color: var(--text);
-  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--sdc-dark, #061d39);
+  border: 1px solid var(--border, #e2e8f0);
 }
 
 /* ---------- Resources section (lives below the Team grid) ---------- */
@@ -7937,8 +8119,9 @@ td.sales-suppressed {
   font-size: 12px;
   color: var(--text-muted);
   display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 #resources-legend .legend-item { display: flex; align-items: center; gap: 6px; }
 #resources-legend .legend-swatch {

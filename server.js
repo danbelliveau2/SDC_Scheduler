@@ -1873,7 +1873,15 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
     // a Quote-vs-Schedule comparison later. Uses the settings table with a
     // project-scoped key.
     try {
+      // MERGE into the existing saved quote — don't replace it. User-entered
+      // contract fields (sold_delivery_weeks, penalty clause, people_breakdown,
+      // quoted_overrides) live in the same row and must survive a reschedule.
+      // Overwriting here is what kept blanking out Dan's "Sold delivery".
+      const existingRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(`project_quote:${projectName}`);
+      let existing = {};
+      if (existingRow) { try { existing = JSON.parse(existingRow.value) || {}; } catch (_) { existing = {}; } }
       const quote = {
+        ...existing,
         hours_per_section: hps,
         hours_breakdown: hbd,
         headcount,
