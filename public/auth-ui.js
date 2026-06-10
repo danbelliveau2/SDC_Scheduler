@@ -1,5 +1,5 @@
-/**
- * auth-ui.js — Phase 3 client-side auth.
+﻿/**
+ * auth-ui.js ΓÇö Phase 3 client-side auth.
  *
  * Loaded BEFORE app.js so it can:
  *   1. Wrap window.fetch to attach Authorization: Bearer <token>
@@ -8,11 +8,11 @@
  *   4. Stash the JWT in localStorage('sdc_auth_token') across reloads
  *
  * Public API on window:
- *   sdcAuth.user        — { id, email, name, role, avatar_color } or null
- *   sdcAuth.token       — JWT string or null
- *   sdcAuth.authEnabled — boolean (set after /me)
- *   sdcAuth.signOut()   — clear + reload
- *   sdcAuth.showLogin() — force open the modal (used by 401 handler)
+ *   sdcAuth.user        ΓÇö { id, email, name, role, avatar_color } or null
+ *   sdcAuth.token       ΓÇö JWT string or null
+ *   sdcAuth.authEnabled ΓÇö boolean (set after /me)
+ *   sdcAuth.signOut()   ΓÇö clear + reload
+ *   sdcAuth.showLogin() ΓÇö force open the modal (used by 401 handler)
  *
  * Dan rule: NO dev-tools required. All errors surface as visible toasts /
  * inline modal text, never console.log diagnostics.
@@ -41,7 +41,7 @@ try {
   if (cached) window.sdcAuth.user = cached;
 } catch (_) {}
 
-// ── fetch wrapper ────────────────────────────────────────────────────────
+// ΓöÇΓöÇ fetch wrapper ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // Attaches Bearer token + intercepts 401/403 with a friendly message. Wraps
 // the global window.fetch so app.js needs no changes.
 const _originalFetch = window.fetch.bind(window);
@@ -52,9 +52,9 @@ window.fetch = async function (input, init) {
     init.headers.set('Authorization', 'Bearer ' + window.sdcAuth.token);
   }
   const res = await _originalFetch(input, init);
-  // 401 from /api/auth/me on boot when auth is on → show login modal.
-  // 401 elsewhere → token expired, sign out + show login.
-  // 403 → user lacks the role, show toast.
+  // 401 from /api/auth/me on boot when auth is on ΓåÆ show login modal.
+  // 401 elsewhere ΓåÆ token expired, sign out + show login.
+  // 403 ΓåÆ user lacks the role, show toast.
   if (res.status === 401) {
     // Don't loop: skip /api/auth/login + /api/auth/register endpoints.
     const url = (typeof input === 'string') ? input : (input?.url || '');
@@ -72,7 +72,7 @@ window.fetch = async function (input, init) {
   return res;
 };
 
-// ── boot ────────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ boot ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 async function _boot() {
   try {
     const r = await _originalFetch('/api/auth/me', {
@@ -85,12 +85,12 @@ async function _boot() {
       try { localStorage.setItem(USER_KEY, JSON.stringify(data.user)); } catch (_) {}
       _renderUserPill();
     } else if (r.status === 401) {
-      // Auth is on, token missing/expired → show modal.
+      // Auth is on, token missing/expired ΓåÆ show modal.
       window.sdcAuth.authEnabled = true;
       _openModal();
     }
   } catch (e) {
-    // Server unreachable — fail silent; app.js will surface the failure.
+    // Server unreachable ΓÇö fail silent; app.js will surface the failure.
   }
 }
 if (document.readyState === 'loading') {
@@ -99,7 +99,7 @@ if (document.readyState === 'loading') {
   _boot();
 }
 
-// ── modal ───────────────────────────────────────────────────────────────
+// ΓöÇΓöÇ modal ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 let _modalEl = null;
 function _openModal() {
   if (_modalEl) { _modalEl.classList.add('is-open'); return; }
@@ -108,13 +108,13 @@ function _openModal() {
   _modalEl.innerHTML = `
     <div class="sdc-auth-modal" role="dialog" aria-label="Sign in">
       <h2>Sign in</h2>
-      <p class="sdc-auth-modal-sub">SDC Scheduler — enter your email + password.</p>
+      <p class="sdc-auth-modal-sub">SDC Scheduler ΓÇö enter your email + password.</p>
       <form id="sdc-auth-form">
         <label>Email
           <input type="email" name="email" required autocomplete="username" />
         </label>
         <label>Password
-          <input type="password" name="password" required autocomplete="current-password" minlength="1" />
+          <input type="password" name="password" required autocomplete="current-password" minlength="6" />
         </label>
         <p class="sdc-auth-error" id="sdc-auth-error" hidden></p>
         <button type="submit" class="btn-primary">Sign in</button>
@@ -165,10 +165,7 @@ function _openModal() {
   });
 }
 
-// ── user pill in the bottom footer ───────────────────────────────────────
-// Lives in #schedule-footer next to the Quote vs Schedule button. Falls
-// back to body-fixed bottom-left if the footer isn't on the page (e.g.
-// the user opens a non-schedule view first).
+// ΓöÇΓöÇ user pill in top corner ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 function _renderUserPill() {
   if (!window.sdcAuth.authEnabled || !window.sdcAuth.user) return;
   if (document.getElementById('sdc-auth-pill')) return;
@@ -181,72 +178,8 @@ function _renderUserPill() {
     <span class="sdc-auth-avatar" style="background:${u.avatar_color || '#1574c4'};">${initials}</span>
     <span class="sdc-auth-name">${u.name}</span>
     <span class="sdc-auth-role">${u.role}</span>
-    <button type="button" class="sdc-auth-changepw" title="Change password">🔑</button>
-    <button type="button" class="sdc-auth-signout" title="Sign out">×</button>
+    <button type="button" class="sdc-auth-signout" title="Sign out">├ù</button>
   `;
   pill.querySelector('.sdc-auth-signout').addEventListener('click', () => window.sdcAuth.signOut());
-  pill.querySelector('.sdc-auth-changepw').addEventListener('click', () => _showChangePasswordModal());
-
   document.body.appendChild(pill);
-}
-
-// ── Change password modal ─────────────────────────────────────────────────
-function _showChangePasswordModal() {
-  document.getElementById('sdc-change-pw-modal')?.remove();
-  const modal = document.createElement('div');
-  modal.id = 'sdc-change-pw-modal';
-  modal.className = 'sdc-auth-modal-backdrop is-open';
-  modal.innerHTML = `
-    <div class="sdc-auth-modal" role="dialog" aria-label="Change password">
-      <h2>Change password</h2>
-      <p class="sdc-auth-modal-sub">Signed in as ${window.sdcAuth.user?.name || ''}</p>
-      <form id="sdc-change-pw-form">
-        <label>Current password
-          <input type="password" name="current_password" required autocomplete="current-password" />
-        </label>
-        <label>New password
-          <input type="password" name="new_password" required autocomplete="new-password" minlength="1" />
-        </label>
-        <p class="sdc-auth-error" id="sdc-change-pw-error" hidden></p>
-        <p id="sdc-change-pw-ok" hidden style="color:#059669;font-size:13px;margin:8px 0;">Password updated!</p>
-        <div style="display:flex;gap:8px;margin-top:4px;">
-          <button type="submit" class="btn-primary" style="flex:1;">Update</button>
-          <button type="button" id="sdc-change-pw-cancel" style="flex:1;">Cancel</button>
-        </div>
-      </form>
-    </div>
-  `;
-  document.body.appendChild(modal);
-  modal.querySelector('#sdc-change-pw-cancel').addEventListener('click', () => modal.remove());
-  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
-  modal.querySelector('#sdc-change-pw-form').addEventListener('submit', async e => {
-    e.preventDefault();
-    const data   = Object.fromEntries(new FormData(e.target).entries());
-    const errEl  = modal.querySelector('#sdc-change-pw-error');
-    const okEl   = modal.querySelector('#sdc-change-pw-ok');
-    const btn    = modal.querySelector('button[type="submit"]');
-    errEl.hidden = true;
-    okEl.hidden  = true;
-    btn.disabled = true;
-    try {
-      const r = await fetch('/api/auth/password', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      let body;
-      try { body = await r.json(); }
-      catch (_) { throw new Error('Server error — please refresh the page and try again'); }
-      if (!r.ok) throw new Error(body.error || 'Update failed');
-      okEl.hidden = false;
-      e.target.reset();
-      setTimeout(() => modal.remove(), 1500);
-    } catch (err) {
-      errEl.textContent = err.message;
-      errEl.hidden = false;
-    } finally {
-      btn.disabled = false;
-    }
-  });
-  modal.querySelector('input[name="current_password"]').focus();
 }

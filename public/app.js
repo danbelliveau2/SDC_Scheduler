@@ -1,4 +1,4 @@
-const api = {
+﻿const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
   create: (data) => {
     window._lastLocalEdit = Date.now();
@@ -25,7 +25,7 @@ const api = {
     const body = await r.json();
     if (r.status === 409) {
       if (typeof showToast === 'function') {
-        showToast('Someone else just edited this row. Reloading…', { kind: 'warn' });
+        showToast('Someone else just edited this row. ReloadingΓÇª', { kind: 'warn' });
       }
       try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
       // Hand the server's authoritative row back to the caller so chained
@@ -42,25 +42,11 @@ const api = {
   putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(r => r.json()),
   team: {
     list:   () => fetch('/api/team').then(r => r.json()),
-    // Stamp _lastLocalEdit on every write so the realtime-ui Socket listener
-    // skips the immediate echo. Without this stamp, the socket's debounced
-    // loadTeam() fires 250 ms after the local save and tears down whatever
-    // input the user was typing in — which manifests as "I typed a name and
-    // it didn't save" because the input element gets destroyed mid-edit.
-    create: (data) => {
-      window._lastLocalEdit = Date.now();
-      return fetch('/api/team', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
-    },
-    update: (id, data) => {
-      window._lastLocalEdit = Date.now();
-      return fetch(`/api/team/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
-    },
-    remove: (id) => {
-      window._lastLocalEdit = Date.now();
-      return fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json());
-    },
+    create: (data) => fetch('/api/team', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
+    update: (id, data) => fetch(`/api/team/${id}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()),
+    remove: (id) => fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json()),
   },
-  // Baseline snapshot — captures the current start/end dates on every task in a
+  // Baseline snapshot ΓÇö captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
   baseline: {
     set:   (project) => fetch('/api/baseline/set',   { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ project }) }).then(r => r.json()),
@@ -69,7 +55,7 @@ const api = {
   // Per-project financial milestones. Independent from tasks: they're not in the grid,
   // don't have predecessors, and render as a Gantt overlay when the $ Financial toggle
   // is on. Auto-seeded from the default_financial_milestones setting via api.financials.seed.
-  // Every method tolerates a missing server-side endpoint (404) — if the server hasn't
+  // Every method tolerates a missing server-side endpoint (404) ΓÇö if the server hasn't
   // been restarted with the new routes, list() returns [] and seed() returns ok:false
   // so callers can show a "restart the server" hint instead of crashing.
   financials: {
@@ -108,7 +94,7 @@ const api = {
 // Disciplines = roles that get assigned to project tasks. Keep in sync with the server-side
 // TEAM_DISCIPLINES set. The bar color used in the Resources timeline is per-PROJECT, not per-
 // discipline, so the discipline color/text below is only used for chips and headers.
-// v4.63: password gate for the Departments tab. Not real security — just
+// v4.63: password gate for the Departments tab. Not real security ΓÇö just
 // keeps regular engineers from accidentally opening the manager view. The
 // password caches in sessionStorage so it's prompted once per browser
 // session, not on every click. Change here when you need to rotate it.
@@ -137,7 +123,7 @@ const state = {
   //     sourceMachine,
   //     targetName,
   //     includeIds: Set<number>,
-  //     customPredecessors: Map<number, string>,  // source task id → typed pred
+  //     customPredecessors: Map<number, string>,  // source task id ΓåÆ typed pred
   //   }
   // null when not cloning.
   cloneMode: null,
@@ -158,7 +144,7 @@ const state = {
     // all shared (machine=null) work. Stored per-project in localStorage
     // since each project's machine set is independent.
     machinesSubset: [],
-    // Quick chip filters in the popover — each is a boolean toggle. Anchors are
+    // Quick chip filters in the popover ΓÇö each is a boolean toggle. Anchors are
     // exempt (always shown) so the schedule spine stays visible when filtering.
     quick: { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false },
   },
@@ -175,7 +161,7 @@ const state = {
   // - sortByStart: order tasks by start_date within each section instead of sort_order.
   // - ganttOnly: hide the grid panel and show only the Gantt full-width.
   // - criticalPath: highlight the longest predecessor-driven chain from Receipt of PO
-  //   to FAT — bars + arrows on that path turn red so the project-driving sequence
+  //   to FAT ΓÇö bars + arrows on that path turn red so the project-driving sequence
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
@@ -183,31 +169,20 @@ const state = {
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
-  // Resources timeline state. zoomPercent + barHeight mirror the Schedule
-  // Gantt's friendly 1-10 zoom / 0-10 row-height ranges so the steppers
-  // feel the same. statusFilter is per-bucket: each flag determines
-  // whether tasks in that schedule-status bucket render.
-  resources: {
-    discipline: 'mech',
-    project: '',
-    zoomPercent: 54, // friendlyToZoom(5) — default Gantt zoom 5/10
-    focusMemberId: null,
-    barHeight: 16,   // friendlyResRowToPx(4) — default row height 4/10
-    statusFilter: { zero: true, behind: true, ontrack: true, done: false },
-  },
+  resources: { discipline: 'mech', project: '', zoomPercent: 100, focusMemberId: null },
   overAllocatedTaskIds: new Set(),
-  // Open project schedules — like browser tabs. The empty string acts as the "All
+  // Open project schedules ΓÇö like browser tabs. The empty string acts as the "All
   // projects" pseudo-tab so the user can always step back to the global view. Persisted
   // to localStorage so reloads remember which schedules you had open and which one was
-  // active. The Team and Setup views ignore this — they show data across all projects.
+  // active. The Team and Setup views ignore this ΓÇö they show data across all projects.
   openProjects: [''],
   // Project names flagged as templates: protected from accidental close, marked with
   // a star in the tab. Stored in localStorage as a string array.
   templateProjects: [],
-  // Workspaces — projects can be grouped into one of a fixed set of workspaces
+  // Workspaces ΓÇö projects can be grouped into one of a fixed set of workspaces
   // so the "+ Open project" picker doesn't pile every sales schedule alongside
   // active customer projects. Default workspaces: Active, Sales, Closed.
-  // projectWorkspaces is a map of project name → workspace name. Any project
+  // projectWorkspaces is a map of project name ΓåÆ workspace name. Any project
   // not in the map defaults to "Active". Persisted in localStorage so it
   // survives reloads (per-browser; if you need shared workspaces across
   // engineers, that\'s a future server-side move).
@@ -217,23 +192,19 @@ const state = {
   // project tab stays visible (special "currently viewing" exemption) so you
   // never get stranded with no tab to click. Persisted in localStorage.
   activeWorkspace: 'Active',
-  // Favorites — per-browser list of starred project names. User clicks the ★
+  // Favorites ΓÇö per-browser list of starred project names. User clicks the Γÿà
   // next to a project in Projects / sidebar to toggle.
   favoriteProjects: [],
-  // Recents — last N opened project names, newest first. Capped at 10.
+  // Recents ΓÇö last N opened project names, newest first. Capped at 10.
   recentProjects: [],
   // Project financial milestones, keyed by project name. Loaded on demand when the
   // Financials modal opens or the $ Financial overlay is enabled. Each value is the
-  // full array from /api/financials?project=… in display order (sort_order, then id).
+  // full array from /api/financials?project=ΓÇª in display order (sort_order, then id).
   financials: {},
-  // Per-project quote payload cache, keyed by project name. Populated
-  // lazily on first read (via loadProjectQuote). Used by the stats
-  // popup to read sold_delivery_weeks for the Duration row.
-  projectQuotes: {},
   // Toggle for the $ Financial Gantt overlay. Persisted to localStorage via
   // saveScheduleView so it sticks across reloads.
   showFinancials: false,
-  // Toggle for the Baseline ghost overlay — dashed outline at each task's
+  // Toggle for the Baseline ghost overlay ΓÇö dashed outline at each task's
   // baseline date range + a drift chip showing days moved vs. baseline.
   showBaseline: false,
   // Undo / Redo history. Capped at UNDO_STACK_MAX entries (see pushUndoSnapshot).
@@ -252,7 +223,7 @@ const state = {
 
 // v4.54: ROW_H_MIN = 16 (was 12 in v4.52-v4.53; was 18 before that). User
 // feedback: even friendly 10 = 12px was too small to be readable. New
-// friendly scale goes 0–100 (not 10–100), mapping 0=16px → 100=30px in
+// friendly scale goes 0ΓÇô100 (not 10ΓÇô100), mapping 0=16px ΓåÆ 100=30px in
 // increments of 10 = 1.4px each. The previous "you'd never go smaller
 // than 30 (= 16px in v4.53 friendly)" gets renamed to 0 in the new scale.
 const ROW_H_MIN = 16;
@@ -261,27 +232,7 @@ const ROW_H_FRIENDLY_MIN_PX = 16;
 const ROW_H_FRIENDLY_MAX_PX = 30;
 const ROW_H_DEFAULT = 26;
 const BAR_H_MIN = 10;
-
-// Departments-tab resource bars use a tighter, denser scale than the
-// Schedule grid because the user just wants bar-thickness control on the
-// timeline — not row spacing inside an editable table. Per Dan's request
-// the friendly scale is 0-10 (steps of 1), with row 0 SMALLER than the
-// Schedule's row 0 and row 10 equivalent to Schedule's row 50/100.
-//   Schedule's row 50/100 = 16 + 0.5 * (30-16) = 23 px
-//   So MAX = 23, MIN = 12 (smaller than Schedule's 16).
-const RES_BAR_H_MIN_PX  = 12;
-const RES_BAR_H_MAX_PX  = 23;
-const RES_BAR_H_LEVELS  = 10;
-function pxToFriendlyResRow(px) {
-  const clamped = Math.max(RES_BAR_H_MIN_PX, Math.min(RES_BAR_H_MAX_PX, px));
-  const t = (clamped - RES_BAR_H_MIN_PX) / (RES_BAR_H_MAX_PX - RES_BAR_H_MIN_PX);
-  return Math.round(t * RES_BAR_H_LEVELS);
-}
-function friendlyResRowToPx(friendly) {
-  const t = Math.max(0, Math.min(RES_BAR_H_LEVELS, friendly)) / RES_BAR_H_LEVELS;
-  return Math.round(RES_BAR_H_MIN_PX + t * (RES_BAR_H_MAX_PX - RES_BAR_H_MIN_PX));
-}
-// Row-height +/- step. Fixed 2px/click is fine-grained enough for the typical 14–60
+// Row-height +/- step. Fixed 2px/click is fine-grained enough for the typical 14ΓÇô60
 // range; small enough to make tight 1-row-difference adjustments without
 // overshooting, big enough that holding the button doesn't feel sluggish.
 const ROW_H_STEP = 2;
@@ -297,7 +248,7 @@ const collapsedGroups = new Set();
 function groupPath(g, d, s) { return [g || '', d || '', s || ''].join('/'); }
 
 // Maps maintained by updateLineNumbersAndPreds. Predecessors are stored by task id but shown
-// as line numbers (1, 2, 3 …) so the user has a stable visual reference that keeps re-numbering
+// as line numbers (1, 2, 3 ΓÇª) so the user has a stable visual reference that keeps re-numbering
 // as rows move.
 let lineByTaskId = {};
 let taskIdByLine = {};
@@ -310,7 +261,7 @@ function predDisplay(predString) {
     const id = Number(m[1]);
     const line = lineByTaskId[id];
     // If we don't know the line, render nothing for this entry instead of
-    // "?id" — a question mark in the predecessor column is just noise.
+    // "?id" ΓÇö a question mark in the predecessor column is just noise.
     if (line == null) return '';
     return (line + m[2]).toUpperCase();
   }).filter(Boolean).join(', ');
@@ -327,13 +278,13 @@ function predParse(displayString) {
 }
 
 // Walk HIERARCHY + anchors as if nothing is collapsed. Returns the canonical task ID
-// order — used to assign line numbers that stay STABLE across collapse / expand
+// order ΓÇö used to assign line numbers that stay STABLE across collapse / expand
 // operations, so predecessor displays never flip to "?id" just because a section is
 // folded up.
 function buildCanonicalTaskOrder() {
   // Line numbers should stay STABLE when the user flips between machine
   // pills (All / M1 / M2). Otherwise M2.Builder-1 would be "line 1" in
-  // M2 view and "line 24" in All view — and the user references those
+  // M2 view and "line 24" in All view ΓÇö and the user references those
   // numbers in predecessors, so they have to point to the same row
   // either way.
   const filtered = applyFilters(state.tasks, { ignoreMachineSubset: true });
@@ -350,7 +301,7 @@ function buildCanonicalTaskOrder() {
   const sortBucket = (arr) => {
     if (state.scheduleView?.sortByStart) {
       arr.sort((a, b) =>
-        (a.start_date || '￿').localeCompare(b.start_date || '￿')
+        (a.start_date || '∩┐┐').localeCompare(b.start_date || '∩┐┐')
         || (a.sort_order || 0) - (b.sort_order || 0));
     } else {
       arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
@@ -388,7 +339,7 @@ function buildCanonicalTaskOrder() {
   const order = [];
   if (receiptAnchor) order.push(receiptAnchor.id);
   // Every non-anchor task with no phase_group sits BETWEEN Receipt of PO and
-  // section 10 in the rendered grid — these are the "above section 10" rows
+  // section 10 in the rendered grid ΓÇö these are the "above section 10" rows
   // (Backlog, or anything the user added below an anchor via right-click).
   // Include them in canonical order so they each get a stable line number
   // that can be used as a predecessor reference.
@@ -400,34 +351,28 @@ function buildCanonicalTaskOrder() {
   for (const group of HIERARCHY) {
     if (state.scheduleView?.flatten || isPersonalMode()) {
       // Same INLINE_ANCHORS rule as the table walk.
-      let sectionTasks = filtered.filter(t => {
+      const sectionTasks = filtered.filter(t => {
         if (t.phase_group !== group.key) return false;
         const k = inferredAnchorKey(t);
         return !k || INLINE_ANCHORS.has(k);
       });
       sortBucket(sectionTasks);
-      // Splice Ship Machine into section 50 by sort_order so line numbers
-      // land Teardown / Ship Machine / Install even when tasks carry a
-      // null department (sales template suppresses subheaders that way).
-      if (group.key === 'teardown_install' && shipAnchors.length) {
-        sectionTasks = [...sectionTasks, ...shipAnchors]
-          .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+      let shipDropped = false;
+      for (const t of sectionTasks) {
+        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
+          for (const s of shipAnchors) order.push(s.id);
+          shipDropped = true;
+        }
+        order.push(t.id);
       }
-      for (const t of sectionTasks) order.push(t.id);
+      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
+        for (const s of shipAnchors) order.push(s.id);
+      }
     } else {
-      let groupLevelTasks = buckets[groupPath(group.key)] || [];
-      // Sales-mode section 50: merge Ship Machine anchors into the
-      // group-level list by sort_order. Skips the dept-loop ship-insert
-      // below so we don't double-count.
-      let shipDroppedAtGroupLevelOrd = false;
-      if (group.key === 'teardown_install' && shipAnchors.length && groupLevelTasks.length) {
-        groupLevelTasks = [...groupLevelTasks, ...shipAnchors]
-          .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
-        shipDroppedAtGroupLevelOrd = true;
-      }
+      const groupLevelTasks = buckets[groupPath(group.key)] || [];
       for (const t of groupLevelTasks) order.push(t.id);
       for (const dept of group.departments) {
-        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length && !shipDroppedAtGroupLevelOrd) {
+        if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length) {
           for (const s of shipAnchors) order.push(s.id);
         }
         const dPath = groupPath(group.key, dept.key);
@@ -453,7 +398,7 @@ function buildCanonicalTaskOrder() {
 function updateLineNumbersAndPreds() {
   const tbody = document.getElementById('tasks-tbody');
   if (!tbody) return;
-  // Stable canonical line numbers — built from the FULL hierarchy walk so collapsing
+  // Stable canonical line numbers ΓÇö built from the FULL hierarchy walk so collapsing
   // a section never reshuffles them. Predecessor displays therefore stay locked even
   // when the predecessor's row is currently hidden.
   const canonicalOrder = buildCanonicalTaskOrder();
@@ -481,19 +426,19 @@ function updateLineNumbersAndPreds() {
       cell.textContent = predDisplay(task?.predecessors || '');
     }
   });
-  // v4.39: fill in duration-link badges with a 🔗 emoji + source line.
+  // v4.39: fill in duration-link badges with a ≡ƒöù emoji + source line.
   // The link icon makes the relationship visible at a glance; the row
   // number lets you trace which task it's tied to without hovering.
   tbody.querySelectorAll('.name-cell-dur-link[data-link-target-id]').forEach(el => {
     const srcId = Number(el.getAttribute('data-link-target-id'));
     const line = lineByTaskId[srcId];
-    el.textContent = line != null ? `🔗${line}` : '🔗?';
+    el.textContent = line != null ? `≡ƒöù${line}` : '≡ƒöù?';
   });
 }
 
 // Frappe-gantt v0.6.1 hard-codes column_width inside update_view_scale based on view mode,
 // which clobbers any custom column_width we pass in. Patch the prototype so a per-instance
-// _cwOverride survives the reset — that's how we get continuous zoom.
+// _cwOverride survives the reset ΓÇö that's how we get continuous zoom.
 if (window.Gantt && !Gantt.prototype._sdcPatched) {
   const _orig = Gantt.prototype.update_view_scale;
   Gantt.prototype.update_view_scale = function (mode) {
@@ -512,7 +457,7 @@ const VIEW_MODE_STEP_DAYS = { Day: 1, Week: 7, Month: 30 };
 // Wheel + setZoom() clamp to the SAME range as the friendly 1-10
 // stepper so the user can't scroll past either end. ZOOM_MIN_PCT and
 // ZOOM_MAX_PCT below mirror this so the friendly stepper stays in
-// sync — adjust both together if you change the range.
+// sync ΓÇö adjust both together if you change the range.
 const ZOOM_MIN = 10;
 const ZOOM_MAX = 145;
 const ZOOM_STEP = 10;
@@ -545,26 +490,26 @@ function daysBetween(start, end) {
 // Team members named "* Placeholder" (case-insensitive) act as role-stand-ins on
 // templates. They carry through duplicate-project, sit at the bottom of their team
 // card, render with a ghost/italic style, and are skipped by the over-allocation
-// calc — they're not real people, just role markers waiting to be reassigned.
+// calc ΓÇö they're not real people, just role markers waiting to be reassigned.
 function isPlaceholder(name) {
   return /\bplaceholder\b/i.test(String(name || ''));
 }
 
 // Capacity snapshot for one discipline:
 //   - realCount:     number of active, non-placeholder team members in that discipline
-//   - scheduledHrs:  total scheduled hours = SUM(duration_days × 8 × allocation%)
+//   - scheduledHrs:  total scheduled hours = SUM(duration_days ├ù 8 ├ù allocation%)
 //                    across every task currently assigned to someone in that discipline
 //                    (placeholders included, since templated work is still "sold")
-//   - weeksAhead:    scheduledHrs ÷ (realCount × 40 × 0.9). null when realCount is 0
-//                    (no real people → infinite weeks, not meaningful).
-// Drives the "X hrs scheduled · Y wks at 90%" line under each discipline's card.
+//   - weeksAhead:    scheduledHrs ├╖ (realCount ├ù 40 ├ù 0.9). null when realCount is 0
+//                    (no real people ΓåÆ infinite weeks, not meaningful).
+// Drives the "X hrs scheduled ┬╖ Y wks at 90%" line under each discipline's card.
 function computeDisciplineCapacity(discKey, members) {
   const memberNames = new Set(members.map(m => m.name));
   const realCount = members.filter(m => !isPlaceholder(m.name) && m.active !== 0).length;
   let hrs = 0;
   for (const t of state.tasks) {
     if (t.is_milestone) continue;
-    // Skip tasks from template projects AND Sales-workspace projects —
+    // Skip tasks from template projects AND Sales-workspace projects ΓÇö
     // templates are canonical scaffolding cloned into real projects (not
     // real work); Sales schedules are pre-quote work that hasn't been
     // staffed for real yet. Either would inflate the "X hrs scheduled"
@@ -581,7 +526,7 @@ function computeDisciplineCapacity(discKey, members) {
   const weeklyCapacity = realCount * 40 * 0.9;
   const weeksAhead = weeklyCapacity > 0 ? Math.round((scheduledHrs / weeklyCapacity) * 10) / 10 : null;
   const tooltip = realCount > 0
-    ? `${scheduledHrs.toLocaleString()} hrs total ÷ (${realCount} × 40 × 90%) = ${weeksAhead} weeks of work. (Template-project tasks excluded.)`
+    ? `${scheduledHrs.toLocaleString()} hrs total ├╖ (${realCount} ├ù 40 ├ù 90%) = ${weeksAhead} weeks of work. (Template-project tasks excluded.)`
     : `${scheduledHrs.toLocaleString()} hrs scheduled. Add real team members (non-placeholders) to see capacity in weeks.`;
   return { realCount, scheduledHrs, weeksAhead, tooltip };
 }
@@ -598,39 +543,39 @@ function relevantDisciplinesForTask(task) {
   const dep = task.department;
   const sub = task.sub_department;
 
-  // Section 10 — Design & Build: sub-department is highly specific where set.
+  // Section 10 ΓÇö Design & Build: sub-department is highly specific where set.
   if (pg === 'design_build') {
     if (sub === 'mech')     return ['mech'];
     if (sub === 'controls') return ['controls'];
     if (sub === 'build')    return ['build'];
     if (sub === 'wire')     return ['wire'];
     if (sub === 'general')  return ['mech', 'controls'];   // any engineer
-    // Department-level rows (no sub) — engineering = either engineer,
+    // Department-level rows (no sub) ΓÇö engineering = either engineer,
     // shop = either trade, procurement = anyone.
     if (dep === 'engineering') return ['mech', 'controls'];
     if (dep === 'shop')        return ['build', 'wire'];
     if (dep === 'procurement') return ['mech', 'controls', 'build', 'wire'];
   }
 
-  // Section 40 — Machine Testing: dept-only, both disciplines under each.
+  // Section 40 ΓÇö Machine Testing: dept-only, both disciplines under each.
   if (pg === 'machine_testing') {
     if (dep === 'engineering') return ['mech', 'controls'];
     if (dep === 'shop')        return ['build', 'wire'];
   }
 
-  // Section 50 — Teardown & Install. Teardown is shop-only; Install has both.
+  // Section 50 ΓÇö Teardown & Install. Teardown is shop-only; Install has both.
   if (pg === 'teardown_install') {
     if (dep === 'teardown') return ['build', 'wire'];
     if (dep === 'install') {
       if (sub === 'engineering') return ['mech', 'controls'];
       if (sub === 'shop')        return ['build', 'wire'];
-      // Install at the dept level — anyone.
+      // Install at the dept level ΓÇö anyone.
       return ['mech', 'controls', 'build', 'wire'];
     }
   }
 
   // Anything else (no classification, anchors before they're given a section,
-  // etc.) — return all four so the dropdown is unconstrained.
+  // etc.) ΓÇö return all four so the dropdown is unconstrained.
   return ['mech', 'controls', 'build', 'wire'];
 }
 
@@ -640,7 +585,7 @@ function isWeekendDate(d) {
 }
 
 // Snap an ISO date to a business day if it's currently Sat/Sun. dir=1 advances
-// forward (Sat → Mon), dir=-1 walks backward (Sat → Fri). Idempotent on weekdays.
+// forward (Sat ΓåÆ Mon), dir=-1 walks backward (Sat ΓåÆ Fri). Idempotent on weekdays.
 function snapToBusinessDay(dateStr, dir = 1) {
   if (!dateStr) return null;
   const d = new Date(dateStr + 'T00:00:00Z');
@@ -650,7 +595,7 @@ function snapToBusinessDay(dateStr, dir = 1) {
   return d.toISOString().slice(0, 10);
 }
 
-// Inclusive count of business days (Mon–Fri) between two ISO dates.
+// Inclusive count of business days (MonΓÇôFri) between two ISO dates.
 function businessDaysBetween(start, end) {
   if (!start || !end) return null;
   const s = new Date(start + 'T00:00:00Z');
@@ -680,7 +625,7 @@ function addBusinessDays(startISO, n) {
 }
 
 // Duration display in BUSINESS days. The stored task.duration_days is the SOURCE OF
-// TRUTH — what the user typed stays exactly that, regardless of how the end_date
+// TRUTH ΓÇö what the user typed stays exactly that, regardless of how the end_date
 // shifts when crossing weekends. Falls back to a fresh business-day count from
 // start/end only when duration_days isn't populated (legacy rows pre-migration).
 function durationLabel(task) {
@@ -690,24 +635,19 @@ function durationLabel(task) {
   if (d == null) d = businessDaysBetween(task.start_date, task.end_date);
   if (d == null) return '';
   if (d === 0) return '0';
-  // Whole weeks: 5, 10, 15, ... → "Nw"
+  // Whole weeks: 5, 10, 15, ... ΓåÆ "Nw"
   if (d % 5 === 0 && d >= 5) return `${d / 5}w`;
-  // Half-week buckets — every duration generated by the estimate-create
-  // pipeline lands on one of these: ceil(n × 2.5) for integer n ≥ 1
-  // → 3 (0.5w), 8 (1.5w), 13 (2.5w), 18 (3.5w), 23 (4.5w), 28 (5.5w), 33, 38, 43, 48, 53, 58 (11.5w), ...
-  // Detect that pattern and label as half-week: 3 → "0.5w", 13 → "2.5w", etc.
+  // Half-week buckets ΓÇö every duration generated by the estimate-create
+  // pipeline lands on one of these: ceil(n ├ù 2.5) for integer n ΓëÑ 1
+  // ΓåÆ 3 (0.5w), 8 (1.5w), 13 (2.5w), 18 (3.5w), 23 (4.5w), 28 (5.5w), 33, 38, 43, 48, 53, 58 (11.5w), ...
+  // Detect that pattern and label as half-week: 3 ΓåÆ "0.5w", 13 ΓåÆ "2.5w", etc.
   const nHalfWeeks = Math.round(d / 2.5);
   if (nHalfWeeks >= 1 && Math.ceil(nHalfWeeks * 2.5) === d) {
     return `${nHalfWeeks / 2}w`;
   }
-  // Half-week snap for ANY other day count — Dan's hard rule: week
-  // values only ever read as 0.5, 1, 1.5, 2, ... never 0.6 / 0.8 /
-  // 1.4. Falls back to "0d" / "1d" only when the duration is below
-  // half a work-week (3 days) so we don't lose precision on single-
-  // day rows.
-  if (d <= 2) return `${d}d`;
-  const halfWeeks = Math.max(1, Math.round((d / 5) * 2));
-  return `${halfWeeks / 2}w`;
+  // Fallback for arbitrary day counts: decimal weeks if ΓëÑ 10 days, else "Nd".
+  if (d >= 10) return `${(d / 5).toFixed(1)}w`;
+  return `${d}d`;
 }
 
 function sortByPhaseThenOrder(tasks) {
@@ -737,7 +677,7 @@ function escapeHtml(s) {
 
 // In-app confirm / alert dialogs that match the SDC app styling instead of the
 // browser-native white box. Both return a Promise so callers can `await` them.
-// Caller passes plain text (which we escape) — line breaks turn into <br>.
+// Caller passes plain text (which we escape) ΓÇö line breaks turn into <br>.
 function _formatDialogMessage(msg) {
   if (msg == null) return '';
   return escapeHtml(msg).replace(/\n/g, '<br>');
@@ -854,7 +794,7 @@ function showPasswordDialog(opts = {}) {
     document.addEventListener('keydown', onKey);
     setTimeout(() => input.focus(), 0);
     // expose for the caller in case they want to surface a "wrong password"
-    // shake without reopening — currently unused, kept for future polish.
+    // shake without reopening ΓÇö currently unused, kept for future polish.
     overlay._showError = (msg) => {
       errEl.textContent = msg || 'Wrong password.';
       errEl.classList.remove('hidden');
@@ -868,7 +808,7 @@ function uniqueValues(field) {
 }
 
 // Roll up per-project stats for the schedule header pills:
-//   - percentComplete: labor-weighted % done = SUM(duration × progress) /
+//   - percentComplete: labor-weighted % done = SUM(duration ├ù progress) /
 //     SUM(duration) across non-milestone tasks. Returns null when no tasks have
 //     durations yet (fresh project).
 //   - fatVariance: business-day signed offset between current FAT anchor's
@@ -896,13 +836,13 @@ function computeProjectStats(project, machine) {
     weighted += d * p;
   }
   const percentComplete = total > 0 ? Math.round(weighted / total) : null;
-  // FAT for this machine (or any FAT if no machine specified — fall back
+  // FAT for this machine (or any FAT if no machine specified ΓÇö fall back
   // to the oldest one project-wide).
   const fatCandidates = allTasks.filter(t => inferredAnchorKey(t) === 'fat');
   let fat = null;
   if (machine) fat = fatCandidates.find(t => t.machine === machine) || null;
   if (!fat && !machine) fat = fatCandidates.length ? fatCandidates.reduce((a, b) => (a.id < b.id ? a : b)) : null;
-  // FAT variance — current FAT vs baseline FAT, in business days.
+  // FAT variance ΓÇö current FAT vs baseline FAT, in business days.
   let fatVariance = null;
   if (fat && fat.baseline_start_date && fat.start_date) {
     if (fat.baseline_start_date === fat.start_date) {
@@ -924,28 +864,28 @@ function computeProjectStats(project, machine) {
 //
 // Formula: project the task's finish date assuming you keep working at full
 // allocation, then compare to the SCHEDULED finish date.
-//   remainingDays = (1 − progress/100) × totalDays
+//   remainingDays = (1 ΓêÆ progress/100) ├ù totalDays
 //   projectedFinish = today + remainingDays business days
-//   drift = scheduledEnd − projectedFinish  (business days)
+//   drift = scheduledEnd ΓêÆ projectedFinish  (business days)
 //
 // Examples:
-//   • 2-week task, 50% done, today is 3 weeks before scheduled start:
-//     remaining = 5 BD, projectedFinish = today + 5 BD, drift ≈ +20d ahead.
-//   • Task halfway through window but only 25% done:
-//     remaining = 0.75 × 10 = 7.5 ≈ 8 BD, drift goes negative → behind chip.
+//   ΓÇó 2-week task, 50% done, today is 3 weeks before scheduled start:
+//     remaining = 5 BD, projectedFinish = today + 5 BD, drift Γëê +20d ahead.
+//   ΓÇó Task halfway through window but only 25% done:
+//     remaining = 0.75 ├ù 10 = 7.5 Γëê 8 BD, drift goes negative ΓåÆ behind chip.
 //
 // Skipped (returns 0):
-//   • Milestones, anchors, backlog — they have their own status logic.
-//   • Tasks at exactly 0% — not yet started, treated as on schedule.
-//   • Completed tasks (progress ≥ 100) — done is done; baseline handles
+//   ΓÇó Milestones, anchors, backlog ΓÇö they have their own status logic.
+//   ΓÇó Tasks at exactly 0% ΓÇö not yet started, treated as on schedule.
+//   ΓÇó Completed tasks (progress ΓëÑ 100) ΓÇö done is done; baseline handles
 //     finish variance.
 function taskScheduleDelta(task) {
   if (!task || task.is_milestone || !task.start_date || !task.end_date) return 0;
   if (inferredAnchorKey(task)) return 0;
   if (isBacklogTask(task)) return 0;
   const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
-  if (actualPct >= 100) return 0;  // Done — no drift chip.
-  if (actualPct <= 0)   return 0;  // Not started — treated as on schedule.
+  if (actualPct >= 100) return 0;  // Done ΓÇö no drift chip.
+  if (actualPct <= 0)   return 0;  // Not started ΓÇö treated as on schedule.
   const totalDays = businessDaysBetween(task.start_date, task.end_date);
   if (!totalDays || totalDays <= 0) return 0;
   const remainingBD = Math.max(0, Math.round((1 - actualPct / 100) * totalDays));
@@ -960,7 +900,7 @@ function taskScheduleDelta(task) {
     ? snappedToday
     : addBusinessDays(snappedToday, remainingBD - 1);
   if (!projectedFinish || projectedFinish === task.end_date) return 0;
-  // Sign: projectedFinish BEFORE scheduledEnd → ahead; AFTER → behind.
+  // Sign: projectedFinish BEFORE scheduledEnd ΓåÆ ahead; AFTER ΓåÆ behind.
   if (projectedFinish < task.end_date) {
     const span = businessDaysBetween(projectedFinish, task.end_date) || 0;
     return Math.max(0, span - 1); // span is inclusive on both ends
@@ -973,7 +913,7 @@ function taskScheduleDelta(task) {
 function applyFilters(tasks, opts = {}) {
   const { search, project, phase, assignee, quick, projectsSubset, machinesSubset } = state.filters;
   // ignoreMachineSubset: when computing canonical line numbers, we want
-  // the order to stay stable across "All / M1 / M2" pill clicks — so
+  // the order to stay stable across "All / M1 / M2" pill clicks ΓÇö so
   // M2's Builder-1 keeps its overall line number even when filtered
   // down to just M2's rows. Caller passes { ignoreMachineSubset: true }
   // for that path.
@@ -987,13 +927,13 @@ function applyFilters(tasks, opts = {}) {
   const useSubset = !project && subset.length > 0;
   const subsetSet = useSubset ? new Set(subset) : null;
   // Machine subset: only meaningful inside a SINGLE project tab. Non-empty
-  // means "show ONLY tasks belonging to these machines" — shared
+  // means "show ONLY tasks belonging to these machines" ΓÇö shared
   // (machine=null) tasks are hidden too. The user wants per-machine views
   // to show JUST that machine's work; shared design / procurement /
   // anchors are only visible in the "All" view. Empty subset = no
   // filter (All machines + shared).
   // Strip any subset entries that don't actually exist as machines in the
-  // current project — otherwise the strict filter would hide every row
+  // current project ΓÇö otherwise the strict filter would hide every row
   // when a previously-saved machine has since been deleted.
   let machSubset = Array.isArray(machinesSubset) ? machinesSubset : [];
   if (project && machSubset.length > 0) {
@@ -1011,7 +951,7 @@ function applyFilters(tasks, opts = {}) {
     }
   }
   const useMachineFilter = !!project && machSubset.length > 0 && !skipMachineSubset;
-  // In clone mode the user is BUILDING the new machine off the source —
+  // In clone mode the user is BUILDING the new machine off the source ΓÇö
   // they need to see the shared rows (design, anchors) so they can
   // reference them as predecessors. Soften the strict rule during clone.
   const cloneSoftenFilter = !!state.cloneMode;
@@ -1021,7 +961,7 @@ function applyFilters(tasks, opts = {}) {
     if (useSubset && !subsetSet.has(t.project)) return false;
     // Machine subset filter:
     //   - In clone mode: pass shared (machine=null) OR in-subset.
-    //   - Otherwise: STRICT — only in-subset rows pass.
+    //   - Otherwise: STRICT ΓÇö only in-subset rows pass.
     if (useMachineFilter) {
       if (t.machine == null) {
         if (!cloneSoftenFilter) return false;
@@ -1035,19 +975,19 @@ function applyFilters(tasks, opts = {}) {
     // real projects, not work people are doing. Sales projects are
     // pre-quote, no real allocation yet. Both are noise on aggregate views.
     // (If the user explicitly opens a template or Sales project tab,
-    // we DO show its tasks — that branch hits the `project` check above.)
+    // we DO show its tasks ΓÇö that branch hits the `project` check above.)
     if (!project && t.project &&
         (isTemplateProject(t.project) || projectWorkspace(t.project) === 'Sales')) {
       return false;
     }
-    // Personal mode: hide anchor milestones entirely — this view is "one
+    // Personal mode: hide anchor milestones entirely ΓÇö this view is "one
     // person across many projects", so per-project anchors like Receipt of
     // PO / FAT / Ship Machine are noise.
     if (personal && inferredAnchorKey(t)) return false;
     // Strict assignee filter. The personal view only shows tasks/actions
     // DIRECTLY assigned to the signed-in person. If a task gets reassigned
     // away from them (e.g. to a placeholder), it drops off their view
-    // immediately on next render — no stale leftovers.
+    // immediately on next render ΓÇö no stale leftovers.
     if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
       return false;
     }
@@ -1055,15 +995,15 @@ function applyFilters(tasks, opts = {}) {
       const hay = `${t.name||''} ${t.notes||''} ${t.assignee||''} ${t.project||''} ${t.phase||''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    // Completed handling — two independent controls:
-    //   • Filter "Show completed" (popover): when ON, show ONLY completed
-    //     items. When OFF, no completion filtering — everything passes.
-    //   • View toggle "Hide completed" (View menu): when ON, hides completed
+    // Completed handling ΓÇö two independent controls:
+    //   ΓÇó Filter "Show completed" (popover): when ON, show ONLY completed
+    //     items. When OFF, no completion filtering ΓÇö everything passes.
+    //   ΓÇó View toggle "Hide completed" (View menu): when ON, hides completed
     //     items entirely. Independent of the filter.
     const isDone = (t.progress || 0) >= 100;
     if (qf.showCompleted && !isDone) return false;
     if (state.scheduleView?.hideCompleted && isDone) return false;
-    // "Milestones only" filter — straightforward.
+    // "Milestones only" filter ΓÇö straightforward.
     if (qf.milestones && !t.is_milestone) return false;
 
     // v5.9: milestones and anchors are now subject to the SAME quick-filter
@@ -1099,7 +1039,7 @@ function applyFilters(tasks, opts = {}) {
 }
 
 function phaseChip(phaseKey) {
-  if (!phaseKey) return '<span class="phase-chip" style="background:#f1f5f9;color:#64748b">—</span>';
+  if (!phaseKey) return '<span class="phase-chip" style="background:#f1f5f9;color:#64748b">ΓÇö</span>';
   const p = PHASE_BY_KEY[phaseKey];
   if (!p) return `<span class="phase-chip" style="background:#f1f5f9;color:#64748b">${escapeHtml(phaseKey)}</span>`;
   return `<span class="phase-chip" style="background:${p.color};color:${p.text}">${escapeHtml(p.label)}</span>`;
@@ -1109,12 +1049,12 @@ function phaseChip(phaseKey) {
 function cellHtml(t, key) {
   const cls = colClass(key);
   switch (key) {
-    case 'line':     return `<td class="${cls}" data-col="line"><span class="row-drag" draggable="true" title="Drag to move">⋮⋮</span><span class="line-num"></span></td>`;
+    case 'line':     return `<td class="${cls}" data-col="line"><span class="row-drag" draggable="true" title="Drag to move">Γï«Γï«</span><span class="line-num"></span></td>`;
     case 'name': {
       // Task column layout:
-      //   LEFT:  [✓] name [drift chip]
+      //   LEFT:  [Γ£ô] name [drift chip]
       //   RIGHT: [% complete pill] for duration tasks, [checkbox] for milestones
-      //          (NOTHING for Backlog — it's a duration-only spine task)
+      //          (NOTHING for Backlog ΓÇö it's a duration-only spine task)
       const done = (t.progress || 0) >= 100;
       const isAnchor = !!inferredAnchorKey(t);
       const drift = taskScheduleDelta(t);
@@ -1123,42 +1063,31 @@ function cellHtml(t, key) {
         const ahead = drift > 0;
         driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
       }
-      // Backlog rows derive % from today's position between start/end (it's
-      // not real work, just calendar ramp). All other rows read the stored
-      // t.progress. Helper handles both cases.
-      const pct       = getEffectiveProgress(t);
-      const isBacklog = isBacklogRow(t);
+      const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
       let rightWidget = '';
       if (!t.is_milestone && !isAnchor) {
         // Duration task: pill renders as a small PROGRESS BAR. The fill width
-        // tracks the percent (0–100%), color tracks the schedule status:
+        // tracks the percent (0ΓÇô100%), color tracks the schedule status:
         //   - is-zero    (0%):      empty pill outline, "0%" text in slate
-        //   - is-behind  (1–99% behind): red fill at pct% width, black text
-        //   - is-ontrack (1–99% on/ahead): green fill at pct% width, black text
-        //   - is-done    (100%):    full green fill, white ✓ text
-        // Was a flat solid-colored pill — that felt heavy (especially the
+        //   - is-behind  (1ΓÇô99% behind): red fill at pct% width, black text
+        //   - is-ontrack (1ΓÇô99% on/ahead): green fill at pct% width, black text
+        //   - is-done    (100%):    full green fill, white Γ£ô text
+        // Was a flat solid-colored pill ΓÇö that felt heavy (especially the
         // dark green 100% state). The bar version visually answers "how far
         // along is this?" without you having to read the number.
         let pctClass = 'is-zero';
         let pctText = `${pct}%`;
         if (pct >= 100) {
           pctClass = 'is-done';
-          pctText = '✓';
+          pctText = 'Γ£ô';
         } else if (pct > 0) {
           pctClass = drift < 0 ? 'is-behind' : 'is-ontrack';
         }
-        // Fill width: clamp to 0–100. At 100% the .is-done rules cover the
-        // whole pill via CSS anyway, but we still set width here so 99 → 100
+        // Fill width: clamp to 0ΓÇô100. At 100% the .is-done rules cover the
+        // whole pill via CSS anyway, but we still set width here so 99 ΓåÆ 100
         // transitions render correctly.
         const fillW = Math.max(0, Math.min(100, pct));
-        // Backlog has its % auto-derived from the calendar — disable the
-        // click-to-edit data-attrs so we don't enter inline-edit mode, and
-        // update the tooltip so it's clear why.
-        const pillDataAttrs = isBacklog
-          ? `title="Backlog auto-tracks today's date between start and end — change duration instead to adjust"`
-          : `data-edit-pill data-edit-col="progress" data-task-id="${t.id}" title="% complete — click to edit"`;
-        const autoCls = isBacklog ? ' is-auto' : '';
-        rightWidget = `<span class="name-edit-pill name-pct-pill ${pctClass}${autoCls}" ${pillDataAttrs}>`
+        rightWidget = `<span class="name-edit-pill name-pct-pill ${pctClass}" data-edit-pill data-edit-col="progress" data-task-id="${t.id}" title="% complete ΓÇö click to edit">`
           + `<span class="name-pct-fill" style="width:${fillW}%"></span>`
           + `<span class="name-pct-text">${pctText}</span>`
           + `</span>`;
@@ -1167,7 +1096,7 @@ function cellHtml(t, key) {
         // binary (0 or 100). Anchors already render via anchorRowHtml with a
         // green chip, but non-anchor milestones (Mech 2 Release, BOM Review,
         // Order Long Lead, etc.) need a way to mark them complete.
-        rightWidget = `<button type="button" class="name-milestone-check ${done ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${done ? 'Mark not complete' : 'Mark complete'}">${done ? '✓' : ''}</button>`;
+        rightWidget = `<button type="button" class="name-milestone-check ${done ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${done ? 'Mark not complete' : 'Mark complete'}">${done ? 'Γ£ô' : ''}</button>`;
       }
       const classes = [cls];
       if (rightWidget) classes.push('has-pills');
@@ -1182,45 +1111,43 @@ function cellHtml(t, key) {
       //     pre   bold name  dur-post
       //
       // The pre-allocation text is hidden via .hide-alloc-pre on body
-      // (controlled by the α icon in the View pill). Both alloc + dur are
-      // still click-to-edit via data-edit-pill — they look like plain text
+      // (controlled by the ╬▒ icon in the View pill). Both alloc + dur are
+      // still click-to-edit via data-edit-pill ΓÇö they look like plain text
       // but pick up an underline on hover. Skipped for milestones / anchors /
-      // backlog (no meaningful allocation × duration there).
+      // backlog (no meaningful allocation ├ù duration there).
       let allocPre = '';
       let dashSep = '';
       let durEl = '';
       if (!t.is_milestone && !isAnchor) {
         const allocVal = t.allocation == null ? null : Number(t.allocation);
         const durDays  = Number(t.duration_days) || 0;
-        // Half-week snap — Dan's rule applies EVERYWHERE: weeks values
-        // round to the nearest 0.5, never 0.1 or 0.2 increments.
-        const wks = durDays > 0 ? Math.round((durDays / 5) * 2) / 2 : 0;
-        const allocText = allocVal != null && allocVal > 0 ? `${allocVal}%` : '—%';
-        // v4.43: uppercase W in duration text per user request — "10W" not "10w".
-        const wksText   = wks > 0 ? `${wks}W` : '—W';
+        const wks = durDays > 0 ? Math.round(durDays / 5 * 10) / 10 : 0;  // 1 decimal week
+        const allocText = allocVal != null && allocVal > 0 ? `${allocVal}%` : 'ΓÇö%';
+        // v4.43: uppercase W in duration text per user request ΓÇö "10W" not "10w".
+        const wksText   = wks > 0 ? `${wks}W` : 'ΓÇöW';
         // v4.36: Sales-workspace tasks NO LONGER auto-hide allocation in
-        // the Task column meta. The α icon in the View pill is now the
-        // single authoritative control for alloc visibility — turn it off
+        // the Task column meta. The ╬▒ icon in the View pill is now the
+        // single authoritative control for alloc visibility ΓÇö turn it off
         // when presenting to a customer / sales rep (hides alloc across
         // ALL projects regardless of workspace), turn it on otherwise.
         // Earlier (v4.22) Sales tasks hid alloc unconditionally even with
-        // α on, which made the toggle look broken when the user was
+        // ╬▒ on, which made the toggle look broken when the user was
         // viewing the SDC_Sales_Template.
-        allocPre = `<span class="name-cell-alloc-pre" data-edit-pill data-edit-col="allocation" data-task-id="${t.id}" title="Allocation — click to edit">${allocText}</span>`;
-        dashSep  = `<span class="name-cell-dash">–</span>`;
+        allocPre = `<span class="name-cell-alloc-pre" data-edit-pill data-edit-col="allocation" data-task-id="${t.id}" title="Allocation ΓÇö click to edit">${allocText}</span>`;
+        dashSep  = `<span class="name-cell-dash">ΓÇô</span>`;
         // v4.43: link badge moved BEFORE the duration value so the dur
         // value stays right-aligned at the column's right edge (consistent
         // across all rows whether linked or not). Layout reads as
-        // "🔗24 10W" — badge on the left, duration on the right. Badge
+        // "≡ƒöù24 10W" ΓÇö badge on the left, duration on the right. Badge
         // is still inside .name-cell-dur with pointer-events: none so
         // clicks pass through to the dur for re-editing.
         let linkBadge = '';
         if (t.duration_link_task_id) {
           const earlyLine = lineByTaskId[t.duration_link_task_id];
-          const earlyText = earlyLine != null ? `🔗${earlyLine}` : '🔗?';
+          const earlyText = earlyLine != null ? `≡ƒöù${earlyLine}` : '≡ƒöù?';
           linkBadge = `<span class="name-cell-dur-link" data-link-target-id="${t.duration_link_task_id}">${earlyText}</span> `;
         }
-        durEl = `<span class="name-cell-dur" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to edit (e.g. 5d, 2w, or = then click another row to link)">${linkBadge}${wksText}</span>`;
+        durEl = `<span class="name-cell-dur" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration ΓÇö click to edit (e.g. 5d, 2w, or = then click another row to link)">${linkBadge}${wksText}</span>`;
       }
       // v4.39: dropped the .name-cell-row flex wrapper. alloc, dash, and
       // dur are now ABSOLUTE-POSITIONED inside the TD (deterministic offsets
@@ -1245,15 +1172,15 @@ function cellHtml(t, key) {
       return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
-      // SALES workspaces blank out the assignee — pre-quote work isn't
+      // SALES workspaces blank out the assignee ΓÇö pre-quote work isn't
       // staffed yet, and showing "ME Placeholder" or a real name on a sales
       // schedule risks accidentally communicating who'll own the work
       // before the deal is signed.
       if (isSalesProjectTask(t)) {
-        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry Assigned To — staff after the project moves to Active."></td>`;
+        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry Assigned To ΓÇö staff after the project moves to Active."></td>`;
       }
-      // When this task is over-allocated for its assignee — i.e. its priority pushes the
-      // running daily total over 100% somewhere in its span — flag the cell so the user
+      // When this task is over-allocated for its assignee ΓÇö i.e. its priority pushes the
+      // running daily total over 100% somewhere in its span ΓÇö flag the cell so the user
       // sees in the Schedule view that this person can't actually accomplish all their
       // higher-priority work plus this one.
       const over = state.overAllocatedTaskIds && state.overAllocatedTaskIds.has(t.id);
@@ -1262,8 +1189,8 @@ function cellHtml(t, key) {
       if (over) classes.push('over-allocated');
       if (ph)   classes.push('placeholder-assignee');
       const title = over
-        ? 'title="Over-allocated — earlier-priority tasks already fill this person\'s capacity"'
-        : (ph ? 'title="Placeholder — replace with a real team member when staffing this task"' : '');
+        ? 'title="Over-allocated ΓÇö earlier-priority tasks already fill this person\'s capacity"'
+        : (ph ? 'title="Placeholder ΓÇö replace with a real team member when staffing this task"' : '');
       return `<td class="${classes.join(' ')}" data-col="assignee" ${title}>${escapeHtml(t.assignee || '')}</td>`;
     }
     case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
@@ -1275,13 +1202,13 @@ function cellHtml(t, key) {
       // differs from when the checkbox was clicked.
       return `<td class="${cls}" data-col="completed">${fmtDate(t.completed_on)}</td>`;
     case 'duration': {
-      // v5.11: no backlog special-case. Every row uses the same path —
+      // v5.11: no backlog special-case. Every row uses the same path ΓÇö
       // click cell, type "3w" / "5d" / etc., Enter. The hover pencil
       // signals "editable" on every row.
       let label = durationLabel(t);
-      if (!label) label = '—';
+      if (!label) label = 'ΓÇö';
       else if (label === '0') label = t.is_milestone ? '0d' : '0';
-      return `<td class="${cls} is-editable-duration" data-col="duration" title="Click to edit — e.g. 3w, 5d, 2w">${escapeHtml(label)}<span class="duration-edit-hint">✎</span></td>`;
+      return `<td class="${cls} is-editable-duration" data-col="duration" title="Click to edit ΓÇö e.g. 3w, 5d, 2w">${escapeHtml(label)}<span class="duration-edit-hint">Γ£Ä</span></td>`;
     }
     case 'pred':     return `<td class="${cls}" data-col="pred"></td>`; /* filled in by updateLineNumbers */
     case 'progress': {
@@ -1289,20 +1216,20 @@ function cellHtml(t, key) {
       return `<td class="${cls}" data-col="progress"><span class="progress-bar"><span style="width:${p}%"></span></span> ${p}%</td>`;
     }
     case 'allocation': {
-      // SALES workspaces blank the allocation cell — see meta-row / assignee
+      // SALES workspaces blank the allocation cell ΓÇö see meta-row / assignee
       // notes above. Sales work is pre-quote so allocation isn't meaningful.
       if (isSalesProjectTask(t)) {
-        return `<td class="${cls} sales-suppressed" data-col="allocation" title="Sales schedules don't carry allocations — set after the project moves to Active."></td>`;
+        return `<td class="${cls} sales-suppressed" data-col="allocation" title="Sales schedules don't carry allocations ΓÇö set after the project moves to Active."></td>`;
       }
       // Default to 100 for tasks predating this column. Milestones shouldn't show an
-      // allocation since they don't consume time — render a dash so they read as N/A.
-      const a = t.is_milestone ? '—' : (t.allocation == null ? 90 : t.allocation);
-      return `<td class="${cls}" data-col="allocation">${a === '—' ? '—' : `${a}%`}</td>`;
+      // allocation since they don't consume time ΓÇö render a dash so they read as N/A.
+      const a = t.is_milestone ? 'ΓÇö' : (t.allocation == null ? 90 : t.allocation);
+      return `<td class="${cls}" data-col="allocation">${a === 'ΓÇö' ? 'ΓÇö' : `${a}%`}</td>`;
     }
     case 'priority': {
-      // Per-assignee priority. Value displayed verbatim — the resources view is the
+      // Per-assignee priority. Value displayed verbatim ΓÇö the resources view is the
       // primary editor (drag/click pills there); this column is mostly for visibility.
-      const p = t.priority == null ? '—' : t.priority;
+      const p = t.priority == null ? 'ΓÇö' : t.priority;
       return `<td class="${cls}" data-col="priority">${p}</td>`;
     }
     case 'notes': {
@@ -1328,7 +1255,7 @@ function rowColorKey(task) {
     if (task.sub_department === 'shop')        return 'shop-combined';
     return task.sub_department; // mech, controls, general, build, wire
   }
-  // Department-level — Engineering and Shop are the combined blend palette.
+  // Department-level ΓÇö Engineering and Shop are the combined blend palette.
   // Teardown (section 50, shop-only) reuses the shop palette.
   if (task.department === 'engineering') return 'eng-combined';
   if (task.department === 'shop')        return 'shop-combined';
@@ -1346,14 +1273,14 @@ function rowHtml(t, depth = 0) {
   const colorKey = rowColorKey(t);
   // The left-edge stripe on the name column uses the HIERARCHY color (mech blue,
   // controls green, build orange, wire yellow, etc.) so every task in a section
-  // gets the right stripe — regardless of whether its phase field is set. Falls
+  // gets the right stripe ΓÇö regardless of whether its phase field is set. Falls
   // back to phase color, then to transparent.
   const hier = HIERARCHY_BAR_COLORS && HIERARCHY_BAR_COLORS[colorKey];
   const stripe = (hier && hier.fill) || PHASE_BY_KEY[t.phase]?.color || 'transparent';
-  // Row itself is NOT draggable — only the .row-drag handle in the line column is, so the
+  // Row itself is NOT draggable ΓÇö only the .row-drag handle in the line column is, so the
   // rest of the row is free for click-drag horizontal panning of the grid panel.
   // Non-anchor milestones (e.g. Mech 2 Release, BOM Review) also get the "done"
-  // treatment so all 0-duration rows read consistently — green check on the row
+  // treatment so all 0-duration rows read consistently ΓÇö green check on the row
   // chip + a diamond fill that matches anchors. Anchors take their own path via
   // anchorRowHtml above; this is for the regular bucket-resident milestones.
   const milestoneDone = t.is_milestone && (t.progress || 0) >= 100 ? ' milestone-done' : '';
@@ -1367,7 +1294,7 @@ function rowHtml(t, depth = 0) {
   const actionCls = t.is_action ? ' is-action' : '';
   // v4.49: actions past their due date but not marked complete paint
   // RED in both the grid row and (for milestone-style actions) the Gantt
-  // diamond. Limited to actions for now — regular scheduled work has its
+  // diamond. Limited to actions for now ΓÇö regular scheduled work has its
   // own drift chip system. Today is computed once at render time so we
   // don't re-evaluate per row.
   const todayISO = new Date().toISOString().slice(0, 10);
@@ -1377,13 +1304,13 @@ function rowHtml(t, depth = 0) {
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
   const cols = state.layout.columnOrder.length;
-  const caret = collapsed ? '▸' : '▾';
+  const caret = collapsed ? 'Γû╕' : 'Γû╛';
   const attrs = Object.entries(dataAttrs)
     .map(([k, v]) => ` data-${k}="${escapeHtml(String(v))}"`).join('');
   // v4.29: wrap the leading "NN " section number (e.g. "10 DESIGN & BUILD")
   // in its own <span> so customer-view CSS can hide just the number portion.
   // SDC team uses the section numbers internally; customers don't care about
-  // "10 / 40 / 50" — they just see the section name.
+  // "10 / 40 / 50" ΓÇö they just see the section name.
   const labelStr = String(label || '');
   const m = labelStr.match(/^(\d+\s+)(.*)$/);
   const labelHtml = m
@@ -1413,7 +1340,7 @@ function renderTable() {
   }
   // Only-critical mode: restrict the visible set to tasks on the critical-path
   // chain. Anchor milestones are always kept (Receipt of PO / FAT / Ship Machine)
-  // since they're the spine markers — Ship Machine sits outside the path but is
+  // since they're the spine markers ΓÇö Ship Machine sits outside the path but is
   // still useful context. If the user wants ship-machine hidden too, they can
   // collapse the section.
   if (state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath) {
@@ -1435,8 +1362,8 @@ function renderTable() {
   // Bucket tasks by hierarchy path. Most anchor milestones render as fixed rows
   // outside the section walk (Receipt of PO above 10, FAT between 40/50, Ship
   // Machine between teardown and install). Mech 1 Release and Machine Power-Up
-  // are the exceptions — they live INSIDE the hierarchy buckets (10 → Mech Eng
-  // and 10 → Shop → Wire respectively) so they flow with their team's work.
+  // are the exceptions ΓÇö they live INSIDE the hierarchy buckets (10 ΓåÆ Mech Eng
+  // and 10 ΓåÆ Shop ΓåÆ Wire respectively) so they flow with their team's work.
   // Anchor styling is layered on at render time via renderTaskRow's branching.
   const INLINE_ANCHORS = new Set(['mech_release_1', 'machine_power_up']);
   const buckets = {};
@@ -1446,7 +1373,7 @@ function renderTable() {
     const path = groupPath(t.phase_group, t.department, t.sub_department);
     (buckets[path] ||= []).push(t);
   }
-  // Sort each bucket — by start_date when the user has flipped the "By date" toggle,
+  // Sort each bucket ΓÇö by start_date when the user has flipped the "By date" toggle,
   // otherwise by their manual sort_order so drag-reordering sticks. In BOTH cases,
   // action items (is_action = 1) sort to the BOTTOM of their bucket so scheduled
   // work appears first and actions read as "extras tucked under their section."
@@ -1455,7 +1382,7 @@ function renderTable() {
     if (state.scheduleView.sortByStart) {
       arr.sort((a, b) =>
         ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0))
-        || (a.start_date || '￿').localeCompare(b.start_date || '￿')
+        || (a.start_date || '∩┐┐').localeCompare(b.start_date || '∩┐┐')
         || (a.sort_order || 0) - (b.sort_order || 0));
     } else {
       arr.sort((a, b) =>
@@ -1471,7 +1398,7 @@ function renderTable() {
   // Power-Up flow into their section's flat list; the other anchors render
   // outside the walk regardless of what their stored phase_group says.
   // Personal mode (signed in as a specific person on Actions tab) forces
-  // flatten — there's no point in showing dept / sub-dept headers when the
+  // flatten ΓÇö there's no point in showing dept / sub-dept headers when the
   // whole view is one person who typically lives in one department.
   const flattenEffective = state.scheduleView.flatten || isPersonalMode();
   const flatBySection = {};
@@ -1490,26 +1417,20 @@ function renderTable() {
   // hierarchy as project-spine markers. Receipt of PO sits above section 10; FAT
   // sits between sections 40 and 50; Ship Machine sits between TEARDOWN and INSTALL
   // inside section 50. EXACTLY ONE of each is rendered (oldest wins on duplicates).
-  // The row stays plain white — only the task NAME gets the configured anchor color
+  // The row stays plain white ΓÇö only the task NAME gets the configured anchor color
   // as a small chip, so the marker stands out without flooding the row.
   const anchorRowHtml = (t, opts = {}) => {
     const order = state.layout.columnOrder;
     const isDone = (t.progress || 0) >= 100;
     const isBacklog = !!opts.backlog;
-    // v4.84: backlog is "expired" once its end_date is in the past — the
+    // v4.84: backlog is "expired" once its end_date is in the past ΓÇö the
     // calendar time it represented has elapsed. We don't check it off; we
     // just signal with a lime-green border that the backlog window is over.
     const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
     const backlogExpired = isBacklog && t.end_date && new Date(t.end_date).getTime() < todayMs;
     const cells = order.map(k => {
       if (k === 'name') {
-        // Click-to-toggle check pinned to the RIGHT of the name cell,
-        // same slot regular milestones use (via name-cell-pills) so
-        // every checkable row reads consistently. Backlog rows skip the
-        // check — they're a duration spine, not a checkable event.
-        const checkBtn = !isBacklog
-          ? `<span class="name-cell-pills"><button type="button" class="name-milestone-check ${isDone ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${isDone ? 'Mark not complete' : 'Mark complete'}">${isDone ? '✓' : ''}</button></span>`
-          : '';
+        const check = (isDone && !isBacklog) ? '<span class="anchor-done-check">Γ£ô</span> ' : '';
         const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}`;
         // Multi-machine: prepend the M1/M2/M3 pill on anchor rows too, so
         // M2.FAT visually reads as "M2" before the green FAT chip. Hidden
@@ -1519,15 +1440,14 @@ function renderTable() {
           const c = getMachineColor(t.project, t.machine);
           machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="background:${c.hex};color:${c.text};border-color:${c.hex};">${escapeHtml(t.machine)}</span> `;
         }
-        const tdCls = checkBtn ? 'has-pills' : '';
-        return `<td data-col="name" class="${tdCls}">${machineChip}<span class="${chipCls}">${escapeHtml(t.name || '')}</span>${checkBtn}</td>`;
+        return `<td data-col="name">${machineChip}<span class="${chipCls}">${check}${escapeHtml(t.name || '')}</span></td>`;
       }
       return cellHtml(t, k);
     }).join('');
     // groupTop: black border ABOVE the row (default true for unrelated anchors)
     // groupBottom: black border BELOW the row (default true for unrelated anchors)
     // When PO + Backlog are stacked, PO gets groupTop only and Backlog gets
-    // groupBottom only — they read as one continuous spine block.
+    // groupBottom only ΓÇö they read as one continuous spine block.
     const groupTop    = opts.groupTop    !== false;
     const groupBottom = opts.groupBottom !== false;
     const cls = `depth-1 anchor-row${isDone && !isBacklog ? ' is-done' : ''}${isBacklog ? ' backlog-row' : ''}${!groupTop ? ' no-top-border' : ''}${!groupBottom ? ' no-bottom-border' : ''}`;
@@ -1544,7 +1464,7 @@ function renderTable() {
   // pickAll: in multi-machine projects each machine has its own FAT /
   // Ship Machine anchor (Power-Up flows through Section 10's inline
   // walk). Return all of them sorted shared-first then by machine name,
-  // so the grid renders M1.FAT, M2.FAT, … side by side at the spine
+  // so the grid renders M1.FAT, M2.FAT, ΓÇª side by side at the spine
   // slot. Receipt of PO stays shared so the single-pick is right.
   const pickAll = (key) => {
     const list = candidates.filter(([, k]) => k === key).map(([t]) => t);
@@ -1560,23 +1480,23 @@ function renderTable() {
   const receiptAnchor = pickOldest('receipt_of_po');
   const fatAnchors    = pickAll('fat');
   const shipAnchors   = pickAll('ship_machine');
-  // Receipt of PO — top of the schedule, above section 10.
+  // Receipt of PO ΓÇö top of the schedule, above section 10.
   if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
   // Every non-anchor task with no phase_group renders above section 10,
-  // ordered by sort_order. This is the "above section 10" zone — the
+  // ordered by sort_order. This is the "above section 10" zone ΓÇö the
   // Backlog row lives here, and so do any rows the user adds below an
-  // anchor via right-click → "+ Add row below."
+  // anchor via right-click ΓåÆ "+ Add row below."
   const aboveSectionTasks = filtered
     .filter(t => !inferredAnchorKey(t) && !t.phase_group)
     .slice()
     .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
   for (const t of aboveSectionTasks) html += rowHtml(t, 1);
 
-  // Walk the full canonical hierarchy. Every level renders its header even when empty —
+  // Walk the full canonical hierarchy. Every level renders its header even when empty ΓÇö
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
   // under a phase_group (cross-cutting like Perform FAT), under a department, or under a
   // sub-department. Machine Power-Up flows through the bucket walk like any other Wire
-  // task — its anchor styling is applied by the row renderer below.
+  // task ΓÇö its anchor styling is applied by the row renderer below.
   for (const group of HIERARCHY) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
@@ -1586,28 +1506,27 @@ function renderTable() {
     // Flatten mode: drop every dept/sub-dept header, render this section's tasks as
     // one flat list. Ship Machine still sits in section 50 between teardown and
     // install tasks; FAT still closes section 40.
-    // Helper — pick the right row renderer for a task. Anchor tasks (currently just
+    // Helper ΓÇö pick the right row renderer for a task. Anchor tasks (currently just
     // Machine Power-Up flows through the bucket walk) get the anchor chip styling
     // so they read as spine markers even while sitting inline with their siblings.
     const renderTaskRow = (t, depth) => inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, depth);
 
     if (flattenEffective) {
-      let sectionTasks = flatBySection[group.key] || [];
-      // For section 50, merge Ship Machine anchors into the section list and
-      // sort by start_date so it lands between Teardown and Install regardless
-      // of whether the tasks carry department='install' (sales schedules
-      // clear department to suppress the subheaders, breaking the old
-      // dept-based splice trigger).
-      if (group.key === 'teardown_install' && shipAnchors.length) {
-        const cmp = (a, b) => {
-          const ad = String(a.start_date || '');
-          const bd = String(b.start_date || '');
-          if (ad && bd && ad !== bd) return ad < bd ? -1 : 1;
-          return (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
-        };
-        sectionTasks = [...sectionTasks, ...shipAnchors].sort(cmp);
+      const sectionTasks = flatBySection[group.key] || [];
+      let shipDropped = false;
+      for (const t of sectionTasks) {
+        // For section 50, splice the Ship Machine anchors in once we cross from
+        // teardown work to install work (or as the last rows if everything is
+        // teardown). Sort-by-date naturally orders them correctly.
+        if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped && t.department === 'install') {
+          for (const s of shipAnchors) html += anchorRowHtml(s);
+          shipDropped = true;
+        }
+        html += renderTaskRow(t, 2);
       }
-      for (const t of sectionTasks) html += renderTaskRow(t, 2);
+      if (group.key === 'teardown_install' && shipAnchors.length && !shipDropped) {
+        for (const s of shipAnchors) html += anchorRowHtml(s);
+      }
       // FAT anchors at the end of section 40 even in flatten mode (collapses with the section).
       if (group.key === 'machine_testing' && fatAnchors.length) {
         for (const f of fatAnchors) html += anchorRowHtml(f);
@@ -1615,44 +1534,23 @@ function renderTable() {
       continue;
     }
 
-    // Tasks pinned at the phase_group level (no department).
-    // Sales-mode section 50 puts every row at the group level (Teardown /
-    // Ship Machine / Install with no dept subheaders), so splice Ship
-    // Machine anchors in by sort_order here. Set a flag so the dept loop
-    // below doesn't render Ship Machine a second time.
-    let groupLevelTasks = buckets[gPath] || [];
-    let shipDroppedAtGroupLevel = false;
-    if (group.key === 'teardown_install' && shipAnchors.length && groupLevelTasks.length) {
-      groupLevelTasks = [...groupLevelTasks, ...shipAnchors]
-        .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
-      shipDroppedAtGroupLevel = true;
-    }
+    // Tasks pinned at the phase_group level (no department)
+    const groupLevelTasks = buckets[gPath] || [];
     for (const t of groupLevelTasks) html += renderTaskRow(t, 2);
     for (const dept of group.departments) {
-      // Ship Machine sits between TEARDOWN and INSTALL inside section 50 — it's the
+      // Ship Machine sits between TEARDOWN and INSTALL inside section 50 ΓÇö it's the
       // gate where the disassembled machine leaves SDC for the customer's site.
-      // Multi-machine: render one Ship row per machine. Skip if we already
-      // dropped them at the group level (sales schedules).
-      if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length && !shipDroppedAtGroupLevel) {
+      // Multi-machine: render one Ship row per machine.
+      if (group.key === 'teardown_install' && dept.key === 'install' && shipAnchors.length) {
         for (const s of shipAnchors) html += anchorRowHtml(s);
       }
       const dPath = groupPath(group.key, dept.key);
       const dCollapsed = collapsedGroups.has(dPath);
-      // Count tasks at the dept level + every sub-dept underneath. If the
-      // total is zero, skip rendering the dept header entirely — sales
-      // schedules + section 50 / install / teardown live at the section
-      // level with no dept, and the empty SHOP / ENGINEERING / TEARDOWN
-      // skeleton headers were just noise.
-      const deptTaskCount =
-        (buckets[dPath]?.length || 0)
-        + dept.subs.reduce((sum, sub) =>
-            sum + (buckets[groupPath(group.key, dept.key, sub.key)]?.length || 0), 0);
-      if (deptTaskCount === 0) continue;
-      // For section 10, the Engineering and Shop departments are pure containers —
+      // For section 10, the Engineering and Shop departments are pure containers ΓÇö
       // every task lives in a sub-department under them. The container header reads as
       // visual noise, so we skip it and let the sub-deps render directly under the
       // section. Procurement (no subs) and the section 40/50 dept-only groups still
-      // get headers — those rows hold tasks themselves.
+      // get headers ΓÇö those rows hold tasks themselves.
       const skipDeptHeader = group.key === 'design_build' && dept.subs.length > 0;
       if (!skipDeptHeader) {
         html += headerRowHtml(2, dept.label, dPath, dCollapsed,
@@ -1665,14 +1563,11 @@ function renderTable() {
         for (const t of deptLevelTasks) html += renderTaskRow(t, 3);
         for (const sub of dept.subs) {
           const sPath = groupPath(group.key, dept.key, sub.key);
-          const tasks = buckets[sPath] || [];
-          // Skip empty sub-dept headers — same rule as dept-level above:
-          // no tasks → no header. Keeps sales projects clean.
-          if (tasks.length === 0) continue;
           const sCollapsed = collapsedGroups.has(sPath);
           html += headerRowHtml(3, sub.label, sPath, sCollapsed,
             { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key });
           if (sCollapsed) continue;
+          const tasks = buckets[sPath] || [];
           for (const t of tasks) html += renderTaskRow(t, 4);
         }
       } else {
@@ -1680,7 +1575,7 @@ function renderTable() {
         for (const t of tasks) html += renderTaskRow(t, 3);
       }
     }
-    // FAT anchors close section 40 — they're the gate that ends machine testing.
+    // FAT anchors close section 40 ΓÇö they're the gate that ends machine testing.
     // Rendered INSIDE section 40's iteration so that collapsing the section also
     // tucks them away. Multi-machine: one row per machine.
     if (group.key === 'machine_testing' && fatAnchors.length) {
@@ -1689,7 +1584,7 @@ function renderTable() {
   }
 
   // No UNASSIGNED bucket and no orphan auto-promote. Orphans (tasks with no phase_group
-  // and not an anchor) simply don't render — server-side dedupe handles cleanup.
+  // and not an anchor) simply don't render ΓÇö server-side dedupe handles cleanup.
 
   tbody.innerHTML = html;
   if (state.layout) applyColumnVisibility();
@@ -1701,15 +1596,15 @@ function renderTable() {
       const path = tr.dataset.path;
       if (collapsedGroups.has(path)) collapsedGroups.delete(path);
       else collapsedGroups.add(path);
-      // Re-render BOTH grid and Gantt — the Gantt filters by collapsed groups too,
+      // Re-render BOTH grid and Gantt ΓÇö the Gantt filters by collapsed groups too,
       // so its bars hide / re-appear in lockstep with the grid rows.
       renderTable();
       renderGantt();
     });
   });
 
-  // v5.2: backlog duration is now a regular click-to-edit cell — no special
-  // select dropdown wiring needed. handleCellClick → enterCellEdit handles
+  // v5.2: backlog duration is now a regular click-to-edit cell ΓÇö no special
+  // select dropdown wiring needed. handleCellClick ΓåÆ enterCellEdit handles
   // it via the standard "duration" column flow.
 
   attachRowDragHandlers(tbody);
@@ -1752,7 +1647,7 @@ function attachRowDragHandlers(tbody) {
       clearDropMarkers();
       tr.classList.add('drop-target');
       if (tr.dataset.id) {
-        // Task row — pick before/after based on cursor position.
+        // Task row ΓÇö pick before/after based on cursor position.
         const rect = tr.getBoundingClientRect();
         const after = (e.clientY - rect.top) > rect.height / 2;
         tr.classList.add(after ? 'drop-after' : 'drop-before');
@@ -1813,11 +1708,11 @@ function attachRowDragHandlers(tbody) {
 }
 
 // Clone-mode click handler. In clone mode the schedule grid becomes a
-// row-selection tool — NO cell editors open, no pills, no drag handles.
+// row-selection tool ΓÇö NO cell editors open, no pills, no drag handles.
 // Every click on a tbody row is eaten. Source-machine rows toggle their
 // membership in includeIds; other rows (shared anchors etc.) are inert.
 // The ONLY interactive element we let through is the inline
-// .clone-pred-editor (the input + OK / ✕ buttons), so the user can
+// .clone-pred-editor (the input + OK / Γ£ò buttons), so the user can
 // type into it without it being eaten by row-selection.
 //
 // Returns true when the event was handled (caller skips its other
@@ -1829,17 +1724,17 @@ function handleCloneModeRowClick(e) {
   // Let the inline pred editor keep its own click semantics.
   if (e.target.closest('.clone-pred-editor')) return false;
   // Anything else inside the table body is eaten in clone mode. Even
-  // clicks on shared-anchor rows (machine=null) are blocked — the
-  // user is focused on the M1 → M2 flow and shouldn't be opening
+  // clicks on shared-anchor rows (machine=null) are blocked ΓÇö the
+  // user is focused on the M1 ΓåÆ M2 flow and shouldn't be opening
   // random cell editors mid-clone.
   e.preventDefault();
   e.stopPropagation();
   if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
   const tr = e.target.closest('tr[data-id]');
-  if (!tr) return true;   // empty area inside tbody — still eat the click
+  if (!tr) return true;   // empty area inside tbody ΓÇö still eat the click
   const id = Number(tr.dataset.id);
   const t = state.tasks.find(x => x.id === id);
-  // Any task in the project is togglable — including shared anchors above
+  // Any task in the project is togglable ΓÇö including shared anchors above
   // the Build line (PO, Mech Release, Design tasks). Source-machine rows
   // are pre-selected when clone mode opens; shared rows start unselected
   // and the user opts in by clicking.
@@ -1847,7 +1742,7 @@ function handleCloneModeRowClick(e) {
   if (cm.includeIds.has(id)) {
     cm.includeIds.delete(id);
     tr.classList.remove('clone-selected');
-    // Hide the chip but keep the stored value — if the user clicks the
+    // Hide the chip but keep the stored value ΓÇö if the user clicks the
     // row back ON we restore their previous custom pred. Orphan customs
     // are filtered out by includeIds in confirmMachineClone, so leaving
     // them in the Map is harmless.
@@ -1865,7 +1760,7 @@ function handleCloneModeRowClick(e) {
 
 // Clone-mode row double-click: opens a small inline editor for a custom
 // predecessor string on this row. The typed value goes into
-// state.cloneMode.customPredecessors (NOT to the server — it's applied
+// state.cloneMode.customPredecessors (NOT to the server ΓÇö it's applied
 // when the user hits Complete).
 function handleCloneModeRowDblClick(e) {
   const cm = state.cloneMode;
@@ -1888,7 +1783,7 @@ function handleCloneModeRowDblClick(e) {
 
 // Floating popup that hangs off the clicked row. Appended to document.body
 // (NOT inside the row) so the row's opacity / background can't bleed
-// through. Anchored to the row's bounding rect — sits just below the
+// through. Anchored to the row's bounding rect ΓÇö sits just below the
 // row, left-aligned with the task name cell. White opaque background,
 // drop shadow, clearly a popup. Click outside closes (commits).
 function openCustomPredecessorEditor(tr, id) {
@@ -1994,7 +1889,7 @@ function paintClonePredChip(tr, id) {
   if (!host) return;
   const chip = document.createElement('span');
   chip.className = 'clone-pred-chip';
-  chip.title = 'Custom predecessor for the new machine — double-click row to edit';
+  chip.title = 'Custom predecessor for the new machine ΓÇö double-click row to edit';
   chip.textContent = ` pred: ${val}`;
   host.appendChild(chip);
 }
@@ -2041,7 +1936,7 @@ function handleCellClick(e) {
     enterPillEdit(pill, taskId, col);
     return;
   }
-  // Milestone / anchor checkbox — toggle progress between 0 and 100.
+  // Milestone / anchor checkbox ΓÇö toggle progress between 0 and 100.
   const mcheck = e.target.closest('[data-toggle-milestone]');
   if (mcheck) {
     e.stopPropagation();
@@ -2060,7 +1955,7 @@ function handleCellClick(e) {
   const col = td.dataset.col;
   if (col === 'line') return; // auto-computed, not editable
   // Sales-workspace tasks have allocation + assignee suppressed (v4.22).
-  // Clicking those blank cells should be a no-op — the tooltip on the cell
+  // Clicking those blank cells should be a no-op ΓÇö the tooltip on the cell
   // explains why it's empty.
   if (td.classList.contains('sales-suppressed')) return;
   enterCellEdit(td, id, col);
@@ -2078,7 +1973,7 @@ function enterPillEdit(pill, taskId, col) {
   input.classList.add('name-pill-input');
   // v4.32: pin the input's width to the column's expected content size.
   // Without this, the browser-default <input> width (~150px) blows up the
-  // flex layout (alloc/dur) or the absolute-positioned % pill — the editor
+  // flex layout (alloc/dur) or the absolute-positioned % pill ΓÇö the editor
   // appears in a totally different spot than the text the user clicked.
   // The three editable columns all have short values; 44px fits any of them.
   if (col === 'allocation') input.style.width = '36px';
@@ -2095,7 +1990,7 @@ function enterPillEdit(pill, taskId, col) {
   // clicks on the SVG Gantt (SVG elements aren't focusable by default), so
   // the pill editor would just sit there even though the user clearly
   // wanted to dismiss it. A document-level mousedown listener catches the
-  // click ANYWHERE outside the input and finalizes (commits) — same as if
+  // click ANYWHERE outside the input and finalizes (commits) ΓÇö same as if
   // they'd hit Enter.
   const onOutsideMousedown = (e) => {
     if (input.contains(e.target)) return;
@@ -2115,13 +2010,13 @@ function enterPillEdit(pill, taskId, col) {
     if (e.key === 'Enter') { e.preventDefault(); finalize(true); }
     else if (e.key === 'Escape') { e.preventDefault(); finalize(false); }
     // v4.42: when editing a DURATION cell, pressing "=" enters CLICK-PICK
-    // mode — the editor closes WITHOUT saving and the user can click any
+    // mode ΓÇö the editor closes WITHOUT saving and the user can click any
     // OTHER row's duration cell to link to it. This is the UX the user
     // asked for ("click the duration, hit equals, click another duration").
     // Cancelable with Escape or by clicking somewhere that isn't a dur cell.
     else if (col === 'duration' && e.key === '=') {
       e.preventDefault();
-      // Discard the source-side edit — we're not saving a typed duration,
+      // Discard the source-side edit ΓÇö we're not saving a typed duration,
       // we're starting a link pick.
       finalize(false);
       enterDurationLinkPickMode(taskId);
@@ -2134,8 +2029,8 @@ function enterPillEdit(pill, taskId, col) {
 }
 
 // v4.42: Duration LINK click-pick mode.
-// Flow: user clicks dur on row A → editor opens → user hits "=" → editor
-// closes, app shows visual pick-mode hint → user clicks dur on row B →
+// Flow: user clicks dur on row A ΓåÆ editor opens ΓåÆ user hits "=" ΓåÆ editor
+// closes, app shows visual pick-mode hint ΓåÆ user clicks dur on row B ΓåÆ
 // row A links to row B (duration_link_task_id = B.id, duration_days copied
 // from B). Pressing Escape or clicking somewhere that isn't a dur cell
 // cancels without linking.
@@ -2154,7 +2049,7 @@ function enterDurationLinkPickMode(sourceTaskId) {
     // Find the dur cell that was clicked (if any).
     const dur = e.target.closest('.name-cell-dur[data-task-id]');
     if (!dur) {
-      // Clicked outside any duration cell — cancel.
+      // Clicked outside any duration cell ΓÇö cancel.
       cleanup();
       return;
     }
@@ -2188,7 +2083,7 @@ function enterDurationLinkPickMode(sourceTaskId) {
       if (source.is_milestone) data.is_milestone = false;
       data.end_date = addBusinessDays(startStr, days - 1);
     }
-    console.log('[duration link] click-pick: linking task', sourceTaskId, '→ task', targetTaskId, '(', days, 'days )');
+    console.log('[duration link] click-pick: linking task', sourceTaskId, 'ΓåÆ task', targetTaskId, '(', days, 'days )');
     api.update(sourceTaskId, data).then(() => loadTasks()).finally(cleanup);
   };
   const onPickKey = (e) => {
@@ -2206,7 +2101,7 @@ function enterCellEdit(td, taskId, col) {
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
   // v5.1: when editing the NAME column, swap ONLY the .name-cell-main span
-  // for the input — don't wipe the whole td. That keeps the alloc, dur, and
+  // for the input ΓÇö don't wipe the whole td. That keeps the alloc, dur, and
   // %-complete pills visible and constrains the input (and its text-selection
   // highlight) to the name's actual area between them, instead of stretching
   // across the entire Task column.
@@ -2220,7 +2115,7 @@ function enterCellEdit(td, taskId, col) {
   } else if (col === 'duration') {
     // v5.3: duration uses a compact right-aligned input that just replaces
     // the text. Skip the full-cell 'editing' state so the input doesn't
-    // stretch across the entire 80-px column — it sits where the duration
+    // stretch across the entire 80-px column ΓÇö it sits where the duration
     // text used to be, so the selection highlight matches the actual edit area.
     input.classList.add('duration-cell-input');
     td.innerHTML = '';
@@ -2234,7 +2129,7 @@ function enterCellEdit(td, taskId, col) {
   if (typeof input.select === 'function') input.select();
 
   let done = false;
-  // v4.25: same click-outside dismissal as enterPillEdit — blur misses
+  // v4.25: same click-outside dismissal as enterPillEdit ΓÇö blur misses
   // clicks on non-focusable SVG Gantt elements, so we attach an explicit
   // document-level mousedown listener that commits on any outside click.
   const onOutsideMousedown = (e) => {
@@ -2254,7 +2149,7 @@ function enterCellEdit(td, taskId, col) {
   document.addEventListener('mousedown', onOutsideMousedown, true);
 
   // First printable keystroke after entering edit mode replaces the entire cell value
-  // — so click-then-type overwrites without the user having to select-all first.
+  // ΓÇö so click-then-type overwrites without the user having to select-all first.
   // Date inputs are skipped (they have their own keyboard handling).
   let firstType = true;
   input.addEventListener('keydown', (e) => {
@@ -2275,7 +2170,7 @@ function enterCellEdit(td, taskId, col) {
       return;
     }
     // Single printable character (no modifier other than Shift), and we haven't typed
-    // yet → wipe the existing value so the keystroke becomes the entire new content.
+    // yet ΓåÆ wipe the existing value so the keystroke becomes the entire new content.
     const isPrintable = e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
     if (firstType && isPrintable && input.type !== 'date') {
       input.value = '';
@@ -2316,10 +2211,10 @@ function currentCellValue(task, col) {
 function createEditInput(col, value, task) {
   if (col === 'assignee') {
     // Constrained to active team members in the disciplines that plausibly own
-    // this task. CONTROLS ENGINEERING task → only controls engineers. BUILD task
-    // → only builders. Ambiguous buckets (General Engineering, Section 40/50
+    // this task. CONTROLS ENGINEERING task ΓåÆ only controls engineers. BUILD task
+    // ΓåÆ only builders. Ambiguous buckets (General Engineering, Section 40/50
     // dept-level) widen to every relevant discipline. Cross-discipline
-    // assignment isn't offered here — use the Resources view if you really need
+    // assignment isn't offered here ΓÇö use the Resources view if you really need
     // to assign across boundaries.
     //
     // One nuance: if the task is ALREADY assigned to someone from a discipline
@@ -2329,7 +2224,7 @@ function createEditInput(col, value, task) {
     sel.className = 'cell-edit-input';
     const blank = document.createElement('option');
     blank.value = '';
-    blank.textContent = '— unassigned —';
+    blank.textContent = 'ΓÇö unassigned ΓÇö';
     sel.appendChild(blank);
     const relevant = new Set(relevantDisciplinesForTask(task));
     const currentMember = value ? state.team.find(m => m.name === value && m.active !== 0) : null;
@@ -2350,7 +2245,7 @@ function createEditInput(col, value, task) {
       }
       sel.appendChild(og);
     }
-    // Legacy assignees that aren't on the team list at all — show them so old
+    // Legacy assignees that aren't on the team list at all ΓÇö show them so old
     // data is still editable, but flag the row clearly.
     if (value && !seen.has(value)) {
       const og = document.createElement('optgroup');
@@ -2369,7 +2264,7 @@ function createEditInput(col, value, task) {
   if (col === 'start' || col === 'finish' || col === 'completed') {
     input.type = 'date';
   } else if (col === 'progress' || col === 'allocation' || col === 'priority') {
-    // type="text" with inputmode=numeric — looks like a plain text field (no spinner
+    // type="text" with inputmode=numeric ΓÇö looks like a plain text field (no spinner
     // arrows ever, in any browser) but mobile keyboards still pop the number pad.
     // Validation happens in saveCellEdit.
     input.type = 'text';
@@ -2388,7 +2283,7 @@ async function saveCellEdit(id, col, value, task) {
     case 'assignee': data.assignee = (value || '').trim() || null; break;
     case 'completed': data.completed_on = (value || '').trim() || null; break;
     case 'start': {
-      // Snap to a business day — we don't work weekends, so a Saturday start always
+      // Snap to a business day ΓÇö we don't work weekends, so a Saturday start always
       // means the user wants Monday. Duration NEVER changes on a start edit; only the
       // finish shifts to honor whatever working-days the task already had.
       const snapped = value ? snapToBusinessDay(value, 1) : null;
@@ -2406,7 +2301,7 @@ async function saveCellEdit(id, col, value, task) {
       break;
     }
     case 'finish': {
-      // Editing the finish manually overrides duration — recompute it from the new
+      // Editing the finish manually overrides duration ΓÇö recompute it from the new
       // span so the duration column matches what the user just set.
       data.end_date = value || null;
       if (task.is_milestone) data.start_date = value || null;
@@ -2418,10 +2313,10 @@ async function saveCellEdit(id, col, value, task) {
     }
     case 'duration': {
       // v4.41: "=N" LINKS this task's duration to the row on line N.
-      // Regex is permissive — accepts "=24", "=24w", "= 24", "=24 some text",
+      // Regex is permissive ΓÇö accepts "=24", "=24w", "= 24", "=24 some text",
       // anything starting with "=" followed by digits. We extract the
       // digits and look up the line. If the line isn't found, log a
-      // warning and bail (saves nothing — leaves the task untouched).
+      // warning and bail (saves nothing ΓÇö leaves the task untouched).
       // Typing a duration WITHOUT a leading "=" clears the link.
       const trimmed = String(value || '').trim();
       if (trimmed.startsWith('=')) {
@@ -2437,7 +2332,7 @@ async function saveCellEdit(id, col, value, task) {
           break;
         }
         if (targetTaskId === id) {
-          console.warn('[duration link] self-link ignored — task can\'t link to itself');
+          console.warn('[duration link] self-link ignored ΓÇö task can\'t link to itself');
           break;
         }
         const sourceTask = state.tasks.find(t => t.id === targetTaskId);
@@ -2458,14 +2353,14 @@ async function saveCellEdit(id, col, value, task) {
           if (task.is_milestone) data.is_milestone = false;
           data.end_date = addBusinessDays(startStr, days - 1);
         }
-        console.log('[duration link] linking task', id, '→ task', targetTaskId, '(line', targetLine, ') duration', days, 'days');
+        console.log('[duration link] linking task', id, 'ΓåÆ task', targetTaskId, '(line', targetLine, ') duration', days, 'days');
         break;
       }
       // No "=" prefix: standard duration parsing + UNLINK any prior link.
       const days = parseDurationInput(trimmed); // business days
       if (days == null) break;
       data.duration_days = days;
-      // Clear the link (idempotent — server treats null = "no link").
+      // Clear the link (idempotent ΓÇö server treats null = "no link").
       data.duration_link_task_id = null;
       const today = new Date().toISOString().slice(0, 10);
       let startStr = snapToBusinessDay(task.start_date || today, 1);
@@ -2491,14 +2386,14 @@ async function saveCellEdit(id, col, value, task) {
   if (Object.keys(data).length > 0) {
     // Snapshot the task BEFORE the change so the toolbar Undo button can roll
     // it back. We snapshot just the fields we know we might write, so undo
-    // restores precisely what the edit changed — not unrelated columns.
+    // restores precisely what the edit changed ΓÇö not unrelated columns.
     pushUndoSnapshot(task, Object.keys(data), `Edit ${col} on "${task.name || 'task'}"`);
     await api.update(id, data);
   }
 }
 
 // ---------- Undo ----------
-// Simple undo stack — records the BEFORE-state of any task field the user
+// Simple undo stack ΓÇö records the BEFORE-state of any task field the user
 // edits via the grid (cell edits, pill edits) or the lag editor on the Gantt
 // arrows. Click the Undo button in the toolbar to pop the top entry and
 // restore that task's snapshot.
@@ -2506,7 +2401,7 @@ async function saveCellEdit(id, col, value, task) {
 const UNDO_STACK_MAX = 20;
 function pushUndoSnapshot(task, fields, description) {
   if (!task || !Array.isArray(fields) || fields.length === 0) return;
-  // Capture only the fields we're about to overwrite — keeps undo precise.
+  // Capture only the fields we're about to overwrite ΓÇö keeps undo precise.
   const before = {};
   for (const f of fields) {
     // Map saveCellEdit's `col` keys to actual task fields.
@@ -2527,7 +2422,7 @@ function pushUndoSnapshot(task, fields, description) {
   if (Object.keys(before).length === 0) return;
   state.undoStack.push({ taskId: task.id, before, description });
   while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
-  // A new edit invalidates the redo history — otherwise redo would re-apply
+  // A new edit invalidates the redo history ΓÇö otherwise redo would re-apply
   // a "future" state that conflicts with what the user just did.
   state.redoStack = [];
   syncUndoButton();
@@ -2595,7 +2490,7 @@ function syncUndoButton() {
   if (last) {
     btn.title = `Undo: ${last.description}\n(${stack.length} change${stack.length === 1 ? '' : 's'} in history)`;
   } else {
-    btn.title = 'Nothing to undo — no edits in this session yet.';
+    btn.title = 'Nothing to undo ΓÇö no edits in this session yet.';
   }
 }
 
@@ -2608,7 +2503,7 @@ function syncRedoButton() {
   if (last) {
     btn.title = `Redo: ${last.description}\n(${stack.length} change${stack.length === 1 ? '' : 's'} ready to re-apply)`;
   } else {
-    btn.title = 'Nothing to redo — undo something first.';
+    btn.title = 'Nothing to redo ΓÇö undo something first.';
   }
 }
 
@@ -2618,12 +2513,12 @@ function parseDurationInput(s) {
   if (!m) return null;
   const n = parseFloat(m[1]);
   const unit = m[2] || 'd';
-  // Duration is in BUSINESS days. "1w" = 5 business days (Mon–Fri), "3d" = 3.
+  // Duration is in BUSINESS days. "1w" = 5 business days (MonΓÇôFri), "3d" = 3.
   // Weeks support half-week granularity (0.5w = 2.5 days, 1.5w = 7.5 days).
-  // Days input always rounds to whole days — fractional days don't make
+  // Days input always rounds to whole days ΓÇö fractional days don't make
   // sense in our work-day grid (you can't end mid-day).
   if (unit === 'w') {
-    // Snap to 0.5-week increments — SDC doesn't think in finer than half weeks.
+    // Snap to 0.5-week increments ΓÇö SDC doesn't think in finer than half weeks.
     const halfWeeks = Math.round(n * 2);
     return halfWeeks * 2.5;
   }
@@ -2667,9 +2562,9 @@ function setupColumnReorder() {
 }
 
 // ---------- Gantt rendering ----------
-// Muted hierarchy palette — drives BOTH the Gantt bar colors and the grid header pill
+// Muted hierarchy palette ΓÇö drives BOTH the Gantt bar colors and the grid header pill
 // colors. Keyed by rowColorKey() / data-color-key. Each entry has a fill (background)
-// and a text/stroke shade. Defaults are configurable on Setup → Hierarchy Colors.
+// and a text/stroke shade. Defaults are configurable on Setup ΓåÆ Hierarchy Colors.
 const HIERARCHY_COLOR_DEFAULTS = {
   // Sub-department-level (only section 10 has sub-departments).
   mech:           { label: 'Mechanical Engineering', fill: '#cfdcef', text: '#1e3a8a' },
@@ -2688,7 +2583,7 @@ const HIERARCHY_COLOR_DEFAULTS = {
 };
 const HIERARCHY_KEYS = Object.keys(HIERARCHY_COLOR_DEFAULTS);
 
-// Live store — populated from settings on load. Read by injectPhaseStyles + the grid CSS
+// Live store ΓÇö populated from settings on load. Read by injectPhaseStyles + the grid CSS
 // (via custom properties). The keys never change; only fill/text per key are editable.
 let HIERARCHY_BAR_COLORS = { ...HIERARCHY_COLOR_DEFAULTS };
 
@@ -2701,7 +2596,7 @@ function injectPhaseStyles() {
     document.head.appendChild(el);
   }
   // Phase-based bar colors (legacy / fallback for tasks without a hierarchy match).
-  // Progress fill is the bar's text/stroke color at 0.4 opacity — solid but not
+  // Progress fill is the bar's text/stroke color at 0.4 opacity ΓÇö solid but not
   // bold. The hierarchy/phase color always reflects WHAT the task is; the
   // darker progress portion reflects HOW MUCH is done.
   const phaseRules = PHASES.map(p =>
@@ -2710,7 +2605,7 @@ function injectPhaseStyles() {
      .gantt .bar-wrapper.phase-${p.key} .bar-label { fill: ${p.text}; font-weight: 600; }`
   ).join('\n');
 
-  // Hierarchy-based bar colors — listed AFTER phase rules so they win on equal specificity.
+  // Hierarchy-based bar colors ΓÇö listed AFTER phase rules so they win on equal specificity.
   // Tasks pick the deepest match (sub-dept > combined dept > procurement).
   const hierarchyRules = Object.entries(HIERARCHY_BAR_COLORS).map(([key, c]) =>
     `.gantt .bar-wrapper.bar-color-${key} .bar { fill: ${c.fill}; stroke: ${c.text}; stroke-width: 1; }
@@ -2718,7 +2613,7 @@ function injectPhaseStyles() {
      .gantt .bar-wrapper.bar-color-${key} .bar-label { fill: ${c.text}; font-weight: 600; }`
   ).join('\n');
 
-  // Over-allocated overrides — listed before critical so the critical-path outline
+  // Over-allocated overrides ΓÇö listed before critical so the critical-path outline
   // wins when both apply (so a critical+over-allocated task still reads as on the
   // critical path).
   const overAlloc = `
@@ -2727,7 +2622,7 @@ function injectPhaseStyles() {
     .gantt .bar-wrapper.over-allocated .bar-label { fill: #b91c1c; font-weight: 800; }
   `;
 
-  // Critical path — bars and milestone diamonds on the binding chain from Receipt
+  // Critical path ΓÇö bars and milestone diamonds on the binding chain from Receipt
   // of PO to FAT get a BOLD red outline (3.5px). The fill stays whatever the
   // hierarchy / phase rules computed, so existing color coding is preserved
   // underneath. Anchor diamonds bump even thicker so they really stand out.
@@ -2737,7 +2632,7 @@ function injectPhaseStyles() {
     .gantt .bar-wrapper.on-critical .milestone-diamond { stroke: #b91c1c; stroke-width: 2.5; }
   `;
 
-  // 100% complete DURATION bars get a lime green border — preserves the
+  // 100% complete DURATION bars get a lime green border ΓÇö preserves the
   // hierarchy color underneath (so a finished Build task still reads as
   // "Build") but adds an unmistakable visual cue that it's done. Lime matches
   // the anchor-color palette so the "done" visual language is consistent
@@ -2773,7 +2668,7 @@ function renderGanttLegend() {
     </span>`).join('');
 }
 
-// True when a task lives inside a collapsed section / department / sub-department —
+// True when a task lives inside a collapsed section / department / sub-department ΓÇö
 // any ancestor on its hierarchy path being collapsed counts. Used by renderGantt to
 // hide bars whose grid row is currently hidden behind a collapsed group, so
 // collapsing a section in the grid also tucks its bars away on the Gantt.
@@ -2781,10 +2676,10 @@ function isTaskInCollapsedGroup(task) {
   if (!task) return false;
   // Spine-floater anchors (no phase_group) collapse with the section they render
   // adjacent to:
-  //   - FAT closes section 40 → hides when MACHINE TESTING is collapsed.
-  //   - Ship Machine sits inside section 50 → hides when TEARDOWN & INSTALL collapses.
-  //   - Receipt of PO is at the very top, above any section — always visible.
-  // Machine Power-Up has a phase_group (10 → Shop → Wire) so it follows the normal
+  //   - FAT closes section 40 ΓåÆ hides when MACHINE TESTING is collapsed.
+  //   - Ship Machine sits inside section 50 ΓåÆ hides when TEARDOWN & INSTALL collapses.
+  //   - Receipt of PO is at the very top, above any section ΓÇö always visible.
+  // Machine Power-Up has a phase_group (10 ΓåÆ Shop ΓåÆ Wire) so it follows the normal
   // collapse rules at the bottom of this function.
   const anchor = inferredAnchorKey(task);
   if (anchor === 'fat') {
@@ -2809,25 +2704,25 @@ function renderGantt() {
   // Same task ordering as the grid so rows align side-by-side. Tasks inside a
   // collapsed group are dropped here so the Gantt mirrors the grid's visibility.
   // Tasks that don't belong to any current section (and aren't anchors) are also
-  // dropped — those are leftovers from old data structures that the grid hides;
+  // dropped ΓÇö those are leftovers from old data structures that the grid hides;
   // the Gantt should hide them too so no ghost bars appear.
   const validSectionKeys = new Set(HIERARCHY.map(g => g.key));
   // v4.50: when NOT in sortByStart mode, use the GRID's canonical order
   // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
-  // grid rows do — Receipt of PO at top, Backlog under it, section 10
+  // grid rows do ΓÇö Receipt of PO at top, Backlog under it, section 10
   // bucket walk, FAT closing section 40, Ship Machine inside section 50.
   //
   // IMPORTANT: buildCanonicalTaskOrder ignores the machine-subset filter
   // (so line numbers stay stable across "All / M1 / M2"). After we have
   // the canonical order, we MUST intersect it with the actually-visible
-  // task set from applyFilters() — otherwise the Gantt renders bars for
+  // task set from applyFilters() ΓÇö otherwise the Gantt renders bars for
   // every machine even when the grid is narrowed to one (the visual mess
   // the user saw with M2 selected: M1 bars still painting on the right
   // side of the chart).
   let ordered;
   if (state.scheduleView?.sortByStart) {
     ordered = [...applyFilters(state.tasks)].sort((a, b) =>
-      (a.start_date || '￿').localeCompare(b.start_date || '￿')
+      (a.start_date || '∩┐┐').localeCompare(b.start_date || '∩┐┐')
       || (a.sort_order || 0) - (b.sort_order || 0));
   } else {
     const canonicalIds = buildCanonicalTaskOrder();
@@ -2842,7 +2737,7 @@ function renderGantt() {
   // shows the critical bars + anchor markers when the toggle is on.
   const onlyCrit = state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath;
   const critForFilter = onlyCrit ? computeCriticalPath() : null;
-  // v4.47: mirror the Schedule/Combined/Actions filter from renderTable —
+  // v4.47: mirror the Schedule/Combined/Actions filter from renderTable ΓÇö
   // the Gantt must always show the SAME row set as the grid. Without this
   // filter, the Gantt drew every task regardless of actionsMode, so "Actions
   // only" in the grid still showed scheduled bars on the chart.
@@ -2858,9 +2753,9 @@ function renderGantt() {
     .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t))
     .filter(t => {
       // Anchors always render. Otherwise honor the actionsMode toggle:
-      //   schedule → drop is_action tasks
-      //   actions  → drop non-action tasks
-      //   combined → keep both
+      //   schedule ΓåÆ drop is_action tasks
+      //   actions  ΓåÆ drop non-action tasks
+      //   combined ΓåÆ keep both
       if (inferredAnchorKey(t)) return true;
       if (am === 'schedule') return !t.is_action;
       if (am === 'actions')  return !!t.is_action;
@@ -2886,7 +2781,7 @@ function renderGantt() {
   const ganttTasks = filtered.map(t => {
     const classes = [];
     if (t.phase) classes.push(`phase-${t.phase}`);
-    // Hierarchy color (sub-department / combined-department) — overrides the phase color.
+    // Hierarchy color (sub-department / combined-department) ΓÇö overrides the phase color.
     const colorKey = rowColorKey(t);
     if (colorKey) classes.push(`bar-color-${colorKey}`);
     if (t.is_milestone) classes.push('is-milestone');
@@ -2900,18 +2795,16 @@ function renderGantt() {
         classes.push('is-backlog-expired');
       }
     }
-    // Milestones at 100%: still tagged milestone-done — drawMilestoneDiamonds
-    // uses it to paint the ✓ overlay glyph. As of v4.4 milestones keep their
+    // Milestones at 100%: still tagged milestone-done ΓÇö drawMilestoneDiamonds
+    // uses it to paint the Γ£ô overlay glyph. As of v4.4 milestones keep their
     // normal fill color (lime for anchors, slate for non-anchors) when done;
-    // only the ✓ overlay differs. Done is the EXTRA — color is consistent.
+    // only the Γ£ô overlay differs. Done is the EXTRA ΓÇö color is consistent.
     if (t.is_milestone && (t.progress || 0) >= 100) classes.push('milestone-done');
     // 100% complete DURATION task: tag .is-done. CSS adds a LIME BORDER around
-    // the bar — preserves the hierarchy color underneath (Build task stays
+    // the bar ΓÇö preserves the hierarchy color underneath (Build task stays
     // Build-tan when done, etc.) and the lime stroke makes "complete" pop
-    // visually without recoloring the bar. Uses getEffectiveProgress so the
-    // Backlog row picks up the same lime border + hash overlay once today
-    // crosses its end_date.
-    if (!t.is_milestone && getEffectiveProgress(t) >= 100) classes.push('is-done');
+    // visually without recoloring the bar.
+    if (!t.is_milestone && !isBacklogTask(t) && (t.progress || 0) >= 100) classes.push('is-done');
     if (state.overAllocatedTaskIds.has(t.id)) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
@@ -2919,16 +2812,14 @@ function renderGantt() {
       name: t.name,
       start: t.start_date,
       end: t.end_date,
-      // Backlog rows: progress derived from today's position; everything
-      // else reads stored t.progress. getEffectiveProgress handles both.
-      progress: getEffectiveProgress(t),
+      progress: t.progress || 0,
       dependencies: '', // custom arrows below
       custom_class: classes.join(' '),
     };
   });
 
   // Invisible phantom tasks 6 months before the earliest task and 6 months after
-  // the latest. Symmetric padding lets the user scroll equally past either edge —
+  // the latest. Symmetric padding lets the user scroll equally past either edge ΓÇö
   // previously the pre-task pad was 30 days, which meant on a project starting in
   // May you couldn't scroll back to April. 6 months is enough to comfortably
   // bring any edge bar into the center of the viewport.
@@ -2941,7 +2832,7 @@ function renderGantt() {
   ganttTasks.push   ({ id: '_pad_after',  name: '', start: padAfter,  end: padAfter,  progress: 0, dependencies: '', custom_class: 'phantom-pad' });
 
   // Auto fit-to-viewport whenever this is the first render OR the active project just
-  // changed. Manual wheel/zoom adjustments stick — we only re-fit on a real navigation.
+  // changed. Manual wheel/zoom adjustments stick ΓÇö we only re-fit on a real navigation.
   const projectKey = state.filters.project || '_all_';
   const fitNow = state._fitOnNextRender === true || state._lastFitProject !== projectKey;
   if (fitNow) {
@@ -3002,7 +2893,7 @@ function renderGantt() {
   if (zoomModeEl && zoomModeEl.value !== mode) zoomModeEl.value = mode;
 
   cleanGanttHeaders();
-  // ── Work-day compression ─────────────────────────────────────────────
+  // ΓöÇΓöÇ Work-day compression ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   // frappe-gantt positions bars by calendar day (7-day weeks). The SDC
   // schedule only operates Mon-Fri, so we squeeze Sat/Sun out: every bar,
   // arrow, today-line, milestone, header label re-anchors to its
@@ -3012,10 +2903,10 @@ function renderGantt() {
   // repositioned here, everything else follows automatically.
   compressGanttToWorkDays();
   // alignGanttToGrid relies on the grid's row offsetTops to position bars row-by-row.
-  // In Gantt-only mode the grid is hidden (display:none) so its offsets are zero —
+  // In Gantt-only mode the grid is hidden (display:none) so its offsets are zero ΓÇö
   // skip alignment and let frappe-gantt's natural layout drive bar positions.
   if (!state.scheduleView?.ganttOnly) alignGanttToGrid();
-  // Arrows render FIRST (behind everything) — bars and labels cover them visually.
+  // Arrows render FIRST (behind everything) ΓÇö bars and labels cover them visually.
   drawCustomArrows();
   drawBaselineGhosts();
   drawTodayLine();
@@ -3026,13 +2917,12 @@ function renderGantt() {
   drawDoneHashOverlay();
   drawWeekdayLetters();
   drawFinancialOverlay();
-  drawPenaltyClauseLine();
   drawBarMeta();
   drawMachineBorders();
   renderProjectStatsPopup();
 }
 
-// ── Work-day Gantt helpers ───────────────────────────────────────────
+// ΓöÇΓöÇ Work-day Gantt helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 // workDayOffset: count of business days (Mon-Fri) from ganttStart to
 // the given date. Used to re-anchor every X position so the weekend
 // columns collapse to zero.
@@ -3065,10 +2955,10 @@ function calXToWorkDayX(calX, pxPerDay, ganttStart) {
 
 // Reposition every bar (and its inner label / progress / handles) to
 // the work-day grid. The convention per Dan's rule:
-//   • Bar's left edge sits at the START day's column line.
-//   • Bar's right edge sits at the END day's column line.
-//   • A 1-day task (start == end) gets a minimum visible width.
-//   • Fractional durations round UP to the next full day.
+//   ΓÇó Bar's left edge sits at the START day's column line.
+//   ΓÇó Bar's right edge sits at the END day's column line.
+//   ΓÇó A 1-day task (start == end) gets a minimum visible width.
+//   ΓÇó Fractional durations round UP to the next full day.
 function compressGanttToWorkDays() {
   try {
     const svg = document.querySelector('#gantt-container .gantt');
@@ -3079,10 +2969,10 @@ function compressGanttToWorkDays() {
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;          // px per CALENDAR day
-    const pxPerWorkDay = pxPerDay;       // we keep the column width — chart shrinks horizontally
+    const pxPerWorkDay = pxPerDay;       // we keep the column width ΓÇö chart shrinks horizontally
     const ganttStart = g.gantt_start;
     // 1-day tasks (start == end) get a slim "marker" bar centered on
-    // their day's line — wide enough to see, but doesn't claim to span
+    // their day's line ΓÇö wide enough to see, but doesn't claim to span
     // any range. All other bars snap EXACTLY to start-day-line and
     // end-day-line (no clamp), so they always end on a day's line.
     const oneDayMarkerW = Math.max(3, pxPerWorkDay * 0.18);
@@ -3109,7 +2999,7 @@ function compressGanttToWorkDays() {
       if (newW === 0) {
         if (isMilestone) {
           // Milestones render as diamonds via drawMilestoneDiamonds, but
-          // frappe-gantt's underlying .bar still needs SOMETHING — use
+          // frappe-gantt's underlying .bar still needs SOMETHING ΓÇö use
           // a centered marker so the diamond drawer has a reliable
           // anchor point.
           newW = Math.max(8, pxPerWorkDay);
@@ -3168,12 +3058,12 @@ function compressGanttToWorkDays() {
       wrap.dataset.workDayW = String(newW);
     }
 
-    // Replace frappe-gantt's date labels — it labels every 7 calendar
+    // Replace frappe-gantt's date labels ΓÇö it labels every 7 calendar
     // days starting from gantt_start, which gives Thursday dates when
     // gantt_start is a Thursday. We want EVERY label to be a Monday.
     // Strategy: remove its lower-text labels + ticks, then redraw our
     // own at each Monday's work-day x. Same for upper-text (month
-    // strip) — redraw with proper month boundaries.
+    // strip) ΓÇö redraw with proper month boundaries.
     for (const el of svg.querySelectorAll('.lower-text, .upper-text, .tick')) el.remove();
     // Find rows for label Y positions. frappe-gantt typically uses
     // header_height: 38 with the upper-text near top and lower-text just
@@ -3187,18 +3077,18 @@ function compressGanttToWorkDays() {
     // Walk Mondays from the first full-week Monday through the chart's
     // right edge. For each Monday: draw a label + a vertical tick line.
     //
-    // Adaptive density rules (all-or-nothing — never every-other):
+    // Adaptive density rules (all-or-nothing ΓÇö never every-other):
     //   weekW = 5 * pxPerDay (one full work-week wide on screen).
-    //   - weekW >= 14px: date numbers shown (kicks in ~zoom 2)
-    //   - weekW <  14px: date numbers SKIPPED (would crowd & overlap)
+    //   - weekW >= 25px: date numbers shown (kicks in ~zoom 3)
+    //   - weekW <  25px: date numbers SKIPPED (would crowd & overlap)
     //   For month names, computed AFTER walking based on each month's
-    //   visible width — if < 70px, switch to short "Nov" form; if even
+    //   visible width ΓÇö if < 70px, switch to short "Nov" form; if even
     //   that doesn't fit, fall back to truncated text.
     const startMs = new Date(ganttStart).getTime();
     const startDow = new Date(startMs).getUTCDay();
     const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
     const weekW = 5 * pxPerDay;
-    const showDateNumbers = weekW >= 14;
+    const showDateNumbers = weekW >= 25;
     let walkMs = startMs + daysToFirstMonday * 86400000;
     let lastMonthLabel = '';
     const monthLabels = []; // [{ startX, label, monthIndex, endX }]
@@ -3207,7 +3097,7 @@ function compressGanttToWorkDays() {
       const dateStr = walkDate.toISOString().slice(0, 10);
       const mondayX = workDayOffset(dateStr, ganttStart) * pxPerDay;
       if (mondayX > (+svg.getAttribute('width') || 8000)) break;
-      // Date number — only when there's enough room. All-or-nothing
+      // Date number ΓÇö only when there's enough room. All-or-nothing
       // (every Monday, or none).
       if (showDateNumbers) {
         const dayNum = walkDate.getUTCDate();
@@ -3224,7 +3114,7 @@ function compressGanttToWorkDays() {
         svg.appendChild(text);
       }
       // Solid tick line at Monday. Use a tall fixed height (10000) instead
-      // of svgH — alignGanttToGrid (called LATER in the render chain) can
+      // of svgH ΓÇö alignGanttToGrid (called LATER in the render chain) can
       // grow the SVG to match the grid, and we'd otherwise leave the
       // ticks too short. SVG clips anything past the viewBox naturally.
       const tick = document.createElementNS(SVG_NS, 'path');
@@ -3261,7 +3151,7 @@ function compressGanttToWorkDays() {
       if (w >= fullW)       labelText = m.label;
       else if (w >= shortW) labelText = m.short;
       else if (w >= 12)     { labelText = m.short.charAt(0); fontSize = '12px'; }
-      else                  labelText = ''; // skip — too tight
+      else                  labelText = ''; // skip ΓÇö too tight
       if (!labelText) continue;
       const text = document.createElementNS(SVG_NS, 'text');
       text.setAttribute('class', 'upper-text');
@@ -3302,7 +3192,7 @@ function compressGanttToWorkDays() {
 // When zoomed in enough that each day occupies enough pixels to fit a
 // letter, paint faint M / T / W / Th / F labels in the date header along
 // with thin vertical tick lines through the chart for each weekday. Skipped
-// at lower zoom levels (and skipped on weekends — we don't work Sa/Su).
+// at lower zoom levels (and skipped on weekends ΓÇö we don't work Sa/Su).
 function drawWeekdayLetters() {
   try {
     const svg = document.querySelector('#gantt-container .gantt');
@@ -3317,9 +3207,9 @@ function drawWeekdayLetters() {
     const pxPerDay = cw / step;
     // Day letters appear only when one full work-week occupies enough
     // pixels to read M T W Th F without overlap. weekW = 5 * pxPerDay.
-    // Threshold of 60 = pxPerDay 12 — that's around zoom level 7 in
+    // Threshold of 60 = pxPerDay 12 ΓÇö that's around zoom level 7 in
     // the friendly stepper, which matches what the user expects.
-    // Configurable on Setup → Gantt Weekday Markers (default 12 px/day).
+    // Configurable on Setup ΓåÆ Gantt Weekday Markers (default 12 px/day).
     const threshold = (state.settings?.weekday_marker_threshold != null)
       ? Number(state.settings.weekday_marker_threshold)
       : 12;
@@ -3343,7 +3233,7 @@ function drawWeekdayLetters() {
     const svgHeight = +svg.getAttribute('height') ||
                       (svg.viewBox?.baseVal?.height) || 800;
 
-    // Letter group — same pattern as drawBarMeta (which DOES render text
+    // Letter group ΓÇö same pattern as drawBarMeta (which DOES render text
     // successfully): create a <g>, append to SVG root, drop text elements
     // inside. Critically, set font-family inline because frappe-gantt's
     // own stylesheet sets `.gantt text { font-family: ... }`, which would
@@ -3362,7 +3252,7 @@ function drawWeekdayLetters() {
     const startDow = new Date(startMs).getUTCDay();
     // Days from gantt_start to its first full-week Monday.
     const daysToFirstMonday = startDow === 1 ? 0 : (startDow === 0 ? 1 : 8 - startDow);
-    // 5 letters per week (M T W Th F) at column-line positions —
+    // 5 letters per week (M T W Th F) at column-line positions ΓÇö
     // evenly spaced one pxPerDay apart. M sits ON the Monday solid
     // line (next to the date number). T, W, Th, F sit on the four
     // dashed lines between Mondays.
@@ -3420,17 +3310,17 @@ function drawWeekdayLetters() {
       }
       walkMs += 7 * 86400000;  // advance to next Monday
     }
-  } catch (_) { /* swallow — cosmetic, never break render chain */ }
+  } catch (_) { /* swallow ΓÇö cosmetic, never break render chain */ }
 }
 
 // Paint a diagonal lime hash pattern on every completed (.is-done) bar so
-// it reads as "done" at a glance — same visual idea as a checked-off line.
+// it reads as "done" at a glance ΓÇö same visual idea as a checked-off line.
 // The pattern is defined once per render in <defs> and reused by every
 // overlay rect. The overlay sits ABOVE the bar + bar-progress but BELOW
 // the bar-label, so the task name stays readable on top.
 function drawDoneHashOverlay() {
   // Diagonal stripes via SVG diagonal-line elements. Each completed bar
-  // gets a group of 45° lines that span its bounds. No clipPath — we use
+  // gets a group of 45┬░ lines that span its bounds. No clipPath ΓÇö we use
   // a foreignObject with CSS repeating-linear-gradient instead, which is
   // the most reliable cross-browser way to render a hash pattern inside
   // an SVG. Try/catch so any failure can't kill the rest of the render
@@ -3449,14 +3339,14 @@ function drawDoneHashOverlay() {
       const h = +bar.getAttribute('height');
       if (!(w > 0 && h > 0)) return;
 
-      // Diagonal stripes drawn as <line> elements at 45° (slope 1). Endpoints
-      // mathematically clamped to stay inside the bar's rectangle — no
+      // Diagonal stripes drawn as <line> elements at 45┬░ (slope 1). Endpoints
+      // mathematically clamped to stay inside the bar's rectangle ΓÇö no
       // clipPath / mask / URL refs (all failed in this SVG).
       //
       // DOM placement: insert the line INTO bar-label's parentNode, just
       // before bar-label itself. This makes the line a SIBLING of bar-label
       // (so they share a parent group containing the bar / bar-progress /
-      // bar-label). Paint order ends up as: bar → bar-progress → my line →
+      // bar-label). Paint order ends up as: bar ΓåÆ bar-progress ΓåÆ my line ΓåÆ
       // bar-label. So the line paints OVER the bar fill (visible) but
       // UNDER the description text (text stays readable).
       //
@@ -3490,7 +3380,7 @@ function drawDoneHashOverlay() {
         line.setAttribute('y1', y1);
         line.setAttribute('x2', x2);
         line.setAttribute('y2', y2);
-        // SDC lime — same color as the bar's lime border (doneRule in
+        // SDC lime ΓÇö same color as the bar's lime border (doneRule in
         // injectPhaseStyles uses #befa4f).
         line.setAttribute('stroke', '#befa4f');
         line.setAttribute('stroke-width', '1.5');
@@ -3506,35 +3396,35 @@ function drawDoneHashOverlay() {
         }
       }
     });
-  } catch (_) { /* swallow — hash overlay is cosmetic, render chain must continue */ }
+  } catch (_) { /* swallow ΓÇö hash overlay is cosmetic, render chain must continue */ }
 }
 
 // Per-bar allocation + duration labels on the Gantt. Renders ONE compact label
-// per task bar — combining allocation % and duration (in weeks) — placed
+// per task bar ΓÇö combining allocation % and duration (in weeks) ΓÇö placed
 // BELOW the bar by default, but flipped ABOVE when an arrow passes through
 // the below-bar gap (otherwise the label sits right on top of the arrow line
 // and you can't read it).
 //
-// Format: "50% · 3w"  (middle-dot separator; either side is omitted when
+// Format: "50% ┬╖ 3w"  (middle-dot separator; either side is omitted when
 // that value is 0 or missing).
 //
 // Placement priority:
-//   1. Below the bar — preferred, sits in its own row's below-gap so
+//   1. Below the bar ΓÇö preferred, sits in its own row's below-gap so
 //      adjacent rows never collide.
-//   2. Above the bar — fallback when an arrow would cross the below position.
-//   3. Skip — last resort, when both above and below would collide with
+//   2. Above the bar ΓÇö fallback when an arrow would cross the below position.
+//   3. Skip ΓÇö last resort, when both above and below would collide with
 //      arrows (rare; only happens when the bar has an arrow entering its top
 //      AND an arrow exiting its bottom).
 //
 // Paint a colored border around every Gantt bar / milestone whose task
 // has a `machine` tag. Border color matches the per-machine palette used
-// by .name-machine-chip in the grid (M1=blue, M2=amber, M3=green, …) so
-// the user can tell duplicates apart on the chart at a glance — without
+// by .name-machine-chip in the grid (M1=blue, M2=amber, M3=green, ΓÇª) so
+// the user can tell duplicates apart on the chart at a glance ΓÇö without
 // overlaying any text on top of the bar (the old chip approach covered
 // labels + duration markers and was unreadable). Bar fill (phase color)
 // stays untouched.
 //
-// Defensive (try/catch) per CLAUDE.md — must NEVER break the render
+// Defensive (try/catch) per CLAUDE.md ΓÇö must NEVER break the render
 // chain; bar-meta + zoom restore live downstream.
 function drawMachineBorders() {
   try {
@@ -3559,7 +3449,7 @@ function drawMachineBorders() {
       bar.style.strokeWidth = '2';
       bar.setAttribute('data-machine-bordered', task.machine);
     }
-  } catch (_) { /* swallow — cosmetic, must not break render chain */ }
+  } catch (_) { /* swallow ΓÇö cosmetic, must not break render chain */ }
 }
 
 // Skipped for milestones, anchors, and backlog. Runs AFTER drawCustomArrows
@@ -3572,7 +3462,7 @@ function drawBarMeta() {
   svg.querySelectorAll('.sdc-bar-meta').forEach(el => el.remove());
   // v4.75 BUGFIX: only reset visibility/opacity on NON-MILESTONE bar-labels.
   // drawMilestoneDiamonds sets opacity=0 on milestone bar-labels because
-  // drawMilestoneLabels renders its own text — so undoing that here was
+  // drawMilestoneLabels renders its own text ΓÇö so undoing that here was
   // causing milestone names to render TWICE (one from frappe-gantt, one
   // from drawMilestoneLabels) when the % toggle was on.
   //
@@ -3597,7 +3487,7 @@ function drawBarMeta() {
   // labels against the SEGMENTS, not the path's bounding box. Why: an L-shape
   // arrow's getBBox() encloses both legs PLUS the L's empty corner area, which
   // wrongly marks most bars sitting INSIDE that corner zone as colliding even
-  // though the arrow line is on the edges only (v3.56 had this issue — 2/3 of
+  // though the arrow line is on the edges only (v3.56 had this issue ΓÇö 2/3 of
   // labels ended up suppressed because every bar near a long L-shape looked
   // "occupied"). Per-segment intersection is exact for axis-aligned arrows
   // (all our arrow segments are pure horizontal or vertical by construction
@@ -3608,7 +3498,7 @@ function drawBarMeta() {
     if (!d || /Z/i.test(d)) return;  // skip arrowhead triangles (closed with Z)
     const nums = d.match(/-?\d+(\.\d+)?/g);
     if (!nums || nums.length < 4) return;
-    // Path is "M x y L x y [L x y]" — pair consecutive points to form segments.
+    // Path is "M x y L x y [L x y]" ΓÇö pair consecutive points to form segments.
     for (let i = 0; i + 3 < nums.length; i += 2) {
       arrowSegments.push({
         x1: +nums[i],   y1: +nums[i+1],
@@ -3631,7 +3521,7 @@ function drawBarMeta() {
   };
 
   const LABEL_H = 11;  // 9px font + small descent / breathing room
-  const GAP     = 2;   // bar → label vertical offset
+  const GAP     = 2;   // bar ΓåÆ label vertical offset
 
   for (const task of state.tasks) {
     if (task.is_milestone) continue;
@@ -3654,10 +3544,10 @@ function drawBarMeta() {
     const durDays = Number(task.duration_days) || 0;
     const wks = Math.round(durDays / 5);
 
-    // v4.58: SINGLE COMBINED LABEL — "85% · 8w" — feels like one pill.
+    // v4.58: SINGLE COMBINED LABEL ΓÇö "85% ┬╖ 8w" ΓÇö feels like one pill.
     // Placement priority changed to match user feedback:
     //   1. INSIDE the bar at the right end (halo so it reads on any color).
-    //   2. JUST OUTSIDE on the LEFT of the bar — preferred outside slot
+    //   2. JUST OUTSIDE on the LEFT of the bar ΓÇö preferred outside slot
     //      because frappe-gantt drops the bar's NAME outside-right when
     //      the bar is too narrow. Putting our label to the right would
     //      collide with the name; putting it to the left is clear.
@@ -3670,53 +3560,53 @@ function drawBarMeta() {
     const allocText = (alloc > 0) ? `${alloc}%` : '';
     const durText   = (wks > 0)   ? `${wks}w`   : '';
     if (!allocText && !durText) continue;
-    const metaText = [allocText, durText].filter(Boolean).join(' · ');
+    const metaText = [allocText, durText].filter(Boolean).join(' ┬╖ ');
 
     // BAR-META LAYOUT CASCADE (settled in v5.0).
     //
     //   Terminology:
-    //     meta = alloc/duration pill ("85% · 8w")
+    //     meta = alloc/duration pill ("85% ┬╖ 8w")
     //     name = task description (the bar-label rendered by frappe-gantt)
     //     bar  = Gantt bar rectangle
     //
     //   Gaps (all 3 px):
-    //     INSIDE_PADDING = bar-left edge ↔ inside-left meta-left edge.
-    //     INSIDE_GAP     = meta-right ↔ name-left  AND  name-right ↔ bar-right.
-    //     OUTSIDE_GAP    = outside-left meta pill right edge ↔ bar-left edge.
+    //     INSIDE_PADDING = bar-left edge Γåö inside-left meta-left edge.
+    //     INSIDE_GAP     = meta-right Γåö name-left  AND  name-right Γåö bar-right.
+    //     OUTSIDE_GAP    = outside-left meta pill right edge Γåö bar-left edge.
     //
-    //   Algorithm — measure where the name actually IS, don't predict:
+    //   Algorithm ΓÇö measure where the name actually IS, don't predict:
     //     1. clipBarLabels has already centered the bar-label in its bar by
     //        the time we run, so we can read its real rendered rect via
     //        getBoundingClientRect.
     //     2. metaW is computed via a per-character table calibrated for
-    //        bold-9 px sans-serif (digits 5.5, % 6.5, space 2.5, · 3, w 6.5)
+    //        bold-9 px sans-serif (digits 5.5, % 6.5, space 2.5, ┬╖ 3, w 6.5)
     //        plus 3 px stroke halo + safety. The meta text is bounded
-    //        ("XX% · YYw"), so the per-char table is reliable without
-    //        depending on any browser measurement API (every one tried —
+    //        ("XX% ┬╖ YYw"), so the per-char table is reliable without
+    //        depending on any browser measurement API (every one tried ΓÇö
     //        getBBox, getComputedTextLength, getBoundingClientRect, canvas
-    //        measureText — was returning widths smaller than actual on at
+    //        measureText ΓÇö was returning widths smaller than actual on at
     //        least some bars).
     //     3. availLeftPx = nameRect.left - barRect.left = the actual gap
     //        between the bar's left edge and the rendered name's left edge.
     //        This is the space the meta can use.
     //
     //   Cascade:
-    //     Step 1 — meta inside-left, name stays centered in bar.
-    //              Trigger: availLeftPx ≥ metaW + INSIDE_PADDING + INSIDE_GAP.
-    //     Step 2 — meta inside-left, name shifts to be centered between
+    //     Step 1 ΓÇö meta inside-left, name stays centered in bar.
+    //              Trigger: availLeftPx ΓëÑ metaW + INSIDE_PADDING + INSIDE_GAP.
+    //     Step 2 ΓÇö meta inside-left, name shifts to be centered between
     //              meta-right and bar-right (symmetric gaps on both sides).
-    //              Trigger: (barW - INSIDE_PADDING - metaW) ≥ nameW + 2·INSIDE_GAP.
+    //              Trigger: (barW - INSIDE_PADDING - metaW) ΓëÑ nameW + 2┬╖INSIDE_GAP.
     //              IMPLEMENTATION: the bar-label's x attribute stays at the
     //              centered position; the shift is applied via CSS
-    //              `transform: translateX(...)`. Why: setAttribute('x', …)
+    //              `transform: translateX(...)`. Why: setAttribute('x', ΓÇª)
     //              was updating the SVG DOM (getBoundingClientRect picked
     //              up the new x) but the rendered glyphs visually stayed
     //              at the centered position. CSS transforms hook into the
     //              paint pipeline directly, so the visible text actually
     //              moves.
-    //     Step 3 — meta OUTSIDE-left, name centered in bar.
-    //              Trigger: barW ≥ nameW + 2·INSIDE_GAP.
-    //     Step 4 — both outside. Meta outside-left, name ALWAYS outside-right.
+    //     Step 3 ΓÇö meta OUTSIDE-left, name centered in bar.
+    //              Trigger: barW ΓëÑ nameW + 2┬╖INSIDE_GAP.
+    //     Step 4 ΓÇö both outside. Meta outside-left, name ALWAYS outside-right.
     const INSIDE_PADDING = 3;
     const INSIDE_GAP     = 3;
     const OUTSIDE_GAP    = 3;
@@ -3729,7 +3619,7 @@ function drawBarMeta() {
 
     // Force a known font on the meta SO IT MATCHES what canvas measures.
     // Via inline style so it beats any CSS rule (frappe-gantt's stylesheet
-    // sets font-family on .gantt text — would override a presentation
+    // sets font-family on .gantt text ΓÇö would override a presentation
     // attribute).
     const metaEl = document.createElementNS(SVG_NS, 'text');
     metaEl.setAttribute('class', 'sdc-bar-meta');
@@ -3749,7 +3639,7 @@ function drawBarMeta() {
     metaEl.textContent = metaText;
     group.appendChild(metaEl);
 
-    // Center name inside the bar — sets the bar-label to its natural
+    // Center name inside the bar ΓÇö sets the bar-label to its natural
     // centered-in-bar position. Used for Step 1 (default) and Step 3.
     const centerNameInBar = () => {
       barLabel.setAttribute('x', String(barX + barW / 2));
@@ -3770,17 +3660,17 @@ function drawBarMeta() {
       addPillOccluder(group, metaEl, PILL_PAD);
     };
 
-    // Meta width — PER-CHARACTER estimate. v4.95's first-pass values were
+    // Meta width ΓÇö PER-CHARACTER estimate. v4.95's first-pass values were
     // about 20 % too generous (visible by the magenta debug tick sitting
     // well past the rendered meta's right edge), so v4.96 trims them
-    // proportionally. The meta text is bounded — digits, "%", spaces, "·",
-    // "w" — so a per-char table works better than any browser measurement
+    // proportionally. The meta text is bounded ΓÇö digits, "%", spaces, "┬╖",
+    // "w" ΓÇö so a per-char table works better than any browser measurement
     // API. Deterministic, slightly conservative, safe from overlap.
     const metaCharW = (ch) => {
-      if (/[0-9]/.test(ch)) return 5.5;   // digits 0–9 (was 7)
+      if (/[0-9]/.test(ch)) return 5.5;   // digits 0ΓÇô9 (was 7)
       if (ch === '%')        return 6.5;   // percent sign (was 8)
       if (ch === ' ')        return 2.5;   // space (was 3)
-      if (ch === '·')        return 3;     // middle dot (was 4)
+      if (ch === '┬╖')        return 3;     // middle dot (was 4)
       if (ch === 'w')        return 6.5;   // weeks marker (was 8)
       return 5.5;                          // any other char (was 7)
     };
@@ -3790,43 +3680,43 @@ function drawBarMeta() {
     const metaW = metaTextW + 3;
 
     // Center the bar-label as Step 1 would. clipBarLabels may have placed it
-    // outside if the bar is narrower than nameW + PAD — force back to center
+    // outside if the bar is narrower than nameW + PAD ΓÇö force back to center
     // so we can read its real centered-in-bar position. The browser does a
     // layout pass when we read getBoundingClientRect below.
     centerNameInBar();
 
     // === READ THE NAME'S ACTUAL RENDERED POSITION ===
     // This is the key change from prior versions: we don't COMPUTE where the
-    // name will be from a (potentially wrong) measured width — we READ where
+    // name will be from a (potentially wrong) measured width ΓÇö we READ where
     // the browser actually placed it. getBoundingClientRect on the already-
     // laid-out bar-label is reliable.
     const barRect   = bar.getBoundingClientRect();
     const nameRect  = barLabel.getBoundingClientRect();
-    // Gap from bar's left edge to the rendered name's left edge — this is
+    // Gap from bar's left edge to the rendered name's left edge ΓÇö this is
     // the space available for the meta on the inside-left.
     const availLeftPx = nameRect.left - barRect.left;
-    // Gap from the rendered name's right edge to bar's right edge — used
+    // Gap from the rendered name's right edge to bar's right edge ΓÇö used
     // for Step 2 "does the name still fit if we re-center it?" check below.
     const availRightPx = barRect.right - nameRect.right;
     const nameWidthPx = nameRect.width;
 
-    // === CASCADE — decide which step ===
+    // === CASCADE ΓÇö decide which step ===
     const step1Works = availLeftPx >= metaW + INSIDE_PADDING + INSIDE_GAP;
     const step2AvailableForName = barW - INSIDE_PADDING - metaW;
     const step2Works = step2AvailableForName >= nameWidthPx + 2 * INSIDE_GAP;
     const step3Works = barW >= nameWidthPx + 2 * INSIDE_GAP;
 
     if (step1Works) {
-      // Step 1 — name already centered (centerNameInBar above), meta at
+      // Step 1 ΓÇö name already centered (centerNameInBar above), meta at
       // default inside-left position. Nothing more to do.
     } else if (step2Works) {
-      // Step 2 — meta stays inside-left, name shifts right so it's centered
+      // Step 2 ΓÇö meta stays inside-left, name shifts right so it's centered
       // between meta-right and bar-right.
       //
       // Why a CSS transform and not setAttribute('x', ...): on at least some
       // browsers/renderers, setAttribute('x', ...) on a bar-label updates
       // the SVG DOM (getBoundingClientRect picks up the new x) but the
-      // rendered glyphs visually stay at the old x — paint and layout
+      // rendered glyphs visually stay at the old x ΓÇö paint and layout
       // disagree. CSS `transform: translateX(...)` hooks into the paint
       // pipeline directly and the visible text actually moves. The x
       // attribute stays at the centered position; the transform supplies
@@ -3841,12 +3731,12 @@ function drawBarMeta() {
       barLabel.style.transform = `translateX(${shiftX}px)`;
       barLabel.classList.remove('bar-label-outside');
     } else if (step3Works) {
-      // Step 3 — meta OUTSIDE-left. Name centered in bar (it now has full
+      // Step 3 ΓÇö meta OUTSIDE-left. Name centered in bar (it now has full
       // width to use).
       moveMetaOutside();
       centerNameInBar();
     } else {
-      // Step 4 — both outside.
+      // Step 4 ΓÇö both outside.
       moveMetaOutside();
       barLabel.setAttribute('x', String(barX + barW + 6));
       barLabel.setAttribute('text-anchor', 'start');
@@ -3858,11 +3748,11 @@ function drawBarMeta() {
 }
 
 // Floating stat card in the top-right of the Gantt area. Shows project stats:
-// Duration (PO→FAT in calendar weeks), labor-weighted % Complete, and FAT
+// Duration (POΓåÆFAT in calendar weeks), labor-weighted % Complete, and FAT
 // date with an optional baseline-variance chip. Hidden on All-projects since
 // these are per-project.
 //
-// (View options used to live here too — moved to the View pill in the toolbar
+// (View options used to live here too ΓÇö moved to the View pill in the toolbar
 // in v3.50 so this popup stays focused on read-only project stats.)
 function renderProjectStatsPopup() {
   const split = document.getElementById('schedule-split');
@@ -3889,97 +3779,16 @@ function renderProjectStatsPopup() {
   // FAT for the active scope. stats.fat returns the machine-specific
   // anchor when activeMachine is set; falls back to oldest project FAT.
   const fat = stats.fat || tasks.find(t => inferredAnchorKey(t) === 'fat');
-  // Duration — current AND quoted. Quoted comes from (in priority):
-  //   1. quote.sold_delivery_weeks — the explicit number Dan enters in
-  //      the Quote vs Schedule modal ("this is what we sold").
-  //   2. baseline_PO → baseline_FAT span (calculated from the saved
-  //      baseline snapshot).
-  //   3. nothing — falls back to scheduled-only.
-  // Format: "Q / S" with quoted muted, scheduled bold. Falls back to
-  // a single number when there's no quoted reference. Half-week
-  // rounding per the no-arbitrary-week-fractions rule.
-  const _toHalfWeek = (days) => Math.round((days / 7) * 2) / 2;
-  // Kick off async quote load — re-renders this popup when it
-  // resolves so the next paint includes sold_delivery_weeks.
-  if (!(project in state.projectQuotes)) {
-    loadProjectQuote(project).then(() => {
-      try { renderProjectStatsPopup(); } catch (_) {}
-    });
-  }
-  const _quote = state.projectQuotes[project] || null;
-  const _soldW = _quote && Number.isFinite(Number(_quote.sold_delivery_weeks))
-    ? Number(_quote.sold_delivery_weeks)
-    : null;
-  let durationLabel = '—';
+  // Duration: PO ΓåÆ (active machine's) FAT.
+  let durationLabel = 'ΓÇö';
   if (po && fat && po.start_date && fat.start_date) {
     const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
-    const schedW = Math.max(0, _toHalfWeek(days));
-    let quotedW = null;
-    if (_soldW != null && _soldW > 0) {
-      quotedW = Math.round(_soldW * 2) / 2;
-    } else if (po.baseline_start_date && fat.baseline_start_date) {
-      const qDays = Math.round((new Date(fat.baseline_start_date + 'T00:00:00') - new Date(po.baseline_start_date + 'T00:00:00')) / 86400000);
-      quotedW = Math.max(0, _toHalfWeek(qDays));
-    }
-    // Always show Q / S when a quoted reference exists — even when
-    // they match — so the PM can confirm the sold value was saved.
-    // Was showing only the scheduled number when they were equal,
-    // which made Dan think the sold input didn't stick.
-    if (quotedW != null) {
-      durationLabel = `<span class="popup-vs"><span class="popup-vs-q">${quotedW}W</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${schedW}W</span></span>`;
-    } else {
-      durationLabel = `${schedW}W`;
-    }
-  }
-  // Quoted FAT — computed as PO start + (sold weeks × 7 calendar days)
-  // when a sold duration is set, OR baseline_FAT date when a baseline
-  // exists. Used in the FAT row alongside the live scheduled date so
-  // the PM sees "FAT we sold vs FAT we'll hit".
-  let quotedFatDate = null;
-  if (po && po.start_date) {
-    if (_soldW != null && _soldW > 0) {
-      // PO start + N*7 calendar days (calendar weeks, matches how the
-      // sold duration was negotiated with the customer).
-      const t = new Date(po.start_date + 'T00:00:00');
-      t.setDate(t.getDate() + Math.round(_soldW * 7));
-      quotedFatDate = t.toISOString().slice(0, 10);
-    } else if (fat && fat.baseline_start_date) {
-      quotedFatDate = fat.baseline_start_date;
-    }
-  }
-  // Expected % at today's date — labor-weighted across all tasks. For
-  // each task, expected % = (elapsed business days from start / total
-  // business days) × 100, clamped to 0-100. Roll up the same way the
-  // actual % does (weighted by duration). Done tasks count as 100%
-  // expected since their window is past.
-  let expectedPct = null;
-  {
-    let wSum = 0, dSum = 0;
-    for (const t of tasks) {
-      if (t.is_milestone) continue;
-      if (inferredAnchorKey(t)) continue;
-      const d = Number(t.duration_days);
-      if (!d || d <= 0) continue;
-      if (!t.start_date || !t.end_date) continue;
-      const sMs = new Date(t.start_date + 'T00:00:00').getTime();
-      const eMs = new Date(t.end_date + 'T00:00:00').getTime();
-      const todayLocal = new Date(); todayLocal.setHours(0, 0, 0, 0);
-      const tMs = todayLocal.getTime();
-      let pct = 0;
-      if (tMs >= eMs) pct = 100;
-      else if (tMs <= sMs) pct = 0;
-      else {
-        const span = Math.max(1, eMs - sMs);
-        pct = Math.round(((tMs - sMs) / span) * 100);
-      }
-      dSum += d;
-      wSum += d * pct;
-    }
-    expectedPct = dSum > 0 ? Math.round(wSum / dSum) : null;
+    const weeks = Math.max(0, Math.round(days / 7));
+    durationLabel = `${weeks} wk${weeks === 1 ? '' : 's'}`;
   }
   // If we're viewing a per-machine FAT and there's a PREVIOUS machine
-  // (e.g. viewing M2 → compare to M1.FAT), show a small delta chip
-  // "+N wks vs M1" — that's the typical "one machine every 3 weeks"
+  // (e.g. viewing M2 ΓåÆ compare to M1.FAT), show a small delta chip
+  // "+N wks vs M1" ΓÇö that's the typical "one machine every 3 weeks"
   // staggered-delivery view.
   let machineDeltaChip = '';
   if (activeMachine) {
@@ -3991,48 +3800,33 @@ function renderProjectStatsPopup() {
       const prevFat = tasks.find(t => t.machine === prevMachine && inferredAnchorKey(t) === 'fat');
       if (prevFat && prevFat.start_date && fat && fat.start_date) {
         const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(prevFat.start_date + 'T00:00:00')) / 86400000);
-        // Half-week snap — Dan's rule: week values must end in 0 or
-        // .5 only. Never show 0.6W / 1.2W / 6.8W etc.
-        const wks = Math.round((days / 7) * 2) / 2;
+        const wks = Math.round(days / 7);
         if (wks !== 0) {
-          machineDeltaChip = ` <span class="popup-machine-delta" title="${escapeHtml(activeMachine)}.FAT vs ${escapeHtml(prevMachine)}.FAT">${wks >= 0 ? '+' : ''}${wks}W vs ${escapeHtml(prevMachine)}</span>`;
+          machineDeltaChip = ` <span class="popup-machine-delta" title="${escapeHtml(activeMachine)}.FAT vs ${escapeHtml(prevMachine)}.FAT">${wks >= 0 ? '+' : ''}${wks} wk${Math.abs(wks) === 1 ? '' : 's'} vs ${escapeHtml(prevMachine)}</span>`;
         }
       }
     }
   }
-  const pctLabel = stats.percentComplete != null ? `${stats.percentComplete}%` : '—';
-  // Header label — show which machine (if any) the stats scope to.
+  const pctLabel = stats.percentComplete != null ? `${stats.percentComplete}%` : 'ΓÇö';
+  // Header label ΓÇö show which machine (if any) the stats scope to.
   const scopeLabel = activeMachine ? `${activeMachine} only` : 'All machines';
   // FAT row: show the actual date plus an optional variance chip when a
-  // baseline is set. Variance rounds DAYS → WEEKS (5 business days per week)
+  // baseline is set. Variance rounds DAYS ΓåÆ WEEKS (5 business days per week)
   // so the chip reads as "+1 wk / -2 wks / 0 wks" instead of "+3d late /
-  // -7d early" — matches how everything else in this app talks about time
+  // -7d early" ΓÇö matches how everything else in this app talks about time
   // (estimate sheets, durations, etc. are all weekly). Rounding is to-nearest:
-  //   0 days → 0 wks
-  //   1-2 days → 0 wks (rounds down)
-  //   3-7 days → 1 wk
-  //   8-12 days → 2 wks
+  //   0 days ΓåÆ 0 wks
+  //   1-2 days ΓåÆ 0 wks (rounds down)
+  //   3-7 days ΓåÆ 1 wk
+  //   8-12 days ΓåÆ 2 wks
   //   ...
-  // FAT row — show Quoted / Scheduled when there's a quoted FAT to
-  // compare against, otherwise just the scheduled date. Same Q/S
-  // visual pattern as Duration.
-  const schedFatStr = fat?.start_date ? fmtDate(fat.start_date) : '—';
-  let fatDateLabel;
-  if (quotedFatDate && quotedFatDate !== fat?.start_date) {
-    fatDateLabel = `<span class="popup-vs"><span class="popup-vs-q">${escapeHtml(fmtDate(quotedFatDate))}</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${escapeHtml(schedFatStr)}</span></span>`;
-  } else if (quotedFatDate) {
-    // Same date — still show the pair so the PM can confirm.
-    fatDateLabel = `<span class="popup-vs"><span class="popup-vs-q">${escapeHtml(fmtDate(quotedFatDate))}</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${escapeHtml(schedFatStr)}</span></span>`;
-  } else {
-    fatDateLabel = schedFatStr;
-  }
+  let fatDateLabel = fat?.start_date ? fmtDate(fat.start_date) : 'ΓÇö';
   let fatVarChip = '';
   if (stats.fatVariance != null) {
-    // Half-week snap per Dan's no-arbitrary-week-fractions rule.
-    const wks = Math.round((stats.fatVariance / 5) * 2) / 2;
-    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok">0W</span>';
-    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late">+${wks}W</span>`;
-    else                  fatVarChip = `<span class="popup-fat-var stat-early">${wks}W</span>`;
+    const wks = Math.round(stats.fatVariance / 5);  // 5 business days = 1 week
+    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok">0 wks</span>';
+    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late">+${wks} wk${wks === 1 ? '' : 's'}</span>`;
+    else                  fatVarChip = `<span class="popup-fat-var stat-early">${wks} wk${wks === -1 ? '' : 's'}</span>`;
   }
 
   // Multi-machine projects: tell the user what these numbers cover.
@@ -4041,125 +3835,23 @@ function renderProjectStatsPopup() {
   const scopeHeader = hasMultiMachine
     ? `<div class="popup-scope">${escapeHtml(scopeLabel)}</div>`
     : '';
-  // Sales projects are estimates, not live work — there's no real
-  // % complete to roll up, so drop the Complete row entirely on the
-  // Sales workspace. Duration + FAT still show because those are
-  // schedule-level facts the user always wants.
-  const isSalesProject = projectWorkspace(project) === 'Sales';
-  // Complete row — Q on LEFT (expected, muted), S on RIGHT (actual,
-  // bold). Same column order as Duration and FAT so the header row
-  // at the top of the popup applies consistently.
-  let completeLabel = pctLabel;
-  if (stats.percentComplete != null && expectedPct != null) {
-    const actualW = `${stats.percentComplete}%`;
-    const expectedW = `${expectedPct}%`;
-    completeLabel = `<span class="popup-vs"><span class="popup-vs-q">${expectedW}</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${actualW}</span></span>`;
-  }
-  const completeRow = isSalesProject ? '' : `
+  popup.innerHTML = `
+    ${scopeHeader}
+    <div class="popup-row">
+      <span class="popup-label">Duration</span>
+      <span class="popup-value" title="Receipt of PO ΓåÆ ${activeMachine ? activeMachine + '.' : ''}FAT, in calendar weeks (rounded).">${durationLabel}${machineDeltaChip}</span>
+    </div>
     <div class="popup-row">
       <span class="popup-label">Complete</span>
-      <span class="popup-value" title="Expected % at today's date (left, muted) / Actual % complete (right, bold). Labor-weighted across non-anchor tasks.">${completeLabel}</span>
-    </div>`;
-  // Penalty clause row — appears when the quote has has_penalty_clause
-  // checked. Date = PO receipt date + penalty_clause_weeks calendar
-  // weeks. Single value (no Q/S split since this is just a calendar
-  // event derived from the contract).
-  let penaltyRow = '';
-  if (_quote && _quote.has_penalty_clause && _quote.penalty_clause_weeks != null && po && po.start_date) {
-    const wks = Number(_quote.penalty_clause_weeks);
-    if (Number.isFinite(wks) && wks > 0) {
-      const d = new Date(po.start_date + 'T00:00:00');
-      d.setDate(d.getDate() + Math.round(wks * 7));
-      const dateStr = fmtDate(d.toISOString().slice(0, 10));
-      const isPast = fat?.start_date && fat.start_date > d.toISOString().slice(0, 10);
-      penaltyRow = `
-        <div class="popup-row">
-          <span class="popup-label">Penalty</span>
-          <span class="popup-value" title="Penalty clause start date — PO + ${wks} weeks. Set on Quote vs Schedule → 'Has penalty clause'.">${escapeHtml(dateStr)}${isPast ? ' <span class="popup-fat-var stat-late">past</span>' : ''}</span>
-        </div>`;
-    }
-  }
-  // Column header — appears at the top of the popup so the user knows
-  // which side is Quoted vs Scheduled. Skipped when no row has a
-  // Q/S split (i.e. no baseline + no sold value).
-  const hasAnyVs = (durationLabel.includes('popup-vs') || completeLabel.includes('popup-vs') || fatDateLabel.includes('popup-vs'));
-  const colHeader = hasAnyVs ? `
-    <div class="popup-row popup-row-header">
-      <span class="popup-label"></span>
-      <span class="popup-value popup-header-cols">
-        <span class="popup-vs-q">Quoted</span>
-        <span class="popup-vs-sep">/</span>
-        <span class="popup-vs-s">Scheduled</span>
+      <span class="popup-value" title="Labor-weighted across ${activeMachine || 'all'} tasks: SUM(duration ├ù progress) ├╖ SUM(duration).">${pctLabel}</span>
+    </div>
+    <div class="popup-row">
+      <span class="popup-label">FAT</span>
+      <span class="popup-value" title="${activeMachine ? activeMachine + '.' : ''}FAT anchor start date. Chip on the right shows baseline variance, if a baseline is set.">
+        ${fatDateLabel}${fatVarChip}
       </span>
-    </div>` : '';
-  // Simple vs Advanced mode — persisted in localStorage. Simple
-  // shows only the live scheduled values (Duration / Complete / FAT)
-  // — no Q/S split, no header, no penalty row. Advanced shows the
-  // full comparison + penalty. Per Dan's request: default simple,
-  // expand to advanced via the toggle in the top-right.
-  let popupMode = 'simple';
-  try { popupMode = localStorage.getItem('sdcStatsPopupMode') || 'simple'; } catch (_) {}
-  if (popupMode !== 'advanced') popupMode = 'simple';
-  const toggleLabel = popupMode === 'advanced' ? '▾ Simple' : '▸ Advanced';
-  const toggleTitle = popupMode === 'advanced'
-    ? 'Collapse — show only the live schedule numbers.'
-    : 'Expand — show Quoted vs Scheduled comparison + penalty clause.';
-
-  if (popupMode === 'simple') {
-    // Simple = just the scheduled values, single column per row.
-    const schedDur = (() => {
-      if (!po || !fat || !po.start_date || !fat.start_date) return '—';
-      const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
-      return `${Math.max(0, _toHalfWeek(days))}W`;
-    })();
-    const simpleCompleteRow = isSalesProject ? '' : `
-      <div class="popup-row">
-        <span class="popup-label">Complete</span>
-        <span class="popup-value">${pctLabel}</span>
-      </div>`;
-    popup.innerHTML = `
-      <button type="button" class="popup-mode-toggle" data-action="popup-toggle" title="${escapeHtml(toggleTitle)}">${escapeHtml(toggleLabel)}</button>
-      ${scopeHeader}
-      <div class="popup-row">
-        <span class="popup-label">Duration</span>
-        <span class="popup-value">${schedDur}${machineDeltaChip}</span>
-      </div>
-      ${simpleCompleteRow}
-      <div class="popup-row">
-        <span class="popup-label">FAT</span>
-        <span class="popup-value">${schedFatStr}${fatVarChip}</span>
-      </div>
-    `;
-  } else {
-    popup.innerHTML = `
-      <button type="button" class="popup-mode-toggle" data-action="popup-toggle" title="${escapeHtml(toggleTitle)}">${escapeHtml(toggleLabel)}</button>
-      ${scopeHeader}
-      ${colHeader}
-      <div class="popup-row">
-        <span class="popup-label">Duration</span>
-        <span class="popup-value" title="Sold delivery (left, muted) / Current scheduled PO→FAT span (right, bold). Half-week steps.">${durationLabel}${machineDeltaChip}</span>
-      </div>
-      ${completeRow}
-      <div class="popup-row">
-        <span class="popup-label">FAT</span>
-        <span class="popup-value" title="Sold FAT (PO + sold weeks; or baseline FAT) on the left, scheduled ${activeMachine ? activeMachine + '.' : ''}FAT on the right. Chip shows variance.">
-          ${fatDateLabel}${fatVarChip}
-        </span>
-      </div>
-      ${penaltyRow}
-    `;
-  }
-  // Wire the toggle button — flips mode + re-renders so the new
-  // markup paints in place. localStorage persists across reloads.
-  const toggleBtn = popup.querySelector('[data-action="popup-toggle"]');
-  if (toggleBtn && !toggleBtn.dataset.bound) {
-    toggleBtn.dataset.bound = '1';
-    toggleBtn.addEventListener('click', () => {
-      const next = popupMode === 'advanced' ? 'simple' : 'advanced';
-      try { localStorage.setItem('sdcStatsPopupMode', next); } catch (_) {}
-      renderProjectStatsPopup();
-    });
-  }
+    </div>
+  `;
 }
 
 // ---------- Today line ----------
@@ -4186,8 +3878,8 @@ function drawTodayLine() {
   const todayDt = new Date();
   let todayMs = Date.UTC(todayDt.getUTCFullYear(), todayDt.getUTCMonth(), todayDt.getUTCDate());
   let todayDow = new Date(todayMs).getUTCDay();
-  if (todayDow === 6) todayMs += 2 * 86400000;     // Sat → Mon
-  else if (todayDow === 0) todayMs += 1 * 86400000;// Sun → Mon
+  if (todayDow === 6) todayMs += 2 * 86400000;     // Sat ΓåÆ Mon
+  else if (todayDow === 0) todayMs += 1 * 86400000;// Sun ΓåÆ Mon
   const days = (todayMs - startMs) / 86400000;
   if (days < 0) return; // today is BEFORE the chart's earliest date
   // Use work-day offset so the today line lands on the right column in
@@ -4198,7 +3890,7 @@ function drawTodayLine() {
   if (x > svgW) return;  // today is past the right edge of the chart
 
   // Find the topmost bar to determine where the chart content starts. yTop sits
-  // just below the date header — same approach the financial overlay uses.
+  // just below the date header ΓÇö same approach the financial overlay uses.
   let firstBarY = Infinity;
   for (const bar of svg.querySelectorAll('.bar-wrapper:not(.phantom-pad) .bar')) {
     const y = +bar.getAttribute('y');
@@ -4213,7 +3905,7 @@ function drawTodayLine() {
   line.setAttribute('x2', x);
   line.setAttribute('y1', yTop);
   line.setAttribute('y2', svgH);
-  // SDC blue — primary brand color. Distinct from the lime anchor diamonds
+  // SDC blue ΓÇö primary brand color. Distinct from the lime anchor diamonds
   // and the green financial overlay lines.
   line.setAttribute('stroke', '#1574c4');
   line.setAttribute('stroke-width', '1.4');
@@ -4244,8 +3936,8 @@ function drawTodayLine() {
 // outline at the baseline's date range, behind the current bar. The outline
 // uses the SAME color family as the task itself (fill for the dashed stroke,
 // stroke shade for the drift label) so it reads as a ghost of THAT specific
-// task, not a generic purple overlay. A bare "+Nd" / "−Nd" label sits adjacent
-// to the bar — no pill background, no "vs baseline" wording.
+// task, not a generic purple overlay. A bare "+Nd" / "ΓêÆNd" label sits adjacent
+// to the bar ΓÇö no pill background, no "vs baseline" wording.
 function drawBaselineGhosts() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
@@ -4321,16 +4013,16 @@ function drawBaselineGhosts() {
     ghost.setAttribute('pointer-events', 'none');
     wrap.insertBefore(ghost, wrap.firstChild);
 
-    // Drift label — bare "+Nd" / "−Nd" in the task's dark color. No pill, no
+    // Drift label ΓÇö bare "+Nd" / "ΓêÆNd" in the task's dark color. No pill, no
     // "baseline" wording. ALWAYS placed to the LEFT of the bar (anchored to the
     // bar's left edge) so it never collides with the schedule-status chip on
     // the right. SKIPPED for milestones (anchors + regular) because the diamond
-    // shape extends well past the bar's bbox — the label would land on top of
+    // shape extends well past the bar's bbox ΓÇö the label would land on top of
     // the diamond. The ghost shape alone is enough to read the drift on those.
     const driftMag = Math.abs(startDrift);
     if (driftMag > 0 && !task.is_milestone) {
       const isLate = startDrift > 0;
-      const labelText = `${isLate ? '+' : '−'}${driftMag}d`;
+      const labelText = `${isLate ? '+' : 'ΓêÆ'}${driftMag}d`;
       const text = document.createElementNS(SVG_NS, 'text');
       text.setAttribute('class', 'baseline-drift-label');
       text.setAttribute('x', barX - 4);
@@ -4353,125 +4045,8 @@ function drawBaselineGhosts() {
 // When the $ Financial toggle is on, draw a vertical line through the whole chart
 // at each financial milestone's date. Line is DASHED for not-yet-sent invoices
 // and SOLID once the Sent checkbox is on (the `paid` DB field is reused for this
-// flag — name's legacy). A small label at the top names the milestone + percent.
+// flag ΓÇö name's legacy). A small label at the top names the milestone + percent.
 // Renders ON TOP of bars/arrows so it's always readable.
-// Short red vertical line at the penalty-clause start date — appears
-// only when the active project's quote has has_penalty_clause checked
-// AND penalty_clause_weeks set. Spans ~2 rows above and below the
-// FAT bar (full-height would dominate the chart) with a "Penalty
-// starts" label so the PM sees both the date and what it means.
-// Wrapped in try/catch per CLAUDE.md — render chain must continue
-// even if anything in here throws.
-function drawPenaltyClauseLine() {
-  try {
-    const svg = document.querySelector('#gantt-container .gantt');
-    if (!svg) return;
-    svg.querySelectorAll('.sdc-penalty-line').forEach(el => el.remove());
-    if (!state.gantt || !state.gantt.gantt_start) return;
-    const project = state.filters.project;
-    if (!project) return;
-    // Self-load the quote on cache miss so the penalty line shows on
-    // the first Gantt render, not just after the user opens the
-    // Quote modal. Re-draws when the fetch resolves.
-    if (!(project in state.projectQuotes)) {
-      loadProjectQuote(project).then(() => {
-        try { drawPenaltyClauseLine(); } catch (_) {}
-      });
-      return;
-    }
-    const quote = state.projectQuotes[project];
-    if (!quote || !quote.has_penalty_clause) return;
-    const wks = Number(quote.penalty_clause_weeks);
-    if (!Number.isFinite(wks) || wks <= 0) return;
-    // PO start anchors the date math (penalty = PO + N weeks). FAT
-    // bar anchors the VERTICAL extent (~2 rows above to 2 below).
-    const tasks = state.tasks.filter(t => t.project === project);
-    const po = tasks.find(t => inferredAnchorKey(t) === 'receipt_of_po');
-    const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
-    if (!po || !po.start_date) return;
-    const penaltyDateObj = new Date(po.start_date + 'T00:00:00');
-    penaltyDateObj.setDate(penaltyDateObj.getDate() + Math.round(wks * 7));
-    const penaltyISO = penaltyDateObj.toISOString().slice(0, 10);
-    const g = state.gantt;
-    const cw = g.options.column_width;
-    const mode = g.options.view_mode || 'Week';
-    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
-    const pxPerDay = cw / step;
-    // Work-day positioning so the line lands on the same column as
-    // a task ending on that date (matches compressGanttToWorkDays).
-    const x = workDayOffset(penaltyISO, g.gantt_start) * pxPerDay;
-    if (x < 0) return;
-    // Find the FAT bar's y to anchor the line. If FAT isn't rendered
-    // (filtered out), fall back to mid-chart.
-    const svgH = +svg.getAttribute('height') || svg.viewBox?.baseVal?.height || 600;
-    let fatY = svgH / 2;
-    let rowH = 28;
-    if (fat) {
-      const wrap = svg.querySelector(`.bar-wrapper[data-id="${fat.id}"]`);
-      const bar = wrap && wrap.querySelector('.bar');
-      if (bar) {
-        fatY = +bar.getAttribute('y');
-        rowH = +bar.getAttribute('height') || rowH;
-      }
-    }
-    // Span: 2 rows ABOVE FAT to 2 rows BELOW — short enough not to
-    // dominate the chart, long enough to read as "this matters
-    // around delivery". Each row is roughly rowH + a few px padding.
-    const ROW_STRIDE = rowH + 8;
-    const yTop = Math.max(40, fatY - 2 * ROW_STRIDE);
-    const yBottom = fatY + 3 * ROW_STRIDE;
-
-    const layer = document.createElementNS(SVG_NS, 'g');
-    layer.setAttribute('class', 'sdc-penalty-line');
-    layer.style.pointerEvents = 'none';
-    svg.appendChild(layer);
-    // Vertical red line.
-    const line = document.createElementNS(SVG_NS, 'line');
-    line.setAttribute('x1', x);
-    line.setAttribute('x2', x);
-    line.setAttribute('y1', yTop);
-    line.setAttribute('y2', yBottom);
-    line.setAttribute('stroke', '#dc2626');
-    line.setAttribute('stroke-width', '2.2');
-    layer.appendChild(line);
-    // Label — "Penalty starts" + date. Positioned to the RIGHT of
-    // the line and vertically centered between the line's top and
-    // bottom so it doesn't sit ON TOP of any task bar (centering it
-    // above the line was overlapping with bars in busy areas like
-    // Test/Debug rows).
-    const labelText = `Penalty starts ${fmtDate(penaltyISO)}`;
-    const padX = 6;
-    const approxCharW = 6.2;
-    const labelW = labelText.length * approxCharW + padX * 2;
-    const labelH = 16;
-    const rectX = x + 6;
-    const rectY = ((yTop + yBottom) / 2) - (labelH / 2);
-    const rect = document.createElementNS(SVG_NS, 'rect');
-    rect.setAttribute('x', rectX);
-    rect.setAttribute('y', rectY);
-    rect.setAttribute('width', labelW);
-    rect.setAttribute('height', labelH);
-    rect.setAttribute('rx', '3');
-    rect.setAttribute('fill', '#fff');
-    rect.setAttribute('stroke', '#dc2626');
-    rect.setAttribute('stroke-width', '1.4');
-    layer.appendChild(rect);
-    const text = document.createElementNS(SVG_NS, 'text');
-    // Anchor text to the LEFT edge of the pill (since the pill sits
-    // to the right of the line now, not centered above it).
-    text.setAttribute('x', rectX + labelW / 2);
-    text.setAttribute('y', rectY + labelH / 2 + 1);
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('dominant-baseline', 'central');
-    text.setAttribute('fill', '#b91c1c');
-    text.style.fontFamily = 'sans-serif';
-    text.style.fontSize = '11px';
-    text.style.fontWeight = '700';
-    text.textContent = labelText;
-    layer.appendChild(text);
-  } catch (_) { /* swallow — render chain must continue */ }
-}
-
 function drawFinancialOverlay() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
@@ -4505,7 +4080,7 @@ function drawFinancialOverlay() {
   }
   if (markers.length === 0) return;
 
-  // Date → x. gantt_start is the leftmost calendar date the Gantt knows about.
+  // Date ΓåÆ x. gantt_start is the leftmost calendar date the Gantt knows about.
   // step = calendar days per column for the current view mode.
   const g = state.gantt;
   const startMs = new Date(g.gantt_start).getTime();
@@ -4516,7 +4091,7 @@ function drawFinancialOverlay() {
 
   // Lines span the full chart height. yTop has to land BELOW the date header
   // (including the day-number row). The header elements are <g> groups, not
-  // <rect>s, so their getAttribute('height') is null — using header_height as a
+  // <rect>s, so their getAttribute('height') is null ΓÇö using header_height as a
   // proxy underestimates the actual rendered band. Instead we find the topmost
   // task bar's Y: bars always start AFTER the entire header, so first_bar.y - 16
   // is guaranteed to be in the gap above the first row, comfortably past the
@@ -4534,7 +4109,7 @@ function drawFinancialOverlay() {
   layer.setAttribute('class', 'financial-marker financial-overlay-layer');
   svg.appendChild(layer);
 
-  // Lane assignment — each lane is a horizontal "row" of labels just below the
+  // Lane assignment ΓÇö each lane is a horizontal "row" of labels just below the
   // date header. If a label's X overlaps another label's right edge in the same
   // lane, it spills to the next lane down so the labels never sit on top of each
   // other. Markers sorted by date so the lane walk is left-to-right.
@@ -4544,18 +4119,12 @@ function drawFinancialOverlay() {
   const LANE_GAP_X = 10;   // min horizontal gap before two labels can share a lane
   const laneEndX = [];
   const laneByMarker = new Map();
-  // The schedule Gantt is WORK-DAY compressed (Sat/Sun collapsed) via
-  // compressGanttToWorkDays — so bar positions use workDayOffset, not
-  // calendar-day math. The overlay must do the same or markers land
-  // weeks-to-months off because every weekend along the way adds 2
-  // calendar days that don't exist on the chart.
   for (const m of sortedMarkers) {
-    if (!m.due_date) continue;
-    const x = workDayOffset(m.due_date, g.gantt_start) * pxPerDay;
+    const date = new Date(m.due_date + 'T00:00:00');
+    if (Number.isNaN(date.getTime())) continue;
+    const x = ((date.getTime() - startMs) / (86400 * 1000)) * pxPerDay;
     const pct = m.percent != null ? ` ${Number(m.percent)}%` : '';
-    // Width estimate uses the abbreviation (matches what the label
-    // actually renders), not the full name.
-    const labelW = (_pdashFinAbbrev(m).length + pct.length) * APPROX_CHAR + 12;
+    const labelW = ((m.name || '').length + pct.length) * APPROX_CHAR + 12; // +pill padding
     let lane = 0;
     for (; lane < laneEndX.length; lane++) {
       if (laneEndX[lane] + LANE_GAP_X < x) break;
@@ -4565,17 +4134,17 @@ function drawFinancialOverlay() {
   }
 
   for (const m of markers) {
-    if (!m.due_date) continue;
-    // Same work-day-based x positioning as the lane loop above —
-    // matches the bar positions in the compressed Gantt.
-    const x = workDayOffset(m.due_date, g.gantt_start) * pxPerDay;
+    const date = new Date(m.due_date + 'T00:00:00');
+    if (Number.isNaN(date.getTime())) continue;
+    const days = (date.getTime() - startMs) / (86400 * 1000);
+    const x = days * pxPerDay;
     const sent = !!m.paid;
     const lane = laneByMarker.get(m) || 0;
     // Labels sit BELOW the dates (yTop already accounts for both header rows),
     // shifted into their assigned lane.
     const labelY = yTop + 12 + lane * LANE_H;
 
-    // Vertical line through the whole chart — bolder than v1.9.x so it reads
+    // Vertical line through the whole chart ΓÇö bolder than v1.9.x so it reads
     // clearly against busy bars. Dashed when pending, solid when sent.
     const line = document.createElementNS(SVG_NS, 'line');
     line.setAttribute('class', 'financial-marker financial-line' + (sent ? ' is-sent' : ''));
@@ -4589,18 +4158,15 @@ function drawFinancialOverlay() {
     layer.appendChild(line);
 
     // Build label text first so we can measure for the pill backdrop.
-    // Use the SDC abbreviation (PO / MC / FAT / SAT) — matches the
-    // dashboard tile so PMs read the same shorthand in both places.
     const pct = m.percent != null ? ` ${Number(m.percent)}%` : '';
-    const abbrev = _pdashFinAbbrev(m);
     const text = document.createElementNS(SVG_NS, 'text');
     text.setAttribute('x', x + 6);
     text.setAttribute('y', labelY);
     text.setAttribute('class', 'financial-marker financial-label');
     text.setAttribute('font-size', '11');
     text.setAttribute('font-weight', '700');
-    text.setAttribute('fill', '#14532d');         // green-900 — strong contrast
-    text.textContent = abbrev + pct;
+    text.setAttribute('fill', '#14532d');         // green-900 ΓÇö strong contrast
+    text.textContent = (m.name || '') + pct;
     layer.appendChild(text);
 
     // White pill backdrop behind each label so the label is readable even when
@@ -4619,14 +4185,14 @@ function drawFinancialOverlay() {
     bg.setAttribute('stroke-width', '0.75');
     layer.insertBefore(bg, text);
 
-    // Hover title for full info — attached to the line so the whole vertical hit area works.
+    // Hover title for full info ΓÇö attached to the line so the whole vertical hit area works.
     const title = document.createElementNS(SVG_NS, 'title');
-    title.textContent = `${m.project ? m.project + ' · ' : ''}${m.name}${pct} (${m.due_date})${sent ? ' — SENT' : ''}`;
+    title.textContent = `${m.project ? m.project + ' ┬╖ ' : ''}${m.name}${pct} (${m.due_date})${sent ? ' ΓÇö SENT' : ''}`;
     line.appendChild(title);
   }
 }
 
-// Compute the critical path — the chain of tasks that drives the schedule from
+// Compute the critical path ΓÇö the chain of tasks that drives the schedule from
 // Receipt of PO to FAT. We walk BACKWARD from FAT: at each step we pick the
 // predecessor whose date drives this task's start/end (the latest-finishing FS
 // predecessor, the latest-starting SS one, etc.) Slipping any task in the returned
@@ -4636,7 +4202,7 @@ function computeCriticalPath() {
   const tasks = projectFilter ? state.tasks.filter(t => t.project === projectFilter) : state.tasks;
   const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
   if (!fat) return new Set();
-  // Stringify IDs throughout — bar elements expose IDs via data-id (always string),
+  // Stringify IDs throughout ΓÇö bar elements expose IDs via data-id (always string),
   // so storing strings keeps the Set comparable with the lookup site in
   // drawCustomArrows without per-call Number() conversions slipping past.
   const taskById = Object.fromEntries(tasks.map(t => [String(t.id), t]));
@@ -4650,7 +4216,7 @@ function computeCriticalPath() {
       .map(s => parsePredecessor(s.trim()))
       .filter(Boolean);
     if (refs.length === 0) continue;
-    // Find the binding predecessor — the one whose driven date is latest. That's
+    // Find the binding predecessor ΓÇö the one whose driven date is latest. That's
     // the one pinning this task's start; everyone else has slack.
     let bound = null, boundMs = -Infinity;
     for (const ref of refs) {
@@ -4674,7 +4240,7 @@ function computeCriticalPath() {
 // For every in-progress non-milestone task, compare ACTUAL progress (% complete) to
 // EXPECTED progress at today's date. A small chip is drawn just to the right of the
 // task bar showing how many working days the task is ahead (green) or behind (red).
-// On-track tasks (|diff| < 1d) get no chip — keeps the chart clean.
+// On-track tasks (|diff| < 1d) get no chip ΓÇö keeps the chart clean.
 function drawScheduleStatus() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
@@ -4690,9 +4256,9 @@ function drawScheduleStatus() {
     if (!wrap) continue;
     const bar = wrap.querySelector('.bar');
     if (!bar) continue;
-    // For completed tasks, use the locked drift (scheduled_end − completed_on).
+    // For completed tasks, use the locked drift (scheduled_end ΓêÆ completed_on).
     // For incomplete tasks, the live formula based on today.
-    // taskScheduleDelta handles both — single source of truth.
+    // taskScheduleDelta handles both ΓÇö single source of truth.
     const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
     const diffDays = taskScheduleDelta(task);
     // Hover-tooltip context: % math is only meaningful for INCOMPLETE tasks.
@@ -4722,12 +4288,12 @@ function drawScheduleStatus() {
         // Label x is its start point; width = lb.width. End = labelX + lb.width.
         const labelEndX = (+labelEl.getAttribute('x')) + lb.width;
         cx = Math.max(cx, labelEndX + 6);
-      } catch (_) { /* SVG not measurable yet — fall back to default cx */ }
+      } catch (_) { /* SVG not measurable yet ΓÇö fall back to default cx */ }
     }
     const cy = barY + barH / 2;
-    const label = `${ahead ? '+' : '−'}${Math.abs(diffDays)}d`;
+    const label = `${ahead ? '+' : 'ΓêÆ'}${Math.abs(diffDays)}d`;
     const padX = 5, chipH = Math.max(12, barH - 2);
-    // Estimate width — text is short, ~7px per char + padding.
+    // Estimate width ΓÇö text is short, ~7px per char + padding.
     const w = label.length * 6.5 + padX * 2;
     const g = document.createElementNS(SVG_NS, 'g');
     g.setAttribute('class', 'sdc-status-chip');
@@ -4752,7 +4318,7 @@ function drawScheduleStatus() {
     text.setAttribute('pointer-events', 'none');
     text.textContent = label;
     g.appendChild(text);
-    // Tooltip for the chip — extra context on hover.
+    // Tooltip for the chip ΓÇö extra context on hover.
     const title = document.createElementNS(SVG_NS, 'title');
     title.textContent = ahead
       ? `${Math.abs(diffDays)} working day${Math.abs(diffDays) === 1 ? '' : 's'} AHEAD of schedule (${actualPct.toFixed(0)}% complete, expected ${expectedPct.toFixed(0)}%)`
@@ -4804,13 +4370,13 @@ function alignGanttToGrid() {
     shiftElementY(wrap, dy);
   });
 
-  // Clear any old custom stripes — keep the gantt background plain white.
+  // Clear any old custom stripes ΓÇö keep the gantt background plain white.
   const oldStripes = ganttSvg.querySelector('.sdc-row-stripes');
   if (oldStripes) oldStripes.remove();
   const finalSvgHeight = +ganttSvg.getAttribute('height') || gridHeight;
 
   // Draw fresh full-height vertical tick lines at every date column. We use the lower-text
-  // x positions (which we know exist — the date label numbers) as the column anchors. This
+  // x positions (which we know exist ΓÇö the date label numbers) as the column anchors. This
   // doesn't depend on frappe-gantt's internal tick rendering, which may be lines/paths/rects.
   let tickGroup = ganttSvg.querySelector('.sdc-tick-fill');
   if (tickGroup) tickGroup.remove();
@@ -4863,7 +4429,7 @@ function cleanGanttHeaders() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
   // In Month view, the lower-text IS the month name (Jan / Feb / etc.) and the
-  // upper-text is the year — we have to keep both. The de-duplication below was
+  // upper-text is the year ΓÇö we have to keep both. The de-duplication below was
   // designed for Week view, where the upper-text is "January" and the lower-
   // text used to repeat it ("Jan 12") creating noise; stripping months in
   // Month view leaves the row blank, which is what the user just hit.
@@ -4889,11 +4455,11 @@ function setZoom(percent) {
 
   // Capture the DATE under the viewport center BEFORE we re-render. We can't
   // just scale pixel positions linearly (the old code did `factor * oldCenterPx`)
-  // because getZoomConfig may flip the view mode at certain zoom thresholds —
+  // because getZoomConfig may flip the view mode at certain zoom thresholds ΓÇö
   // and when the mode flips, the gantt's start date, column width formula, and
   // px-per-day all change discontinuously. A pixel that meant "Aug 10" in Week
   // mode might map to "Nov 3" in Month mode after the rebuild, which is what
-  // made the chart appear to jump way off to the side at the Week→Month
+  // made the chart appear to jump way off to the side at the WeekΓåÆMonth
   // boundary. Converting to a date and back is mode-independent.
   let centerDateMs = null;
   const oldScroller = getGanttScroller();
@@ -4938,7 +4504,7 @@ function setZoom(percent) {
 
   // Now find that same date on the new chart and scroll so it sits at the
   // viewport center. Use WORK-DAY x positioning (the same logic the bars
-  // and headers use after compressGanttToWorkDays) — otherwise a Month→
+  // and headers use after compressGanttToWorkDays) ΓÇö otherwise a MonthΓåÆ
   // Week mode flip leaves the chart visually shifted by the weekend
   // compression delta.
   const newScroller = getGanttScroller();
@@ -4955,8 +4521,8 @@ function setZoom(percent) {
     }
   }
   // v4.55: Keep the Zoom dropdown's displayed value in sync with any zoom
-  // change — wheel zoom, Zoom-to-fit, time-scale switch, and the dropdown's
-  // own +/− buttons all flow through here. renderZoomMenu bails if the
+  // change ΓÇö wheel zoom, Zoom-to-fit, time-scale switch, and the dropdown's
+  // own +/ΓêÆ buttons all flow through here. renderZoomMenu bails if the
   // menu element isn't in the DOM yet, so this is safe on init.
   if (typeof renderZoomMenu === 'function') renderZoomMenu();
 }
@@ -5011,7 +4577,7 @@ function zoomToFit() {
   const minStartMs = new Date(minStartStr + 'T00:00:00Z');
   const workDaysSpan = Math.max(1, workDayOffset(maxEndStr, minStartMs));
 
-  // Label-overflow budget — Receipt of PO renders its date (~60px) to
+  // Label-overflow budget ΓÇö Receipt of PO renders its date (~60px) to
   // the LEFT of its diamond, and long task names overflow ~80-120px
   // past the RIGHT of their bars. Reserve room so neither gets clipped.
   const LABEL_PAD_LEFT  = 70;
@@ -5024,7 +4590,7 @@ function zoomToFit() {
   renderGantt();
 
   // Scroll so the earliest task's bar sits LABEL_PAD_LEFT + EDGE_PAD
-  // from the viewport's left edge — that's enough room for the date
+  // from the viewport's left edge ΓÇö that's enough room for the date
   // label hanging off the leftmost anchor.
   const earliest = filtered.reduce((min, t) =>
     t.start_date < min.start_date ? t : min);
@@ -5046,11 +4612,11 @@ function drawMilestoneDiamonds() {
   svg.querySelectorAll('.milestone-diamond, .milestone-check').forEach(d => d.remove());
 
   // Checkmark color for done milestones. The diamond itself keeps its normal
-  // anchor / non-anchor fill — only the ✓ glyph overlay tells you it's done.
+  // anchor / non-anchor fill ΓÇö only the Γ£ô glyph overlay tells you it's done.
   // (Earlier versions flipped the whole diamond to a deep-green "done" color;
   // that made done anchors look completely different from undone ones, which
-  // was confusing when two anchors of the same type — e.g. Receipt of PO not
-  // done vs Mech 1 Release done — sat in the same view.)
+  // was confusing when two anchors of the same type ΓÇö e.g. Receipt of PO not
+  // done vs Mech 1 Release done ΓÇö sat in the same view.)
   const CHECK_COLOR = '#1e293b';   // slate-800; reads against both lime + slate diamonds
 
   for (const task of state.tasks) {
@@ -5064,26 +4630,26 @@ function drawMilestoneDiamonds() {
     const y = +bar.getAttribute('y');
     const w = +bar.getAttribute('width');
     const h = +bar.getAttribute('height');
-    const cx = x + Math.max(w / 2, 0); // milestones often have w≈step; center of bar
+    const cx = x + Math.max(w / 2, 0); // milestones often have wΓëêstep; center of bar
     const cy = y + h / 2;
     // Anchor milestones (Receipt of PO, Mech 1 Release, Machine Power-Up, FAT,
     // Ship Machine) render as a CONCENTRIC double-diamond: a smaller filled
     // inner diamond INSIDE an outline ring that matches the size of a regular
     // non-anchor milestone. So anchors and non-anchors have the same total
-    // visual footprint — what distinguishes them is the ring (anchor only) and
+    // visual footprint ΓÇö what distinguishes them is the ring (anchor only) and
     // the color (lime-green fill vs slate).
     //
     // v4.23 hotfix: DECOUPLED milestone size from bar_height. The bar ratio
-    // bumped 0.5 → 0.7 in v4.23 (so task bars dominate their rows), which
+    // bumped 0.5 ΓåÆ 0.7 in v4.23 (so task bars dominate their rows), which
     // also blew up the diamond ~40% because it was sized off `h` directly
     // and looked oversized for milestones. Now we compute a separate
     // diamondRef at the OLD 0.5 ratio so diamonds stay the same size they
     // always were even though task bars grew.
     //
     // Sizing (against diamondRef, not h):
-    //   - Non-anchor diamond:   diamondRef × 1.20 wide.
-    //   - Anchor OUTER ring:    diamondRef × 1.20 wide.
-    //   - Anchor INNER diamond: diamondRef × 0.75 wide.
+    //   - Non-anchor diamond:   diamondRef ├ù 1.20 wide.
+    //   - Anchor OUTER ring:    diamondRef ├ù 1.20 wide.
+    //   - Anchor INNER diamond: diamondRef ├ù 0.75 wide.
     const diamondRef = Math.max(BAR_H_MIN, Math.round(state.layout.rowHeight * 0.5));
     const isAnchor = !!inferredAnchorKey(task);
     const isDone   = (task.progress || 0) >= 100;
@@ -5091,17 +4657,17 @@ function drawMilestoneDiamonds() {
 
     bar.style.opacity = '0';
     wrap.querySelectorAll('.bar-progress').forEach(el => el.style.opacity = '0');
-    // Hide frappe-gantt's bar-label — we render our own in drawMilestoneLabels (after arrows
+    // Hide frappe-gantt's bar-label ΓÇö we render our own in drawMilestoneLabels (after arrows
     // so the pill background obscures any arrow line that runs underneath).
     const lbl = wrap.querySelector('.bar-label');
     if (lbl) lbl.style.opacity = '0';
 
-    // Anchor color comes from settings (Setup → Anchor Color). Falls back to the
+    // Anchor color comes from settings (Setup ΓåÆ Anchor Color). Falls back to the
     // green default when settings haven't loaded yet.
     const ac = state.settings?.anchor_color || ANCHOR_COLOR_DEFAULTS;
 
     if (isAnchor) {
-      // Outer ring — pure outline at diamondRef × 1.20 (same size as a non-anchor
+      // Outer ring ΓÇö pure outline at diamondRef ├ù 1.20 (same size as a non-anchor
       // diamond), in the anchor text/stroke shade. The clear gap between this
       // outer ring and the smaller inner diamond is what makes the anchor
       // visually distinct without making it any larger than other milestones.
@@ -5117,8 +4683,8 @@ function drawMilestoneDiamonds() {
       // double-diamond reads as completed (otherwise the outer ring still looks
       // "pending" while the inner is filled green).
       // Outer ring uses the same anchor text/stroke color whether or not the
-      // milestone is done. Done state is signaled by the ✓ overlay added below,
-      // not a color flip — so a done Receipt of PO and an undone Receipt of PO
+      // milestone is done. Done state is signaled by the Γ£ô overlay added below,
+      // not a color flip ΓÇö so a done Receipt of PO and an undone Receipt of PO
       // are unambiguously the same milestone, just one with a checkmark on top.
       outer.setAttribute('stroke', ac.text);
       outer.setAttribute('stroke-width', '1.75');
@@ -5155,28 +4721,15 @@ function drawMilestoneDiamonds() {
       dStroke = '#1574c4'; // SDC primary
       dStrokeW = '1.5';
     }
-    // Done milestone: KEEP the diamond's original fill (slate for non-anchor,
-    // lime for anchor) — flipping the whole shape green made a done non-anchor
-    // look identical to a fresh anchor, which is exactly the wrong signal.
-    // Done state is communicated by a bright SDC-lime stroke at 2.5px + the
-    // ✓ overlay. Brighter than the earlier deep-green border so a done
-    // milestone reads at a glance against the slate (or lime) fill.
-    if (isDone) {
-      dStroke  = '#74c415';     // SDC green — same lime used on done bars
-      dStrokeW = '2.5';
-    }
     diamond.setAttribute('fill',   dFill);
     diamond.setAttribute('stroke', dStroke);
     diamond.setAttribute('stroke-width', dStrokeW);
     wrap.appendChild(diamond);
 
     // Checkmark glyph rendered on top of the diamond for done milestones.
-    // Sized at ~55% of the diamond — the diamond's inscribed square is only
-    // ~0.71×size, so a 0.9×size glyph spilled to the points and looked aligned
-    // with the diamond outline rather than centered inside it. 0.55 leaves
-    // clear breathing room on all four sides so the ✓ reads as "inside the
-    // shape" instead of "stretched across the shape." Color is dark slate
-    // (anchor lime fill) or white (non-anchor slate fill) for contrast.
+    // Sized to fit comfortably inside the inner shape, centered. Color is
+    // slate-800 ΓÇö reads cleanly on both the lime anchor fill and the slate
+    // non-anchor fill (both have enough luminance difference from dark slate).
     if (isDone) {
       const check = document.createElementNS(SVG_NS, 'text');
       check.setAttribute('x', cx);
@@ -5185,10 +4738,10 @@ function drawMilestoneDiamonds() {
       check.setAttribute('text-anchor', 'middle');
       check.setAttribute('dominant-baseline', 'central');
       check.setAttribute('fill', isAnchor ? CHECK_COLOR : '#ffffff');
-      check.setAttribute('font-size', String(Math.round(size * 0.55)));
+      check.setAttribute('font-size', String(Math.round(size * 0.9)));
       check.setAttribute('font-weight', '900');
       check.setAttribute('pointer-events', 'none');
-      check.textContent = '✓';
+      check.textContent = 'Γ£ô';
       wrap.appendChild(check);
     }
   }
@@ -5196,7 +4749,7 @@ function drawMilestoneDiamonds() {
 
 // Detect arrow lines that cross a milestone's label pill and toggle the pill side override.
 // Returns true if any pill was flipped (caller should re-render labels + arrows once).
-// Bar labels stay INSIDE the bar — if the task name doesn't fit at the current zoom, we
+// Bar labels stay INSIDE the bar ΓÇö if the task name doesn't fit at the current zoom, we
 // truncate with an ellipsis and stash the full text in a <title> for hover tooltip.
 // No pills, no spillover, no obstacles for routing to worry about.
 function clipBarLabels() {
@@ -5223,12 +4776,12 @@ function clipBarLabels() {
     const barY = +bar.getAttribute('y');
     const barH = +bar.getAttribute('height');
     // Scale font down for short bars so descenders (g, y, p, S) don't clip below
-    // the bar. Visible text-with-descender height ≈ font-size, so cap font-size
+    // the bar. Visible text-with-descender height Γëê font-size, so cap font-size
     // at barH - 2 to leave 1px breathing room top + bottom.
-    //  - barH=10 → 8px  (smallest legible)
-    //  - barH=12 → 10px
-    //  - barH=14 → 12px
-    //  - barH≥14 → 12px (capped to match grid font)
+    //  - barH=10 ΓåÆ 8px  (smallest legible)
+    //  - barH=12 ΓåÆ 10px
+    //  - barH=14 ΓåÆ 12px
+    //  - barHΓëÑ14 ΓåÆ 12px (capped to match grid font)
     // IMPORTANT: set via style.fontSize (inline style), NOT setAttribute. The
     // frappe-gantt CDN CSS rule `.gantt .bar-label { font-size: 12px }` has
     // higher CSS specificity than a presentation attribute, so attribute-based
@@ -5246,27 +4799,27 @@ function clipBarLabels() {
     const PAD = 8; // breathing room inside the bar
 
     if (labelW + PAD <= barW) {
-      // Fits INSIDE — center label in bar (dominant-baseline 'central' keeps
+      // Fits INSIDE ΓÇö center label in bar (dominant-baseline 'central' keeps
       // descenders inside the bar instead of dropping below).
       label.setAttribute('x', barX + barW / 2);
       label.setAttribute('y', barY + barH / 2);
       label.setAttribute('text-anchor', 'middle');
       label.setAttribute('dominant-baseline', 'central');
-      // Drop any prior tooltip — full text is visible.
+      // Drop any prior tooltip ΓÇö full text is visible.
       const t = wrap.querySelector('title');
       if (t) t.remove();
       continue;
     }
 
-    // v4.28: doesn't fit INSIDE — render OUTSIDE the bar (like milestone
+    // v4.28: doesn't fit INSIDE ΓÇö render OUTSIDE the bar (like milestone
     // labels do). Default placement is to the RIGHT of the bar. If the
     // right-side label would clip past the SVG edge AND there's room on
     // the left, place LEFT instead. Otherwise stays right (still readable
     // because the Gantt panel scrolls horizontally).
     //
     // Previously this branch ellipsis-truncated inside the bar ("Configure
-    // Mac…"), which for short bars like "Configure Machine" at Week zoom
-    // ended up rendering as just "…" or nothing — useless. Out-of-bar
+    // MacΓÇª"), which for short bars like "Configure Machine" at Week zoom
+    // ended up rendering as just "ΓÇª" or nothing ΓÇö useless. Out-of-bar
     // labels solve that the same way milestone labels do.
     const labelOffset = 6;
     const rightStartX = barX + barW + labelOffset;
@@ -5287,7 +4840,7 @@ function clipBarLabels() {
     label.setAttribute('dominant-baseline', 'central');
     label.classList.add('bar-label-outside');
 
-    // Outside labels render the full task name — no tooltip needed.
+    // Outside labels render the full task name ΓÇö no tooltip needed.
     const t = wrap.querySelector('title');
     if (t) t.remove();
   }
@@ -5322,7 +4875,7 @@ function drawMilestoneLabels() {
     const cy = y + h / 2;
     const isAnchor = !!inferredAnchorKey(task);
     // Anchor outer ring and non-anchor diamond both have the same outer
-    // radius. v4.23 hotfix: sized off diamondRef (OLD bar ratio of 0.5×rh)
+    // radius. v4.23 hotfix: sized off diamondRef (OLD bar ratio of 0.5├ùrh)
     // not the current h, since bars grew but milestones stay the same.
     const diamondRef = Math.max(BAR_H_MIN, Math.round(state.layout.rowHeight * 0.5));
     const r = diamondRef * 1.20 / 2;
@@ -5338,11 +4891,11 @@ function drawMilestoneLabels() {
     lbl.style.pointerEvents = 'none';
     // In personal mode, append the date to non-anchor milestone labels so
     // the user can see when each thing's due directly on the Gantt
-    // (anchors already get a date label on the LEFT — see below).
+    // (anchors already get a date label on the LEFT ΓÇö see below).
     const showPersonalDate = isPersonalMode() && !isAnchor && task.start_date;
-    lbl.textContent = (task.name || '') + (showPersonalDate ? ` · ${fmtDate(task.start_date)}` : '');
+    lbl.textContent = (task.name || '') + (showPersonalDate ? ` ┬╖ ${fmtDate(task.start_date)}` : '');
     group.appendChild(lbl);
-    // v4.60: milestone labels NO LONGER get the pill occluder — user
+    // v4.60: milestone labels NO LONGER get the pill occluder ΓÇö user
     // prefers seeing the arrow pass through the text. Bar-meta keeps the
     // pill (arrows can't otherwise be distinguished from the meta text).
     // Date label on the LEFT side of the diamond for the 5 spine anchors.
@@ -5368,10 +4921,10 @@ function drawMilestoneLabels() {
 // background (white), so it reads as if the arrow naturally stops at the
 // label edge and continues out the other side. Reused by drawBarMeta and
 // drawMilestoneLabels. Caller must have already appended the text element
-// to the group — we use getBBox to measure the actual rendered glyph box.
+// to the group ΓÇö we use getBBox to measure the actual rendered glyph box.
 // Shared canvas 2D context for text measurement. Created lazily.
 // Canvas measureText is the most reliable way to get text widths in CSS
-// pixels — it works directly off the browser's font metrics, doesn't
+// pixels ΓÇö it works directly off the browser's font metrics, doesn't
 // require the element to be in the DOM or laid out, and returns
 // synchronously. Used by drawBarMeta to size the meta/name labels before
 // deciding the cascade step.
@@ -5428,7 +4981,7 @@ function parsePredecessor(s) {
 //         pred's bottom/top edge at the target x.
 //       * Otherwise, exit horizontally from pred's left/right side at center y.
 //   - Final segment direction sets the arrowhead orientation (LEFT, RIGHT, UP, DOWN).
-// v4.56: arrow head shrunk from 6 → 3 (half size) per user feedback —
+// v4.56: arrow head shrunk from 6 ΓåÆ 3 (half size) per user feedback ΓÇö
 // the previous head filled the whole vertical gap between adjacent rows
 // at default row heights, which looked clunky. Now it's a small marker
 // that points without dominating.
@@ -5446,7 +4999,7 @@ function computeArrowPath(pred, succ, type, opts = {}) {
   const succBot   = succ.y + succ.h;
 
   // Vertical relationship by row CENTER. Anything more than 1px difference is treated
-  // as a different row — that catches consecutive-row pairs whose bars happen to overlap
+  // as a different row ΓÇö that catches consecutive-row pairs whose bars happen to overlap
   // by a pixel or two.
   const predCy = pred.y + pred.h / 2;
   const succCy = succ.y + succ.h / 2;
@@ -5481,7 +5034,7 @@ function computeArrowPath(pred, succ, type, opts = {}) {
         ? Math.min(sideEntryX + 4, succRight - 2)
         : Math.max(sideEntryX - 4, succLeft + 2);
     } else {
-      // Same row — approach from the side, final segment horizontal.
+      // Same row ΓÇö approach from the side, final segment horizontal.
       entryX = sideEntryX;
       entryY = succ.y + succ.h / 2;
       headDir = enterFromLeft ? 'RIGHT' : 'LEFT';
@@ -5497,7 +5050,7 @@ function computeArrowPath(pred, succ, type, opts = {}) {
     else                                    { exitX = predLeft;  exitY = pred.y + pred.h / 2; }
   } else {
     if (goingDown || goingUp) {
-      // Straight drop possible if entryX is within pred's x range — exit through the
+      // Straight drop possible if entryX is within pred's x range ΓÇö exit through the
       // top/bottom edge at entryX. Otherwise exit from the side closest to entryX.
       if (entryX >= predLeft && entryX <= predRight) {
         exitX = entryX;
@@ -5507,7 +5060,7 @@ function computeArrowPath(pred, succ, type, opts = {}) {
         exitY = pred.y + pred.h / 2;
       }
     } else {
-      // Same row — exit horizontal from the side.
+      // Same row ΓÇö exit horizontal from the side.
       const exitingRight = type === 'FS' || type === 'FF';
       exitX = exitingRight ? predRight : predLeft;
       exitY = pred.y + pred.h / 2;
@@ -5548,7 +5101,7 @@ function computeArrowPath(pred, succ, type, opts = {}) {
     linePath = `M ${exitX} ${exitY} L ${adj.x} ${exitY}`;
     labelAnchor = { x: (exitX + adj.x) / 2, y: exitY };
   } else if (headDir === 'DOWN' || headDir === 'UP') {
-    // Final segment is vertical → corner at (entryX, exitY): horizontal then vertical.
+    // Final segment is vertical ΓåÆ corner at (entryX, exitY): horizontal then vertical.
     linePath = `M ${exitX} ${exitY} L ${entryX} ${exitY} L ${entryX} ${adj.y}`;
     const horizLen = Math.abs(entryX - exitX);
     const vertLen  = Math.abs(adj.y - exitY);
@@ -5556,7 +5109,7 @@ function computeArrowPath(pred, succ, type, opts = {}) {
       ? { x: (exitX + entryX) / 2, y: exitY }
       : { x: entryX, y: (exitY + adj.y) / 2 };
   } else {
-    // Final segment is horizontal → corner at (exitX, entryY): vertical then horizontal.
+    // Final segment is horizontal ΓåÆ corner at (exitX, entryY): vertical then horizontal.
     linePath = `M ${exitX} ${exitY} L ${exitX} ${entryY} L ${adj.x} ${entryY}`;
     const vertLen  = Math.abs(entryY - exitY);
     const horizLen = Math.abs(adj.x - exitX);
@@ -5593,14 +5146,14 @@ function drawCustomArrows() {
   group.setAttribute('class', 'sdc-arrows');
   // Insert BEFORE the first bar-wrapper so arrows render BEHIND bars and labels
   // (z-order: later siblings paint on top in SVG). frappe-gantt nests the bar-wrappers
-  // inside a parent <g>, so we attach to that parent — not the SVG root.
+  // inside a parent <g>, so we attach to that parent ΓÇö not the SVG root.
   const firstBar = svg.querySelector('.bar-wrapper');
   if (firstBar && firstBar.parentNode) firstBar.parentNode.insertBefore(group, firstBar);
   else svg.appendChild(group);
 
   // Index every bar's geometry. Milestones use the DIAMOND bbox so arrows
   // terminate at the visible outer edge, not the underlying bar-wrapper rect.
-  // Anchor diamonds have an OUTER RING ~75% larger than the inner — arrows
+  // Anchor diamonds have an OUTER RING ~75% larger than the inner ΓÇö arrows
   // must terminate at that outer edge, otherwise they pierce the ring.
   const taskById = Object.fromEntries(state.tasks.map(t => [String(t.id), t]));
   const bars = [...svg.querySelectorAll('.bar-wrapper')].map(w => {
@@ -5615,7 +5168,7 @@ function drawCustomArrows() {
       const cx = x + ww / 2;
       const cy = y + hh / 2;
       // Anchor outer ring and non-anchor diamond both have outer radius
-      // diamondRef × 1.20 / 2 (v4.23 hotfix: decoupled from h). Arrows
+      // diamondRef ├ù 1.20 / 2 (v4.23 hotfix: decoupled from h). Arrows
       // terminate at this exact boundary so they don't pierce or miss the
       // diamond now that the diamond is smaller than the bar height.
       const diamondRef = Math.max(BAR_H_MIN, Math.round(state.layout.rowHeight * 0.5));
@@ -5632,7 +5185,7 @@ function drawCustomArrows() {
   // Build the job list, then group by pred + direction so successors leaving the same
   // side of one pred can stagger their exit y values.
   const arrowJobs = [];
-  // Lag-label rendering deferred to a second pass after all arrows are drawn —
+  // Lag-label rendering deferred to a second pass after all arrows are drawn ΓÇö
   // see end of this function. Collecting jobs here avoids a per-arrow forward
   // declaration.
   const lagLabelJobs = [];
@@ -5674,7 +5227,7 @@ function drawCustomArrows() {
     });
 
     // Arrow color: deep red and bolder ONLY when BOTH endpoints sit on the
-    // critical path. That's what makes the segment actually part of the chain —
+    // critical path. That's what makes the segment actually part of the chain ΓÇö
     // an arrow leaving a critical task to a non-critical successor isn't critical
     // (the successor has slack). Read directly from the bar-wrappers' class so
     // we share the exact source of truth that's already painting the bars red.
@@ -5722,8 +5275,8 @@ function drawCustomArrows() {
   // Two reasons to render here, after the arrows loop, rather than inline:
   //   1. Z-order: the .sdc-arrows group sits BEHIND bars on purpose (so
   //      arrows duck under bars when routes overlap). Lag labels need to sit
-  //      ABOVE bars so the user can read them — bars covered the labels
-  //      otherwise (user feedback: "−2 weeks from designer view is underneath
+  //      ABOVE bars so the user can read them ΓÇö bars covered the labels
+  //      otherwise (user feedback: "ΓêÆ2 weeks from designer view is underneath
   //      mechanical design").
   //   2. Overlap avoidance: once we have ALL label positions, we can detect
   //      colliding labels and shift them along the segment so they don't sit
@@ -5757,7 +5310,7 @@ function renderArrowLagLabels(svg, jobs) {
       a.y + a.h + GAP <= b.y || b.y + b.h + GAP <= a.y);
 
   for (const { job, wks, onCritical, anchor } of jobs) {
-    const labelText = (wks > 0 ? '+' : '−') + Math.abs(wks) + ' wk' + (Math.abs(wks) === 1 ? '' : 's');
+    const labelText = (wks > 0 ? '+' : 'ΓêÆ') + Math.abs(wks) + ' wk' + (Math.abs(wks) === 1 ? '' : 's');
     const pillW = labelText.length * 6 + 10;
 
     // Shift the label vertically until it no longer collides with any
@@ -5923,7 +5476,7 @@ function renderFilters() {
 
   const pop = document.getElementById('filters-popover');
   if (!pop) return;
-  // Quick-chip filters — single-click toggles that focus the schedule on a state
+  // Quick-chip filters ΓÇö single-click toggles that focus the schedule on a state
   // ("behind", "ahead", "milestones only", etc.). Anchors AND non-anchor
   // milestones are always exempt so the schedule spine stays visible
   // regardless of which chips are on.
@@ -6022,7 +5575,7 @@ function renderFilters() {
       if (cvToggle.checked) {
         if (!state.filters.project) {
           cvToggle.checked = false;
-          showAlertDialog('Pick a project tab first — customer view is per-project.');
+          showAlertDialog('Pick a project tab first ΓÇö customer view is per-project.');
           return;
         }
         enterCustomerView();
@@ -6035,7 +5588,7 @@ function renderFilters() {
 
 // ---------- Project tabs (open schedules) ----------
 // Open projects persist in localStorage so reloads remember them. The empty string ""
-// is the canonical "All projects" pseudo-tab — always present, can't be closed. Switching
+// is the canonical "All projects" pseudo-tab ΓÇö always present, can't be closed. Switching
 // tabs sets state.filters.project which the existing applyFilters honors.
 function loadProjectTabs() {
   let saved = null;
@@ -6117,7 +5670,7 @@ function isTemplateProject(p) {
 
 // Fixed list of workspaces for v4.7. Order here is also the display order in
 // the picker. Adding a new workspace just means dropping its name into this
-// array — assignments live in state.projectWorkspaces keyed by project name.
+// array ΓÇö assignments live in state.projectWorkspaces keyed by project name.
 const WORKSPACES = ['Active', 'Sales', 'Closed'];
 const DEFAULT_WORKSPACE = 'Active';
 
@@ -6131,7 +5684,7 @@ function projectWorkspace(p) {
   // Auto-detect workspace from project name when nothing's explicitly set.
   // Keeps the SDC_Sales_Template (and any other *sales* / *closed* schedule)
   // in the right workspace on first load without requiring manual right-click
-  // assignment per browser. The user can still override via right-click →
+  // assignment per browser. The user can still override via right-click ΓåÆ
   // Workspace: ___; that explicit choice persists in state.projectWorkspaces.
   const lower = String(p).toLowerCase();
   if (/\bsales?\b|_sales/.test(lower))  return 'Sales';
@@ -6141,11 +5694,11 @@ function projectWorkspace(p) {
 
 // True iff the task lives in a Sales-workspace project. Used by the grid to
 // SUPPRESS the allocation pill, allocation column, and assignee column for
-// Sales schedules (per v4.22): Sales work is pre-quote, so showing "85% × 4
+// Sales schedules (per v4.22): Sales work is pre-quote, so showing "85% ├ù 4
 // engineers" or "ME Placeholder" surfaces detail the customer / sales rep
 // doesn't need and risks accidentally communicating commitments. Anything
 // auto-detected as Sales (name match) OR explicitly assigned via right-click
-// → Workspace: Sales gets the suppression.
+// ΓåÆ Workspace: Sales gets the suppression.
 function isSalesProjectTask(t) {
   if (!t || !t.project) return false;
   return projectWorkspace(t.project) === 'Sales';
@@ -6155,14 +5708,12 @@ function setProjectWorkspace(p, workspace) {
   if (!p) return;
   if (!WORKSPACES.includes(workspace)) return;
   state.projectWorkspaces = state.projectWorkspaces || {};
-  // ALWAYS write the explicit value — even 'Active'. The auto-detect by
-  // name (used as a fallback in projectWorkspace) returns 'Sales' for any
-  // name matching /_sales/, which used to override an explicit 'Active'
-  // setting because we'd clear the map entry. e.g. "Test_Sales — Project"
-  // was being auto-tagged as Sales after promote despite the server
-  // setting workspace='Active'. Recording every explicit assignment fixes
-  // this; the trade-off is a slightly larger map.
-  state.projectWorkspaces[p] = workspace;
+  if (workspace === DEFAULT_WORKSPACE) {
+    // Keep the map clean ΓÇö default-workspace projects don\'t need an entry.
+    delete state.projectWorkspaces[p];
+  } else {
+    state.projectWorkspaces[p] = workspace;
+  }
   saveProjectTabs();
 }
 
@@ -6184,13 +5735,13 @@ function syncBaselineButtons() {
   if (!btn) return;
   const project = state.filters.project;
   const has = projectHasBaseline(project);
-  // Compact label keeps the button width consistent regardless of state — the
+  // Compact label keeps the button width consistent regardless of state ΓÇö the
   // is-active highlight tells you whether the overlay is currently visible.
-  btn.textContent = '◎ Baseline ▾';
+  btn.textContent = 'ΓùÄ Baseline Γû╛';
   btn.classList.toggle('is-active', !!state.showBaseline);
   btn.disabled = !project;
   btn.title = !project
-    ? 'Open a specific project tab first — baselines are per-project.'
+    ? 'Open a specific project tab first ΓÇö baselines are per-project.'
     : (has
         ? (state.showBaseline
             ? `Baseline is ON (overlay visible). Click for actions: Reset / Hide / Turn off.`
@@ -6198,1309 +5749,11 @@ function syncBaselineButtons() {
         : `No baseline set for "${project}". Click to turn one on.`);
 }
 
-// Projects landing page — full-page view that the user navigates to by
+// Projects landing page ΓÇö full-page view that the user navigates to by
 // clicking the Projects icon in the left sidebar. Single column with each
 // workspace as a collapsible section; click the header row to expand /
 // collapse. Project rows inside each section open as a tab on click.
 // "+ New schedule" button per workspace (disabled for Closed).
-// Sales → detailed project promote modal. Prompts for the new project
-// name, calls the server's /api/project/:source/promote, then opens
-// the freshly-stamped project as the active tab.
-function openPromoteModal(sourceProject) {
-  const existing = document.getElementById('promote-modal');
-  if (existing) existing.remove();
-  // Default name: `<sales> — detailed`. Strip a trailing " — detailed" if
-  // somehow the user is promoting an already-promoted project so we don't
-  // end up with " — detailed — detailed".
-  const baseName = sourceProject.replace(/ — detailed$/, '');
-  const suggestedName = `${baseName} — detailed`;
-  const overlay = document.createElement('div');
-  overlay.id = 'promote-modal';
-  overlay.className = 'modal-overlay app-dialog-overlay';
-  overlay.innerHTML = `
-    <div class="modal-card" style="max-width: 520px;">
-      <div class="modal-head">
-        <h2>Promote to detailed project</h2>
-        <button class="modal-close" type="button">×</button>
-      </div>
-      <div class="modal-body">
-        <p style="margin:0 0 12px;font-size:13px;color:#334155;">
-          Stamps a fresh schedule from <code>SDC_StandardProject_Template</code>
-          and copies <strong>${escapeHtml(sourceProject)}</strong>'s saved
-          quote across — hours per bucket, People # (incl. fractional
-          values like 1.25), and any manual Quoted-hours overrides.
-        </p>
-        <p style="margin:0 0 16px;font-size:12px;color:#64748b;">
-          People-math: a sales value of <em>1.25 ce_engineering</em>
-          becomes 1 CE row @ 85% + 1 helper row @ 25% on the detailed
-          schedule. Durations recompute so total hours per discipline
-          match the sales quote, then cascadeSchedule fills in dates.
-        </p>
-        <label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:6px;">
-          New project name
-        </label>
-        <input type="text" id="promote-name-input" value="${escapeHtml(suggestedName)}"
-               style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:4px;font-size:14px;font-family:inherit;" />
-        <p class="promote-error" id="promote-error" style="background:#fee2e2;color:#991b1b;padding:8px 10px;border-radius:4px;font-size:13px;margin:10px 0 0;display:none;"></p>
-      </div>
-      <div class="modal-foot">
-        <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
-        <button type="button" class="btn-primary" data-action="confirm" id="promote-confirm-btn">Promote</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  const close = () => overlay.remove();
-  overlay.querySelector('.modal-close').onclick = close;
-  overlay.querySelector('[data-action="cancel"]').onclick = close;
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  const input    = overlay.querySelector('#promote-name-input');
-  const errorEl  = overlay.querySelector('#promote-error');
-  const showErr  = (msg) => { errorEl.textContent = msg; errorEl.style.display = ''; };
-  const hideErr  = () => { errorEl.style.display = 'none'; };
-  input.addEventListener('input', hideErr);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') overlay.querySelector('[data-action="confirm"]').click(); });
-  setTimeout(() => input.select(), 50);
-  overlay.querySelector('[data-action="confirm"]').addEventListener('click', async () => {
-    const newName = input.value.trim();
-    if (!newName) { showErr('Name is required.'); return; }
-    if (newName === sourceProject) { showErr('New name must differ from the source.'); return; }
-    const btn = overlay.querySelector('#promote-confirm-btn');
-    btn.disabled = true;
-    btn.textContent = 'Promoting…';
-    try {
-      const r = await fetch(`/api/project/${encodeURIComponent(sourceProject)}/promote`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newName }),
-      });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.error || 'Promotion failed');
-      close();
-      if (typeof showToast === 'function') showToast(`Created "${newName}" from ${sourceProject}.`, { kind: 'success' });
-      // Pin the new project to the Active workspace explicitly. Without
-      // this, projectWorkspace's name-based auto-detect tags anything
-      // matching /_sales/ as Sales — so "Test_Sales — Project" would
-      // open with the sales-mode (combined) Quote vs Schedule rows
-      // instead of the detailed breakdown we just stamped.
-      setProjectWorkspace(newName, 'Active');
-      // Open the new project as the active tab.
-      if (!state.openProjects.includes(newName)) state.openProjects.push(newName);
-      state.filters.project = newName;
-      state.activeWorkspace = 'Active';
-      recordRecentProject(newName);
-      saveProjectTabs();
-      await loadTasks();
-      setView('schedule');
-    } catch (err) {
-      btn.disabled = false;
-      btn.textContent = 'Promote';
-      showErr(err.message || String(err));
-    }
-  });
-}
-
-// ───────────────────────────────────────────────────────────────────────
-// Dashboard — at-a-glance status across one or many projects, organized
-// by department (the disciplines that actually do the work).
-//
-// Layout, top to bottom:
-//   1. Filters row: Project picker (multi-select dropdown) + "Coming due
-//      in N weeks" number input. Both persist in localStorage.
-//   2. Key Milestones strip — one row per selected project, showing the
-//      5 spine anchors (PO / Mech 1 / Power-Up / FAT / Ship) as a visual
-//      timeline with done/upcoming/overdue states.
-//   3. Overall Health — single donut chart + counts for all open work
-//      tasks across the selected projects (done / on-time / ahead / behind).
-//   4. By Department — one card per ownership bucket (Mechanical, Controls,
-//      General, Procurement, Build, Wire, Testing, Teardown, Install).
-//      Each card has:
-//        • Progress bar comparing actual % done vs expected % done. The
-//          expected % is the fraction of THIS DEPT'S tasks whose end_date
-//          has already passed — i.e. "should be finished by now" by count,
-//          not by elapsed calendar time. Per Dan's spec.
-//        • Donut showing the dept's ahead/on-time/behind split.
-//        • Three short lists: Coming due (within the N-week window),
-//          Behind, Ahead.
-//
-// "Ownership bucket" is computed from (phase_group, department,
-// sub_department) so Mechanical Engineering tasks live with their own
-// kind, not lumped under generic 'engineering'.
-//
-// Built straight off state.tasks so it always reflects whatever the
-// schedule already loaded. No new server endpoints — pure derived view.
-
-// Map a task to its ownership bucket — group by ASSIGNEE'S team
-// discipline, not by the task's section/department. Dan's spec:
-// "People are assigned to departments. Right? Not tasks. So in that
-// case, you only have four departments… mechanical engineering,
-// controls engineering, wiring, building. I guess you could put in
-// p m there." The team-discipline values come from DISCIPLINES at the
-// top of the file: pm, mech, controls, build, wire.
-function _pdashOwnershipKey(t) {
-  if (!t.assignee) return 'unassigned';
-  const member = (state.team || []).find(m => m.name === t.assignee);
-  if (!member || !member.discipline) return 'unassigned';
-  return member.discipline;
-}
-
-// Five team disciplines + the catch-all unassigned bucket. Labels match
-// DISCIPLINE_BY_KEY so the dashboard and Departments tab read the same.
-const _PDASH_OWNERSHIP = [
-  { key: 'mech',       label: 'Mechanical Engineering' },
-  { key: 'controls',   label: 'Controls Engineering' },
-  { key: 'pm',         label: 'Project Management' },
-  { key: 'build',      label: 'Build' },
-  { key: 'wire',       label: 'Wire' },
-  { key: 'unassigned', label: 'Unassigned' },
-];
-// Map a financial milestone (by name OR predecessor) to its short
-// abbreviation used in the dashboard tile + the Gantt overlay label.
-// Dan's canonical set: PO, MC, FAT, SAT. Anything not in the standard
-// four falls back to the first 3-4 chars of the name uppercased.
-function _pdashFinAbbrev(f) {
-  const name = String(f && f.name || '').trim();
-  const pred = String(f && f.predecessors || '').trim().toLowerCase();
-  const n = name.toLowerCase();
-  if (/\bpo\b|receipt of po|down payment/.test(n) || pred === 'po') return 'PO';
-  if (/major commercial|mid payment|\bmc\b/.test(n))                 return 'MC';
-  if (/\bfat\b|acceptance at sdc/.test(n) || pred === 'fat')         return 'FAT';
-  if (/\bsat\b|acceptance at customer/.test(n) || /^ship/i.test(pred)) return 'SAT';
-  // Fallback — first non-space chunk uppercased, max 4 chars.
-  const fallback = (name.match(/[A-Za-z0-9]+/g) || []).join('').slice(0, 4);
-  return fallback.toUpperCase() || '$';
-}
-
-// Canonical order for the dashboard milestone strip — PO, MC, FAT, SAT.
-// Anything else falls to the tail end, sorted by date.
-function _pdashFinOrder(f) {
-  return ({ PO: 0, MC: 1, FAT: 2, SAT: 3 })[_pdashFinAbbrev(f)] ?? 99;
-}
-
-// Short month-year string from an ISO date — "2026-05-08" → "May '26".
-// Used by the milestone-strip financial badges so the PM sees the
-// target month at a glance without the full M/D/Y. Returns '' for an
-// unparseable or empty date.
-function _pdashFinMonth(isoDate) {
-  if (!isoDate) return '';
-  const d = new Date(String(isoDate) + 'T00:00:00');
-  if (Number.isNaN(d.getTime())) return '';
-  const monthShort = d.toLocaleString('en-US', { month: 'short' });
-  const yearShort  = String(d.getFullYear()).slice(2);
-  return `${monthShort} '${yearShort}`;
-}
-
-// Convert a (calendar) day count to a half-week-snapped string like
-// "0.5W" / "1W" / "1.5W". Per Dan's spec: the dashboard never shows raw
-// days, and any week value is rounded to the nearest 0.5 — no 0.2 / 0.4
-// / 0.6 fractions even when the underlying math would produce them.
-// Five work days = one work week is the SDC convention used throughout
-// the schedule.
-function _pdashDaysToWeeks(days) {
-  const w = (Math.abs(days) || 0) / 5;
-  const snapped = Math.round(w * 2) / 2;
-  // Round-trip is intentional: tiny values that would render "0W" still
-  // count as "0.5W" minimum, so a 1-day slip reads "0.5W late" not "0W".
-  const out = snapped === 0 && Math.abs(days) > 0 ? 0.5 : snapped;
-  // Drop trailing ".0" so 2.0 → "2", but keep "0.5".
-  return out % 1 === 0 ? String(out) : String(out);
-}
-
-// Month-range picker used by the Financial Milestones section.
-// Returns HTML for two <input type="month"> fields side by side. The
-// data-action="set-fin-month-from|to" attrs are read by the change
-// handler wired in renderDashboard.
-function _pdashFinMonthControls(from, to) {
-  return `<label class="pdash-fin-month">From <input type="month" data-action="set-fin-month-from" value="${escapeHtml(from || '')}"/></label>
-          <label class="pdash-fin-month">To <input type="month" data-action="set-fin-month-to" value="${escapeHtml(to || '')}"/></label>
-          <button type="button" class="btn-ghost btn-tight" data-action="clear-fin-months">Clear</button>`;
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// DEPARTMENTS — project rollup + capacity cards.
-//
-// In v7.6 the standalone Dashboard view was merged into the Departments
-// tab. The project rollup (picker + key milestone strips + financial
-// milestones) now sits ABOVE the SDC Team grid; the capacity cards
-// (Under/Over allocated + Due this month) sit BELOW the existing team
-// dashboard cards, scoped to the active discipline + the projects
-// picked at the top.
-//
-// Selected-projects persistence reuses the old sdcDashboardProjects
-// localStorage key so users keep their picks across the upgrade.
-// ──────────────────────────────────────────────────────────────────────
-function _deptSelectedProjects() {
-  let selected;
-  try { selected = JSON.parse(localStorage.getItem('sdcDashboardProjects') || '[]'); }
-  catch (_) { selected = []; }
-  if (!Array.isArray(selected)) selected = [];
-  const allProjects = uniqueValues('project')
-    .filter(p => p && p.trim().length > 0)
-    .filter(p => !isTemplateProject(p))
-    .filter(p => projectWorkspace(p) !== 'Sales')
-    .sort();
-  if (selected.length === 0) {
-    selected = (state.openProjects || []).filter(p => p && allProjects.includes(p));
-    if (selected.length === 0 && allProjects.length > 0) selected = [allProjects[0]];
-  } else {
-    selected = selected.filter(p => allProjects.includes(p));
-  }
-  return { selected, allProjects };
-}
-
-function renderDeptProjectRollup() {
-  const root = document.getElementById('dept-project-rollup');
-  if (!root) return;
-
-  const { selected, allProjects } = _deptSelectedProjects();
-
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const todayMs  = today.getTime();
-  const todayISO = today.toISOString().slice(0, 10);
-
-  // Pool tasks across the selected projects — milestone-only subset for
-  // the strip.
-  const pool = state.tasks.filter(t => selected.includes(t.project) && !isBacklogTask(t));
-  const milestoneTasks = pool.filter(t => t.is_milestone || t.anchor_key);
-
-  // Kick off lazy financial loads for any project that hasn't been
-  // fetched yet — re-render when each resolves.
-  for (const p of selected) {
-    if (!state.financials[p]) {
-      loadFinancialsForProject(p).then(() => {
-        if (state.view === 'team') {
-          try { renderDeptProjectRollup(); } catch (_) {}
-        }
-      }).catch(() => {});
-    }
-  }
-  const financials = selected.flatMap(p =>
-    (state.financials[p] || []).map(r => ({ ...r, project: p }))
-  );
-
-  // Per-project milestone strip — 5 spine anchors at fixed left% +
-  // financial mini-columns slotted between them. (Same logic the old
-  // Dashboard view used; kept inline so the helper stays close to its
-  // only caller.)
-  function milestoneStripForProject(project) {
-    const KEY_ANCHORS = [
-      { key: 'receipt_of_po',    short: 'PO' },
-      { key: 'mech_release_1',   short: 'Mech 1' },
-      { key: 'machine_power_up', short: 'Power' },
-      { key: 'fat',              short: 'FAT' },
-      { key: 'ship_machine',     short: 'Ship' },
-    ];
-    const items = KEY_ANCHORS.map(a => {
-      const t = milestoneTasks.find(m => m.project === project && inferredAnchorKey(m) === a.key);
-      if (!t) return { ...a, missing: true };
-      const done = (Number(t.progress) || 0) >= 100;
-      const baselineDate = t.baseline_end_date || t.baseline_start_date || null;
-      const currentDate  = t.start_date || t.end_date || null;
-      const actualDate   = done ? (t.completed_on || currentDate) : null;
-      const displayDate  = actualDate || currentDate;
-      const overdue = !done && currentDate && currentDate < todayISO;
-      let slipDays = null;
-      if (baselineDate && displayDate) {
-        const baseMs = new Date(baselineDate + 'T00:00:00').getTime();
-        const dateMs = new Date(displayDate + 'T00:00:00').getTime();
-        slipDays = Math.round((dateMs - baseMs) / 86400000);
-      }
-      return { ...a, task: t, done, overdue, baselineDate, currentDate, actualDate, displayDate, slipDays };
-    });
-    // Anchors live at fixed 10/30/53/72/90% across every row so all
-    // PO/Mech-1/Power/FAT/Ship dots line up vertically regardless of
-    // which financial milestones each project has. Financials slot in
-    // at their own dedicated percentages BETWEEN the anchors — no
-    // pushing, no shifting.
-    const ANCHOR_POS = { receipt_of_po: 10, mech_release_1: 30, machine_power_up: 53, fat: 72, ship_machine: 90 };
-    const FIN_POS    = { PO: 18, MC: 44, FAT: 80, SAT: 96 };
-
-    function mileItem(kind, cls, iconHtml, label, dateHtml, slipChip, leftPct, dataAttrs, tipText) {
-      return `<div class="pdash-mile-item pdash-mile-${kind} ${cls}" style="left:${leftPct}%" ${dataAttrs}${tipText ? ` title="${escapeHtml(tipText)}"` : ''}>
-        <div class="pdash-mile-icon">${iconHtml}</div>
-        <div class="pdash-mile-label">${escapeHtml(label)}</div>
-        ${dateHtml}
-        ${slipChip || ''}
-      </div>`;
-    }
-    const segments = items.map(a => {
-      const cls = a.missing ? 'is-missing' : a.done ? 'is-done' : a.overdue ? 'is-overdue' : 'is-upcoming';
-      const icon = a.done ? '✓' : (a.overdue ? '!' : '');
-      let dateHtml;
-      if (a.missing) {
-        dateHtml = '<div class="pdash-mile-date">—</div>';
-      } else if (!a.baselineDate || a.baselineDate === a.displayDate) {
-        dateHtml = `<div class="pdash-mile-date">${escapeHtml(a.displayDate ? fmtDate(a.displayDate) : '—')}</div>`;
-      } else {
-        const baseStr = fmtDate(a.baselineDate);
-        const dispStr = a.displayDate ? fmtDate(a.displayDate) : '—';
-        dateHtml = `<div class="pdash-mile-dates" title="Baseline ${baseStr} → ${a.done ? 'Actual' : 'Revised'} ${dispStr}">
-          <span class="pdash-date-baseline">${escapeHtml(baseStr)}</span>
-          <span class="pdash-date-current">${escapeHtml(dispStr)}</span>
-        </div>`;
-      }
-      let slipChip = '';
-      if (a.slipDays != null && a.slipDays !== 0) {
-        const isEarly = a.slipDays < 0;
-        const tone = isEarly ? 'is-early' : 'is-late';
-        const wks = _pdashDaysToWeeks(a.slipDays);
-        slipChip = `<div class="pdash-mile-slip ${tone}" title="Vs original baseline">${wks}W ${isEarly ? 'early' : 'late'}</div>`;
-      }
-      const anchorAttrs = `data-project="${escapeHtml(project)}"${a.task ? ` data-task-id="${a.task.id}"` : ''}`;
-      return mileItem('anchor', cls, icon, a.short, dateHtml, slipChip,
-        ANCHOR_POS[a.key] != null ? ANCHOR_POS[a.key] : 50, anchorAttrs, '');
-    }).join('');
-
-    let finItemsHtml = '';
-    for (const f of (state.financials[project] || [])) {
-      const fAbbrev = _pdashFinAbbrev(f);
-      const leftPct = FIN_POS[fAbbrev];
-      if (leftPct == null) continue;
-      const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
-      const fPaid = !!f.paid;
-      const fOverdue = !fPaid && fd && fd < todayISO;
-      let fCls = 'is-upcoming';
-      if (fPaid)         fCls = 'is-paid';
-      else if (!fd)      fCls = 'is-no-date';
-      else if (fOverdue) fCls = 'is-overdue';
-      const monthStr = fd ? _pdashFinMonth(fd) : '—';
-      const fDateFull = fd ? fmtDate(fd) : 'no date';
-      const fPctTip = f.percent ? ` · ${f.percent}%` : '';
-      const fStatusTip = fPaid ? ' · paid'
-        : (!fd ? ' · no date set'
-        : (fOverdue ? ' · past due' : ''));
-      const finDateHtml = `<div class="pdash-mile-date">${escapeHtml(monthStr)}</div>`;
-      finItemsHtml += mileItem('fin', fCls, '$', fAbbrev, finDateHtml, '', leftPct, '',
-        (f.name || fAbbrev) + fPctTip + ' · ' + fDateFull + fStatusTip);
-    }
-    return `
-      <div class="pdash-milestone-row">
-        <div class="pdash-milestone-project" title="${escapeHtml(project)}">${escapeHtml(project)}</div>
-        <div class="pdash-milestone-track">${segments}${finItemsHtml}</div>
-      </div>`;
-  }
-
-  // ── Financial milestones table ── Per-project payment events. Sorted
-  //    by due date. Default month filter = the CURRENT month so the PM
-  //    lands on "what am I invoicing this month?" rather than
-  //    "everything ever". Clear button stores the sentinel "any".
-  const _currentMonth = (() => {
-    const d = new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-  })();
-  const _storedFrom = localStorage.getItem('sdcDashboardFinMonthFrom');
-  const _storedTo   = localStorage.getItem('sdcDashboardFinMonthTo');
-  const finMonthFrom = _storedFrom == null ? _currentMonth : (_storedFrom === 'any' ? '' : _storedFrom);
-  const finMonthTo   = _storedTo   == null ? _currentMonth : (_storedTo   === 'any' ? '' : _storedTo);
-  const financialsTableHtml = (() => {
-    if (selected.length === 0) {
-      return '<div class="pdash-empty-block">Pick at least one project to see financial milestones.</div>';
-    }
-    const monthOf = (iso) => iso ? iso.slice(0, 7) : '';
-    const rows = [...financials]
-      .filter(f => f.due_date)
-      .filter(f => {
-        if (!finMonthFrom && !finMonthTo) return true;
-        const m = monthOf(f.due_date);
-        if (finMonthFrom && m < finMonthFrom) return false;
-        if (finMonthTo   && m > finMonthTo)   return false;
-        return true;
-      })
-      .sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
-    if (rows.length === 0) {
-      const filterHint = (finMonthFrom || finMonthTo) ? ' in the selected month range' : '';
-      return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
-        <div class="pdash-empty-block">No financial milestones${filterHint} for the selected projects.</div>`;
-    }
-    const showProjectCol = selected.length > 1;
-    const colgroup = showProjectCol
-      ? `<colgroup><col style="width:240px"/><col style="width:60px"/><col style="width:auto"/><col style="width:130px"/><col style="width:130px"/></colgroup>`
-      : `<colgroup><col style="width:60px"/><col style="width:auto"/><col style="width:130px"/><col style="width:130px"/></colgroup>`;
-    const head = showProjectCol
-      ? '<thead><tr><th>Project</th><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>'
-      : '<thead><tr><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>';
-    const body = rows.map(r => {
-      const dueMs = r.due_date ? new Date(r.due_date + 'T00:00:00').getTime() : null;
-      const isPast = dueMs != null && dueMs < todayMs;
-      let chip;
-      if (r.paid) chip = '<span class="pdash-chip chip-success">Paid</span>';
-      else if (isPast) chip = '<span class="pdash-chip chip-danger">Invoice now</span>';
-      else if (dueMs != null && dueMs - todayMs <= 14 * 86400000) chip = '<span class="pdash-chip chip-warn">Due soon</span>';
-      else chip = '<span class="pdash-chip chip-info">Upcoming</span>';
-      const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '—';
-      const projCell = showProjectCol ? `<td title="${escapeHtml(r.project)}">${escapeHtml(r.project)}</td>` : '';
-      return `<tr class="pdash-fin-row" data-project="${escapeHtml(r.project)}">
-        ${projCell}
-        <td class="num">${pctVal}</td>
-        <td title="${escapeHtml(r.name || '')}">${escapeHtml(r.name || '')}</td>
-        <td>${escapeHtml(r.due_date ? fmtDate(r.due_date) : '—')}</td>
-        <td>${chip}</td>
-      </tr>`;
-    }).join('');
-    return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
-            <table class="pdash-fin-table">${colgroup}${head}<tbody>${body}</tbody></table>`;
-  })();
-
-  const milestoneStripsHtml = selected.length === 0
-    ? '<div class="pdash-empty-block">Pick at least one project to see milestone dates.</div>'
-    : selected.map(p => milestoneStripForProject(p)).join('');
-
-  // ── Compose ──
-  root.innerHTML = `
-    <div class="pdash-filters">
-      <details class="pdash-picker">
-        <summary>📂 Projects: <strong>${
-          selected.length === 0 ? 'none'
-            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} selected`)
-        }</strong> <span class="pdash-picker-caret">▾</span></summary>
-        <div class="pdash-picker-list">
-          ${allProjects.map(p => `
-            <label class="pdash-picker-item">
-              <input type="checkbox" data-project="${escapeHtml(p)}" ${selected.includes(p) ? 'checked' : ''}/>
-              <span>${escapeHtml(p)}</span>
-            </label>`).join('')}
-        </div>
-        <div class="pdash-picker-actions">
-          <button type="button" data-action="select-all" class="btn-ghost btn-tight">Select all</button>
-          <button type="button" data-action="select-none" class="btn-ghost btn-tight">Clear</button>
-        </div>
-      </details>
-    </div>
-
-    <section class="pdash-section">
-      <header class="pdash-section-head">
-        <h2>🚦 Key Milestones</h2>
-        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship, per project</span>
-      </header>
-      <div class="pdash-milestones">${milestoneStripsHtml}</div>
-    </section>
-
-    <section class="pdash-section">
-      <header class="pdash-section-head">
-        <h2>💲 Financial Milestones</h2>
-        <span class="pdash-section-sub">Invoiceable payment events across selected projects.</span>
-      </header>
-      ${financialsTableHtml}
-    </section>
-  `;
-
-  // ── Wire handlers ──
-  root.querySelectorAll('.pdash-picker input[type="checkbox"]').forEach(box => {
-    box.addEventListener('change', () => {
-      const sel = [...root.querySelectorAll('.pdash-picker input[type="checkbox"]')]
-        .filter(b => b.checked).map(b => b.dataset.project);
-      try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(sel)); } catch (_) {}
-      renderDeptProjectRollup();
-      try { renderTeamDashboard(); } catch (_) {}
-    });
-  });
-  root.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
-    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(allProjects)); } catch (_) {}
-    renderDeptProjectRollup();
-    try { renderTeamDashboard(); } catch (_) {}
-  });
-  root.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
-    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
-    renderDeptProjectRollup();
-    try { renderTeamDashboard(); } catch (_) {}
-  });
-  root.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      try { localStorage.setItem('sdcDashboardFinMonthFrom', inp.value || ''); } catch (_) {}
-      renderDeptProjectRollup();
-    });
-  });
-  root.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      try { localStorage.setItem('sdcDashboardFinMonthTo', inp.value || ''); } catch (_) {}
-      renderDeptProjectRollup();
-    });
-  });
-  root.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      try {
-        localStorage.setItem('sdcDashboardFinMonthFrom', 'any');
-        localStorage.setItem('sdcDashboardFinMonthTo', 'any');
-      } catch (_) {}
-      renderDeptProjectRollup();
-    });
-  });
-  // Click a milestone tile or a financial row → jump to that project on
-  // the schedule view.
-  root.querySelectorAll('.pdash-mile-item, .pdash-fin-row').forEach(el => {
-    el.addEventListener('click', () => {
-      const p = el.dataset.project;
-      if (!p) return;
-      if (!state.openProjects.includes(p)) state.openProjects.push(p);
-      state.filters.project = p;
-      state.activeWorkspace = projectWorkspace(p);
-      saveProjectTabs();
-      setView('schedule');
-    });
-  });
-}
-
-function renderDashboard() {
-  const root = document.getElementById('dashboard-page');
-  if (!root) return;
-
-  // ── Filters: selected projects + coming-due horizon (weeks). Persisted. ──
-  let selected;
-  try { selected = JSON.parse(localStorage.getItem('sdcDashboardProjects') || '[]'); }
-  catch (_) { selected = []; }
-  if (!Array.isArray(selected)) selected = [];
-  let comingDueWeeks = parseFloat(localStorage.getItem('sdcDashboardComingWeeks') || '2');
-  if (!Number.isFinite(comingDueWeeks) || comingDueWeeks <= 0) comingDueWeeks = 2;
-
-  // Dashboard is for ACTIVE work only — drop templates (scaffolding) and
-  // Sales-workspace projects (pre-quote, not real schedules yet).
-  const allProjects = uniqueValues('project')
-    .filter(p => p && p.trim().length > 0)
-    .filter(p => !isTemplateProject(p))
-    .filter(p => projectWorkspace(p) !== 'Sales')
-    .sort();
-  // Default to currently-open projects when nothing's persisted yet.
-  if (selected.length === 0) {
-    selected = (state.openProjects || []).filter(p => p && allProjects.includes(p));
-    if (selected.length === 0 && allProjects.length > 0) selected = [allProjects[0]];
-  } else {
-    selected = selected.filter(p => allProjects.includes(p));
-  }
-
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const todayMs   = today.getTime();
-  const todayISO  = today.toISOString().slice(0, 10);
-  const comingDueMs = todayMs + comingDueWeeks * 7 * 86400000;
-
-  // Pool tasks across the selected projects, separating real work from
-  // spine milestones (anchors).
-  const pool = state.tasks.filter(t =>
-    selected.includes(t.project) &&
-    !isBacklogTask(t)
-  );
-  const work = pool.filter(t => !t.is_milestone && !t.anchor_key);
-  const milestoneTasks = pool.filter(t => t.is_milestone || t.anchor_key);
-
-  // Load financial milestones for each selected project (cached in
-  // state.financials[project]). Skipping the await chain — kick off the
-  // fetches if they haven't happened, and use whatever's already
-  // cached for this render. The next render after the fetches resolve
-  // will paint the financial dots and section.
-  for (const p of selected) {
-    if (!state.financials[p]) {
-      loadFinancialsForProject(p).then(() => {
-        // Only re-render if the dashboard is still the active view.
-        if (state.view === 'dashboard') renderDashboard();
-      }).catch(() => {});
-    }
-  }
-  // Flat list of financial rows across the selection. Each row carries
-  // { project, name, due_date, paid, amount, percent }.
-  const financials = selected.flatMap(p =>
-    (state.financials[p] || []).map(r => ({ ...r, project: p }))
-  );
-
-  // ── Per-task health: actual vs expected % complete + status bucket. ──
-  // Expected = time elapsed between start and end (linear). On-time means
-  // |expected − actual| < 15. Beyond that, ahead or behind.
-  function taskStatus(t) {
-    const actual = Math.max(0, Math.min(100, Number(t.progress) || 0));
-    if (actual >= 100) return { actual, expected: 100, status: 'done', lag: 0 };
-    if (!t.start_date || !t.end_date)
-      return { actual, expected: actual, status: 'on-time', lag: 0 };
-    const startMs = new Date(t.start_date + 'T00:00:00').getTime();
-    const endMs   = new Date(t.end_date   + 'T00:00:00').getTime();
-    if (todayMs <= startMs)
-      return { actual, expected: 0, status: 'on-time', lag: 0 };
-    const total = Math.max(1, endMs - startMs);
-    const elapsed = Math.min(total, todayMs - startMs);
-    const expected = Math.round((elapsed / total) * 100);
-    const lag = expected - actual;
-    if (lag >= 15)  return { actual, expected, status: 'behind', lag };
-    if (lag <= -15) return { actual, expected, status: 'ahead',  lag };
-    return            { actual, expected, status: 'on-time', lag };
-  }
-
-  // ── Bucket counts for a task set: done / on-time / ahead / behind. ──
-  function bucketCounts(tasks) {
-    let done = 0, behind = 0, ahead = 0, ontime = 0, shouldBeDone = 0;
-    for (const t of tasks) {
-      const s = taskStatus(t);
-      if (s.status === 'done')        done++;
-      else if (s.status === 'behind') behind++;
-      else if (s.status === 'ahead')  ahead++;
-      else                            ontime++;
-      // "should be done by now" = count of tasks whose end_date has
-      // already passed. Per Dan's spec: expected % is tasks-based, not
-      // calendar-based.
-      if (t.end_date && t.end_date < todayISO) shouldBeDone++;
-    }
-    return { total: tasks.length, done, behind, ahead, ontime, shouldBeDone };
-  }
-
-  // ── Group work tasks by ownership bucket. ──
-  const tasksByOwner = new Map();
-  for (const t of work) {
-    const k = _pdashOwnershipKey(t);
-    if (!tasksByOwner.has(k)) tasksByOwner.set(k, []);
-    tasksByOwner.get(k).push(t);
-  }
-
-  // Render order: known buckets first (in our canonical order), then any
-  // strays (alphabetical). Buckets with zero tasks are skipped.
-  const knownKeys = new Set(_PDASH_OWNERSHIP.map(o => o.key));
-  const knownInOrder = _PDASH_OWNERSHIP.filter(o => tasksByOwner.has(o.key));
-  const strays = [...tasksByOwner.keys()].filter(k => !knownKeys.has(k)).sort()
-    .map(k => ({ key: k, label: k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) }));
-  const renderOrder = [...knownInOrder, ...strays];
-
-  const overall = bucketCounts(work);
-
-  // ── SVG donut chart. Three segments: ahead / on-time / behind, with
-  //    done shown as a separate inner ring (slightly darker green). ──
-  function donutSvg(stats, size = 130) {
-    const cx = size / 2, cy = size / 2;
-    const ringR = size * 0.36;
-    const stroke = size * 0.16;
-    const C = 2 * Math.PI * ringR;
-    const total = Math.max(1, stats.done + stats.ontime + stats.behind + stats.ahead);
-    // SDC palette per Dan's spec: dark blue, light blue, lime, yellow.
-    //   done   → SDC green (#74c415)
-    //   ontime → SDC dark blue (#1574c4)
-    //   ahead  → SDC lime light (#befa4f)
-    //   behind → red (warning state — kept from palette outside the four
-    //            so behind reads as alarming, not just "different blue")
-    const segs = [
-      { val: stats.done,   color: '#74c415' },
-      { val: stats.ontime, color: '#1574c4' },
-      { val: stats.ahead,  color: '#befa4f' },
-      { val: stats.behind, color: '#dc2626' },
-    ];
-    let acc = 0;
-    const arcs = segs.filter(s => s.val > 0).map(seg => {
-      const len = (seg.val / total) * C;
-      const gap = C - len;
-      const out = `<circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="${seg.color}" stroke-width="${stroke}" stroke-dasharray="${len} ${gap}" stroke-dashoffset="${-acc}" transform="rotate(-90 ${cx} ${cy})"/>`;
-      acc += len;
-      return out;
-    }).join('');
-    const centerPct = total > 0 ? Math.round((stats.done / total) * 100) : 0;
-    return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="pdash-donut-svg">
-      <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
-      ${arcs}
-      <text x="${cx}" y="${cy - 4}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.20}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${centerPct}%</text>
-      <text x="${cx}" y="${cy + size * 0.12}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.08}" fill="#64748b" style="font-family:sans-serif">done</text>
-    </svg>`;
-  }
-
-  // ── Progress bar: actual filled vs expected tick. ──
-  function progressBar(actualPct, expectedPct) {
-    actualPct   = Math.max(0, Math.min(100, actualPct));
-    expectedPct = Math.max(0, Math.min(100, expectedPct));
-    let tone = 'good';
-    if      (actualPct < expectedPct - 15) tone = 'bad';
-    else if (actualPct < expectedPct - 5)  tone = 'mid';
-    return `<div class="pdash-progress" data-tone="${tone}">
-      <div class="pdash-progress-track">
-        <div class="pdash-progress-bar" style="width:${actualPct}%"></div>
-        <div class="pdash-progress-tick" style="left:${expectedPct}%" title="Expected by now: ${expectedPct}%"></div>
-      </div>
-      <div class="pdash-progress-readout">
-        <strong>${actualPct}%</strong> done
-        <span class="pdash-progress-expected">vs. ${expectedPct}% expected</span>
-      </div>
-    </div>`;
-  }
-
-  // ── Per-project milestone strip (5 spine anchors). ──
-  const KEY_ANCHORS = [
-    { key: 'receipt_of_po',    short: 'PO' },
-    { key: 'mech_release_1',   short: 'Mech 1' },
-    { key: 'machine_power_up', short: 'Power' },
-    { key: 'fat',              short: 'FAT' },
-    { key: 'ship_machine',     short: 'Ship' },
-  ];
-  function milestoneStripForProject(project) {
-    // Map each financial milestone abbreviation to the spine cell it
-    // SHARES. The badge becomes a sibling item inside that cell (same
-    // icon/label/date stack as the anchor) — keeps all the main
-    // anchor dots horizontally aligned across rows and reads as one
-    // continuous left-to-right timeline.
-    //   MC was previously dropped into the Power-Up cell as a leading
-    //   badge, but that pushed the Power-Up dot out of alignment.
-    //   Moved MC into Mech 1's cell instead — sits AFTER Mech 1's
-    //   mini-column but BEFORE the Power-Up cell, which matches Dan's
-    //   "Proceed to major commercials, just before power up" spec
-    //   without disturbing the anchor row.
-    const FIN_TO_ANCHOR = {
-      PO:  'receipt_of_po',
-      MC:  'mech_release_1',
-      FAT: 'fat',
-      SAT: 'ship_machine',
-    };
-    const finByAnchor = new Map();
-    for (const f of (state.financials[project] || [])) {
-      const ak = FIN_TO_ANCHOR[_pdashFinAbbrev(f)] || null;
-      if (!ak) continue;
-      if (!finByAnchor.has(ak)) finByAnchor.set(ak, []);
-      finByAnchor.get(ak).push(f);
-    }
-    const projFinancials = (state.financials[project] || []).slice().sort((a, b) => {
-      // Canonical SDC billing order — PO, MC, FAT, SAT — regardless of
-      // dates. Custom milestones outside the standard four fall to the
-      // end and sort by date among themselves.
-      const oa = _pdashFinOrder(a);
-      const ob = _pdashFinOrder(b);
-      if (oa !== ob) return oa - ob;
-      const da = computeFinancialTriggerDate(a.predecessors, project) || a.due_date || '';
-      const db = computeFinancialTriggerDate(b.predecessors, project) || b.due_date || '';
-      return da.localeCompare(db);
-    });
-
-    const items = KEY_ANCHORS.map(a => {
-      const t = milestoneTasks.find(m => m.project === project && inferredAnchorKey(m) === a.key);
-      if (!t) return { ...a, missing: true };
-      const done = (Number(t.progress) || 0) >= 100;
-      // Three possible dates per Dan's spec:
-      //   baselineDate = when the project ORIGINALLY committed to this date
-      //   currentDate  = what's in the schedule today (PM-adjusted)
-      //   actualDate   = when the milestone actually completed (if done)
-      // For display: show baseline → (actual|current) when they differ.
-      // For slip:    compare baseline → (actual if done, else current).
-      const baselineDate = t.baseline_end_date || t.baseline_start_date || null;
-      const currentDate  = t.start_date || t.end_date || null;
-      const actualDate   = done ? (t.completed_on || currentDate) : null;
-      const displayDate  = actualDate || currentDate;
-      const overdue = !done && currentDate && currentDate < todayISO;
-      let slipDays = null;
-      if (baselineDate && displayDate) {
-        const baseMs = new Date(baselineDate + 'T00:00:00').getTime();
-        const dateMs = new Date(displayDate + 'T00:00:00').getTime();
-        slipDays = Math.round((dateMs - baseMs) / 86400000);
-      }
-      return { ...a, task: t, done, overdue, baselineDate, currentDate, actualDate, displayDate, slipDays };
-    });
-
-    // Each item is positioned ABSOLUTELY at a fixed left% inside the
-    // track. This is the key to alignment: anchors live at the same
-    // 10/30/50/70/90% across every project row, regardless of which
-    // financial milestones happen to exist. Financials slot in at
-    // their own dedicated percentages BETWEEN the anchors — no
-    // pushing, no shifting.
-    const ANCHOR_POS = {
-      receipt_of_po:    10,
-      mech_release_1:   30,
-      machine_power_up: 53,
-      fat:              72,
-      ship_machine:     90,
-    };
-    const FIN_POS = {
-      PO:  18,   // just to the right of the PO anchor (10%)
-      MC:  44,   // between Mech 1 (30%) and Power-Up (53%), closer to Power
-      FAT: 80,   // just to the right of FAT (72%)
-      SAT: 96,   // just past Ship (90%)
-    };
-
-    function _mileItem(kind, cls, iconHtml, label, dateHtml, slipChip, leftPct, dataAttrs, tipText) {
-      return `<div class="pdash-mile-item pdash-mile-${kind} ${cls}" style="left:${leftPct}%" ${dataAttrs}${tipText ? ` title="${escapeHtml(tipText)}"` : ''}>
-        <div class="pdash-mile-icon">${iconHtml}</div>
-        <div class="pdash-mile-label">${escapeHtml(label)}</div>
-        ${dateHtml}
-        ${slipChip || ''}
-      </div>`;
-    }
-
-    const segments = items.map((a) => {
-      const cls = a.missing ? 'is-missing'
-                : a.done    ? 'is-done'
-                : a.overdue ? 'is-overdue'
-                : 'is-upcoming';
-      const icon = a.done ? '✓' : (a.overdue ? '!' : '');
-
-      let dateHtml;
-      if (a.missing) {
-        dateHtml = '<div class="pdash-mile-date">—</div>';
-      } else if (!a.baselineDate || a.baselineDate === a.displayDate) {
-        dateHtml = `<div class="pdash-mile-date">${escapeHtml(a.displayDate ? fmtDate(a.displayDate) : '—')}</div>`;
-      } else {
-        const baseStr = fmtDate(a.baselineDate);
-        const dispStr = a.displayDate ? fmtDate(a.displayDate) : '—';
-        dateHtml = `<div class="pdash-mile-dates" title="Baseline ${baseStr} → ${a.done ? 'Actual' : 'Revised'} ${dispStr}">
-          <span class="pdash-date-baseline">${escapeHtml(baseStr)}</span>
-          <span class="pdash-date-current">${escapeHtml(dispStr)}</span>
-        </div>`;
-      }
-
-      let slipChip = '';
-      if (a.slipDays != null && a.slipDays !== 0) {
-        const isEarly = a.slipDays < 0;
-        const tone = isEarly ? 'is-early' : 'is-late';
-        const wks = _pdashDaysToWeeks(a.slipDays);
-        slipChip = `<div class="pdash-mile-slip ${tone}" title="Vs original baseline">${wks}W ${isEarly ? 'early' : 'late'}</div>`;
-      }
-
-      const anchorAttrs = `data-project="${escapeHtml(project)}"${a.task ? ` data-task-id="${a.task.id}"` : ''}`;
-      return _mileItem('anchor', cls, icon, a.short, dateHtml, slipChip,
-        ANCHOR_POS[a.key] != null ? ANCHOR_POS[a.key] : 50, anchorAttrs, '');
-    }).join('');
-
-    // Financial mini-columns — rendered as siblings of the anchor
-    // items inside the track, each at its own fixed left%. Uses the
-    // exact same icon/label/date stack so a $-tile reads visually
-    // identical to a ●-tile (just the icon differs).
-    let finItemsHtml = '';
-    for (const f of (state.financials[project] || [])) {
-      const fAbbrev = _pdashFinAbbrev(f);
-      const leftPct = FIN_POS[fAbbrev];
-      if (leftPct == null) continue;   // custom milestones — skip strip
-      const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
-      const fPaid = !!f.paid;
-      const fOverdue = !fPaid && fd && fd < todayISO;
-      let fCls = 'is-upcoming';
-      if (fPaid)         fCls = 'is-paid';
-      else if (!fd)      fCls = 'is-no-date';
-      else if (fOverdue) fCls = 'is-overdue';
-      const monthStr = fd ? _pdashFinMonth(fd) : '—';
-      const fDateFull = fd ? fmtDate(fd) : 'no date';
-      const fPctTip = f.percent ? ` · ${f.percent}%` : '';
-      const fStatusTip = fPaid ? ' · paid'
-        : (!fd ? ' · no date set'
-        : (fOverdue ? ' · past due' : ''));
-      const finDateHtml = `<div class="pdash-mile-date">${escapeHtml(monthStr)}</div>`;
-      finItemsHtml += _mileItem('fin', fCls, '$', fAbbrev, finDateHtml, '', leftPct, '',
-        (f.name || fAbbrev) + fPctTip + ' · ' + fDateFull + fStatusTip);
-    }
-
-    return `
-      <div class="pdash-milestone-row">
-        <div class="pdash-milestone-project" title="${escapeHtml(project)}">${escapeHtml(project)}</div>
-        <div class="pdash-milestone-track">${segments}${finItemsHtml}</div>
-      </div>
-    `;
-  }
-
-  // ── Build one department card. ──
-  function renderDeptCard(def, tasks) {
-    const stats = bucketCounts(tasks);
-    const actualPct   = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
-    const expectedPct = stats.total > 0 ? Math.round((stats.shouldBeDone / stats.total) * 100) : 0;
-
-    // Current-month window — used for "tasks due this month".
-    const cmStart = new Date(); cmStart.setHours(0, 0, 0, 0);
-    cmStart.setDate(1);
-    const cmEndDate = new Date(cmStart.getFullYear(), cmStart.getMonth() + 1, 0);
-    cmEndDate.setHours(23, 59, 59, 999);
-    const cmStartMs = cmStart.getTime();
-    const cmEndMs   = cmEndDate.getTime();
-    const currentMonthLabel = cmStart.toLocaleString('en-US', { month: 'long', year: 'numeric' });
-
-    // Tasks due in the current calendar month (not yet complete).
-    const dueThisMonth = tasks
-      .filter(t => (Number(t.progress) || 0) < 100 && t.end_date)
-      .filter(t => {
-        const endMs = new Date(t.end_date + 'T00:00:00').getTime();
-        return endMs >= cmStartMs && endMs <= cmEndMs;
-      })
-      .sort((a, b) => (a.end_date || '').localeCompare(b.end_date || ''));
-
-    const annotated = tasks.map(t => ({ task: t, status: taskStatus(t) }));
-    const behindList = annotated.filter(x => x.status.status === 'behind').sort((a, b) => b.status.lag - a.status.lag);
-
-    // ── Under / over allocated PEOPLE in this discipline ──
-    // Active team members whose discipline matches this dept. Look at
-    // their open-task load over the next ~8 weeks:
-    //   over  = computeOverloadRegions returns any region above 100%
-    //   under = no active tasks at all OR total open < 2
-    // Placeholders ("ME Placeholder", etc.) are skipped — they're role
-    // stand-ins, not real capacity to flag.
-    const deptMembers = (def.key === 'unassigned')
-      ? []
-      : (state.team || []).filter(m =>
-          m.discipline === def.key && m.active !== 0 && !isPlaceholder(m.name)
-        );
-    const windowStart = new Date(); windowStart.setHours(0, 0, 0, 0);
-    const windowMs    = windowStart.getTime();
-    const windowEnd   = windowMs + 56 * 86400000; // 8 weeks ahead
-    const underPeople = [];
-    const overPeople  = [];
-    for (const m of deptMembers) {
-      // Member's tasks in the next 8 weeks that are still open and
-      // belong to one of the selected projects.
-      const memTasks = state.tasks.filter(t =>
-        t.assignee === m.name &&
-        (Number(t.progress) || 0) < 100 &&
-        t.start_date && t.end_date &&
-        !isTemplateProject(t.project) &&
-        projectWorkspace(t.project) !== 'Sales' &&
-        selected.includes(t.project)
-      ).filter(t => {
-        const eMs = new Date(t.end_date + 'T00:00:00').getTime();
-        return eMs >= windowMs && eMs <= windowEnd + 30 * 86400000;
-      });
-      if (memTasks.length === 0) {
-        underPeople.push({ name: m.name, reason: 'no open tasks' });
-        continue;
-      }
-      const overlap = computeOverloadRegions(memTasks, windowStart);
-      if (overlap.length > 0) {
-        const peak = Math.max(...overlap.map(r => r.peak));
-        overPeople.push({ name: m.name, peak });
-        continue;
-      }
-      // Heuristic for "under": avg daily allocation across the window
-      // < 60%. Sum (task allocation × days in window) / total days × 100.
-      let totalAlloc = 0, daysCovered = 0;
-      const totalDays = 56;
-      for (const t of memTasks) {
-        const sMs = Math.max(windowMs, new Date(t.start_date + 'T00:00:00').getTime());
-        const eMs = Math.min(windowEnd, new Date(t.end_date + 'T00:00:00').getTime());
-        if (eMs < sMs) continue;
-        const days = Math.round((eMs - sMs) / 86400000) + 1;
-        const alloc = t.allocation == null ? 90 : Number(t.allocation);
-        totalAlloc += alloc * days;
-        daysCovered += days;
-      }
-      const avgAlloc = daysCovered > 0 ? totalAlloc / totalDays : 0;
-      if (avgAlloc < 60) {
-        underPeople.push({ name: m.name, reason: `${Math.round(avgAlloc)}% avg load` });
-      }
-    }
-
-    const showProjectCol = selected.length > 1;
-    const taskLine = (t, chipHtml) => {
-      const proj = showProjectCol
-        ? `<span class="pdash-tl-project">${escapeHtml(t.project || '')}</span>` : '';
-      const ass = t.assignee
-        ? `<span class="pdash-tl-assignee">${escapeHtml(t.assignee)}</span>` : '';
-      return `<li class="pdash-tl-row" data-project="${escapeHtml(t.project || '')}" data-task-id="${t.id}">
-        <span class="pdash-tl-name">${escapeHtml(t.name || '')}</span>
-        ${proj}${ass}
-        ${chipHtml || ''}
-      </li>`;
-    };
-    // Due-this-month rows show TWO chips: the % complete (with
-    // ahead/behind/done coloring) AND the days-until-due chip. So the
-    // PM sees "almost done and not until next week" vs "0% and due
-    // tomorrow" at a glance.
-    const dueLis = dueThisMonth.length === 0
-      ? `<li class="pdash-tl-empty">Nothing due in ${escapeHtml(currentMonthLabel)}.</li>`
-      : dueThisMonth.slice(0, 12).map(t => {
-          const endMs = new Date(t.end_date + 'T00:00:00').getTime();
-          const days = Math.max(0, Math.round((endMs - todayMs) / 86400000));
-          const dueCls = days <= 3 ? 'chip-danger' : (days <= 7 ? 'chip-warn' : 'chip-info');
-          const s = taskStatus(t);
-          const pct = s.actual;
-          let pctCls = 'chip-info';
-          if (pct >= 100)       pctCls = 'chip-success';
-          else if (s.status === 'behind') pctCls = 'chip-danger';
-          else if (s.status === 'ahead')  pctCls = 'chip-success';
-          else if (pct > 0)               pctCls = 'chip-info';
-          const pctChip = `<span class="pdash-chip ${pctCls}" title="Actual ${pct}% vs expected ${s.expected}%">${pct}%</span>`;
-          const dueChip = `<span class="pdash-chip ${dueCls}">${_pdashDaysToWeeks(days)}W</span>`;
-          return taskLine(t, pctChip + dueChip);
-        }).join('');
-    const behindLis = behindList.length === 0
-      ? '<li class="pdash-tl-empty">Nothing behind.</li>'
-      : behindList.slice(0, 12).map(({ task, status }) =>
-          taskLine(task, `<span class="pdash-chip chip-danger">-${status.lag}%</span>`)).join('');
-    // Under-allocated — plain text rows (no chips). Previously every
-    // row carried a yellow chip and a roster of free people looked
-    // like a wall of yellow. Now: name in normal weight + reason in
-    // muted text below, reads like a cleaner address book.
-    const underLis = underPeople.length === 0
-      ? '<li class="pdash-tl-empty">Everyone is fully booked.</li>'
-      : underPeople.map(p =>
-          `<li class="pdash-tl-person">
-            <span class="pdash-tl-person-name">${escapeHtml(p.name)}</span>
-            <span class="pdash-tl-person-reason">${escapeHtml(p.reason)}</span>
-          </li>`).join('');
-    const overLis = overPeople.length === 0
-      ? '<li class="pdash-tl-empty">No one is over-allocated.</li>'
-      : overPeople.map(p =>
-          `<li class="pdash-tl-person is-over">
-            <span class="pdash-tl-person-name">${escapeHtml(p.name)}</span>
-            <span class="pdash-tl-person-reason">peak ${p.peak}%</span>
-          </li>`).join('');
-
-    return `
-      <article class="pdash-dept-card" data-dept="${escapeHtml(def.key)}">
-        <header class="pdash-dept-head">
-          <h3>${escapeHtml(def.label)}</h3>
-          <span class="pdash-dept-count">${stats.total} task${stats.total === 1 ? '' : 's'} · ${actualPct}% complete (expected ${expectedPct}%)</span>
-        </header>
-        <div class="pdash-dept-lists pdash-dept-lists-4">
-          <section class="pdash-dept-list">
-            <h4>Under-allocated <span class="pdash-list-count">${underPeople.length}</span></h4>
-            <ul>${underLis}</ul>
-          </section>
-          <section class="pdash-dept-list">
-            <h4>Over-allocated <span class="pdash-list-count">${overPeople.length}</span></h4>
-            <ul>${overLis}</ul>
-          </section>
-          <section class="pdash-dept-list">
-            <h4>Due in ${escapeHtml(currentMonthLabel)} <span class="pdash-list-count">${dueThisMonth.length}</span></h4>
-            <ul>${dueLis}</ul>
-          </section>
-          <section class="pdash-dept-list">
-            <h4>Behind schedule <span class="pdash-list-count">${behindList.length}</span></h4>
-            <ul>${behindLis}</ul>
-          </section>
-        </div>
-      </article>
-    `;
-  }
-
-  // ── Compose ──
-  const summaryLabel = selected.length === 0
-    ? 'No projects selected.'
-    : (selected.length === 1
-        ? `1 project — grouped by department`
-        : `${selected.length} projects — combined and grouped by department`);
-
-  // ── Financial milestones table ── Per-project payment events. Sorted
-  //    by due date. Filtered by the month-range selector below.
-  //    Default = the CURRENT month so the PM lands on "what am I
-  //    invoicing this month?" rather than "everything ever". User
-  //    overrides persist in localStorage. To explicitly mean "no
-  //    filter", the Clear button stores the sentinel "any".
-  const _currentMonth = (() => {
-    const d = new Date();
-    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-  })();
-  const _storedFrom = localStorage.getItem('sdcDashboardFinMonthFrom');
-  const _storedTo   = localStorage.getItem('sdcDashboardFinMonthTo');
-  let finMonthFrom = _storedFrom == null ? _currentMonth : (_storedFrom === 'any' ? '' : _storedFrom);
-  let finMonthTo   = _storedTo   == null ? _currentMonth : (_storedTo   === 'any' ? '' : _storedTo);
-  const financialsTableHtml = (() => {
-    if (selected.length === 0) {
-      return '<div class="pdash-empty-block">Pick at least one project to see financial milestones.</div>';
-    }
-    // Month-range filter. "" / "" → no filter. Month strings are
-    // YYYY-MM (the value an <input type="month"> produces).
-    const monthOf = (iso) => iso ? iso.slice(0, 7) : '';
-    const rows = [...financials]
-      .filter(f => f.due_date)
-      .filter(f => {
-        if (!finMonthFrom && !finMonthTo) return true;
-        const m = monthOf(f.due_date);
-        if (finMonthFrom && m < finMonthFrom) return false;
-        if (finMonthTo   && m > finMonthTo)   return false;
-        return true;
-      })
-      .sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
-    if (rows.length === 0) {
-      const filterHint = (finMonthFrom || finMonthTo)
-        ? ' in the selected month range'
-        : '';
-      return `<div class="pdash-fin-controls">
-        ${_pdashFinMonthControls(finMonthFrom, finMonthTo)}
-      </div>
-      <div class="pdash-empty-block">No financial milestones${filterHint} for the selected projects.</div>`;
-    }
-    const showProjectCol = selected.length > 1;
-    // Column order matches the financials modal (% · description ·
-    // date) but PRECEDED by Project when multiple projects are
-    // selected, so the eye lands on which schedule the row belongs
-    // to first. Status chip sits on the right. Column widths follow
-    // the CLAUDE.md grid rule — Description (Milestone) gets the
-    // remainder so long names never clip; everything else is sized
-    // to its data.
-    const colgroup = showProjectCol
-      ? `<colgroup>
-          <col style="width:240px"/>
-          <col style="width:60px"/>
-          <col style="width:auto"/>
-          <col style="width:130px"/>
-          <col style="width:130px"/>
-        </colgroup>`
-      : `<colgroup>
-          <col style="width:60px"/>
-          <col style="width:auto"/>
-          <col style="width:130px"/>
-          <col style="width:130px"/>
-        </colgroup>`;
-    const head = showProjectCol
-      ? '<thead><tr><th>Project</th><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>'
-      : '<thead><tr><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>';
-    const body = rows.map(r => {
-      const dueMs = r.due_date ? new Date(r.due_date + 'T00:00:00').getTime() : null;
-      const isPast = dueMs != null && dueMs < todayMs;
-      let chip;
-      if (r.paid) chip = '<span class="pdash-chip chip-success">Paid</span>';
-      else if (isPast) chip = '<span class="pdash-chip chip-danger">Invoice now</span>';
-      else if (dueMs != null && dueMs - todayMs <= 14 * 86400000) chip = '<span class="pdash-chip chip-warn">Due soon</span>';
-      else chip = '<span class="pdash-chip chip-info">Upcoming</span>';
-      const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '—';
-      const projCell = showProjectCol ? `<td title="${escapeHtml(r.project)}">${escapeHtml(r.project)}</td>` : '';
-      return `<tr class="pdash-fin-row" data-project="${escapeHtml(r.project)}">
-        ${projCell}
-        <td class="num">${pctVal}</td>
-        <td title="${escapeHtml(r.name || '')}">${escapeHtml(r.name || '')}</td>
-        <td>${escapeHtml(r.due_date ? fmtDate(r.due_date) : '—')}</td>
-        <td>${chip}</td>
-      </tr>`;
-    }).join('');
-    return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
-            <table class="pdash-fin-table">${colgroup}${head}<tbody>${body}</tbody></table>`;
-  })();
-
-  const milestoneStripsHtml = selected.length === 0
-    ? '<div class="pdash-empty-block">Pick at least one project to see milestone dates.</div>'
-    : selected.map(p => milestoneStripForProject(p)).join('');
-
-  const deptCardsHtml = renderOrder.length === 0
-    ? '<div class="pdash-empty-block">No work tasks in this selection.</div>'
-    : renderOrder.map(def => renderDeptCard(def, tasksByOwner.get(def.key))).join('');
-
-  const overallTotal = Math.max(1, overall.total);
-  const overallLegend = `
-    <div class="pdash-overall-legend">
-      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#74c415"></span>
-        <strong>${overall.done}</strong> done
-        <span class="pdash-legend-pct">${Math.round(overall.done/overallTotal*100)}%</span></div>
-      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#1574c4"></span>
-        <strong>${overall.ontime}</strong> on time
-        <span class="pdash-legend-pct">${Math.round(overall.ontime/overallTotal*100)}%</span></div>
-      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#befa4f"></span>
-        <strong>${overall.ahead}</strong> ahead
-        <span class="pdash-legend-pct">${Math.round(overall.ahead/overallTotal*100)}%</span></div>
-      <div class="pdash-legend-item"><span class="pdash-legend-dot" style="background:#dc2626"></span>
-        <strong>${overall.behind}</strong> behind
-        <span class="pdash-legend-pct">${Math.round(overall.behind/overallTotal*100)}%</span></div>
-    </div>`;
-
-  root.innerHTML = `
-    <h1 class="pdash-title">Dashboard</h1>
-    <p class="pdash-sub">${escapeHtml(summaryLabel)}</p>
-
-    <div class="pdash-filters">
-      <details class="pdash-picker">
-        <summary>📂 Projects: <strong>${
-          selected.length === 0 ? 'none'
-            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} selected`)
-        }</strong> <span class="pdash-picker-caret">▾</span></summary>
-        <div class="pdash-picker-list">
-          ${allProjects.map(p => `
-            <label class="pdash-picker-item">
-              <input type="checkbox" data-project="${escapeHtml(p)}" ${selected.includes(p) ? 'checked' : ''}/>
-              <span>${escapeHtml(p)}</span>
-            </label>`).join('')}
-        </div>
-        <div class="pdash-picker-actions">
-          <button type="button" data-action="select-all" class="btn-ghost btn-tight">Select all</button>
-          <button type="button" data-action="select-none" class="btn-ghost btn-tight">Clear</button>
-        </div>
-      </details>
-      <label class="pdash-weeks-control" title="How far ahead 'Coming due' looks, in weeks.">
-        ⏰ Coming due in
-        <input type="number" min="0.5" max="52" step="0.5" value="${comingDueWeeks}" data-action="set-weeks"/>
-        weeks
-      </label>
-    </div>
-
-    <section class="pdash-section">
-      <header class="pdash-section-head">
-        <h2>🚦 Key Milestones</h2>
-        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship, per project</span>
-      </header>
-      <div class="pdash-milestones">${milestoneStripsHtml}</div>
-    </section>
-
-    <section class="pdash-section">
-      <header class="pdash-section-head">
-        <h2>💲 Financial Milestones</h2>
-        <span class="pdash-section-sub">Invoiceable payment events across selected projects.</span>
-      </header>
-      ${financialsTableHtml}
-    </section>
-
-    <section class="pdash-section">
-      <header class="pdash-section-head">
-        <h2>📊 Overall Health</h2>
-        <span class="pdash-section-sub">${overall.total} open + done tasks across selected projects</span>
-      </header>
-      <div class="pdash-overall">
-        <div class="pdash-overall-donut">${donutSvg(overall, 170)}</div>
-        ${overallLegend}
-      </div>
-    </section>
-
-    <section class="pdash-section">
-      <header class="pdash-section-head">
-        <h2>🏢 By Department</h2>
-        <span class="pdash-section-sub">Each card: progress bar (actual vs. expected), donut, and lists by person.</span>
-      </header>
-      <div class="pdash-dept-grid">${deptCardsHtml}</div>
-    </section>
-  `;
-
-  // ── Wire handlers ──
-  root.querySelectorAll('.pdash-picker input[type="checkbox"]').forEach(box => {
-    box.addEventListener('change', () => {
-      const sel = [...root.querySelectorAll('.pdash-picker input[type="checkbox"]')]
-        .filter(b => b.checked).map(b => b.dataset.project);
-      try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(sel)); } catch (_) {}
-      renderDashboard();
-    });
-  });
-  root.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
-    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(allProjects)); } catch (_) {}
-    renderDashboard();
-  });
-  root.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
-    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
-    renderDashboard();
-  });
-  const weeksInput = root.querySelector('[data-action="set-weeks"]');
-  if (weeksInput) {
-    weeksInput.addEventListener('change', () => {
-      const w = parseFloat(weeksInput.value);
-      if (Number.isFinite(w) && w > 0) {
-        try { localStorage.setItem('sdcDashboardComingWeeks', String(w)); } catch (_) {}
-        renderDashboard();
-      }
-    });
-  }
-  // Financial milestones month-range filter — persists to localStorage,
-  // re-renders on change.
-  root.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      try { localStorage.setItem('sdcDashboardFinMonthFrom', inp.value || ''); } catch (_) {}
-      renderDashboard();
-    });
-  });
-  root.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      try { localStorage.setItem('sdcDashboardFinMonthTo', inp.value || ''); } catch (_) {}
-      renderDashboard();
-    });
-  });
-  root.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      // Sentinel "any" means "user explicitly cleared" — without it
-      // the default kicks back in (current month) on every render and
-      // the Clear button would feel broken.
-      try {
-        localStorage.setItem('sdcDashboardFinMonthFrom', 'any');
-        localStorage.setItem('sdcDashboardFinMonthTo', 'any');
-      } catch (_) {}
-      renderDashboard();
-    });
-  });
-  // Click any task row OR milestone tile → open that task's project in
-  // the schedule view.
-  root.querySelectorAll('.pdash-tl-row, .pdash-milestone, .pdash-fin-row').forEach(el => {
-    el.addEventListener('click', () => {
-      const p = el.dataset.project;
-      if (!p) return;
-      if (!state.openProjects.includes(p)) state.openProjects.push(p);
-      state.filters.project = p;
-      state.activeWorkspace = projectWorkspace(p);
-      saveProjectTabs();
-      setView('schedule');
-    });
-  });
-}
-
 function renderProjectsPage() {
   const root = document.getElementById('projects-page');
   if (!root) return;
@@ -7519,7 +5772,7 @@ function renderProjectsPage() {
   const expanded = state._projectsExpanded || (state._projectsExpanded = {});
 
   const favSet = new Set(state.favoriteProjects || []);
-  // Row is a <div role="button"> — NOT a <button> — so the favorite ★ button
+  // Row is a <div role="button"> ΓÇö NOT a <button> ΓÇö so the favorite Γÿà button
   // nested inside doesn't create invalid nested-button HTML (which Chrome
   // renders as block-level, breaking the row onto two lines).
   const rowHtml = (p, opts = {}) => {
@@ -7527,21 +5780,12 @@ function renderProjectsPage() {
     const isFav = favSet.has(p);
     const isTmpl = isTemplateProject(p);
     const star = isTmpl
-      ? '<span class="projects-row-star" title="Template">★</span>'
-      : '<span class="projects-row-star" style="visibility:hidden">★</span>';
-    const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? '★' : '☆'}</button>`;
-    // Sales-mode projects (non-templates in the Sales workspace) get an
-    // inline "→ Project" promotion button. Clicking it stamps a fresh
-    // detailed schedule from SDC_StandardProject_Template and carries
-    // the saved quote across so Quote vs Schedule lights up immediately.
-    const isSalesProject = !isTmpl && projectWorkspace(p) === 'Sales';
-    const promoteBtn = isSalesProject
-      ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project. Stamps SDC_StandardProject_Template tasks, copies the saved quote (hours + people #), and applies the sales people-math (e.g. 1.25 people → 1 @ 85% + 1 @ 25%).">→ Project</button>`
-      : '';
+      ? '<span class="projects-row-star" title="Template">Γÿà</span>'
+      : '<span class="projects-row-star" style="visibility:hidden">Γÿà</span>';
+    const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? 'Γÿà' : 'Γÿå'}</button>`;
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
       ${star}<span class="projects-row-name">${escapeHtml(p)}</span>
       ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
-      ${promoteBtn}
       ${favBtn}
     </div>`;
   };
@@ -7554,15 +5798,15 @@ function renderProjectsPage() {
     // Auto-pick the single template in this workspace for the "+ New" button.
     // Multi-template workspaces still fall back to the legacy picker.
     const wsTmpl = templates.length === 1 ? templates[0] : null;
-    const newBtnLabel = wsTmpl ? `＋ New from ${escapeHtml(wsTmpl)}` : '＋ New schedule';
+    const newBtnLabel = wsTmpl ? `∩╝ï New from ${escapeHtml(wsTmpl)}` : '∩╝ï New schedule';
     return `
       <div class="projects-workspace${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}">
         <button class="projects-workspace-head" data-action="toggle" type="button">
-          <span class="projects-workspace-caret">▶</span>
+          <span class="projects-workspace-caret">Γû╢</span>
           <span class="projects-workspace-name">${escapeHtml(ws)}</span>
           <span class="projects-workspace-count">${projects.length}</span>
           <span class="projects-workspace-spacer"></span>
-          <button class="projects-workspace-newbtn${allowsNew ? '' : ' is-disabled'}" data-action="new" data-workspace="${escapeHtml(ws)}" ${allowsNew ? '' : 'disabled title="Closed workspace — no new schedules allowed."'} type="button">${newBtnLabel}</button>
+          <button class="projects-workspace-newbtn${allowsNew ? '' : ' is-disabled'}" data-action="new" data-workspace="${escapeHtml(ws)}" ${allowsNew ? '' : 'disabled title="Closed workspace ΓÇö no new schedules allowed."'} type="button">${newBtnLabel}</button>
         </button>
         <div class="projects-workspace-body">
           ${templates.length > 0 ? `
@@ -7574,7 +5818,7 @@ function renderProjectsPage() {
           ${nonTemplates.length === 0 && templates.length === 0
             ? '<div class="projects-workspace-empty">No schedules in this workspace yet.</div>'
             : nonTemplates.length === 0
-              ? '<div class="projects-workspace-empty">No schedules yet — use the "+ New" button to start one.</div>'
+              ? '<div class="projects-workspace-empty">No schedules yet ΓÇö use the "+ New" button to start one.</div>'
               : nonTemplates.map(rowHtml).join('')}
         </div>
       </div>
@@ -7604,15 +5848,8 @@ function renderProjectsPage() {
   });
   root.querySelectorAll('.projects-row').forEach(row => {
     row.addEventListener('click', (e) => {
-      // Star button intercept — toggles favorite, doesn't open the project.
+      // Star button intercept ΓÇö toggles favorite, doesn't open the project.
       if (e.target.closest('[data-action="toggle-fav"]')) return;
-      // Promote button intercept — opens the sales → detailed promote modal.
-      if (e.target.closest('[data-action="promote"]')) {
-        e.stopPropagation();
-        const p = e.target.closest('[data-action="promote"]').dataset.project;
-        if (p) openPromoteModal(p);
-        return;
-      }
       const p = row.dataset.project;
       if (!p) return;
       if (!state.openProjects.includes(p)) state.openProjects.push(p);
@@ -7637,7 +5874,7 @@ function renderProjectsPage() {
       state.activeWorkspace = ws;
       saveProjectTabs();
       // If the workspace has EXACTLY ONE template, prompt for a name and clone
-      // directly — no need to fight a dropdown. Other cases (no template,
+      // directly ΓÇö no need to fight a dropdown. Other cases (no template,
       // multiple templates) fall back to the legacy picker which still has
       // estimate-sheet + Smartsheet flows.
       const wsTemplates = (state.templateProjects || []).filter(t =>
@@ -7659,7 +5896,7 @@ function renderProjectsPage() {
         setView('schedule');
         return;
       }
-      // 0 or >1 templates → fall back to the legacy picker.
+      // 0 or >1 templates ΓåÆ fall back to the legacy picker.
       showProjectAddPicker();
     });
   });
@@ -7673,7 +5910,7 @@ function renderProjectsPage() {
   });
 }
 
-// Favorites page — list of starred projects. Click to open like the Projects page.
+// Favorites page ΓÇö list of starred projects. Click to open like the Projects page.
 function renderFavoritesPage() {
   const root = document.getElementById('favorites-page');
   if (!root) return;
@@ -7682,15 +5919,15 @@ function renderFavoritesPage() {
     <h1 class="projects-page-title">Favorites</h1>
     <div class="projects-page-sub">${favs.length} starred schedule${favs.length === 1 ? '' : 's'}</div>
     ${favs.length === 0
-      ? '<p class="projects-page-empty">No favorites yet. Click the ☆ next to any schedule on the Projects page to star it.</p>'
+      ? '<p class="projects-page-empty">No favorites yet. Click the Γÿå next to any schedule on the Projects page to star it.</p>'
       : `<div class="projects-workspace is-expanded"><div class="projects-workspace-body">${favs.map(p => {
           const isOpen = state.openProjects.includes(p);
           const isTmpl = isTemplateProject(p);
           return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
-            <span class="projects-row-star">${isTmpl ? '★' : ''}</span>
+            <span class="projects-row-star">${isTmpl ? 'Γÿà' : ''}</span>
             <span class="projects-row-name">${escapeHtml(p)}</span>
             ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
-            <button class="projects-row-favbtn is-fav" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="Unfavorite">★</button>
+            <button class="projects-row-favbtn is-fav" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="Unfavorite">Γÿà</button>
           </div>`;
         }).join('')}</div></div>`}
   `;
@@ -7716,7 +5953,7 @@ function renderFavoritesPage() {
   });
 }
 
-// Recents page — last 10 opened projects, newest first.
+// Recents page ΓÇö last 10 opened projects, newest first.
 function renderRecentsPage() {
   const root = document.getElementById('recents-page');
   if (!root) return;
@@ -7731,10 +5968,10 @@ function renderRecentsPage() {
           const isTmpl = isTemplateProject(p);
           const isFav = (state.favoriteProjects || []).includes(p);
           return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
-            <span class="projects-row-star">${isTmpl ? '★' : ''}</span>
+            <span class="projects-row-star">${isTmpl ? 'Γÿà' : ''}</span>
             <span class="projects-row-name">${escapeHtml(p)}</span>
             ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
-            <button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button">${isFav ? '★' : '☆'}</button>
+            <button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button">${isFav ? 'Γÿà' : 'Γÿå'}</button>
           </div>`;
         }).join('')}</div></div>`}
   `;
@@ -7760,7 +5997,7 @@ function renderRecentsPage() {
   });
 }
 
-// Left sidebar panel — DEPRECATED in v4.11. Pages are used now instead.
+// Left sidebar panel ΓÇö DEPRECATED in v4.11. Pages are used now instead.
 // Kept as a no-op shim so any straggler callers don't blow up.
 function renderSidebarPanel(mode) {
   const titleEl = document.getElementById('app-sidebar-panel-title');
@@ -7777,10 +6014,10 @@ function renderSidebarPanel(mode) {
     wireWorkspacePanelHandlers(bodyEl);
   } else if (mode === 'favorites') {
     titleEl.textContent = 'Favorites';
-    bodyEl.innerHTML = `<div class="panel-workspace-empty">Favorites coming in v4.11 — for now use Workspaces to navigate.</div>`;
+    bodyEl.innerHTML = `<div class="panel-workspace-empty">Favorites coming in v4.11 ΓÇö for now use Workspaces to navigate.</div>`;
   } else if (mode === 'recents') {
     titleEl.textContent = 'Recents';
-    bodyEl.innerHTML = `<div class="panel-workspace-empty">Recents coming next — for now use Workspaces to navigate.</div>`;
+    bodyEl.innerHTML = `<div class="panel-workspace-empty">Recents coming next ΓÇö for now use Workspaces to navigate.</div>`;
   } else if (mode === 'create') {
     titleEl.textContent = 'Create New Schedule';
     bodyEl.innerHTML = renderCreatePanelHtml();
@@ -7789,7 +6026,7 @@ function renderSidebarPanel(mode) {
 }
 
 // Build the HTML for the Workspaces tree panel. Lists every workspace and
-// the projects in it (templates pinned at top with ★). Click a project row
+// the projects in it (templates pinned at top with Γÿà). Click a project row
 // to open it as a tab + switch to schedule view.
 function renderWorkspacesPanelHtml() {
   const all = uniqueValues('project');
@@ -7807,7 +6044,7 @@ function renderWorkspacesPanelHtml() {
   const rowHtml = (p) => {
     const isOpen = openSet.has(p);
     const isActive = (state.filters.project || '') === p;
-    const star = isTemplateProject(p) ? '<span class="panel-row-star" title="Template">★</span>' : '';
+    const star = isTemplateProject(p) ? '<span class="panel-row-star" title="Template">Γÿà</span>' : '';
     return `<button class="panel-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">
       ${star}<span class="panel-row-name">${escapeHtml(p)}</span>
       ${isActive ? '<span class="panel-row-badge">viewing</span>' : (isOpen ? '<span class="panel-row-badge">open</span>' : '')}
@@ -7823,7 +6060,7 @@ function renderWorkspacesPanelHtml() {
         ? `<div class="panel-workspace-empty">No schedules in this workspace.</div>`
         : byWs[ws].map(rowHtml).join('')}
     </div>
-  `).join('') + `<button class="panel-create-button" data-action="open-create" type="button">＋ New schedule…</button>`;
+  `).join('') + `<button class="panel-create-button" data-action="open-create" type="button">∩╝ï New scheduleΓÇª</button>`;
 }
 
 function wireWorkspacePanelHandlers(bodyEl) {
@@ -7849,7 +6086,7 @@ function wireWorkspacePanelHandlers(bodyEl) {
   if (createBtn) createBtn.addEventListener('click', () => renderSidebarPanel('create'));
 }
 
-// Build the Create panel — three cards for new-schedule entry points.
+// Build the Create panel ΓÇö three cards for new-schedule entry points.
 function renderCreatePanelHtml() {
   const ws = state.activeWorkspace || 'Active';
   const wsTemplates = (state.templateProjects || []).filter(t =>
@@ -7860,30 +6097,30 @@ function renderCreatePanelHtml() {
   return `
     <div class="workspace-page-actions" style="padding: 12px 14px;">
       <div class="workspace-action-card">
-        <h3>★ Build from template</h3>
+        <h3>Γÿà Build from template</h3>
         ${allTemplates.length === 0
-          ? `<p>No templates yet. Mark an existing schedule as template (right-click its tab → Mark as template ★) to build new schedules from it.</p>`
+          ? `<p>No templates yet. Mark an existing schedule as template (right-click its tab ΓåÆ Mark as template Γÿà) to build new schedules from it.</p>`
           : `<p>${onlyTemplate ? `Active workspace template: <strong>${escapeHtml(onlyTemplate)}</strong>.` : 'Pick a template below.'} Real-person assignees are blanked; placeholders carry through.</p>
             <div class="workspace-action-row">
-              <input type="text" class="cv-tmpl-name" placeholder="New schedule name…" />
+              <input type="text" class="cv-tmpl-name" placeholder="New schedule nameΓÇª" />
               ${onlyTemplate
                 ? `<input type="hidden" class="cv-tmpl-source" value="${escapeHtml(onlyTemplate)}" />`
-                : `<select class="cv-tmpl-source"><option value="" disabled selected>Pick a template…</option>${allTemplates.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>`}
+                : `<select class="cv-tmpl-source"><option value="" disabled selected>Pick a templateΓÇª</option>${allTemplates.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>`}
               <button class="btn-primary cv-tmpl-btn" type="button" disabled>Build in ${escapeHtml(ws)}</button>
             </div>`}
       </div>
       <div class="workspace-action-card">
-        <h3>📊 From SDC estimate sheet</h3>
-        <p>Upload the SDC estimate xlsx — we pull hours from "SUMMARY FOR RELEASE", ask for PO + FAT dates, and lay out a schedule from the standard template.</p>
+        <h3>≡ƒôè From SDC estimate sheet</h3>
+        <p>Upload the SDC estimate xlsx ΓÇö we pull hours from "SUMMARY FOR RELEASE", ask for PO + FAT dates, and lay out a schedule from the standard template.</p>
         <div class="workspace-action-row">
-          <button class="btn-primary cv-fallback" data-action="legacy-picker" type="button">Open legacy picker…</button>
+          <button class="btn-primary cv-fallback" data-action="legacy-picker" type="button">Open legacy pickerΓÇª</button>
         </div>
       </div>
       <div class="workspace-action-card">
-        <h3>📥 Import from Smartsheet</h3>
-        <p>Already have a schedule in Smartsheet? Export → Excel, then pick the file in the legacy picker (will move here soon).</p>
+        <h3>≡ƒôÑ Import from Smartsheet</h3>
+        <p>Already have a schedule in Smartsheet? Export ΓåÆ Excel, then pick the file in the legacy picker (will move here soon).</p>
         <div class="workspace-action-row">
-          <button class="btn-primary cv-fallback" data-action="legacy-picker" type="button">Open legacy picker…</button>
+          <button class="btn-primary cv-fallback" data-action="legacy-picker" type="button">Open legacy pickerΓÇª</button>
         </div>
       </div>
     </div>
@@ -7965,7 +6202,7 @@ function renderWorkspacePage() {
 
   const rowHtml = (p) => {
     const isOpen = state.openProjects.includes(p);
-    const star = isTemplateProject(p) ? '<span class="ws-row-star" title="Template — protected">★</span>' : '';
+    const star = isTemplateProject(p) ? '<span class="ws-row-star" title="Template ΓÇö protected">Γÿà</span>' : '';
     return `<button class="ws-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">
       ${star}<span class="ws-row-name">${escapeHtml(p)}</span>
       ${isOpen ? '<span class="ws-row-badge">open</span>' : ''}
@@ -7985,31 +6222,31 @@ function renderWorkspacePage() {
 
     <div class="workspace-page-actions">
       <div class="workspace-action-card">
-        <h3>★ Build from template</h3>
+        <h3>Γÿà Build from template</h3>
         ${wsTemplates.length === 0
-          ? `<p>No template in this workspace yet. Mark an existing schedule as template (right-click its tab → Mark as template ★), or build one from the standard template and move it here.</p>`
+          ? `<p>No template in this workspace yet. Mark an existing schedule as template (right-click its tab ΓåÆ Mark as template Γÿà), or build one from the standard template and move it here.</p>`
           : `<p>${onlyTemplate ? `Clones <strong>${escapeHtml(onlyTemplate)}</strong> into a fresh project.` : 'Clones the chosen template into a fresh project.'} Real-person assignees are blanked; placeholders carry through.</p>
             <div class="workspace-action-row">
-              <input type="text" class="ws-tmpl-name" placeholder="New schedule name…" />
+              <input type="text" class="ws-tmpl-name" placeholder="New schedule nameΓÇª" />
               ${onlyTemplate
                 ? `<input type="hidden" class="ws-tmpl-source" value="${escapeHtml(onlyTemplate)}" />`
-                : `<select class="ws-tmpl-source"><option value="" disabled selected>Pick a template…</option>${wsTemplates.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>`}
+                : `<select class="ws-tmpl-source"><option value="" disabled selected>Pick a templateΓÇª</option>${wsTemplates.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('')}</select>`}
               <button class="btn-primary ws-tmpl-btn" type="button" disabled>Build</button>
             </div>`}
       </div>
 
       <div class="workspace-action-card">
-        <h3>📊 Build from SDC estimate sheet</h3>
+        <h3>≡ƒôè Build from SDC estimate sheet</h3>
         <p>Upload the SDC estimate xlsx (with the "SUMMARY FOR RELEASE" tab). We pull the hours per discipline + section, ask for PO + FAT dates, and lay out a full schedule based on the standard template.</p>
         <div class="workspace-action-row">
           <input type="file" class="ws-estimate-file" accept=".xlsx" />
-          <button class="btn-primary ws-estimate-btn" type="button" disabled>Analyze →</button>
+          <button class="btn-primary ws-estimate-btn" type="button" disabled>Analyze ΓåÆ</button>
         </div>
       </div>
 
       <div class="workspace-action-card">
-        <h3>📥 Import from Smartsheet</h3>
-        <p>Already have a schedule in Smartsheet? Export it from Smartsheet → File → Export → Excel, then pick the xlsx here. One file → one project. Bulk-pick multiple files to import all at once.</p>
+        <h3>≡ƒôÑ Import from Smartsheet</h3>
+        <p>Already have a schedule in Smartsheet? Export it from Smartsheet ΓåÆ File ΓåÆ Export ΓåÆ Excel, then pick the xlsx here. One file ΓåÆ one project. Bulk-pick multiple files to import all at once.</p>
         <div class="workspace-action-row">
           <input type="text" class="ws-import-name" placeholder="Project name (auto-fills from file)" />
           <input type="file" class="ws-import-file" accept=".xlsx" multiple />
@@ -8020,7 +6257,7 @@ function renderWorkspacePage() {
     </div>
   `;
 
-  // Wire row clicks — open the project as a tab + switch to schedule view.
+  // Wire row clicks ΓÇö open the project as a tab + switch to schedule view.
   root.querySelectorAll('.ws-row').forEach(row => {
     row.addEventListener('click', async () => {
       const p = row.dataset.project;
@@ -8073,7 +6310,7 @@ function renderWorkspacePage() {
     nameEl?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !btnEl.disabled) { e.preventDefault(); buildFromTmpl(); } });
   }
 
-  // Wire Estimate sheet upload (reuses the existing flow from the picker —
+  // Wire Estimate sheet upload (reuses the existing flow from the picker ΓÇö
   // we set up the file input + button here and delegate to handleEstimateFile,
   // which already opens the analyze modal etc.).
   const estFile = root.querySelector('.ws-estimate-file');
@@ -8083,12 +6320,12 @@ function renderWorkspacePage() {
     estBtn.addEventListener('click', async () => {
       const f = estFile.files?.[0];
       if (!f) return;
-      // The legacy picker code reads the file as base64 → POSTs to
+      // The legacy picker code reads the file as base64 ΓåÆ POSTs to
       // /api/estimate/analyze, opens a modal. We don't have that function
       // factored out yet; for v4.9 the user can fall back to the existing
       // "+ New tab" picker for now (which still has the estimate flow wired).
       // Telegraph that in the meantime.
-      alert('Estimate-sheet upload from the workspace page is wired but the analyze flow still lives in the legacy + New tab picker for now — click "+ New tab" → "Build from SDC estimate sheet" to use it. Will wire here in the next iteration.');
+      alert('Estimate-sheet upload from the workspace page is wired but the analyze flow still lives in the legacy + New tab picker for now ΓÇö click "+ New tab" ΓåÆ "Build from SDC estimate sheet" to use it. Will wire here in the next iteration.');
     });
   }
 
@@ -8098,23 +6335,23 @@ function renderWorkspacePage() {
   if (impFile && impBtn) {
     impFile.addEventListener('change', () => { impBtn.disabled = !impFile.files?.length; });
     impBtn.addEventListener('click', () => {
-      alert('Smartsheet import from the workspace page is wired but the parser still lives in the legacy + New tab picker for now — click "+ New tab" → "Import from Smartsheet" to use it. Will wire here in the next iteration.');
+      alert('Smartsheet import from the workspace page is wired but the parser still lives in the legacy + New tab picker for now ΓÇö click "+ New tab" ΓåÆ "Import from Smartsheet" to use it. Will wire here in the next iteration.');
     });
   }
 }
 
-// (v4.10: renderWorkspaceBar removed — the workspace switcher moved from the
-// top of the page into the left sidebar PANEL. Click the 📁 Workspaces icon
+// (v4.10: renderWorkspaceBar removed ΓÇö the workspace switcher moved from the
+// top of the page into the left sidebar PANEL. Click the ≡ƒôü Workspaces icon
 // in the sidebar to open the panel, which lists every workspace and its
 // projects as a tree.)
-function renderWorkspaceBar() { /* no-op — kept for callers that haven't been updated yet */ }
+function renderWorkspaceBar() { /* no-op ΓÇö kept for callers that haven't been updated yet */ }
 
 function renderProjectTabs() {
   const wrap = document.getElementById('project-tabs');
   if (!wrap) return;
 
   // When signed in (personId persisted), the personal tab is ALWAYS visible
-  // in the strip — even when the user clicks away to a project tab — so
+  // in the strip ΓÇö even when the user clicks away to a project tab ΓÇö so
   // they can return to their personal view in one click. Active state is
   // separate: only highlighted when isPersonalMode() reports true (assignee
   // filter actually applied + no project filter).
@@ -8127,14 +6364,14 @@ function renderProjectTabs() {
       personalTabHtml = `
         <button class="project-tab is-personal ${isPersonalActive ? 'active' : ''}" data-personal="1" type="button" draggable="false">
           <span class="project-tab-dot project-tab-dot-personal" title="Personal view"></span>
-          <span class="project-tab-label">👤 ${escapeHtml(member.name)}</span>
-          <span class="project-tab-close" data-personal-clear="1" title="Sign out — back to All projects">×</span>
+          <span class="project-tab-label">≡ƒæñ ${escapeHtml(member.name)}</span>
+          <span class="project-tab-close" data-personal-clear="1" title="Sign out ΓÇö back to All projects">├ù</span>
         </button>`;
     }
   }
 
   // Show ALL open project tabs regardless of workspace. v4.18 dropped the
-  // workspace filter that v4.8 introduced — having tabs disappear when you
+  // workspace filter that v4.8 introduced ΓÇö having tabs disappear when you
   // navigate to a different workspace's project was disorienting. Now you
   // can have an Active project, a Sales template, and a Closed schedule all
   // open side-by-side; the workspace is conveyed via per-tab COLOR coding
@@ -8150,8 +6387,8 @@ function renderProjectTabs() {
     const isAll = p === '';
     // A tab only reads as "active" when you're ACTUALLY on the Schedule
     // view. If you're on Actions / Team / Setup / etc., no project tab is
-    // highlighted — clicking the Actions sidebar icon shouldn't leave a
-    // schedule tab looking selected. Personal mode is also exclusive —
+    // highlighted ΓÇö clicking the Actions sidebar icon shouldn't leave a
+    // schedule tab looking selected. Personal mode is also exclusive ΓÇö
     // the personal tab owns the active state then.
     const isActive = state.view === 'schedule'
       && !isPersonalMode()
@@ -8159,22 +6396,22 @@ function renderProjectTabs() {
     const isTemplate = isTemplateProject(p);
     const label = isAll ? 'All projects' : p;
     // All-projects pseudo-tab has no close button (it's a special permanent
-    // tab). Everything else — including templates — can be closed via the ×;
+    // tab). Everything else ΓÇö including templates ΓÇö can be closed via the ├ù;
     // "close" only removes the tab from the open-tabs list, the underlying
     // project (and template flag) stay in the DB.
     const close = isAll ? ''
-      : `<span class="project-tab-close" data-project="${escapeHtml(p)}" title="Close tab (project stays in the database)">×</span>`;
-    const star  = isTemplate ? '<span class="project-tab-star" title="Template — protected">★</span>' : '';
+      : `<span class="project-tab-close" data-project="${escapeHtml(p)}" title="Close tab (project stays in the database)">├ù</span>`;
+    const star  = isTemplate ? '<span class="project-tab-star" title="Template ΓÇö protected">Γÿà</span>' : '';
     const cls = ['project-tab'];
     if (isActive) cls.push('active');
     if (isAll)    cls.push('is-all');
     if (isTemplate) cls.push('is-template');
-    // Workspace class drives a SMALL colored DOT before the project name —
+    // Workspace class drives a SMALL colored DOT before the project name ΓÇö
     // not the full tab background. Inactive tabs share a neutral background
     // so the SELECTED tab (lime border) is unmistakable. Dot colors:
-    //   workspace-active → SDC lime  (#befa4f)
-    //   workspace-sales  → SDC blue  (#AACEE8)
-    //   workspace-closed → SDC yellow (#FFDE51)
+    //   workspace-active ΓåÆ SDC lime  (#befa4f)
+    //   workspace-sales  ΓåÆ SDC blue  (#AACEE8)
+    //   workspace-closed ΓåÆ SDC yellow (#FFDE51)
     let wsDot = '';
     if (!isAll) {
       const ws = projectWorkspace(p).toLowerCase();
@@ -8191,7 +6428,7 @@ function renderProjectTabs() {
       </button>`;
   }).join('');
 
-  // Personal-tab × handler — full sign-out: clear personId entirely, drop
+  // Personal-tab ├ù handler ΓÇö full sign-out: clear personId entirely, drop
   // assignee filter, return to All Projects.
   const personalClearBtn = wrap.querySelector('[data-personal-clear]');
   if (personalClearBtn) {
@@ -8202,7 +6439,7 @@ function renderProjectTabs() {
       routePersonalMode(null);
     });
   }
-  // Personal tab body click — re-enter personal mode (re-applies the
+  // Personal tab body click ΓÇö re-enter personal mode (re-applies the
   // assignee filter + clears the project filter so the schedule view
   // shows just this person's work again).
   const personalTabBtn = wrap.querySelector('.project-tab.is-personal');
@@ -8215,12 +6452,12 @@ function renderProjectTabs() {
     });
   }
 
-  // Regular project tabs (NOT the personal tab) — wire normal click behavior.
+  // Regular project tabs (NOT the personal tab) ΓÇö wire normal click behavior.
   wrap.querySelectorAll('.project-tab:not(.is-personal)').forEach(btn => {
     btn.addEventListener('click', (e) => {
       if (e.target.closest('.project-tab-close')) return;
       // Clicking a regular project tab while signed in: keep personId
-      // persisted (so the personal tab stays visible — they can return)
+      // persisted (so the personal tab stays visible ΓÇö they can return)
       // but drop the assignee filter so the project view shows the whole
       // project, not just this person's slice.
       if (isPersonalMode()) {
@@ -8236,10 +6473,10 @@ function renderProjectTabs() {
       // Always switch to the schedule view when a project tab is clicked.
       // Without this, clicking a tab while on the Projects page (or any other
       // non-schedule view) would silently change the active project without
-      // navigating off the current view — which made the click feel broken.
+      // navigating off the current view ΓÇö which made the click feel broken.
       setView('schedule');
     });
-    // Right-click → context menu (Duplicate, Mark/Unmark template, Close).
+    // Right-click ΓåÆ context menu (Duplicate, Mark/Unmark template, Close).
     btn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const p = btn.dataset.project;
@@ -8248,7 +6485,7 @@ function renderProjectTabs() {
     });
     // Drag-to-reorder. The All-projects pseudo-tab is non-draggable (its
     // draggable=false attribute prevents dragstart) and we explicitly skip
-    // drops on it too — it stays pinned at position 0.
+    // drops on it too ΓÇö it stays pinned at position 0.
     if (btn.dataset.project === '') return;
     btn.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/plain', btn.dataset.project);
@@ -8278,7 +6515,7 @@ function renderProjectTabs() {
       const toIdx = order.indexOf(toP);
       // Drop AT the target's position (pushes target right). For drops on the
       // last tab the target index is the new last, but we still want fromP to
-      // land there — so use toIdx, not toIdx+1.
+      // land there ΓÇö so use toIdx, not toIdx+1.
       order.splice(toIdx === -1 ? order.length : toIdx, 0, fromP);
       state.openProjects = order;
       saveProjectTabs();
@@ -8289,7 +6526,7 @@ function renderProjectTabs() {
     x.addEventListener('click', (e) => {
       e.stopPropagation();
       const p = x.dataset.project;
-      // Templates close just like any other tab — the project + template flag
+      // Templates close just like any other tab ΓÇö the project + template flag
       // remain in the DB, the tab just goes away. Reopen anytime via the
       // Projects page.
       state.openProjects = state.openProjects.filter(q => q !== p);
@@ -8299,7 +6536,7 @@ function renderProjectTabs() {
     });
   });
 
-  // Project name banner — short pill with SDC-lime outline sitting BETWEEN
+  // Project name banner ΓÇö short pill with SDC-lime outline sitting BETWEEN
   // the toolbar and the schedule split. Replaces the old centered-name row
   // above the toolbar (which only made sense when grid + Gantt were both
   // visible; the banner placement reads correctly for grid-only and
@@ -8309,7 +6546,7 @@ function renderProjectTabs() {
   if (banner) {
     if (isPersonalMode()) {
       // Personal-mode banner is the .schedule-personal-banner above the
-      // toolbar — this one stays empty so the layout doesn't double up.
+      // toolbar ΓÇö this one stays empty so the layout doesn't double up.
       banner.innerHTML = '';
     } else if (!state.filters.project) {
       // Two-step sign-in: department first, then person. Mirrors the picker
@@ -8323,10 +6560,10 @@ function renderProjectTabs() {
         return (a.sort_order || 0) - (b.sort_order || 0) || (a.name || '').localeCompare(b.name || '');
       });
       const signInHtml = team.length > 0
-        ? `<span class="banner-signin-wrap" title="Sign in as one team member — switches to a personal view of their tasks/actions across every project.">
+        ? `<span class="banner-signin-wrap" title="Sign in as one team member ΓÇö switches to a personal view of their tasks/actions across every project.">
              <span class="banner-signin-label">Sign in:</span>
              <select id="banner-signin-dept" class="banner-signin-pick">
-               <option value="">Department…</option>
+               <option value="">DepartmentΓÇª</option>
                <option value="mech"     ${dept === 'mech'     ? 'selected' : ''}>Mech Eng</option>
                <option value="controls" ${dept === 'controls' ? 'selected' : ''}>Controls Eng</option>
                <option value="build"    ${dept === 'build'    ? 'selected' : ''}>Build</option>
@@ -8334,22 +6571,22 @@ function renderProjectTabs() {
                <option value="pm"       ${dept === 'pm'       ? 'selected' : ''}>Project Mgmt</option>
              </select>
              <select id="banner-signin-pick" class="banner-signin-pick" ${dept ? '' : 'disabled'}>
-               <option value="">${dept ? 'Pick yourself…' : 'Pick department first'}</option>
-               ${inDept.map(m => `<option value="${m.id}">${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`).join('')}
+               <option value="">${dept ? 'Pick yourselfΓÇª' : 'Pick department first'}</option>
+               ${inDept.map(m => `<option value="${m.id}">${escapeHtml(m.name)}${m.is_lead ? ' Γÿà' : ''}</option>`).join('')}
              </select>
            </span>`
         : '';
-      // Multi-project filter — PM view.
+      // Multi-project filter ΓÇö PM view.
       const subset = Array.isArray(state.filters.projectsSubset) ? state.filters.projectsSubset : [];
       const subsetCount = subset.length;
       const projectsBtnLabel = subsetCount === 0 ? 'All projects'
                               : subsetCount === 1 ? `1 project`
                               : `${subsetCount} projects`;
       const projectsFilterHtml = `
-        <button id="btn-banner-projects" class="banner-projects-btn ${subsetCount > 0 ? 'is-active' : ''}" type="button" title="Narrow the view to a subset of projects — useful for PMs who want to see only the projects they run.">
+        <button id="btn-banner-projects" class="banner-projects-btn ${subsetCount > 0 ? 'is-active' : ''}" type="button" title="Narrow the view to a subset of projects ΓÇö useful for PMs who want to see only the projects they run.">
           <span class="banner-projects-label">Projects:</span>
           <span class="banner-projects-value">${escapeHtml(projectsBtnLabel)}</span>
-          <span class="banner-projects-caret">▾</span>
+          <span class="banner-projects-caret">Γû╛</span>
         </button>
         <div id="banner-projects-popup" class="banner-projects-popup hidden"></div>`;
       banner.innerHTML = '<span class="schedule-project-name-pill schedule-project-label">All projects</span>' + signInHtml + projectsFilterHtml;
@@ -8377,7 +6614,7 @@ function renderProjectTabs() {
     }
   }
 
-  // Disable "+ Add task" while on All projects — the new task wouldn't have a project
+  // Disable "+ Add task" while on All projects ΓÇö the new task wouldn't have a project
   // to attach to. Tooltip explains why so the user knows to pick a project tab first.
   const addBtn = document.getElementById('btn-add');
   if (addBtn) {
@@ -8385,37 +6622,30 @@ function renderProjectTabs() {
     addBtn.disabled = onAllProjects;
     addBtn.setAttribute('aria-disabled', String(onAllProjects));
     addBtn.title = onAllProjects
-      ? 'Pick a project tab first — new tasks attach to the active project.'
+      ? 'Pick a project tab first ΓÇö new tasks attach to the active project.'
       : `Add a new task to ${state.filters.project}`;
   }
-  // ⚖ Quote vs Schedule toolbar button — disabled when there's no active
+  // ΓÜû Quote vs Schedule toolbar button ΓÇö disabled when there's no active
   // project tab (no single project to compare). Tooltip explains.
   const quoteBtn = document.getElementById('btn-toolbar-quote');
   if (quoteBtn) {
     const onAllProjects = !state.filters.project;
     quoteBtn.disabled = onAllProjects;
     quoteBtn.title = onAllProjects
-      ? 'Pick a project tab first — quote vs schedule is per-project.'
+      ? 'Pick a project tab first ΓÇö quote vs schedule is per-project.'
       : `Compare quoted vs scheduled hours for ${state.filters.project}. Also exposes the financial milestones editor.`;
   }
-  // 💲 Financial Milestones — peer button. Turns red (`needs-attention`)
-  // when the active project either has no financials yet OR any row is
-  // missing both amount + percent (i.e. the dollar value isn't pinned
-  // down). Filled = normal. The check runs against the cached
-  // state.financials[project]; we kick off a load when the cache is cold
-  // so the next render reflects the real state.
-  refreshFinancialsButtonState();
 }
 
-// Machine sub-tab strip — sits below the project tab strip and only shows
+// Machine sub-tab strip ΓÇö sits below the project tab strip and only shows
 // when the active project has multi-machine tasks (any task with machine !=
-// null). Pills: All · M1 · M2 · … · + (add new machine) · Duplicate.
+// null). Pills: All ┬╖ M1 ┬╖ M2 ┬╖ ΓÇª ┬╖ + (add new machine) ┬╖ Duplicate.
 function renderMachineSubTabs() {
   const bar = document.getElementById('machine-tab-bar');
   if (!bar) return;
   const activeProject = state.filters.project;
   if (!activeProject || state.view !== 'schedule') { bar.hidden = true; bar.innerHTML = ''; return; }
-  // In clone mode, the orange banner takes over the top strip — hide the
+  // In clone mode, the orange banner takes over the top strip ΓÇö hide the
   // sub-tab bar so the banner sits flush below the project tabs (no gray
   // gap). The user is focused on building the new machine, not switching
   // between machines.
@@ -8427,10 +6657,10 @@ function renderMachineSubTabs() {
       .map(t => t.machine)
   )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   if (machines.length < 2) {
-    // A single machine doesn't need a switcher — the schedule IS that
+    // A single machine doesn't need a switcher ΓÇö the schedule IS that
     // machine. The bar only appears once 2+ machines exist (when there's
     // something to switch between). The user adds a second machine by
-    // right-clicking the project tab → "+ Add another machine."
+    // right-clicking the project tab ΓåÆ "+ Add another machine."
     bar.hidden = true;
     bar.innerHTML = '';
     return;
@@ -8439,7 +6669,7 @@ function renderMachineSubTabs() {
   const subsetSet = new Set(subset);
   const isAllActive = subset.length === 0;
   // All pills look identical so on/off state is obvious. Per-machine
-  // colors only show in the grid/Gantt — the sub-tab strip stays neutral
+  // colors only show in the grid/Gantt ΓÇö the sub-tab strip stays neutral
   // (right-click any pill to change its color or delete it).
   const pillHtml = (label, active, dataAttr) =>
     `<button type="button" class="machine-tab ${active ? 'is-active' : ''}" ${dataAttr}>${escapeHtml(label)}</button>`;
@@ -8447,7 +6677,7 @@ function renderMachineSubTabs() {
     <span class="machine-tab-label">Machines:</span>
     ${pillHtml('All', isAllActive, 'data-machine-all="1"')}
     ${machines.map(m => pillHtml(m, !isAllActive && subsetSet.has(m), `data-machine="${escapeHtml(m)}" title="Click to toggle ${escapeHtml(m)} (right-click for color / delete)"`)).join('')}
-    <button type="button" class="machine-tab-action" id="btn-add-machine" title="Add another machine — clone an existing one and pick which lines to include + which connect to the source.">+ Add another machine</button>
+    <button type="button" class="machine-tab-action" id="btn-add-machine" title="Add another machine ΓÇö clone an existing one and pick which lines to include + which connect to the source.">+ Add another machine</button>
   `;
   // CRITICAL: clear the `hidden` attribute that earlier render calls set
   // (e.g. when clone mode was active, when the project had no machines,
@@ -8460,7 +6690,7 @@ function renderMachineSubTabs() {
 function wireMachineSubTabButtons() {
   const bar = document.getElementById('machine-tab-bar');
   if (!bar) return;
-  // "All" — clear the subset.
+  // "All" ΓÇö clear the subset.
   const allBtn = bar.querySelector('[data-machine-all]');
   if (allBtn) {
     allBtn.addEventListener('click', () => {
@@ -8469,7 +6699,7 @@ function wireMachineSubTabButtons() {
       render();
     });
   }
-  // Per-machine pill — clicks ALWAYS toggle membership in the subset.
+  // Per-machine pill ΓÇö clicks ALWAYS toggle membership in the subset.
   // (No shift-modifier needed.) So clicking M1 then M2 shows both
   // together; clicking M2 again removes it; if the subset goes empty
   // the "All" pill lights up.
@@ -8484,7 +6714,7 @@ function wireMachineSubTabButtons() {
       saveMachinesSubset();
       render();
     });
-    // Right-click → context menu with all SDC color options inline +
+    // Right-click ΓåÆ context menu with all SDC color options inline +
     // delete at the bottom. One click to change color, no submenu.
     btn.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -8517,7 +6747,7 @@ function wireMachineSubTabButtons() {
       showContextMenu(e.clientX, e.clientY, items);
     });
   });
-  // + Add another machine — single entry point. Cloning flow.
+  // + Add another machine ΓÇö single entry point. Cloning flow.
   const addBtn = bar.querySelector('#btn-add-machine');
   if (addBtn) {
     addBtn.addEventListener('click', () => openAddMachineDialog());
@@ -8548,7 +6778,7 @@ async function deleteMachineFromProject(project, machine) {
       saveMachinesSubset();
     }
     await loadTasks();
-    showToast(`Deleted machine "${machine}" — removed ${body?.deleted ?? taskCount} tasks.`, { kind: 'success' });
+    showToast(`Deleted machine "${machine}" ΓÇö removed ${body?.deleted ?? taskCount} tasks.`, { kind: 'success' });
   } catch (err) {
     showToast('Failed to delete machine: ' + (err.message || err), { kind: 'error' });
   }
@@ -8567,10 +6797,10 @@ function isPerMachineTask(task) {
 }
 
 // Auto-tag every untagged task in a project as the given machine. Used
-// when the project doesn't have machines yet — clicking "+ Add another
+// when the project doesn't have machines yet ΓÇö clicking "+ Add another
 // machine" silently converts the entire project to M1 first, then opens
 // the M2 clone dialog. M1 represents the WHOLE first machine (PO,
-// Design, Build, FAT, Ship — all of it); M2 is the SUBSET the user
+// Design, Build, FAT, Ship ΓÇö all of it); M2 is the SUBSET the user
 // explicitly picks for duplication.
 async function autoTagAsM1(project, machineName) {
   const candidates = (state.tasks || [])
@@ -8580,7 +6810,7 @@ async function autoTagAsM1(project, machineName) {
 }
 
 // Add-machine flow. Clicking + Add machine on a project ALWAYS means
-// "add the next machine" — never the first one. If the project has no
+// "add the next machine" ΓÇö never the first one. If the project has no
 // machines yet, we silently auto-tag the existing work as M1 first. Then
 // the user enters CLONE MODE: the schedule stays in place, but each row
 // from the source machine gets two checkboxes (Include / Connect to M1)
@@ -8609,7 +6839,7 @@ async function openAddMachineDialog() {
 
 function enterMachineCloneMode(sourceMachine, targetName) {
   // Start with NOTHING selected. The user clicks each row they want to
-  // duplicate into the new machine — typically just the build/wire/test
+  // duplicate into the new machine ΓÇö typically just the build/wire/test
   // work specific to a second physical machine, not the shared PO /
   // design / mech-release rows. Double-click a selected row to set a
   // custom predecessor (e.g. "wait for M1's Build to finish first").
@@ -8648,8 +6878,8 @@ function renderMachineCloneBanner() {
       Name
       <input type="text" id="mcb-name" value="${escapeHtml(cm.targetName)}" maxlength="20" />
     </label>
-    <span class="mcb-hint">Click each row you want in the new machine · double-click to set a custom predecessor</span>
-    <span class="mcb-status">${includeCount} selected${predCount ? ` · ${predCount} custom pred` : ''}</span>
+    <span class="mcb-hint">Click each row you want in the new machine ┬╖ double-click to set a custom predecessor</span>
+    <span class="mcb-status">${includeCount} selected${predCount ? ` ┬╖ ${predCount} custom pred` : ''}</span>
     <button type="button" class="mcb-btn" id="mcb-cancel">Cancel</button>
     <button type="button" class="mcb-btn mcb-btn-confirm" id="mcb-confirm">Complete</button>
   `;
@@ -8668,7 +6898,7 @@ async function confirmMachineClone() {
   if (cm.includeIds.size === 0) { showToast('Pick at least one line to include.', { kind: 'error' }); return; }
   // customPredecessors is a Map<id, string> the user typed referencing
   // source-machine LINE NUMBERS (what they see on screen). Convert each
-  // string from line-number form → task-ID form via predParse so the
+  // string from line-number form ΓåÆ task-ID form via predParse so the
   // server stores stable IDs. Empty strings explicitly clear the pred.
   const customPredsObj = {};
   for (const [id, raw] of cm.customPredecessors.entries()) {
@@ -8710,7 +6940,7 @@ async function confirmMachineClone() {
   const clonedCount = Number(result?.cloned) || 0;
   if (clonedCount === 0) {
     showToast(`Server reported no tasks cloned. Response: ${JSON.stringify(result)}`, { kind: 'error', duration: 8000 });
-    // Don't exit clone mode — let the user retry / cancel.
+    // Don't exit clone mode ΓÇö let the user retry / cancel.
     return;
   }
   try {
@@ -8767,7 +6997,7 @@ const MACHINE_PALETTE = [
   { name: 'Rose',            hex: '#e11d48', text: '#ffffff' },
 ];
 // Default cycle assignment when a machine doesn't have a user-chosen
-// color. M1→SDC Blue, M2→SDC Yellow, M3→SDC Green, etc.
+// color. M1ΓåÆSDC Blue, M2ΓåÆSDC Yellow, M3ΓåÆSDC Green, etc.
 function defaultMachineColor(machine) {
   if (!machine) return MACHINE_PALETTE[0];
   const m = String(machine).match(/^M(\d+)$/i);
@@ -8791,7 +7021,7 @@ function pickContrastText(hex) {
   const r = parseInt(h.slice(0, 2), 16);
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
-  // YIQ luminance — bright background → dark text.
+  // YIQ luminance ΓÇö bright background ΓåÆ dark text.
   const yiq = (r * 299 + g * 587 + b * 114) / 1000;
   return yiq >= 160 ? '#0f172a' : '#ffffff';
 }
@@ -8833,10 +7063,10 @@ function openMachineColorPicker(x, y, project, machine) {
   pop.innerHTML = `
     <div class="mcp-header">
       <span class="mcp-title">${escapeHtml(machine)} color</span>
-      <button type="button" class="mcp-close" aria-label="Close">×</button>
+      <button type="button" class="mcp-close" aria-label="Close">├ù</button>
     </div>
     <div class="mcp-swatches">${swatches}</div>
-    <button type="button" class="mcp-reset" title="Use the default cycle color">↺ Reset to default</button>
+    <button type="button" class="mcp-reset" title="Use the default cycle color">Γå║ Reset to default</button>
   `;
   document.body.appendChild(pop);
   // Anchor & clamp
@@ -8880,7 +7110,7 @@ function showProjectTabMenu(x, y, project) {
   //    openAddMachineDialog handles the no-machines case internally
   //    (auto-tags existing per-machine work as M1 + opens M2 clone).
   items.push({
-    label: '🔧 + Add another machine',
+    label: '≡ƒöº + Add another machine',
     primary: true,
     onClick: () => {
       state.filters.project = project;
@@ -8889,16 +7119,16 @@ function showProjectTabMenu(x, y, project) {
     },
   });
   items.push({ separator: true });
-  // 2) Project basics — no other entry points for these.
-  items.push({ label: 'Rename project…',                    onClick: () => renameProject(project) });
-  items.push({ label: 'Duplicate to new project…',          onClick: () => duplicateProject(project) });
-  items.push({ label: 'Merge another project into this…',   onClick: () => mergeAnotherProjectInto(project, x, y) });
-  items.push({ label: isTemplate ? 'Unmark as template' : 'Mark as template ★', onClick: () => toggleTemplate(project) });
-  // 3) Destructive — only on non-template tabs.
+  // 2) Project basics ΓÇö no other entry points for these.
+  items.push({ label: 'Rename projectΓÇª',                    onClick: () => renameProject(project) });
+  items.push({ label: 'Duplicate to new projectΓÇª',          onClick: () => duplicateProject(project) });
+  items.push({ label: 'Merge another project into thisΓÇª',   onClick: () => mergeAnotherProjectInto(project, x, y) });
+  items.push({ label: isTemplate ? 'Unmark as template' : 'Mark as template Γÿà', onClick: () => toggleTemplate(project) });
+  // 3) Destructive ΓÇö only on non-template tabs.
   if (!isTemplate) {
     items.push({ separator: true });
     items.push({ label: 'Close tab',                          onClick: () => closeProjectTab(project) });
-    items.push({ label: 'Delete project (and all its tasks)…', danger: true, onClick: () => deleteProject(project) });
+    items.push({ label: 'Delete project (and all its tasks)ΓÇª', danger: true, onClick: () => deleteProject(project) });
   }
   showContextMenu(x, y, items);
 }
@@ -8913,7 +7143,7 @@ async function deleteProject(project) {
   if (!project) return;
   const tasks = state.tasks.filter(t => t.project === project);
   if (tasks.length === 0) return; // nothing to delete; silent
-  // No confirmation popup — right-click → Delete is already 2 intentional clicks.
+  // No confirmation popup ΓÇö right-click ΓåÆ Delete is already 2 intentional clicks.
   // User explicitly requested this.
   // Bypass the anchor-protection in the regular DELETE handler by clearing
   // anchor_key first on those rows.
@@ -8935,7 +7165,7 @@ async function deleteProject(project) {
 }
 
 // Pull every task from another project into THIS one. Used to fold a stray project
-// into a canonical home — e.g. when the All-projects orphan-save split data across
+// into a canonical home ΓÇö e.g. when the All-projects orphan-save split data across
 // "Job 2026-014" and "SDC_Template" and you just want everything under one name.
 function mergeAnotherProjectInto(target, anchorX, anchorY) {
   if (!target) return;
@@ -8972,7 +7202,7 @@ async function doMergeProjects(source, target) {
   await loadTasks();
 }
 
-// Rename every task tagged with `oldName` to a new project name. In-place — same task
+// Rename every task tagged with `oldName` to a new project name. In-place ΓÇö same task
 // IDs, same dates, same predecessors. Open tab and template flag carry over to the
 // new name. Useful when a project that started life as one name (e.g. Job 2026-014)
 // turns into the template you keep around.
@@ -9050,7 +7280,7 @@ function convertOrphansToProject() {
   pop.style.top  = (r.bottom + 4) + 'px';
   pop.style.width = POPUP_W + 'px';
   const mergeRows = existing.length === 0
-    ? '<div class="picker-empty">No projects yet — create one below.</div>'
+    ? '<div class="picker-empty">No projects yet ΓÇö create one below.</div>'
     : existing.map(p => {
         const n = state.tasks.filter(t => t.project === p).length;
         return `<button class="picker-row" data-action="merge" data-project="${escapeHtml(p)}" type="button">
@@ -9138,7 +7368,7 @@ function saveAllAsOneProject() {
   pop.style.width = POPUP_W + 'px';
   const total = state.tasks.length;
   const mergeRows = existing.length === 0
-    ? '<div class="picker-empty">No existing projects — create a new one below.</div>'
+    ? '<div class="picker-empty">No existing projects ΓÇö create a new one below.</div>'
     : existing.map(p => {
         const n = state.tasks.filter(t => t.project === p).length;
         return `<button class="picker-row" data-action="merge" data-project="${escapeHtml(p)}" type="button">
@@ -9212,7 +7442,7 @@ async function promptCreateNewOrphanProject(orphans) {
 }
 
 // Clone every task in `source` into a brand-new project name. INCLUDES the anchor
-// milestones (Receipt of PO / FAT / Ship Machine) — they're project-spine markers
+// milestones (Receipt of PO / FAT / Ship Machine) ΓÇö they're project-spine markers
 // and a duplicate without them is missing the structural backbone the schedule is
 // built on. Predecessor IDs are remapped to the new task IDs so the dependency
 // graph survives. Assignees are left blank in the copy: a duplicate with real
@@ -9246,7 +7476,7 @@ async function duplicateProject(source, targetName = null) {
       phase_group: t.phase_group || null,
       department: t.department || null,
       sub_department: t.sub_department || null,
-      // Placeholders carry through (they're role markers — that's the whole point of
+      // Placeholders carry through (they're role markers ΓÇö that's the whole point of
       // a template). Real-person assignees get blanked so the new project isn't
        // pre-staffed and over-allocation isn't tripped by ghost double-booking.
       assignee: isPlaceholder(t.assignee) ? t.assignee : null,
@@ -9281,7 +7511,7 @@ async function duplicateProject(source, targetName = null) {
   if (!state.openProjects.includes(trimmed)) state.openProjects.push(trimmed);
   state.filters.project = trimmed;
   saveProjectTabs();
-  // loadTasks runs ensureAnchorsForProject — it'll see the cloned anchors and skip
+  // loadTasks runs ensureAnchorsForProject ΓÇö it'll see the cloned anchors and skip
   // creating duplicates, so the clone keeps the source's anchor dates / predecessors.
   await loadTasks();
 }
@@ -9308,8 +7538,8 @@ function showProjectAddPicker() {
   pop.style.top = (r.bottom + 4) + 'px';
   pop.style.width = POPUP_W + 'px';
   // Group projects by workspace (Active / Sales / Closed). Templates appear
-  // within their workspace's group (marked with ★), pinned to the top of
-  // that group — no separate "Templates" group, since templates per workspace
+  // within their workspace's group (marked with Γÿà), pinned to the top of
+  // that group ΓÇö no separate "Templates" group, since templates per workspace
   // is the new mental model (each workspace can have its own template).
   // Projects without an explicit workspace fall back to "Active".
   const byWs = Object.fromEntries(WORKSPACES.map(ws => [ws, []]));
@@ -9325,7 +7555,7 @@ function showProjectAddPicker() {
   }
   const rowHtml = (p) => {
     const isOpen = openSet.has(p);
-    const star = isTemplateProject(p) ? '<span class="picker-row-star" title="Template — protected">★</span>' : '';
+    const star = isTemplateProject(p) ? '<span class="picker-row-star" title="Template ΓÇö protected">Γÿà</span>' : '';
     return `<button class="picker-row${isOpen ? ' is-open' : ''}" data-project="${escapeHtml(p)}" type="button">${star}${escapeHtml(p)}${isOpen ? '<span class="picker-row-badge">open</span>' : ''}</button>`;
   };
   const sectionHtml = (title, projects, hint = '') => projects.length === 0 ? '' :
@@ -9334,21 +7564,21 @@ function showProjectAddPicker() {
 
   pop.innerHTML = `
     ${all.length === 0 ? '<div class="picker-empty">No projects yet.</div>' : ''}
-    ${sectionHtml('Active', byWs.Active, '(★ = template; right-click a tab to move / delete)')}
+    ${sectionHtml('Active', byWs.Active, '(Γÿà = template; right-click a tab to move / delete)')}
     ${sectionHtml('Sales', byWs.Sales)}
     ${sectionHtml('Closed', byWs.Closed)}
     <div class="picker-divider"></div>
     <div class="picker-section-title">Or start a new schedule</div>
     <div class="picker-new-row">
-      <input type="text" class="picker-new-input" placeholder="e.g. Job 2026-015 — Sample Project" />
+      <input type="text" class="picker-new-input" placeholder="e.g. Job 2026-015 ΓÇö Sample Project" />
       <button class="btn-primary picker-new-btn" type="button">Open</button>
     </div>
     <div class="picker-divider"></div>
-    <div class="picker-section-title">Or build from a template ★</div>
+    <div class="picker-section-title">Or build from a template Γÿà</div>
     <div class="picker-new-row picker-template-row">
-      <input type="text" class="picker-template-name" placeholder="New schedule name…" />
+      <input type="text" class="picker-template-name" placeholder="New schedule nameΓÇª" />
       <select class="picker-template-source">
-        <option value="" disabled selected>Pick a template…</option>
+        <option value="" disabled selected>Pick a templateΓÇª</option>
       </select>
       <button class="btn-primary picker-template-btn" type="button" disabled>Build</button>
     </div>
@@ -9357,7 +7587,7 @@ function showProjectAddPicker() {
     <div class="picker-section-title">Or build a schedule from an SDC estimate sheet (.xlsx)</div>
     <div class="picker-new-row picker-estimate-row">
       <input type="file" class="picker-estimate-file" accept=".xlsx" />
-      <button class="btn-primary picker-estimate-btn" type="button" disabled>Analyze →</button>
+      <button class="btn-primary picker-estimate-btn" type="button" disabled>Analyze ΓåÆ</button>
     </div>
     <div class="picker-estimate-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Pulls hours from "SUMMARY FOR RELEASE", then asks for a PO date + quoted FAT date to lay out a schedule from the SDC_Template.</div>
     <div class="picker-divider"></div>
@@ -9367,7 +7597,7 @@ function showProjectAddPicker() {
       <input type="file" class="picker-import-file" accept=".xlsx" multiple />
       <button class="btn-primary picker-import-btn" type="button" disabled>Import</button>
     </div>
-    <div class="picker-import-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Tip: pick multiple .xlsx files at once to bulk-import — each file becomes a project named after its filename.</div>
+    <div class="picker-import-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Tip: pick multiple .xlsx files at once to bulk-import ΓÇö each file becomes a project named after its filename.</div>
     <div class="picker-import-status" id="picker-import-status"></div>`;
   document.body.appendChild(pop);
   pop.querySelectorAll('.picker-row').forEach(row => {
@@ -9423,11 +7653,11 @@ function showProjectAddPicker() {
 
   // ---- Build from template ----------------------------------------------
   // Populate the template dropdown with every project marked as a template
-  // (★ in the project tab right-click menu → "Mark as template"). The user
-  // can have any number of templates — e.g., "SDC_Template" for full project
+  // (Γÿà in the project tab right-click menu ΓåÆ "Mark as template"). The user
+  // can have any number of templates ΓÇö e.g., "SDC_Template" for full project
   // schedules and "SDC_Sales_Template" for simplified sales schedules.
   // Clicking Build clones the chosen template into the entered name via the
-  // existing duplicateProject() — same code path as the right-click → Duplicate.
+  // existing duplicateProject() ΓÇö same code path as the right-click ΓåÆ Duplicate.
   const tmplSelect = pop.querySelector('.picker-template-source');
   const tmplName   = pop.querySelector('.picker-template-name');
   const tmplBtn    = pop.querySelector('.picker-template-btn');
@@ -9435,11 +7665,11 @@ function showProjectAddPicker() {
   // picker grouping. Use a different name here to avoid the redeclaration.
   const tmplOptions = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t));
   if (tmplOptions.length === 0) {
-    tmplSelect.innerHTML = '<option value="" disabled selected>No templates yet — mark a project as template first.</option>';
+    tmplSelect.innerHTML = '<option value="" disabled selected>No templates yet ΓÇö mark a project as template first.</option>';
     tmplSelect.disabled = true;
     tmplName.disabled   = true;
   } else {
-    tmplSelect.innerHTML = '<option value="" disabled selected>Pick a template…</option>'
+    tmplSelect.innerHTML = '<option value="" disabled selected>Pick a templateΓÇª</option>'
       + tmplOptions.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
   }
   const refreshTmplBtn = () => {
@@ -9462,7 +7692,7 @@ function showProjectAddPicker() {
   tmplName.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !tmplBtn.disabled) { e.preventDefault(); buildFromTemplate(); } });
 
   // ---- Smartsheet (Excel) import ----------------------------------------
-  // The user picks an .xlsx (exported from Smartsheet → File → Export → Excel).
+  // The user picks an .xlsx (exported from Smartsheet ΓåÆ File ΓåÆ Export ΓåÆ Excel).
   // We auto-fill the project name from the file's basename, then POST the file
   // (base64) to /api/import/smartsheet. The server parses it and creates a new
   // project with all the tasks + auto-adds new team members.
@@ -9470,20 +7700,20 @@ function showProjectAddPicker() {
   const importFileEl = pop.querySelector('.picker-import-file');
   const importBtnEl  = pop.querySelector('.picker-import-btn');
   const importStatus = pop.querySelector('#picker-import-status');
-  let pickedFiles = []; // array — supports single or bulk import
+  let pickedFiles = []; // array ΓÇö supports single or bulk import
   // Project name derived from a filename: strip ".xlsx" extension.
   const nameFromFile = (f) => f.name.replace(/\.xlsx$/i, '');
   importFileEl.addEventListener('change', () => {
     pickedFiles = Array.from(importFileEl.files || []);
     importBtnEl.disabled = pickedFiles.length === 0;
     if (pickedFiles.length === 1) {
-      // Single file — name input is editable, seeded from filename.
+      // Single file ΓÇö name input is editable, seeded from filename.
       importNameEl.disabled = false;
       if (!importNameEl.value.trim()) importNameEl.value = nameFromFile(pickedFiles[0]);
     } else if (pickedFiles.length > 1) {
-      // Bulk — name input is ignored, each project is named after its file.
+      // Bulk ΓÇö name input is ignored, each project is named after its file.
       importNameEl.disabled = true;
-      importNameEl.value = `(bulk: ${pickedFiles.length} files — names from filenames)`;
+      importNameEl.value = `(bulk: ${pickedFiles.length} files ΓÇö names from filenames)`;
     }
   });
   const importOne = async (file, projectName) => {
@@ -9505,9 +7735,9 @@ function showProjectAddPicker() {
     if (pickedFiles.length === 1) {
       const projectName = importNameEl.value.trim();
       if (!projectName) { importStatus.textContent = 'Enter a project name first.'; importBtnEl.disabled = false; return; }
-      importStatus.textContent = 'Reading file…';
+      importStatus.textContent = 'Reading fileΓÇª';
       try {
-        importStatus.textContent = 'Uploading & parsing…';
+        importStatus.textContent = 'Uploading & parsingΓÇª';
         const { ok, result } = await importOne(pickedFiles[0], projectName);
         if (!ok) { importStatus.textContent = `Import failed: ${result.error || 'unknown error'}`; importBtnEl.disabled = false; return; }
         if (!state.openProjects.includes(result.project)) state.openProjects.push(result.project);
@@ -9527,7 +7757,7 @@ function showProjectAddPicker() {
       return;
     }
 
-    // Bulk path — sequential so we don't hammer the server and so errors are easy
+    // Bulk path ΓÇö sequential so we don't hammer the server and so errors are easy
     // to attribute to a single file. Each file gets its own project; failures don't
     // block the rest. Summary alert at the end lists what worked and what didn't.
     const successes = [];
@@ -9536,7 +7766,7 @@ function showProjectAddPicker() {
     for (let i = 0; i < pickedFiles.length; i++) {
       const f = pickedFiles[i];
       const projectName = nameFromFile(f);
-      importStatus.textContent = `Importing ${i + 1}/${pickedFiles.length}: ${projectName}…`;
+      importStatus.textContent = `Importing ${i + 1}/${pickedFiles.length}: ${projectName}ΓÇª`;
       try {
         const { ok, result } = await importOne(f, projectName);
         if (ok) {
@@ -9561,14 +7791,14 @@ function showProjectAddPicker() {
     pop.remove();
     const lines = [];
     lines.push(`Imported ${successes.length}/${pickedFiles.length} files.`);
-    if (successes.length) lines.push('', 'Created:', ...successes.map(s => `  • ${s.project} (${s.tasks} tasks)`));
-    if (failures.length)  lines.push('', 'Failed:',  ...failures .map(f => `  • ${f.project}: ${f.error}`));
+    if (successes.length) lines.push('', 'Created:', ...successes.map(s => `  ΓÇó ${s.project} (${s.tasks} tasks)`));
+    if (failures.length)  lines.push('', 'Failed:',  ...failures .map(f => `  ΓÇó ${f.project}: ${f.error}`));
     if (newMembers.size)  lines.push('', `New team members added: ${[...newMembers].join(', ')}`);
     alert(lines.join('\n'));
   };
   importBtnEl.addEventListener('click', runImport);
 
-  // ---- Estimate sheet → new schedule from SDC_Template ---------------------
+  // ---- Estimate sheet ΓåÆ new schedule from SDC_Template ---------------------
   // Two-step flow: (1) user picks an estimate xlsx and clicks Analyze, which
   // parses the workbook and opens a feasibility modal showing hours per
   // discipline + recommended headcount; (2) user enters PO date + FAT date in
@@ -9635,8 +7865,8 @@ function showEstimateFeasibilityModal(parsed) {
 
   // Break out the raw estimate columns into per-TASK hours so the user can edit
   // each bucket independently. Defaults for split columns:
-  //   ce_design column → Controls Design (50%) + Controls Drawings (50%)
-  //   elec_build column → Wire Panel (25%) + Wire Machine (75%)
+  //   ce_design column ΓåÆ Controls Design (50%) + Controls Drawings (50%)
+  //   elec_build column ΓåÆ Wire Panel (25%) + Wire Machine (75%)
   // Section 40 has its own column structure (testing engineers only); we keep
   // ce_des as the combined debug bucket and let drawings/software be 0 there.
   const r10 = parsed.hours_per_section.section_10 || {};
@@ -9655,7 +7885,7 @@ function showEstimateFeasibilityModal(parsed) {
     wire_panel:   Math.round(safe(s.elec_build) * 0.25),
     wire_machine: safe(s.elec_build) - Math.round(safe(s.elec_build) * 0.25),
   });
-  // `hours` is the editable model — user can mutate any cell in the grid below.
+  // `hours` is the editable model ΓÇö user can mutate any cell in the grid below.
   const hours = {
     section_10: buildSection(r10),
     section_40: buildSection(r40),
@@ -9674,7 +7904,7 @@ function showEstimateFeasibilityModal(parsed) {
   //   Test/Debug 1 + 2 share the remaining 95% (run in parallel).
   //   Shop Debug duration = engineering debug duration (parallel); headcount
   //     auto-scales with hours.
-  //   Mech 1 Release lands at the END of mech eng (latest possible) — only
+  //   Mech 1 Release lands at the END of mech eng (latest possible) ΓÇö only
   //     pulled earlier if needed to fit. If schedule has slack, mech eng
   //     STRETCHES (lower allocation) to push M1R later.
   //   Section 50 teardown + install fixed at 1 week each.
@@ -9698,7 +7928,7 @@ function showEstimateFeasibilityModal(parsed) {
     },
     section_40: {
       // Section 40 testing engineering = mech + controls debug (Design column
-      // here represents debug hours, not split design/drawings — but we treat
+      // here represents debug hours, not split design/drawings ΓÇö but we treat
       // ce_des + ce_drw as the testing-engineer hours).
       testing:      hours.section_40.mech + hours.section_40.ce_des + hours.section_40.ce_drw + hours.section_40.ce_sw,
       shop_debug:   hours.section_40.build + hours.section_40.wire_panel + hours.section_40.wire_machine,
@@ -9738,7 +7968,7 @@ function showEstimateFeasibilityModal(parsed) {
     const shopDebugCount = debugWeeks > 0 ? Math.max(1, Math.ceil(shopDebugHrs / (debugWeeks * 40 * eff))) : 1;
 
     // Total min span (everything at minimum durations). Add a 2-week template
-    // overhead allowance because the SDC_Template wires Build → 2-week-gap →
+    // overhead allowance because the SDC_Template wires Build ΓåÆ 2-week-gap ΓåÆ
     // Wire Machine sequentially (procurement lag between panel and machine).
     // Plus 1 week handoff buffers between phases. Without this, the math
     // underestimates the real cascade span and "fits" projects that actually
@@ -9755,7 +7985,7 @@ function showEstimateFeasibilityModal(parsed) {
     const fatWeek        = testStartWeek + testDur;
     const m1rWeek        = mechStretched;
 
-    // Section 50 (post-FAT) — sized by 1-week rule, headcount = hrs / week.
+    // Section 50 (post-FAT) ΓÇö sized by 1-week rule, headcount = hrs / week.
     const teardownPeopleNeeded = peopleNeededInOneWeek(t.section_50.teardown, eff);
     const installPeopleNeeded  = peopleNeededInOneWeek(t.section_50.install + t.section_50.teardown, eff);
 
@@ -9809,13 +8039,13 @@ function showEstimateFeasibilityModal(parsed) {
     <div class="modal-card" style="max-width: 1080px;">
       <div class="modal-head">
         <h2 style="margin: 0;">New schedule from estimate</h2>
-        <button class="modal-close" type="button">×</button>
+        <button class="modal-close" type="button">├ù</button>
       </div>
       <div class="modal-body">
         <div class="est-meta">
-          <div><span class="est-meta-label">Quote</span> <strong>${escapeHtml(parsed.quote_number || '—')}</strong></div>
-          <div><span class="est-meta-label">Customer</span> <strong>${escapeHtml(parsed.customer || '—')}</strong></div>
-          <div><span class="est-meta-label">Machine</span> <strong>${escapeHtml(parsed.machine_title || '—')}</strong></div>
+          <div><span class="est-meta-label">Quote</span> <strong>${escapeHtml(parsed.quote_number || 'ΓÇö')}</strong></div>
+          <div><span class="est-meta-label">Customer</span> <strong>${escapeHtml(parsed.customer || 'ΓÇö')}</strong></div>
+          <div><span class="est-meta-label">Machine</span> <strong>${escapeHtml(parsed.machine_title || 'ΓÇö')}</strong></div>
         </div>
 
         <div class="est-form">
@@ -9829,17 +8059,17 @@ function showEstimateFeasibilityModal(parsed) {
             <input type="number" id="est-delivery-weeks" min="1" max="200" step="1" value="30" />
           </label>
           <label>Backlog (weeks)
-            <input type="number" id="est-backlog-weeks" min="0" max="20" step="1" value="2" title="Time between Receipt of PO and the start of engineering — accounts for handoff, kickoff, contract paperwork." />
+            <input type="number" id="est-backlog-weeks" min="0" max="20" step="1" value="2" title="Time between Receipt of PO and the start of engineering ΓÇö accounts for handoff, kickoff, contract paperwork." />
           </label>
           <label>Efficiency
             <span class="est-pct-wrap"><input type="number" id="est-efficiency" min="10" max="100" step="1" value="90" />%</span>
           </label>
           <label>Quoted FAT
-            <span class="est-readout" id="est-fat-readout">—</span>
+            <span class="est-readout" id="est-fat-readout">ΓÇö</span>
           </label>
         </div>
 
-        <h3 style="margin: 16px 0 6px;">Estimate hours — editable</h3>
+        <h3 style="margin: 16px 0 6px;">Estimate hours ΓÇö editable</h3>
         <p class="est-help" style="margin: 0 0 6px; font-size: 12px; color: #6b7280;">
           Mirrors the SUMMARY FOR RELEASE tab. Section 10's <strong>Design + Drawings</strong> cell splits into Design | Drawings (default 50/50). Section 10's <strong>Electrical Build</strong> splits into Panel | Machine (default 25/75). Click any value to edit.
         </p>
@@ -9882,7 +8112,7 @@ function showEstimateFeasibilityModal(parsed) {
 
         <h3 style="margin: 16px 0 6px;">Staffing</h3>
         <p class="est-help" style="margin: 0 0 6px; font-size: 12px; color: #6b7280;">
-          Edit people-per-role. Mech 1 Release pinned ${MECH_RELEASE_TO_BUILD_WEEKS} weeks before Build start. Section 40 always staffs 2 controls (lead + secondary). Section 50 teardown + install fixed at 1 week — more hours = more people.
+          Edit people-per-role. Mech 1 Release pinned ${MECH_RELEASE_TO_BUILD_WEEKS} weeks before Build start. Section 40 always staffs 2 controls (lead + secondary). Section 50 teardown + install fixed at 1 week ΓÇö more hours = more people.
         </p>
         <table class="est-staff-table">
           <thead>
@@ -9912,7 +8142,7 @@ function showEstimateFeasibilityModal(parsed) {
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
   // Mutable headcount the user can override. Seeded from suggestHeadcount on
-  // first render then locked unless the user clicks +/− or changes the delivery
+  // first render then locked unless the user clicks +/ΓêÆ or changes the delivery
   // weeks (which re-suggests).
   let userHeadcount = null;
   let userOverrode = false;
@@ -9991,7 +8221,7 @@ function showEstimateFeasibilityModal(parsed) {
         ${lumpCell  ('section_50', 'eb',    eb50,      'grp-eb')}
       </tr>`;
 
-    // Footer totals — single cell per column (sums Design+Drawings and Panel+Machine
+    // Footer totals ΓÇö single cell per column (sums Design+Drawings and Panel+Machine
     // because the SUMMARY tab shows them as one number).
     const total = (col) => sumCol(col);
     const totalCe  = total('ce_des') + total('ce_drw');
@@ -10031,7 +8261,7 @@ function showEstimateFeasibilityModal(parsed) {
         const sec = e.target.dataset.section;
         const v = Math.max(0, Number(e.target.value) || 0);
         if (e.target.classList.contains('est-hours-lump')) {
-          // Lump cell — distribute into the underlying split: ce → 50/50, eb → 25/75.
+          // Lump cell ΓÇö distribute into the underlying split: ce ΓåÆ 50/50, eb ΓåÆ 25/75.
           const kind = e.target.dataset.lump;
           if (kind === 'ce') {
             hours[sec].ce_des = Math.round(v * 0.5);
@@ -10050,7 +8280,7 @@ function showEstimateFeasibilityModal(parsed) {
     });
   };
 
-  // Staffing table rows — one per "role" that maps onto a placeholder in
+  // Staffing table rows ΓÇö one per "role" that maps onto a placeholder in
   // SDC_Template. Headcount is editable for Section 10 disciplines + Section
   // 50 teardown/install (since those scale headcount to fit a fixed week);
   // Section 40 controls is locked at 2 per user direction.
@@ -10058,16 +8288,16 @@ function showEstimateFeasibilityModal(parsed) {
     const body = document.getElementById('est-hc-body');
     const t = sectionTotals();
     const fmt = (n) => Math.round(n || 0).toLocaleString();
-    // Format weeks rounded UP to the nearest half — 9.7 → 10w, 3.9 → 4w,
-    // 5.3 → 5.5w, 5.7 → 6w. Matches the half-week duration grid the schedule
+    // Format weeks rounded UP to the nearest half ΓÇö 9.7 ΓåÆ 10w, 3.9 ΓåÆ 4w,
+    // 5.3 ΓåÆ 5.5w, 5.7 ΓåÆ 6w. Matches the half-week duration grid the schedule
     // generator uses everywhere else.
     const fmtW = (n) => {
-      if (!(n > 0)) return '—';
+      if (!(n > 0)) return 'ΓÇö';
       const halves = Math.ceil(n * 2) / 2;
       return halves + 'w';
     };
 
-    // Compact one-section staffing table — single column for total hours and
+    // Compact one-section staffing table ΓÇö single column for total hours and
     // editable People count. Locked rows (Section 40 debug at 2, Section 50
     // teardown/install auto from hours) show their value with no buttons.
     const rows = [
@@ -10087,7 +8317,7 @@ function showEstimateFeasibilityModal(parsed) {
         <td>${escapeHtml(r.label)}</td>
         <td class="num">${fmt(r.hrs)}</td>
         <td class="num">${r.editable
-          ? `<button type="button" class="est-hc-btn" data-action="dec">−</button> <span class="est-hc">${r.people}</span> <button type="button" class="est-hc-btn" data-action="inc">+</button>`
+          ? `<button type="button" class="est-hc-btn" data-action="dec">ΓêÆ</button> <span class="est-hc">${r.people}</span> <button type="button" class="est-hc-btn" data-action="inc">+</button>`
           : `<span class="est-hc-fixed">${r.peopleLabel || r.people}</span>`}</td>
         <td class="num">${fmtW(r.weeks)}</td>
       </tr>`).join('');
@@ -10107,7 +8337,7 @@ function showEstimateFeasibilityModal(parsed) {
     const po = document.getElementById('est-po-date').value;
     const deliveryWeeks = Math.max(1, Number(document.getElementById('est-delivery-weeks').value) || 30);
     const eff = Math.max(0.1, Math.min(1, (Number(document.getElementById('est-efficiency').value) || 90) / 100));
-    document.getElementById('est-fat-readout').textContent = computeFatDate(po, deliveryWeeks) || '—';
+    document.getElementById('est-fat-readout').textContent = computeFatDate(po, deliveryWeeks) || 'ΓÇö';
     if (!userHeadcount || !userOverrode) {
       userHeadcount = suggestHeadcount(deliveryWeeks, eff);
     }
@@ -10115,8 +8345,8 @@ function showEstimateFeasibilityModal(parsed) {
     renderHeadcountTable(cp, deliveryWeeks, eff);
     const m1rText = cp.m1rWeek > 0 ? `week ${cp.m1rWeek.toFixed(1)}` : 'BEFORE PO (infeasible)';
     const summary = cp.feasible
-      ? `<div style="font-size:12px;color:#166534;">✓ Fits ${deliveryWeeks} weeks at ${Math.round(eff*100)}% efficiency. <strong>Mech 1 Release at ${m1rText}</strong> · Build/Wire weeks ${cp.buildStartWeek.toFixed(1)}–${cp.buildEndWeek.toFixed(1)} · Testing weeks ${cp.testStartWeek.toFixed(1)}–${cp.fatWeek}.</div>`
-      : `<div style="font-size:12px;color:#b91c1c;">✗ Doesn't fit ${deliveryWeeks} weeks. Bump headcount or extend delivery.</div>`;
+      ? `<div style="font-size:12px;color:#166534;">Γ£ô Fits ${deliveryWeeks} weeks at ${Math.round(eff*100)}% efficiency. <strong>Mech 1 Release at ${m1rText}</strong> ┬╖ Build/Wire weeks ${cp.buildStartWeek.toFixed(1)}ΓÇô${cp.buildEndWeek.toFixed(1)} ┬╖ Testing weeks ${cp.testStartWeek.toFixed(1)}ΓÇô${cp.fatWeek}.</div>`
+      : `<div style="font-size:12px;color:#b91c1c;">Γ£ù Doesn't fit ${deliveryWeeks} weeks. Bump headcount or extend delivery.</div>`;
     document.getElementById('est-summary').innerHTML = summary;
   };
 
@@ -10138,7 +8368,7 @@ function showEstimateFeasibilityModal(parsed) {
     if (!po_date || !fat_date)     { await showAlertDialog('Pick a PO date and delivery weeks.'); return; }
     const btn = document.getElementById('est-create');
     btn.disabled = true;
-    btn.textContent = 'Creating…';
+    btn.textContent = 'CreatingΓÇª';
     try {
       // Convert the editable broken-out hours back into the column layout the
       // backend expects (mech_eng / ce_design / ce_software / gen_* / mech_build
@@ -10204,7 +8434,7 @@ function render() {
   renderMachineCloneBanner();
   renderFilters();
   // Keep the Baseline buttons' labels (Set/Reset) and disabled state aligned
-  // with the active project after every render — covers project-tab switches
+  // with the active project after every render ΓÇö covers project-tab switches
   // as well as data reloads.
   syncBaselineButtons();
   renderAssigneeFilterBanner();
@@ -10218,23 +8448,16 @@ function render() {
   } else if (state.view === 'team') {
     renderTeam();
   }
-  // Refresh the footer Financials button AFTER renderTable —
-  // renderTable populates taskIdByLine, which the financial row check
-  // needs to resolve line-number Triggers (e.g. "16" → task at line
-  // 16). The first call from renderProjectTabs above runs BEFORE
-  // taskIdByLine is rebuilt for the new project, so a line-number
-  // Trigger that should resolve fails and the button stays stuck red.
-  try { refreshFinancialsButtonState(); } catch (_) {}
 }
 
-function renderAssigneeFilterBanner() { /* removed — personal view is a simple list in the Actions tab */ }
+function renderAssigneeFilterBanner() { /* removed ΓÇö personal view is a simple list in the Actions tab */ }
 
 // Render the personal list when a person is signed in on the Actions tab.
 // Simple flat list grouped by section (10 DESIGN & BUILD / 40 MACHINE
 // TESTING / 50 TEARDOWN & INSTALL). Department / sub-department headers
-// are intentionally NOT shown — one person typically lives in one
+// are intentionally NOT shown ΓÇö one person typically lives in one
 // department, the breakdown adds noise. Empty sections are hidden.
-// Toolbar above the personal view — three buttons (Grid / Both / Gantt)
+// Toolbar above the personal view ΓÇö three buttons (Grid / Both / Gantt)
 // that swap which pane is visible. Mode persists in localStorage.
 function renderPersonalToolbar() {
   const bar = document.getElementById('actions-personal-toolbar');
@@ -10261,12 +8484,12 @@ function renderPersonalToolbar() {
     ${chipBtn('ahead',    'Ahead')}
     ${chipBtn('hideDone', 'Hide done')}
     <span class="apl-pane-label" style="margin-left:14px">Zoom:</span>
-    <button type="button" class="apl-pane-btn" data-zoom="out" ${zoomOutDisabled} title="Zoom out">−</button>
+    <button type="button" class="apl-pane-btn" data-zoom="out" ${zoomOutDisabled} title="Zoom out">ΓêÆ</button>
     <button type="button" class="apl-pane-btn" data-zoom="fit" title="Fit timeline to window">Fit</button>
     <button type="button" class="apl-pane-btn" data-zoom="in"  ${zoomInDisabled}  title="Zoom in">+</button>
     <span style="flex:1"></span>
     <span class="apl-title-name">${escapeHtml(member.name)}</span>
-    <button type="button" class="apl-clear" id="apl-clear-toolbar" title="Sign out">× Clear</button>
+    <button type="button" class="apl-clear" id="apl-clear-toolbar" title="Sign out">├ù Clear</button>
   `;
   bar.querySelectorAll('[data-pane]').forEach(b => {
     b.addEventListener('click', () => {
@@ -10304,7 +8527,7 @@ function renderPersonalToolbar() {
   bar.querySelectorAll('[data-zoom]').forEach(b => {
     b.addEventListener('click', () => {
       const action = b.dataset.zoom;
-      // setZoom is already personal-aware — it routes to renderActionsPersonGantt
+      // setZoom is already personal-aware ΓÇö it routes to renderActionsPersonGantt
       // when state.view === 'actions' && _actionsPageState.personId != null.
       if (action === 'in' || action === 'out') {
         const cur = zoomToFriendly(state.zoomPercent);
@@ -10380,7 +8603,7 @@ function renderPersonalAssignments() {
   // Sort within each bucket by start_date, then name.
   for (const k of Object.keys(buckets)) {
     buckets[k].sort((a, b) => {
-      const sa = (a.start_date || '￿').localeCompare(b.start_date || '￿');
+      const sa = (a.start_date || '∩┐┐').localeCompare(b.start_date || '∩┐┐');
       if (sa !== 0) return sa;
       return (a.name || '').localeCompare(b.name || '');
     });
@@ -10390,8 +8613,8 @@ function renderPersonalAssignments() {
     .filter(g => buckets[g.key] && buckets[g.key].length > 0)
     .map(g => {
       const rows = buckets[g.key].map(t => {
-        const dur = durationLabel(t) || '—';
-        const due = t.end_date ? fmtDate(t.end_date) : '—';
+        const dur = durationLabel(t) || 'ΓÇö';
+        const due = t.end_date ? fmtDate(t.end_date) : 'ΓÇö';
         const overdue = t.end_date && t.end_date < _today && (t.progress || 0) < 100;
         const done = (t.progress || 0) >= 100;
         const tagAction = t.is_action ? '<span class="apl-tag apl-tag-action">action</span>' : '';
@@ -10412,7 +8635,7 @@ function renderPersonalAssignments() {
 
   // Title row is now part of renderPersonalToolbar (name + clear button) so
   // the same controls show whether you're on Grid, Both, or Gantt view.
-  // Column header sits above the section rows — matches main grid layout
+  // Column header sits above the section rows ΓÇö matches main grid layout
   // semantics so the user knows what each column means.
   const headerHtml = `
     <div class="apl-col-header">
@@ -10425,12 +8648,12 @@ function renderPersonalAssignments() {
   setupPersonalRowCrossHighlight();
 }
 
-// ---------- New-task & delete (no modal — everything else is inline) ----------
+// ---------- New-task & delete (no modal ΓÇö everything else is inline) ----------
 function newTaskInline() {
   // All-projects view has no project context to attach a new task to. Bail with a
   // hint so the user knows to open / pick a real project first.
   if (!state.filters.project) {
-    alert('Pick a specific project tab first — new tasks attach to the active project. "All projects" is an aggregate view.');
+    alert('Pick a specific project tab first ΓÇö new tasks attach to the active project. "All projects" is an aggregate view.');
     return;
   }
   const btn = document.getElementById('btn-add');
@@ -10462,11 +8685,11 @@ function newTaskInline() {
 // `discipline` is the assignee-placeholder key (mech / controls / build /
 // wire / '' for none). For sections 40 and 50 where the HIERARCHY doesn't
 // carry sub-department detail, we still expose the discipline choice here
-// so a "40 · Engineering" action can be assigned specifically to a
-// Mechanical or Controls placeholder — not a generic Engineering one.
+// so a "40 ┬╖ Engineering" action can be assigned specifically to a
+// Mechanical or Controls placeholder ΓÇö not a generic Engineering one.
 function buildFunctionOptions(sectionKey) {
   if (sectionKey === 'design_build') {
-    // Section 10 — HIERARCHY already has discipline-level sub-departments,
+    // Section 10 ΓÇö HIERARCHY already has discipline-level sub-departments,
     // so each row is unique on its own.
     return [
       { g: 'design_build', d: 'engineering', s: 'mech',     discipline: 'mech',     label: 'Mechanical Eng' },
@@ -10478,26 +8701,26 @@ function buildFunctionOptions(sectionKey) {
     ];
   }
   if (sectionKey === 'machine_testing') {
-    // Section 40 — HIERARCHY has only Engineering / Shop. We expand each
+    // Section 40 ΓÇö HIERARCHY has only Engineering / Shop. We expand each
     // here into its constituent disciplines so the user can target the
     // right placeholder.
     return [
-      { g: 'machine_testing', d: 'engineering', s: null, discipline: 'mech',     label: 'Engineering · Mechanical' },
-      { g: 'machine_testing', d: 'engineering', s: null, discipline: 'controls', label: 'Engineering · Controls' },
-      { g: 'machine_testing', d: 'shop',        s: null, discipline: 'build',    label: 'Shop · Build' },
-      { g: 'machine_testing', d: 'shop',        s: null, discipline: 'wire',     label: 'Shop · Wire' },
+      { g: 'machine_testing', d: 'engineering', s: null, discipline: 'mech',     label: 'Engineering ┬╖ Mechanical' },
+      { g: 'machine_testing', d: 'engineering', s: null, discipline: 'controls', label: 'Engineering ┬╖ Controls' },
+      { g: 'machine_testing', d: 'shop',        s: null, discipline: 'build',    label: 'Shop ┬╖ Build' },
+      { g: 'machine_testing', d: 'shop',        s: null, discipline: 'wire',     label: 'Shop ┬╖ Wire' },
     ];
   }
   if (sectionKey === 'teardown_install') {
-    // Section 50 — Teardown is shop work (Build/Wire); Install splits
+    // Section 50 ΓÇö Teardown is shop work (Build/Wire); Install splits
     // Shop and Engineering, each with their own discipline pair.
     return [
-      { g: 'teardown_install', d: 'teardown', s: null,          discipline: 'build',    label: 'Teardown · Build' },
-      { g: 'teardown_install', d: 'teardown', s: null,          discipline: 'wire',     label: 'Teardown · Wire' },
-      { g: 'teardown_install', d: 'install',  s: 'shop',        discipline: 'build',    label: 'Install · Build' },
-      { g: 'teardown_install', d: 'install',  s: 'shop',        discipline: 'wire',     label: 'Install · Wire' },
-      { g: 'teardown_install', d: 'install',  s: 'engineering', discipline: 'mech',     label: 'Install · Mechanical' },
-      { g: 'teardown_install', d: 'install',  s: 'engineering', discipline: 'controls', label: 'Install · Controls' },
+      { g: 'teardown_install', d: 'teardown', s: null,          discipline: 'build',    label: 'Teardown ┬╖ Build' },
+      { g: 'teardown_install', d: 'teardown', s: null,          discipline: 'wire',     label: 'Teardown ┬╖ Wire' },
+      { g: 'teardown_install', d: 'install',  s: 'shop',        discipline: 'build',    label: 'Install ┬╖ Build' },
+      { g: 'teardown_install', d: 'install',  s: 'shop',        discipline: 'wire',     label: 'Install ┬╖ Wire' },
+      { g: 'teardown_install', d: 'install',  s: 'engineering', discipline: 'mech',     label: 'Install ┬╖ Mechanical' },
+      { g: 'teardown_install', d: 'install',  s: 'engineering', discipline: 'controls', label: 'Install ┬╖ Controls' },
     ];
   }
   return [];
@@ -10513,7 +8736,7 @@ function disciplineForSection(deptKey, subKey) {
   if (subKey === 'controls') return 'controls';
   if (subKey === 'build')    return 'build';
   if (subKey === 'wire')     return 'wire';
-  // General engineering (HMI / Robot / Vision crosses mech + controls) —
+  // General engineering (HMI / Robot / Vision crosses mech + controls) ΓÇö
   // default to controls since most general engineering work is software.
   if (subKey === 'general')  return 'controls';
   // Section 50 install sub-departments.
@@ -10536,7 +8759,7 @@ function placeholderNameForDiscipline(discKey) {
   return ph ? ph.name : null;
 }
 
-// v4.46: + Add action — same flow as newTaskInline but with is_action = 1
+// v4.46: + Add action ΓÇö same flow as newTaskInline but with is_action = 1
 // and milestone defaults (duration 0). If the user is currently in
 // 'schedule' actions-mode, the new action would be filtered out of view
 // after the save, so we auto-switch to 'combined' so they can see it.
@@ -10544,7 +8767,7 @@ function placeholderNameForDiscipline(discKey) {
 // can see + triage. User can still edit the assignee inline after creation.
 function newActionInline() {
   if (!state.filters.project) {
-    alert('Pick a specific project tab first — actions attach to the active project. "All projects" is an aggregate view.');
+    alert('Pick a specific project tab first ΓÇö actions attach to the active project. "All projects" is an aggregate view.');
     return;
   }
   const btn = document.getElementById('btn-add-action');
@@ -10601,9 +8824,9 @@ async function deleteTaskById(id) {
   await loadTasks();
 }
 
-// Right-click on a group header → "Add task here" creates a task directly in that
+// Right-click on a group header ΓåÆ "Add task here" creates a task directly in that
 // section (including phase-group level for cross-cutting tasks like Perform FAT).
-// Right-click on a task row → "Move to section…" or "Delete task".
+// Right-click on a task row ΓåÆ "Move to sectionΓÇª" or "Delete task".
 function handleRowContextMenu(e) {
   const headerTr = e.target.closest('tr.group-header');
   if (headerTr) {
@@ -10619,7 +8842,7 @@ function handleRowContextMenu(e) {
     const items = [
       { label: 'Add task here', onClick: () => createTaskInSection(g || null, d || null, s || null) },
     ];
-    // Phase-group header (level-1, no department) — make cross-cutting affordance explicit.
+    // Phase-group header (level-1, no department) ΓÇö make cross-cutting affordance explicit.
     if (g && !d) {
       items[0].label = 'Add cross-cutting task here';
     }
@@ -10633,13 +8856,13 @@ function handleRowContextMenu(e) {
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
   const items = [
-    { label: '＋ Add row below', onClick: () => createTaskBelow(id) },
+    { label: '∩╝ï Add row below', onClick: () => createTaskBelow(id) },
   ];
   if (task && !(task.is_milestone || inferredAnchorKey(task))) {
-    items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
+    items.push({ label: '∩╝ï Add additional resource', onClick: () => addAdditionalResource(id) });
   }
-  items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
-  // Copy to another machine — for filling in rows the user missed during
+  items.push({ label: 'Move to sectionΓÇª', onClick: () => moveTaskInline(id, cx, cy) });
+  // Copy to another machine ΓÇö for filling in rows the user missed during
   // the original clone (e.g. M1.FAT didn't get clicked into M2). Lists
   // every OTHER machine in the project as a target.
   if (task && task.project) {
@@ -10656,7 +8879,7 @@ function handleRowContextMenu(e) {
   }
   if (typeof openCommentPanel === 'function') {
     items.push({
-      label: '💬 Comments…',
+      label: '≡ƒÆ¼ CommentsΓÇª',
       onClick: () => {
         let taskName = `Task #${id}`;
         try {
@@ -10681,7 +8904,7 @@ function copyTaskToMachineInline(taskId, x, y, machines) {
     label: `Copy to ${m}`,
     onClick: async () => {
       // Clone the task into the target machine. Predecessor is BLANK on
-      // copy — the user explicitly wires it up in the new machine's
+      // copy ΓÇö the user explicitly wires it up in the new machine's
       // context (otherwise they inherit the source machine's chain and
       // the new row anchors to the wrong place).
       const payload = {
@@ -10715,8 +8938,8 @@ function copyTaskToMachineInline(taskId, x, y, machines) {
   showContextMenu(x, y, items);
 }
 
-// Inline machine picker — shows existing machines in the project + the
-// "Shared" option (null) + "New machine…" so the user can tag the row.
+// Inline machine picker ΓÇö shows existing machines in the project + the
+// "Shared" option (null) + "New machineΓÇª" so the user can tag the row.
 function setTaskMachineInline(taskId, x, y) {
   const task = state.tasks.find(t => t.id === taskId);
   if (!task) return;
@@ -10726,21 +8949,21 @@ function setTaskMachineInline(taskId, x, y) {
       .map(t => t.machine)
   )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   const items = [
-    { label: task.machine == null ? '✓ Shared' : 'Shared', onClick: async () => {
+    { label: task.machine == null ? 'Γ£ô Shared' : 'Shared', onClick: async () => {
       await api.update(taskId, { machine: null });
       await loadTasks();
     }},
   ];
   for (const m of existing) {
     items.push({
-      label: task.machine === m ? `✓ ${m}` : m,
+      label: task.machine === m ? `Γ£ô ${m}` : m,
       onClick: async () => {
         await api.update(taskId, { machine: m });
         await loadTasks();
       },
     });
   }
-  items.push({ label: 'New machine…', onClick: async () => {
+  items.push({ label: 'New machineΓÇª', onClick: async () => {
     const name = (prompt('Machine identifier (e.g. M2)') || '').trim();
     if (!name) return;
     await api.update(taskId, { machine: name });
@@ -10750,7 +8973,7 @@ function setTaskMachineInline(taskId, x, y) {
 }
 
 // Create a new row directly below the given task. Inherits section info
-// verbatim — phase_group, department, sub_department (including null
+// verbatim ΓÇö phase_group, department, sub_department (including null
 // for anchors and rows that live above section 10). sort_order is set
 // to clicked + 0.5 so the new row lands immediately below in the
 // rendered grid. Opens in name-edit mode so the user can type the name.
@@ -10765,7 +8988,7 @@ async function createTaskBelow(taskId) {
     phase_group: t.phase_group || null,
     department: t.department || null,
     sub_department: t.sub_department || null,
-    // Inherit machine tag too — adding a row below an M2 task should put
+    // Inherit machine tag too ΓÇö adding a row below an M2 task should put
     // the new row IN M2, not silently make it shared.
     machine: t.machine || null,
     sort_order: sortOrder,
@@ -10780,24 +9003,24 @@ async function createTaskBelow(taskId) {
   }
 }
 
-// Right-click → "Add additional resource". Duplicates a task row as the
+// Right-click ΓåÆ "Add additional resource". Duplicates a task row as the
 // next-numbered resource of the same kind:
-//   - "Builder 1"        → "Builder 2"
-//   - "Builder"          → "Builder 2"
-//   - "Mechanical Design 2" → "Mechanical Design 3"
+//   - "Builder 1"        ΓåÆ "Builder 2"
+//   - "Builder"          ΓåÆ "Builder 2"
+//   - "Mechanical Design 2" ΓåÆ "Mechanical Design 3"
 // New task inherits department / sub_department / phase_group, duration,
 // allocation, priority, dates, and lands right below the source in
 // sort_order. Predecessor is set to "<source_id>FF" so the new resource
 // finishes alongside the original (typical "extra body on the same work"
-// pattern). Assignee is intentionally blank — caller staffs the new line
+// pattern). Assignee is intentionally blank ΓÇö caller staffs the new line
 // from the dropdown.
 async function addAdditionalResource(sourceId) {
   const src = state.tasks.find(t => t.id === sourceId);
   if (!src) return;
   // Increment a trailing number, preserving the separator the user used. We
-  // recognize space, dash, or underscore before the number — so "Builder 1"
-  // → "Builder 2", "Machine Wiring-1" → "Machine Wiring-2",
-  // "Test_Engineer_3" → "Test_Engineer_4". If the name has no trailing
+  // recognize space, dash, or underscore before the number ΓÇö so "Builder 1"
+  // ΓåÆ "Builder 2", "Machine Wiring-1" ΓåÆ "Machine Wiring-2",
+  // "Test_Engineer_3" ΓåÆ "Test_Engineer_4". If the name has no trailing
   // number, append " 2".
   const TRAILING_NUM = /^(.*?)([\s\-_])(\d+)\s*$/;
   const m = String(src.name || '').match(TRAILING_NUM);
@@ -10898,7 +9121,7 @@ function showContextMenu(x, y, items) {
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
   for (const item of items) {
-    // Visual separator — a thin horizontal rule between menu groups.
+    // Visual separator ΓÇö a thin horizontal rule between menu groups.
     if (item && item.separator) {
       const hr = document.createElement('hr');
       hr.className = 'context-menu-sep';
@@ -10909,7 +9132,7 @@ function showContextMenu(x, y, items) {
     btn.type = 'button';
     if (item.danger) btn.classList.add('danger');
     if (item.primary) btn.classList.add('primary');
-    // Color swatch support — when item.swatch is set, render a colored
+    // Color swatch support ΓÇö when item.swatch is set, render a colored
     // square before the label. Used for the per-machine color menu so
     // the SDC palette can be picked inline (no submenu).
     if (item.swatch) {
@@ -10956,11 +9179,11 @@ function showToast(message, opts = {}) {
   const toast = document.createElement('div');
   toast.id = 'sdc-toast';
   toast.className = `sdc-toast sdc-toast-${kind}`;
-  const iconChar = kind === 'success' ? '✓' : kind === 'error' ? '⚠' : 'ℹ';
+  const iconChar = kind === 'success' ? 'Γ£ô' : kind === 'error' ? 'ΓÜá' : 'Γä╣';
   toast.innerHTML = `
     <span class="sdc-toast-icon">${iconChar}</span>
     <span class="sdc-toast-msg"></span>
-    <button type="button" class="sdc-toast-close" aria-label="Dismiss">×</button>
+    <button type="button" class="sdc-toast-close" aria-label="Dismiss">├ù</button>
   `;
   // textContent (not innerHTML) so the message can't inject markup.
   toast.querySelector('.sdc-toast-msg').textContent = message;
@@ -10975,7 +9198,7 @@ function showToast(message, opts = {}) {
 }
 
 // `confirm()` (which opens a centered browser-chrome dialog far from wherever
-// the user clicked — disorienting). Returns a Promise<boolean>: resolves true
+// the user clicked ΓÇö disorienting). Returns a Promise<boolean>: resolves true
 // if Confirm was clicked, false if Cancel or clicking outside.
 //
 // Usage:
@@ -11031,7 +9254,7 @@ function showConfirmAt(x, y, opts = {}) {
 
 // ---------- Financial milestones ----------
 // Per-project payment events (Down Payment, FAT acceptance, etc.). Independent from
-// tasks — no grid row, no predecessors — but they participate in the Gantt overlay
+// tasks ΓÇö no grid row, no predecessors ΓÇö but they participate in the Gantt overlay
 // when the $ Financial toolbar toggle is on. Auto-seeded from the
 // default_financial_milestones setting the first time the modal opens or the overlay
 // is enabled for a project that doesn't have any yet.
@@ -11039,72 +9262,6 @@ function showConfirmAt(x, y, opts = {}) {
 // Pull the financials for one project, seeding defaults first if the project has none.
 // Caches into state.financials[project] so multiple consumers (modal + overlay) share
 // the same array and re-renders just need a refreshFinancials() call.
-// Refresh the footer Financial Milestones button's red/white state +
-// tooltip for the currently-active project. Pulled out of
-// renderProjectTabs so financial saves (which touch
-// state.financials[project] but don't re-render the tab strip) can
-// trigger the re-evaluation directly. Previously every caller used a
-// `syncToolbarProjectAction()` name that didn't exist — the calls
-// were no-ops, so the button stayed red even after dates were saved.
-function refreshFinancialsButtonState() {
-  const finBtn = document.getElementById('btn-toolbar-financials');
-  if (!finBtn) return;
-  const project = state.filters && state.filters.project;
-  const onAllProjects = !project;
-  finBtn.disabled = onAllProjects;
-  if (onAllProjects) {
-    finBtn.classList.remove('needs-attention');
-    finBtn.title = 'Pick a project tab first — financial milestones are per-project.';
-    return;
-  }
-  // Cold-cache: trigger load. Re-call once it resolves to flip the
-  // colors after the fetch returns.
-  if (!state.financials[project]) {
-    loadFinancialsForProject(project).then(() => {
-      refreshFinancialsButtonState();
-    }).catch(() => {});
-  }
-  const fins = state.financials[project] || [];
-  // A row counts as filled when it has a date — either set manually
-  // (due_date) OR derived from a Trigger predecessor that resolves.
-  // The PO row typically has no predecessor (it IS the start of the
-  // schedule), which is fine as long as someone typed its date.
-  function _finRowHasDate(f) {
-    if (f.due_date) return true;
-    return !!computeFinancialTriggerDate(f.predecessors, project);
-  }
-  const missingRows = fins.filter(f => !_finRowHasDate(f));
-  const incomplete = fins.length === 0 || missingRows.length > 0;
-  finBtn.classList.toggle('needs-attention', incomplete);
-  if (!incomplete) {
-    finBtn.title = `Edit financial milestones for ${project}.`;
-  } else if (fins.length === 0) {
-    finBtn.title = `No financial milestones yet for ${project} — click to set them up.`;
-  } else {
-    const names = missingRows.map(r => r.name || '(unnamed)').join(', ');
-    finBtn.title = `Missing date: ${names}. Click to fix.`;
-  }
-}
-
-// Lazy-load the saved quote payload for a project, cache in
-// state.projectQuotes[project]. Returns null if the project has no
-// saved quote. Used by the stats popup to read sold_delivery_weeks
-// (manual override of the baseline-derived "quoted" duration).
-async function loadProjectQuote(project) {
-  if (!project) return null;
-  if (project in state.projectQuotes) return state.projectQuotes[project];
-  try {
-    const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
-    if (!r.ok) { state.projectQuotes[project] = null; return null; }
-    const data = await r.json();
-    state.projectQuotes[project] = data || null;
-    return data || null;
-  } catch (_) {
-    state.projectQuotes[project] = null;
-    return null;
-  }
-}
-
 async function loadFinancialsForProject(project) {
   if (!project) return [];
   let rows = await api.financials.list(project);
@@ -11113,7 +9270,7 @@ async function loadFinancialsForProject(project) {
     await api.financials.seed(project);
     rows = await api.financials.list(project);
   }
-  // Apply anchor-sync overrides — if a row points at an anchor (e.g. 'fat'), its
+  // Apply anchor-sync overrides ΓÇö if a row points at an anchor (e.g. 'fat'), its
   // due_date follows the predecessor's date for display. Edits to the row's date
   // still save, but the live value reflects the trigger each render.
   for (const r of rows) {
@@ -11129,7 +9286,7 @@ async function loadFinancialsForProject(project) {
 // the line vertically) and by date display (which needs only the date).
 // Accepts:
 //   - Anchor aliases: PO / Receipt of PO / Power-Up / Powerup / PU / FAT / Ship /
-//     Ship Machine — case-insensitive
+//     Ship Machine ΓÇö case-insensitive
 //   - Task line numbers: same syntax as task predecessors (5, 5FS, 5FF +1w, etc.)
 //   - Both can be combined with an optional FS/SS/FF/SF and lag: "FAT +1w"
 // Returns { task, date } or null if unresolvable.
@@ -11148,7 +9305,7 @@ function resolveFinancialTrigger(ref, project) {
     const n = Number(m[3].replace(/\s+/g, ''));
     lagDays = (m[4] || 'd').toLowerCase() === 'w' ? n * 5 : n;
   }
-  // Resolve prefix → task object on the same project.
+  // Resolve prefix ΓåÆ task object on the same project.
   let target = null;
   const aliases = {
     po: 'receipt_of_po',
@@ -11186,7 +9343,7 @@ function computeFinancialTriggerDate(ref, project) {
   return resolveFinancialTrigger(ref, project)?.date || null;
 }
 
-// Add `n` business days to an ISO date (Mon–Fri math, mirrors server.js). Returns
+// Add `n` business days to an ISO date (MonΓÇôFri math, mirrors server.js). Returns
 // ISO date string. Negative n walks backwards. n=0 is a no-op.
 function addBusinessDaysClient(dateStr, n) {
   if (!dateStr) return null;
@@ -11212,12 +9369,12 @@ async function loadFinancialsForAllOpenProjects() {
 // Centered modal popup for the per-project Financial Milestones editor. Same
 // editable table the inline panel was hosting, just in a modal so the user gets
 // a focused view instead of pushing the schedule grid down. Adding a new milestone
-// drops an empty row at the bottom of the table and focuses its Name cell — no
+// drops an empty row at the bottom of the table and focuses its Name cell ΓÇö no
 // blocking JS prompt at the top of the window.
 // Quote vs Schedule comparison. Fetches the persisted quote (saved when the
 // project was created from an estimate sheet) and compares it to the live
 // scheduled hours. If no quote was saved (older project, manual creation,
-// Smartsheet import), offers an in-modal "Load estimate file…" button so the
+// Smartsheet import), offers an in-modal "Load estimate fileΓÇª" button so the
 // user can pick the original xlsx and populate the comparison without
 // recreating the project.
 async function openQuoteCompareModal(project, providedQuote) {
@@ -11228,7 +9385,7 @@ async function openQuoteCompareModal(project, providedQuote) {
   document.getElementById('quote-compare-modal')?.remove();
 
   // Fetch the persisted quote unless one was passed in (e.g. from the
-  // "Load estimate file…" flow).
+  // "Load estimate fileΓÇª" flow).
   let quote = providedQuote || null;
   if (!quote) {
     try {
@@ -11238,7 +9395,7 @@ async function openQuoteCompareModal(project, providedQuote) {
   }
 
   // Walk the project's tasks and sum hours per task-bucket.
-  // Bucket map: task name → key (matches the buckets in /api/estimate/create).
+  // Bucket map: task name ΓåÆ key (matches the buckets in /api/estimate/create).
   const TASK_BUCKET = (t) => {
     // Strip a trailing " N", "-N", or "_N" before matching so duplicated
     // resources (e.g. "Wire Machine 2", "Builder-3", "Mechanical Design 2"
@@ -11247,25 +9404,25 @@ async function openQuoteCompareModal(project, providedQuote) {
     // sub-department fallback. Match against both raw name and base name.
     const raw = String(t.name || '').trim();
     const base = raw.replace(/[\s\-_]\d+\s*$/, '').trim();
-    // Test either form — covers schedules where the user typed names that
+    // Test either form ΓÇö covers schedules where the user typed names that
     // don't match the SDC_Template naming convention (e.g. "CE Design"
     // instead of "Controls Design", "Machine Wiring" vs "Wire Machine").
     const test = (re) => re.test(base) || re.test(raw);
     const pg = t.phase_group, d = t.department, sd = t.sub_department;
     if (test(/^configure machine/i))                return 'configure';
-    // Engineering Testing — catches "Test/Debug Engineer 1/2", "Test/Debug
-    // Machine", "Engineering Testing", "ME & CE Testing", etc. — anything
+    // Engineering Testing ΓÇö catches "Test/Debug Engineer 1/2", "Test/Debug
+    // Machine", "Engineering Testing", "ME & CE Testing", etc. ΓÇö anything
     // that's the testing-engineering phase regardless of how it's named
     // on the schedule.
     if (test(/^(engineering\s*testing|me\s*(&|and)\s*ce.*test)/i)) return 'test_debug';
     if (test(/test\/?debug.*(engineer|machine)/i))   return 'test_debug';
     if (pg === 'machine_testing' && d === 'engineering') return 'test_debug';
-    // Shop Testing — "Shop Debug" (detailed template), "Shop Testing"
+    // Shop Testing ΓÇö "Shop Debug" (detailed template), "Shop Testing"
     // (sales mode), "MB & EB Testing", anything in section_40 shop.
     if (test(/^(shop\s*debug|shop\s*testing)/i))    return 'shop_debug';
     if (test(/^mb\s*(&|and)\s*eb.*test/i))          return 'shop_debug';
     if (pg === 'machine_testing' && d === 'shop')   return 'shop_debug';
-    // Combined "Controls Engineering" — sales-mode single bar; tasks
+    // Combined "Controls Engineering" ΓÇö sales-mode single bar; tasks
     // named just "Controls Engineering" or "Controls Eng" route to a
     // single bucket. The detailed-mode keys (ce_software/design/drawings)
     // still take precedence above.
@@ -11277,16 +9434,16 @@ async function openQuoteCompareModal(project, providedQuote) {
     if (test(/^robot/i))                            return 'gen_robot';
     if (test(/^vision/i))                           return 'gen_vision';
     // Combined "Device Programming" / "General Machine Programming" /
-    // "General Engineering" — sales-mode single bar covering HMI +
+    // "General Engineering" ΓÇö sales-mode single bar covering HMI +
     // Robot + Vision + device work.
     if (test(/^(device|general)\s*(programming|engineering)|general machine programming/i)) return 'gen_engineering';
-    // Combined "Electrical Build" — sales-mode single bar covering
+    // Combined "Electrical Build" ΓÇö sales-mode single bar covering
     // both panel build and machine wiring.
     if (test(/^electrical\s*build/i))               return 'elec_build';
-    // Wire panel — both word orders ("Build and Wire Panel", "Wire Panel",
+    // Wire panel ΓÇö both word orders ("Build and Wire Panel", "Wire Panel",
     // "Panel Build", "Panel Wiring") roll into wire_panel.
     if (test(/wire[\s\-_]?panel|panel[\s\-_]?(build|wir)/i)) return 'wire_panel';
-    // Wire machine — both orders ("Wire Machine", "Machine Wiring") roll
+    // Wire machine ΓÇö both orders ("Wire Machine", "Machine Wiring") roll
     // into wire_machine.
     if (test(/wire[\s\-_]?machine|machine[\s\-_]?wir/i))    return 'wire_machine';
     // Build / Mechanical build / Builder / Build Machine
@@ -11302,11 +9459,11 @@ async function openQuoteCompareModal(project, providedQuote) {
     if (pg === 'teardown_install' && d === 'install')  return 'install';
     return null;
   };
-  // Per-bucket: scheduled hours + remaining hours (scheduled × (1 - progress/100)
+  // Per-bucket: scheduled hours + remaining hours (scheduled ├ù (1 - progress/100)
   // summed per task, so partial-completion across multiple tasks rolls up cleanly).
-  // basicScheduled = duration × 8 × alloc, BEFORE the people-count multiplier.
-  // The People # column in the modal multiplies basicScheduled[k] × people to
-  // get the actual labor demand — lets the user model "this phase has 2 people
+  // basicScheduled = duration ├ù 8 ├ù alloc, BEFORE the people-count multiplier.
+  // The People # column in the modal multiplies basicScheduled[k] ├ù people to
+  // get the actual labor demand ΓÇö lets the user model "this phase has 2 people
   // even though we only show 1 bar on the sales schedule."
   // bucketTaskIds[k] tracks which tasks contribute to each bucket so the
   // Weeks column can write durations back proportionally on edit.
@@ -11329,17 +9486,11 @@ async function openQuoteCompareModal(project, providedQuote) {
     bucketWorkDays[k] = (bucketWorkDays[k] || 0) + days;
     (bucketTaskIds[k] ||= []).push(t.id);
   }
-  // People # per bucket — persisted on the project's saved quote object.
+  // People # per bucket ΓÇö persisted on the project's saved quote object.
   // Defaults to 1 for every bucket. Editing this in the modal recomputes
-  // scheduled = basic × people and updates the variance chip live.
+  // scheduled = basic ├ù people and updates the variance chip live.
   const peopleBreakdown = (quote && quote.people_breakdown) || {};
-  // Fractional people are valid: e.g. 1.25 = one full-timer + one quarter-time
-  // helper. Allowed range 0.25 – 99 in 0.25 steps. Used to default to integer
-  // 1+ via Math.round which destroyed any user-typed fractional input.
-  const peopleFor = (k) => {
-    const v = Number(peopleBreakdown[k]);
-    return Number.isFinite(v) && v > 0 ? Math.max(0.25, v) : 1;
-  };
+  const peopleFor = (k) => Math.max(1, Math.round(Number(peopleBreakdown[k]) || 1));
   // Apply the people multiplier so the rest of the rendering code reads
   // the same `scheduled` / `remaining` maps it always did.
   const scheduled = {};
@@ -11367,7 +9518,7 @@ async function openQuoteCompareModal(project, providedQuote) {
     build:       safe(s10.build),
     wire_panel:  safe(s10.wire_panel),
     wire_machine: safe(s10.wire_machine),
-    // Section 40 testing engineering — Configure (5%) + Test/Debug 1+2 (95%)
+    // Section 40 testing engineering ΓÇö Configure (5%) + Test/Debug 1+2 (95%)
     // split out. We compare totals to the sum of those tasks.
     test_debug:  safe(s40.mech) + safe(s40.ce_des) + safe(s40.ce_drw) + safe(s40.ce_sw)
                  + safe(s40.hmi) + safe(s40.robot) + safe(s40.vision),
@@ -11380,7 +9531,7 @@ async function openQuoteCompareModal(project, providedQuote) {
   // Configure Machine = 5% of testing engineering hours.
   quoted.configure = Math.round(quoted.test_debug * 0.05);
   quoted.test_debug = quoted.test_debug - quoted.configure;
-  // Per-bucket Quoted overrides — when the user edits a Quoted cell in
+  // Per-bucket Quoted overrides ΓÇö when the user edits a Quoted cell in
   // the modal we stash the new value in quote.quoted_overrides so it
   // wins over the auto-derived hours_breakdown sums above.
   const overrides = (quote && quote.quoted_overrides) || {};
@@ -11392,234 +9543,106 @@ async function openQuoteCompareModal(project, providedQuote) {
   const isSales = projectWorkspace(project) === 'Sales';
   // SECTIONS define the row breakdown shown in the modal. Each row carries
   // either a single `k` bucket OR a `keys` array that sums multiple buckets
-  // into ONE displayed row — used for sales schedules where the user wants
+  // into ONE displayed row ΓÇö used for sales schedules where the user wants
   // a coarser view (one Controls Engineering bar, not three sub-rows).
   // The first key in `keys` (or `k` itself) is also the STORAGE KEY for
   // people_breakdown + quoted_overrides, so the persisted value tracks the
   // combined row consistently.
-  // Detailed mode: rows mirror the schedule EXACTLY — one row per task.
-  // Built from the current project's tasks (non-milestone, non-anchor),
-  // grouped by phase_group, sorted by sort_order. Labels are the literal
-  // task names, so "Panel" / "ME Concept" / "Builder 1" all show up
-  // verbatim instead of being rolled into a generic "Mechanical Engineering"
-  // bucket. r.taskId carries the row's target so Weeks / Alloc / Quoted
-  // edits hit that specific task.
-  const SECTION_TITLES_DETAILED = {
-    'design_build':     'Section 10 — Design & Build',
-    'machine_testing':  'Section 40 — Machine Testing / Debug',
-    'teardown_install': 'Section 50 — Teardown & Install',
-  };
-  // Group label for a task, matching the schedule grid's sub-section
-  // header (e.g. "MECHANICAL ENGINEERING", "CONTROLS ENGINEERING",
-  // "PROCUREMENT", "BUILD", "WIRE"). Walks HIERARCHY's dept/sub-dept
-  // tree so labels stay in sync with phases.js automatically.
-  //
-  // Section 50 special case: regrouped by DISCIPLINE (engineering vs
-  // shop) instead of by PHASE (teardown vs install). Estimate sheets
-  // budget section-50 hours by discipline — there's no "engineering
-  // teardown" line, and install has both eng + shop. So in the modal:
-  //   - Teardown (any) → SHOP
-  //   - Install w/ sub_department='shop' → SHOP
-  //   - Install w/ sub_department='engineering' → ENGINEERING
-  // The schedule grid keeps the phase-based layout (TEARDOWN → INSTALL
-  // with shop / engineering nested under INSTALL); only this modal
-  // regroups for the quote comparison.
-  function detailedGroupForTask(t) {
-    if (t.phase_group === 'teardown_install') {
-      const isEng = (t.department === 'install' && t.sub_department === 'engineering');
-      if (isEng) return { key: 'teardown_install/__discipline/engineering', label: 'ENGINEERING' };
-      return       { key: 'teardown_install/__discipline/shop',        label: 'SHOP' };
-    }
-    const group = HIERARCHY.find(g => g.key === t.phase_group);
-    if (!group) return { key: '__none__', label: '' };
-    const dept = (group.departments || []).find(d => d.key === t.department);
-    if (!dept) return { key: `${t.phase_group}/__none__`, label: '' };
-    if (dept.subs && dept.subs.length > 0 && t.sub_department) {
-      const sub = dept.subs.find(s => s.key === t.sub_department);
-      if (sub) return { key: `${t.phase_group}/${dept.key}/${sub.key}`, label: sub.label };
-    }
-    // Dept-level task (no sub-department, e.g. procurement). Use the
-    // dept label as the sub-header so a single task doesn't drift up
-    // to the section header alone.
-    return { key: `${t.phase_group}/${dept.key}`, label: dept.label };
-  }
-  function buildDetailedTaskSections() {
-    const projectTasks = state.tasks
-      .filter(t => t.project === project)
-      .filter(t => !t.is_milestone && !t.anchor_key && t.phase_group)
-      .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
-    const order = ['design_build', 'machine_testing', 'teardown_install'];
-    const result = [];
-    for (const sectionKey of order) {
-      const inSection = projectTasks.filter(t => t.phase_group === sectionKey);
-      if (inSection.length === 0) continue;
-      // Pre-seed the group order so sub-sections always render in the
-      // canonical sequence regardless of task sort_order.
-      //   Section 10: mech → controls → general → procurement → build → wire
-      //   Section 40: engineering → shop
-      //   Section 50: ENGINEERING → SHOP (discipline-based, matches the
-      //     estimate sheet's columns; see detailedGroupForTask comment)
-      const groupMap = new Map(); // key → { label, rows: [] }
-      if (sectionKey === 'teardown_install') {
-        groupMap.set('teardown_install/__discipline/engineering', { key: 'teardown_install/__discipline/engineering', label: 'ENGINEERING', rows: [] });
-        groupMap.set('teardown_install/__discipline/shop',        { key: 'teardown_install/__discipline/shop',        label: 'SHOP',        rows: [] });
-      } else {
-        const sectionDef = HIERARCHY.find(g => g.key === sectionKey);
-        if (sectionDef) {
-          for (const dept of sectionDef.departments || []) {
-            if (dept.subs && dept.subs.length > 0) {
-              for (const sub of dept.subs) {
-                const key = `${sectionKey}/${dept.key}/${sub.key}`;
-                groupMap.set(key, { key, label: sub.label, rows: [] });
-              }
-            } else {
-              const key = `${sectionKey}/${dept.key}`;
-              groupMap.set(key, { key, label: dept.label, rows: [] });
-            }
-          }
-        }
-      }
-      // Now drop tasks into their slot. Unrecognised group keys (task
-      // with a department / sub-dept that doesn't exist in HIERARCHY)
-      // get appended at the end so they're still visible.
-      for (const t of inSection) {
-        const g = detailedGroupForTask(t);
-        if (!groupMap.has(g.key)) groupMap.set(g.key, { key: g.key, label: g.label, rows: [] });
-        groupMap.get(g.key).rows.push({
-          k: `task_${t.id}`,
-          label: t.name,
-          taskId: t.id,
-          bucket: TASK_BUCKET(t),
-          baseAllocation: Number(t.allocation) || 90,
-          section: sectionKey,
-          groupKey: g.key,
-        });
-      }
-      // Drop any pre-seeded sub-groups that ended up empty.
-      const groups = [...groupMap.values()].filter(g => g.rows.length > 0);
-      result.push({ title: SECTION_TITLES_DETAILED[sectionKey], groups });
-    }
-    return result;
-  }
-  const SECTIONS_DETAILED = buildDetailedTaskSections();
-  // Sales-mode line items — mirror the SDC_Sales_Template schedule rows.
+  const SECTIONS_DETAILED = [
+    {
+      title: 'Section 10 ΓÇö Design & Build',
+      rows: [
+        { k: 'mech_eng',     label: 'Mechanical Engineering' },
+        { k: 'ce_design',    label: 'Controls Design' },
+        { k: 'ce_drawings',  label: 'Controls Drawings' },
+        { k: 'ce_software',  label: 'Controls Software' },
+        { k: 'gen_hmi',      label: 'HMI Programming' },
+        { k: 'gen_robot',    label: 'Robot Programming' },
+        { k: 'gen_vision',   label: 'Vision Programming' },
+        { k: 'build',        label: 'Mechanical Build' },
+        { k: 'wire_panel',   label: 'Build and Wire Panel' },
+        { k: 'wire_machine', label: 'Wire Machine' },
+      ],
+    },
+    {
+      title: 'Section 40 ΓÇö Machine Testing / Debug',
+      rows: [
+        { k: 'configure',  label: 'Configure Machine' },
+        { k: 'test_debug', label: 'Test/Debug Engineer (lead + secondary)' },
+        { k: 'shop_debug', label: 'Shop Debug' },
+      ],
+    },
+    {
+      title: 'Section 50 ΓÇö Teardown & Install',
+      rows: [
+        { k: 'teardown', label: 'Teardown' },
+        { k: 'install',  label: 'Install' },
+      ],
+    },
+  ];
+  // Sales-mode line items ΓÇö mirror the SDC_Sales_Template schedule rows.
   // Section 40 / 50 do NOT split engineering vs shop here: in a sales schedule,
   // shop time = engineering time (same duration), so we collapse them into a
   // single "Test and Debug Machine" row to keep the timeline readable.
   // FAT and Ship Machine show as milestone markers (info rows) so the modal
   // mirrors the schedule structure end-to-end.
-  // `consolidateAs` (sales mode only): when the user clicks Apply and the
-  // schedule has more than one task contributing to this combined row, the
-  // extra tasks are DELETED and the survivor is renamed to this canonical
-  // name. Matches the SDC_Sales_Template naming so a multi-task project
-  // collapses to the same shape as a freshly-stamped sales schedule.
   const SECTIONS_SALES = [
     {
-      title: 'Section 10 — Design & Build',
+      title: 'Section 10 ΓÇö Design & Build',
       rows: [
         { k: 'mech_eng',       label: 'Mechanical Design' },
         { k: 'ce_engineering', label: 'Controls Design',
-          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'],
-          consolidateAs: 'Controls Design and Machine Software' },
+          keys: ['ce_engineering', 'ce_design', 'ce_drawings', 'ce_software'] },
         { k: 'gen_engineering', label: 'Device Programming',
-          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'],
-          consolidateAs: 'Device Programming' },
+          keys: ['gen_engineering', 'gen_hmi', 'gen_robot', 'gen_vision'] },
         { k: 'build',          label: 'Mechanical Assembly' },
         { k: 'elec_build',     label: 'Electrical Assembly',
-          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'],
-          consolidateAs: 'Electrical Assembly/Machine Wiring' },
+          keys: ['elec_build', 'wire_panel', 'wire_machine', 'wire_other'] },
       ],
     },
     {
-      title: 'Section 40 — Machine Testing',
+      title: 'Section 40 ΓÇö Machine Testing',
       rows: [
-        // Complete Machine Testing — ONE row covering Configure Machine +
-        // the engineering/shop Test/Debug. Sales schedules don't break
-        // these out; the single bar reads cleaner against the timeline.
-        { k: 'test_debug', label: 'Complete Machine Testing',
-          keys: ['configure', 'test_debug', 'shop_debug'],
-          consolidateAs: 'Complete Machine Testing' },
-        // FAT — milestone anchor. Shows as an info row with no hours.
+        { k: 'configure',  label: 'Configure Machine' },
+        // Test/Debug Machine ΓÇö single row covering BOTH the engineering and
+        // shop sides of section 40 testing.
+        { k: 'test_debug', label: 'Test and Debug Machine',
+          keys: ['test_debug', 'shop_debug'] },
+        // FAT ΓÇö milestone anchor. Shows as an info row with no hours.
         { k: 'fat',        label: 'FAT', milestone: true },
       ],
     },
     {
-      title: 'Section 50 — Teardown & Install',
+      title: 'Section 50 ΓÇö Teardown & Install',
       rows: [
         { k: 'teardown',     label: 'Teardown' },
-        // Ship Machine — milestone anchor between teardown and install.
+        // Ship Machine ΓÇö milestone anchor between teardown and install.
         { k: 'ship_machine', label: 'Ship Machine', milestone: true },
         { k: 'install',      label: 'Install' },
       ],
     },
   ];
   const SECTIONS = isSales ? SECTIONS_SALES : SECTIONS_DETAILED;
-  // Flatten all rows (across sub-groups in detailed mode) for the rowsByKey
-  // lookup that wireInputs / applyChanges / consolidation logic reads.
-  const allRows = (sec) => sec.groups ? sec.groups.flatMap(g => g.rows) : (sec.rows || []);
   const rowsByKey = {};
-  SECTIONS.forEach(s => allRows(s).forEach(r => { rowsByKey[r.k] = r; }));
-  // Column count varies — sales projects hide the Remaining column.
+  SECTIONS.forEach(s => s.rows.forEach(r => { rowsByKey[r.k] = r; }));
+  // Column count varies ΓÇö sales projects hide the Remaining column.
   const colCount = isSales ? 5 : 6;
 
-  // PENDING STATE — edits live here until Done is pressed. Keyed by row
+  // PENDING STATE ΓÇö edits live here until Done is pressed. Keyed by row
   // storage key (r.k). Undefined means "no override; use base value."
   // This gives the user a sandbox: tweak numbers, see chips recompute,
   // commit when satisfied.
   const pendingPeople = {};
   const pendingQuoted = {};
   const pendingWeeks  = {};
-  // Detailed mode: per-task allocation overrides. Each task can carry its
-  // own % (e.g. ME 2 at 25% acting as a helper). Sales mode doesn't use
-  // this — its rows aggregate buckets and use People # for the same effect.
-  const pendingAlloc  = {};
 
-  // Per-task quoted override key helpers — when the user types a Quoted
-  // value on a task row, it lives under `quoted_overrides[task_<id>]` so
-  // change-orders stick to the specific task and survive subsequent renders.
-  function quotedForTaskRow(r) {
-    // Prefer a per-task override; otherwise split the parent bucket's
-    // quoted hours evenly across the tasks contributing to that bucket
-    // so newly-promoted projects show non-zero defaults per row.
-    const taskOverride = overrides[r.k];
-    if (taskOverride !== undefined && Number.isFinite(Number(taskOverride))) {
-      return Math.round(Number(taskOverride));
-    }
-    if (!r.bucket) return 0;
-    const bucketTotal = Number(quoted[r.bucket] || 0);
-    if (!bucketTotal) return 0;
-    const tasksInBucket = (bucketTaskIds[r.bucket] || []).length || 1;
-    return Math.round(bucketTotal / tasksInBucket);
-  }
-
-  // basicScheduled comes from real task durations × 8 × alloc (no people
+  // basicScheduled comes from real task durations ├ù 8 ├ù alloc (no people
   // multiplier). For "what does this row look like right now in pending
   // state?" we apply pendingWeeks as a scaling factor on basicScheduled
   // and then multiply by pendingPeople. This lets the user model "if I
   // bumped Mechanical Engineering to 8 wks with 2 people, my actual hrs
-  // would be …" without touching the schedule yet.
+  // would be ΓÇª" without touching the schedule yet.
   function computeRowState(r) {
-    // Per-task rows (detailed mode) — `r.taskId` is set when the row
-    // represents a single schedule task. Weeks → that task's duration;
-    // Alloc → that task's allocation; Quoted → per-task quoted_overrides.
-    if (r.taskId) {
-      const t = state.tasks.find(x => x.id === r.taskId);
-      const baseDays  = t ? (Number(t.duration_days) || 0) : 0;
-      const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
-      const weeks     = pendingWeeks[r.k] !== undefined ? pendingWeeks[r.k] : baseWeeks;
-      const baseAlloc = r.baseAllocation || 90;
-      const alloc     = pendingAlloc[r.k]  !== undefined ? pendingAlloc[r.k]  : baseAlloc;
-      const s         = Math.round(weeks * 5 * 8 * (alloc / 100));
-      const progress  = t ? Math.max(0, Math.min(100, Number(t.progress) || 0)) : 0;
-      const rem       = Math.round(s * (1 - progress / 100));
-      const baseQuoted = quotedForTaskRow(r);
-      const q          = pendingQuoted[r.k] !== undefined ? pendingQuoted[r.k] : baseQuoted;
-      return {
-        keys: [r.bucket].filter(Boolean), q, weeks, ppl: 1, alloc,
-        s, rem, baseDays, taskIds: [r.taskId],
-      };
-    }
-    // Sales / bucket-aggregated rows — unchanged from the original logic.
     const keys = r.keys || [r.k];
     const baseQuoted = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
     const q = pendingQuoted[r.k] !== undefined ? pendingQuoted[r.k] : baseQuoted;
@@ -11641,17 +9664,17 @@ async function openQuoteCompareModal(project, providedQuote) {
 
   function rowHtml(r) {
     // Milestone rows (FAT / Ship Machine in sales mode) are info-only line
-    // items — no hours, no editable Weeks/People/Quoted cells. Render as a
+    // items ΓÇö no hours, no editable Weeks/People/Quoted cells. Render as a
     // muted label row so the modal mirrors the schedule structure without
     // implying any hours comparison.
     if (r.milestone) {
       return `<tr class="quote-row is-milestone" data-row-key="${escapeHtml(r.k)}">
-        <td><span class="quote-milestone-glyph" title="Schedule milestone — no hours">◆</span> ${escapeHtml(r.label)}</td>
-        <td class="num quote-milestone-cell">—</td>
-        <td class="num quote-milestone-cell">—</td>
-        <td class="num quote-milestone-cell">—</td>
-        <td class="num quote-milestone-cell">—</td>
-        ${isSales ? '' : '<td class="num quote-milestone-cell">—</td>'}
+        <td><span class="quote-milestone-glyph" title="Schedule milestone ΓÇö no hours">Γùå</span> ${escapeHtml(r.label)}</td>
+        <td class="num quote-milestone-cell">ΓÇö</td>
+        <td class="num quote-milestone-cell">ΓÇö</td>
+        <td class="num quote-milestone-cell">ΓÇö</td>
+        <td class="num quote-milestone-cell">ΓÇö</td>
+        ${isSales ? '' : '<td class="num quote-milestone-cell">ΓÇö</td>'}
       </tr>`;
     }
     const st = computeRowState(r);
@@ -11663,46 +9686,20 @@ async function openQuoteCompareModal(project, providedQuote) {
       else if (variance > st.q * 0.10) varCls = 'var-over';
       else if (variance > 0) varCls = 'var-near';
     }
-    const varText = st.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    const varText = st.q === 0 ? 'ΓÇö' : (variance > 0 ? '+' : '') + variance.toLocaleString();
     const weeksTitle = taskCount === 0
-      ? 'No tasks in this bucket yet — add a task to the schedule first.'
-      : (r.taskId
-          ? 'Click to edit this task’s duration in weeks.'
-          : (taskCount === 1
-              ? 'Click to edit this phase’s duration in weeks.'
-              : `${taskCount} tasks in this bucket — editing scales each proportionally.`));
+      ? 'No tasks in this bucket yet ΓÇö add a task to the schedule first.'
+      : (taskCount === 1
+          ? 'Click to edit this phaseΓÇÖs duration in weeks.'
+          : `${taskCount} tasks in this bucket ΓÇö editing scales each proportionally.`);
     const weeksDisabled = taskCount === 0 ? 'disabled' : '';
-    const pendingMark = (pendingPeople[r.k] !== undefined || pendingQuoted[r.k] !== undefined || pendingWeeks[r.k] !== undefined || pendingAlloc[r.k] !== undefined) ? ' is-pending' : '';
-    // Highlight rows where the schedule has tasks BUT no quoted hours
-    // have been entered yet — that's a sales-promoted detailed bucket
-    // whose hours the user still needs to type in. Amber stripe + the
-    // tooltip on the Quoted cell hints at what to do.
-    const needsQuoteMark = (st.q === 0 && taskCount > 0 && !r.milestone) ? ' needs-quote' : '';
-    // Detailed mode (r.taskId set): replace People # with Alloc % and
-    // append a tiny `×` button to delete the underlying task. Sales mode
-    // keeps the People # input + people-math.
-    let peopleOrAllocCell;
-    if (r.taskId) {
-      peopleOrAllocCell = `<td class="num"><input type="number" min="0" max="100" step="5" class="quote-alloc-input" data-bucket="${escapeHtml(r.k)}" value="${st.alloc}" title="Allocation %. Drop to 25 (or whatever) to model a helper resource at part-time." /></td>`;
-    } else {
-      peopleOrAllocCell = `<td class="num"><input type="number" min="0.25" max="99" step="0.25" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${(+st.ppl).toFixed(2).replace(/\.?0+$/, '')}" title="People assigned to this phase. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People." /></td>`;
-    }
-    // Detailed mode: row label gets a small "delete this task" button on
-    // the right so the user can drop a 2nd builder / ME 2 / etc. when
-    // not needed. Sales mode rows aggregate so the per-task delete
-    // doesn't apply.
-    const deleteBtn = r.taskId
-      ? `<button type="button" class="quote-row-delete" data-task-id="${r.taskId}" title="Remove this task from the schedule (e.g. you don't need a second builder).">×</button>`
-      : '';
-    const labelCell = r.taskId
-      ? `<td class="quote-row-label-cell">${escapeHtml(r.label)} ${deleteBtn}</td>`
-      : `<td>${escapeHtml(r.label)}</td>`;
-    return `<tr class="quote-row${pendingMark}${needsQuoteMark}" data-row-key="${escapeHtml(r.k)}">
-      ${labelCell}
+    const pendingMark = (pendingPeople[r.k] !== undefined || pendingQuoted[r.k] !== undefined || pendingWeeks[r.k] !== undefined) ? ' is-pending' : '';
+    return `<tr class="quote-row${pendingMark}" data-row-key="${escapeHtml(r.k)}">
+      <td>${escapeHtml(r.label)}</td>
       <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
-      ${peopleOrAllocCell}
+      <td class="num"><input type="number" min="1" max="99" step="1" class="quote-people-input" data-bucket="${escapeHtml(r.k)}" value="${st.ppl}" title="People assigned to this phase. Scheduled hrs = Weeks ├ù 40 ├ù allocation ├ù People." /></td>
       <td class="num quote-sched-cell">
-        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override. Saved per-task in detailed mode, per-bucket in sales mode." />
+        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours ΓÇö type to override." />
         <span class="quote-sched-slash">/</span>
         <span class="quote-sched-s">${st.s.toLocaleString()}</span>
       </td>
@@ -11711,86 +9708,16 @@ async function openQuoteCompareModal(project, providedQuote) {
     </tr>`;
   }
 
-  // Compute totals for a set of rows (used for group-total rows + grand
-  // total). Skips milestones since they have no hours.
-  function computeRowsTotals(rows) {
-    let q = 0, s = 0, rem = 0;
-    for (const r of rows) {
-      if (r.milestone) continue;
-      const st = computeRowState(r);
-      q += st.q; s += st.s; rem += st.rem;
-    }
-    return { q, s, rem };
-  }
-  function buildGroupTotalRow(groupLabel, rows) {
-    const t = computeRowsTotals(rows);
-    const variance = t.s - t.q;
-    let varCls = 'var-zero';
-    if (t.q > 0) {
-      if (variance < 0) varCls = 'var-under';
-      else if (variance > t.q * 0.10) varCls = 'var-over';
-      else if (variance > 0) varCls = 'var-near';
-    }
-    const varText = t.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
-    return `<tr class="quote-row quote-group-total-row">
-      <td class="quote-group-total-label">${escapeHtml(groupLabel || 'Group')} total</td>
-      <td class="num">—</td>
-      <td class="num">—</td>
-      <td class="num quote-sched-cell">
-        <span class="quote-sched-q">${t.q ? t.q.toLocaleString() : '—'}</span>
-        <span class="quote-sched-slash">/</span>
-        <span class="quote-sched-s">${t.s.toLocaleString()}</span>
-      </td>
-      <td class="num quote-variance ${varCls}">${varText}</td>
-      ${isSales ? '' : `<td class="num">${t.rem.toLocaleString()}</td>`}
-    </tr>`;
-  }
   function buildRowsHtml() {
-    return SECTIONS.map(section => {
-      const head = `<tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>`;
-      // Detailed mode: section.groups is an array of sub-sections matching
-      // the schedule's HIERARCHY (MECHANICAL ENGINEERING / CONTROLS / etc.).
-      // Sales mode keeps section.rows flat.
-      if (section.groups) {
-        return head + section.groups.map(g => {
-          const subHead = g.label
-            ? `<tr class="quote-subsection-head"><td colspan="${colCount}">${escapeHtml(g.label)}</td></tr>`
-            : '';
-          const groupRows = g.rows.map(rowHtml).join('');
-          // Group total row — what Dan actually compares against the
-          // quote. Sums every row's Quoted / Scheduled / Variance /
-          // Remaining within the group. Sits below the rows + above
-          // the "+ Add resource" footer.
-          const totalRow = buildGroupTotalRow(g.label, g.rows);
-          // "+ Add resource" sits at the end of each sub-group with a
-          // dropdown listing the tasks in this group so the user picks
-          // which one to duplicate (instead of always cloning the last).
-          const optionsHtml = g.rows
-            .filter(r => r.taskId)
-            .map(r => `<option value="${r.taskId}">Duplicate "${escapeHtml(r.label)}"</option>`)
-            .join('');
-          const pickerRow = optionsHtml
-            ? `<tr class="quote-row quote-add-resource-row">
-                <td colspan="${colCount}">
-                  <span style="font-size:12px;color:#475569;">+ Add resource to ${escapeHtml(g.label || 'this group')}:</span>
-                  <select class="quote-add-resource-select" data-group-key="${escapeHtml(g.key || '')}">
-                    <option value="">— pick a task to duplicate —</option>
-                    ${optionsHtml}
-                  </select>
-                </td>
-              </tr>`
-            : '';
-          return subHead + groupRows + totalRow + pickerRow;
-        }).join('');
-      }
-      // Sales mode (flat row list).
-      return head + section.rows.map(rowHtml).join('');
-    }).join('');
+    return SECTIONS.map(section => `
+      <tr class="section-head"><td colspan="${colCount}">${escapeHtml(section.title)}</td></tr>
+      ${section.rows.map(rowHtml).join('')}
+    `).join('');
   }
   function computeTotals() {
     let totalQ = 0, totalS = 0, totalR = 0;
     for (const section of SECTIONS) {
-      for (const r of allRows(section)) {
+      for (const r of section.rows) {
         if (r.milestone) continue; // milestone rows have no hours to total
         const st = computeRowState(r);
         totalQ += st.q; totalS += st.s; totalR += st.rem;
@@ -11808,14 +9735,14 @@ async function openQuoteCompareModal(project, providedQuote) {
     return `
       <tr class="totals-row">
         <td>Total</td>
-        <td class="num">—</td>
-        <td class="num">—</td>
+        <td class="num">ΓÇö</td>
+        <td class="num">ΓÇö</td>
         <td class="num quote-sched-cell">
-          <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
+          <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : 'ΓÇö'}</span>
           <span class="quote-sched-slash">/</span>
           <span class="quote-sched-s">${totalS.toLocaleString()}</span>
         </td>
-        <td class="num quote-variance ${varCls}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
+        <td class="num quote-variance ${varCls}">${totalQ === 0 ? 'ΓÇö' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
         ${isSales ? '' : `<td class="num">${totalR.toLocaleString()}</td>`}
       </tr>`;
   }
@@ -11825,73 +9752,38 @@ async function openQuoteCompareModal(project, providedQuote) {
   overlay.id = 'quote-compare-modal';
   overlay.className = 'modal-overlay app-dialog-overlay';
   overlay.innerHTML = `
-    <div class="modal-card" style="max-width: 880px;">
+    <div class="modal-card" style="max-width: 720px;">
       <div class="modal-head">
-        <h2>Quote vs Schedule — ${escapeHtml(project)}</h2>
-        <button class="modal-close" type="button">×</button>
+        <h2>Quote vs Schedule ΓÇö ${escapeHtml(project)}</h2>
+        <button class="modal-close" type="button">├ù</button>
       </div>
       <div class="modal-body">
-        <!-- Sold delivery + Penalty clause — the contract terms.
-             Sold delivery → "Quoted" reference for the stats popup.
-             Penalty clause → optional date the customer can start
-             charging late fees, computed as PO + N weeks. Both
-             persist in the project's saved quote payload. -->
-        <div class="quote-sold-row">
-          <label class="quote-sold-label">
-            Sold delivery
-            <input type="number" id="quote-sold-weeks" min="0" step="0.5" placeholder="weeks" value="${quote && quote.sold_delivery_weeks != null ? Number(quote.sold_delivery_weeks) : ''}" title="The duration sold to the customer (in weeks). The schedule stats popup shows this as the 'Quoted' duration alongside the live scheduled span." />
-            <span class="quote-sold-unit">weeks</span>
-          </label>
-          <label class="quote-penalty-toggle" title="Check if the contract has a late-delivery penalty clause. The clause start date = PO date + N weeks.">
-            <input type="checkbox" id="quote-has-penalty" ${quote && quote.has_penalty_clause ? 'checked' : ''} />
-            <span>Penalty clause</span>
-          </label>
-          <label class="quote-sold-label quote-penalty-input ${quote && quote.has_penalty_clause ? '' : 'is-hidden'}">
-            Starts after
-            <input type="number" id="quote-penalty-weeks" min="0" step="0.5" placeholder="weeks" value="${quote && quote.penalty_clause_weeks != null ? Number(quote.penalty_clause_weeks) : ''}" title="Weeks after PO date when the penalty clause begins. Shown on the schedule stats popup as 'Penalty'." />
-            <span class="quote-sold-unit">weeks after PO</span>
-          </label>
-        </div>
         ${quote
           ? `<div style="margin:0 0 12px;font-size:12px;color:#475569;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span style="flex:1 1 auto;min-width:240px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
+              <span style="flex:1 1 auto;min-width:240px;">Comparing the saved estimate hours against the live scheduled hours (duration ├ù allocation ├ù 8 per task).</span>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor (billing events tied to anchors, e.g. 30% at PO / 60% at FAT / 10% at Ship). Stays open on top so you can confirm billing while the comparison is still in view.">$ Financial Milestones</button>
               <label class="btn-ghost" style="cursor:pointer;border:1px solid #cbd5e1;color:#334155;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
-                Replace estimate…
+                Replace estimateΓÇª
                 <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
               </label>
             </div>`
           : `<div style="margin:0 0 12px;font-size:12px;color:#b45309;background:#fef3c7;padding:10px 12px;border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span style="flex:1 1 auto;min-width:240px;">No estimate attached to this project. Load the estimate xlsx — it'll be saved on the project so future opens of this modal load it automatically.</span>
+              <span style="flex:1 1 auto;min-width:240px;">No estimate attached to this project. Load the estimate xlsx ΓÇö it'll be saved on the project so future opens of this modal load it automatically.</span>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor. You can still edit billing milestones even without an estimate attached.">$ Financial Milestones</button>
               <label class="btn-ghost" style="cursor:pointer;border:1px solid #d97706;color:#b45309;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
-                Attach estimate…
+                Attach estimateΓÇª
                 <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
               </label>
             </div>`}
         <table class="quote-compare-table">
-          <!-- Column widths sized so every header fits without truncation,
-               while wide-content cells (Quoted / Scheduled is two numbers +
-               a slash) get the real estate they need. Sums to 100% so the
-               table is responsive inside the wider 880px modal card. -->
-          <colgroup>
-            <col style="width: ${isSales ? '34%' : '28%'};">  <!-- Discipline -->
-            <col style="width: 10%;">                          <!-- Weeks -->
-            <col style="width: 11%;">                          <!-- People # -->
-            <col style="width: ${isSales ? '32%' : '28%'};">   <!-- Quoted / Scheduled -->
-            <col style="width: 13%;">                          <!-- Variance -->
-            ${isSales ? '' : '<col style="width: 13%;">'}      <!-- Remaining -->
-          </colgroup>
           <thead>
             <tr>
               <th style="text-align:left;">Discipline</th>
-              <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations.">Weeks</th>
-              ${isSales
-                ? `<th class="num" title="People assigned to this phase. Defaults to 1. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People.">People&nbsp;#</th>`
-                : `<th class="num" title="Allocation % for this task. Each row = one resource. Drop to 25% to model a part-time helper, or use the + Add resource button at the end of the section to add another full-time person.">Alloc&nbsp;%</th>`}
-              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted&nbsp;/&nbsp;Scheduled</th>
-              <th class="num" title="Scheduled − Quoted. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
-              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: scheduled_hrs × (1 − task_progress%/100).">Remaining</th>`}
+              <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations. Multi-task buckets scale proportionally.">Weeks</th>
+              <th class="num" title="People assigned to this phase. Defaults to 1. Scheduled hrs = Weeks ├ù 40 ├ù allocation ├ù People.">People #</th>
+              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks ├ù 40 ├ù allocation ├ù People).">Quoted / Scheduled</th>
+              <th class="num" title="Scheduled ΓêÆ Quoted. Green Γëñ quote, amber within 10% over, red &gt;10% over.">Variance</th>
+              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: SUM(task_scheduled_hrs ├ù (1 ΓêÆ task_progress%/100)) per bucket ├ù people#.">Remaining</th>`}
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -11899,7 +9791,7 @@ async function openQuoteCompareModal(project, providedQuote) {
         </table>
       </div>
       <div class="modal-foot">
-        <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
+        <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes ΓÇö click Apply to update the schedule.</span>
         <button type="button" class="btn-secondary" data-action="close">Cancel</button>
         <button type="button" class="btn-primary" data-action="apply" id="quote-apply-btn" disabled>Apply</button>
       </div>
@@ -11909,65 +9801,16 @@ async function openQuoteCompareModal(project, providedQuote) {
   overlay.querySelector('.modal-close').onclick = close;
   overlay.querySelector('[data-action="close"]').onclick = close;
   // "$ Financial Milestones" button lives in the modal BODY (top banner row)
-  // instead of the footer — moved in v3.60 since users said they couldn't
+  // instead of the footer ΓÇö moved in v3.60 since users said they couldn't
   // find it down at the bottom. Opens the per-project financials editor on
   // top so they can confirm or tweak billing while still seeing the hours
   // comparison.
   overlay.querySelector('[data-action="financials"]').onclick = () => {
     openFinancialsModal(project);
   };
-  // Helper — POST the freshly-merged quote and refresh caches/popup.
-  // Used by sold delivery, penalty toggle, and penalty weeks inputs.
-  const _saveQuoteMerge = async (patch) => {
-    const merged = Object.assign({}, quote || {}, patch);
-    try {
-      await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(merged),
-      });
-      quote = merged;
-      state.projectQuotes[project] = merged;
-      if (typeof renderProjectStatsPopup === 'function') {
-        try { renderProjectStatsPopup(); } catch (_) {}
-      }
-      // Re-draw the penalty clause line on the Gantt so toggling the
-      // checkbox or changing the weeks shows up live without closing
-      // the modal.
-      if (typeof drawPenaltyClauseLine === 'function') {
-        try { drawPenaltyClauseLine(); } catch (_) {}
-      }
-    } catch (_) {}
-  };
-
-  const soldInput = overlay.querySelector('#quote-sold-weeks');
-  if (soldInput) {
-    soldInput.addEventListener('change', () => {
-      const raw = soldInput.value.trim();
-      _saveQuoteMerge({ sold_delivery_weeks: raw === '' ? null : Number(raw) });
-    });
-  }
-  // Penalty clause checkbox — toggles whether the popup renders the
-  // Penalty row + whether the weeks input is visible.
-  const penaltyCheckbox = overlay.querySelector('#quote-has-penalty');
-  const penaltyInputWrap = overlay.querySelector('.quote-penalty-input');
-  if (penaltyCheckbox) {
-    penaltyCheckbox.addEventListener('change', () => {
-      const checked = penaltyCheckbox.checked;
-      if (penaltyInputWrap) penaltyInputWrap.classList.toggle('is-hidden', !checked);
-      _saveQuoteMerge({ has_penalty_clause: checked });
-    });
-  }
-  const penaltyWeeksInput = overlay.querySelector('#quote-penalty-weeks');
-  if (penaltyWeeksInput) {
-    penaltyWeeksInput.addEventListener('change', () => {
-      const raw = penaltyWeeksInput.value.trim();
-      _saveQuoteMerge({ penalty_clause_weeks: raw === '' ? null : Number(raw) });
-    });
-  }
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
-  // Refresh the table in-place without reopening the modal — used after
+  // Refresh the table in-place without reopening the modal ΓÇö used after
   // every input change. Re-applies event handlers since innerHTML wipes
   // the old listeners.
   function refreshTable() {
@@ -11979,44 +9822,13 @@ async function openQuoteCompareModal(project, providedQuote) {
     updateApplyButtonState();
   }
 
-  // Returns the combined sales-mode rows that currently have >1 contributing
-  // task. These get auto-consolidated on Apply even when the user didn't
-  // edit Weeks/People/Quoted — opening the modal on a schedule with broken-out
-  // HMI/Robot/Vision and hitting Apply should still collapse them.
-  function pendingConsolidationRows() {
-    if (!isSales) return [];
-    const out = [];
-    for (const section of SECTIONS) {
-      for (const r of section.rows) {
-        if (!r.consolidateAs) continue;
-        const keys = r.keys || [r.k];
-        const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
-        if (taskIds.length > 1) out.push(r);
-      }
-    }
-    return out;
-  }
   function updateApplyButtonState() {
-    const hasEdits = Object.keys(pendingPeople).length > 0
+    const hasPending = Object.keys(pendingPeople).length > 0
       || Object.keys(pendingQuoted).length > 0
-      || Object.keys(pendingWeeks).length > 0
-      || Object.keys(pendingAlloc).length > 0;
-    const consolidation = pendingConsolidationRows();
-    const hasPending = hasEdits || consolidation.length > 0;
+      || Object.keys(pendingWeeks).length > 0;
     const btn = overlay.querySelector('#quote-apply-btn');
     const hint = overlay.querySelector('#quote-pending-hint');
-    if (btn) {
-      btn.disabled = !hasPending;
-      // When the only "pending" thing is consolidation, surface it on the
-      // button so the user knows what Apply is about to do.
-      if (!hasEdits && consolidation.length > 0) {
-        btn.textContent = `Apply (consolidate ${consolidation.length} row${consolidation.length > 1 ? 's' : ''})`;
-        btn.title = 'Lump broken-out sub-tasks into a single task per combined row: ' + consolidation.map(r => r.label).join(', ');
-      } else {
-        btn.textContent = 'Apply';
-        btn.title = '';
-      }
-    }
+    if (btn) btn.disabled = !hasPending;
     if (hint) hint.hidden = !hasPending;
   }
 
@@ -12024,201 +9836,50 @@ async function openQuoteCompareModal(project, providedQuote) {
     overlay.querySelectorAll('.quote-people-input').forEach(input => {
       input.addEventListener('change', () => {
         const bucket = input.dataset.bucket;
-        // Quantize to the 0.25 step the input enforces, clamped to [0.25, 99].
-        // Fractional people are valid — 1.25 means "one full-timer + one at
-        // 25%". Round-to-nearest-quarter so we never store 1.234 noise.
-        const raw = Number(input.value);
-        const quant = Number.isFinite(raw) ? Math.round(raw * 4) / 4 : 1;
-        const val = Math.max(0.25, Math.min(99, quant));
+        const val = Math.max(1, Math.min(99, Math.round(Number(input.value) || 1)));
         const baseVal = peopleFor(bucket);
-        if (Math.abs(val - baseVal) < 1e-6) delete pendingPeople[bucket];
+        if (val === baseVal) delete pendingPeople[bucket];
         else pendingPeople[bucket] = val;
-        refreshTable();
-      });
-    });
-    overlay.querySelectorAll('.quote-alloc-input').forEach(input => {
-      input.addEventListener('change', () => {
-        const rowKey = input.dataset.bucket;
-        const raw = Number(input.value);
-        const val = Math.max(0, Math.min(100, Math.round(raw / 5) * 5));
-        const r = rowsByKey[rowKey];
-        const baseVal = r?.baseAllocation || 90;
-        if (val === baseVal) delete pendingAlloc[rowKey];
-        else pendingAlloc[rowKey] = val;
         refreshTable();
       });
     });
     overlay.querySelectorAll('.quote-q-input').forEach(input => {
       input.addEventListener('change', () => {
-        const rowKey = input.dataset.bucket;
+        const bucket = input.dataset.bucket;
         const val = Math.max(0, Math.round(Number(input.value) || 0));
-        const r = rowsByKey[rowKey];
-        // For per-task rows, the base value comes from quotedForTaskRow
-        // (per-task override, then bucket-split fallback). For bucket
-        // rows, sum the parent keys' quoted totals.
-        let baseVal;
-        if (r && r.taskId) {
-          baseVal = quotedForTaskRow(r);
-        } else {
-          const keys = r ? (r.keys || [r.k]) : [rowKey];
-          baseVal = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
-        }
-        if (val === baseVal) delete pendingQuoted[rowKey];
-        else pendingQuoted[rowKey] = val;
+        const r = rowsByKey[bucket];
+        const keys = r ? (r.keys || [r.k]) : [bucket];
+        const baseVal = keys.reduce((sum, k) => sum + (quoted[k] || 0), 0);
+        if (val === baseVal) delete pendingQuoted[bucket];
+        else pendingQuoted[bucket] = val;
         refreshTable();
       });
     });
     overlay.querySelectorAll('.quote-weeks-input').forEach(input => {
       input.addEventListener('change', () => {
-        const rowKey = input.dataset.bucket;
+        const bucket = input.dataset.bucket;
         const newWeeks = Math.max(0, Math.round(Number(input.value) * 2) / 2);
-        const r = rowsByKey[rowKey];
-        let baseWeeks;
-        if (r && r.taskId) {
-          const t = state.tasks.find(x => x.id === r.taskId);
-          const baseDays = t ? (Number(t.duration_days) || 0) : 0;
-          baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
-        } else {
-          const keys = r ? (r.keys || [r.k]) : [rowKey];
-          const baseDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
-          baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
-        }
-        if (newWeeks === baseWeeks) delete pendingWeeks[rowKey];
-        else pendingWeeks[rowKey] = newWeeks;
+        const r = rowsByKey[bucket];
+        const keys = r ? (r.keys || [r.k]) : [bucket];
+        const baseDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+        if (newWeeks === baseWeeks) delete pendingWeeks[bucket];
+        else pendingWeeks[bucket] = newWeeks;
         refreshTable();
-      });
-    });
-    // Detailed mode: per-row delete button. Confirms then removes the
-    // underlying task from the schedule via api.remove. The modal
-    // re-renders so the row disappears.
-    overlay.querySelectorAll('.quote-row-delete').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const taskId = Number(btn.dataset.taskId);
-        const t = state.tasks.find(x => x.id === taskId);
-        if (!t) return;
-        if (!confirm(`Remove "${t.name}" from the schedule?`)) return;
-        await api.remove(taskId);
-        if (typeof showToast === 'function') showToast(`Removed "${t.name}".`, { kind: 'success' });
-        await loadTasks();
-        // Re-render the modal — close + reopen with the same project.
-        close();
-        openQuoteCompareModal(project);
-      });
-    });
-    // Shared helper — duplicates `sourceId` task in-place, auto-numbering
-    // the name based on the highest existing N-suffix in the same
-    // section, then re-renders the modal.
-    async function duplicateTaskInGroup(sourceId) {
-      const source = state.tasks.find(x => x.id === sourceId);
-      if (!source) return;
-      const match = String(source.name || '').match(/^(.*?)([\s\-_]?)(\d+)\s*$/);
-      let newName;
-      if (match) {
-        const stem = match[1].trim();
-        const sameStem = state.tasks
-          .filter(t => t.project === project && t.phase_group === source.phase_group)
-          .filter(t => String(t.name || '').startsWith(stem))
-          .map(t => {
-            const m = String(t.name).match(/(\d+)\s*$/);
-            return m ? Number(m[1]) : 0;
-          });
-        const next = Math.max(0, ...sameStem) + 1;
-        newName = `${stem} ${next}`;
-      } else {
-        newName = `${source.name} 2`;
-      }
-      const payload = {
-        name: newName,
-        project: source.project,
-        phase: source.phase,
-        phase_group: source.phase_group,
-        department: source.department,
-        sub_department: source.sub_department,
-        assignee: source.assignee,
-        duration_days: source.duration_days,
-        predecessors: source.predecessors,
-        is_milestone: 0,
-        progress: 0,
-        allocation: source.allocation,
-        priority: source.priority,
-        notes: source.notes,
-        sort_order: (Number(source.sort_order) || 0) + 0.5,
-        machine: source.machine,
-      };
-      await api.create(payload);
-      if (typeof showToast === 'function') showToast(`Added "${newName}".`, { kind: 'success' });
-      await loadTasks();
-      close();
-      openQuoteCompareModal(project);
-    }
-    // Detailed mode: per-group "+ Add resource" picker. Dropdown lists
-    // each task in the group; selecting one duplicates THAT specific
-    // task (instead of always cloning the last row).
-    overlay.querySelectorAll('.quote-add-resource-select').forEach(sel => {
-      sel.addEventListener('change', async (e) => {
-        e.stopPropagation();
-        const sourceId = Number(sel.value);
-        if (!sourceId) return;
-        sel.disabled = true;
-        await duplicateTaskInGroup(sourceId);
-      });
-    });
-    // Legacy button path (kept for backward compat / future use).
-    overlay.querySelectorAll('.quote-row-add').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const sourceId = Number(btn.dataset.afterTaskId);
-        await duplicateTaskInGroup(sourceId);
       });
     });
   }
   wireInputs();
 
-  // Apply button — write all pending edits to the server: people +
+  // Apply button ΓÇö write all pending edits to the server: people +
   // quoted overrides land in the saved quote; weeks edits go to the
   // underlying tasks' duration_days (scaled proportionally for
   // multi-task buckets) and trigger a server cascadeSchedule on save.
   async function applyChanges() {
     try {
-      // 1) Quote save — ALWAYS read the live Sold delivery input value
-      //    on Apply and merge it into the payload. Without this, the
-      //    earlier sold_delivery_weeks Dan typed gets clobbered when
-      //    Apply spreads the STALE `quote` variable (which was the
-      //    initial fetch and doesn't know about his input). Also
-      //    handles the case where Dan typed a value and clicked Apply
-      //    before the input's change event fired (no blur).
-      const soldInputEl = overlay.querySelector('#quote-sold-weeks');
-      const penaltyCheckEl = overlay.querySelector('#quote-has-penalty');
-      const penaltyWeeksEl = overlay.querySelector('#quote-penalty-weeks');
-      let liveSold = null;
-      let soldChanged = false;
-      if (soldInputEl) {
-        const raw = soldInputEl.value.trim();
-        liveSold = raw === '' ? null : Number(raw);
-        const cached = (quote && quote.sold_delivery_weeks != null) ? Number(quote.sold_delivery_weeks) : null;
-        soldChanged = liveSold !== cached;
-      }
-      const livePenalty = penaltyCheckEl ? !!penaltyCheckEl.checked : !!(quote && quote.has_penalty_clause);
-      const livePenaltyWeeks = (() => {
-        if (!penaltyWeeksEl) return quote && quote.penalty_clause_weeks != null ? Number(quote.penalty_clause_weeks) : null;
-        const raw = penaltyWeeksEl.value.trim();
-        return raw === '' ? null : Number(raw);
-      })();
-      const cachedPenalty = !!(quote && quote.has_penalty_clause);
-      const cachedPenaltyWeeks = quote && quote.penalty_clause_weeks != null ? Number(quote.penalty_clause_weeks) : null;
-      const penaltyChanged = livePenalty !== cachedPenalty || livePenaltyWeeks !== cachedPenaltyWeeks;
-      const needsQuoteSave = soldChanged
-        || penaltyChanged
-        || Object.keys(pendingPeople).length
-        || Object.keys(pendingQuoted).length;
-      if (needsQuoteSave) {
+      // 1) Quote (people + quoted_overrides)
+      if (Object.keys(pendingPeople).length || Object.keys(pendingQuoted).length) {
         const updated = { ...(quote || {}) };
-        // Carry all contract fields forward — sold delivery + penalty
-        // — so partial Applies don't lose what's already saved.
-        updated.sold_delivery_weeks = liveSold;
-        updated.has_penalty_clause = livePenalty;
-        updated.penalty_clause_weeks = livePenaltyWeeks;
         updated.people_breakdown = { ...(updated.people_breakdown || {}) };
         updated.quoted_overrides = { ...(updated.quoted_overrides || {}) };
         for (const [k, v] of Object.entries(pendingPeople)) updated.people_breakdown[k] = v;
@@ -12228,112 +9889,30 @@ async function openQuoteCompareModal(project, providedQuote) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(updated),
         });
-        // Keep local + state cache in sync so the stats popup and a
-        // second Apply see the freshly-saved values.
-        quote = updated;
-        state.projectQuotes[project] = updated;
-        if (typeof renderProjectStatsPopup === 'function') {
-          try { renderProjectStatsPopup(); } catch (_) {}
-        }
       }
-      // 2) Weeks → task duration_days (and optionally consolidation).
-      // Sales mode + a row with consolidateAs + 2+ tasks in the bucket →
-      // collapse to a single task whose duration matches the new weeks.
-      // Otherwise: detailed mode (or single-task bucket) just scales
-      // duration_days proportionally across the existing tasks.
-      let consolidatedCount = 0;
-      // Build a unified list of rows to process:
-      //   - every row the user edited Weeks on
-      //   - every sales combined row with >1 contributing task (consolidates
-      //     even when the user didn't manually edit weeks)
-      const processedKeys = new Set();
-      const apply = [];
-      for (const [rowKey, w] of Object.entries(pendingWeeks)) {
+      // 2) Weeks ΓåÆ task duration_days (proportional across multi-task buckets)
+      for (const [rowKey, newWeeks] of Object.entries(pendingWeeks)) {
         const r = rowsByKey[rowKey];
         if (!r) continue;
-        apply.push({ r, newWeeks: w });
-        processedKeys.add(rowKey);
-      }
-      for (const r of pendingConsolidationRows()) {
-        if (processedKeys.has(r.k)) continue;
-        // No explicit weeks edit — use the current totalWeeks for this row
-        // (computed from the current scheduled days across keys).
-        const keys = r.keys || [r.k];
-        const days = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
-        const weeks = days > 0 ? days / 5 : 0;
-        apply.push({ r, newWeeks: weeks });
-        processedKeys.add(r.k);
-      }
-      // Snap duration_days to the nearest 2.5 — Dan rule: weeks display as
-      // whole or half values ONLY. 2.5 work-days = 0.5 work-weeks; anything
-      // else produces awkward 9.6W / 6.2W / 1.6W cells.
-      const snapHalfWeek = (days) => Math.max(0, Math.round(Number(days) / 2.5) * 2.5);
-      // Detailed mode: also apply pendingAlloc — each row maps to one task,
-      // each task can carry its own allocation %.
-      for (const [rowKey, alloc] of Object.entries(pendingAlloc)) {
-        const r = rowsByKey[rowKey];
-        if (!r || !r.taskId) continue;
-        await api.update(r.taskId, { allocation: alloc });
-      }
-      for (const { r, newWeeks } of apply) {
-        // Detailed mode path — single task per row. Update that task's
-        // duration_days directly, no proportional scaling needed.
-        if (r.taskId) {
-          const newDays = snapHalfWeek(newWeeks * 5);
-          await api.update(r.taskId, { duration_days: newDays });
-          continue;
-        }
         const keys = r.keys || [r.k];
         const taskIds = keys.flatMap(k => bucketTaskIds[k] || []);
         if (taskIds.length === 0) continue;
-        const newDays = snapHalfWeek(newWeeks * 5);
-
-        const shouldConsolidate = isSales && r.consolidateAs && taskIds.length > 1;
-        if (shouldConsolidate) {
-          // Pick the survivor: prefer a task whose name already matches the
-          // canonical consolidated name; otherwise take the lowest-id task
-          // (deterministic, won't pick a clone). Rename + resize the
-          // survivor; delete the rest.
-          const tasks = taskIds
-            .map(id => state.tasks.find(x => x.id === id))
-            .filter(Boolean);
-          let survivor = tasks.find(t => (t.name || '').trim() === r.consolidateAs);
-          if (!survivor) survivor = tasks.reduce((a, b) => (a.id <= b.id ? a : b));
-          await api.update(survivor.id, {
-            duration_days: newDays,
-            name: r.consolidateAs,
-          });
-          for (const t of tasks) {
-            if (t.id === survivor.id) continue;
-            await api.remove(t.id);
-            consolidatedCount++;
-          }
-        } else if (taskIds.length === 1) {
+        const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
+        const newDays = newWeeks * 5;
+        if (taskIds.length === 1 || currentTotalDays === 0) {
           await api.update(taskIds[0], { duration_days: newDays });
         } else {
-          // Multi-task bucket without consolidation (detailed mode, or a
-          // sales row without a canonical target) — scale proportionally
-          // so each contributing task keeps its share of the total. Snap
-          // each scaled duration to the nearest half-week.
-          const currentTotalDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
-          if (currentTotalDays === 0) {
-            await api.update(taskIds[0], { duration_days: newDays });
-          } else {
-            for (const id of taskIds) {
-              const t = state.tasks.find(x => x.id === id);
-              if (!t) continue;
-              const oldD = Number(t.duration_days) || 0;
-              const scaled = snapHalfWeek((oldD / currentTotalDays) * newDays);
-              await api.update(id, { duration_days: scaled });
-            }
+          for (const id of taskIds) {
+            const t = state.tasks.find(x => x.id === id);
+            if (!t) continue;
+            const oldD = Number(t.duration_days) || 0;
+            const scaled = (oldD / currentTotalDays) * newDays;
+            await api.update(id, { duration_days: scaled });
           }
         }
       }
       await loadTasks();
-      const msg = consolidatedCount > 0
-        ? `Schedule updated — ${consolidatedCount} task(s) consolidated.`
-        : 'Schedule updated.';
-      showToast(msg, { kind: 'success' });
+      showToast('Schedule updated.', { kind: 'success' });
       close();
     } catch (err) {
       showToast('Failed to apply: ' + (err.message || err), { kind: 'error' });
@@ -12341,7 +9920,7 @@ async function openQuoteCompareModal(project, providedQuote) {
   }
   overlay.querySelector('[data-action="apply"]').addEventListener('click', applyChanges);
 
-  // "Load estimate file…" — pick an xlsx, parse it, PERSIST the quote on the
+  // "Load estimate fileΓÇª" ΓÇö pick an xlsx, parse it, PERSIST the quote on the
   // project so future opens of this modal show the comparison without
   // re-loading. Reopens this modal with the saved quote.
   const fileEl = overlay.querySelector('#quote-compare-file');
@@ -12381,7 +9960,7 @@ async function openQuoteCompareModal(project, providedQuote) {
           },
         };
         // Persist on the project so future opens of this modal load it
-        // automatically — no need to pick the file every time.
+        // automatically ΓÇö no need to pick the file every time.
         try {
           await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
             method: 'POST',
@@ -12400,7 +9979,7 @@ async function openQuoteCompareModal(project, providedQuote) {
 
 function openFinancialsModal(project) {
   if (!project) {
-    alert('Pick a project tab first — financial milestones live on a specific project.');
+    alert('Pick a project tab first ΓÇö financial milestones live on a specific project.');
     return;
   }
   // Remove any previous instance
@@ -12421,50 +10000,32 @@ function openFinancialsModal(project) {
         <h2>Financial milestones</h2>
         <div class="modal-subtitle">${escapeHtml(project)}</div>
       </div>
-      <button type="button" class="modal-close" title="Close">×</button>
+      <button type="button" class="modal-close" title="Close">├ù</button>
     </div>
-    <div class="financials-loading">Loading financial milestones…</div>
+    <div class="financials-loading">Loading financial milestonesΓÇª</div>
   `;
 
-  // Track in-flight save promises so close() can wait for them
-  // before refreshing the cache. Without this, clicking the X while
-  // a save is mid-fetch could re-load stale data from the server
-  // and leave the footer Financials button stuck red.
-  const _pendingSaves = new Set();
-  // On close — force a fresh load of state.financials[project] from
-  // the server and re-evaluate the footer Financials button. This
-  // catches the case where an input's `change` event didn't fire
-  // before the modal closed (clicked Done while still focused on a
-  // field), so the cache + button stay in sync.
-  const close = async () => {
-    // Trigger any pending blur-driven save by yanking focus.
-    if (document.activeElement && backdrop.contains(document.activeElement)) {
-      document.activeElement.blur();
-    }
-    // Wait for any in-flight saves to settle before we re-fetch.
-    if (_pendingSaves.size > 0) {
-      try { await Promise.all([..._pendingSaves]); } catch (_) {}
-    }
-    backdrop.remove();
-    try { await loadFinancialsForProject(project); } catch (_) {}
-    try { refreshFinancialsButtonState(); } catch (_) {}
-  };
+  const close = () => backdrop.remove();
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
   modal.querySelector('.modal-close').addEventListener('click', close);
   document.addEventListener('keydown', function onEsc(e) {
     if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); }
   });
 
-  // Static head — Show-on-Gantt toggle dropped (v_dashboard rework).
-  // The same flag lives on the schedule toolbar's $ view-bracket icon,
-  // so a second copy here was redundant.
+  // Re-rendered on every render() so the checkbox reflects the current overlay state.
   const headHtml = () => `
     <div class="modal-head">
       <div class="modal-title">
         <h2>Financial milestones</h2>
         <div class="modal-subtitle">${escapeHtml(project)}</div>
       </div>
-      <button type="button" class="modal-close" title="Close">×</button>
+      <div class="financials-head-actions">
+        <label class="financials-show-on-gantt" title="Overlay these milestones as $ diamonds along the top of the Gantt">
+          <input type="checkbox" id="financials-show-on-gantt" ${state.showFinancials ? 'checked' : ''} />
+          <span>Show on Gantt</span>
+        </label>
+        <button type="button" class="modal-close" title="Close">├ù</button>
+      </div>
     </div>`;
 
   const render = async (opts = {}) => {
@@ -12479,7 +10040,7 @@ function openFinancialsModal(project) {
       modal.innerHTML = headHtml() + `
         <div class="financials-error">
           <p><strong>Financial milestones aren't available yet.</strong></p>
-          <p>The server needs to be restarted to add the financial milestones table and API endpoints. Stop the running server and re-launch it — then refresh this page.</p>
+          <p>The server needs to be restarted to add the financial milestones table and API endpoints. Stop the running server and re-launch it ΓÇö then refresh this page.</p>
         </div>
         <div class="modal-foot">
           <button type="button" class="btn-primary" id="financials-done">Close</button>
@@ -12492,20 +10053,14 @@ function openFinancialsModal(project) {
     modal.innerHTML = headHtml() + `
       <div class="financials-table-wrap">
         <table class="financials-table">
-          <colgroup>
-            <col class="col-percent" />
-            <col class="col-name" />
-            <col class="col-trigger" />
-            <col class="col-date" />
-            <col class="col-paid" />
-          </colgroup>
           <thead>
             <tr>
-              <th class="num">%</th>
-              <th>Description</th>
-              <th title="Predecessor — same syntax as the task Predecessors column. Accepts a task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag (e.g. 'FAT +1w', '12 +3d'). Blank = no automatic date; fill in the Date column manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
+              <th>Name</th>
+              <th title="Predecessor ΓÇö anchor name (PO / Power-Up / FAT / Ship) or task line number, with optional lag like '+1w'.">Trigger</th>
               <th>Date</th>
+              <th class="num">%</th>
               <th class="paid" title="Check when the invoice has been sent. The Gantt line goes from dashed to solid.">Sent</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -12514,15 +10069,16 @@ function openFinancialsModal(project) {
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
               return `
-                <tr data-id="${r.id}" title="Right-click to add or delete a milestone">
-                  <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
-                  <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
-                  <td><input type="text" data-field="predecessors" value="${escapeHtml(r.predecessors || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
+                <tr data-id="${r.id}">
+                  <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Down Payment" /></td>
+                  <td><input type="text" data-field="predecessors" value="${escapeHtml(r.predecessors || '')}" placeholder="e.g. FAT  or  FAT +1w" /></td>
                   <td>
                     <input type="date" data-field="due_date" value="${dateValue}"
-                      ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
+                      ${dateDisabled ? 'disabled title="Auto-derived from the Trigger ΓÇö clear Trigger to set manually"' : ''} />
                   </td>
+                  <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                   <td class="paid"><input type="checkbox" data-field="paid" ${r.paid ? 'checked' : ''} /></td>
+                  <td><button type="button" class="remove-btn" data-action="delete" title="Delete">├ù</button></td>
                 </tr>
               `;
             }).join('')}
@@ -12547,76 +10103,56 @@ function openFinancialsModal(project) {
   const bindFinancialsModalHandlers = () => {
     modal.querySelector('.modal-close').addEventListener('click', close);
     modal.querySelector('#financials-done').addEventListener('click', close);
-    // (Show-on-Gantt checkbox + handler removed — the $ toolbar icon
-    //  already owns state.showFinancials.)
+
+    // Show on Gantt checkbox ΓÇö drives the same state.showFinancials flag the
+    // Filters popover view-options toggle uses. Re-renders the Gantt immediately
+    // so the user sees the overlay appear/disappear without closing the modal.
+    // Also refresh the filters popover so its toggle reflects the new state.
+    const showCb = modal.querySelector('#financials-show-on-gantt');
+    if (showCb) {
+      showCb.addEventListener('change', async () => {
+        state.showFinancials = showCb.checked;
+        saveScheduleView();
+        if (state.showFinancials) await loadFinancialsForAllOpenProjects();
+        renderFilters();
+        renderGantt();
+      });
+    }
 
     modal.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
-      // Right-click any row → context menu with Add / Delete. Replaces
-      // the per-row "×" delete column so the table stays compact.
-      tr.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        const items = [
-          { label: '+ Add milestone below', onClick: async () => {
-              await api.financials.create({ project, name: '' });
-              await loadFinancialsForProject(project);
-              await render({ focusLastNameInput: true });
-              if (state.showFinancials) renderGantt();
-              try { refreshFinancialsButtonState(); } catch (_) {}
-          }},
-          { separator: true },
-          { label: 'Delete this milestone…', danger: true, onClick: async () => {
-              const row = (state.financials[project] || []).find(r => r.id === id);
-              const ok = await showConfirmDialog({
-                title: 'Delete financial milestone?',
-                message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`,
-                okLabel: 'Delete',
-                danger: true,
-              });
-              if (!ok) return;
-              await api.financials.remove(id);
-              await loadFinancialsForProject(project);
-              await render();
-              if (state.showFinancials) renderGantt();
-              try { refreshFinancialsButtonState(); } catch (_) {}
-          }},
-        ];
-        showContextMenu(e.clientX, e.clientY, items);
-      });
       tr.querySelectorAll('input[data-field], select[data-field]').forEach(el => {
-        el.addEventListener('change', () => {
+        el.addEventListener('change', async () => {
           const field = el.dataset.field;
           let value;
           if (el.type === 'checkbox') value = el.checked ? 1 : 0;
           else if (el.type === 'number') value = el.value === '' ? null : Number(el.value);
           else value = el.value || null;
-          // Build the save promise + register it so close() can await
-          // it before refreshing state.financials. Without this, a
-          // close mid-save would re-fetch BEFORE the save committed
-          // and the footer button would stay red.
-          const savePromise = (async () => {
-            try {
-              await api.financials.update(id, { [field]: value });
-              await loadFinancialsForProject(project);
-              if (field === 'predecessors') await render();
-              if (state.showFinancials) renderGantt();
-              try { refreshFinancialsButtonState(); } catch (_) {}
-            } catch (err) {
-              console.warn('[financial save]', err);
-            }
-          })();
-          _pendingSaves.add(savePromise);
-          savePromise.finally(() => _pendingSaves.delete(savePromise));
+          await api.financials.update(id, { [field]: value });
+          await loadFinancialsForProject(project);
+          await render();
+          if (state.showFinancials) renderGantt();
         });
       });
-      // Per-row × delete button removed in v_dashboard rework — right-
-      // click context menu now handles delete (see contextmenu handler
-      // above) so the table stays a compact 5 columns instead of 6.
+      tr.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+        const row = (state.financials[project] || []).find(r => r.id === id);
+        const ok = await showConfirmDialog({
+          title: 'Delete financial milestone?',
+          message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`,
+          okLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
+        await api.financials.remove(id);
+        await loadFinancialsForProject(project);
+        await render();
+        if (state.showFinancials) renderGantt();
+      });
     });
 
-    // + Add milestone — drops an empty row at the bottom of the table and focuses
+    // + Add milestone ΓÇö drops an empty row at the bottom of the table and focuses
     // its Name cell. NO browser prompt(), which was the "stupid-ass pop-up at the
-    // top of the window" — that's the native JS prompt and there's no way to style
+    // top of the window" ΓÇö that's the native JS prompt and there's no way to style
     // or position it. Inline focus is cleaner.
     modal.querySelector('#financials-add').addEventListener('click', async () => {
       await api.financials.create({ project, name: '' });
@@ -12629,7 +10165,7 @@ function openFinancialsModal(project) {
   render();
 }
 
-// Cross-panel row highlight — when the user hovers a grid row, light up the SAME
+// Cross-panel row highlight ΓÇö when the user hovers a grid row, light up the SAME
 // row on the Gantt with a translucent horizontal stripe. Lets you cross-reference
 // "which bar is task #14" without squinting at the row alignment. The Gantt SVG
 // gets a single <rect> injected behind the bar-wrappers; hovering away removes it.
@@ -12650,7 +10186,7 @@ function setupRowCrossHighlight() {
   });
 }
 
-// Personal-view counterpart — hover an .apl-row in the personal grid, the
+// Personal-view counterpart ΓÇö hover an .apl-row in the personal grid, the
 // matching bar in the personal Gantt gets a translucent stripe across it
 // (same pattern as the main schedule's setupRowCrossHighlight).
 function setupPersonalRowCrossHighlight() {
@@ -12693,14 +10229,14 @@ function highlightPersonalGanttRow(taskId) {
 
 // Draw (or clear) a translucent horizontal stripe at the Y of the bar-wrapper that
 // matches `taskId`. Inserted as the LAST child of the SVG so paint-order puts it
-// ON TOP of bars/arrows/diamonds — combined with low fill-opacity that reads as a
+// ON TOP of bars/arrows/diamonds ΓÇö combined with low fill-opacity that reads as a
 // tinted overlay band rather than fully obscuring the work underneath. Going
 // "underneath" via insertBefore is fragile because frappe-gantt wraps bar-wrappers
 // in nested <g> groups, so cross-node insertBefore throws.
 function highlightGanttRow(taskId) {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
-  // Always strip the previous highlight first — one row at a time.
+  // Always strip the previous highlight first ΓÇö one row at a time.
   svg.querySelectorAll('.gantt-row-highlight').forEach(el => el.remove());
   if (taskId == null) return;
   const wrap = svg.querySelector(`.bar-wrapper[data-id="${taskId}"]`);
@@ -12718,12 +10254,12 @@ function highlightGanttRow(taskId) {
   rect.setAttribute('y', y - 4);
   rect.setAttribute('width',  w);
   rect.setAttribute('height', h + 8);
-  // Append at the end so it paints on TOP of bars — fill-opacity keeps the bars
+  // Append at the end so it paints on TOP of bars ΓÇö fill-opacity keeps the bars
   // readable underneath. CSS handles fill and opacity.
   svg.appendChild(rect);
 }
 
-// Click-and-drag horizontal pan in the grid panel — same UX as the gantt panel. A 4-px
+// Click-and-drag horizontal pan in the grid panel ΓÇö same UX as the gantt panel. A 4-px
 // movement threshold distinguishes pan from a click on a cell (which still enters edit mode).
 function setupGridPan() {
   const panel = document.getElementById('schedule-grid');
@@ -12747,7 +10283,7 @@ function setupGridPan() {
         // Clear any selection the browser kicked off in the first 4px of mouse
         // movement before we hit the panning threshold. Without this, headers /
         // group rows get a blue highlight that persists until the user clicks
-        // somewhere else — especially obvious when the scroll hits the left edge
+        // somewhere else ΓÇö especially obvious when the scroll hits the left edge
         // and the drag has nowhere to go.
         try { window.getSelection()?.removeAllRanges(); } catch (_) {}
       }
@@ -12776,7 +10312,7 @@ function setupGridPan() {
 // v4.72: showSectionPicker accepts an opts.okLabel override (and an opts.title).
 // Default "Create" still works for the schedule's + Add task / + Add action
 // flows where the picker DOES commit the new task. The Actions page quick-add
-// passes okLabel:"Done" because that picker is just stashing the section —
+// passes okLabel:"Done" because that picker is just stashing the section ΓÇö
 // the actual create happens later when the user hits + Add action.
 function showSectionPicker(x, y, onPick, opts = {}) {
   const okLabel = opts.okLabel || 'Create';
@@ -12793,11 +10329,11 @@ function showSectionPicker(x, y, onPick, opts = {}) {
   pop.innerHTML = `
     <div class="section-picker-title">${escapeHtml(title)}</div>
     <select class="sp-group">
-      <option value="">— phase group —</option>
+      <option value="">ΓÇö phase group ΓÇö</option>
       ${HIERARCHY.map(g => `<option value="${g.key}">${escapeHtml(g.label)}</option>`).join('')}
     </select>
-    <select class="sp-dept" disabled><option value="">— pick phase group first —</option></select>
-    <select class="sp-sub" disabled><option value="">— optional —</option></select>
+    <select class="sp-dept" disabled><option value="">ΓÇö pick phase group first ΓÇö</option></select>
+    <select class="sp-sub" disabled><option value="">ΓÇö optional ΓÇö</option></select>
     <div class="section-picker-hint">Leave department blank for a cross-cutting task (e.g. FAT) that spans the whole phase.</div>
     <div class="section-picker-actions">
       <button type="button" class="btn-ghost sp-cancel">Cancel</button>
@@ -12813,8 +10349,8 @@ function showSectionPicker(x, y, onPick, opts = {}) {
   let left = Math.max(margin, Math.min(x, window.innerWidth - popW - margin));
   let top  = y;
   if (top + popH > window.innerHeight - margin) {
-    // Doesn't fit below the anchor — flip up. y was anchor.bottom + 6 in callers,
-    // so anchor.bottom ≈ y - 6; flipped popup top = anchor.bottom - 6 - popH.
+    // Doesn't fit below the anchor ΓÇö flip up. y was anchor.bottom + 6 in callers,
+    // so anchor.bottom Γëê y - 6; flipped popup top = anchor.bottom - 6 - popH.
     top = Math.max(margin, y - 12 - popH);
   }
   pop.style.left = left + 'px';
@@ -12827,26 +10363,26 @@ function showSectionPicker(x, y, onPick, opts = {}) {
   gSel.addEventListener('change', () => {
     const group = GROUP_BY_KEY[gSel.value];
     if (group) {
-      dSel.innerHTML = '<option value="">— cross-cutting (no department) —</option>' +
+      dSel.innerHTML = '<option value="">ΓÇö cross-cutting (no department) ΓÇö</option>' +
         group.departments.map(d => `<option value="${d.key}">${escapeHtml(d.label)}</option>`).join('');
       dSel.disabled = false;
     } else {
-      dSel.innerHTML = '<option value="">— pick phase group first —</option>';
+      dSel.innerHTML = '<option value="">ΓÇö pick phase group first ΓÇö</option>';
       dSel.disabled = true;
     }
     dSel.value = '';
-    sSel.innerHTML = '<option value="">— optional —</option>';
+    sSel.innerHTML = '<option value="">ΓÇö optional ΓÇö</option>';
     sSel.disabled = true;
     sSel.value = '';
   });
   dSel.addEventListener('change', () => {
     const dept = window.findDepartment(gSel.value, dSel.value);
     if (dept && dept.subs.length > 0) {
-      sSel.innerHTML = '<option value="">— optional —</option>' +
+      sSel.innerHTML = '<option value="">ΓÇö optional ΓÇö</option>' +
         dept.subs.map(s => `<option value="${s.key}">${escapeHtml(s.label)}</option>`).join('');
       sSel.disabled = false;
     } else {
-      sSel.innerHTML = '<option value="">— optional —</option>';
+      sSel.innerHTML = '<option value="">ΓÇö optional ΓÇö</option>';
       sSel.disabled = true;
     }
     sSel.value = '';
@@ -12878,9 +10414,9 @@ function showSectionPicker(x, y, onPick, opts = {}) {
 
 // ---------- Settings / theme ----------
 const SECTION_COLOR_DEFAULTS = {
-  // Sections default to a light neutral gray — only this top level shows a colored
+  // Sections default to a light neutral gray ΓÇö only this top level shows a colored
   // block; departments and sub-departments rely on indentation alone for hierarchy.
-  // Keys MUST match HIERARCHY[].key — if not, applySectionColors writes an undefined
+  // Keys MUST match HIERARCHY[].key ΓÇö if not, applySectionColors writes an undefined
   // value and the section row goes transparent (which is why section 50 was missing
   // its gray bar).
   design_build:     '#e2e8f0', // slate-200
@@ -12890,25 +10426,25 @@ const SECTION_COLOR_DEFAULTS = {
 
 // Anchor milestones (Receipt of PO, Machine Power-Up, FAT, Ship Machine) all share
 // one color. Default to SDC lime ("good things, brand-aligned"); user picks on Setup
-// → Anchor Color.
+// ΓåÆ Anchor Color.
 const ANCHOR_COLOR_DEFAULTS = {
-  fill: '#befa4f', // SDC lime — brand palette
-  text: '#0f172a', // slate-900 — contrasts the light lime for label/stroke
+  fill: '#befa4f', // SDC lime ΓÇö brand palette
+  text: '#0f172a', // slate-900 ΓÇö contrasts the light lime for label/stroke
 };
 
-// % complete pill color scheme — four states, each just a background fill.
+// % complete pill color scheme ΓÇö four states, each just a background fill.
 // Text is always black for consistency; the fill is what changes between
 // states (slate / red / green / emerald by default). Drives the right-edge
 // pill inside the Task column on the Schedule grid.
 const PCT_COLOR_DEFAULTS = {
-  zero:    '#fafbfc', // near-white — 0%, not started (subtle, doesn't draw the eye)
-  behind:  '#fee2e2', // soft red — 1–99% AND behind schedule
-  ontrack: '#dcfce7', // soft green — 1–99% AND on/ahead
-  done:    '#16a34a', // deep green — 100% complete (white ✓ inside, matches milestone done)
+  zero:    '#fafbfc', // near-white ΓÇö 0%, not started (subtle, doesn't draw the eye)
+  behind:  '#fee2e2', // soft red ΓÇö 1ΓÇô99% AND behind schedule
+  ontrack: '#dcfce7', // soft green ΓÇö 1ΓÇô99% AND on/ahead
+  done:    '#16a34a', // deep green ΓÇö 100% complete (white Γ£ô inside, matches milestone done)
 };
 const PCT_COLOR_KEYS = ['zero', 'behind', 'ontrack', 'done'];
-// Normalize the saved pct_colors value into the simple { key → hex } form. Earlier
-// builds saved { key → { fill, text } } objects; this absorbs either shape.
+// Normalize the saved pct_colors value into the simple { key ΓåÆ hex } form. Earlier
+// builds saved { key ΓåÆ { fill, text } } objects; this absorbs either shape.
 function normalizePctColors(raw) {
   const out = {};
   for (const k of PCT_COLOR_KEYS) {
@@ -12979,8 +10515,8 @@ async function loadSettings() {
   if (!state.settings.hierarchy_colors)  state.settings.hierarchy_colors  = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   if (!state.settings.anchor_color)      state.settings.anchor_color      = { ...ANCHOR_COLOR_DEFAULTS };
   if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 12;
-  // Always normalize — older builds saved { key → { fill, text } } objects;
-  // current shape is { key → "#hex" }. normalizePctColors handles both.
+  // Always normalize ΓÇö older builds saved { key ΓåÆ { fill, text } } objects;
+  // current shape is { key ΓåÆ "#hex" }. normalizePctColors handles both.
   state.settings.pct_colors = normalizePctColors(state.settings.pct_colors);
   if (settings.theme) applyTheme(settings.theme);
   applySectionColors(state.settings.section_colors);
@@ -13000,7 +10536,7 @@ async function loadSettings() {
 // "+ Add member" button is always the last element. Rows are drag-reorderable
 // within a card so a manager can group their team by specialty / pod / etc.
 // ----------------------------------------------------------------------------
-// v4.61 — Action Items master page (left sidebar > Actions).
+// v4.61 ΓÇö Action Items master page (left sidebar > Actions).
 // Lists every action item (is_action = 1) across every project. Two buckets:
 //   active = progress < 100 (default)
 //   closed = progress >= 100
@@ -13017,7 +10553,7 @@ const _actionsPageState = {
     assignee: '',
     discipline: '',
   },
-  // v4.63: when set, the page flips to "personal" mode for that team member —
+  // v4.63: when set, the page flips to "personal" mode for that team member ΓÇö
   // the list shows ONLY their assigned tasks + actions (across every project),
   // and a summary strip up top mirrors the Departments per-person dashboard.
   // 'everyone' (or empty) = manager / team-wide view. Persists in localStorage.
@@ -13062,7 +10598,7 @@ function personalFilterPass(task, todayISO) {
   const futureDue = !!(task.end_date && task.end_date > todayISO);
   if (pf.hideDone && isDone) return false;
   // Overdue & Ahead are OR'd together when both are on (matches the main
-  // Schedule popover semantics — each toggle widens the set).
+  // Schedule popover semantics ΓÇö each toggle widens the set).
   if (pf.overdue && pf.ahead) {
     return (pastDue && !isDone) || (isDone && futureDue);
   }
@@ -13083,7 +10619,7 @@ function renderActionsPage() {
   const tabs = document.getElementById('actions-page-tabs');
   if (!tabs) return;
 
-  // Tabs (Active / Closed) — wire once. Use a marker dataset attribute so
+  // Tabs (Active / Closed) ΓÇö wire once. Use a marker dataset attribute so
   // we only attach the handler the first time renderActionsPage runs.
   if (!tabs.dataset.wired) {
     tabs.dataset.wired = '1';
@@ -13099,10 +10635,10 @@ function renderActionsPage() {
   });
 
   // Personal view moved to the main Schedule (the routePersonalMode flow)
-  // so the Actions tab is now ALWAYS the manager view — quick-add, filter
+  // so the Actions tab is now ALWAYS the manager view ΓÇö quick-add, filter
   // chips, action list, dept dashboard. We don't toggle .is-signed-in
   // anymore (which used to hide the whole Actions page when a person was
-  // signed in — leaving you with a blank screen when you clicked Actions
+  // signed in ΓÇö leaving you with a blank screen when you clicked Actions
   // while signed in on the Schedule view).
   const pageRoot = document.querySelector('.actions-page');
   if (pageRoot) {
@@ -13123,7 +10659,7 @@ function renderActionsPage() {
   // pickers. Templates are scaffolding (e.g. SDC_StandardProject_Template)
   // and shouldn't be a valid target for new action items; Sales projects
   // are pre-quote work where the user explicitly doesn't want staffing
-  // assignments — same exclusions used by the Departments dashboard.
+  // assignments ΓÇö same exclusions used by the Departments dashboard.
   const projects = uniqueValues('project')
     .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
     .sort();
@@ -13131,7 +10667,7 @@ function renderActionsPage() {
   const prevQaProj  = projSel?.value || '';
   const prevFltProj = filterProjSel?.value || '';
   const prevFltAsg  = filterAsgSel?.value  || '';
-  if (projSel)        projSel.innerHTML       = '<option value="">— pick project —</option>'  + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  if (projSel)        projSel.innerHTML       = '<option value="">ΓÇö pick project ΓÇö</option>'  + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
   if (filterProjSel)  filterProjSel.innerHTML = '<option value="">All projects</option>'      + projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
   if (filterAsgSel)   filterAsgSel.innerHTML  = '<option value="">All people</option>'        + people.map(a   => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
   if (projSel       && prevQaProj)  projSel.value       = prevQaProj;
@@ -13150,13 +10686,13 @@ function renderActionsPage() {
     // Grouped by section via <optgroup> so the user can scan visually.
     // Each option's value encodes the full {g, d, s, discipline} so the
     // create handler resolves the schedule location AND assignee
-    // placeholder from one pick — no separate department field.
+    // placeholder from one pick ΓÇö no separate department field.
     const sectionGroups = [
-      { key: 'design_build',    label: '10 — Design & Build' },
-      { key: 'machine_testing', label: '40 — Machine Testing' },
-      { key: 'teardown_install',label: '50 — Teardown & Install' },
+      { key: 'design_build',    label: '10 ΓÇö Design & Build' },
+      { key: 'machine_testing', label: '40 ΓÇö Machine Testing' },
+      { key: 'teardown_install',label: '50 ΓÇö Teardown & Install' },
     ];
-    qaWhere.innerHTML = '<option value="">— pick —</option>' +
+    qaWhere.innerHTML = '<option value="">ΓÇö pick ΓÇö</option>' +
       sectionGroups.map(g => {
         const opts = buildFunctionOptions(g.key);
         return `<optgroup label="${escapeHtml(g.label)}">` +
@@ -13200,7 +10736,7 @@ function renderActionsPage() {
         return;
       }
       // Reset only Task + Due. Project / Section / Function stay because
-      // consecutive actions usually share them — users hated re-picking
+      // consecutive actions usually share them ΓÇö users hated re-picking
       // those every time.
       qaTitle.value = '';
       qaDue.value   = '';
@@ -13277,7 +10813,7 @@ function renderActionsPage() {
   if (f.project)    actions = actions.filter(t => t.project === f.project);
   if (f.assignee)   actions = actions.filter(t => t.assignee === f.assignee);
   if (f.discipline) actions = actions.filter(t => actionDisciplineKey(t) === f.discipline);
-  // (Personal-view filter removed — personal view now lives on the
+  // (Personal-view filter removed ΓÇö personal view now lives on the
   // Schedule tab. The Actions tab is always the manager view and shows
   // every action; users filter to a specific person via the All people
   // dropdown above, not via "signed in" state.)
@@ -13295,7 +10831,7 @@ function renderActionsPage() {
   // Render rows.
   const list = document.getElementById('actions-list');
   if (!list) return;
-  // v4.62 BUGFIX: build the empty-state INLINE — previously the empty <p>
+  // v4.62 BUGFIX: build the empty-state INLINE ΓÇö previously the empty <p>
   // lived in static HTML and got removed by innerHTML rewrites, then null
   // references caused renders to throw silently and leave the list stuck.
   if (actions.length === 0) {
@@ -13314,13 +10850,13 @@ function renderActionsPage() {
     };
     // v4.68: list now has a header row, inline-editable Assigned-To, and an
     // explicit "Open" arrow per row. Clicking the row body no longer jumps
-    // anywhere — the user wanted to be able to interact with the row without
+    // anywhere ΓÇö the user wanted to be able to interact with the row without
     // accidentally navigating to the project schedule.
     // v4.74: per-row team filter. The Assigned To dropdown now shows ONLY
-    // the team members in THIS action's department (mech actions → mech
+    // the team members in THIS action's department (mech actions ΓåÆ mech
     // engineers, etc.). Placeholders are dropped from the option list
-    // because "— unassigned —" already represents that state — and the
-    // dropdown selects "— unassigned —" when the saved assignee IS a
+    // because "ΓÇö unassigned ΓÇö" already represents that state ΓÇö and the
+    // dropdown selects "ΓÇö unassigned ΓÇö" when the saved assignee IS a
     // placeholder, so placeholders read as unassigned in the UI.
     const teamByDiscipline = (() => {
       const map = {};
@@ -13343,7 +10879,7 @@ function renderActionsPage() {
       }
       return base;
     };
-    // v4.70: header row — every column has a uniform-styled <span> header.
+    // v4.70: header row ΓÇö every column has a uniform-styled <span> header.
     // The previous build re-used the data-row classes (each with their own
     // font-size / weight / color / padding overrides), so headers came out
     // visually inconsistent. CSS now resets every header cell to the same
@@ -13360,7 +10896,7 @@ function renderActionsPage() {
         <span class="actions-hdr-delete"></span>
       </div>`;
     // v4.74: group rows by department so each discipline reads as a self-
-    // contained block. Order: Mech → Controls → Build → Wire → Other.
+    // contained block. Order: Mech ΓåÆ Controls ΓåÆ Build ΓåÆ Wire ΓåÆ Other.
     // Each group has a dotted-line header in the discipline's color.
     const GROUP_ORDER = ['mech', 'controls', 'build', 'wire', 'other'];
     const GROUP_LABELS = { mech: 'Mech Eng', controls: 'Controls Eng', build: 'Build', wire: 'Wire', other: 'Cross-cutting' };
@@ -13376,15 +10912,15 @@ function renderActionsPage() {
       const dkey = actionDisciplineKey(t);
       const dColor = disciplineColor[dkey] || { bg: '#f1f5f9', fg: '#475569' };
       const dueLabel = done && t.completed_on
-        ? `${fmtDate(t.completed_on)} ✓`
-        : (t.end_date ? fmtDate(t.end_date) : '—');
-      // v4.74: placeholder assignees show as "— unassigned —" in the dropdown.
+        ? `${fmtDate(t.completed_on)} Γ£ô`
+        : (t.end_date ? fmtDate(t.end_date) : 'ΓÇö');
+      // v4.74: placeholder assignees show as "ΓÇö unassigned ΓÇö" in the dropdown.
       // The dropdown options are filtered to this action's department.
       const assigneeUnassigned = !t.assignee || isPlaceholder(t.assignee);
       const rowTeam = teamForTask(t);
       const assignedSelect = `
-        <select class="actions-row-assignee-select" data-id="${t.id}" title="Assign — only ${escapeHtml(disciplineLabel[dkey] || 'team')} shown">
-          <option value="" ${assigneeUnassigned ? 'selected' : ''}>— unassigned —</option>
+        <select class="actions-row-assignee-select" data-id="${t.id}" title="Assign ΓÇö only ${escapeHtml(disciplineLabel[dkey] || 'team')} shown">
+          <option value="" ${assigneeUnassigned ? 'selected' : ''}>ΓÇö unassigned ΓÇö</option>
           ${rowTeam.map(n => `<option value="${escapeHtml(n)}" ${n === t.assignee && !assigneeUnassigned ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
         </select>`;
       return `
@@ -13392,11 +10928,11 @@ function renderActionsPage() {
           <input type="checkbox" class="actions-row-check" data-id="${t.id}" ${done ? 'checked' : ''} title="Mark done / not done">
           <span class="actions-row-name" title="${escapeHtml(t.name || '')}">${escapeHtml(t.name || '')}</span>
           <span class="actions-row-project" title="Project: ${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</span>
-          <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || '—')}">${assignedSelect}</span>
-          <span class="actions-row-dept" style="background:${dColor.bg};color:${dColor.fg}" title="${escapeHtml(disciplineLabel[dkey] || 'Cross-cutting')}">${dkey ? disciplineLabel[dkey] : '—'}</span>
+          <span class="actions-row-assignee" title="Assigned to: ${escapeHtml(t.assignee || 'ΓÇö')}">${assignedSelect}</span>
+          <span class="actions-row-dept" style="background:${dColor.bg};color:${dColor.fg}" title="${escapeHtml(disciplineLabel[dkey] || 'Cross-cutting')}">${dkey ? disciplineLabel[dkey] : 'ΓÇö'}</span>
           <span class="actions-row-due${done ? ' is-completed' : ''}" title="${done ? 'Completed date' : 'Due date'}">${dueLabel}</span>
-          <button type="button" class="actions-row-open" data-id="${t.id}" title="Open this action in the project schedule">→</button>
-          <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">×</button>
+          <button type="button" class="actions-row-open" data-id="${t.id}" title="Open this action in the project schedule">ΓåÆ</button>
+          <button type="button" class="actions-row-delete" data-id="${t.id}" title="Delete this action">├ù</button>
         </div>`;
     };
     // Build the grouped list. Skip groups with no items.
@@ -13415,7 +10951,7 @@ function renderActionsPage() {
     }
     list.innerHTML = headerHtml + groupedHtml;
 
-    // v4.68: Open button — explicit navigation. Row body is now non-clickable
+    // v4.68: Open button ΓÇö explicit navigation. Row body is now non-clickable
     // (no accidental jumps when the user tries to interact with the row).
     list.querySelectorAll('.actions-row-open').forEach(btn => {
       btn.addEventListener('click', (e) => {
@@ -13443,10 +10979,10 @@ function renderActionsPage() {
         e.stopPropagation();
         const id = Number(sel.dataset.id);
         let newAssignee = sel.value || null;
-        // v4.74: picking "— unassigned —" sets the assignee back to the
+        // v4.74: picking "ΓÇö unassigned ΓÇö" sets the assignee back to the
         // action's discipline Placeholder (ME Placeholder / CE Placeholder /
-        // etc.) — keeps the "every action has someone owning it" invariant.
-        // The dropdown will still display "— unassigned —" because the
+        // etc.) ΓÇö keeps the "every action has someone owning it" invariant.
+        // The dropdown will still display "ΓÇö unassigned ΓÇö" because the
         // selected assignee is a placeholder (handled in the render path).
         if (!newAssignee) {
           const task = state.tasks.find(x => x.id === id);
@@ -13483,7 +11019,7 @@ function renderActionsPage() {
   renderActionsDeptDashboard(allActions, todayMs);
 }
 
-// v4.65: two cascading dropdowns — Department → Person — instead of v4.63's
+// v4.65: two cascading dropdowns ΓÇö Department ΓåÆ Person ΓÇö instead of v4.63's
 // giant strip of every-team-member-as-a-chip. Department dropdown drives
 // what people show in the Person dropdown so the user doesn't have to scan
 // a wall of names. Picking a person sets personId; the existing Back-to-
@@ -13513,7 +11049,7 @@ function renderActionsPersonBar() {
   bar.innerHTML = `
     <div class="actions-person-bar-label">Sign in</div>
     <select class="actions-person-select" id="actions-person-dept" title="Pick your department first.">
-      <option value="">Department…</option>
+      <option value="">DepartmentΓÇª</option>
       <option value="mech"     ${dept === 'mech'     ? 'selected' : ''}>Mech Eng</option>
       <option value="controls" ${dept === 'controls' ? 'selected' : ''}>Controls Eng</option>
       <option value="build"    ${dept === 'build'    ? 'selected' : ''}>Build</option>
@@ -13521,10 +11057,10 @@ function renderActionsPersonBar() {
       <option value="pm"       ${dept === 'pm'       ? 'selected' : ''}>Project Mgmt</option>
     </select>
     <select class="actions-person-select" id="actions-person-pick" title="Pick yourself." ${dept ? '' : 'disabled'}>
-      <option value="">${dept ? 'Pick yourself…' : 'Pick department first'}</option>
-      ${inDept.map(m => `<option value="${m.id}" ${pickedId === m.id ? 'selected' : ''}>${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`).join('')}
+      <option value="">${dept ? 'Pick yourselfΓÇª' : 'Pick department first'}</option>
+      ${inDept.map(m => `<option value="${m.id}" ${pickedId === m.id ? 'selected' : ''}>${escapeHtml(m.name)}${m.is_lead ? ' Γÿà' : ''}</option>`).join('')}
     </select>
-    ${pickedId != null ? '<button type="button" class="actions-person-clear" id="actions-person-clear" title="Clear selection — back to Everyone view.">× Clear</button>' : ''}
+    ${pickedId != null ? '<button type="button" class="actions-person-clear" id="actions-person-clear" title="Clear selection ΓÇö back to Everyone view.">├ù Clear</button>' : ''}
   `;
 
   document.getElementById('actions-person-dept').addEventListener('change', (e) => {
@@ -13555,7 +11091,7 @@ function renderActionsPersonBar() {
   }
 }
 
-// Personal mode routing — when a person is picked on the Actions tab, switch
+// Personal mode routing ΓÇö when a person is picked on the Actions tab, switch
 // to the main Schedule view with an assignee filter so the user sees the
 // EXACT same grid + Gantt + divider + zoom + scroll that the main schedule
 // has, just scoped to one person. When cleared, return to the Actions tab
@@ -13565,7 +11101,7 @@ function routePersonalMode(personId) {
     const member = (state.team || []).find(m => m.id === personId);
     if (member) {
       state.filters.assignee = member.name;
-      // Personal view spans ALL projects for this person — drop the project
+      // Personal view spans ALL projects for this person ΓÇö drop the project
       // filter so they see everything on their plate.
       state.filters.project = '';
       // Personal view is most useful as Combined (tasks + actions together).
@@ -13576,7 +11112,7 @@ function routePersonalMode(personId) {
       // body.personal-mode lets CSS hide cross-project-irrelevant columns
       // (predecessors) and tune other visuals without per-render logic.
       document.body.classList.add('personal-mode');
-      // Personal view spans many projects — auto-show the Project column
+      // Personal view spans many projects ΓÇö auto-show the Project column
       // so the user knows which job each task belongs to.
       if (state.layout && Array.isArray(state.layout.visibleCols) &&
           !state.layout.visibleCols.includes('project')) {
@@ -13592,7 +11128,7 @@ function routePersonalMode(personId) {
       return;
     }
   }
-  // Cleared / member not found → drop the assignee filter and return to All Projects.
+  // Cleared / member not found ΓåÆ drop the assignee filter and return to All Projects.
   state.filters.assignee = '';
   document.body.classList.remove('personal-mode');
   setView('schedule');
@@ -13602,7 +11138,7 @@ function routePersonalMode(personId) {
 // (i.e. the assignee filter matches their name AND no specific project is
 // selected). When the user clicks a regular project tab while signed in,
 // personId STAYS persisted (so the personal tab keeps showing in the strip
-// and they can come back) — but isPersonalMode goes FALSE so the project
+// and they can come back) ΓÇö but isPersonalMode goes FALSE so the project
 // view shows everything in that project, not just the signed-in person's
 // work. Clicking the personal tab re-applies the assignee filter and
 // flips this back to true.
@@ -13614,7 +11150,7 @@ function isPersonalMode() {
 }
 
 // Wire the "Projects" multi-select on the All-projects banner. Click the
-// button → popup with one checkbox per distinct project. Selecting a subset
+// button ΓåÆ popup with one checkbox per distinct project. Selecting a subset
 // narrows the All-projects view to just those (so a PM can see only the
 // projects they run). Empty = no filter (default).
 function wireBannerProjectsFilter() {
@@ -13622,7 +11158,7 @@ function wireBannerProjectsFilter() {
   const pop = document.getElementById('banner-projects-popup');
   if (!btn || !pop) return;
 
-  // Apply a new subset WITHOUT re-rendering the banner — that would tear the
+  // Apply a new subset WITHOUT re-rendering the banner ΓÇö that would tear the
   // popup out of the DOM and force the user to re-open it for every check.
   // Only the grid + Gantt need to refresh.
   const applySubset = (next) => {
@@ -13699,7 +11235,7 @@ function wireBannerProjectsFilter() {
   document.addEventListener('mousedown', onOutside);
 }
 
-// Personal-mode banner — sits at the top of the Schedule view when signed
+// Personal-mode banner ΓÇö sits at the top of the Schedule view when signed
 // in. Shows the person's name + their personal-filter chips (Overdue /
 // Ahead / Hide done) + a Clear button that drops the assignee filter and
 // returns to the Actions tab.
@@ -13709,12 +11245,12 @@ function renderPersonalBanner() {
   if (!isPersonalMode()) { el.hidden = true; el.innerHTML = ''; return; }
   const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
   if (!member) { el.hidden = true; el.innerHTML = ''; return; }
-  // Banner is minimal — just identity + sign-out. All filters live in the
+  // Banner is minimal ΓÇö just identity + sign-out. All filters live in the
   // regular Filters popover, no duplication.
   el.innerHTML = `
     <span class="spb-label">Signed in as:</span>
     <span class="spb-name">${escapeHtml(member.name)}</span>
-    <button type="button" class="spb-clear" id="spb-clear" title="Sign out — return to the All Projects view">× Clear</button>
+    <button type="button" class="spb-clear" id="spb-clear" title="Sign out ΓÇö return to the All Projects view">├ù Clear</button>
   `;
   el.hidden = false;
   el.querySelector('#spb-clear').addEventListener('click', () => {
@@ -13726,7 +11262,7 @@ function renderPersonalBanner() {
 
 // v4.63: stats strip + name banner for the picked person. Hidden when no one
 // is selected (manager / Everyone view). Numbers cover EVERYTHING assigned to
-// the person — actions and scheduled tasks both — so the user gets a "what's
+// the person ΓÇö actions and scheduled tasks both ΓÇö so the user gets a "what's
 // on my plate" snapshot, not just the actions list.
 function renderActionsPersonSummary() {
   const wrap = document.getElementById('actions-person-summary');
@@ -13782,7 +11318,7 @@ function renderActionsPersonSummary() {
         <div class="aps-stat-lbl">Action items</div>
       </div>
       <div class="aps-stat">
-        <div class="aps-stat-num">${avgOverrun != null ? (avgOverrun > 0 ? '+' : '') + avgOverrun + 'd' : '—'}</div>
+        <div class="aps-stat-num">${avgOverrun != null ? (avgOverrun > 0 ? '+' : '') + avgOverrun + 'd' : 'ΓÇö'}</div>
         <div class="aps-stat-lbl">Avg overrun</div>
       </div>
     </div>
@@ -13800,7 +11336,7 @@ function renderActionsPersonSummary() {
 // items render as small diamond markers since they typically have zero
 // duration. Hover shows project + task name + dates.
 // v5.4: personal timeline now uses the SAME Gantt machinery as the main
-// schedule — real frappe-gantt + arrows + milestone diamonds + bar-meta
+// schedule ΓÇö real frappe-gantt + arrows + milestone diamonds + bar-meta
 // cascade + today line + status colors. Approach: temporarily swap the
 // element IDs so renderGantt's hard-coded `#gantt-container` selectors hit
 // the personal container, render with this person's tasks substituted into
@@ -13816,15 +11352,15 @@ function renderActionsPersonGantt() {
 
   // v4.80: gather this person's tasks + actions.
   // - Scheduled tasks need dates to position on the timeline (skip if null).
-  // - Action items ALWAYS show on the timeline — even if their start/end
+  // - Action items ALWAYS show on the timeline ΓÇö even if their start/end
   //   dates are null (old data, pre-v4.76 quick-add without a due date).
   //   For those, we default to TODAY at render time so the diamond appears
   //   under the today line. User can edit the date later via the schedule.
   // - Also surface placeholder-assigned action items to every engineer in
-  //   that discipline — so unstaffed actions show up on the relevant team's
+  //   that discipline ΓÇö so unstaffed actions show up on the relevant team's
   //   timeline before someone manually claims them.
   // Filter to this person's tasks. Same selection logic the old custom
-  // renderer used — direct assign OR placeholder-for-my-discipline on
+  // renderer used ΓÇö direct assign OR placeholder-for-my-discipline on
   // action items. Scheduled tasks need dates; dateless actions default to
   // today so they still show under the today line.
   const memberNameLower = (member.name || '').trim().toLowerCase();
@@ -13833,8 +11369,8 @@ function renderActionsPersonGantt() {
   // section, AND drops actions when actionsMode='schedule'. Action items
   // and free-floating tasks without a phase_group would silently vanish
   // from the personal Gantt. We patch each task with a default phase_group
-  // ("design_build") if it doesn't have one — purely for personal-view
-  // filtering — and switch actionsMode to "combined" below so both show.
+  // ("design_build") if it doesn't have one ΓÇö purely for personal-view
+  // filtering ΓÇö and switch actionsMode to "combined" below so both show.
   const personalTasks = (state.tasks || [])
     .filter(t => {
       if (!t.project) return false;
@@ -13848,7 +11384,7 @@ function renderActionsPersonGantt() {
         && actionDisciplineKey(t) === member.discipline;
       if (!directAssign && !placeholderForMyDiscipline) return false;
       if (!t.is_action && !(t.start_date && t.end_date)) return false;
-      // Personal-view quick filters — keep grid + gantt in lockstep.
+      // Personal-view quick filters ΓÇö keep grid + gantt in lockstep.
       return personalFilterPass(t, _todayISO_);
     })
     .map(t => {
@@ -13860,7 +11396,7 @@ function renderActionsPersonGantt() {
         task = { ...task, start_date: start, end_date: end };
       }
       // Patch missing phase_group so renderGantt's section filter doesn't
-      // silently drop the row. Doesn't mutate the original — only the
+      // silently drop the row. Doesn't mutate the original ΓÇö only the
       // clone used for personal-view rendering.
       if (!inferredAnchorKey(task) && !isBacklogTask(task) && !task.phase_group) {
         task = { ...task, phase_group: 'design_build' };
@@ -13892,8 +11428,8 @@ function renderActionsPersonGantt() {
   state.scheduleView = {
     ...savedScheduleView,
     ganttOnly: true,
-    // sortByStart OFF → use buildCanonicalTaskOrder so bars group by section
-    // (10 → 40 → 50) like the grid does, instead of bleeding into a flat
+    // sortByStart OFF ΓåÆ use buildCanonicalTaskOrder so bars group by section
+    // (10 ΓåÆ 40 ΓåÆ 50) like the grid does, instead of bleeding into a flat
     // chronological list. Matches the user's "simple timeline broken out by
     // section" intent.
     sortByStart: false,
@@ -13936,13 +11472,13 @@ function renderActionsPersonGantt() {
   wrap.insertBefore(title, wrap.firstChild);
 
   // Align the personal Gantt's bars row-by-row to the personal grid's rows
-  // by data-id — same pattern as alignGanttToGrid for the main view.
-  // try/catch — alignment is cosmetic; never break the render path.
+  // by data-id ΓÇö same pattern as alignGanttToGrid for the main view.
+  // try/catch ΓÇö alignment is cosmetic; never break the render path.
   try { alignPersonalGanttToGrid(); } catch (_) {}
 }
 
 // Align personal Gantt bars to personal grid rows row-by-row and make the
-// chart LOOK like the main schedule Gantt — match SVG height to grid height
+// chart LOOK like the main schedule Gantt ΓÇö match SVG height to grid height
 // (kill the empty white space below the bars), and paint vertical tick
 // lines at every date column (the "graph paper" feel the main Gantt has).
 function alignPersonalGanttToGrid() {
@@ -13983,7 +11519,7 @@ function alignPersonalGanttToGrid() {
     shiftElementY(wrap, dy);
   });
 
-  // 3. Draw faint vertical tick lines at each date column — same as the
+  // 3. Draw faint vertical tick lines at each date column ΓÇö same as the
   //    main schedule's alignGanttToGrid. Without these the chart background
   //    is one flat white rectangle which is what made it look "bad".
   const oldTicks = ganttSvg.querySelector('.sdc-tick-fill');
@@ -14047,8 +11583,8 @@ function renderActionsDeptDashboard(allActions, todayMs) {
 }
 
 // ----------------------------------------------------------------------------
-// v4.61 — Per-person dashboard. Click a team member row on the Departments
-// tab → a side panel slides in from the right with everything assigned to
+// v4.61 ΓÇö Per-person dashboard. Click a team member row on the Departments
+// tab ΓåÆ a side panel slides in from the right with everything assigned to
 // that person (scheduled work + action items + upcoming milestones).
 // ----------------------------------------------------------------------------
 const _personDashState = {
@@ -14112,7 +11648,7 @@ function renderPersonDashboard() {
   const overdueCount = allAssigned.filter(isOverdue).length;
   const doneActions  = actions.filter(t => !open(t) && t.end_date);
   // Naive avg-close: difference between today and end_date for done actions.
-  // (No "completed_at" column — using end_date as a stand-in. Skips if no due date.)
+  // (No "completed_at" column ΓÇö using end_date as a stand-in. Skips if no due date.)
   let avgCloseDays = null;
   if (doneActions.length > 0) {
     const totalDays = doneActions.reduce((sum, t) => {
@@ -14149,7 +11685,7 @@ function renderPersonDashboard() {
         <span class="person-dashboard-disc">${escapeHtml(disc?.label || member.discipline || '')}</span>
         ${member.specialty ? `<span class="person-dashboard-spec">${escapeHtml(member.specialty)}</span>` : ''}
       </div>
-      <button type="button" class="person-dashboard-close" title="Close (Esc)">×</button>
+      <button type="button" class="person-dashboard-close" title="Close (Esc)">├ù</button>
     </header>
     <div class="person-dashboard-stats">
       <div class="pd-stat">
@@ -14161,7 +11697,7 @@ function renderPersonDashboard() {
         <div class="pd-stat-lbl">Overdue</div>
       </div>
       <div class="pd-stat">
-        <div class="pd-stat-num">${avgCloseDays != null ? avgCloseDays + 'd' : '—'}</div>
+        <div class="pd-stat-num">${avgCloseDays != null ? avgCloseDays + 'd' : 'ΓÇö'}</div>
         <div class="pd-stat-lbl">Avg overrun</div>
       </div>
     </div>
@@ -14176,7 +11712,7 @@ function renderPersonDashboard() {
         : visible.map(t => {
             const overdue = isOverdue(t);
             const done = !open(t);
-            const due = t.end_date ? fmtDate(t.end_date) : '—';
+            const due = t.end_date ? fmtDate(t.end_date) : 'ΓÇö';
             const tag = t.is_action ? 'Action' : 'Task';
             return `
               <div class="pd-row ${overdue ? 'is-overdue' : ''} ${done ? 'is-done' : ''}" data-id="${t.id}" data-project="${escapeHtml(t.project || '')}">
@@ -14199,7 +11735,7 @@ function renderPersonDashboard() {
       renderPersonDashboard();
     });
   });
-  // Click a row → open that project's schedule.
+  // Click a row ΓåÆ open that project's schedule.
   panel.querySelectorAll('.pd-row').forEach(row => {
     row.addEventListener('click', () => {
       const project = row.dataset.project;
@@ -14219,11 +11755,6 @@ function renderPersonDashboard() {
 }
 
 function renderTeam() {
-  // Project rollup sits ABOVE the team grid — picker, key milestone
-  // strips, and the financial milestones table. Rendered first so it
-  // appears at the top even when the rest of the page is still loading.
-  try { renderDeptProjectRollup(); } catch (_) {}
-
   const grid = document.getElementById('team-grid');
   if (!grid) return;
 
@@ -14231,19 +11762,19 @@ function renderTeam() {
   const renderRow = (m) => {
     const ph = isPlaceholder(m.name);
     const focused = state.resources?.focusMemberId === m.id;
-    const leadStar = m.is_lead ? '<span class="team-member-lead" title="Department lead">★</span>' : '';
+    const leadStar = m.is_lead ? '<span class="team-member-lead" title="Department lead">Γÿà</span>' : '';
     // v4.64: View button removed. Clicking ANYWHERE on the row focuses that
-    // person — the resources timeline + dashboard cards below filter to
+    // person ΓÇö the resources timeline + dashboard cards below filter to
     // just their work. Clicks on the action buttons (lead toggle / remove)
     // bypass via stopPropagation in their own handlers.
     return `
       <li class="team-member${ph ? ' is-placeholder' : ''}${m.is_lead ? ' is-lead' : ''}${focused ? ' is-focused' : ''}" data-id="${m.id}" draggable="${ph ? 'false' : 'true'}">
-        <span class="team-member-grip" title="Drag to reorder">⋮⋮</span>
+        <span class="team-member-grip" title="Drag to reorder">Γï«Γï«</span>
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
-        <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
-        <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
-        <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
+        <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag ΓÇö type anything." />
+        <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? 'Γÿà' : 'Γÿå'}</button>
+        <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">├ù</button>
       </li>`;
   };
 
@@ -14275,10 +11806,10 @@ function renderTeam() {
     const capStats = `
       <div class="team-card-capacity" title="${escapeHtml(cap.tooltip)}">
         <span class="cap-stat"><span class="cap-num">${cap.realCount}</span> people</span>
-        <span class="cap-sep">·</span>
+        <span class="cap-sep">┬╖</span>
         <span class="cap-stat"><span class="cap-num">${cap.scheduledHrs.toLocaleString()}</span> hrs</span>
         ${cap.weeksAhead != null ? `
-          <span class="cap-sep">·</span>
+          <span class="cap-sep">┬╖</span>
           <span class="cap-stat"><span class="cap-num">${cap.weeksAhead}</span> wks @ 90%</span>
         ` : ''}
       </div>`;
@@ -14330,7 +11861,7 @@ function renderTeam() {
       if (!member) return;
       const tasksRef = state.tasks.filter(t => t.assignee === member.name).length;
       const msg = tasksRef > 0
-        ? `Remove ${member.name}? They're still listed as the assignee on ${tasksRef} task(s) — those tasks will keep the name but it will be marked "(not on team)".`
+        ? `Remove ${member.name}? They're still listed as the assignee on ${tasksRef} task(s) ΓÇö those tasks will keep the name but it will be marked "(not on team)".`
         : `Remove ${member.name}?`;
       if (!confirm(msg)) return;
       await api.team.remove(id);
@@ -14338,7 +11869,7 @@ function renderTeam() {
     });
   });
 
-  // Toggle lead — star button next to each team member's name.
+  // Toggle lead ΓÇö star button next to each team member's name.
   grid.querySelectorAll('[data-action="toggle-lead"]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const id = Number(btn.dataset.id);
@@ -14349,7 +11880,7 @@ function renderTeam() {
     });
   });
 
-  // Specialty — save on blur. Trim + treat empty as null so the placeholder
+  // Specialty ΓÇö save on blur. Trim + treat empty as null so the placeholder
   // text shows again instead of an empty value.
   grid.querySelectorAll('.team-member-specialty').forEach(input => {
     const id = Number(input.dataset.id);
@@ -14369,7 +11900,7 @@ function renderTeam() {
   // v4.64: click anywhere on the row to FOCUS that person. The resources
   // timeline + dashboard cards below filter to just their assignments.
   // Click handlers on the row's buttons stopPropagation so they don't
-  // accidentally trigger this. Inputs are exempt — clicking the name to
+  // accidentally trigger this. Inputs are exempt ΓÇö clicking the name to
   // edit it shouldn't kick off a re-render that yanks input focus.
   grid.querySelectorAll('.team-member').forEach(row => {
     row.addEventListener('click', (e) => {
@@ -14444,27 +11975,19 @@ function renderTeam() {
     });
   });
 
-  // The Resources timeline lives on the same page now — render it after the cards so the
+  // The Resources timeline lives on the same page now ΓÇö render it after the cards so the
   // discipline tabs and per-person rows reflect the team list above.
   renderResources();
 }
 
 // ---------- Resources view ----------
-// Per-person workload timeline. Pick a discipline → see every active member of that
+// Per-person workload timeline. Pick a discipline ΓåÆ see every active member of that
 // discipline as a row, with their assigned tasks drawn as horizontal bars across all
 // projects/schedules. Bars stack vertically when overlapping so you can spot conflicts.
-//
-// Zoom + row-height behavior MIRRORS the Schedule Gantt:
-//   • zoomPercent 10 → 145 maps to friendly levels 1-10 via the same exponential
-//     curve (zoomToFriendly / friendlyToZoom).
-//   • 100% = 20 px/day, matching the Schedule's pxPerDay scale at 100%.
-//   • barHeight is the friendly 0-100 row-height stepper (16-30 px).
-// Keep these synced with ZOOM_FRIENDLY_MIN_PCT / MAX_PCT / MAX_LEVEL.
 const RES_PX_MIN = 1, RES_PX_MAX = 40;
 function getResourcesPxPerDay() {
-  // 100% = 20 px/day (same as Schedule). Clamp to a sensible range so very
-  // low / very high zooms still render legibly.
-  return Math.max(RES_PX_MIN, Math.min(RES_PX_MAX, (state.resources.zoomPercent / 100) * 20));
+  // 100% = 6 px/day. Lets you see ~half a year on a normal-sized window.
+  return Math.max(RES_PX_MIN, Math.min(RES_PX_MAX, (state.resources.zoomPercent / 100) * 6));
 }
 
 function projectColorFor(projectName) {
@@ -14477,21 +12000,6 @@ function projectColorFor(projectName) {
   return { fill: `hsl(${hue} 70% 78%)`, stroke: `hsl(${hue} 55% 38%)`, text: `hsl(${hue} 60% 22%)` };
 }
 
-// Bucket a task into one of four schedule-status buckets:
-//   zero    — 0% progress, not started
-//   done    — 100% progress, complete
-//   behind  — started, business-day drift is negative
-//   ontrack — started, on or ahead of plan
-// Matches the bar color logic in renderResources so the status-filter
-// chips have a one-to-one mapping with what each bar shows.
-function _resTaskStatus(t) {
-  const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
-  if (pct >= 100) return 'done';
-  if (pct === 0)  return 'zero';
-  const drift = taskScheduleDelta(t);
-  return drift < 0 ? 'behind' : 'ontrack';
-}
-
 function resourcesTasksFor(memberName) {
   // All tasks (across all projects) currently assigned to this person, that have valid
   // dates so they can be plotted on the timeline.
@@ -14499,17 +12007,13 @@ function resourcesTasksFor(memberName) {
   //   - Template projects (canonical scaffolding, not real work)
   //   - Sales workspace projects (pre-quote schedules; resourcing isn't real
   //     until they roll into Active)
-  //   - Tasks whose schedule-status bucket has been toggled OFF in the
-  //     Departments-tab status chips (see state.resources.statusFilter).
   const projFilter = state.resources.project;
-  const sf = (state.resources && state.resources.statusFilter) || { zero: true, behind: true, ontrack: true, done: false };
   return state.tasks.filter(t =>
     t.assignee === memberName &&
     t.start_date && t.end_date &&
     !isTemplateProject(t.project) &&
     projectWorkspace(t.project) !== 'Sales' &&
-    (!projFilter || t.project === projFilter) &&
-    sf[_resTaskStatus(t)] !== false
+    (!projFilter || t.project === projFilter)
   );
 }
 
@@ -14552,9 +12056,9 @@ function computeLoadSegments(tasks, minDate) {
 
 // Walk every plotted task day-by-day, summing allocation %. Then collapse contiguous
 // days where the running total exceeds 100% into stripes. Milestones and zero-allocation
-// tasks are skipped — they don't consume capacity.
+// tasks are skipped ΓÇö they don't consume capacity.
 function computeOverloadRegions(tasks, minDate) {
-  const allocByDay = new Map(); // day index → total allocation % that day
+  const allocByDay = new Map(); // day index ΓåÆ total allocation % that day
   for (const t of tasks) {
     if (t.is_milestone) continue;
     const a = t.allocation == null ? 90 : Number(t.allocation);
@@ -14606,494 +12110,99 @@ function assignTaskLanes(tasks) {
 // each discipline-manager a focused view of their team's workload across every
 // open project: what's running late, what's coming up, and (per discipline)
 // the key anchor dates that matter most to them.
-// v7.6 — Department overview below the resource Gantt. One unified, SDC-colored
-// section that replaced the old Behind/Coming-due/Key-dates + Under/Over/
-// Due-this-month card rows. A shared "Window" selector (weeks) drives the cards
-// with a natural horizon (Upcoming, Available capacity, Over-allocated). Behind
-// schedule and Release dates have no window and ignore it. Scope = the projects
-// picked at the top of the page ∩ this discipline's members.
 function renderTeamDashboard() {
   const disc = state.resources?.discipline;
   if (!disc) return;
   const discDef = DISCIPLINE_BY_KEY[disc] || { label: disc };
-
-  // Focused member (set from the team grid) narrows every card to one person.
+  // v4.64: if a single member is focused, the dashboard cards narrow to just
+  // that person's name. Otherwise we use every name in the discipline.
   const focusId = state.resources.focusMemberId;
   const focusedMember = focusId != null ? state.team.find(m => m.id === focusId) : null;
   const memberNames = focusedMember
     ? new Set([focusedMember.name])
     : new Set(state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name));
+  // Departments dashboard skips:
+  //   - Template projects (SDC_StandardProject_Template, SDC_Sales_Template, ΓÇª)
+  //     ΓÇö they're scaffolding, not real work to surface as behind/coming-due.
+  //   - Sales-workspace projects ΓÇö sales schedules are pre-quote work that
+  //     hasn't been staffed yet, so they shouldn't show up in engineering
+  //     resource management.
+  const isProjectExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
 
-  // Project scope follows the Gantt above: if a specific project is picked in
-  // the Gantt's project filter, the whole overview narrows to that one. Else it
-  // falls back to the rollup picker's selection. Templates + Sales are dropped.
-  const { selected } = _deptSelectedProjects();
-  const ganttProj = (state.resources && state.resources.project) || '';
-  const isExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
-  const inScope = (p) => !isExcluded(p) && (ganttProj ? p === ganttProj : selected.includes(p));
-
-  // Time window (weeks), shared across the windowed cards. Each windowed card
-  // carries its own <select class="dept-window-select">; all read/write one value
-  // so they stay in sync. Mechanical releases has no window.
-  let weeks = parseInt(localStorage.getItem('sdcDeptTimeframeWeeks') || '8', 10);
-  if (![2, 4, 8, 12].includes(weeks)) weeks = 8;
-  const WINDOW_OPTS = [2, 4, 8, 12].map(w => `<option value="${w}">Next ${w} weeks</option>`).join('');
-  document.querySelectorAll('.dept-window-select').forEach(sel => {
-    if (sel.dataset.filled !== '1') { sel.innerHTML = WINDOW_OPTS; sel.dataset.filled = '1'; }
-    sel.value = String(weeks);
-    if (!sel.dataset.bound) {
-      sel.dataset.bound = '1';
-      sel.addEventListener('change', () => {
-        try { localStorage.setItem('sdcDeptTimeframeWeeks', sel.value); } catch (_) {}
-        renderTeamDashboard();
-      });
-    }
-  });
-
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const todayMs   = today.getTime();
-  const todayISO  = today.toISOString().slice(0, 10);
-  const windowEnd = todayMs + weeks * 7 * 86400000;
-
-  const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-  setText('dept-overview-sub', `${discDef.label} · ${selected.length} project${selected.length === 1 ? '' : 's'} selected`);
-  setText('dept-over-title', 'Over-allocated');
-  setText('dept-starting-title', `Starting in next ${weeks}w`);
-  setText('dept-ending-title', `Ending in next ${weeks}w`);
-  setText('dept-available-title', 'Current workload');
-
-  // ── Header chart · schedule-health donut over ACTIVE in-scope work. Done
-  //    tasks are excluded everywhere in the overview — they just pile up over
-  //    time and aren't actionable (per Dan). ──
-  const work = state.tasks.filter(t =>
-    inScope(t.project) && t.assignee && memberNames.has(t.assignee) &&
-    !t.is_milestone && !inferredAnchorKey(t) && (Number(t.progress) || 0) < 100);
-  const sc = deptStatusCounts(work, todayMs);
-  const statusLegend =
-    deptLegendDot(DEPT_STATUS_COLORS.behind, `Behind ${sc.behind}`) +
-    deptLegendDot(DEPT_STATUS_COLORS.ontime, `On-time ${sc.ontime}`) +
-    deptLegendDot(DEPT_STATUS_COLORS.ahead,  `Ahead ${sc.ahead}`);
-  const donutHtml = deptHealthDonutSvg(work, todayMs);
-
-  // ── Needs attention · three buckets: behind, unstaffed-but-started, over. ──
-  // 1) Behind schedule — REAL-assignee tasks with negative business-day drift
-  //    (placeholder tasks go to "Unstaffed" instead). Action items included.
+  // --- Behind schedule ----------------------------------------------------
+  // Every assigned task whose business-day drift is negative AND not a true
+  // milestone (anchor / spine). v4.64: action items (is_milestone = 1 +
+  // is_action = 1) are INCLUDED so the dashboard shows overdue actions too.
   const behind = state.tasks
-    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && !isPlaceholder(t.assignee) && inScope(t.project))
+    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && !isProjectExcluded(t.project))
     .map(t => ({ task: t, drift: taskScheduleDelta(t) }))
     .filter(x => x.drift < 0)
     .sort((a, b) => a.drift - b.drift);
-  // 2) Unstaffed & started — should be underway (start date reached, not done)
-  //    but it's parked on a placeholder, so no real person owns it = a risk.
-  const unstaffed = state.tasks
-    .filter(t => !t.is_milestone && (Number(t.progress) || 0) < 100 && inScope(t.project) &&
-      t.assignee && isPlaceholder(t.assignee) && memberNames.has(t.assignee) &&
-      t.start_date && t.start_date <= todayISO)
-    .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
-  // 3) Capacity scan over the window → over- + under-allocated REAL people.
-  const realMembers = (state.team || []).filter(m =>
-    m.discipline === disc && m.active !== 0 && !isPlaceholder(m.name) &&
-    (!focusedMember || m.id === focusedMember.id));
-  const windowDays = Math.max(1, Math.round((windowEnd - todayMs) / 86400000));
-  const overPeople = [], underPeople = [], memberLoads = [], loadByName = {};
-  for (const m of realMembers) {
-    const memTasks = state.tasks.filter(t =>
-      t.assignee === m.name && (Number(t.progress) || 0) < 100 &&
-      t.start_date && t.end_date && inScope(t.project)
-    ).filter(t => {
-      const s = new Date(t.start_date + 'T00:00:00').getTime();
-      const e = new Date(t.end_date + 'T00:00:00').getTime();
-      return e >= todayMs && s <= windowEnd; // overlaps the window
-    });
-    // Average daily allocation across the window (0 when no open tasks) — feeds
-    // both the under-allocated heuristic and the per-person availability donuts.
-    let totalAlloc = 0;
-    for (const t of memTasks) {
-      const s = Math.max(todayMs, new Date(t.start_date + 'T00:00:00').getTime());
-      const e = Math.min(windowEnd, new Date(t.end_date + 'T00:00:00').getTime());
-      if (e < s) continue;
-      const days = Math.round((e - s) / 86400000) + 1;
-      totalAlloc += (t.allocation == null ? 90 : Number(t.allocation)) * days;
-    }
-    const avg = Math.round(totalAlloc / windowDays);
-    memberLoads.push(avg);
-    loadByName[m.name] = avg;
-    const lead = !!m.is_lead;
-    if (memTasks.length === 0) { underPeople.push({ name: m.name, load: 0, lead, reason: 'no open tasks' }); continue; }
-    const overlap = computeOverloadRegions(memTasks, today);
-    if (overlap.length > 0) { overPeople.push({ name: m.name, peak: Math.max(...overlap.map(r => r.peak)) }); continue; }
-    if (avg < 60) underPeople.push({ name: m.name, load: avg, lead, reason: `${avg}% load` });
-  }
-  // The discipline lead/manager (starred in the team grid) always shows in
-  // Current workload — first, with a bold border — even if fully booked.
-  const leadMember = realMembers.find(m => m.is_lead);
-  if (leadMember && !underPeople.some(p => p.name === leadMember.name)) {
-    underPeople.unshift({ name: leadMember.name, load: loadByName[leadMember.name] || 0, lead: true });
-  }
+  renderDashboardList('dashboard-behind-body', behind, ({ task, drift }) => ({
+    project: task.project,
+    name: task.name,
+    assignee: task.assignee,
+    rightChip: { text: `${drift}d`, tone: 'danger' },
+    onClick: () => jumpToTask(task),
+  }), 'No tasks behind schedule for this team.');
 
-  // Needs-attention visual — the health donut (moved here from the header) +
-  // three problem-count tiles, side by side.
-  const attnChart = document.getElementById('dept-chart-attention');
-  if (attnChart) {
-    const tiles = deptStatTilesHtml([
-      { label: 'Behind',    n: behind.length,    color: DEPT_STATUS_COLORS.behind },
-      { label: 'Unstaffed', n: unstaffed.length,  color: 'var(--sdc-primary, #1574c4)' },
-      { label: 'Over',      n: overPeople.length, color: 'var(--sdc-primary, #1574c4)' },
-    ]);
-    const donutBlock = donutHtml
-      ? `<div class="dept-attn-donut">${donutHtml}<div class="dept-chart-legend">${statusLegend}</div></div>`
-      : '';
-    attnChart.innerHTML = `<div class="dept-attn-row">${donutBlock}<div class="dept-attn-tiles">${tiles}</div></div>`;
-  }
+  // --- Coming due ---------------------------------------------------------
+  // Tasks starting OR finishing within the next 14 business days (~3 weeks
+  // calendar). Helps a manager see "what's hitting the wire" for their crew.
+  const todayMs = new Date().setHours(0, 0, 0, 0);
+  const horizonMs = addBusinessDaysClient(new Date().toISOString().slice(0, 10), 14);
+  const horizonStop = horizonMs ? new Date(horizonMs + 'T23:59:59').getTime() : todayMs + 21 * 86400000;
+  const coming = state.tasks
+    .filter(t => t.assignee && memberNames.has(t.assignee) && t.start_date && t.end_date && !isProjectExcluded(t.project))
+    .map(t => {
+      const startMs = new Date(t.start_date + 'T00:00:00').getTime();
+      const endMs   = new Date(t.end_date   + 'T00:00:00').getTime();
+      const startingSoon = startMs >= todayMs && startMs <= horizonStop;
+      const finishingSoon = endMs >= todayMs && endMs <= horizonStop && !startingSoon;
+      if (!startingSoon && !finishingSoon) return null;
+      return { task: t, kind: startingSoon ? 'starts' : 'finishes', when: startingSoon ? t.start_date : t.end_date };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.when || '').localeCompare(b.when || ''));
+  renderDashboardList('dashboard-coming-body', coming, ({ task, kind, when }) => ({
+    project: task.project,
+    name: task.name,
+    assignee: task.assignee,
+    rightChip: { text: `${kind} ${fmtDate(when)}`, tone: 'info' },
+    onClick: () => jumpToTask(task),
+  }), 'Nothing starting or finishing in the next 2 weeks.');
 
-  renderDashboardList('dept-behind-body', behind, ({ task, drift }) => ({
-    project: task.project, name: task.name, assignee: task.assignee,
-    rightChip: deptVarChip(-drift), onClick: () => jumpToTask(task),
-  }), 'Nothing behind schedule. 🎉');
-  renderDashboardList('dept-unstaffed-body', unstaffed, t => ({
-    project: t.project, name: t.name, assignee: t.assignee,
-    rightChip: { text: `since ${fmtDate(t.start_date)}`, tone: 'danger' }, onClick: () => jumpToTask(t),
-  }), 'Nothing started without a real owner.');
-  deptRenderPeopleList('dept-over-body',
-    overPeople.map(p => ({ name: p.name, over: true, chip: `peak ${p.peak}%`, chipTone: 'chip-danger' })),
-    'No one over-allocated in this window.');
-  // Current workload — a card per person (5 across): name + a donut of their
-  // current allocation % over the window.
-  const workloadPeople = [...underPeople].sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0));
-  deptRenderWorkloadCards('dept-available-body',
-    workloadPeople.map(p => ({ name: p.name, load: p.load, lead: !!p.lead })),
-    'Everyone is fully booked.');
-  // Utilization gauge — average team load across the window (one rollup number).
-  const deptUtil = memberLoads.length ? Math.round(memberLoads.reduce((a, b) => a + b, 0) / memberLoads.length) : 0;
-  const gaugeEl = document.getElementById('dept-chart-available');
-  if (gaugeEl) gaugeEl.innerHTML = realMembers.length ? deptUtilGaugeSvg(deptUtil) : '';
-
-  // ── Upcoming · starting / ending within the window (by date). ──
-  const starting = state.tasks
-    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && t.start_date && inScope(t.project))
-    .filter(t => { const s = new Date(t.start_date + 'T00:00:00').getTime(); return s >= todayMs && s <= windowEnd; })
-    .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
-  renderDashboardList('dept-starting-body', starting, t => {
-    const alloc = t.allocation == null ? 90 : Number(t.allocation);
-    const dur = durationLabel(t);
-    return {
-      project: t.project, name: t.name,
-      assignee: `${t.assignee}${dur ? ' · ' + dur : ''} · ${alloc}%`,
-      rightChip: { text: fmtDate(t.start_date), tone: 'info' }, onClick: () => jumpToTask(t),
-    };
-  }, `Nothing starting in the next ${weeks} weeks.`);
-  // Upcoming visual — a timeline dot per task starting in the window (hover = name),
-  // so you see WHEN work lands and which task it is, not just a count.
-  const upChart = document.getElementById('dept-chart-upcoming');
-  if (upChart) upChart.innerHTML = deptUpcomingTimelineSvg(starting, todayMs, windowEnd);
-
-  const ending = state.tasks
-    .filter(t => (!t.is_milestone || t.is_action) && (Number(t.progress) || 0) < 100 && t.assignee && memberNames.has(t.assignee) && t.end_date && inScope(t.project))
-    .filter(t => { const e = new Date(t.end_date + 'T00:00:00').getTime(); return e >= todayMs && e <= windowEnd; })
-    .sort((a, b) => (a.end_date || '').localeCompare(b.end_date || ''));
-  renderDashboardList('dept-ending-body', ending, t => {
-    const drift = taskScheduleDelta(t); // business-day drift; negative = behind
-    const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
-    return {
-      project: t.project, name: t.name,
-      assignee: `${t.assignee} · ${pct}% · due ${fmtDate(t.end_date)}`,
-      rightChip: deptVarChip(-drift), onClick: () => jumpToTask(t),
-    };
-  }, `Nothing ending in the next ${weeks} weeks.`);
-
-  // ── Release dates · discipline-aware, all in date order, late in red. ──
-  // Mechanical shows EVERY release (Mech 1/2/3…): mech_release_1 is an anchor,
-  // but Mech 2 / Mech 3 are plain milestone tasks, so match both. Other
-  // disciplines fall back to their single key anchor across the projects.
-  // The bottom-right "completion" card is discipline-specific:
-  //   mech     → all mechanical releases (Mech 1/2/3 — anchor + milestone names)
-  //   controls → software completion (tasks named "…software…")
-  //   build    → Power-Up (machine_power_up anchor)   ← builders work toward it
-  //   wire     → Power-Up (machine_power_up anchor)   ← electricians too
-  //   pm       → Ship Machine (ship_machine anchor)
+  // --- Key dates (discipline-specific) ------------------------------------
+  // For each discipline, the anchor type that matters most to its manager.
+  // Listed once per project so they can scan across the portfolio.
   const KEY_ANCHOR_BY_DISCIPLINE = {
-    pm:    { anchor: 'ship_machine',     title: 'Ship Machine' },
-    build: { anchor: 'machine_power_up', title: 'Power-Up' },
-    wire:  { anchor: 'machine_power_up', title: 'Power-Up' },
+    mech:     { anchor: 'mech_release_1',   title: 'Mech 1 Release across all projects' },
+    controls: { anchor: 'fat',              title: 'FAT across all projects' },
+    pm:       { anchor: 'ship_machine',     title: 'Ship Machine across all projects' },
+    build:    { anchor: 'ship_machine',     title: 'Ship Machine across all projects' },
+    wire:     { anchor: 'machine_power_up', title: 'Machine Power-Up across all projects' },
   };
-  let releaseTasks = [];
-  let releasesTitle = 'Release dates';
-  if (disc === 'mech') {
-    releasesTitle = 'Mechanical releases';
-    const isMechRelease = (t) =>
-      inferredAnchorKey(t) === 'mech_release_1' ||
-      (t.is_milestone && /mech\w*\s*\d*\s*release/i.test(t.name || ''));
-    releaseTasks = state.tasks.filter(t => inScope(t.project) && isMechRelease(t));
-  } else if (disc === 'controls') {
-    releasesTitle = 'Software completion';
-    releaseTasks = state.tasks.filter(t => inScope(t.project) && /software/i.test(t.name || ''));
-  } else {
-    const keyDef = KEY_ANCHOR_BY_DISCIPLINE[disc];
-    if (keyDef) {
-      releasesTitle = keyDef.title;
-      releaseTasks = state.tasks.filter(t => inferredAnchorKey(t) === keyDef.anchor && inScope(t.project));
-    }
+  const keyDef = KEY_ANCHOR_BY_DISCIPLINE[disc];
+  const keyTitleEl = document.getElementById('dashboard-keydates-title');
+  const keySubEl   = document.getElementById('dashboard-keydates-sub');
+  if (keyTitleEl) keyTitleEl.textContent = keyDef ? keyDef.title : 'Key dates';
+  if (keySubEl)   keySubEl.textContent   = keyDef
+    ? `Anchor: ${anchorLabelFor(keyDef.anchor)}` : 'No discipline-specific anchor configured.';
+  let keyItems = [];
+  if (keyDef) {
+    keyItems = state.tasks
+      .filter(t => inferredAnchorKey(t) === keyDef.anchor && !isProjectExcluded(t.project))
+      .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
   }
-  // Hide-completed filter (default on). Bind once.
-  const hideDoneBox = document.getElementById('dept-releases-hide-done');
-  if (hideDoneBox) {
-    const stored = localStorage.getItem('sdcDeptHideDoneReleases');
-    const hideDone = stored == null ? true : stored === '1';
-    hideDoneBox.checked = hideDone;
-    if (!hideDoneBox.dataset.bound) {
-      hideDoneBox.dataset.bound = '1';
-      hideDoneBox.addEventListener('change', () => {
-        try { localStorage.setItem('sdcDeptHideDoneReleases', hideDoneBox.checked ? '1' : '0'); } catch (_) {}
-        renderTeamDashboard();
-      });
-    }
-    if (hideDone) releaseTasks = releaseTasks.filter(t => (Number(t.progress) || 0) < 100);
-  }
-  releaseTasks.sort((a, b) =>
-    ((a.start_date || a.end_date || '') + '').localeCompare((b.start_date || b.end_date || '') + ''));
-  setText('dept-releases-title', releasesTitle);
-  const releaseItems = releaseTasks.map(t => {
-    const baseName = t.name || anchorLabelFor(inferredAnchorKey(t));
-    const done = (Number(t.progress) || 0) >= 100;
-    const sched  = t.baseline_end_date || t.baseline_start_date || t.start_date || t.end_date || '';
-    const actual = done ? (t.completed_on || t.end_date || t.start_date || '') : '';
-    let v = 0;
-    if (sched && actual) v = Math.round((new Date(actual + 'T00:00:00') - new Date(sched + 'T00:00:00')) / 86400000);
-    else if (!done && sched && sched < todayISO) v = Math.round((todayMs - new Date(sched + 'T00:00:00').getTime()) / 86400000);
-    return { id: t.id, project: t.project, name: baseName, done, sched, actual, chip: deptVarChip(v) };
-  });
-  deptRenderReleaseGrid('dept-releases-body', releaseItems,
-    `No ${releasesTitle.toLowerCase()} for the selected projects.`);
-  // Release timeline — a dot per release across the date axis, late dots stand out.
-  const relChart = document.getElementById('dept-chart-releases');
-  if (relChart) relChart.innerHTML = deptReleaseTimelineSvg(releaseTasks, todayMs);
-}
-
-// Releases grid — columns spread across the card width (Project / Release /
-// Scheduled / Done / variance) instead of stacked rows, so the wide card isn't
-// mostly blank. Same variance pill + ✓-when-done convention as everywhere else.
-function deptRenderReleaseGrid(bodyId, items, emptyText) {
-  const body = document.getElementById(bodyId);
-  if (!body) return;
-  if (!items || items.length === 0) {
-    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
-    return;
-  }
-  const head = `<div class="dept-rel-row dept-rel-head">
-    <span>Project</span><span>Release</span><span>Scheduled</span><span>Done</span><span></span>
-  </div>`;
-  const rows = items.map((it, i) => `
-    <button type="button" class="dept-rel-row" data-i="${i}">
-      <span class="dept-rel-project" title="${escapeHtml(it.project || '')}">${escapeHtml(it.project || '—')}</span>
-      <span class="dept-rel-name"><span class="dept-rel-check">${it.done ? '✓' : ''}</span><span class="dept-rel-name-text">${escapeHtml(it.name)}</span></span>
-      <span class="dept-rel-date">${it.sched ? fmtDate(it.sched) : '—'}</span>
-      <span class="dept-rel-date">${it.actual ? fmtDate(it.actual) : '—'}</span>
-      <span class="dept-rel-var"><span class="dashboard-chip chip-${it.chip.tone}">${escapeHtml(it.chip.text)}</span></span>
-    </button>`).join('');
-  body.innerHTML = `<div class="dept-rel-grid">${head}${rows}</div>`;
-  body.querySelectorAll('.dept-rel-row[data-i]').forEach(row => {
-    row.addEventListener('click', () => {
-      const it = items[Number(row.dataset.i)];
-      const t = it && state.tasks.find(x => x.id === it.id);
-      if (t) jumpToTask(t);
-    });
-  });
-}
-
-// Current-workload renderer — a grid of person cards (5 across): a donut of the
-// person's current allocation % over the window + their name beneath.
-function deptRenderWorkloadCards(bodyId, people, emptyText) {
-  const body = document.getElementById(bodyId);
-  if (!body) return;
-  if (!people || people.length === 0) {
-    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
-    return;
-  }
-  body.innerHTML = `<div class="dept-workload-grid">${people.map(p => `
-    <div class="dept-workload-card${p.lead ? ' dept-workload-card--lead' : ''}" title="${escapeHtml(p.name)}${p.lead ? ' (lead)' : ''} — ${p.load}% allocated">
-      ${deptLoadDonutSvg(p.load, 52)}
-      <div class="dept-workload-name">${p.lead ? '★ ' : ''}${escapeHtml(p.name)}</div>
-    </div>`).join('')}</div>`;
-}
-
-// People-list renderer for the capacity sub-cards (Over-allocated / Available).
-// Rows have no project/task — just a person plus a one-line status or chip — so
-// they use a lighter markup than renderDashboardList.
-function deptRenderPeopleList(bodyId, people, emptyText) {
-  const body = document.getElementById(bodyId);
-  if (!body) return;
-  if (!people || people.length === 0) {
-    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
-    return;
-  }
-  body.innerHTML = people.map(p => `
-    <div class="dashboard-row dashboard-row-person${p.over ? ' is-over' : ''}"${p.reason ? ` title="${escapeHtml(p.reason)}"` : ''}>
-      ${p.donutPct != null ? deptLoadDonutSvg(p.donutPct) : ''}
-      <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
-      ${p.chip
-        ? `<span class="dashboard-chip ${p.chipTone || 'chip-info'}">${escapeHtml(p.chip)}</span>`
-        : (p.donutPct == null && p.reason ? `<span class="dashboard-row-assignee">${escapeHtml(p.reason)}</span>` : '')}
-    </div>`).join('');
-}
-
-// SDC status palette shared by every overview chart. No red — per Dan's "pills
-// on the SDC colorway" rule, "behind" reads as navy (heavy/attention), not red.
-const DEPT_STATUS_COLORS = { done: '#74c415', ontime: '#1574c4', ahead: '#befa4f', behind: '#ef4444' };
-
-// ONE variance pill, used everywhere a date is on/ahead/behind schedule
-// (upcoming-ending, releases, …). Common strategy so nothing looks bespoke:
-//   days > 0  → "Nd late"  (red)
-//   days < 0  → "Nd early" (green)
-//   days == 0 → "on time"  (blue)
-function deptVarChip(days) {
-  if (days > 0) return { text: `${days}d late`,  tone: 'danger'  };
-  if (days < 0) return { text: `${-days}d early`, tone: 'success' };
-  return { text: 'on time', tone: 'info' };
-}
-
-// Schedule status for one task: done / behind / ahead / on-time. Expected % is
-// linear time-elapsed between start and end; |expected − actual| ≥ 15 flips it.
-function deptTaskStatus(t, todayMs) {
-  const actual = Math.max(0, Math.min(100, Number(t.progress) || 0));
-  if (actual >= 100) return 'done';
-  if (!t.start_date || !t.end_date) return 'ontime';
-  const s = new Date(t.start_date + 'T00:00:00').getTime();
-  const e = new Date(t.end_date + 'T00:00:00').getTime();
-  if (todayMs <= s) return 'ontime';
-  const total = Math.max(1, e - s);
-  const expected = Math.round((Math.min(total, todayMs - s) / total) * 100);
-  const lag = expected - actual;
-  if (lag >= 15) return 'behind';
-  if (lag <= -15) return 'ahead';
-  return 'ontime';
-}
-function deptStatusCounts(tasks, todayMs) {
-  const c = { done: 0, ontime: 0, ahead: 0, behind: 0 };
-  for (const t of (tasks || [])) c[deptTaskStatus(t, todayMs)]++;
-  return c;
-}
-// Small colored-dot legend item, reused by the donut + status bar.
-function deptLegendDot(color, label) {
-  return `<span class="dept-legend-item"><span class="dept-legend-dot" style="background:${color}"></span>${escapeHtml(label)}</span>`;
-}
-
-// Schedule-health donut for the overview header. Returns '' when there's
-// nothing to chart (caller clears the slot).
-function deptHealthDonutSvg(tasks, todayMs, size = 92) {
-  if (!tasks || tasks.length === 0) return '';
-  const c = deptStatusCounts(tasks, todayMs);
-  const cx = size / 2, cy = size / 2, ringR = size * 0.36, stroke = size * 0.16;
-  const C = 2 * Math.PI * ringR;
-  const total = Math.max(1, c.done + c.ontime + c.ahead + c.behind);
-  const segs = [
-    { val: c.done,   color: DEPT_STATUS_COLORS.done },
-    { val: c.ontime, color: DEPT_STATUS_COLORS.ontime },
-    { val: c.ahead,  color: DEPT_STATUS_COLORS.ahead },
-    { val: c.behind, color: DEPT_STATUS_COLORS.behind },
-  ];
-  let acc = 0;
-  const arcs = segs.filter(s => s.val > 0).map(seg => {
-    const len = (seg.val / total) * C, gap = C - len;
-    const out = `<circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="${seg.color}" stroke-width="${stroke}" stroke-dasharray="${len} ${gap}" stroke-dashoffset="${-acc}" transform="rotate(-90 ${cx} ${cy})"/>`;
-    acc += len; return out;
-  }).join('');
-  const pct = Math.round(((c.ontime + c.ahead) / total) * 100);
-  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="dept-donut-svg">
-    <title>${c.ontime} on-time · ${c.ahead} ahead · ${c.behind} behind — ${pct}% on track</title>
-    <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
-    ${arcs}
-    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.22}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}%</text>
-  </svg>`;
-}
-
-// Needs-attention chart: three problem-count tiles (Behind / Unstaffed / Over).
-// tiles = [{ label, n, color }]. A zero count greys out so problems pop.
-function deptStatTilesHtml(tiles) {
-  return `<div class="dept-stattiles">${tiles.map(t => `
-    <div class="dept-stattile" title="${escapeHtml(t.label)}: ${t.n}">
-      <div class="dept-stattile-n" style="color:${t.n > 0 ? t.color : '#94a3b8'}">${t.n}</div>
-      <div class="dept-stattile-label">${escapeHtml(t.label)}</div>
-    </div>`).join('')}</div>`;
-}
-
-// Upcoming chart: a timeline dot per task starting in the window, positioned by
-// start date (today at the left edge). Hover shows the task name + date — so it
-// answers "when does work land, and which task" rather than just a count.
-function deptUpcomingTimelineSvg(tasks, todayMs, windowEnd) {
-  if (!tasks || tasks.length === 0) return '';
-  const min = todayMs, max = Math.max(windowEnd, todayMs + 7 * 86400000);
-  const pos = (ms) => Math.max(0, Math.min(100, ((ms - min) / (max - min)) * 100));
-  const dots = tasks.map(t => {
-    const ms = new Date(t.start_date + 'T00:00:00').getTime();
-    const tip = `${t.project ? t.project + ' · ' : ''}${t.name || ''} · starts ${fmtDate(t.start_date)}`;
-    return `<span class="dept-tl-dot is-upcoming" style="left:${pos(ms)}%" title="${escapeHtml(tip)}"></span>`;
-  }).join('');
-  return `<div class="dept-timeline">
-    <div class="dept-tl-axis"></div>
-    <span class="dept-tl-today" style="left:0%" title="Today"></span>
-    ${dots}
-  </div>`;
-}
-
-// Small per-person workload ring for the Current-workload list. pct = how
-// allocated they are. Lime under 85, green 85–100, navy over 100.
-function deptLoadDonutSvg(pct, size = 34) {
-  const cx = size / 2, cy = size / 2, r = size * 0.34, sw = size * 0.18, C = 2 * Math.PI * r;
-  const frac = Math.max(0, Math.min(1, pct / 100));
-  const len = frac * C, gap = C - len;
-  const color = pct > 100 ? DEPT_STATUS_COLORS.behind : (pct >= 85 ? '#74c415' : '#befa4f');
-  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="dept-mini-donut">
-    <title>${pct}% allocated</title>
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="${sw}"/>
-    ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${len} ${gap}" transform="rotate(-90 ${cx} ${cy})"/>` : ''}
-    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.3}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}</text>
-  </svg>`;
-}
-
-// Available-capacity chart: a single ring gauge of average team load across the
-// window. Colour by zone — lime under 85, green 85–100, navy over 100.
-function deptUtilGaugeSvg(pct, size = 92) {
-  const cx = size / 2, cy = size / 2, ringR = size * 0.36, stroke = size * 0.16;
-  const C = 2 * Math.PI * ringR;
-  const frac = Math.max(0, Math.min(1, pct / 100));
-  const len = frac * C, gap = C - len;
-  const color = pct > 100 ? DEPT_STATUS_COLORS.behind : (pct >= 85 ? '#74c415' : '#befa4f');
-  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="dept-gauge-svg">
-    <title>Average team load across the window: ${pct}%</title>
-    <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
-    ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="${color}" stroke-width="${stroke}" stroke-dasharray="${len} ${gap}" stroke-dashoffset="0" transform="rotate(-90 ${cx} ${cy})" stroke-linecap="round"/>` : ''}
-    <text x="${cx}" y="${cy - 3}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.2}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}%</text>
-    <text x="${cx}" y="${cy + size * 0.17}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.1}" fill="#64748b" style="font-family:sans-serif">avg load</text>
-  </svg>`;
-}
-
-// Releases chart: a dot per release positioned by date along an axis, with a
-// dashed "today" marker. Done = green, upcoming = blue, late = navy. HTML so the
-// circular dots don't distort when the card width changes.
-function deptReleaseTimelineSvg(releaseTasks, todayMs) {
-  const dated = (releaseTasks || [])
-    .map(t => ({ t, ms: Date.parse((t.start_date || t.end_date || '') + 'T00:00:00') }))
-    .filter(x => !isNaN(x.ms))
-    .sort((a, b) => a.ms - b.ms);
-  if (!dated.length) return '';
-  let min = Math.min(todayMs, dated[0].ms);
-  let max = Math.max(todayMs, dated[dated.length - 1].ms);
-  if (max <= min) max = min + 30 * 86400000;
-  const pad = (max - min) * 0.06 || 86400000;
-  min -= pad; max += pad;
-  const pos = (ms) => ((ms - min) / (max - min)) * 100;
-  const dots = dated.map(({ t, ms }) => {
-    const done = (Number(t.progress) || 0) >= 100;
-    const late = !done && ms < todayMs;
-    const cls = done ? 'is-done' : (late ? 'is-late' : 'is-upcoming');
-    const tip = `${t.project ? t.project + ' · ' : ''}${t.name || ''} · ${fmtDate(t.start_date || t.end_date)}`;
-    return `<span class="dept-tl-dot ${cls}" style="left:${pos(ms)}%" title="${escapeHtml(tip)}"></span>`;
-  }).join('');
-  return `<div class="dept-timeline">
-    <div class="dept-tl-axis"></div>
-    <span class="dept-tl-today" style="left:${pos(todayMs)}%" title="Today"></span>
-    ${dots}
-  </div>`;
+  renderDashboardList('dashboard-keydates-body', keyItems, (task) => ({
+    project: task.project,
+    name: anchorLabelFor(inferredAnchorKey(task)),
+    assignee: '',
+    rightChip: { text: fmtDate(task.start_date || task.end_date) || 'ΓÇö', tone: 'neutral' },
+    onClick: () => jumpToTask(task),
+  }), keyDef
+    ? 'No projects have this anchor yet.'
+    : `No key-date summary configured for ${discDef.label}.`);
 }
 
 // Look up a friendly anchor name from its key.
@@ -15134,11 +12243,9 @@ function renderDashboardList(bodyId, items, mapper, emptyText) {
     const toneCls = `chip-${r.rightChip?.tone || 'neutral'}`;
     return `
       <button type="button" class="dashboard-row" data-i="${i}">
-        <span class="dashboard-row-main">
-          <span class="dashboard-row-project">${escapeHtml(r.project || '—')}</span>
-          <span class="dashboard-row-name">${escapeHtml(r.name || '')}</span>
-          ${r.assignee ? `<span class="dashboard-row-assignee">${escapeHtml(r.assignee)}</span>` : ''}
-        </span>
+        <span class="dashboard-row-project">${escapeHtml(r.project || 'ΓÇö')}</span>
+        <span class="dashboard-row-name">${escapeHtml(r.name || '')}</span>
+        ${r.assignee ? `<span class="dashboard-row-assignee">${escapeHtml(r.assignee)}</span>` : ''}
         ${r.rightChip ? `<span class="dashboard-chip ${toneCls}">${escapeHtml(r.rightChip.text)}</span>` : ''}
       </button>
     `;
@@ -15156,7 +12263,7 @@ function renderDashboardList(bodyId, items, mapper, emptyText) {
 function setFocusedMember(memberId) {
   state.resources.focusMemberId = memberId;
   // Update the .is-focused class on the team-member rows without a full
-  // grid re-render — re-rendering would tear down input edits in progress.
+  // grid re-render ΓÇö re-rendering would tear down input edits in progress.
   document.querySelectorAll('.team-member').forEach(row => {
     row.classList.toggle('is-focused', Number(row.dataset.id) === memberId);
   });
@@ -15198,7 +12305,7 @@ function renderTeamFocusBanner() {
     <span class="team-focus-banner-label">Focused on</span>
     <strong>${escapeHtml(member.name)}</strong>
     ${disc ? `<span class="team-focus-banner-disc">${escapeHtml(disc.label)}</span>` : ''}
-    <button type="button" class="team-focus-banner-clear" title="Show the whole discipline again">× Clear focus</button>
+    <button type="button" class="team-focus-banner-clear" title="Show the whole discipline again">├ù Clear focus</button>
   `;
   banner.querySelector('.team-focus-banner-clear').addEventListener('click', () => {
     setFocusedMember(null);
@@ -15234,7 +12341,7 @@ function renderResources() {
       </button>`).join('');
   }
 
-  // Project filter — pull project names from the current task list
+  // Project filter ΓÇö pull project names from the current task list
   const projSel = document.getElementById('resources-project');
   if (projSel && !projSel.dataset.bound) {
     projSel.dataset.bound = '1';
@@ -15249,107 +12356,23 @@ function renderResources() {
       projects.map(p => `<option value="${escapeHtml(p)}" ${state.resources.project === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
   }
 
-  // ── Status filter — inline icon chips (click to show/hide each bucket),
-  //    same feel as the Schedule view toggle. is-on class reflects state. ──
-  const statusBar = document.getElementById('resources-status-filters');
-  if (statusBar) {
-    if (!state.resources.statusFilter) {
-      state.resources.statusFilter = { zero: true, behind: true, ontrack: true, done: false };
-    }
-    const sf = state.resources.statusFilter;
-    statusBar.querySelectorAll('.view-bracket-icon[data-status]').forEach(chip => {
-      chip.classList.toggle('is-active', !!sf[chip.dataset.status]);
-    });
-    if (!statusBar.dataset.bound) {
-      statusBar.dataset.bound = '1';
-      statusBar.addEventListener('click', (e) => {
-        const chip = e.target.closest('.view-bracket-icon[data-status]');
-        if (!chip) return;
-        const key = chip.dataset.status;
-        state.resources.statusFilter[key] = !state.resources.statusFilter[key];
-        renderResources();
-      });
-    }
-  }
-
-  // Zoom controls. +/- step through friendly levels 1-10 (matching the
-  // Schedule Gantt's stepper); Fit auto-sizes; the display reads "Zoom N/10".
+  // Zoom controls
   const zo = document.getElementById('resources-zoom-out');
   const zi = document.getElementById('resources-zoom-in');
   const zf = document.getElementById('resources-zoom-fit');
-  // ── Zoom helper that preserves the date under the viewport center. ──
-  // Mirrors the Schedule's setZoom logic: capture the date under the
-  // center BEFORE the render, then scroll so that date sits at center
-  // AFTER the render. Without this, every zoom would jam the chart to
-  // the left and the user loses their place.
-  function _stepResourcesZoom(deltaFriendly) {
-    const body = document.getElementById('resources-body');
-    const oldPxPerDay = getResourcesPxPerDay();
-    let centerOffsetDays = null;
-    if (body && body.clientWidth > 0) {
-      const centerPx = body.scrollLeft + (body.clientWidth / 2);
-      const nameColW = 180; // matches NAME_COL_W in render
-      const trackPx = Math.max(0, centerPx - nameColW);
-      if (oldPxPerDay > 0) centerOffsetDays = trackPx / oldPxPerDay;
-    }
-    const cur = zoomToFriendly(state.resources.zoomPercent);
-    const next = Math.max(1, Math.min(ZOOM_FRIENDLY_MAX_LEVEL, cur + deltaFriendly));
-    state.resources.zoomPercent = friendlyToZoom(next);
-    state.resources.lastScrollKey = '__preserve_center__'; // suppress auto-jump
-    renderResources();
-    if (centerOffsetDays != null) {
-      const newPxPerDay = getResourcesPxPerDay();
-      const newBody = document.getElementById('resources-body');
-      if (newBody) {
-        const targetCenter = (centerOffsetDays * newPxPerDay) + 180;
-        newBody.scrollLeft = Math.max(0, targetCenter - (newBody.clientWidth / 2));
-      }
-    }
-  }
   if (zo && !zo.dataset.bound) {
     zo.dataset.bound = '1';
-    zo.addEventListener('click', () => _stepResourcesZoom(-1));
+    zo.addEventListener('click', () => { state.resources.zoomPercent = Math.max(10, state.resources.zoomPercent / 1.2); renderResources(); });
   }
   if (zi && !zi.dataset.bound) {
     zi.dataset.bound = '1';
-    zi.addEventListener('click', () => _stepResourcesZoom(+1));
+    zi.addEventListener('click', () => { state.resources.zoomPercent = Math.min(800, state.resources.zoomPercent * 1.2); renderResources(); });
   }
   if (zf && !zf.dataset.bound) {
     zf.dataset.bound = '1';
     zf.addEventListener('click', () => { fitResourcesZoom(); });
   }
-  const zoomPctEl = document.getElementById('resources-zoom-percent');
-  if (zoomPctEl) {
-    const friendly = zoomToFriendly(state.resources.zoomPercent);
-    zoomPctEl.textContent = `Zoom ${friendly}/${ZOOM_FRIENDLY_MAX_LEVEL}`;
-  }
-
-  // Row-height controls — Departments uses its own tighter 0-10 scale
-  // (RES_BAR_H_*). Each click steps the friendly level by 1.
-  const rho = document.getElementById('resources-row-shrink');
-  const rhi = document.getElementById('resources-row-grow');
-  if (rho && !rho.dataset.bound) {
-    rho.dataset.bound = '1';
-    rho.addEventListener('click', () => {
-      const cur = pxToFriendlyResRow(state.resources.barHeight || 16);
-      const next = Math.max(0, cur - 1);
-      state.resources.barHeight = friendlyResRowToPx(next);
-      renderResources();
-    });
-  }
-  if (rhi && !rhi.dataset.bound) {
-    rhi.dataset.bound = '1';
-    rhi.addEventListener('click', () => {
-      const cur = pxToFriendlyResRow(state.resources.barHeight || 16);
-      const next = Math.min(RES_BAR_H_LEVELS, cur + 1);
-      state.resources.barHeight = friendlyResRowToPx(next);
-      renderResources();
-    });
-  }
-  const rhLabel = document.getElementById('resources-row-height');
-  if (rhLabel) {
-    rhLabel.textContent = `Row ${pxToFriendlyResRow(state.resources.barHeight || 16)}/${RES_BAR_H_LEVELS}`;
-  }
+  document.getElementById('resources-zoom-percent').textContent = `${Math.round(state.resources.zoomPercent)}%`;
 
   // Build the active member list for the selected discipline. Same ordering as
   // the team cards above: placeholders FIRST (they're the template-stage
@@ -15372,7 +12395,7 @@ function renderResources() {
     members = members.filter(m => m.id === state.resources.focusMemberId);
   }
 
-  // Empty state — no members in this discipline OR no tasks anywhere yet
+  // Empty state ΓÇö no members in this discipline OR no tasks anywhere yet
   if (members.length === 0) {
     body.innerHTML = '';
     if (empty) {
@@ -15385,7 +12408,6 @@ function renderResources() {
   if (empty) empty.classList.add('hidden');
 
   // Compute the union date range across every plotted task so all rows share an axis.
-  // Compute the union date range across every plotted task so all rows share an axis.
   const allTasks = members.flatMap(m => resourcesTasksFor(m.name));
   let firstTaskDate = null, lastTaskDate = null;
   for (const t of allTasks) {
@@ -15393,7 +12415,7 @@ function renderResources() {
     if (!firstTaskDate || s < firstTaskDate) firstTaskDate = s;
     if (!lastTaskDate  || e > lastTaskDate)  lastTaskDate  = e;
   }
-  // No tasks for any member — anchor the timeline around today so the user can still
+  // No tasks for any member ΓÇö anchor the timeline around today so the user can still
   // drag through a sensible date range and the empty future doesn't disappear.
   const _today = new Date(); _today.setHours(0,0,0,0);
   if (!firstTaskDate) {
@@ -15411,25 +12433,17 @@ function renderResources() {
   const totalDays = Math.max(1, Math.round((maxDate - minDate) / 86400000));
   const tlWidth = Math.max(400, totalDays * pxPerDay);
   const NAME_COL_W = 180;
-  const BAR_H = Math.max(ROW_H_FRIENDLY_MIN_PX, state.resources.barHeight || 16);
-  const LANE_GAP = Math.max(2, Math.round(BAR_H * 0.18));
-  // ROW_PAD and the load strip both scale with BAR_H so the row actually
-  // shrinks at low row settings — otherwise a fixed 12px load strip + 12px
-  // padding floors the row at ~38px regardless of bar height.
-  const ROW_PAD = Math.max(2, Math.round(BAR_H * 0.3));
+  const BAR_H = 16;
+  const LANE_GAP = 3;
+  const ROW_PAD = 6;
 
-  // View-mode label so the user can see at what scale they're at. Matches
-  // the Schedule Gantt's mode breakpoints (pxPerDay < 3 → Month, < 28 →
-  // Week, else Day) so "weeks" / "days" mean the same thing here.
+  // View-mode label so the user can see at what scale they're at.
   let modeLabel = 'days';
-  if (pxPerDay < 3) modeLabel = 'months';
-  else if (pxPerDay < 28) modeLabel = 'weeks';
-  const modeEl = document.getElementById('resources-mode-label');
-  if (modeEl) modeEl.textContent = modeLabel;
+  if (pxPerDay < 1.2) modeLabel = 'months';
+  else if (pxPerDay < 8) modeLabel = 'weeks';
+  document.getElementById('resources-mode-label').textContent = modeLabel;
 
-  // Build the rows. The header is a sticky 2-row date axis: upper = month
-  // labels (centered over their span), lower = Monday dates and (at high
-  // zoom) weekday letters. Same hierarchy as the Schedule Gantt.
+  // Build the rows. The header is a sticky date axis spanning the timeline column.
   const dateTicks = buildResourceDateTicks(minDate, maxDate, pxPerDay, modeLabel);
   let html = `
     <div class="resources-table" style="--name-col-w:${NAME_COL_W}px;--tl-width:${tlWidth}px;">
@@ -15439,9 +12453,8 @@ function renderResources() {
       </div>`;
 
   // Thin strip under the bars showing the running daily total per segment.
-  // Scales with BAR_H so very small rows actually look small.
-  const STRIP_H = Math.max(6, Math.round(BAR_H * 0.6));
-  const STRIP_GAP = Math.max(1, Math.round(BAR_H * 0.1));
+  const STRIP_H = 12;
+  const STRIP_GAP = 2;
 
   for (const m of members) {
     const ph = isPlaceholder(m.name);
@@ -15449,15 +12462,15 @@ function renderResources() {
     const placed = assignTaskLanes(tasks);
     const lanes = placed.length === 0 ? 1 : (Math.max(...placed.map(p => p.lane)) + 1);
     // Reserve room for the load strip below the bars (only when there are tasks AND
-    // this is a real person — placeholders don't get a load strip at all).
+    // this is a real person ΓÇö placeholders don't get a load strip at all).
     const stripExtra = (!ph && tasks.length > 0) ? STRIP_H + STRIP_GAP : 0;
     const rowH = ROW_PAD * 2 + lanes * BAR_H + (lanes - 1) * LANE_GAP + stripExtra;
 
     // Overload regions = contiguous spans of days where the sum of allocations across all
-    // overlapping (non-milestone) tasks exceeds 100%. Two 50% tasks overlapping is fine —
+    // overlapping (non-milestone) tasks exceeds 100%. Two 50% tasks overlapping is fine ΓÇö
     // the day reads 100% and stays clean. Two 100% tasks reads 200% and gets a red stripe.
     // Placeholders are role-stand-ins (managers' eyes look at the workload SHAPE, not a
-    // capacity warning) — skip overload entirely on those rows.
+    // capacity warning) ΓÇö skip overload entirely on those rows.
     const overload = ph ? [] : computeOverloadRegions(tasks, minDate);
     const peakLoad = overload.length === 0 ? null : Math.max(...overload.map(r => r.peak));
     const overloadHtml = overload.map(r => {
@@ -15466,30 +12479,23 @@ function renderResources() {
       return `<div class="res-overload" style="left:${x}px;width:${w}px;height:${rowH}px" title="Peak ${r.peak}% allocation"></div>`;
     }).join('');
 
-    // Load segments — one pill per contiguous span of equal total allocation. Sits below
+    // Load segments ΓÇö one pill per contiguous span of equal total allocation. Sits below
     // the bars in a 12px strip so users can see "50%, then 100% during the overlap" without
     // having to mentally add up the pieces. Pills color-code: under/full/over 100%.
-    // Placeholders skip the rolled-up load strip — each task bar now shows its own
-    // duration + allocation %, so the summed "135%" strip was redundant noise.
+    // Placeholders skip this entirely ΓÇö they're role-stand-ins, not capacity-tracked.
     const loadSegs = ph ? [] : computeLoadSegments(tasks, minDate);
     const loadHtml = loadSegs.map(s => {
       const x = s.startDay * pxPerDay;
       const w = Math.max(2, (s.endDay - s.startDay + 1) * pxPerDay);
-      // Color thresholds (per Dan's spec):
-      //   > 100 → over-allocated  (red)
-      //   85 ≤ t ≤ 100 → good     (green)  ← sweet spot for engineers
-      //   < 85         → under-allocated  (yellow)
-      let cls = 'load-under';
-      if (s.total > 100)      cls = 'load-over';
-      else if (s.total >= 85) cls = 'load-good';
+      const cls = s.total > 100 ? 'load-over' : (s.total === 100 ? 'load-full' : 'load-partial');
       const dayLabel = s.startDay === s.endDay ? '' : ` (${s.endDay - s.startDay + 1}d)`;
       return `
-        <div class="res-load-seg ${cls}" style="left:${x}px;width:${w}px;height:${STRIP_H}px;bottom:${Math.max(0, ROW_PAD - 2)}px"
+        <div class="res-load-seg ${cls}" style="left:${x}px;width:${w}px;height:${STRIP_H}px;bottom:${ROW_PAD - 2}px"
              title="${s.total}% total${dayLabel}">${s.total}%</div>`;
     }).join('');
 
     // A task only NEEDS a priority when it overlaps in time with another task for
-    // the same person — that's the only case where the system has to pick which to
+    // the same person ΓÇö that's the only case where the system has to pick which to
     // do first. Compute the overlap set here so the per-bar code below can decide
     // whether to render the priority pill.
     const overlapIds = new Set();
@@ -15517,22 +12523,22 @@ function renderResources() {
       const w = Math.max(2, dur * pxPerDay);
       const y = ROW_PAD + lane * (BAR_H + LANE_GAP);
       const alloc = task.is_milestone ? null : (task.allocation == null ? 90 : task.allocation);
-      const labelDate = `${fmtDate(task.start_date)} – ${fmtDate(task.end_date)}`;
-      const tip = `${task.project ? `[${task.project}] ` : ''}${task.name} · ${labelDate}${alloc != null ? ` · ${alloc}%` : ''}`;
-      // 100% is the default — at the default we skip the alloc text entirely so the bar's
-      // full width belongs to the label (no more "Ro…" clipping just to fit "100%"). For
-      // non-default allocations we append " · 50%" to the label string itself, which lets
+      const labelDate = `${fmtDate(task.start_date)} ΓÇô ${fmtDate(task.end_date)}`;
+      const tip = `${task.project ? `[${task.project}] ` : ''}${task.name} ┬╖ ${labelDate}${alloc != null ? ` ┬╖ ${alloc}%` : ''}`;
+      // 100% is the default ΓÇö at the default we skip the alloc text entirely so the bar's
+      // full width belongs to the label (no more "RoΓÇª" clipping just to fit "100%"). For
+      // non-default allocations we append " ┬╖ 50%" to the label string itself, which lets
       // the existing ellipsis handle truncation gracefully when the bar is narrow.
-      const baseLabel = task.project ? `${task.project} · ${task.name}` : task.name;
-      const labelText = (alloc != null && alloc !== 100) ? `${baseLabel} · ${alloc}%` : baseLabel;
+      const baseLabel = task.project ? `${task.project} ┬╖ ${task.name}` : task.name;
+      const labelText = (alloc != null && alloc !== 100) ? `${baseLabel} ┬╖ ${alloc}%` : baseLabel;
       const lowAllocClass = (alloc != null && alloc < 100) ? ' low-alloc' : '';
       const overClass = state.overAllocatedTaskIds.has(task.id) ? ' over-allocated' : '';
-      // Bar color reflects SCHEDULE STATUS — same scheme as the % complete pill
+      // Bar color reflects SCHEDULE STATUS ΓÇö same scheme as the % complete pill
       // in the grid, just blown up to a full bar so you can scan the team page
       // and see what's hot at a glance:
       //   slate   = 0%, not started
-      //   red     = 1–99% AND behind schedule
-      //   green   = 1–99% AND on/ahead
+      //   red     = 1ΓÇô99% AND behind schedule
+      //   green   = 1ΓÇô99% AND on/ahead
       //   emerald = 100% complete
       const pct = Math.max(0, Math.min(100, Number(task.progress) || 0));
       const drift = taskScheduleDelta(task);
@@ -15541,39 +12547,27 @@ function renderResources() {
       else if (pct > 0) statusClass = drift < 0 ? 'status-behind' : 'status-ontrack';
       const pri = task.priority == null ? 1 : task.priority;
       // Priority pill rules:
-      //   - Placeholders never show one — placeholders are role-stand-ins, not
+      //   - Placeholders never show one ΓÇö placeholders are role-stand-ins, not
       //     workload-ranked.
       //   - Real people only show one on tasks that OVERLAP another of their tasks.
-      //     A solo task at a unique date span doesn't need a priority — it's the
+      //     A solo task at a unique date span doesn't need a priority ΓÇö it's the
       //     only thing competing for that day, automatically #1.
       const showPriPill = !ph && overlapIds.has(task.id);
       const priPill = showPriPill
-        ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="Priority ${pri} — click to change">${pri}</span>`
+        ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="Priority ${pri} ΓÇö click to change">${pri}</span>`
         : '';
-      // Task-bar label — shows DURATION only. Per Dan's spec: the task
-      // bar is the "top section" (status color + duration); the load strip
-      // below the bars is where allocation lives (with its own
-      // under/good/over color scheme). Format: "Project · TaskName · 3w".
-      // The low-alloc CSS class on partial-allocation bars still applies,
-      // giving them a visual hatch so you can spot part-timers.
-      const durWeeks = task.duration_days
-        ? (Math.round((task.duration_days / 5) * 2) / 2)  // half-week steps
-        : Math.round((dur / 7) * 2) / 2;
-      const durStr = (!task.is_milestone && durWeeks > 0) ? ` · ${durWeeks}w` : '';
-      const allocStr = (alloc != null) ? ` · ${alloc}%` : '';
-      const enrichedLabel = `${baseLabel}${allocStr}${durStr}`;
       return `
         <div class="res-bar ${statusClass}${lowAllocClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;"
              title="${escapeHtml(tip)}"
              data-task-id="${task.id}">
           ${priPill}
-          <span class="res-bar-label">${escapeHtml(enrichedLabel)}</span>
+          <span class="res-bar-label">${escapeHtml(labelText)}</span>
         </div>`;
     }).join('');
     const totalDuration = tasks.reduce((sum, t) => sum + Math.max(1, Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) + 1), 0);
     // Peak overload pill appears INLINE with the name only when the person is
-    // over-allocated (>100%). The previous "X tasks · Yd" meta line under the
-    // name was getting cut off at tight row heights — dropped per user request,
+    // over-allocated (>100%). The previous "X tasks ┬╖ Yd" meta line under the
+    // name was getting cut off at tight row heights ΓÇö dropped per user request,
     // the bars to the right convey the same info visually.
     const peakInline = peakLoad != null
       ? ` <span class="res-overload-pill">peak ${peakLoad}%</span>` : '';
@@ -15592,7 +12586,7 @@ function renderResources() {
   // older per-project color legend (bars haven't used project color since the
   // schedule-status palette took over).
   const legend = document.getElementById('resources-legend');
-  const statusItems = [
+  legend.innerHTML = [
     { cls: 'status-zero',    label: 'Not started' },
     { cls: 'status-behind',  label: 'Behind schedule' },
     { cls: 'status-ontrack', label: 'On track / ahead' },
@@ -15600,21 +12594,9 @@ function renderResources() {
   ].map(({ cls, label }) =>
     `<span class="legend-item"><span class="legend-swatch res-bar ${cls}" style="position:static;width:14px;height:14px;padding:0;display:inline-block;vertical-align:middle"></span>${escapeHtml(label)}</span>`
   ).join('');
-  // Second legend row — what the load strip / allocation colors mean (separate
-  // axis from task status above: this is how booked the person is).
-  const allocItems = [
-    { bg: '#fef3c7', bd: '#fcd34d', label: 'Under 85%' },
-    { bg: '#dcfce7', bd: '#86efac', label: 'Full 85–100%' },
-    { bg: '#fee2e2', bd: '#fca5a5', label: 'Over 100%' },
-  ].map(({ bg, bd, label }) =>
-    `<span class="legend-item"><span class="legend-swatch" style="background:${bg};border:1px solid ${bd};width:14px;height:14px;display:inline-block;border-radius:3px;vertical-align:middle"></span>${escapeHtml(label)}</span>`
-  ).join('');
-  legend.innerHTML =
-    `<div class="legend-row"><strong class="legend-title">Task</strong>${statusItems}</div>` +
-    `<div class="legend-row"><strong class="legend-title">Allocation</strong>${allocItems}</div>`;
 
-  // Click a priority pill → cycle through 1..N (where N is the number of this
-  // person's tasks that overlap with at least one other). Wraps N → 1. Server-side
+  // Click a priority pill ΓåÆ cycle through 1..N (where N is the number of this
+  // person's tasks that overlap with at least one other). Wraps N ΓåÆ 1. Server-side
   // conflict resolution displaces whoever was previously at the new priority.
   body.querySelectorAll('.res-bar-priority').forEach(pill => {
     pill.addEventListener('click', async (e) => {
@@ -15637,11 +12619,11 @@ function renderResources() {
           new Date(o.end_date) >= new Date(t.start_date))
       );
       const N = overlapPeers.length;
-      if (N < 2) return; // single task — no cycling needed
+      if (N < 2) return; // single task ΓÇö no cycling needed
       const next = (cur % N) + 1;
       pill.textContent = String(next); // optimistic update so the click reads instant
       pill.dataset.priority = String(next);
-      pill.title = `Priority ${next} — click to change`;
+      pill.title = `Priority ${next} ΓÇö click to change`;
       await api.update(id, { priority: next });
       await loadTasks();
     });
@@ -15653,7 +12635,7 @@ function renderResources() {
       if (e.target.closest('.res-bar-priority, .res-bar-priority-input')) return;
       e.stopPropagation();
       const id = Number(b.dataset.taskId);
-      // Same popup for every bar — placeholder or real person. Lets the manager
+      // Same popup for every bar ΓÇö placeholder or real person. Lets the manager
       // reassign to anyone in the discipline (including back to a placeholder) or
       // jump to the task's row on the Schedule grid.
       openResourceBarMenu(b, id);
@@ -15665,22 +12647,17 @@ function renderResources() {
   // After rendering, scroll horizontally so the first plotted task sits ~40px from the
   // left edge instead of leaving the user staring at 180 days of empty padding. This
   // remembers a per-discipline scroll position so re-renders (zoom, filter, edits) don't
-  // jump them back to "first task" unexpectedly — only fresh switches do.
+  // jump them back to "first task" unexpectedly ΓÇö only fresh switches do.
   const firstTaskOffsetDays = (firstTaskDate - minDate) / 86400000;
   const desiredLeft = Math.max(0, firstTaskOffsetDays * pxPerDay - 40);
   const scrollKey = `${state.resources.discipline}|${state.resources.project}`;
-  // Sentinel set by the zoom handlers — they preserve center themselves
-  // and don't want the auto-jump-to-first-task to fire over the top of
-  // their already-restored scroll position.
-  if (state.resources.lastScrollKey === '__preserve_center__') {
-    state.resources.lastScrollKey = scrollKey; // restore the real key
-  } else if (state.resources.lastScrollKey !== scrollKey) {
+  if (state.resources.lastScrollKey !== scrollKey) {
     state.resources.lastScrollKey = scrollKey;
     body.scrollLeft = desiredLeft;
   }
 }
 
-// Popup launched on EVERY resource-bar click — placeholder rows or real-person rows.
+// Popup launched on EVERY resource-bar click ΓÇö placeholder rows or real-person rows.
 // Lists every team member in the discipline (real people + placeholders) so the
 // manager can move a task wherever, plus an "Open in schedule" option to jump to
 // the task's row on the grid. Whoever is currently assigned is dimmed in the list
@@ -15726,7 +12703,7 @@ function openResourceBarMenu(barEl, taskId) {
     ${rows}
     <div class="picker-divider"></div>
     <button class="picker-row picker-row-clear" type="button" data-action="unassign">Leave unassigned</button>
-    <button class="picker-row" type="button" data-action="open-schedule">📅 Open in schedule</button>`;
+    <button class="picker-row" type="button" data-action="open-schedule">≡ƒôà Open in schedule</button>`;
   document.body.appendChild(pop);
   pop.querySelectorAll('.picker-row[data-name]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -15761,89 +12738,36 @@ function openResourceBarMenu(barEl, taskId) {
   }, 0);
 }
 
-function buildResourceDateTicks(minDate, maxDate, pxPerDay, _mode) {
-  // SVG-based header — uses the EXACT same SVG primitives + class names
-  // the Schedule's compressGanttToWorkDays produces:
-  //   <text class="upper-text">  — month label, y=12, anchor middle
-  //   <text class="lower-text">  — Monday day-of-month, y=28, anchor middle
-  //   <path class="tick thick">  — vertical Monday gridline, y >= 36
-  //   <text class="sdc-weekday-letter"> — M T W Th F at high zoom (≥ 12 px/day)
-  //
-  // Wrapped in an SVG with class="gantt" so frappe-gantt's stylesheet
-  // (.gantt .upper-text, .gantt .lower-text, .gantt .tick) skins it
-  // identically to the Schedule's date axis.
-  const totalDays = Math.max(1, Math.round((maxDate - minDate) / 86400000));
-  const tlWidth = Math.max(400, totalDays * pxPerDay);
-  // Header grows when weekday letters are shown so they don't get clipped
-  // outside the SVG viewBox. Earlier bug: weekday letters drew at y=50
-  // but headerH was hard-coded to 38 → letters invisible.
-  const weekW = 5 * pxPerDay;          // 5 work days wide on screen
-  const showDateNumbers = weekW >= 14; // hide when too cramped
-  const showWeekdayLetters = pxPerDay >= 12;
-  const headerH = showWeekdayLetters ? 56 : 38;
-
-  const upperY = 12;
-  const lowerY = 28;
-  const tickTop = showWeekdayLetters ? 54 : 36;
-  const weekLetterY = 46;
-
-  // Find the first Monday on/after minDate.
-  const startCur = new Date(minDate);
-  startCur.setHours(0, 0, 0, 0);
-  const dow0 = startCur.getDay();
-  const daysToMon = dow0 === 1 ? 0 : (dow0 === 0 ? 1 : 8 - dow0);
-  const firstMon = new Date(startCur);
-  firstMon.setDate(firstMon.getDate() + daysToMon);
-
-  // Walk Mondays from firstMon to maxDate. For each Monday: emit the
-  // tick + the day-of-month label. Track month transitions to know
-  // where to draw month labels.
-
-  const parts = [];
-  const monthLabels = []; // [{ startX, endX, label, short }]
-  let lastMonthLabel = '';
-
-  const cursor = new Date(firstMon);
-  while (cursor <= maxDate) {
-    const x = ((cursor - minDate) / 86400000) * pxPerDay;
-    if (showDateNumbers) {
-      parts.push(`<text class="lower-text" x="${x}" y="${lowerY}" text-anchor="middle" fill="#475569" style="font-family:sans-serif;font-size:12px;font-weight:500">${cursor.getDate()}</text>`);
+function buildResourceDateTicks(minDate, maxDate, pxPerDay, mode) {
+  // Render ticks at month, week, or day boundaries depending on the zoom level. Each tick
+  // is an absolutely-positioned label inside the axis div; pillars/grid lines come from CSS.
+  const ticks = [];
+  const start = new Date(minDate);
+  start.setHours(0, 0, 0, 0);
+  if (mode === 'months') {
+    let cur = new Date(start.getFullYear(), start.getMonth(), 1);
+    while (cur <= maxDate) {
+      const offset = (cur - minDate) / 86400000;
+      ticks.push({ x: offset * pxPerDay, label: cur.toLocaleString('en-US', { month: 'short', year: '2-digit' }) });
+      cur = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
     }
-    parts.push(`<path class="tick thick" d="M ${x} ${tickTop} v 10000" stroke="#cbd5e1" stroke-width="1"/>`);
-    if (showWeekdayLetters) {
-      const letters5 = ['M', 'T', 'W', 'Th', 'F'];
-      for (let j = 0; j < 5; j++) {
-        const xd = x + j * pxPerDay;
-        parts.push(`<text class="sdc-weekday-letter" x="${xd + pxPerDay / 2}" y="${weekLetterY}" text-anchor="middle" fill="#94a3b8" style="font-family:sans-serif;font-size:10px;font-weight:600">${letters5[j]}</text>`);
-      }
+  } else if (mode === 'weeks') {
+    let cur = new Date(start);
+    cur.setDate(cur.getDate() - cur.getDay()); // back to Sunday
+    while (cur <= maxDate) {
+      const offset = (cur - minDate) / 86400000;
+      ticks.push({ x: offset * pxPerDay, label: `${cur.getMonth() + 1}/${cur.getDate()}` });
+      cur.setDate(cur.getDate() + 7);
     }
-    const monthName  = cursor.toLocaleString('en-US', { month: 'long' });
-    const monthShort = cursor.toLocaleString('en-US', { month: 'short' });
-    if (monthName !== lastMonthLabel) {
-      if (monthLabels.length) monthLabels[monthLabels.length - 1].endX = x;
-      monthLabels.push({ startX: x, endX: tlWidth, label: monthName, short: monthShort });
-      lastMonthLabel = monthName;
+  } else {
+    let cur = new Date(start);
+    while (cur <= maxDate) {
+      const offset = (cur - minDate) / 86400000;
+      ticks.push({ x: offset * pxPerDay, label: `${cur.getMonth() + 1}/${cur.getDate()}` });
+      cur.setDate(cur.getDate() + 1);
     }
-    cursor.setDate(cursor.getDate() + 7);
   }
-
-  // Month labels: full / short / single-letter / hidden based on width.
-  for (const m of monthLabels) {
-    const w = m.endX - m.startX;
-    const fullW  = m.label.length * 7 + 8;
-    const shortW = m.short.length * 7 + 8;
-    let labelText = '';
-    let fontSize = '13px';
-    if (w >= fullW)       labelText = m.label;
-    else if (w >= shortW) labelText = m.short;
-    else if (w >= 12)     { labelText = m.short.charAt(0); fontSize = '12px'; }
-    else                  labelText = '';
-    if (!labelText) continue;
-    const cx = (m.startX + m.endX) / 2;
-    parts.push(`<text class="upper-text" x="${cx}" y="${upperY}" text-anchor="middle" fill="#0f172a" style="font-family:sans-serif;font-size:${fontSize};font-weight:600">${escapeHtml(labelText)}</text>`);
-  }
-
-  return `<svg class="gantt resources-axis-svg" width="${tlWidth}" height="${headerH}" viewBox="0 0 ${tlWidth} ${headerH}" preserveAspectRatio="none">${parts.join('')}</svg>`;
+  return ticks.map(t => `<span class="resources-tick" style="left:${t.x}px">${escapeHtml(t.label)}</span>`).join('');
 }
 
 // Click-and-drag horizontal/vertical pan on the resources body so the user can scroll
@@ -15853,44 +12777,6 @@ function setupResourcesPan() {
   const body = document.getElementById('resources-body');
   if (!body || body.dataset.panBound === '1') return;
   body.dataset.panBound = '1';
-
-  // ── Wheel zoom — same handler pattern as the Schedule Gantt's
-  //    onZoomWheel. Captures the date under the viewport center BEFORE
-  //    each zoom step, then scrolls the new viewport so that date stays
-  //    at center. Otherwise the chart yanks back to its left edge on
-  //    every wheel tick. ~6% per tick, rAF-throttled.
-  let _wPending = 1, _wScheduled = false;
-  const WHEEL_FACTOR = 1.06;
-  body.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    _wPending *= e.deltaY > 0 ? WHEEL_FACTOR : (1 / WHEEL_FACTOR);
-    if (_wScheduled) return;
-    _wScheduled = true;
-    requestAnimationFrame(() => {
-      try {
-        const oldPxPerDay = getResourcesPxPerDay();
-        const NAME_COL_W = 180;
-        const centerPx = body.scrollLeft + (body.clientWidth / 2);
-        const trackPx = Math.max(0, centerPx - NAME_COL_W);
-        const centerOffsetDays = oldPxPerDay > 0 ? trackPx / oldPxPerDay : null;
-        const next = state.resources.zoomPercent * _wPending;
-        state.resources.zoomPercent = Math.max(ZOOM_FRIENDLY_MIN_PCT, Math.min(ZOOM_FRIENDLY_MAX_PCT, next));
-        state.resources.lastScrollKey = '__preserve_center__';
-        renderResources();
-        if (centerOffsetDays != null) {
-          const newPxPerDay = getResourcesPxPerDay();
-          const newBody = document.getElementById('resources-body');
-          if (newBody) {
-            const targetCenter = (centerOffsetDays * newPxPerDay) + NAME_COL_W;
-            newBody.scrollLeft = Math.max(0, targetCenter - (newBody.clientWidth / 2));
-          }
-        }
-      } finally {
-        _wPending = 1;
-        _wScheduled = false;
-      }
-    });
-  }, { passive: false });
 
   body.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
@@ -15948,11 +12834,7 @@ function fitResourcesZoom() {
   }
   const totalDays = Math.max(1, Math.round((maxD - minD) / 86400000) + 14);
   const desiredPxPerDay = visibleW / totalDays;
-  // 100% = 20 px/day (matches Schedule + getResourcesPxPerDay above).
-  // Clamp to the same friendly 1-10 range so Fit lands on a stop that
-  // the +/- buttons can step from.
-  const rawPct = (desiredPxPerDay / 20) * 100;
-  state.resources.zoomPercent = Math.max(ZOOM_FRIENDLY_MIN_PCT, Math.min(ZOOM_FRIENDLY_MAX_PCT, rawPct));
+  state.resources.zoomPercent = Math.max(10, Math.min(800, (desiredPxPerDay / 6) * 100));
   renderResources();
 }
 
@@ -15967,9 +12849,9 @@ function renderSetup() {
   ensureSetupDraft();
   const d = state.setupDraft;
 
-  // (Row-height now lives in the schedule toolbar — used to be a slider here.)
+  // (Row-height now lives in the schedule toolbar ΓÇö used to be a slider here.)
 
-  // Weekday marker threshold — pixels per day at which the faint dashes +
+  // Weekday marker threshold ΓÇö pixels per day at which the faint dashes +
   // M/T/W/Th/F letters appear in the Gantt header. Defaults to 8.
   const thrInput = document.getElementById('weekday-marker-threshold');
   if (thrInput) {
@@ -15991,7 +12873,7 @@ function renderSetup() {
       <input type="color" value="${c.hex}" data-field="hex" />
       <input type="text" value="${c.hex.toUpperCase()}" class="hex-input" data-field="hex-text" maxlength="7" />
       <input type="text" value="${escapeHtml(c.name)}" data-field="name" placeholder="Name" />
-      <button type="button" class="remove-btn" data-action="remove-color" title="Remove">×</button>
+      <button type="button" class="remove-btn" data-action="remove-color" title="Remove">├ù</button>
     </div>`).join('');
 
   // Theme
@@ -16002,7 +12884,7 @@ function renderSetup() {
     document.getElementById(`theme-${key}-hex`).value = v.toUpperCase();
   }
 
-  // Section colors — three pickable section header colors (10/40/50). Defaults seeded from
+  // Section colors ΓÇö three pickable section header colors (10/40/50). Defaults seeded from
   // SECTION_COLOR_DEFAULTS in loadSettings.
   if (!d.section_colors) d.section_colors = { ...SECTION_COLOR_DEFAULTS };
   for (const key of ['design_build', 'machine_testing', 'teardown_install']) {
@@ -16012,14 +12894,14 @@ function renderSetup() {
     document.getElementById(`section-${dash}-hex`).value = v.toUpperCase();
   }
 
-  // Anchor color — single fill + text shared by all three project anchors.
+  // Anchor color ΓÇö single fill + text shared by all three project anchors.
   if (!d.anchor_color) d.anchor_color = { ...ANCHOR_COLOR_DEFAULTS };
   document.getElementById('anchor-fill').value     = d.anchor_color.fill;
   document.getElementById('anchor-fill-hex').value = d.anchor_color.fill.toUpperCase();
   document.getElementById('anchor-text').value     = d.anchor_color.text;
   document.getElementById('anchor-text-hex').value = d.anchor_color.text.toUpperCase();
 
-  // % complete pill colors — 4 states (zero / behind / ontrack / done). One
+  // % complete pill colors ΓÇö 4 states (zero / behind / ontrack / done). One
   // color picker per state; text is always black so there's nothing to
   // configure on that side.
   d.pct_colors = normalizePctColors(d.pct_colors);
@@ -16029,7 +12911,7 @@ function renderSetup() {
     document.getElementById(`pct-${k}-fill-hex`).value = v.toUpperCase();
   }
 
-  // Hierarchy colors — one row per group. Each row has a fill picker, a text picker,
+  // Hierarchy colors ΓÇö one row per group. Each row has a fill picker, a text picker,
   // matching hex inputs, and a small live preview pill.
   if (!d.hierarchy_colors) d.hierarchy_colors = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   for (const k of HIERARCHY_KEYS) {
@@ -16057,7 +12939,7 @@ function renderSetup() {
   const tbody = document.getElementById('phases-list');
   tbody.innerHTML = (d.phases || []).map((p, i) => `
     <tr data-i="${i}">
-      <td class="col-drag" title="Drag to reorder (coming soon)">⋮⋮</td>
+      <td class="col-drag" title="Drag to reorder (coming soon)">Γï«Γï«</td>
       <td><input type="text" data-field="label" value="${escapeHtml(p.label)}" /></td>
       <td><input type="text" class="key-input" data-field="key" value="${escapeHtml(p.key)}" /></td>
       <td>
@@ -16073,17 +12955,17 @@ function renderSetup() {
         </span>
       </td>
       <td class="preview-cell"><span class="phase-chip" style="background:${p.color};color:${p.text}">${escapeHtml(p.label)}</span></td>
-      <td><button type="button" class="remove-btn" data-action="remove-phase" title="Remove">×</button></td>
+      <td><button type="button" class="remove-btn" data-action="remove-phase" title="Remove">├ù</button></td>
     </tr>`).join('');
 
-  // Standard Financial Milestones — defaults applied to new projects.
+  // Standard Financial Milestones ΓÇö defaults applied to new projects.
   if (!Array.isArray(d.default_financial_milestones)) {
     d.default_financial_milestones = state.settings?.default_financial_milestones || [];
   }
   const finBody = document.getElementById('default-financials-list');
   if (finBody) {
     const anchorOptions = [
-      { key: '',                  label: '— (none)' },
+      { key: '',                  label: 'ΓÇö (none)' },
       { key: 'receipt_of_po',     label: 'Receipt of PO' },
       { key: 'machine_power_up',  label: 'Machine Power-Up' },
       { key: 'fat',               label: 'FAT' },
@@ -16098,7 +12980,7 @@ function renderSetup() {
             ${anchorOptions.map(o => `<option value="${o.key}" ${(f.sync_to_anchor || '') === o.key ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
           </select>
         </td>
-        <td><button type="button" class="remove-btn" data-action="remove-default-financial" title="Remove">×</button></td>
+        <td><button type="button" class="remove-btn" data-action="remove-default-financial" title="Remove">├ù</button></td>
       </tr>
     `).join('');
   }
@@ -16119,17 +13001,17 @@ function renderSetup() {
           <td><input type="text" data-field="name" value="${escapeHtml(m.name || '')}" /></td>
           <td>
             <select data-field="suggested_section">
-              <option value="">—</option>
+              <option value="">ΓÇö</option>
               ${sectionOptions.map(o => `<option value="${o.key}" ${sec === o.key ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
             </select>
           </td>
           <td>
             <select data-field="suggested_dept" ${deptOpts.length === 0 ? 'disabled' : ''}>
-              <option value="">—</option>
+              <option value="">ΓÇö</option>
               ${deptOpts.map(d => `<option value="${d.key}" ${(m.suggested_dept || '') === d.key ? 'selected' : ''}>${escapeHtml(d.label)}</option>`).join('')}
             </select>
           </td>
-          <td><button type="button" class="remove-btn" data-action="remove-milestone-template" title="Remove">×</button></td>
+          <td><button type="button" class="remove-btn" data-action="remove-milestone-template" title="Remove">├ù</button></td>
         </tr>
       `;
     }).join('');
@@ -16142,26 +13024,26 @@ function renderSetup() {
 
 // ---------- Arrow & milestone reference (Setup view) ----------
 const ARROW_DEMO_SCENARIOS_BAR = [
-  { type: 'FS', lag:  0, label: 'FS — Finish to Start',         syntax: '5 (or 5FS)' },
-  { type: 'FS', lag:  2, label: 'FS +2d — lag (gap after pred)', syntax: '5FS +2d' },
-  { type: 'FS', lag: -2, label: 'FS −2d — lead (overlap)',       syntax: '5FS -2d' },
-  { type: 'SS', lag:  0, label: 'SS — Start to Start',           syntax: '5SS' },
-  { type: 'SS', lag:  2, label: 'SS +2d — succ starts later',    syntax: '5SS +2d' },
-  { type: 'SS', lag: -2, label: 'SS −2d — succ starts earlier',  syntax: '5SS -2d' },
-  { type: 'FF', lag:  0, label: 'FF — Finish to Finish',         syntax: '5FF' },
+  { type: 'FS', lag:  0, label: 'FS ΓÇö Finish to Start',         syntax: '5 (or 5FS)' },
+  { type: 'FS', lag:  2, label: 'FS +2d ΓÇö lag (gap after pred)', syntax: '5FS +2d' },
+  { type: 'FS', lag: -2, label: 'FS ΓêÆ2d ΓÇö lead (overlap)',       syntax: '5FS -2d' },
+  { type: 'SS', lag:  0, label: 'SS ΓÇö Start to Start',           syntax: '5SS' },
+  { type: 'SS', lag:  2, label: 'SS +2d ΓÇö succ starts later',    syntax: '5SS +2d' },
+  { type: 'SS', lag: -2, label: 'SS ΓêÆ2d ΓÇö succ starts earlier',  syntax: '5SS -2d' },
+  { type: 'FF', lag:  0, label: 'FF ΓÇö Finish to Finish',         syntax: '5FF' },
   { type: 'FF', lag:  2, label: 'FF +2d',                        syntax: '5FF +2d' },
-  { type: 'FF', lag: -2, label: 'FF −2d',                        syntax: '5FF -2d' },
-  { type: 'SF', lag:  0, label: 'SF — Start to Finish',          syntax: '5SF' },
+  { type: 'FF', lag: -2, label: 'FF ΓêÆ2d',                        syntax: '5FF -2d' },
+  { type: 'SF', lag:  0, label: 'SF ΓÇö Start to Finish',          syntax: '5SF' },
   { type: 'SF', lag:  2, label: 'SF +2d',                        syntax: '5SF +2d' },
-  { type: 'SF', lag: -2, label: 'SF −2d',                        syntax: '5SF -2d' },
+  { type: 'SF', lag: -2, label: 'SF ΓêÆ2d',                        syntax: '5SF -2d' },
 ];
 const ARROW_DEMO_SCENARIOS_MS = [
-  { type: 'FS', lag: 0, predMs: false, succMs: true,  label: 'Bar → Milestone (FS)',        syntax: '5' },
-  { type: 'FS', lag: 0, predMs: true,  succMs: false, label: 'Milestone → Bar (FS)',        syntax: '5' },
-  { type: 'FS', lag: 0, predMs: true,  succMs: true,  label: 'Milestone → Milestone (FS)',  syntax: '5' },
-  { type: 'SS', lag: 0, predMs: true,  succMs: false, label: 'Milestone → Bar (SS)',        syntax: '5SS' },
-  { type: 'FF', lag: 0, predMs: false, succMs: true,  label: 'Bar → Milestone (FF)',        syntax: '5FF' },
-  { type: 'FS', lag: 2, predMs: true,  succMs: true,  label: 'Milestone → Milestone +2d',   syntax: '5FS +2d' },
+  { type: 'FS', lag: 0, predMs: false, succMs: true,  label: 'Bar ΓåÆ Milestone (FS)',        syntax: '5' },
+  { type: 'FS', lag: 0, predMs: true,  succMs: false, label: 'Milestone ΓåÆ Bar (FS)',        syntax: '5' },
+  { type: 'FS', lag: 0, predMs: true,  succMs: true,  label: 'Milestone ΓåÆ Milestone (FS)',  syntax: '5' },
+  { type: 'SS', lag: 0, predMs: true,  succMs: false, label: 'Milestone ΓåÆ Bar (SS)',        syntax: '5SS' },
+  { type: 'FF', lag: 0, predMs: false, succMs: true,  label: 'Bar ΓåÆ Milestone (FF)',        syntax: '5FF' },
+  { type: 'FS', lag: 2, predMs: true,  succMs: true,  label: 'Milestone ΓåÆ Milestone +2d',   syntax: '5FS +2d' },
 ];
 
 const ARROW_DEMO_OPTS = {
@@ -16273,7 +13155,7 @@ function drawDemoTaskBody(svg, task, variant) {
     rect.setAttribute('rx', 3);
     rect.setAttribute('class', 'demo-bar' + (variant === 'b' ? ' b' : ''));
     svg.appendChild(rect);
-    // Bar labels are inside the bar — drawn here with the body, not on top of arrows.
+    // Bar labels are inside the bar ΓÇö drawn here with the body, not on top of arrows.
     const label = document.createElementNS(SVG_NS, 'text');
     label.setAttribute('x', task.x + task.w / 2);
     label.setAttribute('y', task.y + task.h / 2);
@@ -16373,7 +13255,7 @@ function redrawArrowReference() {
 }
 
 function bindSetupHandlers() {
-  // (Row-height handlers moved to the schedule toolbar — see the btn-row-h-up/down
+  // (Row-height handlers moved to the schedule toolbar ΓÇö see the btn-row-h-up/down
   // wiring in init. Setup no longer owns this control.)
 
   // Palette row edits
@@ -16420,7 +13302,7 @@ function bindSetupHandlers() {
     };
   }
 
-  // Section color edits — live-apply so the user sees the change in the Schedule grid as
+  // Section color edits ΓÇö live-apply so the user sees the change in the Schedule grid as
   // soon as they pick. Persisted on save.
   for (const key of ['design_build', 'machine_testing', 'teardown_install']) {
     const dash = key.replace(/_/g, '-');
@@ -16439,7 +13321,7 @@ function bindSetupHandlers() {
     };
   }
 
-  // Anchor color edits — live-apply so anchor diamonds + grid rows update as you pick.
+  // Anchor color edits ΓÇö live-apply so anchor diamonds + grid rows update as you pick.
   for (const k of ['fill', 'text']) {
     document.getElementById(`anchor-${k}`).oninput = (e) => {
       state.setupDraft.anchor_color[k] = e.target.value;
@@ -16459,7 +13341,7 @@ function bindSetupHandlers() {
     };
   }
 
-  // % complete pill colors — one picker per state. Live-apply via CSS custom
+  // % complete pill colors ΓÇö one picker per state. Live-apply via CSS custom
   // properties so the grid's pills repaint instantly without a re-render.
   for (const k of PCT_COLOR_KEYS) {
     document.getElementById(`pct-${k}-fill`).oninput = (e) => {
@@ -16476,7 +13358,7 @@ function bindSetupHandlers() {
     };
   }
 
-  // Hierarchy color edits — live-apply so the user can preview both the Gantt bars and
+  // Hierarchy color edits ΓÇö live-apply so the user can preview both the Gantt bars and
   // the grid header pills as they pick.
   document.getElementById('hierarchy-colors-list').oninput = (e) => {
     const row = e.target.closest('tr[data-key]');
@@ -16542,7 +13424,7 @@ function bindSetupHandlers() {
     }
   };
 
-  // Default Financial Milestones edits — applied to new projects on first use.
+  // Default Financial Milestones edits ΓÇö applied to new projects on first use.
   const finList = document.getElementById('default-financials-list');
   if (finList) {
     finList.oninput = finList.onchange = (e) => {
@@ -16573,7 +13455,7 @@ function bindSetupHandlers() {
     }
   }
 
-  // Project Milestone Library edits — quick-pick suggestions for in-flow milestones.
+  // Project Milestone Library edits ΓÇö quick-pick suggestions for in-flow milestones.
   const libList = document.getElementById('milestone-library-list');
   if (libList) {
     libList.oninput = libList.onchange = (e) => {
@@ -16613,7 +13495,7 @@ function normalizeHex(v) {
 
 async function saveSetup() {
   const status = document.getElementById('setup-status');
-  status.textContent = 'Saving…';
+  status.textContent = 'SavingΓÇª';
   try {
     await Promise.all([
       api.putSetting('brand_palette',     state.setupDraft.brand_palette),
@@ -16627,10 +13509,10 @@ async function saveSetup() {
       api.putSetting('project_milestone_library',    state.setupDraft.project_milestone_library || []),
       api.putSetting('weekday_marker_threshold',     state.setupDraft.weekday_marker_threshold || 8),
     ]);
-    status.textContent = 'Saved. Reloading…';
+    status.textContent = 'Saved. ReloadingΓÇª';
     setTimeout(() => location.reload(), 250);
   } catch (err) {
-    status.textContent = 'Save failed — see console.';
+    status.textContent = 'Save failed ΓÇö see console.';
     console.error(err);
   }
 }
@@ -16641,18 +13523,18 @@ function discardSetup() {
 }
 
 // ---------- Data ----------
-// Anchor milestones — hard-coded project-spine markers. Five of them, in order:
-//   - Receipt of PO     → kicks the project off (above section 10 in the grid)
-//   - Mech 1 Release    → inside section 10 → Engineering → Mechanical. Gates the
-//                         shop's ability to start building — a key plan-of-record
+// Anchor milestones ΓÇö hard-coded project-spine markers. Five of them, in order:
+//   - Receipt of PO     ΓåÆ kicks the project off (above section 10 in the grid)
+//   - Mech 1 Release    ΓåÆ inside section 10 ΓåÆ Engineering ΓåÆ Mechanical. Gates the
+//                         shop's ability to start building ΓÇö a key plan-of-record
 //                         date for everyone downstream.
-//   - Machine Power-Up  → inside section 10 → Shop → Wire (END of wire work — the
+//   - Machine Power-Up  ΓåÆ inside section 10 ΓåÆ Shop ΓåÆ Wire (END of wire work ΓÇö the
 //                         moment the panel turns on).
-//   - FAT               → end of section 40 (gates teardown)
-//   - Ship Machine      → between teardown and install inside section 50
+//   - FAT               ΓåÆ end of section 40 (gates teardown)
+//   - Ship Machine      ΓåÆ between teardown and install inside section 50
 // Auto-created per project; can't be deleted. They render as concentric diamonds
 // in the anchor color. Mech 1 and Machine Power-Up live WITHIN regular hierarchy
-// buckets — the others sit above or between sections as standalone rows.
+// buckets ΓÇö the others sit above or between sections as standalone rows.
 const ANCHOR_DEFS = [
   { key: 'receipt_of_po',    name: 'Receipt of PO',    defaultOffsetDays: 0  },
   { key: 'mech_release_1',   name: 'Mech 1 Release',   defaultOffsetDays: 20,
@@ -16674,7 +13556,7 @@ function offsetISO(days) {
 // Match an existing task to an anchor by either anchor_key (when the column has been
 // populated) OR by name (fallback for tasks created before the column existed).
 function inferredAnchorKey(t) {
-  // Backlog is NOT an anchor for behavior purposes — it's just a regular
+  // Backlog is NOT an anchor for behavior purposes ΓÇö it's just a regular
   // row that happens to live above section 10. Returning null here makes
   // every code path (delete protection, milestone-flip logic, etc.)
   // treat it as an ordinary task.
@@ -16688,46 +13570,20 @@ function inferredAnchorKey(t) {
   return null;
 }
 
-// Backlog is a "duration milestone" — a project-spine task with real calendar
+// Backlog is a "duration milestone" ΓÇö a project-spine task with real calendar
 // duration but no work content (allocation 0). Lives above section 10 with the
 // PO anchor. Detected by anchor_key='backlog' (or name fallback for legacy
 // rows). No % complete pill, no drift chip, no allocation pill.
 function isBacklogTask(_) {
-  // Gutted. Backlog is no longer a special row type — just name a row
+  // Gutted. Backlog is no longer a special row type ΓÇö just name a row
   // "Backlog" if you want one. Every former special-case in the codebase
   // that calls this now flows through the normal task path (the calls
   // remain but always evaluate false, so they're effectively dead code).
   return false;
 }
 
-// Name-only detector for rows that should derive their % complete from the
-// calendar instead of being manually entered. Currently only "Backlog" —
-// it has no real work content, just calendar ramp-up time before Receipt
-// of PO. Compares case-insensitively against the trimmed name.
-function isBacklogRow(t) {
-  return String(t?.name || '').trim().toLowerCase() === 'backlog';
-}
-
-// Returns the effective % complete for the row at render time.
-// For Backlog rows: linearly interpolates today's position between
-// start_date and end_date. 0% before start, 100% after end.
-// For every other row: the stored t.progress (clamped 0-100).
-function getEffectiveProgress(t) {
-  const raw = Math.max(0, Math.min(100, Number(t?.progress) || 0));
-  if (!isBacklogRow(t)) return raw;
-  if (!t.start_date || !t.end_date) return raw;
-  const today = new Date().toISOString().slice(0, 10);
-  if (today >= t.end_date)   return 100;
-  if (today <= t.start_date) return 0;
-  const ms = (s) => new Date(s + 'T00:00:00Z').getTime();
-  const span = ms(t.end_date) - ms(t.start_date);
-  if (span <= 0) return 0;
-  const elapsed = ms(today) - ms(t.start_date);
-  return Math.max(0, Math.min(100, Math.round((elapsed / span) * 100)));
-}
-
 // Make sure each open project has a Receipt of PO + FAT anchor task. Anchors are real
-// rows in the tasks table — flagged with anchor_key — so they participate in
+// rows in the tasks table ΓÇö flagged with anchor_key ΓÇö so they participate in
 // scheduling, predecessors, and the Gantt like any other milestone. Critically, this
 // matches by NAME as well as by anchor_key so we don't create duplicates if the API
 // didn't accept anchor_key on a previous run (e.g. server hadn't been restarted).
@@ -16748,7 +13604,7 @@ async function ensureAnchorsForProject(project) {
       is_milestone: true,
       start_date: date,
       end_date: date,
-      // Machine Power-Up sits inside section 10 → Shop → Wire so it flows with the
+      // Machine Power-Up sits inside section 10 ΓåÆ Shop ΓåÆ Wire so it flows with the
       // wire team's work. Other anchors stay free-floating (rendered specially).
       phase_group:    a.phaseGroup    || null,
       department:     a.department    || null,
@@ -16756,13 +13612,13 @@ async function ensureAnchorsForProject(project) {
     });
     created = true;
   }
-  // Backlog auto-create removed — Backlog is no longer a special row. If you
+  // Backlog auto-create removed ΓÇö Backlog is no longer a special row. If you
   // want a Backlog row, right-click any line and add one and name it "Backlog".
   return created;
 }
 
 // De-duplicate anchor milestones (Receipt of PO, FAT) at the data layer so EVERY
-// downstream consumer — grid, Gantt, predecessor parsing, over-allocation — sees
+// downstream consumer ΓÇö grid, Gantt, predecessor parsing, over-allocation ΓÇö sees
 // exactly ONE of each. The DB may still have duplicates until the server-side dedup
 // migration runs (requires a server restart); this hides them everywhere in the UI.
 // Normalize the raw task list: dedup anchor milestones (Receipt of PO / FAT / Ship
@@ -16775,7 +13631,7 @@ function dedupAnchors(all) {
   // a machine. So a multi-machine project can have FAT-M1, FAT-M2, etc. side
   // by side without one shadowing the other. machine='' = shared (PO,
   // Mech Release) which stays one-per-project.
-  const oldest = {}; // key = `${project}::${machine}::${anchor_key}` → lowest id
+  const oldest = {}; // key = `${project}::${machine}::${anchor_key}` ΓåÆ lowest id
   for (const t of all) {
     const k = inferredAnchorKey(t);
     if (!k) continue;
@@ -16822,7 +13678,7 @@ async function loadTasks() {
   let raw = await api.list();
   state.tasks = raw;
   // Backfill anchors for every project that doesn't yet have them. Runs once per page
-  // load — subsequent loads see the rows (or a duplicate row) and skip.
+  // load ΓÇö subsequent loads see the rows (or a duplicate row) and skip.
   const projects = uniqueValues('project');
   let backfilled = false;
   for (const p of projects) {
@@ -16842,14 +13698,14 @@ async function loadTasks() {
   }
   // Refresh financial milestones for projects whose data we already cached. The
   // overlay renders from state.financials, so this keeps it current with the latest
-  // anchor dates after every task save (FAT moves → "Acceptance at SDC" follows).
+  // anchor dates after every task save (FAT moves ΓåÆ "Acceptance at SDC" follows).
   if (state.showFinancials) {
     await loadFinancialsForAllOpenProjects();
   }
   render();
-  // Phase 2 (Abhi port): refresh 💬 badge counts for the active project after
+  // Phase 2 (Abhi port): refresh ≡ƒÆ¼ badge counts for the active project after
   // every render so newly-loaded rows pick up their comment counts and saves
-  // don't leave stale badges behind. Wrapped in typeof check — comments-ui.js
+  // don't leave stale badges behind. Wrapped in typeof check ΓÇö comments-ui.js
   // is loaded as a separate script after app.js and may be unavailable in
   // pared-down embedded views.
   if (typeof loadCommentCounts === 'function' && state.filters?.project) {
@@ -16857,7 +13713,7 @@ async function loadTasks() {
   }
 }
 
-// Walk each assignee's tasks in priority order, building a day → cumulative-alloc map.
+// Walk each assignee's tasks in priority order, building a day ΓåÆ cumulative-alloc map.
 // A task is "over-allocated" if its allocation, ADDED on top of higher-priority tasks
 // already on the books, would push the day total over 100% anywhere in its span.
 // This is what drives the bold-red assignee cell in the Schedule grid: priority 1 tasks
@@ -16867,7 +13723,7 @@ function computeOverAllocatedTasks(tasks) {
   const byAssignee = {};
   for (const t of tasks) {
     if (!t.assignee || !t.start_date || !t.end_date || t.is_milestone) continue;
-    // Placeholders aren't real people — they're role-stand-ins on templates. A
+    // Placeholders aren't real people ΓÇö they're role-stand-ins on templates. A
     // placeholder showing up on every task in a section is expected (that's its job)
     // and shouldn't paint everything red.
     if (isPlaceholder(t.assignee)) continue;
@@ -16889,7 +13745,7 @@ function computeOverAllocatedTasks(tasks) {
         if ((allocByDay.get(d) || 0) + a > 100) { pushesOver = true; break; }
       }
       if (pushesOver) flagged.add(t.id);
-      // Always book this task into the running map — even if it pushes over, we still
+      // Always book this task into the running map ΓÇö even if it pushes over, we still
       // count it for downstream priorities so they see the realistic load.
       for (let d = startMs; d <= endMs; d += 86400000) {
         allocByDay.set(d, (allocByDay.get(d) || 0) + a);
@@ -16903,20 +13759,16 @@ async function loadTeam() {
   // Re-render whichever view depends on the team list. The Schedule grid only renders
   // assignee names (any string), but the Team tab and Resources tab both need a fresh
   // list, and the Schedule grid's inline-edit dropdown reads state.team at click time
-  // anyway — so we just re-render the active view.
+  // anyway ΓÇö so we just re-render the active view.
   render();
 }
 
 // ---------- Wiring ----------
 function setView(view) {
-  // v7.6: the Dashboard view was merged into Departments. Anyone who
-  // had state.view === 'dashboard' saved in localStorage lands on
-  // Departments instead so they don't get a blank page.
-  if (view === 'dashboard') view = 'team';
   state.view = view;
   document.body.dataset.view = view;
   // Update the legacy .tab buttons (if any still exist) and the sidebar
-  // icons — both share the data-view attribute, so a single CSS active
+  // icons ΓÇö both share the data-view attribute, so a single CSS active
   // class works for both. .tab was the old topbar nav, replaced in v4.11
   // by the sidebar, but the selector is harmless if no .tab elements
   // remain in the DOM.
@@ -16924,14 +13776,7 @@ function setView(view) {
   document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(t => t.classList.toggle('is-active', t.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
   if (view === 'setup') renderSetup();
-  else if (view === 'team') {
-    // Land on a consistent default each time the Departments page opens:
-    // Gantt zoom 5/10, row height 4/10. (Mid-session zooming still sticks —
-    // this only resets on navigation TO the page.)
-    state.resources.zoomPercent = friendlyToZoom(5);
-    state.resources.barHeight = friendlyResRowToPx(4);
-    renderTeam();
-  }
+  else if (view === 'team') renderTeam();
   else if (view === 'projects')  renderProjectsPage();
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
@@ -16981,11 +13826,11 @@ const COLUMN_DEFS = [
   { key: 'notes',    label: 'Comments' },
 ];
 // Columns we don't auto-show when introducing a column. The user can still toggle them
-// on from the columns menu — they just don't appear by default for fresh installs and
+// on from the columns menu ΓÇö they just don't appear by default for fresh installs and
 // aren't force-shown for existing users on app load. Priority is hidden because the
 // Resources view's pill is the primary editor. Progress / allocation / duration are
 // hidden because they all live as click-to-edit pills inside the Task name column now
-// (v4.27) — the dedicated columns are redundant and just eat horizontal space.
+// (v4.27) ΓÇö the dedicated columns are redundant and just eat horizontal space.
 const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority', 'progress', 'allocation', 'duration', 'project']);
 
 // Bump LAYOUT_VERSION whenever we change a default column width that existing users have
@@ -17021,7 +13866,7 @@ function loadLayout() {
   }
   // Migration v6: hide allocation + duration columns by default. Both values
   // now live as click-to-edit pills inside the Task name column's meta row
-  // (alloc · duration underneath the task name), so the dedicated columns
+  // (alloc ┬╖ duration underneath the task name), so the dedicated columns
   // are redundant and just eat horizontal space. Users who want them back
   // can still toggle them on from the columns menu.
   if ((saved.layoutVersion || 1) < 6) {
@@ -17031,7 +13876,7 @@ function loadLayout() {
   }
 
   const rh = Number(saved.rowHeight) || ROW_H_DEFAULT;
-  // Default visible columns exclude `line` (#) — the row-number column doubles as a drag
+  // Default visible columns exclude `line` (#) ΓÇö the row-number column doubles as a drag
   // handle but mostly adds clutter; users can re-enable it from the columns toggle when
   // they need predecessor numbers visible.
   const defaultVisible = COLUMN_DEFS.map(c => c.key).filter(k => k !== 'line');
@@ -17052,7 +13897,7 @@ function colClass(key) {
 
 function renderHeaders() {
   const order = state.layout.columnOrder.filter(k => COLUMN_DEFS.find(d => d.key === k));
-  // Slot new columns at their canonical position from COLUMN_DEFS, not at the end —
+  // Slot new columns at their canonical position from COLUMN_DEFS, not at the end ΓÇö
   // otherwise adding the line column on the left would push it to the end for existing users.
   for (let i = 0; i < COLUMN_DEFS.length; i++) {
     const key = COLUMN_DEFS[i].key;
@@ -17077,12 +13922,12 @@ function renderHeaders() {
     // matching the body cell layout. Since the body cell packs all four
     // pieces inline (alloc, name, dur, % pill), the header labels each
     // sub-region so the user can read which value is which.
-    // v4.37: header mirrors the body cell's flex skeleton EXACTLY —
-    // alloc + dash + task + dur + %com — so labels land directly above
+    // v4.37: header mirrors the body cell's flex skeleton EXACTLY ΓÇö
+    // alloc + dash + task + dur + %com ΓÇö so labels land directly above
     // their corresponding body values. The dash placeholder ensures the
     // TASK label sits where the body's task name does (the body has a
     // dash element between alloc and name).
-    // v4.44: TASK banner on top (not bold — other column headers like
+    // v4.44: TASK banner on top (not bold ΓÇö other column headers like
     // "ASSIGNED TO" aren't bold either). Below it the four sub-labels:
     // ALOC | DESCRIPTION | DUR | %COM. DESCRIPTION sits centered above
     // the body name area (matching TASK's range from left: 64 to right: 110).
@@ -17112,7 +13957,7 @@ function saveLayout() {
 
 // ---------- Schedule view modes ----------
 // Three independent toggles (flatten / sortByStart / ganttOnly) live on state and are
-// persisted to localStorage. Each one is reversible — clicking the button again
+// persisted to localStorage. Each one is reversible ΓÇö clicking the button again
 // returns the schedule to the previous view.
 const SCHED_VIEW_KEY = 'sdcSchedulerScheduleView';
 function loadScheduleView() {
@@ -17120,7 +13965,7 @@ function loadScheduleView() {
     const saved = JSON.parse(localStorage.getItem(SCHED_VIEW_KEY) || '{}');
     // showFinancials / showBaseline are persisted alongside the schedule-view
     // flags but live on state.show* (not state.scheduleView) since the overlays
-    // aren't section-rendering modes — they're extra layers. Hydrate as side effects.
+    // aren't section-rendering modes ΓÇö they're extra layers. Hydrate as side effects.
     state.showFinancials = !!saved.showFinancials;
     state.showBaseline   = !!saved.showBaseline;
     return {
@@ -17133,7 +13978,7 @@ function loadScheduleView() {
       // OFF on first load, which would surprise users who saw the labels
       // in v3.52 and expect them on after upgrading.
       showArrowLags: saved.showArrowLags === undefined ? true : !!saved.showArrowLags,
-      // Default OFF — opt-in feature, since it clutters the chart a bit. The
+      // Default OFF ΓÇö opt-in feature, since it clutters the chart a bit. The
       // user enables it when they want to see allocation/duration at a glance
       // without having to read the grid.
       showBarMeta:   !!saved.showBarMeta,
@@ -17144,18 +13989,18 @@ function loadScheduleView() {
       showMachineColors: saved.showMachineColors === undefined ? true : !!saved.showMachineColors,
       // v4.30: inline allocation prefix in the Task column ("85%  Task Name").
       // Defaults to ON since the user explicitly asked for it; the View pill's
-      // α icon turns it off when presenting to a customer or anyone else
+      // ╬▒ icon turns it off when presenting to a customer or anyone else
       // who shouldn't see the staffing percentages.
       showInlineAlloc: saved.showInlineAlloc === undefined ? true : !!saved.showInlineAlloc,
       // v4.46: 3-way toggle for action items rendering:
-      //   'schedule' — only scheduled work (is_action = 0). Default.
-      //   'combined' — schedule rows AND action rows. Actions sort to the
+      //   'schedule' ΓÇö only scheduled work (is_action = 0). Default.
+      //   'combined' ΓÇö schedule rows AND action rows. Actions sort to the
       //                bottom of their sub-dep bucket.
-      //   'actions'  — only action items (is_action = 1).
+      //   'actions'  ΓÇö only action items (is_action = 1).
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
         ? saved.actionsMode
         : 'combined'),
-      // View → Hide completed items. OFF by default — completed tasks stay
+      // View ΓåÆ Hide completed items. OFF by default ΓÇö completed tasks stay
       // visible with the lime outline + hash pattern until the user opts in.
       hideCompleted: !!saved.hideCompleted,
     };
@@ -17177,17 +14022,17 @@ function applyScheduleView() {
   // toggle state. Critical path stays in the Quick filters popover (renderFilters).
   syncViewPill();
   // The pane class (.gantt-only) on schedule-split is owned by applyGanttVisibility
-  // — it knows about both showGantt and ganttOnly. Just delegate.
+  // ΓÇö it knows about both showGantt and ganttOnly. Just delegate.
   applyGanttVisibility();
   // v4.30: body.hide-alloc-pre hides the inline "85% " prefix in the Task
-  // column when the user turns the α View pill icon off. Pure CSS swap, no
+  // column when the user turns the ╬▒ View pill icon off. Pure CSS swap, no
   // re-render needed since the span is always in the DOM.
   document.body.classList.toggle('hide-alloc-pre', state.scheduleView && state.scheduleView.showInlineAlloc === false);
 }
 
 // Update the .is-active class on each View pill icon to match the current
 // schedule-view state. Called whenever a toggle changes or the view re-renders.
-// The flatten icon represents the COMBINED flatten + sortByStart toggle —
+// The flatten icon represents the COMBINED flatten + sortByStart toggle ΓÇö
 // active iff BOTH flags are on (so the icon doesn't look on when only half
 // the linked pair is active, e.g. from settings persisted before v3.58).
 function syncViewPill() {
@@ -17229,7 +14074,7 @@ function shouldShowMachineVisuals() {
 }
 function toggleScheduleView(key) {
   state.scheduleView[key] = !state.scheduleView[key];
-  // Gantt-only forces the Gantt visible — otherwise turning it on while the Gantt is
+  // Gantt-only forces the Gantt visible ΓÇö otherwise turning it on while the Gantt is
   // hidden by the show-Gantt checkbox would leave the user with nothing on screen.
   if (key === 'ganttOnly' && state.scheduleView.ganttOnly && !state.layout.showGantt) {
     state.layout.showGantt = true;
@@ -17275,12 +14120,12 @@ function applyRowHeight() {
   document.body.classList.remove('row-h-compact');
 }
 
-// Bar height tracks row height. v4.23 bumped the ratio from 0.5 → 0.7 so the
+// Bar height tracks row height. v4.23 bumped the ratio from 0.5 ΓåÆ 0.7 so the
 // bar dominates each row visually (was leaving big empty bands above + below
-// short bars in compact mode). Milestone diamonds — sized off bar_height
-// (outer radius = h × 1.20 / 2 = h × 0.60) — still fit because the floor of
+// short bars in compact mode). Milestone diamonds ΓÇö sized off bar_height
+// (outer radius = h ├ù 1.20 / 2 = h ├ù 0.60) ΓÇö still fit because the floor of
 // 4px padding keeps adjacent rows from touching, and we don't allow padding
-// below 4px even when row height is at the floor of 14px (14 × 0.7 = 9.8 →
+// below 4px even when row height is at the floor of 14px (14 ├ù 0.7 = 9.8 ΓåÆ
 // 10 bar, 4 padding). Text fit inside bars is handled separately in
 // clipBarLabels by scaling font-size to barH.
 function getGanttBarMetrics() {
@@ -17304,9 +14149,9 @@ function applyGanttVisibility() {
   const split = document.getElementById('schedule-split');
   if (!split) return;
   // Pane mode is derived from two underlying flags so existing keys persist:
-  //   - layout.showGantt   = false → "grid" only
-  //   - scheduleView.ganttOnly = true → "gantt" only
-  //   - else → "both"
+  //   - layout.showGantt   = false ΓåÆ "grid" only
+  //   - scheduleView.ganttOnly = true ΓåÆ "gantt" only
+  //   - else ΓåÆ "both"
   const ganttOnly = !!state.scheduleView?.ganttOnly;
   const showGantt = state.layout.showGantt !== false;
   let pane = 'both';
@@ -17324,7 +14169,7 @@ function applyColumnVisibility() {
   const visible = new Set(state.layout.visibleCols);
   // Project column is contextual:
   //   - On a single-project tab: every row would show the same project name
-  //     in every cell — pure noise. Force-hide.
+  //     in every cell ΓÇö pure noise. Force-hide.
   //   - On All Projects view OR in personal mode (which spans many projects):
   //     show it so the user can see which job each task belongs to.
   // This overrides whatever's in state.layout.visibleCols.
@@ -17339,7 +14184,7 @@ function applyColumnVisibility() {
 // Render the Show/hide columns dropdown. Two responsibilities:
 //   1. Each row has a checkbox that toggles visibility (col-hidden class on
 //      the matching <col>/<th>/<td> elements).
-//   2. Each row has a drag-handle (⋮⋮) and is itself draggable. Reordering
+//   2. Each row has a drag-handle (Γï«Γï«) and is itself draggable. Reordering
 //      rows inside the menu reorders state.layout.columnOrder, which the
 //      grid headers + body + colgroup all read from on the next renderHeaders
 //      / renderTable cycle.
@@ -17359,12 +14204,12 @@ function renderColumnsMenu() {
     const def = COLUMN_DEFS.find(d => d.key === key);
     if (!def) return '';
     // Project column is purely contextual (visible only on All Projects
-    // or in personal mode) — don't expose it as a user-toggleable entry.
+    // or in personal mode) ΓÇö don't expose it as a user-toggleable entry.
     if (def.key === 'project') return '';
     const isName = def.key === 'name';
     return `
-      <div class="col-menu-row ${isName ? 'is-locked' : ''}" data-col="${def.key}" draggable="${!isName}" title="${isName ? 'Task column is always shown and always first — can\'t reorder or hide.' : 'Drag to reorder. Checkbox toggles visibility.'}">
-        <span class="col-menu-drag">⋮⋮</span>
+      <div class="col-menu-row ${isName ? 'is-locked' : ''}" data-col="${def.key}" draggable="${!isName}" title="${isName ? 'Task column is always shown and always first ΓÇö can\'t reorder or hide.' : 'Drag to reorder. Checkbox toggles visibility.'}">
+        <span class="col-menu-drag">Γï«Γï«</span>
         <label class="col-menu-label">
           <input type="checkbox" data-col="${def.key}" ${visible.has(def.key) ? 'checked' : ''} ${isName ? 'disabled' : ''} />
           ${escapeHtml(def.label)}
@@ -17372,7 +14217,7 @@ function renderColumnsMenu() {
       </div>`;
   }).join('');
 
-  // Visibility checkboxes — same behavior as before.
+  // Visibility checkboxes ΓÇö same behavior as before.
   menu.addEventListener('change', (e) => {
     if (e.target.matches('input[type="checkbox"]')) {
       const key = e.target.dataset.col;
@@ -17387,7 +14232,7 @@ function renderColumnsMenu() {
   });
 
   // Drag-and-drop reordering. Mirrors setupColumnReorder() on the table
-  // headers — same state.layout.columnOrder update, same renderHeaders +
+  // headers ΓÇö same state.layout.columnOrder update, same renderHeaders +
   // renderTable refresh. After dropping, also re-render the menu so the
   // rows visually re-sort to match the new order.
   menu.querySelectorAll('.col-menu-row[draggable="true"]').forEach(row => {
@@ -17412,7 +14257,7 @@ function renderColumnsMenu() {
       const fromKey = e.dataTransfer.getData('text/plain');
       const toKey = row.dataset.col;
       if (!fromKey || fromKey === toKey) return;
-      // The "name" column is locked at position 0 — refuse drops that would
+      // The "name" column is locked at position 0 ΓÇö refuse drops that would
       // move anything to its slot or move name itself.
       if (toKey === 'name' || fromKey === 'name') return;
       const order = [...state.layout.columnOrder];
@@ -17442,7 +14287,7 @@ function setupRowHeightHandle() {
     let pendingH = startH;
     let raf = false;
     const onMove = (ev) => {
-      // Drag down → taller rows. ~1px drag = ~1px row height change.
+      // Drag down ΓåÆ taller rows. ~1px drag = ~1px row height change.
       pendingH = startH + (ev.clientY - startY);
       if (raf) return;
       raf = true;
@@ -17472,7 +14317,7 @@ function setupGanttPan() {
     if (e.target.closest('button, input, select, a')) return;
     if (e.target.closest('.schedule-divider, .row-height-bar')) return;
 
-    // Walk up and grab every scrollable ancestor — set scroll on all of them so it
+    // Walk up and grab every scrollable ancestor ΓÇö set scroll on all of them so it
     // doesn't matter which one actually owns the scrollbar.
     const scrollers = [];
     let el = e.target;
@@ -17577,14 +14422,14 @@ function toggleGanttVisible(visible) {
 }
 
 // ---------- Customer view ----------
-// "👤 For Customer" toggles a clean view for showing the schedule to a
+// "≡ƒæñ For Customer" toggles a clean view for showing the schedule to a
 // customer. Hides the toolbar / topbar / project tabs / extra grid columns
 // via the body.customer-view CSS class, forces pane=both so they see grid +
 // Gantt together, and zoom-to-fits the chart so the full project span is
 // visible. State (pane mode, zoom, scroll) is saved on entry and restored
 // on exit so toggling off returns the user to their exact editing layout.
-// Keep the floating "≡ Flatten" button in customer view in sync with the
-// flatten + sortByStart toggle. Same is-active class the toolbar's ≡ View-
+// Keep the floating "Γëí Flatten" button in customer view in sync with the
+// flatten + sortByStart toggle. Same is-active class the toolbar's Γëí View-
 // pill icon uses (so both buttons read consistent at a glance).
 function syncCustomerViewFlattenBtn() {
   const btn = document.getElementById('btn-customer-view-flatten');
@@ -17608,7 +14453,7 @@ function enterCustomerView() {
   document.body.classList.add('customer-view');
   // Force both panes so the customer sees grid + Gantt.
   setPaneMode('both');
-  // Reflect the current flatten state on the floating button — flatten may
+  // Reflect the current flatten state on the floating button ΓÇö flatten may
   // already be on (carried over from the editing view) and we want the
   // button to show as active immediately, not only after the user clicks it.
   syncCustomerViewFlattenBtn();
@@ -17649,7 +14494,7 @@ function exitCustomerView() {
 // this just keeps them in sync and re-applies styles + re-renders the Gantt.
 // v4.52: the schedule/combined/actions toggle is a visible seg-control
 // again. Keep the original function name (existing callers like + Add
-// action's auto-switch Schedule → Combined still call this) and sync
+// action's auto-switch Schedule ΓåÆ Combined still call this) and sync
 // both the seg-control AND the hidden v4.51 dropdown helper.
 function syncActionsModeButtons() {
   syncModeSegControl();
@@ -17657,10 +14502,10 @@ function syncActionsModeButtons() {
   renderViewModeMenu();
 }
 
-// v4.51: View dropdown — Smartsheet-style picker holding both pane mode
+// v4.51: View dropdown ΓÇö Smartsheet-style picker holding both pane mode
 // (Grid / Both / Gantt) and content mode (Schedule / Combined / Actions)
 // in one popover divided by a line. The button label reflects both
-// current values ("Both · Schedule") so the user can see state without
+// current values ("Both ┬╖ Schedule") so the user can see state without
 // opening the menu.
 function getCurrentPaneMode() {
   if (state.scheduleView?.ganttOnly) return 'gantt';
@@ -17678,7 +14523,7 @@ function syncViewModeButton() {
   if (!label) return;
   const pane = getCurrentPaneMode();
   const am = state.scheduleView?.actionsMode || 'schedule';
-  label.textContent = `${paneLabel(pane)} · ${actionsLabel(am)}`;
+  label.textContent = `${paneLabel(pane)} ┬╖ ${actionsLabel(am)}`;
 }
 function renderViewModeMenu() {
   const menu = document.getElementById('view-mode-menu');
@@ -17687,7 +14532,7 @@ function renderViewModeMenu() {
   const am = state.scheduleView?.actionsMode || 'schedule';
   const item = (active, value, label, group) =>
     `<button type="button" class="dropdown-item ${active ? 'is-active' : ''}" data-${group}="${value}">
-       <span class="dropdown-item-check">${active ? '✓' : ''}</span>
+       <span class="dropdown-item-check">${active ? 'Γ£ô' : ''}</span>
        <span>${label}</span>
      </button>`;
   const hideDone = !!state.scheduleView?.hideCompleted;
@@ -17711,7 +14556,7 @@ function renderViewModeMenu() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       // setPaneMode now calls syncViewModeButton + renderViewModeMenu at
-      // the end on its own — no extra sync needed here.
+      // the end on its own ΓÇö no extra sync needed here.
       setPaneMode(btn.dataset.pane);
     });
   });
@@ -17723,7 +14568,7 @@ function renderViewModeMenu() {
         state.scheduleView.actionsMode = m;
         saveScheduleView();
         render();
-        // render() doesn't touch the dropdown — sync the button label and
+        // render() doesn't touch the dropdown ΓÇö sync the button label and
         // re-render the menu so the new active row gets its checkmark + tint.
         syncViewModeButton();
         renderViewModeMenu();
@@ -17770,13 +14615,13 @@ function setupViewModeDropdown() {
 }
 
 // ----------------------------------------------------------------------------
-// v4.51 — Zoom dropdown. Single toolbar button that opens a popover holding
+// v4.51 ΓÇö Zoom dropdown. Single toolbar button that opens a popover holding
 // three controls:
-//   • TIME SCALE — radio rows: Days / Weeks / Months. Picks the Gantt's
+//   ΓÇó TIME SCALE ΓÇö radio rows: Days / Weeks / Months. Picks the Gantt's
 //     view_mode (the existing #zoom-mode select is the underlying control).
-//   • ZOOM       — minus / current % / plus. Drives setZoom() at the same
-//     1.25x step the legacy + / − buttons used.
-//   • ROW HEIGHT — minus / friendly value (10-100, increments of 10) / plus.
+//   ΓÇó ZOOM       ΓÇö minus / current % / plus. Drives setZoom() at the same
+//     1.25x step the legacy + / ΓêÆ buttons used.
+//   ΓÇó ROW HEIGHT ΓÇö minus / friendly value (10-100, increments of 10) / plus.
 //     The internal layout.rowHeight value still tracks pixels (18-120) so
 //     setRowHeight() doesn't need to change; the friendly value is a UI-only
 //     projection mapped via px-to-friendly / friendly-to-px helpers below.
@@ -17784,29 +14629,29 @@ function setupViewModeDropdown() {
 // the other dropdowns (Columns, View, Baseline).
 // ----------------------------------------------------------------------------
 // v4.55 friendly scales for the Zoom dropdown.
-// ROW HEIGHT: 0 → 16px (smallest), 100 → 30px (largest). Step of 10 friendly
+// ROW HEIGHT: 0 ΓåÆ 16px (smallest), 100 ΓåÆ 30px (largest). Step of 10 friendly
 //   units = 1.4px. Note the friendly minimum is 0 (not 10).
-// ZOOM: 1-10 EXPONENTIAL — each click multiplies zoomPercent by ~1.527 (the
+// ZOOM: 1-10 EXPONENTIAL ΓÇö each click multiplies zoomPercent by ~1.527 (the
 //   9th root of 50, since friendly 1 = 5% and friendly 10 = 250% covers a
-//   50× range). Levels:
-//     1 → 5%    (Month, very far out)
-//     2 → 7.6%
-//     3 → 11.7%
-//     4 → 17.8%
-//     5 → 27.2%  (Week kicks in around here)
-//     6 → 41.5%
-//     7 → 63.4%
-//     8 → 96.8%
-//     9 → 147.8% (Day kicks in around here)
-//     10 → 225.6%
+//   50├ù range). Levels:
+//     1 ΓåÆ 5%    (Month, very far out)
+//     2 ΓåÆ 7.6%
+//     3 ΓåÆ 11.7%
+//     4 ΓåÆ 17.8%
+//     5 ΓåÆ 27.2%  (Week kicks in around here)
+//     6 ΓåÆ 41.5%
+//     7 ΓåÆ 63.4%
+//     8 ΓåÆ 96.8%
+//     9 ΓåÆ 147.8% (Day kicks in around here)
+//     10 ΓåÆ 225.6%
 //   getZoomConfig auto-switches Month/Week/Day based on pct, so the time
 //   scale follows the zoom level automatically without a separate selector.
-// Friendly zoom range — 10 steps mapped exponentially over the
+// Friendly zoom range ΓÇö 10 steps mapped exponentially over the
 // "usable" pct range. Anchored so that:
-//   • Zoom 1  = ~25% (Week mode, months still fit without overlap)
-//   • Zoom 3  = ~36% (Monday date numbers start appearing — weekW ≥ 35)
-//   • Zoom 6-7 = ~60-73% (day letters T/W/Th/F start appearing — weekW ≥ 60)
-//   • Zoom 10 = ~125% (max useful zoom-in)
+//   ΓÇó Zoom 1  = ~25% (Week mode, months still fit without overlap)
+//   ΓÇó Zoom 3  = ~36% (Monday date numbers start appearing ΓÇö weekW ΓëÑ 35)
+//   ΓÇó Zoom 6-7 = ~60-73% (day letters T/W/Th/F start appearing ΓÇö weekW ΓëÑ 60)
+//   ΓÇó Zoom 10 = ~125% (max useful zoom-in)
 // Must match ZOOM_MIN / ZOOM_MAX above so wheel zoom hits the same
 // stops the +/- stepper does.
 const ZOOM_FRIENDLY_MIN_PCT = 10;
@@ -17815,7 +14660,7 @@ const ZOOM_FRIENDLY_MAX_LEVEL = 10;
 const ZOOM_FRIENDLY_MULTIPLIER = Math.pow(
   ZOOM_FRIENDLY_MAX_PCT / ZOOM_FRIENDLY_MIN_PCT,
   1 / (ZOOM_FRIENDLY_MAX_LEVEL - 1)
-); // ≈ 1.527
+); // Γëê 1.527
 function pxToFriendlyRowH(px) {
   const t = (px - ROW_H_FRIENDLY_MIN_PX) / (ROW_H_FRIENDLY_MAX_PX - ROW_H_FRIENDLY_MIN_PX); // 0..1
   return Math.max(0, Math.min(100, Math.round((t * 100) / 10) * 10));
@@ -17841,28 +14686,28 @@ function renderZoomMenu() {
   const friendlyRow  = pxToFriendlyRowH(state.layout?.rowHeight || ROW_H_FRIENDLY_MIN_PX);
   // v4.54: Time scale section dropped from the popover. Each zoom level (1-5)
   // now carries its own time-scale preset, so getZoomConfig auto-switches
-  // Month → Week → Day as you step +/-. No need for a manual selector.
+  // Month ΓåÆ Week ΓåÆ Day as you step +/-. No need for a manual selector.
   menu.innerHTML = `
     <div class="zoom-menu-section">
       <div class="zoom-menu-title">Zoom</div>
       <div class="zoom-menu-row">
-        <button type="button" class="btn-icon" data-zoom="out" ${friendlyZoom <= 1 ? 'disabled' : ''} title="Zoom out — small step (~1.5× per click). Mouse-wheel inside the Gantt is finer (~1.06× per tick).">−</button>
+        <button type="button" class="btn-icon" data-zoom="out" ${friendlyZoom <= 1 ? 'disabled' : ''} title="Zoom out ΓÇö small step (~1.5├ù per click). Mouse-wheel inside the Gantt is finer (~1.06├ù per tick).">ΓêÆ</button>
         <span class="zoom-menu-value">${friendlyZoom}</span>
-        <button type="button" class="btn-icon" data-zoom="in"  ${friendlyZoom >= ZOOM_FRIENDLY_MAX_LEVEL ? 'disabled' : ''} title="Zoom in — small step (~1.5× per click). Mouse-wheel inside the Gantt is finer (~1.06× per tick).">+</button>
+        <button type="button" class="btn-icon" data-zoom="in"  ${friendlyZoom >= ZOOM_FRIENDLY_MAX_LEVEL ? 'disabled' : ''} title="Zoom in ΓÇö small step (~1.5├ù per click). Mouse-wheel inside the Gantt is finer (~1.06├ù per tick).">+</button>
       </div>
     </div>
     <div class="dropdown-sep"></div>
     <div class="zoom-menu-section">
       <div class="zoom-menu-title">Row height</div>
       <div class="zoom-menu-row">
-        <button type="button" class="btn-icon" data-row="down" ${friendlyRow <= 0   ? 'disabled' : ''} title="Shorter rows">−</button>
+        <button type="button" class="btn-icon" data-row="down" ${friendlyRow <= 0   ? 'disabled' : ''} title="Shorter rows">ΓêÆ</button>
         <span class="zoom-menu-value">${friendlyRow}</span>
         <button type="button" class="btn-icon" data-row="up"   ${friendlyRow >= 100 ? 'disabled' : ''} title="Taller rows">+</button>
       </div>
     </div>`;
-  // Zoom +/− — step by exactly 1 friendly unit (1-10). Each level is
-  // ~1.527× the previous, so the displayed value moves reliably one step
-  // per click. Mouse-wheel inside the Gantt stays finer (~1.06× per tick).
+  // Zoom +/ΓêÆ ΓÇö step by exactly 1 friendly unit (1-10). Each level is
+  // ~1.527├ù the previous, so the displayed value moves reliably one step
+  // per click. Mouse-wheel inside the Gantt stays finer (~1.06├ù per tick).
   menu.querySelectorAll('[data-zoom]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -17875,7 +14720,7 @@ function renderZoomMenu() {
       renderZoomMenu();
     });
   });
-  // Row +/− — steps in friendly increments of 10. setRowHeight clamps to the
+  // Row +/ΓêÆ ΓÇö steps in friendly increments of 10. setRowHeight clamps to the
   // px range so we never escape ROW_H_MIN/ROW_H_MAX.
   menu.querySelectorAll('[data-row]').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -17914,7 +14759,7 @@ function setupZoomDropdown() {
 }
 
 // ----------------------------------------------------------------------------
-// v4.52 — Pane + Mode seg-controls on the toolbar (replaces the v4.51
+// v4.52 ΓÇö Pane + Mode seg-controls on the toolbar (replaces the v4.51
 // combined View dropdown). Two visible 3-button seg-controls: pane layout
 // (Grid/Both/Gantt) and content mode (Schedule/Combined/Actions). Each
 // button has its own is-active state synced to the underlying state via
@@ -17937,7 +14782,7 @@ function setupPaneSegControl() {
   });
   syncPaneSegControl();
 }
-// Mode is now a dropdown — single button shows the current mode label,
+// Mode is now a dropdown ΓÇö single button shows the current mode label,
 // click opens a menu with the 3 options. Combined is the default; Schedule
 // and Actions are alternate views you rarely need.
 function syncModeSegControl() {
@@ -17945,7 +14790,7 @@ function syncModeSegControl() {
   if (!btn) return;
   const mode = state.scheduleView?.actionsMode || 'combined';
   const labels = { schedule: 'Schedule', combined: 'Combined', actions: 'Actions' };
-  btn.textContent = `${labels[mode] || 'Combined'} ▾`;
+  btn.textContent = `${labels[mode] || 'Combined'} Γû╛`;
 }
 function renderModeMenu() {
   const menu = document.getElementById('mode-menu');
@@ -17953,11 +14798,11 @@ function renderModeMenu() {
   const mode = state.scheduleView?.actionsMode || 'combined';
   const item = (val, label, desc) =>
     `<button type="button" class="dropdown-item ${mode === val ? 'is-active' : ''}" data-mode="${val}" title="${escapeHtml(desc)}">
-       <span class="dropdown-item-check">${mode === val ? '✓' : ''}</span>
+       <span class="dropdown-item-check">${mode === val ? 'Γ£ô' : ''}</span>
        <span>${label}</span>
      </button>`;
   menu.innerHTML = `
-    ${item('combined', 'Combined', 'Schedule rows AND action items together — the default view.')}
+    ${item('combined', 'Combined', 'Schedule rows AND action items together ΓÇö the default view.')}
     ${item('schedule', 'Schedule', 'Only the duration-based scheduled tasks.')}
     ${item('actions',  'Actions',  'Only the ad-hoc to-do action items.')}
   `;
@@ -18002,7 +14847,7 @@ function setPaneMode(mode) {
   const becomingVisible = !state.layout.showGantt && mode !== 'grid';
   state.layout.showGantt = (mode !== 'grid');
   state.scheduleView.ganttOnly = (mode === 'gantt');
-  // When the Gantt becomes visible (grid → both / grid → gantt / both → gantt) auto
+  // When the Gantt becomes visible (grid ΓåÆ both / grid ΓåÆ gantt / both ΓåÆ gantt) auto
   // zoom-to-fit so the project span centers in the freshly-sized panel.
   if (mode === 'both' || mode === 'gantt') {
     state._fitOnNextRender = true;
@@ -18012,7 +14857,7 @@ function setPaneMode(mode) {
   applyGanttVisibility();
   applyScheduleView();
   // When the Gantt panel was just unhidden, the browser hasn't finished laying out
-  // the now-visible panel yet — its clientWidth still reads stale (often 0). Defer
+  // the now-visible panel yet ΓÇö its clientWidth still reads stale (often 0). Defer
   // renderGantt to the next animation frame so the fit calc measures the actual
   // new panel width. For grid-only, no Gantt rendering needed anyway.
   if (becomingVisible) {
@@ -18030,7 +14875,7 @@ function setPaneMode(mode) {
 }
 
 // ----------------------------------------------------------------------------
-// Revision pill — reads window.RELEASE_NOTES (newest first) from release-notes.js.
+// Revision pill ΓÇö reads window.RELEASE_NOTES (newest first) from release-notes.js.
 // The topbar shows the version of the FIRST entry; clicking opens a popover
 // listing every entry. To bump the rev, prepend a new entry in release-notes.js.
 // ----------------------------------------------------------------------------
@@ -18041,13 +14886,13 @@ function setupRevisionPill() {
 
   // The topbar has position: sticky with z-index: 10, which creates a stacking
   // context. The project-tab-bar below it has z-index: 11. Re-parent the popover
-  // to <body> so its z-index isn't capped by the topbar's stacking context —
+  // to <body> so its z-index isn't capped by the topbar's stacking context ΓÇö
   // otherwise the tab bar paints on top of the popover when it drops down.
   if (pop.parentElement !== document.body) document.body.appendChild(pop);
 
   const entries = Array.isArray(window.RELEASE_NOTES) ? window.RELEASE_NOTES : [];
   const verEl = document.getElementById('revision-version');
-  if (verEl) verEl.textContent = entries[0]?.version || '—';
+  if (verEl) verEl.textContent = entries[0]?.version || 'ΓÇö';
 
   // Build the popover body once. Each entry becomes a card with version + date + bullets.
   const fmtDate = (iso) => {
@@ -18081,7 +14926,7 @@ function setupRevisionPill() {
   `;
 
   const positionPopover = () => {
-    // Center on the viewport so the popover is always fully visible —
+    // Center on the viewport so the popover is always fully visible ΓÇö
     // previously we anchored it BELOW the button, which on smaller
     // screens (or with a long topbar) put the popover off the bottom
     // of the page where it couldn't be reached.
@@ -18112,30 +14957,6 @@ function setupRevisionPill() {
 
 async function init() {
   await loadSettings();
-  // One-time sync: pull workspace assignments from the projects table so
-  // explicit DB values (e.g. a promoted project we just stamped as
-  // 'Active') win over the name-based auto-detect in projectWorkspace().
-  // Fire-and-forget; the modal/sales detection works fine without it on
-  // first boot, this just keeps the state.projectWorkspaces map fresh.
-  try {
-    const resp = await fetch('/api/projects');
-    if (resp.ok) {
-      const projects = await resp.json();
-      state.projectWorkspaces = state.projectWorkspaces || {};
-      for (const p of projects) {
-        if (!p || !p.name) continue;
-        // Server stores the legacy literal 'default' for projects that
-        // never had an explicit workspace set; map that to our canonical
-        // DEFAULT_WORKSPACE ('Active'). Anything else must be in the
-        // WORKSPACES list to count.
-        const raw = p.workspace || '';
-        const ws  = (raw === 'default' || raw === '') ? DEFAULT_WORKSPACE : raw;
-        if (!WORKSPACES.includes(ws)) continue;
-        state.projectWorkspaces[p.name] = ws;
-      }
-      try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
-    }
-  } catch (_) {}
 
   document.getElementById('btn-save-setup').addEventListener('click', saveSetup);
   document.getElementById('btn-reset-setup').addEventListener('click', discardSetup);
@@ -18156,7 +14977,7 @@ async function init() {
     t.addEventListener('click', () => setView(t.dataset.view));
   });
 
-  // Layout (split, columns, show-gantt) — hydrate from localStorage and wire up handlers
+  // Layout (split, columns, show-gantt) ΓÇö hydrate from localStorage and wire up handlers
   state.layout = loadLayout();
   state.scheduleView = loadScheduleView();
   applyGridWidth();
@@ -18172,18 +14993,18 @@ async function init() {
   // combined dropdown. Pane (Grid/Both/Gantt) + Actions mode (Schedule/
   // Combined/Actions) are now direct click-to-select buttons. The hidden
   // legacy #btn-view-mode is still wired by setupViewModeDropdown() but
-  // nobody can open it — its menu element exists just so the helper
+  // nobody can open it ΓÇö its menu element exists just so the helper
   // functions don't bail. The seg-controls are the visible UI.
   setupViewModeDropdown();
   setupPaneSegControl();
   setupModeSegControl();
-  // v4.51: Zoom dropdown — single toolbar button popover with Time scale /
+  // v4.51: Zoom dropdown ΓÇö single toolbar button popover with Time scale /
   // Zoom (1-10) / Row height (10-100). Drives the legacy zoom/row controls.
   setupZoomDropdown();
-  // View pill — four icon-toggles in the toolbar:
-  //   ≡   Flatten sub-sections + sort by start date (linked toggle)
+  // View pill ΓÇö four icon-toggles in the toolbar:
+  //   Γëí   Flatten sub-sections + sort by start date (linked toggle)
   //   $   Show financial milestones overlay
-  //   ↔   Show arrow lag labels (±N wks)
+  //   Γåö   Show arrow lag labels (┬▒N wks)
   //   %   Show bar allocation + duration meta
   // Critical path stays as a Quick-filter chip (see renderFilters). The View
   // pill state is reflected via .is-active classes maintained by syncViewPill.
@@ -18199,7 +15020,7 @@ async function init() {
         syncViewPill();
         renderGantt();
       } else if (key === 'showArrowLags') {
-        // Arrow-lag labels only affect the Gantt overlay, not the grid — so
+        // Arrow-lag labels only affect the Gantt overlay, not the grid ΓÇö so
         // skip the heavy render() and just re-render the Gantt to redraw
         // arrows with or without labels.
         state.scheduleView.showArrowLags = !state.scheduleView.showArrowLags;
@@ -18208,13 +15029,13 @@ async function init() {
         renderGantt();
       } else if (key === 'showBarMeta') {
         // Bar meta (allocation % above bars, duration wks below) only affects
-        // the Gantt — same fast path as the arrow lag toggle.
+        // the Gantt ΓÇö same fast path as the arrow lag toggle.
         state.scheduleView.showBarMeta = !state.scheduleView.showBarMeta;
         saveScheduleView();
         syncViewPill();
         renderGantt();
       } else if (key === 'flatten+sort') {
-        // Single icon that toggles BOTH flatten AND sortByStart together —
+        // Single icon that toggles BOTH flatten AND sortByStart together ΓÇö
         // flatten without sort almost never makes sense (you flatten because
         // you want a chronological view of section 10/40/50), so user
         // requested they live behind one click.
@@ -18242,15 +15063,15 @@ async function init() {
   wireViewToggle('btn-view-machine',    'showMachineColors');
   syncViewPill();
 
-  // Baseline — dropdown menu. The menu rebuilds on every open so its items
+  // Baseline ΓÇö dropdown menu. The menu rebuilds on every open so its items
   // reflect the current state (turn-on vs reset, show vs hide, turn-off).
   // Replaces the previous segmented pair (Set / Show) which didn't surface the
-  // "turn off completely" action — users had to right-click to find Clear.
+  // "turn off completely" action ΓÇö users had to right-click to find Clear.
   //
   // Implementation notes:
   //   - Each item carries its own onClick. We render BOTH separators and item
   //     buttons into the menu HTML and then wire click handlers by walking
-  //     element children paired with the items array — keeping the same index
+  //     element children paired with the items array ΓÇö keeping the same index
   //     for both arrays (previous code used querySelectorAll('.dropdown-item')
   //     which skipped separators, throwing item indices off-by-one so the wrong
   //     handler fired, or no handler at all). That's why "Turn off baseline"
@@ -18270,7 +15091,7 @@ async function init() {
         items.push({ label: '(Open a project tab first)', disabled: true });
       } else if (!has) {
         items.push({
-          label: '▷ Turn on baseline',
+          label: 'Γû╖ Turn on baseline',
           hint: `Snapshot today's start/end dates as the plan-of-record for "${project}".`,
           onClick: async (clickX, clickY) => {
             const ok = await showConfirmAt(clickX, clickY, {
@@ -18288,9 +15109,9 @@ async function init() {
         });
       } else {
         items.push({
-          label: state.showBaseline ? '☑ Show overlay (on)' : '☐ Show overlay (off)',
+          label: state.showBaseline ? 'Γÿæ Show overlay (on)' : 'ΓÿÉ Show overlay (off)',
           hint: 'Toggle the dashed-outline overlay on the Gantt. The baseline snapshot stays saved either way.',
-          // No confirmation — purely visual toggle, no data is destroyed.
+          // No confirmation ΓÇö purely visual toggle, no data is destroyed.
           onClick: () => {
             state.showBaseline = !state.showBaseline;
             saveScheduleView();
@@ -18299,7 +15120,7 @@ async function init() {
           },
         });
         items.push({
-          label: '↻ Reset baseline',
+          label: 'Γå╗ Reset baseline',
           hint: 'Overwrite the snapshot with today\'s start/end dates as the new plan-of-record.',
           onClick: async (clickX, clickY) => {
             const ok = await showConfirmAt(clickX, clickY, {
@@ -18315,7 +15136,7 @@ async function init() {
         });
         items.push({ separator: true });
         items.push({
-          label: '✖ Turn off baseline',
+          label: 'Γ£û Turn off baseline',
           danger: true,
           hint: 'Clear the baseline snapshot entirely. Drift comparisons will no longer be available until you turn it back on.',
           onClick: async (clickX, clickY) => {
@@ -18335,7 +15156,7 @@ async function init() {
         });
       }
       // Render and wire in lock-step so separators keep their slot in BOTH the
-      // DOM and the items array — fixes the index-mismatch bug that made Turn
+      // DOM and the items array ΓÇö fixes the index-mismatch bug that made Turn
       // off baseline behave like a no-op.
       baseMenu.innerHTML = '';
       items.forEach((it) => {
@@ -18406,7 +15227,7 @@ async function init() {
   document.getElementById('btn-add').addEventListener('click', newTaskInline);
   const addActionBtn = document.getElementById('btn-add-action');
   if (addActionBtn) addActionBtn.addEventListener('click', newActionInline);
-  // Cell-edit handler is attached once here — renderTable rebuilds tbody.innerHTML so the
+  // Cell-edit handler is attached once here ΓÇö renderTable rebuilds tbody.innerHTML so the
   // tbody element survives across renders and accumulating listeners is wasteful.
   const tbodyEl = document.getElementById('tasks-tbody');
   // Clone-mode click trap, registered in CAPTURE phase so it beats any
@@ -18419,7 +15240,7 @@ async function init() {
   tbodyEl.addEventListener('dblclick', (e) => {
     if (state.cloneMode) handleCloneModeRowDblClick(e);
   });
-  // Also trap mousedown in capture phase — some editors (enterPillEdit)
+  // Also trap mousedown in capture phase ΓÇö some editors (enterPillEdit)
   // wire their own document-level mousedown listeners on first interaction,
   // which would fire BEFORE our click handler. Eating the mousedown stops
   // them in their tracks too.
@@ -18434,7 +15255,7 @@ async function init() {
   setupGridPan();
   setupRowCrossHighlight();
 
-  // Filters popover — toggled by the topbar's Filters button. Inner controls are
+  // Filters popover ΓÇö toggled by the topbar's Filters button. Inner controls are
   // re-bound by renderFilters each time it runs.
   const filtersBtn = document.getElementById('btn-filters');
   const filtersPop = document.getElementById('filters-popover');
@@ -18467,14 +15288,14 @@ async function init() {
     });
   }
 
-  // Revision pill — top-right of the topbar. Shows the current version and opens a
+  // Revision pill ΓÇö top-right of the topbar. Shows the current version and opens a
   // popover listing every release-notes entry (newest first). Entries live in
   // release-notes.js so bumping the rev is just an array edit.
   setupRevisionPill();
 
   // Project tab bar
-  // + New tab — opens the Workspaces side panel so the user can pick or build
-  // a schedule. Right-click → legacy picker fallback (the estimate +
+  // + New tab ΓÇö opens the Workspaces side panel so the user can pick or build
+  // a schedule. Right-click ΓåÆ legacy picker fallback (the estimate +
   // Smartsheet flows still live there until they're migrated to the panel).
   document.getElementById('btn-add-project').addEventListener('click', () => {
     openSidebarPanel('workspaces');
@@ -18484,11 +15305,11 @@ async function init() {
     showProjectAddPicker();
   });
 
-  // Left sidebar icons — each navigates to a top-level view. The
+  // Left sidebar icons ΓÇö each navigates to a top-level view. The
   // [data-view] attribute matches the view's section id (#view-<view>) so we
   // just call setView() and let the standard view-switching machinery handle
-  // it. Revision pill (📌) opens the revision popover via its own existing
-  // handler below — not handled here.
+  // it. Revision pill (≡ƒôî) opens the revision popover via its own existing
+  // handler below ΓÇö not handled here.
   document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const v = btn.dataset.view;
@@ -18513,7 +15334,7 @@ async function init() {
     });
   });
 
-  // ⚖ Quote vs Schedule toolbar button — wires once at startup, then the
+  // ΓÜû Quote vs Schedule toolbar button ΓÇö wires once at startup, then the
   // enabled/disabled state + tooltip is refreshed every render() by
   // syncToolbarProjectAction (so it reflects the active project tab).
   const quoteToolbarBtn = document.getElementById('btn-toolbar-quote');
@@ -18524,36 +15345,26 @@ async function init() {
       openQuoteCompareModal(p);
     });
   }
-  // 💲 Financial Milestones — opens the same per-project editor that the
-  // Quote modal exposes via its "$ Financial Milestones" link.
-  const finToolbarBtn = document.getElementById('btn-toolbar-financials');
-  if (finToolbarBtn) {
-    finToolbarBtn.addEventListener('click', () => {
-      const p = state.filters.project;
-      if (!p) return;
-      openFinancialsModal(p);
-    });
-  }
 
-  // Zoom-to-fit button — zoomToFit reads the visible task span and snaps the Gantt zoom
+  // Zoom-to-fit button ΓÇö zoomToFit reads the visible task span and snaps the Gantt zoom
   // so it all fits in the viewport. Wheel-zoom still works for finer adjustments.
   document.getElementById('btn-zoom-fit').addEventListener('click', zoomToFit);
 
-  // Undo button — pops the top entry of state.undoStack and re-applies the
+  // Undo button ΓÇö pops the top entry of state.undoStack and re-applies the
   // BEFORE snapshot via api.update. Disabled when the stack is empty.
   const undoBtn = document.getElementById('btn-undo');
   if (undoBtn) {
     undoBtn.addEventListener('click', performUndo);
     syncUndoButton();  // start with the right disabled state
   }
-  // Redo button — opposite direction. Pops state.redoStack and re-applies.
+  // Redo button ΓÇö opposite direction. Pops state.redoStack and re-applies.
   // A new edit (pushUndoSnapshot) clears the redo stack to keep history linear.
   const redoBtn = document.getElementById('btn-redo');
   if (redoBtn) {
     redoBtn.addEventListener('click', performRedo);
     syncRedoButton();
   }
-  // Refresh button — re-fetches task data from the server WITHOUT a full
+  // Refresh button ΓÇö re-fetches task data from the server WITHOUT a full
   // page reload. Collapsed-section state, scroll position, layout, and
   // filters all stay where they are because collapsedGroups + layout +
   // filters all live in-memory (not in localStorage that gets re-read on
@@ -18564,7 +15375,7 @@ async function init() {
     refreshBtn.addEventListener('click', async () => {
       refreshBtn.disabled = true;
       const orig = refreshBtn.textContent;
-      refreshBtn.textContent = '…';
+      refreshBtn.textContent = 'ΓÇª';
       try {
         await loadTasks();
       } finally {
@@ -18573,12 +15384,12 @@ async function init() {
       }
     });
   }
-  // "👤 For Customer" — toggles a clean customer-facing view by adding the
+  // "≡ƒæñ For Customer" ΓÇö toggles a clean customer-facing view by adding the
   // body.customer-view class. CSS hides the toolbar / tabs / extra columns;
   // JS forces pane=both and runs zoomToFit so the customer sees grid + Gantt
-  // fitted to the full project span. A floating "✕ Exit customer view"
+  // fitted to the full project span. A floating "Γ£ò Exit customer view"
   // button appears top-right (visible only while the class is set) to get
-  // back to the editing view — the main toolbar is hidden so the original
+  // back to the editing view ΓÇö the main toolbar is hidden so the original
   // button isn't clickable anymore.
   //
   // Replaces the older Export-PDF flow which tried to drive the browser
@@ -18586,7 +15397,7 @@ async function init() {
   // once (panel size mismatch between screen and print, viewBox scaling,
   // beforeprint timing). Far simpler to just put the on-screen app into a
   // customer-friendly state and let the user screenshot / share / print it
-  // themselves — Ctrl+P from customer view still works, with the same
+  // themselves ΓÇö Ctrl+P from customer view still works, with the same
   // hidden chrome.
   const customerBtn = document.getElementById('btn-customer-view');
   const customerExitBtn = document.getElementById('btn-customer-view-exit');
@@ -18597,7 +15408,7 @@ async function init() {
         exitCustomerView();
       } else {
         if (!state.filters.project) {
-          showAlertDialog('Pick a project tab first — customer view is per-project.');
+          showAlertDialog('Pick a project tab first ΓÇö customer view is per-project.');
           return;
         }
         enterCustomerView();
@@ -18608,7 +15419,7 @@ async function init() {
     customerExitBtn.addEventListener('click', exitCustomerView);
   }
   // The Flatten button in customer view is a slim mirror of the toolbar's
-  // ≡ View pill — both toggle flatten + sortByStart in lockstep (the same
+  // Γëí View pill ΓÇö both toggle flatten + sortByStart in lockstep (the same
   // linked pair used everywhere else in the app; flatten without start-date
   // sort almost never makes sense, per v3.58). After flipping the flag we
   // call render() to redraw the grid + Gantt under the new layout and
@@ -18626,7 +15437,7 @@ async function init() {
     });
   }
 
-  // Topbar zoom controls: − / mode / + . The mode picker jumps to a representative zoom
+  // Topbar zoom controls: ΓêÆ / mode / + . The mode picker jumps to a representative zoom
   // for that scale (Day=200%, Week=70%, Month=10%) so the user can switch directly.
   const zoomIn = document.getElementById('btn-zoom-in');
   const zoomOut = document.getElementById('btn-zoom-out');
@@ -18659,7 +15470,7 @@ async function init() {
     zoomScheduled = true;
     requestAnimationFrame(() => {
       // try/finally so any exception inside setZoom or the rendering chain
-      // doesn't leave zoomScheduled stuck at true forever — that bug froze
+      // doesn't leave zoomScheduled stuck at true forever ΓÇö that bug froze
       // the wheel zoom after the first scroll.
       try {
         setZoom(state.zoomPercent * pendingFactor);
@@ -18688,7 +15499,7 @@ async function init() {
     }
   });
   // Phase 2 (Abhi port): boot the comments UI once. It attaches a
-  // MutationObserver to #tasks-tbody and re-injects 💬 badges after every
+  // MutationObserver to #tasks-tbody and re-injects ≡ƒÆ¼ badges after every
   // render with a 120 ms debounce. Wrapped in typeof check so a missing
   // comments-ui.js (e.g. paint-deferred load) doesn't break boot.
   if (typeof initCommentsUI === 'function') {
