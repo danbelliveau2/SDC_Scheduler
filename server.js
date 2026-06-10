@@ -28,7 +28,7 @@ const XLSX = require('xlsx');
 const compression = require('compression');
 const bcrypt = require('bcryptjs');
 const { Server: SocketIO } = require('socket.io');
-const db = require('./db');
+const { pool } = require('./db');
 const azureSync = require('./azureSync');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
 // emailService is optional — when nodemailer isn't installed or SMTP_HOST is
@@ -107,16 +107,17 @@ app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModifie
 // requireAuth middleware so they don't need a token. /api/auth/me is also
 // gated by requireAuth itself so callers with expired/missing tokens get 401.
 // ──────────────────────────────────────────────────────────────────────────
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const email    = (req.body.email    || '').toString().trim().toLowerCase();
   const password = (req.body.password || '').toString();
   if (!email || !password) return res.status(400).json({ error: 'email and password required' });
-  const user = db.prepare('SELECT * FROM users WHERE email = ? AND active = 1').get(email);
+  const [rows] = await pool.query('SELECT * FROM users WHERE email = ? AND active = 1', [email]);
+  const user = rows[0] || null;
   if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
   if (!bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
-  db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(new Date().toISOString(), user.id);
+  await pool.query('UPDATE users SET last_login = ? WHERE id = ?', [new Date().toISOString(), user.id]);
   const token = signToken(user);
   res.json({
     token,
@@ -130,26 +131,24 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ user: req.authUser, auth_enabled: AUTH_ENABLED });
 });
 
-app.put('/api/auth/password', requireAuth, (req, res) => {
+app.put('/api/auth/password', requireAuth, async (req, res) => {
   const { current_password, new_password } = req.body || {};
   if (!current_password || !new_password)
     return res.status(400).json({ error: 'current_password and new_password are required' });
   if (String(new_password).length < 1)
     return res.status(400).json({ error: 'new password cannot be empty' });
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.authUser.id);
+  const [urows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.authUser.id]);
+  const user = urows[0] || null;
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (!bcrypt.compareSync(current_password, user.password_hash))
     return res.status(401).json({ error: 'Current password is incorrect' });
   const hash = bcrypt.hashSync(String(new_password), 12);
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, user.id);
-  sync('task_comments'); // keep Azure in sync (users table via push)
+  await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, user.id]);
+  sync('task_comments');
   res.json({ ok: true, message: 'Password updated successfully' });
 });
 
-app.post('/api/auth/register', (req, res) => {
-  // Self-registration. When auth is off this just inserts a user record;
-  // when on, the first user to register gets editor unless they hit
-  // create-admin.js first. Hardened against UNIQUE conflicts.
+app.post('/api/auth/register', async (req, res) => {
   const email    = (req.body.email    || '').toString().trim().toLowerCase();
   const name     = (req.body.name     || '').toString().trim();
   const password = (req.body.password || '').toString();
@@ -157,13 +156,14 @@ app.post('/api/auth/register', (req, res) => {
   if (password.length < 1)           return res.status(400).json({ error: 'password is required' });
   try {
     const hash = bcrypt.hashSync(password, 12);
-    const r = db.prepare(`
-      INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'editor')
-    `).run(email, name, hash);
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(r.lastInsertRowid);
+    const [r] = await pool.query(
+      `INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'editor')`,
+      [email, name, hash]
+    );
+    const [urows] = await pool.query('SELECT * FROM users WHERE id = ?', [r.insertId]);
+    const user = urows[0];
     const token = signToken(user);
     io.emit('users:updated');
-    // Surface a note when the caller submitted a role we ignored (always 'editor').
     const roleNote = req.body.role && req.body.role !== 'editor'
       ? 'Requested role ignored — all self-registered accounts start as editor. Contact an admin to change your role.'
       : undefined;
@@ -173,7 +173,7 @@ app.post('/api/auth/register', (req, res) => {
       ...(roleNote ? { note: roleNote } : {}),
     });
   } catch (e) {
-    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });
+    if (String(e.message).includes('ER_DUP_ENTRY') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });
     res.status(500).json({ error: 'Failed to register: ' + e.message });
   }
 });
@@ -276,25 +276,15 @@ function computeDatesFromPreds(task, tasksById) {
   return null;
 }
 
-// v4.37: duration linking. When a task carries duration_link_task_id, its
-// duration_days mirrors the source task's. v4.38 fix: also recompute the
-// dependent's END_DATE from its current start_date + new duration_days,
-// otherwise the dependent's bar on the Gantt stayed at the old length even
-// though duration_days had updated. Chained links (A → B → C) resolve over
-// multiple iterations until stable.
-function cascadeDurationLinks() {
+async function cascadeDurationLinks() {
   for (let iter = 0; iter < 20; iter++) {
-    const linked = db.prepare(
+    const [linked] = await pool.query(
       'SELECT id, duration_days, duration_link_task_id, start_date, end_date FROM tasks WHERE duration_link_task_id IS NOT NULL'
-    ).all();
-    let changed = false;
-    const upd = db.prepare(
-      'UPDATE tasks SET duration_days = ?, end_date = ?, is_milestone = ? WHERE id = ?'
     );
+    let changed = false;
     for (const dep of linked) {
-      const src = db.prepare('SELECT duration_days FROM tasks WHERE id = ?').get(dep.duration_link_task_id);
-      // If the source row was deleted, drop the link silently and leave
-      // duration_days alone. Self-link is also a no-op.
+      const [srcRows] = await pool.query('SELECT duration_days FROM tasks WHERE id = ?', [dep.duration_link_task_id]);
+      const src = srcRows[0] || null;
       if (!src || dep.duration_link_task_id === dep.id) continue;
       const newDur = Number(src.duration_days) || 0;
       if (newDur === dep.duration_days) continue;
@@ -303,52 +293,39 @@ function cascadeDurationLinks() {
       if (newDur === 0) {
         newEnd = dep.start_date;
       } else if (dep.start_date) {
-        // N business days INCLUSIVE → end = start + (N - 1) business days.
         newEnd = addBusinessDaysISO(dep.start_date, newDur - 1);
       }
-      upd.run(newDur, newEnd, newMilestone, dep.id);
+      await pool.query(
+        'UPDATE tasks SET duration_days = ?, end_date = ?, is_milestone = ? WHERE id = ?',
+        [newDur, newEnd, newMilestone, dep.id]
+      );
       changed = true;
     }
     if (!changed) break;
   }
 }
 
-function cascadeSchedule() {
-  // Iteratively recompute every task's dates from its predecessors until stable
-  // (or hit iteration cap to break any accidental cycles).
-  //
-  // Two passes per iteration:
-  //   (a) Predecessor-driven: tasks with `predecessors` get start/end computed
-  //       from upstream rows via FS/SS/FF/SF + lag.
-  //   (b) Standalone-with-duration: tasks WITHOUT predecessors that have a
-  //       duration_days but a stale end_date (e.g. Backlog rows where end=start).
-  //       Compute end_date = start_date + (duration_days - 1) business days.
-  //       Skipped for milestones (start===end is correct there) and for rows
-  //       missing start_date entirely.
+async function cascadeSchedule() {
   for (let iter = 0; iter < 50; iter++) {
-    const all = db.prepare('SELECT * FROM tasks').all();
+    const [all] = await pool.query('SELECT * FROM tasks');
     const byId = Object.fromEntries(all.map(t => [t.id, t]));
     let changed = false;
     for (const t of all) {
       if (t.predecessors) {
         const next = computeDatesFromPreds(t, byId);
         if (next && (next.start_date !== t.start_date || next.end_date !== t.end_date)) {
-          db.prepare('UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?')
-            .run(next.start_date, next.end_date, t.id);
+          await pool.query('UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?',
+            [next.start_date, next.end_date, t.id]);
           changed = true;
         }
       } else if (
         t.start_date && !t.is_milestone &&
         t.duration_days != null && Number(t.duration_days) > 0
       ) {
-        // Standalone row with a known duration — keep end_date in sync with
-        // (start + duration - 1) business days. Fixes the legacy Backlog rows
-        // that were created with start===end.
         const dur = Number(t.duration_days);
         const wantedEnd = addBusinessDaysISO(t.start_date, dur - 1);
         if (wantedEnd !== t.end_date) {
-          db.prepare('UPDATE tasks SET end_date = ? WHERE id = ?')
-            .run(wantedEnd, t.id);
+          await pool.query('UPDATE tasks SET end_date = ? WHERE id = ?', [wantedEnd, t.id]);
           changed = true;
         }
       }
@@ -357,20 +334,18 @@ function cascadeSchedule() {
   }
 }
 
-// Rewrite priorities for one assignee so they form a dense 1, 2, 3 ... sequence
-// in their current sort order. Each person owns their own per-list — no overlap
-// across people, no gaps from deleted/reassigned tasks. Called from every route
-// that can mutate a task's assignee or remove a task. Skips empty assignees.
-function compactPrioritiesForAssignee(assignee) {
+async function compactPrioritiesForAssignee(assignee) {
   if (!assignee) return;
-  const rows = db.prepare(
-    'SELECT id, priority FROM tasks WHERE assignee = ? ORDER BY priority IS NULL, priority ASC, id ASC'
-  ).all(assignee);
-  const upd = db.prepare('UPDATE tasks SET priority = ? WHERE id = ?');
-  rows.forEach((r, i) => {
+  const [rows] = await pool.query(
+    'SELECT id, priority FROM tasks WHERE assignee = ? ORDER BY priority IS NULL, priority ASC, id ASC',
+    [assignee]
+  );
+  for (let i = 0; i < rows.length; i++) {
     const target = i + 1;
-    if (r.priority !== target) upd.run(target, r.id);
-  });
+    if (rows[i].priority !== target) {
+      await pool.query('UPDATE tasks SET priority = ? WHERE id = ?', [target, rows[i].id]);
+    }
+  }
 }
 
 // ── Audit trail (task_history) ─────────────────────────────────────────────
@@ -387,11 +362,7 @@ function compactPrioritiesForAssignee(assignee) {
 // changedFields: optional array of column names that differ between before
 //   and after. For update events the route can compute this and pass it; we
 //   auto-derive it below if both before + after are objects.
-const _stmtInsertHistory = db.prepare(
-  `INSERT INTO task_history (task_id, project, action, changed_by, before_json, after_json, changed_fields)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`
-);
-function logHistory(taskId, project, action, changedBy, before, after, changedFields) {
+async function logHistory(taskId, project, action, changedBy, before, after, changedFields) {
   try {
     let fields = changedFields;
     if (!fields && before && after) {
@@ -401,19 +372,23 @@ function logHistory(taskId, project, action, changedBy, before, after, changedFi
         if (before[k] !== after[k]) fields.push(k);
       }
     }
-    _stmtInsertHistory.run(
-      taskId, project, action, changedBy || null,
-      before ? JSON.stringify(before) : null,
-      after  ? JSON.stringify(after)  : null,
-      Array.isArray(fields) && fields.length ? fields.join(',') : null
+    await pool.query(
+      `INSERT INTO task_history (task_id, project, action, changed_by, before_json, after_json, changed_fields)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        taskId, project, action, changedBy || null,
+        before ? JSON.stringify(before) : null,
+        after  ? JSON.stringify(after)  : null,
+        Array.isArray(fields) && fields.length ? fields.join(',') : null,
+      ]
     );
   } catch (e) {
     console.warn('[history] log failed (non-fatal):', e.message);
   }
 }
 
-app.get('/api/tasks', (req, res) => {
-  const tasks = db.prepare('SELECT * FROM tasks ORDER BY sort_order, id').all();
+app.get('/api/tasks', async (req, res) => {
+  const [tasks] = await pool.query('SELECT * FROM tasks ORDER BY sort_order, id');
   res.json(tasks);
 });
 
@@ -421,35 +396,21 @@ app.post('/api/tasks', requireRole('editor'), async (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
 
-  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks').get().m;
-  // If the client passed a specific sort_order, use it verbatim (no rounding).
-  // The sort_order column is declared INTEGER but SQLite's type affinity is
-  // flexible — REAL values are stored as-is, so callers like "Add additional
-  // resource" can pass fractional values (e.g. 18.5) to slot the new row
-  // BETWEEN two existing integer-sort_order tasks without having to shift
-  // every downstream row. Sequential adds keep halving the gap (18.5, 18.25,
-  // 18.125 …) — 52 bits of double-precision mantissa gives plenty of headroom
-  // for realistic per-task insertion counts.
-  // Append-style callers (no sort_order) still default to MAX + 1.
+  const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks');
+  const maxOrder = maxRow.m;
   let insertSortOrder;
   if (req.body.sort_order != null) {
     insertSortOrder = Number(req.body.sort_order);
   } else {
     insertSortOrder = maxOrder + 1;
   }
-  // If a priority isn't supplied, auto-assign the next slot for this assignee so newly
-  // created tasks fall to the bottom of that person's stack until reranked. Tasks with
-  // no assignee just get priority 1 (it's irrelevant until they're assigned anyway).
   let nextPriority = 1;
   if (req.body.priority != null) {
     nextPriority = Math.max(1, Number(req.body.priority) || 1);
   } else if (req.body.assignee) {
-    const peek = db.prepare('SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ?').get(req.body.assignee);
-    nextPriority = (peek?.m || 0) + 1;
+    const [[peekRow]] = await pool.query('SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ?', [req.body.assignee]);
+    nextPriority = (peekRow?.m || 0) + 1;
   }
-  // v4.46: include is_action in the INSERT columns so + Add action can
-  // flag a row as an action item at creation time. Defaults to 0 (regular
-  // scheduled task) for everything else.
   const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'machine'];
   const values = [
     name,
@@ -474,15 +435,11 @@ app.post('/api/tasks', requireRole('editor'), async (req, res) => {
     req.body.machine || null,
   ];
   const placeholders = cols.map(() => '?').join(', ');
-  const stmt = db.prepare(`INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders})`);
-  const result = stmt.run(...values);
-  // Compact the new assignee's priority list so the new task lands at the next
-  // dense slot — eliminates the "+1 of MAX" gap problem where a person with two
-  // tasks could end up with priorities like (1, 13) because of historical deletes.
-  if (req.body.assignee) compactPrioritiesForAssignee(req.body.assignee);
-  cascadeSchedule();
-  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(result.lastInsertRowid);
-  logHistory(task.id, task.project, 'create', null, null, task, null);
+  const [result] = await pool.query(`INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders})`, values);
+  if (req.body.assignee) await compactPrioritiesForAssignee(req.body.assignee);
+  await cascadeSchedule();
+  const [[task]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [result.insertId]);
+  await logHistory(task.id, task.project, 'create', null, null, task, null);
   res.json(task);
   io.emit('tasks:updated', { project: task.project || null });
   await sync('tasks');
@@ -490,13 +447,9 @@ app.post('/api/tasks', requireRole('editor'), async (req, res) => {
 
 app.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
+  const [[existing]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
   if (!existing) return res.status(404).json({ error: 'not found' });
 
-  // Phase 5 (conflict detection): client passes the version it last saw on
-  // req.body.version. Server compares to existing.version — mismatch means
-  // somebody else saved in between, so we return 409 with the latest row.
-  // Clients without the version key (older callers) bypass the check.
   if (req.body.version != null && existing.version != null
       && Number(req.body.version) !== Number(existing.version)) {
     return res.status(409).json({
@@ -514,93 +467,61 @@ app.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
       else updates[f] = req.body[f] === '' ? null : req.body[f];
     }
   }
-  // v4.62: auto-stamp completed_on when progress transitions to 100, and
-  // clear it when progress drops back below 100. Skipped when the caller
-  // explicitly sends completed_on in the same request (manual edit wins).
   if ('progress' in updates && !('completed_on' in updates)) {
     const newProgress = Number(updates.progress) || 0;
     const oldProgress = Number(existing.progress) || 0;
     if (newProgress >= 100 && oldProgress < 100) {
-      // Just completed → stamp today's date in YYYY-MM-DD.
       updates.completed_on = new Date().toISOString().slice(0, 10);
     } else if (newProgress < 100 && oldProgress >= 100) {
-      // Re-opened → clear the completed date.
       updates.completed_on = null;
     }
   }
   if (Object.keys(updates).length === 0) return res.json(existing);
 
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-  const values = Object.values(updates);
-  db.prepare(`UPDATE tasks SET ${setClause} WHERE id = ?`).run(...values, id);
+  await pool.query(`UPDATE tasks SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
+  await pool.query('UPDATE tasks SET version = COALESCE(version,1) + 1 WHERE id = ?', [id]);
 
-  // Phase 5 conflict-detection: bump version once per successful direct edit.
-  // cascadeSchedule() may modify other tasks too, but those are derived — we
-  // only bump on the row the user explicitly PUT.
-  db.prepare('UPDATE tasks SET version = COALESCE(version,1) + 1 WHERE id = ?').run(id);
-
-  // Priority is PER-ASSIGNEE (each person has their own 1, 2, 3 … list). Two cases
-  // to keep that invariant:
-  //
-  //   (a) Reassigning a task to a new person without an explicit priority change —
-  //       e.g. clicking "Assign to Ian Milne" in the placeholder reassign popup.
-  //       The task's prior priority was meaningful for the PLACEHOLDER's list and
-  //       has no meaning under Ian's. Pick the next unused slot for Ian instead of
-  //       parking the new task at priority 1 and bumping Ian's existing top task.
-  //
-  //   (b) Setting an explicit priority that already exists on the same assignee —
-  //       displaced task(s) get pushed to the smallest unused priority slot.
   const finalAssignee = ('assignee' in updates) ? updates.assignee : existing.assignee;
   const assigneeChanged = 'assignee' in updates && updates.assignee !== existing.assignee;
   const priorityExplicit = 'priority' in updates;
 
   let finalPriority = ('priority' in updates) ? updates.priority : existing.priority;
   if (assigneeChanged && !priorityExplicit && finalAssignee) {
-    // (a) Auto-pick next available priority for the new assignee.
-    const peek = db.prepare('SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ?').get(finalAssignee);
-    finalPriority = (peek?.m || 0) + 1;
-    db.prepare('UPDATE tasks SET priority = ? WHERE id = ?').run(finalPriority, id);
+    const [[peekRow]] = await pool.query('SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ?', [finalAssignee]);
+    finalPriority = (peekRow?.m || 0) + 1;
+    await pool.query('UPDATE tasks SET priority = ? WHERE id = ?', [finalPriority, id]);
   }
 
-  // (b) Conflict resolution — only meaningful when the user explicitly set the priority.
   if (priorityExplicit && finalAssignee && finalPriority != null) {
-    const conflicts = db.prepare(
-      'SELECT id FROM tasks WHERE assignee = ? AND priority = ? AND id != ?'
-    ).all(finalAssignee, finalPriority, id);
+    const [conflicts] = await pool.query(
+      'SELECT id FROM tasks WHERE assignee = ? AND priority = ? AND id != ?',
+      [finalAssignee, finalPriority, id]
+    );
     if (conflicts.length > 0) {
-      const used = new Set(
-        db.prepare('SELECT priority FROM tasks WHERE assignee = ? AND priority IS NOT NULL')
-          .all(finalAssignee)
-          .map(r => r.priority)
+      const [usedRows] = await pool.query(
+        'SELECT priority FROM tasks WHERE assignee = ? AND priority IS NOT NULL', [finalAssignee]
       );
-      const bumpStmt = db.prepare('UPDATE tasks SET priority = ? WHERE id = ?');
+      const used = new Set(usedRows.map(r => r.priority));
       for (const c of conflicts) {
         let next = 1;
         while (used.has(next)) next++;
         used.add(next);
-        bumpStmt.run(next, c.id);
+        await pool.query('UPDATE tasks SET priority = ? WHERE id = ?', [next, c.id]);
       }
     }
   }
 
-  // Compact priority lists for everyone affected by this update — both the new
-  // assignee (in case insertion left gaps) and, when the assignee changed, the
-  // OLD assignee (so removing a slot from their list collapses the rest down).
-  if (finalAssignee) compactPrioritiesForAssignee(finalAssignee);
+  if (finalAssignee) await compactPrioritiesForAssignee(finalAssignee);
   if (assigneeChanged && existing.assignee && existing.assignee !== finalAssignee) {
-    compactPrioritiesForAssignee(existing.assignee);
+    await compactPrioritiesForAssignee(existing.assignee);
   }
 
-  // v4.37: propagate duration changes to linked dependents BEFORE the
-  // schedule cascade runs. cascadeSchedule recomputes start/end based on
-  // the (now-updated) duration_days, so the dependent's end_date shifts
-  // automatically without a separate code path.
-  if ('duration_days' in updates) cascadeDurationLinks();
+  if ('duration_days' in updates) await cascadeDurationLinks();
+  await cascadeSchedule();
 
-  cascadeSchedule();
-
-  const updated = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
-  logHistory(id, updated.project, 'update', null, existing, updated, null);
+  const [[updated]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
+  await logHistory(id, updated.project, 'update', null, existing, updated, null);
   res.json(updated);
   io.emit('tasks:updated', { project: updated.project || null });
   await sync('tasks');
@@ -608,29 +529,22 @@ app.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
 
 app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
-  // Capture full row BEFORE delete so the audit trail can show what was there.
-  const before = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id);
-  // Real anchor milestones (Receipt of PO, Machine Power-Up, FAT, Mech 1
-  // Release, Ship Machine) are project-spine markers and can't be removed
-  // — only edited. Backlog (anchor_key='backlog') is allowed to delete
-  // since it's a regular duration row, not a spine milestone.
-  const t = db.prepare('SELECT anchor_key, assignee FROM tasks WHERE id = ?').get(id);
+  const [[before]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
+  const [[t]] = await pool.query('SELECT anchor_key, assignee FROM tasks WHERE id = ?', [id]);
   if (t && t.anchor_key && t.anchor_key !== 'backlog') {
     return res.status(400).json({ error: 'Anchor milestones cannot be deleted.' });
   }
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
-  if (before) logHistory(id, before.project, 'delete', null, before, null, null);
-  // Collapse the freed slot in the previous owner's per-person priority list so
-  // the next task they get doesn't jump over it.
-  if (t && t.assignee) compactPrioritiesForAssignee(t.assignee);
-  cascadeSchedule();
+  await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
+  if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
+  if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee);
+  await cascadeSchedule();
   res.json({ ok: true });
   io.emit('tasks:updated', { project: before?.project || null });
   await sync('tasks');
 });
 
-app.get('/api/settings', (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM settings').all();
+app.get('/api/settings', async (req, res) => {
+  const [rows] = await pool.query('SELECT `key`, value FROM settings');
   const out = {};
   for (const r of rows) {
     try { out[r.key] = JSON.parse(r.value); } catch { out[r.key] = r.value; }
@@ -641,10 +555,10 @@ app.get('/api/settings', (req, res) => {
 app.put('/api/settings/:key', requireRole('admin'), async (req, res) => {
   const key = req.params.key;
   const value = JSON.stringify(req.body);
-  db.prepare(`
-    INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-  `).run(key, value);
+  await pool.query(
+    'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+    [key, value]
+  );
   res.json({ ok: true });
   io.emit('settings:updated', { key });
   await sync('settings');
@@ -653,8 +567,8 @@ app.put('/api/settings/:key', requireRole('admin'), async (req, res) => {
 // ---------- Team members ----------
 const TEAM_DISCIPLINES = new Set(['mech', 'controls', 'pm', 'build', 'wire']);
 
-app.get('/api/team', (req, res) => {
-  const rows = db.prepare('SELECT * FROM team_members ORDER BY discipline, sort_order, name').all();
+app.get('/api/team', async (req, res) => {
+  const [rows] = await pool.query('SELECT * FROM team_members ORDER BY discipline, sort_order, name');
   res.json(rows);
 });
 
@@ -663,9 +577,9 @@ app.post('/api/team', requireRole('editor'), async (req, res) => {
   const discipline = req.body.discipline;
   if (!name) return res.status(400).json({ error: 'name required' });
   if (!TEAM_DISCIPLINES.has(discipline)) return res.status(400).json({ error: 'invalid discipline' });
-  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM team_members WHERE discipline = ?').get(discipline).m;
-  const result = db.prepare('INSERT INTO team_members (name, discipline, sort_order) VALUES (?, ?, ?)').run(name, discipline, maxOrder + 1);
-  const row = db.prepare('SELECT * FROM team_members WHERE id = ?').get(result.lastInsertRowid);
+  const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM team_members WHERE discipline = ?', [discipline]);
+  const [result] = await pool.query('INSERT INTO team_members (name, discipline, sort_order) VALUES (?, ?, ?)', [name, discipline, maxRow.m + 1]);
+  const [[row]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [result.insertId]);
   res.json(row);
   io.emit('team:updated');
   await sync('team_members');
@@ -673,7 +587,7 @@ app.post('/api/team', requireRole('editor'), async (req, res) => {
 
 app.put('/api/team/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
+  const [[existing]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [id]);
   if (!existing) return res.status(404).json({ error: 'not found' });
   const allowed = ['name', 'discipline', 'active', 'sort_order', 'is_lead', 'specialty'];
   const updates = {};
@@ -687,14 +601,13 @@ app.put('/api/team/:id', requireRole('editor'), async (req, res) => {
     }
   }
   if (Object.keys(updates).length === 0) return res.json(existing);
-  // If name changed, propagate to existing tasks so the existing assignee strings stay consistent.
   if (updates.name && updates.name !== existing.name) {
-    db.prepare('UPDATE tasks SET assignee = ? WHERE assignee = ?').run(updates.name, existing.name);
+    await pool.query('UPDATE tasks SET assignee = ? WHERE assignee = ?', [updates.name, existing.name]);
     await sync('tasks');
   }
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE team_members SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
-  const updated = db.prepare('SELECT * FROM team_members WHERE id = ?').get(id);
+  await pool.query(`UPDATE team_members SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
+  const [[updated]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [id]);
   res.json(updated);
   io.emit('team:updated');
   await sync('team_members');
@@ -702,7 +615,7 @@ app.put('/api/team/:id', requireRole('editor'), async (req, res) => {
 
 app.delete('/api/team/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
-  db.prepare('DELETE FROM team_members WHERE id = ?').run(id);
+  await pool.query('DELETE FROM team_members WHERE id = ?', [id]);
   res.json({ ok: true });
   io.emit('team:updated');
   await sync('team_members');
@@ -711,31 +624,38 @@ app.delete('/api/team/:id', requireRole('editor'), async (req, res) => {
 app.post('/api/team/reorder', requireRole('editor'), async (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
-  const stmt = db.prepare('UPDATE team_members SET sort_order = ? WHERE id = ?');
-  db.exec('BEGIN');
+  const conn = await pool.getConnection();
+  await conn.beginTransaction();
   try {
-    order.forEach((id, idx) => stmt.run(idx, id));
-    db.exec('COMMIT');
+    for (let idx = 0; idx < order.length; idx++) {
+      await conn.query('UPDATE team_members SET sort_order = ? WHERE id = ?', [idx, order[idx]]);
+    }
+    await conn.commit();
   } catch (err) {
-    db.exec('ROLLBACK');
+    await conn.rollback();
+    conn.release();
     throw err;
   }
+  conn.release();
   res.json({ ok: true });
 });
 
 app.post('/api/tasks/reorder', requireRole('editor'), async (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
-
-  const stmt = db.prepare('UPDATE tasks SET sort_order = ? WHERE id = ?');
-  db.exec('BEGIN');
+  const conn = await pool.getConnection();
+  await conn.beginTransaction();
   try {
-    order.forEach((id, idx) => stmt.run(idx, id));
-    db.exec('COMMIT');
+    for (let idx = 0; idx < order.length; idx++) {
+      await conn.query('UPDATE tasks SET sort_order = ? WHERE id = ?', [idx, order[idx]]);
+    }
+    await conn.commit();
   } catch (err) {
-    db.exec('ROLLBACK');
+    await conn.rollback();
+    conn.release();
     throw err;
   }
+  conn.release();
   res.json({ ok: true });
 });
 
@@ -849,8 +769,8 @@ app.post('/api/import/smartsheet', requireRole('admin'), async (req, res) => {
     if (!projectName) return res.status(400).json({ error: 'project name required' });
     if (!file)        return res.status(400).json({ error: 'file (base64) required' });
 
-    const existing = db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE project = ?").get(projectName);
-    if (existing.n > 0) {
+    const [[existingRow]] = await pool.query("SELECT COUNT(*) AS n FROM tasks WHERE project = ?", [projectName]);
+    if (existingRow.n > 0) {
       return res.status(400).json({ error: `Project "${projectName}" already exists. Pick a different name or merge in.` });
     }
 
@@ -995,26 +915,24 @@ app.post('/api/import/smartsheet', requireRole('admin'), async (req, res) => {
     if (items.length === 0) return res.status(400).json({ error: 'no task rows found in sheet' });
 
     // Second pass — insert tasks (no predecessors yet; need IDs first).
-    const insertStmt = db.prepare(`
-      INSERT INTO tasks (name, project, phase_group, department, sub_department, assignee,
-                         start_date, end_date, duration_days, is_milestone, progress, allocation,
-                         priority, notes, sort_order, anchor_key,
-                         baseline_start_date, baseline_end_date)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-    `);
     const sourceRowToId = {};
-    const teamToAdd = new Map(); // name → discipline
+    const teamToAdd = new Map();
     let order = 0;
     for (const t of items) {
-      const result = insertStmt.run(
-        t.name, projectName,
-        t.phase_group, t.department, t.sub_department, t.assignee,
-        t.start_date, t.end_date, t.duration_days, t.is_milestone,
-        t.progress, t.allocation,
-        t.notes, order++, t.anchor_key,
-        t.baseline_start_date, t.baseline_end_date,
+      const [result] = await pool.query(
+        `INSERT INTO tasks (name, project, phase_group, department, sub_department, assignee,
+                            start_date, end_date, duration_days, is_milestone, progress, allocation,
+                            priority, notes, sort_order, anchor_key,
+                            baseline_start_date, baseline_end_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+        [t.name, projectName,
+         t.phase_group, t.department, t.sub_department, t.assignee,
+         t.start_date, t.end_date, t.duration_days, t.is_milestone,
+         t.progress, t.allocation,
+         t.notes, order++, t.anchor_key,
+         t.baseline_start_date, t.baseline_end_date]
       );
-      sourceRowToId[t.row] = result.lastInsertRowid;
+      sourceRowToId[t.row] = result.insertId;
       if (t.assignee && t._discipline_hint) {
         if (!teamToAdd.has(t.assignee)) teamToAdd.set(t.assignee, t._discipline_hint);
       }
@@ -1032,10 +950,9 @@ app.post('/api/import/smartsheet', requireRole('admin'), async (req, res) => {
     // representative task inside that phase:
     //   FS / SS predecessors → FIRST task in the phase (after-start semantics)
     //   FF / SF predecessors → LAST  task in the phase (after-finish semantics)
-    const updPred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
-    const phaseFirstId = {};  // phaseHeaderRow → first task ID
-    const phaseLastId  = {};  // phaseHeaderRow → last  task ID
-    const idToSrcRow   = {};  // taskId → original Excel row number
+    const phaseFirstId = {};
+    const phaseLastId  = {};
+    const idToSrcRow   = {};
     for (const [phaseRow, taskRows] of Object.entries(phaseTaskRows)) {
       const ids = taskRows.map(r => sourceRowToId[r]).filter(Boolean);
       if (ids.length === 0) continue;
@@ -1092,21 +1009,18 @@ app.post('/api/import/smartsheet', requireRole('admin'), async (req, res) => {
     for (const t of items) {
       const id = sourceRowToId[t.row];
       const remapped = remap(t.predecessors_raw, t.row, id);
-      if (remapped) updPred.run(remapped, id);
+      if (remapped) await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [remapped, id]);
     }
 
-    // Auto-add new team members.
-    const haveNames = new Set(
-      db.prepare('SELECT name FROM team_members').all().map(r => r.name.toLowerCase())
-    );
-    const addMemberStmt = db.prepare(
-      'INSERT INTO team_members (name, discipline) VALUES (?, ?)'
-    );
+    const [haveMemberRows] = await pool.query('SELECT name FROM team_members');
+    const haveNames = new Set(haveMemberRows.map(r => r.name.toLowerCase()));
     const addedMembers = [];
     for (const [name, discipline] of teamToAdd) {
       if (haveNames.has(name.toLowerCase())) continue;
-      try { addMemberStmt.run(name, discipline); addedMembers.push({ name, discipline }); }
-      catch (err) { /* ignore — name collision etc. */ }
+      try {
+        await pool.query('INSERT INTO team_members (name, discipline) VALUES (?, ?)', [name, discipline]);
+        addedMembers.push({ name, discipline });
+      } catch (err) { /* ignore — name collision etc. */ }
     }
 
     // NB: deliberately do NOT call cascadeSchedule() here. The Smartsheet has its
@@ -1346,28 +1260,25 @@ function classifyTask(t) {
 // Fetch the persisted quote (estimate hours + headcount) for a project, set at
 // /api/estimate/create time. Returns null when the project wasn't created from
 // an estimate.
-app.get('/api/project/:project/quote', (req, res) => {
+app.get('/api/project/:project/quote', async (req, res) => {
   const key = `project_quote:${req.params.project}`;
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const [[row]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [key]);
   if (!row) return res.json(null);
   try { res.json(JSON.parse(row.value)); }
   catch { res.json(null); }
 });
 
-// Attach (or replace) the saved quote on an existing project. Lets a user pick
-// the estimate xlsx in the Quote vs Schedule modal and persist it without
-// re-creating the project.
 app.post('/api/project/:project/quote', requireRole('editor'), async (req, res) => {
   const key = `project_quote:${req.params.project}`;
   const value = JSON.stringify(req.body || {});
-  db.prepare(`
-    INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-  `).run(key, value);
+  await pool.query(
+    'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+    [key, value]
+  );
   res.json({ ok: true });
 });
 app.delete('/api/project/:project/quote', requireRole('editor'), async (req, res) => {
-  db.prepare('DELETE FROM settings WHERE key = ?').run(`project_quote:${req.params.project}`);
+  await pool.query('DELETE FROM settings WHERE `key` = ?', [`project_quote:${req.params.project}`]);
   res.json({ ok: true });
 });
 
@@ -1393,13 +1304,13 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(poDate))  return res.status(400).json({ error: 'po_date must be YYYY-MM-DD' });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(fatDate)) return res.status(400).json({ error: 'fat_date must be YYYY-MM-DD' });
 
-    const existing = db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE project = ?").get(projectName);
-    if (existing.n > 0) {
+    const [[existingCount]] = await pool.query("SELECT COUNT(*) AS n FROM tasks WHERE project = ?", [projectName]);
+    if (existingCount.n > 0) {
       return res.status(400).json({ error: `Project "${projectName}" already exists. Pick a different name.` });
     }
 
     const TEMPLATE = 'SDC_Template';
-    const tplTasksRaw = db.prepare('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id').all(TEMPLATE);
+    const [tplTasksRaw] = await pool.query('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id', [TEMPLATE]);
     if (tplTasksRaw.length === 0) {
       return res.status(400).json({ error: `Template "${TEMPLATE}" has no tasks. Open Setup → seed it first.` });
     }
@@ -1700,69 +1611,40 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
       taskAllocations[t.id] = ENG_ALLOC_PCT;
     }
 
-    // ---- Insert tasks ----
-    // Anchors keep their pinned dates (PO + FAT) and predecessors are cleared so
-    // cascadeSchedule() leaves them alone. All other tasks get their start/end
-    // recomputed from their predecessors + the new durations.
-    const insertStmt = db.prepare(`
-      INSERT INTO tasks (name, project, phase_group, department, sub_department, assignee,
-                         start_date, end_date, duration_days, is_milestone, progress, allocation,
-                         priority, notes, sort_order, anchor_key, predecessors)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-    `);
     const oldToNewId = {};
     let sortOrder = 0;
     for (const t of tplTasks) {
       const newDur = taskDurations[t.id] != null ? taskDurations[t.id] : (t.duration_days || 5);
       const newAlloc = taskAllocations[t.id] != null ? taskAllocations[t.id] : ENG_ALLOC_PCT;
-      const r = insertStmt.run(
-        t.name, projectName,
-        t.phase_group, t.department, t.sub_department,
-        (t.assignee && /placeholder/i.test(t.assignee)) ? t.assignee : null,
-        t.start_date || poDate, t.end_date || poDate,
-        t.is_milestone ? 0 : newDur, t.is_milestone,
-        0,
-        // Per-task allocation — driven by hours/duration math so Mech Eng tasks
-        // that got stretched to absorb slack run at a lower allocation than full
-        // efficiency. Milestones keep template's value (irrelevant at 0-duration).
-        t.is_milestone ? (t.allocation == null ? 100 : t.allocation) : newAlloc,
-        1, t.notes, sortOrder++, t.anchor_key,
+      const [r] = await pool.query(
+        `INSERT INTO tasks (name, project, phase_group, department, sub_department, assignee,
+                            start_date, end_date, duration_days, is_milestone, progress, allocation,
+                            priority, notes, sort_order, anchor_key, predecessors)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [t.name, projectName,
+         t.phase_group, t.department, t.sub_department,
+         (t.assignee && /placeholder/i.test(t.assignee)) ? t.assignee : null,
+         t.start_date || poDate, t.end_date || poDate,
+         t.is_milestone ? 0 : newDur, t.is_milestone,
+         0,
+         t.is_milestone ? (t.allocation == null ? 100 : t.allocation) : newAlloc,
+         1, t.notes, sortOrder++, t.anchor_key]
       );
-      oldToNewId[t.id] = r.lastInsertRowid;
+      oldToNewId[t.id] = r.insertId;
     }
 
-    // BACKLOG TASK — kickoff/ramp-up period between Receipt of PO and the start
-    // of engineering. Default 2 weeks. Allocation 0 (no real work, just calendar
-    // time). phase_group is NULL so it renders ABOVE section 10 (right under
-    // Receipt of PO) instead of inside it. anchor_key 'backlog' so the renderer
-    // can pick it up and treat it as a duration-only spine task — no progress
-    // pill, no drift chip (it's a backlog, not behind-schedule work).
     let backlogId = null;
     if (backlogDays > 0) {
-      const insertBacklog = db.prepare(`
-        INSERT INTO tasks (name, project, phase_group, department, sub_department, assignee,
-                           start_date, end_date, duration_days, is_milestone, progress, allocation,
-                           priority, notes, sort_order, anchor_key, predecessors)
-        VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, 0, 0, 0, 1, NULL, ?, NULL, ?)
-      `);
-      const r = insertBacklog.run(
-        'Backlog', projectName,
-        poDate, poDate,
-        backlogDays,
-        sortOrder++,
-        `${oldToNewId[tplPo.id]}FS`,
+      const [r] = await pool.query(
+        `INSERT INTO tasks (name, project, phase_group, department, sub_department, assignee,
+                            start_date, end_date, duration_days, is_milestone, progress, allocation,
+                            priority, notes, sort_order, anchor_key, predecessors)
+         VALUES (?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, 0, 0, 0, 1, NULL, ?, NULL, ?)`,
+        ['Backlog', projectName, poDate, poDate, backlogDays, sortOrder++, `${oldToNewId[tplPo.id]}FS`]
       );
-      backlogId = r.lastInsertRowid;
+      backlogId = r.insertId;
     }
 
-    // Remap predecessors with overrides:
-    //   - Receipt of PO has predecessors CLEARED (pinned to user date)
-    //   - Mech 1 Release: FF the last mech eng task (no lag) → lands at end of mech eng
-    //   - FAT: FF the main Test/Debug Engineer task minus 1 week (per user) → FAT
-    //     happens 1 week before main testing ends, work continues that final week
-    //   - Mech eng tasks: FS Backlog (so engineering starts after the kickoff
-    //     period, not the instant the PO is signed)
-    const updPred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
     const mechEngNewIds = new Set((bucketTasks['section_10.mech_eng'] || []).map(t => oldToNewId[t.id]).filter(Boolean));
     const mechEngTplTasks = (bucketTasks['section_10.mech_eng'] || []).slice().sort((a, b) => (b.sort_order || 0) - (a.sort_order || 0));
     const lastMechEngTpl = mechEngTplTasks[0];
@@ -1771,20 +1653,19 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
     for (const t of tplTasks) {
       const newId = oldToNewId[t.id];
       if (t.anchor_key === 'receipt_of_po') {
-        updPred.run(null, newId);
+        await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [null, newId]);
         continue;
       }
       if (t.anchor_key === 'fat' && testDebugMain) {
-        updPred.run(`${oldToNewId[testDebugMain.id]}FF -1w`, newId);
+        await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [`${oldToNewId[testDebugMain.id]}FF -1w`, newId]);
         continue;
       }
       if (t.anchor_key === 'mech_release_1' && lastMechEngTpl) {
-        updPred.run(`${oldToNewId[lastMechEngTpl.id]}FF`, newId);
+        await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [`${oldToNewId[lastMechEngTpl.id]}FF`, newId]);
         continue;
       }
-      // Re-point mech eng tasks to start after Backlog (instead of at PO).
       if (backlogId && mechEngNewIds.has(newId)) {
-        updPred.run(`${backlogId}FS`, newId);
+        await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [`${backlogId}FS`, newId]);
         continue;
       }
       if (!t.predecessors) continue;
@@ -1795,12 +1676,9 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
         const mappedId = oldToNewId[Number(m[1])];
         return mappedId != null ? `${mappedId}${m[2]}` : ref;
       }).join(', ');
-      if (remapped) updPred.run(remapped, newId);
+      if (remapped) await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [remapped, newId]);
     }
-    // Pin PO to user date. FAT is left to cascade from its predecessor (Test/Debug 1
-    // FF -1w) — its actual position depends on how the rest of the chain lands.
-    const updAnchorDates = db.prepare('UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?');
-    updAnchorDates.run(poDate,  poDate,  oldToNewId[tplPo.id]);
+    await pool.query('UPDATE tasks SET start_date = ?, end_date = ? WHERE id = ?', [poDate, poDate, oldToNewId[tplPo.id]]);
 
     // Run cascade — non-anchor tasks recompute their dates from predecessors +
     // their (now hours-based) durations. PO and FAT stay where pinned because
@@ -1818,15 +1696,12 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
     // flag the overrun).
     if (testDebugMain) {
       const td1Id = oldToNewId[testDebugMain.id];
-      const td1Row = db.prepare('SELECT start_date, end_date, duration_days FROM tasks WHERE id = ?').get(td1Id);
+      const [[td1Row]] = await pool.query('SELECT start_date, end_date, duration_days FROM tasks WHERE id = ?', [td1Id]);
       if (td1Row && td1Row.start_date && td1Row.end_date) {
-        const requiredEndIso = addBusinessDaysISO(fatDate, 5); // FAT + 1 wk
+        const requiredEndIso = addBusinessDaysISO(fatDate, 5);
         const currentEndMs   = new Date(td1Row.end_date    + 'T00:00:00Z').getTime();
         const requiredEndMs  = new Date(requiredEndIso     + 'T00:00:00Z').getTime();
         if (requiredEndMs > currentEndMs) {
-          // Extend testing duration by N business days where N is the gap
-          // rounded up to a half-week increment (2.5 days → 3 days, 5 → 5,
-          // 7.5 → 8, etc.) so durations stay on the half-week grid.
           const gapDays  = businessDaysSpanInclusive(td1Row.end_date, requiredEndIso) - 1;
           let extraDays = 0;
           for (let n = 1; n <= 400; n++) {
@@ -1834,70 +1709,46 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
             if (gapDays <= bucketDays) { extraDays = bucketDays; break; }
           }
           const newDur = td1Row.duration_days + extraDays;
-          // Extend all parallel testing tasks together.
           const testingExtendIds = [
             oldToNewId[testDebugMain.id],
             ...debugTasks.map(t => oldToNewId[t.id]),
             ...shopDebugTasks.map(t => oldToNewId[t.id]),
           ].filter(Boolean);
           for (const id of testingExtendIds) {
-            db.prepare('UPDATE tasks SET duration_days = ? WHERE id = ?').run(newDur, id);
+            await pool.query('UPDATE tasks SET duration_days = ? WHERE id = ?', [newDur, id]);
           }
-          // RECOMPUTE allocations now that we know the final stretched
-          // duration. T/D 1 stays at ENG_ALLOC_PCT (lead, full time). T/D 2
-          // drops to match remaining quoted hours. Shop Debug drops to match
-          // its quoted shop hours. Both snap to {25, 50, 90}.
           const td1HrsCovered = newDur * 8 * (ENG_ALLOC_PCT / 100);
           for (const t of td2Tasks) {
             const remainingHrs = Math.max(0, engDebugHrs - configureHrs - td1HrsCovered);
             const rawPct = (remainingHrs / (newDur * 8)) * 100;
             const alloc = snapAllocToDiscrete(Math.max(0, rawPct));
-            db.prepare('UPDATE tasks SET allocation = ? WHERE id = ?').run(alloc, oldToNewId[t.id]);
+            await pool.query('UPDATE tasks SET allocation = ? WHERE id = ?', [alloc, oldToNewId[t.id]]);
           }
           for (const t of shopDebugTasks) {
             const rawPct = (shopDebugHrs / (newDur * 8)) * 100;
             const alloc = snapAllocToDiscrete(Math.max(0, rawPct));
-            db.prepare('UPDATE tasks SET allocation = ? WHERE id = ?').run(alloc, oldToNewId[t.id]);
+            await pool.query('UPDATE tasks SET allocation = ? WHERE id = ?', [alloc, oldToNewId[t.id]]);
           }
-          // Re-cascade so the new durations propagate.
-          cascadeSchedule();
+          await cascadeSchedule();
         }
       }
     }
 
-    // Variance check: compare the computed FAT date to the user's quoted FAT.
-    // Testing extension above should land them within a few days. If FAT is
-    // significantly late, headcount needs a bump.
-    const fatRow = db.prepare('SELECT start_date FROM tasks WHERE project = ? AND anchor_key = ?').get(projectName, 'fat');
+    const [[fatRow]] = await pool.query('SELECT start_date FROM tasks WHERE project = ? AND anchor_key = ?', [projectName, 'fat']);
     let scheduleVariance = null;
     if (fatRow && fatRow.start_date) {
       scheduleVariance = Math.round((new Date(fatRow.start_date).getTime() - new Date(fatDate).getTime()) / 86400000);
     }
 
-    // Persist the quoted hours per task bucket so the Schedule view can pop up
-    // a Quote-vs-Schedule comparison later. Uses the settings table with a
-    // project-scoped key.
     try {
-      // MERGE into the existing saved quote — don't replace it. User-entered
-      // contract fields (sold_delivery_weeks, penalty clause, people_breakdown,
-      // quoted_overrides) live in the same row and must survive a reschedule.
-      // Overwriting here is what kept blanking out Dan's "Sold delivery".
-      const existingRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(`project_quote:${projectName}`);
-      let existing = {};
-      if (existingRow) { try { existing = JSON.parse(existingRow.value) || {}; } catch (_) { existing = {}; } }
-      const quote = {
-        ...existing,
-        hours_per_section: hps,
-        hours_breakdown: hbd,
-        headcount,
-        efficiency,
-        po_date: poDate,
-        fat_date: fatDate,
-      };
-      db.prepare(`
-        INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-      `).run(`project_quote:${projectName}`, JSON.stringify(quote));
+      const [[existingQRow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [`project_quote:${projectName}`]);
+      let existingQ = {};
+      if (existingQRow) { try { existingQ = JSON.parse(existingQRow.value) || {}; } catch (_) { existingQ = {}; } }
+      const quote = { ...existingQ, hours_per_section: hps, hours_breakdown: hbd, headcount, efficiency, po_date: poDate, fat_date: fatDate };
+      await pool.query(
+        'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+        [`project_quote:${projectName}`, JSON.stringify(quote)]
+      );
     } catch (e) { console.error('Failed to persist quoted hours:', e); }
 
     res.json({
@@ -2028,34 +1879,27 @@ app.post('/api/import/schedule', requireRole('admin'), async (req, res) => {
 
     if (dataRows.length === 0) return res.status(400).json({ error: 'no data rows found in file' });
 
-    // If replacing: delete existing tasks for this project first
     if (mode === 'replace') {
-      db.prepare('DELETE FROM tasks WHERE project = ?').run(projectName);
-      db.prepare('DELETE FROM project_financials WHERE project = ?').run(projectName);
+      await pool.query('DELETE FROM tasks WHERE project = ?', [projectName]);
+      await pool.query('DELETE FROM project_financials WHERE project = ?', [projectName]);
     }
 
-    // Insert rows and build line→id map for predecessor remapping
-    const lineToId = {};  // file line number → new task id
-    const insertStmt = db.prepare(`
-      INSERT INTO tasks
-        (name, project, phase, department, sub_department, assignee,
-         start_date, end_date, duration_days, progress, notes,
-         is_milestone, allocation, priority, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    `);
-
+    const lineToId = {};
     for (const row of dataRows) {
-      const result = insertStmt.run(
-        row.name, row.project, row.phase, row.department, row.sub_department,
-        row.assignee, row.start_date, row.end_date, row.duration_days,
-        row.progress, row.notes, row.is_milestone, row.allocation,
-        row.priority, row.sort_order
+      const [result] = await pool.query(
+        `INSERT INTO tasks
+           (name, project, phase, department, sub_department, assignee,
+            start_date, end_date, duration_days, progress, notes,
+            is_milestone, allocation, priority, sort_order)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [row.name, row.project, row.phase, row.department, row.sub_department,
+         row.assignee, row.start_date, row.end_date, row.duration_days,
+         row.progress, row.notes, row.is_milestone, row.allocation,
+         row.priority, row.sort_order]
       );
-      lineToId[row._line] = result.lastInsertRowid;
+      lineToId[row._line] = result.insertId;
     }
 
-    // Remap predecessors: file uses line numbers → translate to real task IDs
-    const updatePred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
     for (const row of dataRows) {
       if (!row._rawPreds) continue;
       const remapped = row._rawPreds.split(',').map(s => {
@@ -2066,11 +1910,10 @@ app.post('/api/import/schedule', requireRole('admin'), async (req, res) => {
         if (!targetId) return null;
         return targetId + (m[2] || '');
       }).filter(Boolean).join(', ');
-      if (remapped) updatePred.run(remapped, lineToId[row._line]);
+      if (remapped) await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [remapped, lineToId[row._line]]);
     }
 
-    // Ensure project record exists
-    db.prepare('INSERT OR IGNORE INTO projects (name) VALUES (?)').run(projectName);
+    await pool.query('INSERT IGNORE INTO projects (name) VALUES (?)', [projectName]);
 
     const inserted = dataRows.length;
     res.json({ ok: true, project: projectName, inserted, mode });
@@ -2091,26 +1934,22 @@ app.post('/api/import/schedule', requireRole('admin'), async (req, res) => {
 app.post('/api/baseline/set', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
-  const result = db.prepare(`
-    UPDATE tasks SET
-      baseline_start_date = start_date,
-      baseline_end_date   = end_date
-    WHERE project = ?
-  `).run(project);
-  res.json({ ok: true, baselined: result.changes });
+  const [result] = await pool.query(
+    'UPDATE tasks SET baseline_start_date = start_date, baseline_end_date = end_date WHERE project = ?',
+    [project]
+  );
+  res.json({ ok: true, baselined: result.affectedRows });
   await sync('tasks');
 });
 
 app.post('/api/baseline/clear', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
-  const result = db.prepare(`
-    UPDATE tasks SET
-      baseline_start_date = NULL,
-      baseline_end_date   = NULL
-    WHERE project = ?
-  `).run(project);
-  res.json({ ok: true, cleared: result.changes });
+  const [result] = await pool.query(
+    'UPDATE tasks SET baseline_start_date = NULL, baseline_end_date = NULL WHERE project = ?',
+    [project]
+  );
+  res.json({ ok: true, cleared: result.affectedRows });
   await sync('tasks');
 });
 
@@ -2149,28 +1988,23 @@ app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), asyn
   if (sourceMachine === targetMachine) {
     return res.status(400).json({ error: 'sourceMachine and targetMachine must differ' });
   }
-  // Reject if target already has tasks in this project (avoid accidental merging).
-  const existing = db.prepare('SELECT COUNT(*) AS c FROM tasks WHERE project = ? AND machine = ?').get(project, targetMachine).c;
-  if (existing > 0) {
-    return res.status(409).json({ error: `Machine "${targetMachine}" already has ${existing} tasks in this project.` });
+  const [[existingMachine]] = await pool.query('SELECT COUNT(*) AS c FROM tasks WHERE project = ? AND machine = ?', [project, targetMachine]);
+  if (existingMachine.c > 0) {
+    return res.status(409).json({ error: `Machine "${targetMachine}" already has ${existingMachine.c} tasks in this project.` });
   }
-  // Pick the rows to clone. When the client sends includeTaskIds, those
-  // IDs win and may include rows outside the source machine (shared
-  // anchors, design rows above the Build line — the user explicitly
-  // clicked them in the schedule). Without includeTaskIds, fall back
-  // to "every row tagged with sourceMachine" (legacy behavior).
   let sourceTasks;
   const includeSet = Array.isArray(includeTaskIds) && includeTaskIds.length
     ? new Set(includeTaskIds.map(Number))
     : null;
   if (includeSet) {
-    sourceTasks = db.prepare('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id').all(project)
-      .filter(t => includeSet.has(t.id));
+    const [allRows] = await pool.query('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id', [project]);
+    sourceTasks = allRows.filter(t => includeSet.has(t.id));
     if (sourceTasks.length === 0) {
       return res.status(400).json({ error: 'includeTaskIds did not match any tasks in this project.' });
     }
   } else {
-    sourceTasks = db.prepare('SELECT * FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id').all(project, sourceMachine);
+    const [rows] = await pool.query('SELECT * FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id', [project, sourceMachine]);
+    sourceTasks = rows;
     if (sourceTasks.length === 0) {
       return res.status(404).json({ error: `No tasks found for machine "${sourceMachine}" in project "${project}".` });
     }
@@ -2186,81 +2020,44 @@ app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), asyn
     ? Object.fromEntries(Object.entries(customPredecessors).map(([k, v]) => [Number(k), v]))
     : null;
   const cloneCols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'completed_on', 'machine'];
-  const insert = db.prepare(`INSERT INTO tasks (${cloneCols.join(', ')}) VALUES (${cloneCols.map(() => '?').join(', ')})`);
-  // sort_order for new tasks: push to end of project so they don't tangle.
-  const maxSort = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project = ?').get(project).m;
+  const [[maxSortRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project = ?', [project]);
+  const maxSort = maxSortRow.m;
 
-  db.exec('BEGIN');
+  const conn = await pool.getConnection();
+  await conn.beginTransaction();
   try {
-    const idMap = {};                  // oldId → newId
-    const newTasks = [];               // pairs of (oldTask, newId) for predecessor rewrite
+    const idMap = {};
+    const newTasks = [];
     let sortCursor = maxSort + 10;
     for (const t of sourceTasks) {
-      const values = [
-        t.name,
-        t.project,
-        t.phase,
-        t.phase_group,
-        t.department,
-        t.sub_department,
-        t.assignee,
-        t.start_date,
-        t.end_date,
-        t.duration_days,
-        null, // predecessors: rewritten in the second pass
-        t.is_milestone,
-        0,    // progress resets — duplicates haven't been done yet
-        t.allocation,
-        t.priority,
-        t.notes,
-        sortCursor,
-        t.anchor_key,
-        t.is_action,
-        null, // completed_on resets
-        targetMachine,
-      ];
-      const r = insert.run(...values);
-      idMap[t.id] = r.lastInsertRowid;
-      newTasks.push({ oldTask: t, newId: r.lastInsertRowid });
+      const [r] = await conn.query(
+        `INSERT INTO tasks (${cloneCols.join(', ')}) VALUES (${cloneCols.map(() => '?').join(', ')})`,
+        [t.name, t.project, t.phase, t.phase_group, t.department, t.sub_department,
+         t.assignee, t.start_date, t.end_date, t.duration_days,
+         null, t.is_milestone, 0, t.allocation, t.priority, t.notes,
+         sortCursor, t.anchor_key, t.is_action, null, targetMachine]
+      );
+      idMap[t.id] = r.insertId;
+      newTasks.push({ oldTask: t, newId: r.insertId });
       sortCursor += 10;
     }
-    // Second pass: rewrite predecessors using idMap. References to source-
-    // machine tasks become references to the new tasks. Other references
-    // (shared anchors, other machines) pass through unchanged.
-    const updatePred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
     for (const { oldTask, newId } of newTasks) {
       if (!oldTask.predecessors) continue;
       const rewritten = String(oldTask.predecessors)
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
+        .split(',').map(s => s.trim()).filter(Boolean)
         .map(ref => {
           const m = ref.match(/^(\d+)(.*)$/);
           if (!m) return ref;
           const oldId = Number(m[1]);
           const suffix = m[2] || '';
-          if (idMap[oldId]) {
-            return idMap[oldId] + suffix;
-          }
-          // Optionally chain to source machine — only relevant when the
-          // predecessor in the source pointed to a non-source-machine task
-          // (e.g. a shared anchor). For the chain case we'd add an
-          // explicit reference to the corresponding source task instead.
-          return ref;
-        })
-        .join(', ');
+          return idMap[oldId] ? idMap[oldId] + suffix : ref;
+        }).join(', ');
       if (rewritten !== oldTask.predecessors) {
-        updatePred.run(rewritten || null, newId);
+        await conn.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [rewritten || null, newId]);
       } else {
-        updatePred.run(oldTask.predecessors, newId);
+        await conn.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [oldTask.predecessors, newId]);
       }
     }
-    // Chain: add a FS link from the new task to its source-machine
-    // counterpart. Two modes:
-    //   • chainPredecessors=true (legacy / all-or-nothing) — every cloned
-    //     task chains to source.
-    //   • chainTaskIds (per-task) — only tasks whose source ID is in the
-    //     list chain to source. This is what the per-task dialog sends.
     const shouldChain = (oldId) => {
       if (chainPredecessors) return true;
       if (chainSet) return chainSet.has(Number(oldId));
@@ -2268,15 +2065,10 @@ app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), asyn
     };
     for (const { oldTask, newId } of newTasks) {
       if (!shouldChain(oldTask.id)) continue;
-      const row = db.prepare('SELECT predecessors FROM tasks WHERE id = ?').get(newId);
+      const [[row]] = await conn.query('SELECT predecessors FROM tasks WHERE id = ?', [newId]);
       const existing = row.predecessors ? row.predecessors + ', ' : '';
-      updatePred.run(`${existing}${oldTask.id}FS`, newId);
+      await conn.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [`${existing}${oldTask.id}FS`, newId]);
     }
-    // Per-task custom predecessor overrides. The user typed these directly
-    // referencing source-machine line numbers (already parsed to task IDs
-    // on the client). We honor them verbatim — no idMap rewriting — so
-    // the user can intentionally point at the source machine ("M2.Build
-    // waits for M1.Build to finish"). Empty string clears the pred.
     if (customPredMap) {
       console.log(`[duplicate-machine] ${project} → ${targetMachine}: customPredMap keys=${Object.keys(customPredMap).join(',')}`);
       for (const { oldTask, newId } of newTasks) {
@@ -2284,34 +2076,27 @@ app.post('/api/projects/:project/duplicate-machine', requireRole('editor'), asyn
         const raw = customPredMap[oldTask.id];
         const v = (raw == null) ? '' : String(raw).trim();
         console.log(`[duplicate-machine]   override: srcId=${oldTask.id} (${oldTask.name}) newId=${newId} pred="${v}"`);
-        updatePred.run(v ? v : null, newId);
+        await conn.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [v ? v : null, newId]);
       }
     }
-    // Final-state dump: what every cloned row ends up with after rewrite + override.
     console.log(`[duplicate-machine] ${project} → ${targetMachine}: ${newTasks.length} cloned`);
     for (const { oldTask, newId } of newTasks) {
-      const row = db.prepare('SELECT predecessors, name FROM tasks WHERE id = ?').get(newId);
+      const [[row]] = await conn.query('SELECT predecessors, name FROM tasks WHERE id = ?', [newId]);
       console.log(`[duplicate-machine]   ${newId} ${row.name}: pred="${row.predecessors || ''}" (from srcId=${oldTask.id}, srcPred="${oldTask.predecessors || ''}")`);
     }
-    db.exec('COMMIT');
+    await conn.commit();
   } catch (err) {
-    db.exec('ROLLBACK');
+    await conn.rollback();
+    conn.release();
     return res.status(500).json({ error: String(err.message || err) });
   }
-  // After commit, recompute start/end dates from every task's predecessors.
-  // Without this the new cloned rows keep the source machine's dates even
-  // though their predecessors now point at different tasks (or have new
-  // lags). Cascade iterates to convergence so chained dependencies all
-  // settle together (M2.Wire shifts because M2.Build shifted).
-  cascadeSchedule();
-  // Log post-cascade dates so we can verify the schedule moved as expected.
-  const final = db.prepare('SELECT * FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id').all(project, targetMachine);
+  conn.release();
+  await cascadeSchedule();
+  const [final] = await pool.query('SELECT * FROM tasks WHERE project = ? AND machine = ? ORDER BY sort_order, id', [project, targetMachine]);
   console.log(`[duplicate-machine] ${project} → ${targetMachine}: post-cascade dates:`);
   for (const r of final) {
     console.log(`[duplicate-machine]   ${r.id} ${r.name}: ${r.start_date} → ${r.end_date}  pred="${r.predecessors || ''}"`);
-    // Audit trail: each cloned row gets a 'create' entry tagged with the
-    // source machine so the history view can show "cloned from M1 → M2".
-    logHistory(r.id, r.project, 'create', null, null, r, ['cloned_from:' + sourceMachine]);
+    await logHistory(r.id, r.project, 'create', null, null, r, ['cloned_from:' + sourceMachine]);
   }
   res.json({ ok: true, cloned: sourceTasks.length });
 });
@@ -2332,26 +2117,29 @@ app.delete('/api/projects/:project/machines/:machine', requireRole('editor'), as
     return res.status(400).json({ error: 'project and machine are required' });
   }
   try {
-    // Fetch full rows up front so the audit trail captures everything that
-    // was deleted (snapshot before mutation, just like /api/tasks/:id).
-    const rows = db.prepare('SELECT * FROM tasks WHERE project = ? AND machine = ?').all(project, machine);
+    const [rows] = await pool.query('SELECT * FROM tasks WHERE project = ? AND machine = ?', [project, machine]);
     if (rows.length === 0) {
       return res.json({ ok: true, deleted: 0 });
     }
-    db.exec('BEGIN');
-    const clearAnchor = db.prepare('UPDATE tasks SET anchor_key = NULL WHERE id = ?');
-    const del = db.prepare('DELETE FROM tasks WHERE id = ?');
-    for (const r of rows) {
-      clearAnchor.run(r.id);
-      del.run(r.id);
+    const conn = await pool.getConnection();
+    await conn.beginTransaction();
+    try {
+      for (const r of rows) {
+        await conn.query('UPDATE tasks SET anchor_key = NULL WHERE id = ?', [r.id]);
+        await conn.query('DELETE FROM tasks WHERE id = ?', [r.id]);
+      }
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      conn.release();
+      throw err;
     }
-    db.exec('COMMIT');
+    conn.release();
     for (const r of rows) {
-      logHistory(r.id, r.project, 'delete', null, r, null, ['machine_deleted:' + machine]);
+      await logHistory(r.id, r.project, 'delete', null, r, null, ['machine_deleted:' + machine]);
     }
     return res.json({ ok: true, deleted: rows.length });
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch (_) {}
     return res.status(500).json({ error: String(err.message || err) });
   }
 });
@@ -2371,25 +2159,21 @@ app.delete('/api/projects/:project/machines/:machine', requireRole('editor'), as
 
 // Per-project comment counts in one query — fuels the small badge on
 // each grid row without N+1 fetches.
-app.get('/api/tasks/comment-counts', (req, res) => {
+app.get('/api/tasks/comment-counts', async (req, res) => {
   const project = (req.query.project || '').toString().trim();
   if (!project) return res.json({});
-  const rows = db.prepare(`
-    SELECT c.task_id, COUNT(*) AS cnt
-    FROM task_comments c
-    JOIN tasks t ON t.id = c.task_id
-    WHERE t.project = ?
-    GROUP BY c.task_id
-  `).all(project);
+  const [rows] = await pool.query(
+    'SELECT c.task_id, COUNT(*) AS cnt FROM task_comments c JOIN tasks t ON t.id = c.task_id WHERE t.project = ? GROUP BY c.task_id',
+    [project]
+  );
   const map = {};
   for (const r of rows) map[r.task_id] = r.cnt;
   res.json(map);
 });
 
-// Comments for a single task, oldest first (chronological reading).
-app.get('/api/tasks/:id/comments', (req, res) => {
+app.get('/api/tasks/:id/comments', async (req, res) => {
   const taskId = Number(req.params.id);
-  const rows = db.prepare('SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC').all(taskId);
+  const [rows] = await pool.query('SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC', [taskId]);
   res.json(rows);
 });
 
@@ -2399,7 +2183,7 @@ app.get('/api/tasks/:id/comments', (req, res) => {
 // for future email delivery (Phase 6).
 app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
   const taskId = Number(req.params.id);
-  const task = db.prepare('SELECT name, project FROM tasks WHERE id = ?').get(taskId);
+  const [[task]] = await pool.query('SELECT name, project FROM tasks WHERE id = ?', [taskId]);
   if (!task) return res.status(404).json({ error: 'task not found' });
 
   const body = (req.body.body || '').toString().trim();
@@ -2416,10 +2200,8 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
                      || 'anonymous';
   const authorId   = (req.authUser && req.authUser.id) || null;
 
-  // Extract @mentions against team-member names (longest first so a
-  // multi-word name like "Sam Iyer Jr" matches before "Sam Iyer"). When
-  // Phase 3 lands we'll also check the users table.
-  const knownNames = db.prepare('SELECT name FROM team_members WHERE active = 1').all().map(r => r.name).filter(Boolean);
+  const [knownNameRows] = await pool.query('SELECT name FROM team_members WHERE active = 1');
+  const knownNames = knownNameRows.map(r => r.name).filter(Boolean);
   knownNames.sort((a, b) => b.length - a.length);
   const mentions = [];
   for (const name of knownNames) {
@@ -2430,12 +2212,12 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
   }
 
   const now = new Date().toISOString();
-  const r = db.prepare(`
-    INSERT INTO task_comments (task_id, project, author_id, author_name, body, mentions, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(taskId, task.project, authorId, authorName, body, JSON.stringify(mentions), now, now);
+  const [r] = await pool.query(
+    'INSERT INTO task_comments (task_id, project, author_id, author_name, body, mentions, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [taskId, task.project, authorId, authorName, body, JSON.stringify(mentions), now, now]
+  );
 
-  const comment = db.prepare('SELECT * FROM task_comments WHERE id = ?').get(r.lastInsertRowid);
+  const [[comment]] = await pool.query('SELECT * FROM task_comments WHERE id = ?', [r.insertId]);
   res.status(201).json(comment);
 
   // Phase 4: fan out a real-time event so other tabs refresh the badge count.
@@ -2447,8 +2229,8 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
   // never block the comment POST.
   for (const name of mentions) {
     try {
-      const userRow = db.prepare('SELECT email FROM users WHERE name = ? AND active = 1').get(name);
-      const to = userRow?.email;
+      const [[userRow]] = await pool.query('SELECT email FROM users WHERE name = ? AND active = 1', [name]);
+      const to = userRow ? userRow.email : null;
       if (to && emailSvc && emailSvc.sendMentionEmail) {
         emailSvc.sendMentionEmail({
           db, to, taskId, taskName: task.name, project: task.project,
@@ -2463,9 +2245,9 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
 // trust model); Phase 3 adds an own-comment-or-admin gate.
 app.delete('/api/comments/:id', requireRole('viewer'), async (req, res) => {
   const id = Number(req.params.id);
-  const comment = db.prepare('SELECT * FROM task_comments WHERE id = ?').get(id);
+  const [[comment]] = await pool.query('SELECT * FROM task_comments WHERE id = ?', [id]);
   if (!comment) return res.status(404).json({ error: 'not found' });
-  db.prepare('DELETE FROM task_comments WHERE id = ?').run(id);
+  await pool.query('DELETE FROM task_comments WHERE id = ?', [id]);
   res.json({ ok: true });
 });
 
@@ -2478,13 +2260,14 @@ app.delete('/api/comments/:id', requireRole('viewer'), async (req, res) => {
 // GET /api/tasks/history?project=<name>&limit=<n>
 //   project — required; filter to one project.
 //   limit   — optional; max rows to return (default 200, max 1000).
-app.get('/api/tasks/history', (req, res) => {
+app.get('/api/tasks/history', async (req, res) => {
   const project = (req.query.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const limit = Math.min(1000, Math.max(1, Number(req.query.limit) || 200));
-  const rows = db.prepare(
-    'SELECT * FROM task_history WHERE project = ? ORDER BY changed_at DESC LIMIT ?'
-  ).all(project, limit);
+  const [rows] = await pool.query(
+    'SELECT * FROM task_history WHERE project = ? ORDER BY changed_at DESC LIMIT ?',
+    [project, limit]
+  );
   res.json(rows);
 });
 
@@ -2494,11 +2277,11 @@ app.get('/api/tasks/history', (req, res) => {
 // the Gantt when the $ Financial toggle is on; they don't live in the task grid.
 const FIN_FIELDS = ['name', 'percent', 'amount', 'due_date', 'paid', 'predecessors', 'sync_to_anchor', 'sort_order'];
 
-app.get('/api/financials', (req, res) => {
+app.get('/api/financials', async (req, res) => {
   const project = (req.query.project || '').toString();
-  const rows = project
-    ? db.prepare('SELECT * FROM project_financials WHERE project = ? ORDER BY sort_order, id').all(project)
-    : db.prepare('SELECT * FROM project_financials ORDER BY project, sort_order, id').all();
+  const [rows] = project
+    ? await pool.query('SELECT * FROM project_financials WHERE project = ? ORDER BY sort_order, id', [project])
+    : await pool.query('SELECT * FROM project_financials ORDER BY project, sort_order, id');
   res.json(rows);
 });
 
@@ -2506,30 +2289,26 @@ app.post('/api/financials', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
   const name = (req.body.name || '').toString().trim();
-  // Name can be empty — the modal creates blank rows for inline editing.
-  const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM project_financials WHERE project = ?').get(project).m;
-  const result = db.prepare(`
-    INSERT INTO project_financials (project, name, percent, amount, due_date, paid, predecessors, sync_to_anchor, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    project,
-    name,
-    req.body.percent != null ? Number(req.body.percent) : null,
-    req.body.amount  != null ? Number(req.body.amount)  : null,
-    req.body.due_date || null,
-    req.body.paid ? 1 : 0,
-    req.body.predecessors || null,
-    req.body.sync_to_anchor || null,
-    maxOrder + 1,
+  const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), -1) AS m FROM project_financials WHERE project = ?', [project]);
+  const [result] = await pool.query(
+    'INSERT INTO project_financials (project, name, percent, amount, due_date, paid, predecessors, sync_to_anchor, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [project, name,
+     req.body.percent != null ? Number(req.body.percent) : null,
+     req.body.amount  != null ? Number(req.body.amount)  : null,
+     req.body.due_date || null,
+     req.body.paid ? 1 : 0,
+     req.body.predecessors || null,
+     req.body.sync_to_anchor || null,
+     maxRow.m + 1]
   );
-  const row = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(result.lastInsertRowid);
+  const [[row]] = await pool.query('SELECT * FROM project_financials WHERE id = ?', [result.insertId]);
   res.json(row);
   await sync('project_financials');
 });
 
 app.put('/api/financials/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(id);
+  const [[existing]] = await pool.query('SELECT * FROM project_financials WHERE id = ?', [id]);
   if (!existing) return res.status(404).json({ error: 'not found' });
   const updates = {};
   for (const f of FIN_FIELDS) {
@@ -2542,44 +2321,34 @@ app.put('/api/financials/:id', requireRole('editor'), async (req, res) => {
   }
   if (Object.keys(updates).length === 0) return res.json(existing);
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE project_financials SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
-  const row = db.prepare('SELECT * FROM project_financials WHERE id = ?').get(id);
+  await pool.query(`UPDATE project_financials SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
+  const [[row]] = await pool.query('SELECT * FROM project_financials WHERE id = ?', [id]);
   res.json(row);
   await sync('project_financials');
 });
 
 app.delete('/api/financials/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
-  db.prepare('DELETE FROM project_financials WHERE id = ?').run(id);
+  await pool.query('DELETE FROM project_financials WHERE id = ?', [id]);
   res.json({ ok: true });
   await sync('project_financials');
 });
 
-// Seed the default financial milestones onto a project that has none yet. Idempotent:
-// running this on a project that already has any financials is a no-op. Reads the
-// defaults from the default_financial_milestones setting (editable on Setup).
 app.post('/api/financials/seed', requireRole('editor'), async (req, res) => {
   const project = (req.body.project || '').toString().trim();
   if (!project) return res.status(400).json({ error: 'project required' });
-  const existing = db.prepare('SELECT COUNT(*) AS n FROM project_financials WHERE project = ?').get(project).n;
-  if (existing > 0) return res.json({ ok: true, seeded: 0 });
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'default_financial_milestones'").get();
+  const [[existingFin]] = await pool.query('SELECT COUNT(*) AS n FROM project_financials WHERE project = ?', [project]);
+  if (existingFin.n > 0) return res.json({ ok: true, seeded: 0 });
+  const [[defRow]] = await pool.query("SELECT value FROM settings WHERE `key` = 'default_financial_milestones'");
   let defaults = [];
-  try { defaults = JSON.parse(row?.value || '[]'); } catch { defaults = []; }
-  const insert = db.prepare(`
-    INSERT INTO project_financials (project, name, percent, amount, due_date, paid, predecessors, sync_to_anchor, sort_order)
-    VALUES (?, ?, ?, NULL, NULL, 0, ?, ?, ?)
-  `);
-  defaults.forEach((d, i) => {
-    insert.run(
-      project,
-      d.name,
-      d.percent != null ? Number(d.percent) : null,
-      d.predecessors || null,
-      d.sync_to_anchor || null,
-      i,
+  try { defaults = JSON.parse(defRow?.value || '[]'); } catch { defaults = []; }
+  for (let i = 0; i < defaults.length; i++) {
+    const d = defaults[i];
+    await pool.query(
+      'INSERT INTO project_financials (project, name, percent, amount, due_date, paid, predecessors, sync_to_anchor, sort_order) VALUES (?, ?, ?, NULL, NULL, 0, ?, ?, ?)',
+      [project, d.name, d.percent != null ? Number(d.percent) : null, d.predecessors || null, d.sync_to_anchor || null, i]
     );
-  });
+  }
   res.json({ ok: true, seeded: defaults.length });
 });
 
@@ -2612,27 +2381,21 @@ function notifyClients(type, extra = {}) {
 }
 
 // ── Projects API ───────────────────────────────────────────────────────────────
-app.get('/api/projects', (_req, res) => {
-  const rows = db.prepare('SELECT * FROM projects ORDER BY name ASC').all();
+app.get('/api/projects', async (_req, res) => {
+  const [rows] = await pool.query('SELECT * FROM projects ORDER BY name ASC');
   res.json(rows);
 });
 
 app.post('/api/projects', requireRole('editor'), async (req, res) => {
   const name = (req.body.name || '').toString().trim();
   if (!name) return res.status(400).json({ error: 'name required' });
-  const existing = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
+  const [[existing]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
   if (existing) return res.json(existing);
-  db.prepare(`
-    INSERT INTO projects (name, status, is_template, job_number, workspace)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(
-    name,
-    req.body.status     || 'active',
-    req.body.is_template ? 1 : 0,
-    req.body.job_number || null,
-    req.body.workspace  || 'default',
+  await pool.query(
+    'INSERT INTO projects (name, status, is_template, job_number, workspace) VALUES (?, ?, ?, ?, ?)',
+    [name, req.body.status || 'active', req.body.is_template ? 1 : 0, req.body.job_number || null, req.body.workspace || 'default']
   );
-  const row = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
+  const [[row]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
   res.status(201).json(row);
   await sync('projects');
   notifyClients('projects_changed');
@@ -2640,7 +2403,7 @@ app.post('/api/projects', requireRole('editor'), async (req, res) => {
 
 app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  const [[existing]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
   if (!existing) return res.status(404).json({ error: 'not found' });
 
   const allowed = ['name', 'status', 'is_template', 'job_number', 'workspace'];
@@ -2652,16 +2415,15 @@ app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
   }
   if (Object.keys(updates).length === 0) return res.json(existing);
 
-  // If renaming, propagate the new name to all tasks
   if (updates.name && updates.name !== existing.name) {
-    db.prepare('UPDATE tasks SET project = ? WHERE project = ?').run(updates.name, existing.name);
-    db.prepare('UPDATE project_financials SET project = ? WHERE project = ?').run(updates.name, existing.name);
+    await pool.query('UPDATE tasks SET project = ? WHERE project = ?', [updates.name, existing.name]);
+    await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
     await sync('tasks', 'project_financials');
   }
 
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE projects SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  await pool.query(`UPDATE projects SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
+  const [[row]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
   res.json(row);
   await sync('projects');
   notifyClients('projects_changed');
@@ -2669,23 +2431,21 @@ app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
 
 app.delete('/api/projects/:id', requireRole('admin'), async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+  const [[existing]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
   if (!existing) return res.status(404).json({ error: 'not found' });
-  db.prepare('DELETE FROM tasks WHERE project = ?').run(existing.name);
-  db.prepare('DELETE FROM project_financials WHERE project = ?').run(existing.name);
-  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  await pool.query('DELETE FROM tasks WHERE project = ?', [existing.name]);
+  await pool.query('DELETE FROM project_financials WHERE project = ?', [existing.name]);
+  await pool.query('DELETE FROM projects WHERE id = ?', [id]);
   res.json({ ok: true });
   await sync('tasks', 'project_financials', 'projects');
   notifyClients('projects_changed');
 });
 
-// Ensure a project record exists for a given name (idempotent). Used by the
-// frontend after loading tasks to register any project name not yet in the table.
 app.post('/api/projects/ensure', requireRole('editor'), async (req, res) => {
   const name = (req.body.name || '').toString().trim();
   if (!name) return res.status(400).json({ error: 'name required' });
-  db.prepare('INSERT OR IGNORE INTO projects (name) VALUES (?)').run(name);
-  const row = db.prepare('SELECT * FROM projects WHERE name = ?').get(name);
+  await pool.query('INSERT IGNORE INTO projects (name) VALUES (?)', [name]);
+  const [[row]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
   res.json(row);
 });
 
@@ -2760,21 +2520,18 @@ app.post('/api/project/:source/promote', requireRole('editor'), async (req, res)
   if (!source || !newName) return res.status(400).json({ error: 'source + newName required' });
   if (source === newName) return res.status(400).json({ error: 'newName must differ from source' });
 
-  // Sanity: source must exist (any project), and newName must not collide.
-  const sourceExists = db.prepare('SELECT 1 FROM projects WHERE name = ?').get(source)
-    || db.prepare('SELECT 1 FROM tasks WHERE project = ? LIMIT 1').get(source);
-  if (!sourceExists) return res.status(404).json({ error: `source project '${source}' not found` });
-  const collide = db.prepare('SELECT 1 FROM projects WHERE name = ?').get(newName)
-    || db.prepare('SELECT 1 FROM tasks WHERE project = ? LIMIT 1').get(newName);
-  if (collide) return res.status(409).json({ error: `project '${newName}' already exists` });
+  const [[srcProj]] = await pool.query('SELECT 1 AS x FROM projects WHERE name = ?', [source]);
+  const [[srcTask]] = await pool.query('SELECT 1 AS x FROM tasks WHERE project = ? LIMIT 1', [source]);
+  if (!srcProj && !srcTask) return res.status(404).json({ error: `source project '${source}' not found` });
+  const [[colProj]] = await pool.query('SELECT 1 AS x FROM projects WHERE name = ?', [newName]);
+  const [[colTask]] = await pool.query('SELECT 1 AS x FROM tasks WHERE project = ? LIMIT 1', [newName]);
+  if (colProj || colTask) return res.status(409).json({ error: `project '${newName}' already exists` });
 
-  // Template lookup.
   const TEMPLATE = 'SDC_StandardProject_Template';
-  const templateTasks = db.prepare('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id').all(TEMPLATE);
+  const [templateTasks] = await pool.query('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id', [TEMPLATE]);
   if (!templateTasks.length) return res.status(500).json({ error: `${TEMPLATE} has no tasks — can't promote` });
 
-  // Source quote (may be null if estimate never attached).
-  const quoteRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(`project_quote:${source}`);
+  const [[quoteRow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [`project_quote:${source}`]);
   let quote = null;
   if (quoteRow) { try { quote = JSON.parse(quoteRow.value); } catch (_) { quote = null; } }
   const peopleBreakdown = (quote && quote.people_breakdown) || {};
@@ -2828,31 +2585,22 @@ app.post('/api/project/:source/promote', requireRole('editor'), async (req, res)
     return 1;
   };
 
-  // ── Begin promotion ─────────────────────────────────────────────────────
-  db.prepare('INSERT INTO projects (name, workspace) VALUES (?, ?) ON CONFLICT(name) DO NOTHING')
-    .run(newName, 'Active');
+  await pool.query('INSERT INTO projects (name, workspace) VALUES (?, ?) ON DUPLICATE KEY UPDATE workspace = workspace', [newName, 'Active']);
 
-  // Map old template task IDs → newly-inserted IDs so we can re-point
-  // predecessors after the copy.
   const idMap = new Map();
   const insertCols = ['name','project','phase','phase_group','department','sub_department','assignee','start_date','end_date','duration_days','predecessors','is_milestone','progress','allocation','priority','notes','sort_order','anchor_key','baseline_start_date','baseline_end_date','duration_link_task_id','is_action','completed_on','machine'];
-  const insertStmt = db.prepare(`INSERT INTO tasks (${insertCols.join(',')}) VALUES (${insertCols.map(() => '?').join(',')})`);
 
-  // Phase 1: stamp tasks (predecessors will be remapped in pass 2).
   for (const t of templateTasks) {
-    const r = insertStmt.run(
-      t.name, newName, t.phase, t.phase_group, t.department, t.sub_department,
-      t.assignee, t.start_date, t.end_date, t.duration_days, null /* preds remapped pass 2 */,
-      t.is_milestone ? 1 : 0, 0, t.allocation, t.priority, t.notes, t.sort_order,
-      t.anchor_key, null, null, null, t.is_action ? 1 : 0, null, 'M1'
+    const [r] = await pool.query(
+      `INSERT INTO tasks (${insertCols.join(',')}) VALUES (${insertCols.map(() => '?').join(',')})`,
+      [t.name, newName, t.phase, t.phase_group, t.department, t.sub_department,
+       t.assignee, t.start_date, t.end_date, t.duration_days, null,
+       t.is_milestone ? 1 : 0, 0, t.allocation, t.priority, t.notes, t.sort_order,
+       t.anchor_key, null, null, null, t.is_action ? 1 : 0, null, 'M1']
     );
-    idMap.set(t.id, r.lastInsertRowid);
+    idMap.set(t.id, r.insertId);
   }
 
-  // Phase 2: remap predecessors using the same FS/SS/FF/SF + lag tokens but
-  // with the new IDs. Tokens that reference IDs we didn't copy (extremely
-  // rare for templates) get dropped silently.
-  const updPred = db.prepare('UPDATE tasks SET predecessors = ? WHERE id = ?');
   for (const t of templateTasks) {
     const newId = idMap.get(t.id);
     if (!newId || !t.predecessors) continue;
@@ -2863,19 +2611,19 @@ app.post('/api/project/:source/promote', requireRole('editor'), async (req, res)
       const newRef = idMap.get(oldRef);
       return newRef ? `${newRef}${m[2]}` : null;
     }).filter(Boolean).join(',');
-    if (remapped) updPred.run(remapped, newId);
+    if (remapped) await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [remapped, newId]);
   }
 
-  // Phase 3: people-math + duration recompute per discipline bucket.
-  // Group new project tasks by bucket; for each bucket, apply Dan's rule.
-  const newTasks = db.prepare('SELECT * FROM tasks WHERE project = ? AND (is_milestone IS NULL OR is_milestone = 0) AND anchor_key IS NULL ORDER BY sort_order, id').all(newName);
+  const [newTasks] = await pool.query(
+    'SELECT * FROM tasks WHERE project = ? AND (is_milestone IS NULL OR is_milestone = 0) AND anchor_key IS NULL ORDER BY sort_order, id',
+    [newName]
+  );
   const tasksByBucket = {};
   for (const t of newTasks) {
     const b = _serverTaskBucket(t);
     if (!b) continue;
     (tasksByBucket[b] ||= []).push(t);
   }
-  const updTask = db.prepare('UPDATE tasks SET duration_days = ?, allocation = ? WHERE id = ?');
   const snapHalfWeek = (days) => Math.max(0, Math.round(Number(days) / 2.5) * 2.5);
   for (const [bucket, tasks] of Object.entries(tasksByBucket)) {
     const hours  = bucketHours[bucket] || 0;
@@ -2901,26 +2649,22 @@ app.post('/api/project/:source/promote', requireRole('editor'), async (req, res)
     const newDays = (hours > 0 && dailyHourCapacity > 0)
       ? snapHalfWeek(hours / dailyHourCapacity)
       : null;
-    tasks.forEach((t, idx) => {
+    for (let idx = 0; idx < tasks.length; idx++) {
       const alloc = slotAllocs[idx];
-      const dur   = newDays != null ? newDays : t.duration_days;
-      updTask.run(dur, alloc, t.id);
-    });
+      const dur   = newDays != null ? newDays : tasks[idx].duration_days;
+      await pool.query('UPDATE tasks SET duration_days = ?, allocation = ? WHERE id = ?', [dur, alloc, tasks[idx].id]);
+    }
   }
 
-  // Phase 4: copy the saved quote (hours_breakdown, people_breakdown,
-  // quoted_overrides). The new project gets the same dollar-value
-  // baseline so Quote vs Schedule on the detailed view reads correctly.
   if (quote) {
     const newQuoteKey = `project_quote:${newName}`;
-    db.prepare(`
-      INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-    `).run(newQuoteKey, JSON.stringify(quote));
+    await pool.query(
+      'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+      [newQuoteKey, JSON.stringify(quote)]
+    );
   }
 
-  // Phase 5: cascade so dates flow from the new durations + predecessors.
-  cascadeSchedule();
+  await cascadeSchedule();
 
   res.json({ project: newName });
   io.emit('tasks:updated', { project: newName });
@@ -2931,10 +2675,9 @@ app.post('/api/project/:source/promote', requireRole('editor'), async (req, res)
 // Ported from Abhi's feature/smartsheet-architecture branch. Lets an admin
 // list, create, edit, and soft-delete (active=0) users without touching the
 // CLI. Authentication itself still flows through /api/auth/login.
-app.get('/api/users', requireRole('admin'), (_req, res) => {
-  res.json(db.prepare(
-    'SELECT id,email,name,role,active,created_at,last_login,avatar_color FROM users ORDER BY name'
-  ).all());
+app.get('/api/users', requireRole('admin'), async (_req, res) => {
+  const [rows] = await pool.query('SELECT id,email,name,role,active,created_at,last_login,avatar_color FROM users ORDER BY name');
+  res.json(rows);
 });
 
 app.post('/api/users', requireRole('admin'), async (req, res) => {
@@ -2943,22 +2686,22 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   if (!['viewer', 'editor', 'admin'].includes(role)) return res.status(400).json({ error: 'invalid role' });
   if (String(password).length < 1) return res.status(400).json({ error: 'password is required' });
   try {
-    const r = db.prepare(
-      'INSERT INTO users (email,name,password_hash,role,active,avatar_color) VALUES (?,?,?,?,1,?)'
-    ).run(email.toLowerCase().trim(), name.trim(), bcrypt.hashSync(password, 12), role, avatar_color);
-    io.emit('users:updated');
-    res.status(201).json(
-      db.prepare('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?').get(r.lastInsertRowid)
+    const [r] = await pool.query(
+      'INSERT INTO users (email,name,password_hash,role,active,avatar_color) VALUES (?,?,?,?,1,?)',
+      [email.toLowerCase().trim(), name.trim(), bcrypt.hashSync(password, 12), role, avatar_color]
     );
+    io.emit('users:updated');
+    const [[newUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?', [r.insertId]);
+    res.status(201).json(newUser);
   } catch (e) {
-    if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'Email already registered.' });
+    if (String(e.message).includes('ER_DUP_ENTRY') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'Email already registered.' });
     res.status(500).json({ error: 'Failed to create user: ' + e.message });
   }
 });
 
 app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const id = Number(req.params.id);
-  const u  = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+  const [[u]] = await pool.query('SELECT * FROM users WHERE id=?', [id]);
   if (!u) return res.status(404).json({ error: 'not found' });
   const allowed = ['email', 'name', 'role', 'active', 'avatar_color'];
   const upd = {};
@@ -2969,15 +2712,14 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   if (req.body.password) upd.password_hash = bcrypt.hashSync(req.body.password, 12);
   if (!Object.keys(upd).length) return res.json(u);
   const setClause = Object.keys(upd).map(k => `${k}=?`).join(',');
-  db.prepare(`UPDATE users SET ${setClause} WHERE id=?`).run(...Object.values(upd), id);
+  await pool.query(`UPDATE users SET ${setClause} WHERE id=?`, [...Object.values(upd), id]);
   io.emit('users:updated');
-  res.json(db.prepare('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?').get(id));
+  const [[updUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?', [id]);
+  res.json(updUser);
 });
 
 app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
-  // Soft-delete — flip active=0 instead of removing the row so historical
-  // comments / audit-trail entries authored by this user keep attribution.
-  db.prepare('UPDATE users SET active=0 WHERE id=?').run(Number(req.params.id));
+  await pool.query('UPDATE users SET active=0 WHERE id=?', [Number(req.params.id)]);
   io.emit('users:updated');
   res.json({ ok: true });
 });
@@ -3008,8 +2750,12 @@ app.post('/api/azure/pull', requireRole('admin'), async (_req, res) => {
 });
 
 // ── Exportable entry point (used by Electron in-process execution) ────────────
-function startServer({ port } = {}) {
+async function startServer({ port } = {}) {
   const p = port || PORT;
+  // Init MySQL schema (creates tables if they don't exist, then seeds defaults)
+  const dbModule = require('./db');
+  await dbModule.init();
+  await dbModule.seedDefaults(pool);
   // Phase 4: listen on the http.Server we wrapped above so Socket.io's
   // upgrade handler is attached. Express alone won't carry the socket layer.
   server.listen(p, '0.0.0.0', () => {
@@ -3019,21 +2765,25 @@ function startServer({ port } = {}) {
   });
   server.on('error', err => console.error('[scheduler] Server error:', err.message));
   // Init Azure sync in background — does not block server startup or requests.
-  azureSync.init(db).catch(err => console.warn('[AzureSync] Background init error:', err.message));
+  azureSync.init(pool).catch(err => console.warn('[AzureSync] Background init error:', err.message));
   // Phase 7 (email): kick off any scheduled cron jobs (digest emails etc.).
   // Wrapped in typeof check so a missing cronJobs.js doesn't crash boot.
   try {
     const cron = require('./cronJobs');
-    if (cron && typeof cron.start === 'function') cron.start({ db, emailSvc });
+    if (cron && typeof cron.start === 'function') cron.start({ db: pool, emailSvc });
   } catch (_) { /* cronJobs.js is optional */ }
   return server;
 }
 
 if (require.main === module) {
-  const _server = startServer();
-  process.on('SIGTERM', () => {
-    console.log('[scheduler] SIGTERM — shutting down gracefully');
-    _server.close(() => process.exit(0));
+  startServer().then(_server => {
+    process.on('SIGTERM', () => {
+      console.log('[scheduler] SIGTERM — shutting down gracefully');
+      _server.close(() => process.exit(0));
+    });
+  }).catch(err => {
+    console.error('[scheduler] Startup failed:', err.message);
+    process.exit(1);
   });
 }
 module.exports = { startServer };
