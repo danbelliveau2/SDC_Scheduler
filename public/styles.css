@@ -1,12 +1,12 @@
-﻿/* SDC Scheduler theme. Brand colors come from /api/settings (seeded with sdcautomation.com palette).
+/* SDC Scheduler theme. Brand colors come from /api/settings (seeded with sdcautomation.com palette).
    These :root values are fallbacks before settings load. */
 :root {
   /* Brand (overridden by JS from settings.theme) */
-  --sdc-primary: #1574c4;         /* SDC Blue ΓÇö topbar, primary fills */
+  --sdc-primary: #1574c4;         /* SDC Blue — topbar, primary fills */
   --sdc-primary-hover: #1260a8;
-  --sdc-accent: #ffde51;          /* SDC Yellow ΓÇö primary action buttons */
-  --sdc-dark: #061d39;            /* SDC Navy ΓÇö deep contrasts */
-  --sdc-green: #74c415;           /* SDC Green ΓÇö logo / success */
+  --sdc-accent: #ffde51;          /* SDC Yellow — primary action buttons */
+  --sdc-dark: #061d39;            /* SDC Navy — deep contrasts */
+  --sdc-green: #74c415;           /* SDC Green — logo / success */
   --sdc-green-light: #befa4f;
   --sdc-blue-light: #aacee8;
 
@@ -33,7 +33,7 @@ html, body {
   font-size: 13px;
   color: var(--text);
   background: var(--bg);
-  /* Pin the document at 100% ΓÇö no page-level scrollbar. Every internal scroll
+  /* Pin the document at 100% — no page-level scrollbar. Every internal scroll
      happens inside the schedule grid/gantt panels, which have their bars hidden
      too. The user navigates with drag-pan + mouse wheel. */
   overflow: hidden;
@@ -49,7 +49,7 @@ body {
 }
 
 /* ==========================================================================
-   Left sidebar ΓÇö icon rail with section labels. Each icon navigates to a
+   Left sidebar — icon rail with section labels. Each icon navigates to a
    top-level view (Projects / Favorites / Recents / Departments / Setup).
    ========================================================================== */
 .app-sidebar {
@@ -113,7 +113,7 @@ body {
   line-height: 1;
 }
 /* Inline-SVG variants (Projects / Recents). The <svg> picks up sidebar
-   text color via currentColor ΓÇö so it dims to muted-white normally and
+   text color via currentColor — so it dims to muted-white normally and
    goes solid white on hover / when is-active. Sized to match the 20px
    emoji glyphs above so the rail rhythm stays consistent. */
 .app-sidebar-glyph-svg {
@@ -129,7 +129,7 @@ body {
   display: block;
 }
 /* Text-style star (Favorites). Rendered as a regular character so it
-   stays WHITE like the labels ΓÇö the Γ¡É emoji was forcing an
+   stays WHITE like the labels — the ⭐ emoji was forcing an
    orange-yellow fill regardless of color rules. Slightly larger than
    the emoji glyphs to compensate for the thinner shape. */
 .app-sidebar-glyph-star {
@@ -147,7 +147,7 @@ body {
 }
 
 /* ==========================================================================
-   Projects page ΓÇö full-page list of workspaces with collapsible sections.
+   Projects page — full-page list of workspaces with collapsible sections.
    ========================================================================== */
 .projects-page {
   max-width: 920px;
@@ -285,7 +285,7 @@ body {
 }
 /* Templates subsection at the top of each workspace. Plain black text + a
    solid divider line beneath separating them from the regular project rows.
-   No green tint, no heavy left border ΓÇö templates read as a small group
+   No green tint, no heavy left border — templates read as a small group
    header, not as a highlighted call-out. */
 .projects-templates-row {
   background: transparent;
@@ -307,7 +307,7 @@ body {
   font-weight: 600;
 }
 .projects-row.is-template { font-weight: 600; }
-/* Favorite Γÿà button on each row ΓÇö light + outlined when unfavorited,
+/* Favorite ★ button on each row — light + outlined when unfavorited,
    solid gold when favorited. Sits at the right edge of the row. */
 .projects-row-favbtn {
   width: 26px;
@@ -322,6 +322,27 @@ body {
 }
 .projects-row-favbtn:hover { color: #ca8a04; background: rgba(0,0,0,0.04); }
 .projects-row-favbtn.is-fav { color: #eab308; }
+
+/* "→ Project" button on each sales project row. Promotes the sales
+   schedule to a fresh detailed project stamped from the standard
+   template. Sits just left of the favorite ★ button. */
+.projects-row-promotebtn {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1574c4;
+  background: white;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 4px;
+  padding: 3px 10px;
+  margin-right: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.projects-row-promotebtn:hover {
+  background: var(--surface-alt, #f1f5f9);
+  color: #0c5fa3;
+  border-color: #1574c4;
+}
 
 /* ---------- Project tab bar (open schedules) ---------- */
 /* ==========================================================================
@@ -410,7 +431,7 @@ body {
   border-radius: 3px;
 }
 
-/* Three action cards across the bottom ΓÇö Build from template / Estimate
+/* Three action cards across the bottom — Build from template / Estimate
    sheet / Smartsheet import. Each is a self-contained mini-form with title,
    one-line description, and a horizontal input + button row. */
 .workspace-page-actions {
@@ -458,8 +479,8 @@ body {
   min-width: 110px;
 }
 
-/* (Removed in v4.10: top workspace bar ΓÇö workspace navigation moved into
-   the left sidebar panel. Click the ≡ƒôü Workspaces icon in the left rail. */
+/* (Removed in v4.10: top workspace bar — workspace navigation moved into
+   the left sidebar panel. Click the 📁 Workspaces icon in the left rail. */
 
 .project-tab-bar {
   display: flex;
@@ -482,7 +503,7 @@ body {
   min-width: 0;
 }
 
-/* Machine sub-tab strip ΓÇö appears below the project tabs when the active
+/* Machine sub-tab strip — appears below the project tabs when the active
    project has multi-machine tasks. Smaller, inset pills. */
 .machine-tab-bar {
   display: flex;
@@ -623,7 +644,7 @@ body {
   border-color: rgba(255,255,255,0.5);
 }
 
-/* Clone-machine BANNER ΓÇö sticky bar at top of schedule when in clone mode.
+/* Clone-machine BANNER — sticky bar at top of schedule when in clone mode.
    Sits flush under the project tab strip (36px tall). The machine sub-tab
    strip is hidden in clone mode so there's no gray gap. */
 .machine-clone-banner {
@@ -661,7 +682,7 @@ body {
 }
 .mcb-btn-confirm:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 85%, black); }
 
-/* Hint text in the clone banner ΓÇö sits between the name input and the
+/* Hint text in the clone banner — sits between the name input and the
    status counter. Kept understated so the input + counts stay primary. */
 .mcb-hint {
   color: #475569;
@@ -679,7 +700,7 @@ body {
    open cell editors. */
 body.machine-clone-mode #tasks-tbody tr[data-id] { cursor: pointer; }
 /* Unselected rows go dim so the lime selection POPS. Source rows that
-   are unselected look "ghosted" ΓÇö visible but clearly not part of the
+   are unselected look "ghosted" — visible but clearly not part of the
    new machine. */
 body.machine-clone-mode #tasks-tbody tr[data-id]:not(.clone-selected) {
   opacity: 0.55;
@@ -874,10 +895,10 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
   max-width: 280px;
 }
 .project-tab:hover { background: rgba(255,255,255,0.12); color: white; }
-/* SELECTED tab ΓÇö strong LIME border + brighter background so it's instantly
+/* SELECTED tab — strong LIME border + brighter background so it's instantly
    obvious which tab is active. Workspace identification is via the small
    colored dot before the name (see .project-tab-dot below), NOT via the tab
-   background ΓÇö having three different background colors on inactive tabs +
+   background — having three different background colors on inactive tabs +
    different active backgrounds per workspace got visually overwhelming. */
 .project-tab.active {
   background: rgba(255,255,255,0.20);
@@ -890,7 +911,7 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
   margin: 0 -1px;
   padding: 5px 11px;     /* slight reduction to offset the 2px border */
 }
-/* Workspace dot ΓÇö small 8px circle prefix before the project name. Carries
+/* Workspace dot — small 8px circle prefix before the project name. Carries
    the workspace color so you can scan the tab bar and see which workspace
    each open tab belongs to without the heavy background tints. */
 .project-tab-dot {
@@ -907,7 +928,7 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 .project-tab-dot-closed { background: #FFDE51; }   /* SDC yellow */
 .project-tab-dot-personal { background: var(--sdc-primary, #1574c4); } /* SDC blue */
 .project-tab.is-all { font-style: italic; }
-/* Personal-mode tab ΓÇö distinguishes a "signed in" pseudo-tab from regular
+/* Personal-mode tab — distinguishes a "signed in" pseudo-tab from regular
    project tabs. Pinned at position 0, with a blue accent that matches the
    personal banner. Active state gets a thicker lime underline so it's
    unmistakably the current view. */
@@ -1129,7 +1150,7 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 }
 .project-add-picker .picker-new-btn { padding: 6px 10px; font-size: 12px; }
 
-/* Schedule view's project header ΓÇö just the toolbar row now. Project name
+/* Schedule view's project header — just the toolbar row now. Project name
    moved to its own banner below this (see .schedule-project-banner) so the
    name reads correctly in any pane mode (grid-only / both / gantt-only).
    Toolbar still flex-wraps so it spills onto a second visual line on narrow
@@ -1148,7 +1169,7 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
      Real name rendering lives in .schedule-project-banner below. */
   display: none;
 }
-/* Project name banner ΓÇö short row below the toolbar, above the schedule
+/* Project name banner — short row below the toolbar, above the schedule
    split. Contains a centered SDC-lime-outlined pill with the project name.
    Pill is small / unobtrusive so it doesn't eat vertical space on the chart. */
 .schedule-project-banner {
@@ -1192,13 +1213,13 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 .toolbar-flex-gap {
   flex: 1 1 auto;
 }
-/* Legacy class ΓÇö the project label visual now lives on .schedule-project-name-pill.
+/* Legacy class — the project label visual now lives on .schedule-project-name-pill.
    Kept as a no-op so any code still adding this class doesn't double-style. */
 .schedule-project-label { /* visual styling moved to .schedule-project-name-pill */ }
 
 /* =========================================================================
-   Customer view. Activated by clicking the "≡ƒæñ For Customer" toolbar button
-   (toggle) ΓÇö adds `customer-view` to <body>. Strips chrome (topbar / tabs /
+   Customer view. Activated by clicking the "👤 For Customer" toolbar button
+   (toggle) — adds `customer-view` to <body>. Strips chrome (topbar / tabs /
    toolbar / row handle), hides every grid column except Task/Start/Finish,
    and removes editing affordances in the Task column. JS forces pane=both
    and runs zoomToFit so the customer sees a clean grid + fitted Gantt.
@@ -1214,11 +1235,11 @@ body.customer-view #project-stats-popup {
   display: none !important;
 }
 /* Hide the % pill / milestone checkbox / drift chips inside Task column
-   cells ΓÇö those are editing affordances, not info the customer needs.
-   The meta row (alloc ┬╖ dur) hides too since customers shouldn't see
+   cells — those are editing affordances, not info the customer needs.
+   The meta row (alloc · dur) hides too since customers shouldn't see
    internal staffing numbers.
    v4.29: also hides the section number prefix ("10 " / "40 " / "50 ") on
-   section header rows ΓÇö those numbers are an SDC-internal convention and
+   section header rows — those numbers are an SDC-internal convention and
    read as clutter to a customer. The section name itself ("DESIGN &
    BUILD", "MACHINE TESTING", "TEARDOWN & INSTALL") still shows. */
 body.customer-view .name-cell-pills,
@@ -1240,7 +1261,7 @@ body.customer-view .schedule-project-name-pill {
   font-size: 16px;
   padding: 4px 18px;
 }
-/* Hide every grid column except Task / Start / Finish ΓÇö same approach used
+/* Hide every grid column except Task / Start / Finish — same approach used
    for the columns dropdown elsewhere. Both the colgroup <col> and the
    <th>/<td> cells need display:none so the table truly collapses those
    columns instead of leaving empty space.
@@ -1279,11 +1300,11 @@ body.customer-view .schedule-gantt {
   flex: 1 1 auto;
   min-width: 0;
 }
-/* Section headers in customer view ΓÇö make the click affordance more obvious
+/* Section headers in customer view — make the click affordance more obvious
    since the customer-presenter may not realize the bars are clickable to
    toggle collapse. Bigger caret + clearer hover state. The collapse / expand
    behavior is the same as in normal view (toggles collapsedGroups on click),
-   no JS changes required ΓÇö the existing click handler still fires. */
+   no JS changes required — the existing click handler still fires. */
 body.customer-view tr.group-header .group-caret {
   font-size: 13px;
   font-weight: 800;
@@ -1296,13 +1317,13 @@ body.customer-view tr.group-header td {
   cursor: pointer;
 }
 
-/* Floating "Γ£ò Exit customer view" + "Γëí Flatten" buttons. Hidden in normal
+/* Floating "✕ Exit customer view" + "≡ Flatten" buttons. Hidden in normal
    mode, shown only when body.customer-view is set. Positioned top-right
    with SDC-lime outline so they pop as clear affordances against the
    stripped-down customer layout.
    The Flatten button is the only view option exposed in customer view
-   (per user feedback in v4.21) ΓÇö clicking it toggles flatten + sort-by-
-   start together (same combined toggle the editing-view Γëí pill icon uses).
+   (per user feedback in v4.21) — clicking it toggles flatten + sort-by-
+   start together (same combined toggle the editing-view ≡ pill icon uses).
    When ACTIVE, the button fills with SDC lime so the user can see at a
    glance that the customer view is currently flattened. */
 .customer-view-exit,
@@ -1328,13 +1349,13 @@ body.customer-view .customer-view-flatten {
 }
 body.customer-view .customer-view-exit { right: 12px; }
 /* Flatten sits to the LEFT of Exit so the eye still lands on Exit first
-   (it's the more destructive action ΓÇö leaving the customer view). */
+   (it's the more destructive action — leaving the customer view). */
 body.customer-view .customer-view-flatten { right: 168px; }
 body.customer-view .customer-view-exit:hover,
 body.customer-view .customer-view-flatten:hover {
   background: var(--surface-alt, #f1f5f9);
 }
-/* Active state ΓÇö solid SDC lime fill so the user knows flatten is on
+/* Active state — solid SDC lime fill so the user knows flatten is on
    without having to scan the grid. */
 body.customer-view .customer-view-flatten.is-active {
   background: var(--anchor-fill, #befa4f);
@@ -1357,7 +1378,7 @@ body.customer-view .customer-view-flatten.is-active {
   font-size: 12px;
   color: var(--text-muted);
 }
-/* Project-stat chips ΓÇö % complete and FAT variance vs baseline. Sit between the
+/* Project-stat chips — % complete and FAT variance vs baseline. Sit between the
    task count and the $ Financials button on the schedule header. Tone-colored
    so the schedule's health reads at a glance: lime for on-track / complete,
    red for late, blue for early, neutral for no-baseline. */
@@ -1395,7 +1416,7 @@ body.customer-view .customer-view-flatten.is-active {
   border: 1px solid var(--border);
 }
 
-/* (Removed in v3.60: .project-header-action class ΓÇö the ΓÜû Quote vs Schedule
+/* (Removed in v3.60: .project-header-action class — the ⚖ Quote vs Schedule
    button moved from the project-name row into the toolbar (next to Filters),
    so a separate visual style isn't needed; it uses .toolbar-toggle-btn now.) */
 .orphan-save-btn {
@@ -1415,7 +1436,7 @@ body.customer-view .customer-view-flatten.is-active {
 .orphan-save-btn:hover { filter: brightness(0.95); }
 
 /* v4.52: seg-controls restored. Two visible seg-controls now live on the
-   toolbar row ΓÇö Grid/Both/Gantt for pane layout, Schedule/Combined/Actions
+   toolbar row — Grid/Both/Gantt for pane layout, Schedule/Combined/Actions
    for content mode. The v4.51 combined dropdown is gone; user prefers
    click-to-select buttons over the two-section popover. */
 .seg-control {
@@ -1475,7 +1496,7 @@ body.customer-view .customer-view-flatten.is-active {
   border: 1px solid #fca5a5;
 }
 
-/* Toolbar toggle buttons ΓÇö Flatten / By date. Outlined when off, filled blue when on. */
+/* Toolbar toggle buttons — Flatten / By date. Outlined when off, filled blue when on. */
 .toolbar-toggle-btn {
   border: 1px solid var(--border-strong, #94a3b8);
   background: white;
@@ -1518,7 +1539,7 @@ body.customer-view .customer-view-flatten.is-active {
 .toolbar-segmented .toolbar-toggle-btn.is-active + .toolbar-toggle-btn.is-active {
   border-left: 1px solid rgba(255,255,255,0.3);
 }
-/* The "Only" half is gated on the "Critical" half ΓÇö dim it when critical is off. */
+/* The "Only" half is gated on the "Critical" half — dim it when critical is off. */
 .toolbar-toggle-btn.is-disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -1550,7 +1571,7 @@ body.customer-view .customer-view-flatten.is-active {
 }
 
 /* Critical-path arrow styling. CSS is a hard belt-and-suspenders override on top
-   of the inline stroke / fill attributes set in drawCustomArrows ΓÇö if anything in
+   of the inline stroke / fill attributes set in drawCustomArrows — if anything in
    the chain breaks the inline attributes, the class + data attribute selectors
    below still paint the arrows red. */
 .gantt path.arrow.on-critical,
@@ -1559,7 +1580,7 @@ body.customer-view .customer-view-flatten.is-active {
   stroke-width: 3 !important;
   fill: none !important;
 }
-/* Arrowhead is a filled triangle path ΓÇö fill, not stroke. */
+/* Arrowhead is a filled triangle path — fill, not stroke. */
 .gantt path.arrow.on-critical[fill]:not([fill="none"]),
 .gantt path.arrow[data-on-critical="1"][fill]:not([fill="none"]) {
   fill: #b91c1c !important;
@@ -1684,7 +1705,7 @@ body.customer-view .customer-view-flatten.is-active {
   border-color: var(--sdc-primary);
   color: #fff;
 }
-/* View options section ΓÇö second group inside the Filters popover. Each option
+/* View options section — second group inside the Filters popover. Each option
    is a full-width row with a checkmark indicator on the left + label on the
    right. Active rows get the SDC-primary tint so the on/off state is
    unmistakable. Sub-options (like "Only critical") indent slightly so the
@@ -1812,7 +1833,7 @@ body.customer-view .customer-view-flatten.is-active {
   cursor: pointer;
 }
 
-/* Revision pill ΓÇö sits on the far right of the topbar. */
+/* Revision pill — sits on the far right of the topbar. */
 .revision-pill {
   display: inline-flex;
   align-items: center;
@@ -2034,6 +2055,14 @@ main {
 }
 .view { display: none; }
 .view.active { display: block; flex: 1; min-height: 0; }
+/* Dashboard view needs to be vertically scrollable — `.view.active` only
+   sets flex:1 + min-height:0; without an explicit overflow:auto, any
+   content past the visible viewport gets clipped. (Bug Dan hit: Build /
+   Wire department cards were cut off at the bottom of the page.) */
+#view-dashboard.active {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 
 /* ---------- Schedule view (combined grid + gantt) ---------- */
 #view-schedule {
@@ -2042,7 +2071,7 @@ main {
   overflow: hidden;
 }
 /* Height comes from flex:1 (inherited from .view.active) inside main's flex
-   column ΓÇö no hardcoded calc(100vh - 90px) so changes to topbar/tabs heights
+   column — no hardcoded calc(100vh - 90px) so changes to topbar/tabs heights
    automatically reflow without leaving a gap or overflow at the bottom. */
 #view-schedule.active { display: flex; }
 
@@ -2101,7 +2130,7 @@ body[data-view="setup"] #btn-add { display: none; }
 .dropdown-menu label:hover { color: var(--sdc-primary); }
 
 /* Show/hide columns menu rows. Each row has:
-     [drag-handle Γï«Γï«]  [checkbox] [column label]
+     [drag-handle ⋮⋮]  [checkbox] [column label]
    Rows are draggable, drop reorders state.layout.columnOrder + the grid. */
 .col-menu-row {
   display: flex;
@@ -2144,7 +2173,7 @@ body[data-view="setup"] #btn-add { display: none; }
   padding: 4px 0 !important;       /* override generic .dropdown-menu label padding */
 }
 
-/* Action-item style for dropdown menus (Baseline menu, etc.) ΓÇö buttons not
+/* Action-item style for dropdown menus (Baseline menu, etc.) — buttons not
    checkbox labels. One row per action with hover highlight. */
 .dropdown-menu .dropdown-item {
   display: flex;
@@ -2195,8 +2224,8 @@ body > .dropdown-menu {
 
 /* v4.51: View dropdown (Smartsheet-style combined picker).
    The popover holds two sections divided by a line:
-     ΓÇó Top:    Grid only / Both / Gantt only     (pane layout)
-     ΓÇó Bottom: Schedule / Combined / Actions     (content mode)
+     • Top:    Grid only / Both / Gantt only     (pane layout)
+     • Bottom: Schedule / Combined / Actions     (content mode)
    Each row has a checkmark column on the left so the active option
    reads at a glance. Sections share the standard .dropdown-menu chrome
    (border, shadow, radius); only the internal layout changes. */
@@ -2279,7 +2308,7 @@ body.hide-alloc-pre .cell-edit-input.name-cell-input {
   left: 8px;
 }
 
-/* v5.3: DURATION-column edit input ΓÇö compact, right-aligned, sized to fit
+/* v5.3: DURATION-column edit input — compact, right-aligned, sized to fit
    the column's actual data (e.g. "10W", "3w") instead of bleeding to fill
    the entire 80-px column. Override the .cell-edit-input full-cell defaults
    via more-specific selector. */
@@ -2295,7 +2324,7 @@ body.hide-alloc-pre .cell-edit-input.name-cell-input {
   font-size: 12px;
 }
 
-/* Strip the up/down spinner arrows from EVERY number input ΓÇö typing is the only
+/* Strip the up/down spinner arrows from EVERY number input — typing is the only
    intended interaction. Spinners appear on focus in WebKit by default; the appearance
    override suppresses them across browsers. */
 input[type="number"]::-webkit-outer-spin-button,
@@ -2323,11 +2352,11 @@ input[type="number"] {
   position: relative;  /* anchor point for the floating #project-stats-popup */
 }
 
-/* Project stats popup ΓÇö floating card in the top-right of the Gantt area
-   showing Duration (PO ΓåÆ FAT in weeks), % Complete, and FAT variance vs
+/* Project stats popup — floating card in the top-right of the Gantt area
+   showing Duration (PO → FAT in weeks), % Complete, and FAT variance vs
    baseline. Doesn't scroll with the gantt content because it sits outside
    the scroll containers. Top offset clears the upper+lower date header
-   (~50ΓÇô60px depending on view mode) so the popup sits inside the chart
+   (~50–60px depending on view mode) so the popup sits inside the chart
    area, never over the day numbers. */
 .project-stats-popup {
   position: absolute;
@@ -2335,18 +2364,16 @@ input[type="number"] {
   right: 14px;
   z-index: 8;
   background: var(--surface, #fff);
-  /* 2px SDC lime outline so the popup pops against the Gantt ΓÇö same color as
-     anchor milestones so the visual language is consistent ("important
-     project-level info"). Falls back to a neutral border if the anchor color
-     hasn't loaded from settings yet. */
   border: 2px solid var(--anchor-fill, #befa4f);
   border-radius: 8px;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
-  padding: 8px 10px;
+  /* Extra padding-top so the absolute-positioned mode toggle in the
+     top-right doesn't overlap the first row's text. */
+  padding: 20px 10px 6px;
   font-size: 11px;
-  min-width: 170px;
+  min-width: 195px;
 }
-/* Hide the popup when only the grid is visible ΓÇö there's no Gantt area
+/* Hide the popup when only the grid is visible — there's no Gantt area
    for it to anchor to and it would float over the grid. */
 .schedule-split.gantt-hidden .project-stats-popup { display: none; }
 .project-stats-popup .popup-row {
@@ -2378,7 +2405,60 @@ input[type="number"] {
 .project-stats-popup .popup-value.stat-early   { color: #3730a3; }
 .project-stats-popup .popup-value.stat-ok      { color: #14532d; }
 .project-stats-popup .popup-value.stat-neutral { color: var(--text-muted); font-size: 11px; font-weight: 600; }
-/* Scope header ΓÇö appears on multi-machine projects to clarify whether
+/* "Quoted / Scheduled" dual-value rendering — quoted on the left in
+   the muted color (the original commitment), scheduled on the right
+   in the strong text color (today's plan). Mirrors the Quote vs
+   Schedule comparison layout. */
+.project-stats-popup .popup-vs { display: inline-flex; align-items: baseline; gap: 4px; }
+.project-stats-popup .popup-vs-q   { color: var(--text-muted, #64748b); font-weight: 600; }
+.project-stats-popup .popup-vs-sep { color: var(--text-muted, #64748b); font-weight: 600; }
+.project-stats-popup .popup-vs-s   { color: var(--text, #061d39); font-weight: 800; }
+/* Mode toggle — top-right corner of the popup. Flips Simple ↔
+   Advanced. Tiny so it doesn't compete with the data. */
+.project-stats-popup .popup-mode-toggle {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  background: transparent;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 3px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.project-stats-popup .popup-mode-toggle:hover {
+  color: var(--text, #1f2937);
+  background: var(--surface-alt, #f8fafc);
+}
+/* Header row above the Duration/Complete/FAT/Penalty values — small
+   uppercase labels so the PM can tell which column is Quoted vs
+   Scheduled at a glance. */
+.project-stats-popup .popup-row-header {
+  border-top: none !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 2px !important;
+}
+.project-stats-popup .popup-header-cols {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.project-stats-popup .popup-header-cols .popup-vs-q,
+.project-stats-popup .popup-header-cols .popup-vs-s,
+.project-stats-popup .popup-header-cols .popup-vs-sep {
+  font-size: 9px;
+  font-weight: 700;
+}
+/* Scope header — appears on multi-machine projects to clarify whether
    the numbers below cover All machines or just one. */
 .project-stats-popup .popup-scope {
   text-transform: uppercase;
@@ -2390,7 +2470,7 @@ input[type="number"] {
   margin-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
-/* +N wks vs M1 ΓÇö staggered-delivery delta chip on per-machine views. */
+/* +N wks vs M1 — staggered-delivery delta chip on per-machine views. */
 .popup-machine-delta {
   display: inline-block;
   margin-left: 6px;
@@ -2402,7 +2482,7 @@ input[type="number"] {
   font-weight: 600;
   vertical-align: middle;
 }
-/* FAT variance chip ΓÇö sits next to the date (M/D/YY), giving a quick "how far
+/* FAT variance chip — sits next to the date (M/D/YY), giving a quick "how far
    off baseline are we?" signal without taking over the row. */
 .project-stats-popup .popup-fat-var {
   display: inline-block;
@@ -2418,7 +2498,7 @@ input[type="number"] {
 .project-stats-popup .popup-fat-var.stat-ok    { background: #dcfce7; color: #14532d; }
 
 /* View Options section inside the project stats popup. Three toggle rows
-   (Flatten / By date / $ Financials) ΓÇö separated from the stats above by a
+   (Flatten / By date / $ Financials) — separated from the stats above by a
    subtle divider. */
 .project-stats-popup .popup-section + .popup-section {
   margin-top: 8px;
@@ -2502,7 +2582,7 @@ input[type="number"] {
 .schedule-split.gantt-hidden .schedule-gantt { display: none; }
 .schedule-split.gantt-hidden .schedule-grid { width: 100% !important; flex: 1; }
 /* In Grid-only mode the table needs to fill the full panel width so the
-   row backgrounds + striping + borders extend all the way across ΓÇö no
+   row backgrounds + striping + borders extend all the way across — no
    "table ends here, empty panel starts" visual gap on the right.
    applyColWidths sets table.style.width to the EXACT sum of column
    widths (e.g. 870px), which is why the table was looking cropped.
@@ -2512,7 +2592,7 @@ input[type="number"] {
    extend cleanly to the right edge). */
 .schedule-split.gantt-hidden #tasks-table { width: 100% !important; }
 
-/* Gantt-only mode ΓÇö symmetric with gantt-hidden, but the OTHER direction: the grid
+/* Gantt-only mode — symmetric with gantt-hidden, but the OTHER direction: the grid
    panel and the split-divider disappear, and the Gantt expands to fill the panel. */
 .schedule-split.gantt-only .schedule-divider,
 .schedule-split.gantt-only .schedule-grid { display: none; }
@@ -2531,7 +2611,7 @@ input[type="number"] {
   position: relative;
 }
 
-/* Row-height resize bar ΓÇö full-width strip below the schedule split.
+/* Row-height resize bar — full-width strip below the schedule split.
    Drag it up to shrink rows, down to grow them. */
 .row-height-bar {
   flex: 0 0 14px;
@@ -2593,7 +2673,7 @@ input[type="number"] {
 .schedule-gantt .milestone-diamond,
 .schedule-gantt .handle { cursor: pointer; }
 
-/* Column resize handle ΓÇö wide hit target so it's easy to grab. */
+/* Column resize handle — wide hit target so it's easy to grab. */
 .col-resize-handle {
   position: absolute;
   right: -7px;
@@ -2620,7 +2700,7 @@ body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-sel
 }
 .schedule-gantt #gantt-container { min-width: 100%; }
 
-/* Hide every scrollbar inside the schedule split ΓÇö drag-pan handles both axes.
+/* Hide every scrollbar inside the schedule split — drag-pan handles both axes.
    Scrolling itself still works via overflow:auto, the bars just aren't drawn.
    Universal `* ` selector inside the split catches anything frappe-gantt creates
    without us having to enumerate it. Targets WebKit + Firefox. */
@@ -2635,7 +2715,7 @@ body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-sel
   height: 0;
 }
 
-/* Bottom-of-schedule treatment ΓÇö one row of empty space below the last task
+/* Bottom-of-schedule treatment — one row of empty space below the last task
    plus a thin divider line, so the bottom doesn't read as "the chart is cut
    off". The grid has the yellow "+ Add task" button between the last row and
    its ::after, so the Gantt's ::after needs an EXTRA margin-top equal to the
@@ -2744,7 +2824,7 @@ tbody tr:hover { background: var(--row-hover); }
 .col-date { font-variant-numeric: tabular-nums; width: 88px; }
 .col-pred { width: 110px; font-variant-numeric: tabular-nums; }
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
-/* Comments column ΓÇö free-text. Truncate with ellipsis so a long note doesn't
+/* Comments column — free-text. Truncate with ellipsis so a long note doesn't
    blow the row height; the full content stays accessible via the title tooltip
    set in cellHtml. */
 .col-notes {
@@ -2759,7 +2839,7 @@ th.col-allocation { padding-left: 4px; padding-right: 6px; }
 .col-priority { width: 44px; text-align: center; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 4px; font-weight: 600; }
 th.col-priority { padding-left: 4px; padding-right: 4px; }
 
-/* Over-allocated assignee cell ΓÇö bold red so it stands out at a glance when scanning the
+/* Over-allocated assignee cell — bold red so it stands out at a glance when scanning the
    Schedule grid. The full task can't be done because earlier-priority tasks already fill
    the assignee's day. The browser tooltip on the cell explains why. */
 td[data-col="assignee"].over-allocated {
@@ -2767,7 +2847,7 @@ td[data-col="assignee"].over-allocated {
   font-weight: 800;
 }
 td[data-col="assignee"].over-allocated::before {
-  content: 'ΓÜá ';
+  content: '⚠ ';
   font-weight: 700;
 }
 
@@ -2847,11 +2927,11 @@ tr.group-header td {
   text-transform: uppercase;
 }
 
-/* v4.24 ΓÇö slim horizontal sub-dep / dept headers.
+/* v4.24 — slim horizontal sub-dep / dept headers.
    The v4.23 vertical-band experiment was reverted; horizontal headers came
    back, but PADDED DOWN to ~12px tall (was ~24px) so they take half the
    vertical space while still reading as clear grouping dividers. Below the
-   "Hierarchy group headers" base rules ΓÇö these overrides win because of
+   "Hierarchy group headers" base rules — these overrides win because of
    selector specificity (.level-2 / .level-3 vs the bare tr.group-header). */
 tr.group-header.level-2 td,
 tr.group-header.level-3 td {
@@ -2867,7 +2947,7 @@ tr.group-header.level-3 .group-caret {
   width: 10px;
 }
 
-/* Anchor rows ΓÇö Receipt of PO, Machine Power-Up, FAT, Ship Machine. Each one is a
+/* Anchor rows — Receipt of PO, Machine Power-Up, FAT, Ship Machine. Each one is a
    project-spine gate, NOT a regular task or dept row. Heavy top/bottom borders +
    slight tint pop them off the rows above/below so they read as section-level
    bookmarks even when they sit visually adjacent to a department's tasks (e.g. FAT
@@ -2879,7 +2959,7 @@ tbody tr.anchor-row td {
   /* v4.33: restored 2px borders for the strong spine-marker emphasis the
      user wants on Receipt of PO / FAT / Ship Machine / Backlog. Earlier
      v4.32 dropped to 1px because the row was growing taller than its
-     siblings ΓÇö but the real culprit was the chip's inline-block padding +
+     siblings — but the real culprit was the chip's inline-block padding +
      inherited line-height pushing content past var(--row-h). We now zero
      out the TD's vertical padding (was 4+4) AND scale the chip's font +
      trim its vertical padding so the chip fits inside the bordered box
@@ -2905,12 +2985,12 @@ tbody tr.anchor-row td {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
 }
 
-/* Completed anchor (progress >= 100%) ΓÇö richer forest green + bold checkmark.
+/* Completed anchor (progress >= 100%) — richer forest green + bold checkmark.
    The default anchor chip's lime green = "scheduled / upcoming"; this darker
    solid green clearly reads as "hit, done, behind us". Applied to the chip in
    the grid AND a matching solid diamond in the Gantt (.bar.milestone-done). */
 tbody tr.anchor-row.is-done .anchor-name-chip {
-  background: #16a34a;            /* solid emerald ΓÇö pops against the lime "scheduled" green */
+  background: #16a34a;            /* solid emerald — pops against the lime "scheduled" green */
   color: #f0fdf4;
   box-shadow: 0 1px 2px rgba(20, 83, 45, 0.35);
 }
@@ -2922,10 +3002,10 @@ tbody tr.anchor-row.is-done .anchor-name-chip {
 }
 
 /* Note: completed REGULAR tasks deliberately leave the name black. The green
-   Γ£ô pill on the right-side of the row is the sole "this task is done" signal,
+   ✓ pill on the right-side of the row is the sole "this task is done" signal,
    matching the milestone done state where the name also stays normal. */
 
-/* Inline schedule-drift chip lives RIGHT inside the name cell ΓÇö no separate column.
+/* Inline schedule-drift chip lives RIGHT inside the name cell — no separate column.
    Picks up the same red/green palette as the Gantt's bar-edge pills so the grid
    tells you "this task is N days behind/ahead of its planned %-complete" without
    you having to look up to the bar. Anchors and milestones don't get one (drift
@@ -2952,7 +3032,7 @@ tbody tr.anchor-row.is-done .anchor-name-chip {
   border: 1px solid #86efac;
 }
 
-/* Task-name cell ΓÇö single % complete pill pinned to the right edge of the column.
+/* Task-name cell — single % complete pill pinned to the right edge of the column.
    Every row's pill lands at the same x-position (`right: 8px` off the same-width td)
    so they read as a vertical column when scanning down the grid. Text stays in the
    td's natural flow with simple padding-right to reserve room for the pill. */
@@ -2989,7 +3069,7 @@ td[data-col="name"].has-pills {
      - dur at right: 60px (just left of the % pill at right: 8)
      - % pill at right: 8px (existing)
 
-   For tasks WITHOUT alloc/dur (milestones / anchors / backlog ΓÇö no
+   For tasks WITHOUT alloc/dur (milestones / anchors / backlog — no
    has-meta): name flows from padding-left: 8px (flush with column edge),
    no absolute siblings to clear room for. */
 /* v4.42: padding-left: 64 on ALL col-name TDs (not just has-meta) so
@@ -3006,7 +3086,7 @@ body.hide-alloc-pre td[data-col="name"] {
   padding-left: 8px;
 }
 .name-cell-alloc-pre {
-  /* v4.40: pixel-identical to .th-label-alloc ΓÇö both at left: 8px, no
+  /* v4.40: pixel-identical to .th-label-alloc — both at left: 8px, no
      padding, no margin. The hover background uses border-radius alone;
      since text sits exactly at left: 8 (no padding shift), it lines up
      perfectly under the header ALOC label. */
@@ -3042,7 +3122,7 @@ body.hide-alloc-pre td[data-col="name"] {
 .name-cell-main {
   /* v4.43: ALL task names line up at left: 64 / right: 110, whether the
      row has alloc/dash/dur or not. This way milestones, anchors, and
-     regular tasks all share the same name area ΓÇö AND the TASK header
+     regular tasks all share the same name area — AND the TASK header
      centers above this exact range. Descenders stay inside the cell via
      vertical centering + line-height: 1.2. */
   position: absolute;
@@ -3080,8 +3160,8 @@ body.hide-alloc-pre .name-cell-main {
 .name-cell-dur:hover {
   background: rgba(15, 23, 42, 0.08);
 }
-/* v4.45: link indicator ΓÇö tiny inline ≡ƒöùN text BEFORE the duration value.
-   Transparent background, baseline-aligned so the bottom of "≡ƒöù23" sits
+/* v4.45: link indicator — tiny inline 🔗N text BEFORE the duration value.
+   Transparent background, baseline-aligned so the bottom of "🔗23" sits
    exactly on the bottom of "8W". No padding so it doesn't add box
    height. pointer-events: none keeps clicks falling through to the dur. */
 .name-cell-dur-link {
@@ -3100,7 +3180,7 @@ body.hide-alloc-pre .name-cell-main {
 /* v4.43: duration link pick mode. While active (after the user typed "="
    in a duration editor), every duration cell becomes a click target for
    the link. Visual: SDC-lime outline + pointer (hand) cursor so it reads
-   as "click this to select" ΓÇö the v4.42 crosshair felt like "place a
+   as "click this to select" — the v4.42 crosshair felt like "place a
    marker" which wasn't the intent. */
 body.duration-link-pick-mode .name-cell-dur {
   outline: 2px solid var(--anchor-fill, #befa4f);
@@ -3112,7 +3192,7 @@ body.duration-link-pick-mode .name-cell-dur:hover {
 }
 
 /* Completed (progress >= 100) DURATION tasks: the row itself stays
-   identical to active work ΓÇö no hash pattern, no lime border across the
+   identical to active work — no hash pattern, no lime border across the
    cells. The green-check % pill on the name column already signals
    "done" in the grid. The matching Gantt bar gets the lime outline (see
    injectPhaseStyles' doneRule) which is where the visual "this is done"
@@ -3121,13 +3201,13 @@ body.duration-link-pick-mode .name-cell-dur:hover {
 /* v4.46/v4.47: action items render with an italic + SDC-BLUE task name
    so they pop visibly against the scheduled rows (regular black, upright).
    The blue color matches the alloc pill + the Gantt action-milestone
-   diamond ΓÇö visual continuity across grid and chart for the same data. */
+   diamond — visual continuity across grid and chart for the same data. */
 tbody tr.is-action .name-cell-main {
   font-style: italic;
   font-weight: 600;
   color: var(--sdc-primary, #1574c4);
 }
-/* v4.49: overdue actions ΓÇö past their due date, not marked complete ΓÇö
+/* v4.49: overdue actions — past their due date, not marked complete —
    flip the task name + duration to RED to demand attention. Visible
    without needing the user to apply the "Behind" filter. Gantt diamond
    gets the same red treatment in drawMilestoneDiamonds. */
@@ -3137,26 +3217,26 @@ tbody tr.is-action.is-overdue .name-cell-main {
 tbody tr.is-action.is-overdue .name-cell-dur {
   color: #dc2626;
 }
-/* ╬▒ icon OFF ΓÇö hides the inline allocation prefix AND its dash separator.
+/* α icon OFF — hides the inline allocation prefix AND its dash separator.
    Task name and bold duration suffix stay. Header ALOC + its dash spacer
-   hide too. Toggling is a CSS class swap (set in applyScheduleView) ΓÇö no
+   hide too. Toggling is a CSS class swap (set in applyScheduleView) — no
    re-render. */
 body.hide-alloc-pre .name-cell-alloc-pre,
 body.hide-alloc-pre .name-cell-dash,
 body.hide-alloc-pre .th-label-alloc,
 body.hide-alloc-pre .th-label-dash { display: none; }
 
-/* v4.43: Task column HEADER ΓÇö TWO-ROW layout, anchored to the TH directly
+/* v4.43: Task column HEADER — TWO-ROW layout, anchored to the TH directly
    (NOT to a padded inner wrapper, so absolute child positions match the
    body cell's TD coordinate system).
 
-     ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+     ─────────────────────────────────
        TASK  (bold, centered, above body name area: left 64 - right 110)
-     ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+     ─────────────────────────────────
      ALOC                  DUR    %COM   (light gray, positioned directly
      (left: 8)    (right: 60) (right: 8)  above their body counterparts)
 
-   TH padding set to 0 so .th-label-name spans the full TH width ΓÇö that
+   TH padding set to 0 so .th-label-name spans the full TH width — that
    makes absolute children inside it use TH's outer-edge coordinates,
    same as body absolute children use TD's outer-edge coordinates. */
 th[data-col="name"] {
@@ -3168,7 +3248,7 @@ th[data-col="name"] .th-label-name {
   width: 100%;
   height: 100%;
 }
-/* TOP HALF ΓÇö TASK banner spanning the body NAME range (left: 64 to
+/* TOP HALF — TASK banner spanning the body NAME range (left: 64 to
    right: 110), centered with a separator line below. v4.44: dropped
    bold weight to match other column headers like "ASSIGNED TO" / "START"
    which use the standard 600 weight from `.th-label`. */
@@ -3197,7 +3277,7 @@ th[data-col="name"] .th-label-name::after {
   height: 1px;
   background: var(--border-strong, #cbd5e1);
 }
-/* BOTTOM HALF ΓÇö light-gray sub-labels at the EXACT same horizontal
+/* BOTTOM HALF — light-gray sub-labels at the EXACT same horizontal
    positions as the body values they describe. v4.44 adds DESCRIPTION
    centered above the body task-name area (left: 64 to right: 110). */
 .th-label-alloc,
@@ -3226,10 +3306,10 @@ th[data-col="name"] .th-label-name::after {
 /* When alloc is hidden globally, also hide the ALOC header label. */
 body.hide-alloc-pre .th-label-alloc { display: none; }
 
-/* % complete pill ΓÇö color reflects SCHEDULE STATUS, not just progress:
+/* % complete pill — color reflects SCHEDULE STATUS, not just progress:
      is-zero    = 0%, not started (slate)
-     is-behind  = 1ΓÇô99% AND behind schedule (light red)
-     is-ontrack = 1ΓÇô99% AND on or ahead of schedule (green)
+     is-behind  = 1–99% AND behind schedule (light red)
+     is-ontrack = 1–99% AND on or ahead of schedule (green)
      is-done    = 100% (emerald, white text) */
 .name-edit-pill {
   display: inline-block;
@@ -3247,13 +3327,13 @@ body.hide-alloc-pre .th-label-alloc { display: none; }
   border: 1px solid;
   box-sizing: border-box;
 }
-/* % complete pill colors ΓÇö driven by CSS custom properties so the Setup page's
+/* % complete pill colors — driven by CSS custom properties so the Setup page's
    color picker can update them live without re-rendering. Text is always black
    for readability across whatever fill the user picks; the border is a slight
    darkening of the fill via color-mix. */
-/* % complete pill ΓÇö restyled as a small PROGRESS BAR in v4.1. The pill is
+/* % complete pill — restyled as a small PROGRESS BAR in v4.1. The pill is
    always a neutral light container; an inner .name-pct-fill div grows from
-   left ΓåÆ right to visually answer "how done is this task?" without you
+   left → right to visually answer "how done is this task?" without you
    having to read the number. The color of the fill tracks schedule status
    (red when behind, green when on-track, deep green when complete). */
 .name-pct-pill {
@@ -3289,7 +3369,7 @@ body.hide-alloc-pre .th-label-alloc { display: none; }
 .name-pct-pill.is-zero .name-pct-fill    { background: transparent; }
 .name-pct-pill.is-behind .name-pct-fill  { background: #fca5a5; }
 .name-pct-pill.is-ontrack .name-pct-fill { background: #86efac; }
-/* 100% complete state ΓÇö full green bar + white Γ£ô. Border deepens to the
+/* 100% complete state — full green bar + white ✓. Border deepens to the
    same dark green that the milestone-check uses when done, so duration
    tasks and milestones look the same when complete. */
 .name-pct-pill.is-done {
@@ -3305,8 +3385,8 @@ body.hide-alloc-pre .th-label-alloc { display: none; }
 /* Milestone / anchor checkbox in the Task column. Replaces the % pill for
    0-duration rows since "% complete" on a milestone is conceptually binary.
    Click toggles progress between 0 and 100.
-   Sized to MATCH the .name-edit-pill footprint (38├ù16) so the Γ£ô sits centered
-   in the same visual slot as the % pill on duration tasks ΓÇö milestone and
+   Sized to MATCH the .name-edit-pill footprint (38×16) so the ✓ sits centered
+   in the same visual slot as the % pill on duration tasks — milestone and
    duration rows line up vertically in the Task column. */
 .name-milestone-check {
   display: inline-flex;
@@ -3338,11 +3418,11 @@ body.hide-alloc-pre .th-label-alloc { display: none; }
   background: #15803d;
 }
 
-/* v4.84: Backlog ΓÇö duration-only spine task between Receipt of PO and
-   section 10. GRAY pill (was red) ΓÇö reads as a neutral spine marker.
+/* v4.84: Backlog — duration-only spine task between Receipt of PO and
+   section 10. GRAY pill (was red) — reads as a neutral spine marker.
    Once the backlog duration is in the past (end_date < today), the pill
    gets a lime-green BORDER to signal "expired / time consumed", but the
-   fill stays gray. There's no done-checkmark ΓÇö backlog isn't a checkable
+   fill stays gray. There's no done-checkmark — backlog isn't a checkable
    task, it just elapses. */
 .anchor-name-chip.backlog-chip {
   background: #e2e8f0;
@@ -3359,7 +3439,7 @@ tbody tr.anchor-row.backlog-row.no-top-border td {
 tbody tr.anchor-row.no-bottom-border td {
   border-bottom: none;
 }
-/* Gantt bar for backlog ΓÇö gray fill, slate stroke. Lime stroke when expired. */
+/* Gantt bar for backlog — gray fill, slate stroke. Lime stroke when expired. */
 .gantt .bar-wrapper.is-backlog .bar {
   fill: #e2e8f0 !important;
   stroke: #64748b !important;
@@ -3378,7 +3458,7 @@ tbody tr.anchor-row.no-bottom-border td {
   font-weight: 700;
 }
 
-/* Setup ΓåÆ Estimate ΓåÆ Schedule Rules list. Read-only for now; intentionally
+/* Setup → Estimate → Schedule Rules list. Read-only for now; intentionally
    styled like compact docs so the user can scan the encoded logic. */
 .estimate-rules {
   margin: 8px 0 0;
@@ -3395,12 +3475,12 @@ tbody tr.anchor-row.no-bottom-border td {
 }
 .name-edit-pill:hover { filter: brightness(0.97); }
 
-/* Editing state ΓÇö the pill swaps its text for a small number input. Keep the same
+/* Editing state — the pill swaps its text for a small number input. Keep the same
    visual footprint so the row doesn't reflow.
    The width: 38px / overflow: hidden are CRITICAL. The pill is display:inline-
    block, which shrink-to-fits to its content's intrinsic width. When the child
    becomes a default <input>, that intrinsic width is ~144px (size=20 chars at
-   our font size), which would balloon the pill to ~4├ù its normal width and
+   our font size), which would balloon the pill to ~4× its normal width and
    look like a separate editor card overlaying the column. Locking width here
    forces the pill to stay 38px regardless of what the input's preferred
    width is. */
@@ -3416,11 +3496,11 @@ tbody tr.anchor-row.no-bottom-border td {
 /* Pill-editor input. The .cell-edit-input class (which we inherit) is designed
    for FULL-CELL editing, so it applies negative margins (-3px / -8px) and
    oversized width/height to make the input cover the whole td. That blows up
-   to roughly half the Task column inside the tiny 38├ù16 pill ΓÇö wildly larger
+   to roughly half the Task column inside the tiny 38×16 pill — wildly larger
    than the pill itself. Override every relevant box-model property here so
    the input stays exactly the pill's footprint. */
 .name-pill-input {
-  /* Default styling ΓÇö designed for the right-edge % complete pill (38├ù16,
+  /* Default styling — designed for the right-edge % complete pill (38×16,
      centered 10px font). Width is set inline by enterPillEdit per column
      type. */
   width: 100%;
@@ -3438,7 +3518,7 @@ tbody tr.anchor-row.no-bottom-border td {
   color: #1e293b;
 }
 /* v4.33: alloc / dur inline editors use INHERITED font + color + alignment
-   so the input renders at the EXACT same size as the original text ΓÇö no
+   so the input renders at the EXACT same size as the original text — no
    vertical or horizontal jump when the user clicks to edit. Earlier the
    input was forced to 10px center-aligned with its own height, which made
    alloc shift down (different baseline + height than surrounding text)
@@ -3455,16 +3535,16 @@ tbody tr.anchor-row.no-bottom-border td {
 }
 
 /* The actual Gantt diamonds (anchor + non-anchor) are custom SVG polygons drawn
-   in drawMilestoneDiamonds() ΓÇö the milestone-done coloring is applied directly
+   in drawMilestoneDiamonds() — the milestone-done coloring is applied directly
    to those <polygon> elements at draw time. No CSS override needed for the bar
    itself (frappe-gantt's native .bar is hidden via inline opacity:0). */
 
-/* Header rows themselves stay white ΓÇö the color is reserved for a small pill around
+/* Header rows themselves stay white — the color is reserved for a small pill around
    just the label text so the row reads as more of a divider than a colored block. */
 tr.group-header td {
   background: var(--surface, #fff);
 }
-/* Section header (level 1) ΓÇö full-width light gray bar that goes all the way across
+/* Section header (level 1) — full-width light gray bar that goes all the way across
    the row, not a small pill. Configurable via section colors on Setup. */
 tr.group-header.level-1 td {
   height: 24px; line-height: 24px; font-size: 12px;
@@ -3498,7 +3578,7 @@ tr.group-header.level-1 .group-label {
   padding: 0;
   border-radius: 0;
 }
-/* Department / sub-department labels ΓÇö no fill, no border, semibold (not bold), light
+/* Department / sub-department labels — no fill, no border, semibold (not bold), light
    slate text so the hierarchy reads through indentation + font size, not boldness. */
 tr.group-header.level-2 .group-label,
 tr.group-header.level-3 .group-label {
@@ -3595,7 +3675,7 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 
 /* In-app toast notification. Replaces native alert() so success/error
    confirmations look like part of the app instead of a browser chrome
-   dialog ("localhost:3000 saysΓÇª"). Positioned at the top-center of the
+   dialog ("localhost:3000 says…"). Positioned at the top-center of the
    schedule area (under the project + sub-tab bars), animates in, fades
    on dismiss. */
 .sdc-toast {
@@ -3706,9 +3786,9 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 }
 .confirm-popup-ok.is-danger:hover { background: #b91c1c; }
 
-/* Arrow lag pill ΓÇö small floating label on the Gantt that shows the lag
+/* Arrow lag pill — small floating label on the Gantt that shows the lag
    duration on an arrow when the predecessor carries one (e.g., "+2 wks" or
-   "ΓêÆ1 wk"). Hover lifts the pill so it's obvious it's clickable; click
+   "−1 wk"). Hover lifts the pill so it's obvious it's clickable; click
    opens the inline lag editor. */
 .gantt .arrow-lag-pill {
   transition: filter 120ms ease;
@@ -3717,7 +3797,7 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
   filter: brightness(0.95);
 }
 
-/* Inline lag editor ΓÇö pops next to the clicked lag pill. Small horizontal
+/* Inline lag editor — pops next to the clicked lag pill. Small horizontal
    row: label / input / Cancel / Save. */
 .arrow-lag-edit {
   position: fixed;
@@ -3792,13 +3872,13 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
        per-row indentation is redundant.
    (b) Crucially, depth-N's padding-left was overriding the has-meta
        padding-left (specificity 0,2,2 vs 0,2,1), so body alloc absolute
-       offsets didn't align with the header ΓÇö and in browsers that
+       offsets didn't align with the header — and in browsers that
        anchor absolute children to TD content-box (not padding-box),
        the body alloc ended up pushed right by the depth padding.
    If we ever want depth indent back, apply it to .name-cell-main (inside
    the cell), not the TD itself, so TD padding-left stays consistent. */
 
-/* Cascading group picker in the task editor ΓÇö three selects on one line. */
+/* Cascading group picker in the task editor — three selects on one line. */
 .group-picker { grid-column: 1 / -1; }
 .group-picker-row {
   display: flex;
@@ -3904,11 +3984,11 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 }
 #gantt-container { overflow: auto; }
 
-/* Hide frappe-gantt's default row stripes / row lines ΓÇö we draw our own that match the grid. */
+/* Hide frappe-gantt's default row stripes / row lines — we draw our own that match the grid. */
 .schedule-gantt .gantt .grid-row,
 .schedule-gantt .gantt .row-line { display: none; }
 
-/* Phantom pad tasks ΓÇö invisible bars used only to extend the date axis for over-pan room. */
+/* Phantom pad tasks — invisible bars used only to extend the date axis for over-pan room. */
 .schedule-gantt .gantt .bar-wrapper.phantom-pad { display: none; }
 
 /* Phase-tinted Gantt bars - colors are injected dynamically per phase */
@@ -3920,9 +4000,9 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   font-weight: 600;
 }
 
-/* Baseline ghost ΓÇö dashed outline painted BEHIND each task's current bar at
+/* Baseline ghost — dashed outline painted BEHIND each task's current bar at
    the baseline's date range, in the task's own color. The drift-label is a
-   bare "+Nd" / "ΓêÆNd" in the task's dark shade with a white halo for legibility
+   bare "+Nd" / "−Nd" in the task's dark shade with a white halo for legibility
    over any background. No pill, no "baseline" wording. */
 .gantt .baseline-ghost,
 .gantt .baseline-drift-label {
@@ -3933,7 +4013,7 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   font-family: inherit;
 }
 
-/* Today line ΓÇö vertical dotted red line at today's date so you can see at a
+/* Today line — vertical dotted red line at today's date so you can see at a
    glance how every bar lines up against now. Tiny "Today" label at the top. */
 .gantt .today-line,
 .gantt .today-line-label {
@@ -3944,7 +4024,7 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   font-family: inherit;
 }
 
-/* Financial overlay ΓÇö vertical lines through the full chart at each financial
+/* Financial overlay — vertical lines through the full chart at each financial
    milestone's date. Dashed = invoice pending, solid = invoice sent. Bold enough
    to read clearly over busy task bars without being obnoxious. Layer sits above
    bars/arrows via SVG paint order. */
@@ -4027,23 +4107,23 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 
 /* v4.51: .zoom-stack (the stacked Weeks/Rows pill) and .view-pill (the icon
    row with the "View" label) were replaced by:
-     ΓÇó .view-bracket ΓÇö Smartsheet-style bracketed icon row with thick outer
+     • .view-bracket — Smartsheet-style bracketed icon row with thick outer
        borders and thin inner dividers, no "View" label.
-     ΓÇó #zoom-menu ΓÇö a dropdown popover containing Time scale (Days/Weeks/
+     • #zoom-menu — a dropdown popover containing Time scale (Days/Weeks/
        Months), Gantt zoom %, and row height (10-100). The button is a
        standard .toolbar-toggle-btn.
-   The legacy .zoom-controls / .row-height-controls rules above STAY ΓÇö the
+   The legacy .zoom-controls / .row-height-controls rules above STAY — the
    Team page resource-timeline still uses those single-row pills.
    The .legacy-zoom-controls div in index.html keeps the original DOM IDs
    (#btn-zoom-out, #btn-zoom-in, #zoom-mode, #btn-row-h-up, #btn-row-h-down,
    #btn-customer-view) alive so the existing event handlers don't need to be
-   rewritten ΓÇö the new Zoom dropdown + Filters popover drive these directly. */
+   rewritten — the new Zoom dropdown + Filters popover drive these directly. */
 .legacy-zoom-controls[hidden] { display: none !important; }
 
-/* v4.52: View toggle bracket ΓÇö Smartsheet-style framing.
+/* v4.52: View toggle bracket — Smartsheet-style framing.
    Thick outer borders (2px SDC-dark) frame the group on left + right.
    Thin 1px inner dividers separate each icon. Tooltips on every button
-   explain what they do. (The v4.51 filter-bracket twin is gone ΓÇö filters
+   explain what they do. (The v4.51 filter-bracket twin is gone — filters
    are back to a labelled dropdown.) */
 .view-bracket {
   display: inline-flex;
@@ -4119,11 +4199,11 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 
 /* v4.51: Zoom dropdown popover content.
    Three sections divided by .dropdown-sep:
-     1) TIME SCALE ΓÇö Days/Weeks/Months as radio-style items
-     2) ZOOM       ΓÇö Gantt zoom % with ΓêÆ [value] +
-     3) ROW HEIGHT ΓÇö 10-100 scale with ΓêÆ [value] +
+     1) TIME SCALE — Days/Weeks/Months as radio-style items
+     2) ZOOM       — Gantt zoom % with − [value] +
+     3) ROW HEIGHT — 10-100 scale with − [value] +
    Each section title is small all-caps muted text; the controls below sit
-   in a single row with the value centered between the two ┬▒ buttons. */
+   in a single row with the value centered between the two ± buttons. */
 .zoom-menu-section {
   padding: 6px 4px;
 }
@@ -4174,7 +4254,7 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   background: white;
   color: var(--text);
 }
-/* Time scale section ΓÇö radio rows. Each row is the full menu width so the
+/* Time scale section — radio rows. Each row is the full menu width so the
    active row's tinted background reads as a bar, not a chip. */
 .zoom-menu-scale {
   display: flex;
@@ -4198,6 +4278,19 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   gap: 8px;
 }
 .schedule-footer .toolbar-toggle-btn { font-size: 12px; }
+/* needs-attention — used by the Financial Milestones footer button
+   when the active project hasn't filled out its financials yet. Bright
+   red so PMs can't miss it; reverts to standard styling once any
+   financial row carries a dollar amount or percent. */
+.schedule-footer .toolbar-toggle-btn.needs-attention {
+  background: #dc2626;
+  color: #fff;
+  border-color: #b91c1c;
+  font-weight: 700;
+}
+.schedule-footer .toolbar-toggle-btn.needs-attention:hover {
+  background: #b91c1c;
+}
 body.customer-view .schedule-footer { display: none; }
 .btn-icon {
   width: 28px;
@@ -4496,7 +4589,7 @@ body.customer-view .schedule-footer { display: none; }
   color: var(--sdc-primary);
   box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
-/* v4.72: Quick-add bar ΓÇö labelled fields that match the action list's
+/* v4.72: Quick-add bar — labelled fields that match the action list's
    column headers below. Each field is a vertical stack: label up top,
    input/select/button underneath. The whole bar is a flex row of these
    field-stacks so the inputs line up with the list columns visually. */
@@ -4504,7 +4597,7 @@ body.customer-view .schedule-footer { display: none; }
   display: flex;
   /* align-items: stretch keeps all fields at the same TOP edge so their
      LABELS line up perfectly across the row. flex-end (previous) was
-     anchoring each field to the bottom ΓÇö selects and inputs have
+     anchoring each field to the bottom — selects and inputs have
      slightly different intrinsic heights, so the labels floated up to
      mismatched positions (visible as the "WHERE label sticks up"
      problem). stretch + uniform control height fixes it. */
@@ -4596,7 +4689,7 @@ body.customer-view .schedule-footer { display: none; }
 
 /* v4.76: when a person is signed in, hide the bottom team-view sections
    (section divider, filter chips, action list, dept dashboard). The
-   personal Gantt above already shows the same data ΓÇö duplicating it
+   personal Gantt above already shows the same data — duplicating it
    below felt like "top is mine / bottom is team" instead of one view.
    Quick-add bar stays visible so the user can keep adding actions. */
 .actions-page.is-signed-in .actions-section-divider,
@@ -4618,7 +4711,7 @@ body.customer-view .schedule-footer { display: none; }
   box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06);
 }
 
-/* v4.65: Person picker bar ΓÇö two cascading dropdowns (Department ΓåÆ Person)
+/* v4.65: Person picker bar — two cascading dropdowns (Department → Person)
    instead of the v4.63 strip of every-team-member-as-chip. */
 .actions-person-bar {
   display: flex;
@@ -4748,14 +4841,14 @@ body.customer-view .schedule-footer { display: none; }
   padding: 22px 18px 32px;
   /* v5.7: match the main #gantt-container so frappe-gantt's wide SVG
      becomes horizontally scrollable instead of overflowing the panel.
-     max-height limits vertical extent ΓÇö many bars don't make the
+     max-height limits vertical extent — many bars don't make the
      actions page infinitely tall. */
   overflow: auto;
   max-height: 70vh;
 }
 .actions-person-gantt:empty { display: none; }
 
-/* Sign-in entry point moved to the All-projects banner ΓÇö hide the entire
+/* Sign-in entry point moved to the All-projects banner — hide the entire
    stale "top section" of the Actions tab. The Departments dashboard /
    action list below stays as the manager view. */
 .actions-person-bar,
@@ -4763,7 +4856,7 @@ body.customer-view .schedule-footer { display: none; }
 .actions-personal-wrap,
 .actions-page > .actions-section-divider { display: none !important; }
 
-/* Sign-in picker on the All-projects banner ΓÇö entry point into personal
+/* Sign-in picker on the All-projects banner — entry point into personal
    mode. Sits inline with the "All projects" label and the optional
    "Save all as one project" button. */
 .banner-signin-wrap {
@@ -4862,13 +4955,13 @@ body.customer-view .schedule-footer { display: none; }
 }
 
 /* Personal mode: hide the Predecessors column. We're looking at one
-   person across many projects ΓÇö predecessors are intra-project relationships
+   person across many projects — predecessors are intra-project relationships
    that don't carry meaning here. Hides both the header cell and every body
    cell at once via the [data-col="pred"] attribute. */
 body.personal-mode #tasks-table [data-col="pred"] { display: none !important; }
 body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !important; }
 
-/* Personal-mode banner on the main Schedule view ΓÇö visible only when
+/* Personal-mode banner on the main Schedule view — visible only when
    signed in via the Actions tab person picker. Sticky-feel strip above the
    toolbar with the person's name, personal-filter chips, and a Clear
    button to return to the regular Actions tab. */
@@ -4963,7 +5056,7 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
 }
 .actions-personal-wrap.is-grid  .actions-personal-list  { flex: 1; }
 .actions-personal-wrap.is-gantt .actions-personal-gantt { flex: 1; }
-/* Visibility ΓÇö driven by the wrapper's pane class. */
+/* Visibility — driven by the wrapper's pane class. */
 .actions-personal-wrap.is-grid  .actions-personal-gantt { display: none; }
 .actions-personal-wrap.is-gantt .actions-personal-list  { display: none; }
 .actions-personal-gantt {
@@ -4978,7 +5071,7 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
 }
 .actions-personal-gantt.panning { cursor: grabbing; }
 
-/* Personal Assignments list ΓÇö shown on the Actions tab when a person
+/* Personal Assignments list — shown on the Actions tab when a person
    is signed in. Simple grouped list of their tasks + actions by
    section. No department headers, no extras. */
 .actions-personal-list:empty { display: none; }
@@ -5228,7 +5321,7 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
   padding: 0 6px;
   overflow: hidden;
 }
-/* v4.76: combined inline content ΓÇö "[meta] ┬╖ [name]" at the LEFT of the bar
+/* v4.76: combined inline content — "[meta] · [name]" at the LEFT of the bar
    (matches v4.75 main Gantt). Meta in 700 weight, name in 600. */
 .apg-bar-content {
   position: relative;
@@ -5269,7 +5362,7 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
   opacity: 0.4;
   border-radius: 3px 0 0 3px;
 }
-/* v4.76: legacy .apg-bar-meta solo (when name absent) ΓÇö kept for back-compat
+/* v4.76: legacy .apg-bar-meta solo (when name absent) — kept for back-compat
    but the combined .apg-bar-content above is the primary layout now. */
 .apg-diamond {
   position: absolute;
@@ -5353,7 +5446,7 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
   margin: 0;
 }
 .actions-row-due.is-completed { color: #15803d; font-weight: 700; }
-/* Filter row ΓÇö chip toggles + a few selects on the right. */
+/* Filter row — chip toggles + a few selects on the right. */
 .actions-filters {
   display: flex;
   align-items: center;
@@ -5377,9 +5470,9 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
 }
 .actions-row {
   display: grid;
-  /* v4.74: 8 columns ΓÇö done / name / project / assignee / dept / due / open / delete.
-     Open widened from 28 ΓåÆ 60px so the "Open" header isn't truncated to
-     "OpΓÇª". Other columns unchanged. */
+  /* v4.74: 8 columns — done / name / project / assignee / dept / due / open / delete.
+     Open widened from 28 → 60px so the "Open" header isn't truncated to
+     "Op…". Other columns unchanged. */
   grid-template-columns: 36px minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 80px 92px 60px 24px;
   gap: 10px;
   align-items: center;
@@ -5392,7 +5485,7 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
 .actions-row:hover {
   background: color-mix(in srgb, var(--sdc-primary, #2563eb) 2%, white);
 }
-/* v4.70: header row ΓÇö uniform typography across every column.
+/* v4.70: header row — uniform typography across every column.
    Reset background / padding / font-* / text-align / etc. on EVERY child
    so column-specific styles from the data rows don't leak through. */
 .actions-row.actions-row-header {
@@ -5882,7 +5975,7 @@ body[data-view="setup"] #btn-add { display: none; }
   z-index: 100;
 }
 
-/* Estimate-sheet feasibility modal ΓÇö separate class set from the older .modal
+/* Estimate-sheet feasibility modal — separate class set from the older .modal
    shell so the existing dialogs keep their styling. New shell uses card / head
    / body / foot. */
 .modal-card {
@@ -6006,7 +6099,7 @@ body[data-view="setup"] #btn-add { display: none; }
   color: var(--text, #0f172a);
 }
 
-/* Editable estimate hours grid ΓÇö wide table with split sub-columns per
+/* Editable estimate hours grid — wide table with split sub-columns per
    discipline. Horizontal scroll on narrow modals so we don't squish cells.
    Inputs are inline-edit numbers. */
 .est-hours-scroll {
@@ -6019,7 +6112,7 @@ body[data-view="setup"] #btn-add { display: none; }
   font-size: 12px;
   table-layout: fixed;
 }
-/* Per-column widths ΓÇö tight to content. Group headers wrap to two lines
+/* Per-column widths — tight to content. Group headers wrap to two lines
    ("Mech / Eng", "Controls / Eng", etc.) so single-column groups don't need
    to be wider than their numeric content. */
 .est-hours-table col.col-section { width: 170px; }
@@ -6044,7 +6137,7 @@ body[data-view="setup"] #btn-add { display: none; }
 .est-hours-table th { background: var(--surface-alt, #f4f6f8); font-weight: 700; color: #475569; font-size: 11px; }
 .est-hours-table th.grp { text-align: center; border-bottom: 1px solid #cbd5e1; }
 
-/* Mirror the SUMMARY FOR RELEASE tab ΓÇö color-coded column groups matching the
+/* Mirror the SUMMARY FOR RELEASE tab — color-coded column groups matching the
    hierarchy palette on the Setup page (so the Estimate modal feels like part
    of the same app). */
 .summary-mirror .grp-mech { background: #D4E8F7; } /* Mechanical Engineering */
@@ -6107,7 +6200,7 @@ body[data-view="setup"] #btn-add { display: none; }
   border-color: #2563eb;
 }
 
-/* Hash-mark split inside a single cell ΓÇö two inputs side by side with a small
+/* Hash-mark split inside a single cell — two inputs side by side with a small
    "/" divider. Used for Section 10's Design + Drawings and Electrical Build. */
 .summary-mirror .split-cell {
   padding: 2px 2px;
@@ -6148,7 +6241,7 @@ body[data-view="setup"] #btn-add { display: none; }
 .est-hours-input:hover { border-color: #cbd5e1; background: white; }
 .est-hours-input:focus { border-color: #2563eb; background: white; outline: none; }
 
-/* Compact staffing table ΓÇö one row per role, columns: Role | Hours | People | Weeks */
+/* Compact staffing table — one row per role, columns: Role | Hours | People | Weeks */
 .est-staff-table {
   width: 100%;
   border-collapse: collapse;
@@ -6172,7 +6265,7 @@ body[data-view="setup"] #btn-add { display: none; }
   font-style: italic;
 }
 
-/* In-app confirm / alert dialogs ΓÇö replace the browser-native window.confirm
+/* In-app confirm / alert dialogs — replace the browser-native window.confirm
    and window.alert popups with something that matches the SDC app shell. Built
    on the same .modal-card framework as the estimate-sheet modal. */
 .app-dialog-overlay {
@@ -6285,7 +6378,7 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 
 /* "$ Financial Milestones" action button inside the Quote vs Schedule modal
-   header. Styled in SDC primary so it reads as "do this important thing" ΓÇö
+   header. Styled in SDC primary so it reads as "do this important thing" —
    per-project financial milestones are usually set once at project creation
    and edited rarely, so the button needs to be findable when the rare edit
    is needed. */
@@ -6305,16 +6398,82 @@ body[data-view="setup"] #btn-add { display: none; }
 
 /* Quote vs Schedule comparison table. Shows quoted hours from the estimate
    side-by-side with the live scheduled hours computed from task durations.
-   ╬ö column: green when on target (┬▒10%), amber when off, slate when no quote. */
-.quote-compare-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-/* Discipline column needs room for the long combined labels like
-   "Test/Debug Engineer (lead + secondary)". Set a generous min-width
-   and don't let it shrink below it. */
+   Δ column: green when on target (±10%), amber when off, slate when no quote. */
+/* Sold-delivery row at the top of the Quote vs Schedule modal — the
+   "what we committed to" input. */
+.quote-sold-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+}
+.quote-sold-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.quote-sold-label input[type="number"] {
+  width: 90px;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 700;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.quote-sold-unit {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+/* Penalty clause toggle + weeks input — sit next to the sold delivery
+   field in the Quote modal. Weeks input hides until the checkbox is on. */
+.quote-penalty-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding-left: 14px;
+  border-left: 1px solid var(--border, #e2e8f0);
+}
+.quote-penalty-toggle input[type="checkbox"] { margin: 0; }
+.quote-penalty-input.is-hidden { display: none; }
+.quote-compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  /* Honor the <colgroup> widths so every header fits without truncation —
+     `table-layout: fixed` stops the browser from auto-expanding cells to
+     match content, which used to push "Quoted / Scheduled" off-screen
+     and leave Discipline / Variance with extra dead space. */
+  table-layout: fixed;
+}
+/* Discipline column — long labels like "Test/Debug Engineer (lead + secondary)"
+   still need a hard minimum so the colgroup widths don't squash them. */
 .quote-compare-table th:first-child,
 .quote-compare-table td:first-child {
   min-width: 220px;
   white-space: nowrap;
   padding-right: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .quote-compare-table th {
   text-align: left;
@@ -6352,7 +6511,107 @@ body[data-view="setup"] #btn-add { display: none; }
 .quote-row.is-pending td {
   background: color-mix(in srgb, var(--sdc-accent, #ffde51) 18%, white);
 }
-/* Milestone line items in the sales quote modal ΓÇö info rows, no hours.
+/* Promoted-from-sales rows where the user hasn't typed Quoted hours yet.
+   Amber stripe on the first cell + a soft amber tint on the Quoted cell
+   so missing-data rows pop without overwhelming the table. */
+.quote-row.needs-quote td:first-child {
+  border-left: 3px solid #d97706;
+}
+.quote-row.needs-quote .quote-sched-cell {
+  background: #fef3c7;
+}
+.quote-row.needs-quote .quote-q-input {
+  border-color: #d97706;
+}
+
+/* Detailed-mode row label cell — task name on the left, small `×` delete
+   button on the right that floats to the row edge on hover. */
+.quote-row-label-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.quote-row-delete {
+  background: transparent;
+  border: none;
+  color: #cbd5e1;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.quote-row-delete:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+/* Per-section "+ Add resource" footer row in detailed mode. */
+.quote-add-resource-row td {
+  padding: 4px 8px;
+  background: var(--surface-alt, #f8fafc);
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+.quote-row-add {
+  background: white;
+  border: 1px dashed #1574c4;
+  color: #1574c4;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.quote-row-add:hover {
+  background: #e0f2fe;
+}
+
+.quote-alloc-input {
+  width: 64px;
+  padding: 2px 6px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: right;
+}
+
+/* Group-total row — sums Quoted / Scheduled / Variance / Remaining for
+   every task row inside a sub-section (MECHANICAL ENGINEERING etc.).
+   Bold + a thin top divider + light-blue tint so it reads as a roll-up
+   without being mistaken for an editable row. */
+.quote-row.quote-group-total-row td {
+  font-weight: 700;
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, white);
+  border-top: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 40%, white);
+}
+.quote-group-total-label {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: #0c4a6e;
+}
+.quote-row.quote-group-total-row .quote-sched-q {
+  font-weight: 700;
+}
+
+/* Add-resource picker dropdown — inline with the section sub-label. */
+.quote-add-resource-select {
+  margin-left: 8px;
+  padding: 3px 8px;
+  border: 1px dashed #1574c4;
+  border-radius: 4px;
+  background: white;
+  color: #1574c4;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.quote-add-resource-select:hover {
+  background: #e0f2fe;
+}
+/* Milestone line items in the sales quote modal — info rows, no hours.
    Muted text + diamond glyph so they read as anchors, not editable rows. */
 .quote-row.is-milestone td {
   color: var(--text-muted, #94a3b8);
@@ -6360,6 +6619,20 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .quote-row.is-milestone .quote-milestone-cell {
   color: var(--text-muted, #94a3b8);
+}
+
+/* Sub-section header rows inside a Quote vs Schedule section (detailed
+   mode). Matches the schedule grid's depth-2 dept-header look — small
+   uppercase muted text on a faint surface. */
+.quote-compare-table .quote-subsection-head td {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #64748b);
+  background: var(--surface-alt, #f8fafc);
+  padding: 6px 8px 4px 18px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
 }
 .quote-milestone-glyph {
   color: var(--anchor-fill, #74c415);
@@ -6396,19 +6669,19 @@ body[data-view="setup"] #btn-add { display: none; }
   padding: 6px 10px;
   border-bottom: none;
 }
-/* Combined Quoted/Scheduled column ΓÇö slash divider styling. */
+/* Combined Quoted/Scheduled column — slash divider styling. */
 .quote-sched-cell { font-variant-numeric: tabular-nums; }
 .quote-sched-q { color: var(--text-muted, #64748b); }
 .quote-sched-slash { color: var(--text-muted, #cbd5e1); margin: 0 4px; }
 .quote-sched-s { color: var(--text, #1e293b); font-weight: 700; }
-/* Variance cell ΓÇö color reflects how scheduled compares to quoted.
+/* Variance cell — color reflects how scheduled compares to quoted.
    under-budget = green, near = neutral, slightly over = amber, well over = red. */
 .quote-variance           { font-weight: 700; border-radius: 3px; padding: 2px 6px; font-variant-numeric: tabular-nums; }
 .quote-variance.var-zero  { color: var(--text-muted, #475569); }
 .quote-variance.var-under { color: #166534; background: #dcfce7; }
 .quote-variance.var-near  { color: #475569; background: #f1f5f9; }
 .quote-variance.var-over  { color: #b45309; background: #fef3c7; }
-/* Legacy v4.15 classes ΓÇö kept inert so old transcripts/code paths don't 404. */
+/* Legacy v4.15 classes — kept inert so old transcripts/code paths don't 404. */
 .quote-diff           { font-weight: 700; border-radius: 3px; padding: 2px 6px; }
 .quote-diff.diff-zero { color: #475569; }
 .quote-diff.diff-near { color: #166534; background: #dcfce7; }
@@ -6637,6 +6910,39 @@ body[data-view="setup"] #btn-add { display: none; }
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  /* Fixed layout so the per-column widths below actually apply — auto
+     layout used to make the long Trigger placeholder pull width away
+     from Name (descriptions like "Acceptance at Customer (SAT)" got
+     clipped). Widths chosen to match the data each column holds:
+     Name needs the most room (description), Trigger is moderate,
+     Date is sized for an ISO date input, %, Sent, and Delete are
+     tiny because they hold a number / checkbox / single button. */
+  table-layout: fixed;
+}
+/* Per-column widths matching the new column order:
+   %, Description, Trigger (predecessor), Date, Sent.
+   Description takes the remainder so long names like
+   "Acceptance at Customer (SAT)" never clip. */
+.financials-table col.col-percent { width: 60px;  }
+.financials-table col.col-name    { width: auto;  }
+.financials-table col.col-trigger { width: 140px; }
+.financials-table col.col-date    { width: 150px; }
+.financials-table col.col-paid    { width: 60px;  }
+/* Stacked header — "Trigger" on top, "(predecessor)" below — so the
+   column can stay narrow without the header text pushing it wide. */
+.financials-table .th-stacked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.05;
+}
+.financials-table .th-stacked small {
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  margin-top: 1px;
 }
 .financials-table thead th {
   position: sticky;
@@ -6650,9 +6956,12 @@ body[data-view="setup"] #btn-add { display: none; }
   color: var(--text-muted);
   font-weight: 700;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .financials-table thead th.num   { text-align: right; }
-.financials-table thead th.paid  { text-align: center; width: 60px; }
+.financials-table thead th.paid  { text-align: center; }
 .financials-table thead th.syn   { width: 160px; }
 .financials-table tbody td {
   padding: 6px 10px;
@@ -6723,7 +7032,7 @@ body[data-view="setup"] #btn-add { display: none; }
   flex: 1;
   min-height: 0;
 }
-/* Team page needs the full window width ΓÇö five discipline cards side by side
+/* Team page needs the full window width — five discipline cards side by side
    plus the dashboard cards below. The 1000px max from setup-pane is too narrow,
    override it here. */
 #view-team .setup-pane {
@@ -6738,7 +7047,7 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .team-card-head h3 { margin: 0; font-size: 13px; }
 
-/* Capacity strip ΓÇö sits directly below each discipline's colored header.
+/* Capacity strip — sits directly below each discipline's colored header.
    Shows real headcount, total scheduled hours, and weeks of work ahead at
    90% effective capacity. */
 .team-card-capacity {
@@ -6798,7 +7107,7 @@ body[data-view="setup"] #btn-add { display: none; }
   padding: 4px 6px 6px;
 }
 .team-placeholders:empty {
-  display: none;        /* no placeholders ΓåÆ no divider */
+  display: none;        /* no placeholders → no divider */
 }
 .team-list {
   list-style: none;
@@ -6854,7 +7163,7 @@ body[data-view="setup"] #btn-add { display: none; }
   font-style: normal;
 }
 .team-member:hover { background: var(--row-hover); }
-/* Department lead ΓÇö star inline with the name + slightly bolder text so the
+/* Department lead — star inline with the name + slightly bolder text so the
    lead row pops at the top of each discipline card. */
 .team-member.is-lead .team-member-name { font-weight: 700; }
 .team-member-lead {
@@ -6879,7 +7188,7 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .team-member-lead-toggle:hover { color: var(--sdc-accent, #ffde51); }
 .team-member.is-lead .team-member-lead-toggle { color: var(--sdc-accent, #ffde51); }
-/* Placeholders ΓÇö role-stand-ins on templates. Ghost styling so they read as
+/* Placeholders — role-stand-ins on templates. Ghost styling so they read as
    "stand-in seat", not real staff: dashed left border, italic name, light fill. */
 .team-member.is-placeholder {
   background: repeating-linear-gradient(135deg, #f8fafc, #f8fafc 6px, #f1f5f9 6px, #f1f5f9 12px);
@@ -6900,7 +7209,7 @@ td[data-col="assignee"].placeholder-assignee {
   font-style: italic;
   color: #64748b;
 }
-/* Sales-workspace cells (Assigned To + Allocation) ΓÇö intentionally empty
+/* Sales-workspace cells (Assigned To + Allocation) — intentionally empty
    (v4.22). Slightly muted background reads as "intentionally blank, not
    missing data". Hover does not invite editing. */
 td.sales-suppressed {
@@ -6963,6 +7272,212 @@ td.sales-suppressed {
 @media (max-width: 1100px) {
   .team-dashboard-cards { grid-template-columns: 1fr; }
 }
+/* v7.6 — Departments page absorbed the Dashboard.
+   - .dept-project-rollup sits ABOVE the SDC Team grid and houses the
+     project picker + key milestone strips + financial milestones table.
+   - .dept-overview sits BELOW the resource Gantt and is the unified,
+     SDC-colored status section (Needs attention / Upcoming / Available
+     capacity / Release dates) built by renderTeamDashboard(). */
+.dept-project-rollup {
+  padding: 22px 22px 4px;
+}
+.dept-project-rollup .pdash-section { margin-bottom: 18px; }
+.dept-project-rollup .pdash-section:last-child { margin-bottom: 8px; }
+
+/* ── Department overview (below the resource Gantt) ── */
+.dept-overview { margin: 18px 22px 180px; }
+.dept-releases-filter { display: block; margin-top: 4px; font-size: 11px; color: var(--text-muted, #64748b); cursor: pointer; }
+.dept-overview-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+.dept-overview-title { flex: 1; min-width: 0; }
+.dept-overview-head h2 { margin: 0; font-size: 18px; }
+.dept-overview-sub { display: block; color: var(--text-muted, #64748b); font-size: 12px; }
+.dept-overview-donut { display: flex; align-items: center; }
+.dept-donut-svg { display: block; }
+.dept-timeframe {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.dept-timeframe select {
+  padding: 5px 8px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--surface, #fff);
+}
+.dept-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@media (max-width: 1100px) {
+  .dept-overview-grid { grid-template-columns: 1fr; }
+}
+/* All overview cards share ONE look — no per-card color. A thin SDC-blue top
+   accent + a faint SDC-blue header tint, with the header text centered. */
+.dashboard-card.dept-card { border-top: 3px solid var(--sdc-primary, #1574c4); overflow: hidden; }
+.dept-card .dashboard-card-head {
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, white);
+  text-align: center;
+}
+/* Two-column split body (Needs attention, Upcoming). */
+.dept-card-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 14px;
+}
+@media (max-width: 720px) {
+  .dept-card-split { grid-template-columns: 1fr; }
+}
+.dept-subsection { min-width: 0; }
+.dept-subhead {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  text-align: center;
+}
+
+/* ── Overview charts (one per card) ── */
+.dept-chart { padding: 10px 14px 2px; }
+.dept-chart:empty { display: none; }
+/* Header donut + its status legend (stacked in the header cell). */
+.dept-overview-donut { flex-direction: column; gap: 4px; }
+.dept-donut-svg, .dept-gauge-svg { display: block; }
+.dept-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  justify-content: center;
+  font-size: 10px;
+  color: var(--text-muted, #64748b);
+}
+.dept-legend-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.dept-legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: none; }
+/* Needs-attention problem-count tiles. */
+.dept-stattiles { display: flex; gap: 8px; }
+.dept-stattile {
+  flex: 1;
+  text-align: center;
+  padding: 6px 4px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+}
+.dept-stattile-n { font-size: 22px; font-weight: 800; line-height: 1; }
+.dept-stattile-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  margin-top: 3px;
+}
+/* Per-person mini load donut in the Available-capacity list. */
+.dept-mini-donut { flex: none; display: block; }
+/* Current-workload — grid of person cards, 5 across. */
+.dept-workload-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 4px 0; }
+@media (max-width: 900px) { .dept-workload-grid { grid-template-columns: repeat(3, 1fr); } }
+.dept-workload-card {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 8px 4px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+.dept-workload-name { font-size: 11px; font-weight: 600; text-align: center; line-height: 1.15; min-width: 0; }
+.dept-workload-card--lead { border: 2px solid var(--sdc-dark, #061d39); }
+/* Releases grid — columns spread across the full card width. */
+.dept-rel-grid { width: 100%; }
+.dept-rel-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.2fr) 96px 96px 80px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 7px 14px;
+  border: none;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff);
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.dept-rel-row:last-child { border-bottom: none; }
+.dept-rel-head {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b); font-weight: 700;
+  cursor: default; background: transparent;
+}
+.dept-rel-row:not(.dept-rel-head):hover { background: var(--row-hover, #f8fafc); }
+.dept-rel-project { color: var(--text-muted, #64748b); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dept-rel-name { display: flex; align-items: center; gap: 8px; font-weight: 600; overflow: hidden; }
+/* Fixed-width check slot so the release NAME starts at the same x on every row,
+   complete or not. Lime-green check, never shifts the column. */
+.dept-rel-check { flex: none; width: 14px; text-align: center; color: var(--sdc-green, #74c415); font-weight: 800; }
+.dept-rel-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dept-rel-date { font-variant-numeric: tabular-nums; }
+.dept-rel-var { text-align: right; }
+/* Resources status filter — reuses the main Gantt's .view-bracket segmented
+   toggle (blue when active), just with smaller text labels. */
+.resources-status-bracket .view-bracket-icon { font-size: 12px; font-weight: 600; min-width: 0; padding: 0 10px; }
+/* Per-card window selector (Needs attention / Upcoming / Current workload). */
+.dept-window-select {
+  margin-top: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  font-size: 11px;
+  background: var(--surface, #fff);
+}
+/* Needs-attention chart row — donut + legend on the left, count tiles on the right. */
+.dept-attn-row { display: flex; align-items: center; gap: 14px; }
+.dept-attn-donut { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; }
+.dept-attn-tiles { flex: 1; min-width: 0; }
+/* Resources legend — two labeled rows (Task status / Allocation). */
+.legend-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 4px; }
+.legend-title { font-size: 11px; color: var(--text-muted, #64748b); margin-right: 2px; min-width: 70px; }
+/* Releases timeline — dots positioned by date along an axis. */
+.dept-timeline { position: relative; height: 32px; margin: 6px 0 2px; }
+.dept-tl-axis { position: absolute; top: 15px; left: 0; right: 0; height: 2px; background: #cbd5e1; }
+.dept-tl-today { position: absolute; top: 7px; width: 0; height: 18px; border-left: 1px dashed #94a3b8; }
+.dept-tl-dot {
+  position: absolute;
+  top: 10px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transform: translateX(-50%);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
+}
+.dept-tl-dot.is-done { background: var(--sdc-green, #74c415); }
+.dept-tl-dot.is-upcoming { background: var(--sdc-primary, #1574c4); }
+.dept-tl-dot.is-late { background: var(--sdc-dark, #061d39); }
+/* Capacity card list rows — match the dashboard-card-body item layout
+   used by the Behind/Coming-due/Key-dates cards above them. */
+.dashboard-row-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  font-size: 13px;
+}
+.dashboard-row-person:last-child { border-bottom: none; }
+.dashboard-row-person.is-over { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 5%, white); }
+.dashboard-row-person .dashboard-row-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-row-person .dashboard-row-assignee { color: var(--text-muted, #64748b); font-size: 12px; }
 .dashboard-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -7009,7 +7524,7 @@ td.sales-suppressed {
   /* Two-column layout: left side stacks project name (full, wrapping) over
      task name; right side is the date / drift chip. The old 90px first
      column truncated project names like "1129_Schneider_Electric_Cartoner"
-     down to "1129_SchneΓÇª" which made the cards basically useless. */
+     down to "1129_Schne…" which made the cards basically useless. */
   grid-template-columns: 1fr auto;
   align-items: center;
   gap: 8px;
@@ -7026,6 +7541,9 @@ td.sales-suppressed {
   font-family: inherit;
 }
 .dashboard-row:last-child { border-bottom: none; }
+/* Left column wrapper — project / task / assignee stacked. Keeps the date pill
+   pinned to the right and vertically centered, identically on every row. */
+.dashboard-row-main { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .dashboard-row:hover { background: var(--row-hover); }
 .dashboard-row-project {
   display: block;
@@ -7062,18 +7580,27 @@ td.sales-suppressed {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.dashboard-chip.chip-danger {
-  background: #fee2e2;
-  color: #b91c1c;
+/* Uniform pill colorway — SDC palette only: light blue (dates / info),
+   lime green (good / done / available), dark blue (attention: behind / over
+   / late), white (neutral). Same shape / size / font for every pill across
+   every overview card. */
+.dashboard-chip.chip-info,
+.dashboard-chip.chip-warn {
+  background: var(--sdc-blue-light, #aacee8);
+  color: var(--sdc-dark, #061d39);
 }
-.dashboard-chip.chip-info {
-  background: #dbeafe;
-  color: #1e40af;
+.dashboard-chip.chip-success {
+  background: var(--sdc-green-light, #befa4f);
+  color: var(--sdc-dark, #061d39);
+}
+.dashboard-chip.chip-danger {
+  background: #ef4444;
+  color: #fff;
 }
 .dashboard-chip.chip-neutral {
-  background: var(--surface-alt);
-  color: var(--text);
-  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--sdc-dark, #061d39);
+  border: 1px solid var(--border, #e2e8f0);
 }
 
 /* ---------- Resources section (lives below the Team grid) ---------- */
@@ -7112,7 +7639,10 @@ td.sales-suppressed {
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
+  /* Match the rest of the app's dark text — was --text-muted (light gray)
+     which made the discipline tabs look washed out next to the dropdowns
+     and dashboard text that all use --text. */
+  color: var(--text);
   cursor: pointer;
   letter-spacing: 0.02em;
 }
@@ -7161,7 +7691,7 @@ td.sales-suppressed {
 }
 .resources-body.panning,
 .resources-body.panning * { cursor: grabbing !important; user-select: none; }
-/* Keep the cursor pointing at things you can actually click ΓÇö don't grab on the name col. */
+/* Keep the cursor pointing at things you can actually click — don't grab on the name col. */
 .resources-name-cell, .resources-name-cell * { cursor: default; }
 .res-bar { cursor: pointer; }
 .resources-body > .empty-state {
@@ -7174,27 +7704,108 @@ td.sales-suppressed {
   flex-direction: column;
   min-width: calc(var(--name-col-w) + var(--tl-width));
 }
+/* Status filter — single dropdown ("⌕ All statuses ▾") with checkboxes
+   for each bucket. Click to expand, check / uncheck to toggle which
+   buckets show on the timeline. */
+.resources-status-dropdown {
+  position: relative;
+  display: inline-block;
+}
+.resources-status-dropdown > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  /* Match the rest of the app — dark text on a light surface, like the
+     Project picker dropdown right next to it. The toolbar uses
+     --surface-alt as its background, so white-on-white was invisible. */
+  color: var(--text, #1f2937);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  user-select: none;
+  white-space: nowrap;
+}
+.resources-status-dropdown > summary::-webkit-details-marker { display: none; }
+.resources-status-dropdown[open] > summary {
+  background: var(--surface-alt, #f1f5f9);
+}
+.resources-status-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  background: #fff;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(15,23,42,0.15);
+  padding: 6px 4px;
+  min-width: 180px;
+}
+.resources-status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.resources-status-item:hover { background: var(--surface-alt, #f1f5f9); }
+.resources-status-item input[type="checkbox"] { margin: 0; }
+.status-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid;
+  flex: 0 0 auto;
+}
+.status-swatch.swatch-zero    { background: #e2e8f0; border-color: #94a3b8; }
+.status-swatch.swatch-behind  { background: #fee2e2; border-color: #fca5a5; }
+.status-swatch.swatch-ontrack { background: #dcfce7; border-color: #86efac; }
+.status-swatch.swatch-done    { background: #ecfccb; border-color: #bef264; }
+/* Header — single inline SVG that uses the SAME class names as the
+   Schedule's frappe-gantt header (`.upper-text`, `.lower-text`, `.tick`).
+   Wrapped in `<svg class="gantt resources-axis-svg">` so frappe-gantt's
+   stylesheet `.gantt text { ... }` skins it identically. */
 .resources-header {
   display: flex;
   align-items: stretch;
   position: sticky;
   top: 0;
-  background: var(--surface-alt);
-  border-bottom: 1px solid var(--border-strong);
+  background: #ffffff;
+  border-bottom: 1px solid #e0e0e0;
   z-index: 2;
-  height: 38px;
+  /* min-height (not fixed height) so the header grows when the inline
+     SVG renders an extra row of weekday letters at high zoom. */
+  min-height: 38px;
 }
 .resources-header .resources-name-cell {
   width: var(--name-col-w);
   flex: 0 0 var(--name-col-w);
-  border-right: 1px solid var(--border);
-  background: var(--surface-alt);
+  border-right: 1px solid #e0e0e0;
+  background: #ffffff;
 }
 .resources-axis {
   position: relative;
-  height: 38px;
+  min-height: 38px;
   flex: 0 0 var(--tl-width);
+  overflow: visible;
+  background: #ffffff;
 }
+.resources-axis-svg {
+  display: block;
+  background: #ffffff;
+}
+.resources-axis-svg .upper-text { fill: #0f172a; font-weight: 600; }
+.resources-axis-svg .lower-text { fill: #475569; font-weight: 500; }
+.resources-axis-svg .tick { stroke: #cbd5e1; }
+
+/* Backwards-compat — keep the old class so anything still using it doesn't
+   blow up. */
 .resources-tick {
   position: absolute;
   top: 4px;
@@ -7215,7 +7826,7 @@ td.sales-suppressed {
   border-bottom: 1px solid var(--border);
 }
 .resources-row:hover { background: var(--row-hover); }
-/* Placeholder rows in the Resources view ΓÇö same role-marker styling as the team
+/* Placeholder rows in the Resources view — same role-marker styling as the team
    grid cards: italic name, dashed left border, ghosted fill. */
 .resources-row.is-placeholder .resources-name {
   font-style: italic;
@@ -7257,7 +7868,7 @@ td.sales-suppressed {
   position: relative;
   flex: 0 0 var(--tl-width);
   /* Clip any task bar whose calculated x is negative (started before the visible
-     timeline window) ΓÇö keeps bars inside the timeline column, never bleeding into
+     timeline window) — keeps bars inside the timeline column, never bleeding into
      the sticky name column on the left. */
   overflow: hidden;
   background: repeating-linear-gradient(
@@ -7289,9 +7900,32 @@ td.sales-suppressed {
 .res-bar:hover { filter: brightness(1.05); box-shadow: 0 2px 4px rgba(15,23,42,0.12); z-index: 2; }
 
 /* Resource-timeline bars share the SAME color scheme as the % complete pill in
-   the grid ΓÇö slate / red / green / emerald ΓÇö so a glance at the team page tells
+   the grid — slate / red / green / emerald — so a glance at the team page tells
    you which tasks are not started, behind, on track, or done without having to
    open a schedule. Driven by the same --pct-*-fill CSS vars set from Setup. */
+/* ── Departments Gantt (rebuilt on frappe-gantt) — same SVG bar styling
+      conventions as Schedule. Color the .bar fill by status; the .bar-
+      progress overlay uses a darker shade of the same status color. ── */
+#dept-gantt-host .gantt .bar-wrapper.dept-bar .bar          { fill: #fafbfc; stroke: #cbd5e1; stroke-width: 1; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar .bar-progress { fill: #94a3b8; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-zero .bar          { fill: var(--pct-zero-fill, #fafbfc); stroke: #cbd5e1; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-zero .bar-progress { fill: #94a3b8; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-behind .bar          { fill: var(--pct-behind-fill, #fee2e2); stroke: #dc2626; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-behind .bar-progress { fill: #dc2626; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-ontrack .bar          { fill: var(--pct-ontrack-fill, #dcfce7); stroke: #16a34a; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-ontrack .bar-progress { fill: #16a34a; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-done .bar          { fill: var(--pct-done-fill, #16a34a); stroke: #14532d; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.status-done .bar-progress { fill: #14532d; }
+#dept-gantt-host .gantt .bar-wrapper.dept-bar.is-focused .bar { stroke-width: 2.5; }
+/* Sample swatches in the legend reuse the same fills. */
+.legend-swatch.dept-bar.status-zero    { background: var(--pct-zero-fill, #fafbfc); border: 1px solid #cbd5e1; }
+.legend-swatch.dept-bar.status-behind  { background: var(--pct-behind-fill, #fee2e2); border: 1px solid #dc2626; }
+.legend-swatch.dept-bar.status-ontrack { background: var(--pct-ontrack-fill, #dcfce7); border: 1px solid #16a34a; }
+.legend-swatch.dept-bar.status-done    { background: var(--pct-done-fill, #16a34a); border: 1px solid #14532d; }
+/* Make the Departments Gantt fill the body height. */
+#dept-gantt-host { width: 100%; }
+#dept-gantt-host .gantt-container { overflow: auto; max-height: 70vh; }
+
 .res-bar.status-zero {
   background: var(--pct-zero-fill, #fafbfc);
   border-color: color-mix(in srgb, var(--pct-zero-fill, #fafbfc) 80%, #000);
@@ -7304,12 +7938,13 @@ td.sales-suppressed {
   background: var(--pct-ontrack-fill, #dcfce7);
   border-color: color-mix(in srgb, var(--pct-ontrack-fill, #dcfce7) 80%, #000);
 }
-/* Done resource bars get white text since the default --pct-done-fill is now
-   a deep green (#16a34a) that doesn't have enough contrast with black. */
+/* Done resource bars — placeholder rule kept here for source-order
+   grouping; the real styling lives further down (after `.res-bar.low-alloc`)
+   so its background-image can override low-alloc's diagonal hash on
+   tasks that are BOTH part-time AND complete. See `.res-bar.status-done`
+   block below. */
 .res-bar.status-done {
-  background: var(--pct-done-fill, #16a34a);
-  border-color: color-mix(in srgb, var(--pct-done-fill, #16a34a) 80%, #000);
-  color: white;
+  /* see overrides below */
 }
 .res-bar-label {
   text-overflow: ellipsis;
@@ -7355,7 +7990,7 @@ td.sales-suppressed {
 }
 .res-bar-priority-input::-webkit-inner-spin-button,
 .res-bar-priority-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-/* Over-allocated bar in the resources view ΓÇö emphasize with a red outline. */
+/* Over-allocated bar in the resources view — emphasize with a red outline. */
 .res-bar.over-allocated {
   outline: 2px solid #dc2626;
   outline-offset: -2px;
@@ -7378,7 +8013,32 @@ td.sales-suppressed {
     );
 }
 
-/* Load strip segments ΓÇö thin pills under the bars showing the running daily total
+/* Done bars — mirror the main Schedule's drawDoneHashOverlay treatment:
+   lime green outline (#befa4f, same color the Schedule uses on
+   `.gantt .bar-wrapper.is-done .bar { stroke: #befa4f }`) plus diagonal
+   lime hash stripes through the bar. Background goes white so the
+   description label stays readable against the lime hash. Higher source
+   order than low-alloc so a 50%-alloc done task shows the done lime
+   stripes (not the part-time white stripes). */
+.res-bar.status-done {
+  background-color: #ffffff !important;
+  border: 2.5px solid #befa4f !important;
+  color: #1f2937 !important;
+  background-image:
+    repeating-linear-gradient(
+      135deg,
+      transparent 0,
+      transparent 5px,
+      rgba(190, 250, 79, 0.7) 5px,
+      rgba(190, 250, 79, 0.7) 7px
+    ) !important;
+}
+.res-bar.status-done .res-bar-label {
+  color: #1f2937;
+  text-shadow: 0 0 2px rgba(255,255,255,0.85);
+}
+
+/* Load strip segments — thin pills under the bars showing the running daily total
    allocation. Adjacent days with the same total merge into one pill, so two 50% tasks
    overlapping for two weeks read as a single "100%" pill across that span. */
 .res-load-seg {
@@ -7397,11 +8057,19 @@ td.sales-suppressed {
   box-sizing: border-box;
   pointer-events: auto;
 }
+/* Load segment colors — sweet-spot bands per Dan's spec:
+   • load-under (< 85%) — light yellow, person has capacity left
+   • load-good  (85-100%) — green, well-utilized engineer
+   • load-over  (> 100%)  — red, double-booked
+   Legacy `load-partial` and `load-full` are kept as aliases so any
+   stale code paths still render sanely. */
+.res-load-seg.load-under,
 .res-load-seg.load-partial {
-  background: #f1f5f9;
-  border-color: #cbd5e1;
-  color: #475569;
+  background: #fef3c7;
+  border-color: #fcd34d;
+  color: #92400e;
 }
+.res-load-seg.load-good,
 .res-load-seg.load-full {
   background: #dcfce7;
   border-color: #86efac;
@@ -7413,7 +8081,7 @@ td.sales-suppressed {
   color: #b91c1c;
 }
 
-/* Overload stripe ΓÇö sits behind the bars (z-index lower), spans full row height. */
+/* Overload stripe — sits behind the bars (z-index lower), spans full row height. */
 .res-overload {
   position: absolute;
   top: 0;
@@ -7431,7 +8099,7 @@ td.sales-suppressed {
 }
 .resources-row.has-overload .resources-name { color: #b91c1c; }
 .resources-row.has-overload .resources-name::before {
-  content: 'ΓÜá ';
+  content: '⚠ ';
   color: #dc2626;
 }
 .res-overload-pill {
@@ -7451,8 +8119,9 @@ td.sales-suppressed {
   font-size: 12px;
   color: var(--text-muted);
   display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 #resources-legend .legend-item { display: flex; align-items: center; gap: 6px; }
 #resources-legend .legend-swatch {
@@ -7462,14 +8131,14 @@ td.sales-suppressed {
   display: inline-block;
 }
 
-/* ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+/* ─────────────────────────────────────────────────────────────────────────
    Phase 2 (Abhi port): per-task comments + @mentions.
    Badge sits inside the name cell; panel slides in from the right.
-   Self-contained CSS ΓÇö uses the existing --border / --surface / --text-*
+   Self-contained CSS — uses the existing --border / --surface / --text-*
    custom properties so it picks up theme tweaks for free.
-   ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+   ───────────────────────────────────────────────────────────────────────── */
 
-/* ≡ƒÆ¼ badge appended inside td[data-col="name"] by comments-ui.js. Kept small
+/* 💬 badge appended inside td[data-col="name"] by comments-ui.js. Kept small
    + neutral so it doesn't compete with the task description / % pill. */
 .sdc-comment-badge {
   display: inline-flex;
@@ -7677,7 +8346,7 @@ td.sales-suppressed {
   cursor: not-allowed;
 }
 
-/* @mention autocomplete ΓÇö floats above the textarea, fixed-positioned by
+/* @mention autocomplete — floats above the textarea, fixed-positioned by
    comments-ui.js based on the textarea's bounding rect. */
 .sdc-mention-dropdown {
   position: fixed;
@@ -7704,4 +8373,814 @@ td.sales-suppressed {
 .sdc-mention-item:hover,
 .sdc-mention-item.active {
   background: var(--surface-alt, #f1f5f9);
+}
+
+/* ─────────────────────────────────────────────────────────
+   Project Dashboard view (Sidebar → Dashboard).
+   Class prefix `pdash-` keeps it separate from the
+   Departments-tab dashboard (which uses .dashboard-card,
+   .dashboard-row, .dashboard-chip).
+
+   Layout, top to bottom:
+     Title + sub
+     Filters row: project dropdown + "coming due in N weeks"
+     Section: Key Milestones — one strip per project
+     Section: Overall Health — donut + legend
+     Section: By Department — cards (progress bar + donut +
+              people pills + 3 lists: coming / behind / ahead)
+   ───────────────────────────────────────────────────────── */
+.dashboard-page {
+  padding: 20px 26px 40px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+.pdash-title {
+  margin: 0 0 4px;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+}
+.pdash-sub {
+  margin: 0 0 18px;
+  font-size: 13px;
+  color: var(--text-muted, #64748b);
+}
+.pdash-sub strong { color: var(--text, #1f2937); font-weight: 600; }
+
+/* ── Filters row: project picker + coming-due weeks input ── */
+.pdash-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: stretch;
+  margin-bottom: 22px;
+}
+.pdash-picker {
+  flex: 1 1 320px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  position: relative;
+  z-index: 5;
+}
+.pdash-picker > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdash-picker > summary > strong {
+  font-weight: 600;
+}
+.pdash-picker-caret {
+  margin-left: auto;
+  color: var(--text-muted, #64748b);
+  transition: transform 120ms ease;
+}
+.pdash-picker[open] .pdash-picker-caret { transform: rotate(180deg); }
+.pdash-picker > summary::-webkit-details-marker { display: none; }
+.pdash-picker-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 4px 14px;
+  padding: 10px 14px 4px;
+  border-top: 1px solid var(--border, #e2e8f0);
+  max-height: 280px;
+  overflow-y: auto;
+}
+.pdash-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  cursor: pointer;
+  padding: 4px 0;
+}
+.pdash-picker-item input[type="checkbox"] { margin: 0; }
+.pdash-picker-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 14px 12px;
+}
+.pdash-weeks-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+  white-space: nowrap;
+}
+.pdash-weeks-control input {
+  width: 60px;
+  padding: 4px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  text-align: center;
+}
+
+/* ── Top-level section frame ── */
+.pdash-section {
+  margin-bottom: 26px;
+}
+.pdash-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.pdash-section-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+}
+.pdash-section-sub {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+}
+.pdash-empty-block {
+  padding: 30px 16px;
+  text-align: center;
+  font-style: italic;
+  color: var(--text-muted, #94a3b8);
+  background: var(--surface, #fff);
+  border: 1px dashed var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+
+/* ── Key Milestones — one COMPACT strip per project. Used to be big
+      30-row-tall cards; squeezed down so 20–30 active projects fit on
+      screen without scrolling forever. Dot is 20px, labels are 10px,
+      and slip chip ("3d early" / "5d late") sits next to the date. ── */
+.pdash-milestones {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pdash-milestone-row {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  align-items: start;
+  gap: 12px;
+  padding: 6px 12px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  min-height: 48px;
+}
+.pdash-milestone-project {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text, #1f2937);
+  /* Wrap rather than truncate — was clipping
+     "1129_Schneider_Electric_Cartoner" at the old 180px column. */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.25;
+}
+.pdash-milestone-track {
+  /* Absolute-positioned items keyed off fixed left% — anchors at
+     10/30/53/72/90, financials at 18/44/80/96. This is what keeps the
+     anchor dots locked across rows: a row with no financials and a
+     row with all four put their anchors at the IDENTICAL x. */
+  position: relative;
+  min-height: 56px;
+}
+/* Spine connector line, drawn once behind the icons. Spans the
+   leftmost anchor (PO @ 10%) to the rightmost (Ship @ 90%), passing
+   through every anchor along the way. Lives below the financial $
+   icons since they sit beside the anchors at higher percentages. */
+.pdash-milestone-track::before {
+  content: '';
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 12px;
+  height: 2px;
+  background: #e2e8f0;
+  z-index: 0;
+  pointer-events: none;
+}
+/* Each mini-item is ABSOLUTELY positioned at its left% inside the
+   track. transform: translateX(-50%) centers the item on that x so
+   the icon column lines up with the percentage. */
+.pdash-mile-item {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 80ms ease;
+  z-index: 1;
+}
+.pdash-mile-item:hover { transform: translateX(-50%) translateY(-1px); }
+/* (replaced by translateX-preserving hover above) */
+.pdash-mile-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  background: #cbd5e1;
+  border: 1.5px solid #cbd5e1;
+}
+.pdash-mile-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.pdash-mile-date {
+  font-size: 10px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.pdash-mile-dates {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.pdash-mile-slip {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.pdash-mile-slip.is-early { background: #dcfce7; color: #2f6a13; border: 1px solid #74c415; }
+.pdash-mile-slip.is-late  { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+
+/* ── Anchor icon variants (●) ── */
+.pdash-mile-anchor.is-done     .pdash-mile-icon { background: #74c415; border-color: #74c415; }
+.pdash-mile-anchor.is-upcoming .pdash-mile-icon { background: #1574c4; border-color: #1574c4; }
+.pdash-mile-anchor.is-overdue  .pdash-mile-icon { background: #dc2626; border-color: #dc2626; }
+.pdash-mile-anchor.is-missing  .pdash-mile-icon { background: #fff;    border-color: #cbd5e1; color: #cbd5e1; }
+.pdash-mile-anchor.is-missing  .pdash-mile-label { color: var(--text-muted, #94a3b8); }
+
+/* ── Financial icon variants ($) — square, SDC-green outline as the
+   "family" signal; fill encodes status. ── */
+.pdash-mile-fin .pdash-mile-icon {
+  border-radius: 4px;
+  border: 1.5px solid #74c415;
+  width: 20px;
+  height: 20px;
+}
+.pdash-mile-fin.is-paid     .pdash-mile-icon { background: #74c415; }
+.pdash-mile-fin.is-no-date  .pdash-mile-icon { background: #ffde51; color: #1f2937; }
+.pdash-mile-fin.is-upcoming .pdash-mile-icon { background: #fff;    color: #2f6a13; }
+.pdash-mile-fin.is-overdue  .pdash-mile-icon { background: #dc2626; border-color: #dc2626; }
+.pdash-mile-fin .pdash-mile-label { color: #2f6a13; }
+.pdash-mile-fin.is-no-date .pdash-mile-label { color: #713f12; }
+.pdash-mile-fin.is-overdue .pdash-mile-label { color: #b91c1c; }
+
+.pdash-date-baseline { color: var(--text-muted, #64748b); text-decoration: line-through; }
+.pdash-date-current  { color: var(--text, #1f2937); font-weight: 700; }
+/* Financial milestones sub-row — sits below the spine track in each
+   project's milestone strip. Tiles flow left→right by date and color-
+   code by status (paid = dark green, upcoming = gray, past due = red).
+   Each tile is a small square-ish pill with $-icon + name + date. */
+.pdash-milestone-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+/* Financial badge — sits INLINE inside the spine anchor cell, right
+   next to the dot. All badges share an SDC-green outline so they read
+   as the "financial family" of markers; the fill color varies by
+   status (paid / no-date / past-due / upcoming). */
+.pdash-fin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding: 0 4px 0 0;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 4px;
+  border: 1.5px solid #74c415;
+  background: #fff;
+  white-space: nowrap;
+  line-height: 1;
+  cursor: default;
+}
+.pdash-fin-badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px 0 0 3px;
+  font-weight: 800;
+  font-size: 10px;
+  color: #fff;
+  background: #74c415;
+}
+.pdash-fin-badge-abbrev {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  font-size: 9px;
+  color: #2f6a13;
+  padding: 0 2px;
+}
+/* Target month tag — "May '26" sized to sit next to the abbreviation
+   so the PM sees billing-month context inline. Slightly lighter
+   weight than the abbreviation so the eye reads `$ PO` first. */
+.pdash-fin-badge-month {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  padding-right: 2px;
+}
+/* Status fills — SDC palette per Dan's spec: paid=SDC green,
+   no-date=SDC yellow, past-due=red, upcoming=neutral. The green
+   outline stays consistent on all four so the user reads them as
+   one family of markers. */
+.pdash-fin-badge.is-paid {
+  background: #ecfccb;
+  border-color: #74c415;
+}
+.pdash-fin-badge.is-paid .pdash-fin-badge-icon   { background: #14532d; }
+.pdash-fin-badge.is-no-date {
+  background: #fef9c3;
+  border-color: #ffde51;
+}
+.pdash-fin-badge.is-no-date .pdash-fin-badge-icon   { background: #ffde51; color: #713f12; }
+.pdash-fin-badge.is-no-date .pdash-fin-badge-abbrev { color: #713f12; }
+.pdash-fin-badge.is-upcoming {
+  background: #fff;
+  border-color: #cbd5e1;
+}
+.pdash-fin-badge.is-upcoming .pdash-fin-badge-icon   { background: #94a3b8; }
+.pdash-fin-badge.is-upcoming .pdash-fin-badge-abbrev { color: #475569; }
+.pdash-fin-badge.is-overdue {
+  background: #fee2e2;
+  border-color: #dc2626;
+}
+.pdash-fin-badge.is-overdue .pdash-fin-badge-icon   { background: #dc2626; }
+.pdash-fin-badge.is-overdue .pdash-fin-badge-abbrev { color: #b91c1c; }
+.pdash-milestone:hover { transform: translateY(-1px); }
+.pdash-milestone-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: #cbd5e1;
+  border: 1.5px solid #cbd5e1;
+  flex: 0 0 auto;
+}
+.pdash-milestone-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.pdash-milestone-date {
+  font-size: 10px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.pdash-milestone-slip {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+/* SDC palette — early = lime (SDC green), late = red. */
+.pdash-milestone-slip.is-early { background: #dcfce7; color: #2f6a13; border: 1px solid #74c415; }
+.pdash-milestone-slip.is-late  { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+.pdash-milestone.is-done .pdash-milestone-dot     { background: #74c415; border-color: #74c415; }
+.pdash-milestone.is-upcoming .pdash-milestone-dot { background: #1574c4; border-color: #1574c4; }
+.pdash-milestone.is-overdue .pdash-milestone-dot  { background: #dc2626; border-color: #dc2626; }
+.pdash-milestone.is-missing .pdash-milestone-dot  { background: #fff;    border-color: #cbd5e1; color: #cbd5e1; }
+.pdash-milestone.is-missing .pdash-milestone-label { color: var(--text-muted, #94a3b8); }
+/* Old per-segment connectors replaced by track::before single line. */
+.pdash-milestone-connector { display: none; }
+
+/* ── Overall Health: donut + legend ── */
+.pdash-overall {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 16px 20px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  flex-wrap: wrap;
+}
+.pdash-overall-donut { flex: 0 0 auto; }
+.pdash-overall-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px 22px;
+  flex: 1 1 auto;
+}
+.pdash-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text, #1f2937);
+}
+.pdash-legend-item strong {
+  min-width: 28px;
+  font-weight: 700;
+  text-align: right;
+}
+.pdash-legend-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.pdash-legend-pct {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+}
+
+/* Each department gets its OWN full-width section (was a 2-col card
+   grid). Per Dan's spec: each dept reads as a band across the whole
+   page, with 4 columns of content inside (under / over / due-this-
+   month / behind). */
+.pdash-dept-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pdash-dept-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.pdash-dept-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--surface-alt, #f8fafc);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.pdash-dept-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.pdash-dept-count {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 999px;
+  padding: 2px 10px;
+}
+.pdash-dept-charts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.pdash-dept-progress-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  margin-bottom: 6px;
+}
+.pdash-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pdash-progress-track {
+  position: relative;
+  height: 14px;
+  background: #f1f5f9;
+  border-radius: 999px;
+  overflow: visible;
+}
+.pdash-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  /* SDC palette: good = SDC green, mid = SDC yellow, bad = red. */
+  background: #74c415;
+  transition: width 200ms ease;
+}
+.pdash-progress[data-tone="mid"] .pdash-progress-bar { background: #ffde51; }
+.pdash-progress[data-tone="bad"] .pdash-progress-bar { background: #dc2626; }
+.pdash-progress-tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 3px;
+  background: #1f2937;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+}
+.pdash-progress-tick::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #1f2937;
+}
+.pdash-progress-readout {
+  font-size: 12px;
+  color: var(--text, #1f2937);
+}
+.pdash-progress-readout strong { font-weight: 700; font-size: 14px; }
+.pdash-progress-expected {
+  margin-left: 8px;
+  color: var(--text-muted, #64748b);
+}
+.pdash-dept-donut {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pdash-donut-legend {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 11px;
+  color: var(--text, #1f2937);
+}
+.pdash-donut-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  white-space: nowrap;
+}
+
+/* People row: assignee pills */
+.pdash-people-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  background: #fafbfc;
+}
+.pdash-person-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 999px;
+}
+.pdash-person-name { font-weight: 600; color: var(--text, #1f2937); }
+.pdash-person-count {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Lists per dept: under-allocated / over-allocated / due-this-month /
+   behind. 3-col by default (Coming/Behind/Ahead legacy), 4-col when
+   the .pdash-dept-lists-4 modifier is on. */
+.pdash-dept-lists.pdash-dept-lists-4 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+}
+.pdash-dept-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0;
+}
+.pdash-dept-list {
+  padding: 12px 14px;
+  border-right: 1px solid var(--border, #e2e8f0);
+}
+.pdash-dept-list:last-child { border-right: none; }
+.pdash-dept-list h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pdash-list-count {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  background: #e2e8f0;
+  border-radius: 999px;
+  color: var(--text, #1f2937);
+}
+.pdash-dept-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.pdash-tl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 0;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f1f5f9;
+}
+.pdash-tl-row:last-child { border-bottom: none; }
+.pdash-tl-row:hover { background: #f8fafc; }
+.pdash-tl-name {
+  flex: 1 1 auto;
+  font-weight: 500;
+  color: var(--text, #1f2937);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdash-tl-project, .pdash-tl-assignee {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  flex: 0 0 auto;
+  white-space: nowrap;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pdash-tl-empty {
+  padding: 8px 0;
+  color: var(--text-muted, #94a3b8);
+  font-style: italic;
+  font-size: 12px;
+}
+/* Person row (under/over allocated) — name + muted reason text. No
+   chip, no row of yellow. Reads like a quick roster. */
+.pdash-tl-person {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 12px;
+}
+.pdash-tl-person:last-child { border-bottom: none; }
+.pdash-tl-person-name {
+  font-weight: 600;
+  color: var(--text, #1f2937);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+.pdash-tl-person-reason {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.pdash-tl-person.is-over .pdash-tl-person-reason { color: #b91c1c; font-weight: 700; }
+
+/* Chip pills used everywhere */
+.pdash-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+/* SDC palette — success/info/warn map to SDC green/blue/yellow. Danger
+   keeps red since it signals a warning state outside the four colors. */
+.pdash-chip.chip-success { background: #dcfce7; color: #2f6a13; border: 1px solid #74c415; }
+.pdash-chip.chip-warn    { background: #fef9c3; color: #713f12; border: 1px solid #ffde51; }
+.pdash-chip.chip-danger  { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+.pdash-chip.chip-info    { background: #e0effa; color: #0c4a8a; border: 1px solid #aacee8; }
+
+/* Financial milestones controls row — month-range pickers + clear. */
+.pdash-fin-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.pdash-fin-month {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text, #1f2937);
+}
+.pdash-fin-month input[type="month"] {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--text, #1f2937);
+}
+/* Financial milestones table — straightforward zebra-striped rows.
+   Uses table-layout:fixed + <colgroup> per the CLAUDE.md column-width
+   rule (description column gets the remainder, numeric/icon columns
+   sized to their content). */
+.pdash-fin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+  table-layout: fixed;
+}
+.pdash-fin-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdash-fin-table th.num,
+.pdash-fin-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pdash-fin-table thead th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+  background: var(--surface-alt, #f8fafc);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.pdash-fin-table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: var(--text, #1f2937);
+}
+.pdash-fin-table tbody tr:last-child td { border-bottom: none; }
+.pdash-fin-row:hover { background: #f8fafc; cursor: pointer; }
+
+@media (max-width: 1100px) {
+  .pdash-dept-grid { grid-template-columns: 1fr; }
+  .pdash-dept-lists { grid-template-columns: 1fr; }
+  .pdash-dept-list { border-right: none; border-bottom: 1px solid var(--border, #e2e8f0); }
+  .pdash-dept-list:last-child { border-bottom: none; }
+  .pdash-milestone-project { flex: 0 0 120px; }
+}
+@media (max-width: 720px) {
+  .pdash-dept-charts { grid-template-columns: 1fr; }
+  .pdash-overall { gap: 16px; }
+  .pdash-milestone-row { flex-direction: column; align-items: flex-start; }
 }
