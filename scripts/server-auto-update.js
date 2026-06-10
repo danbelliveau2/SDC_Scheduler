@@ -8,12 +8,11 @@
  * then pm2 restarts sdc-scheduler.
  *
  * Preserved (never overwritten):
- *   server.js        — compression middleware, azureSync, /health endpoint
- *   azureDb.js       — Azure SQL connection
- *   azureSync.js     — Azure sync layer
- *   create-admin.js, migrate.js
- *   *.db / sessions.db — live SQLite databases
- *   package.json     — extra deps (compression, mssql) kept; only new upstream deps added
+ *   server.js   — rewritten for MySQL (mysql2/promise), must not be replaced with Dan's SQLite version
+ *   db.js       — re-exports MySQL pool; Dan's version is SQLite (better-sqlite3)
+ *   cronJobs.js — rewritten for MySQL; Dan's version uses SQLite prepared statements
+ *   mysqlDb.js, create-admin.js, migrate-sqlite-to-mysql.js  — MySQL-only files
+ *   package.json     — only new upstream deps added, local extras kept
  *   .env
  *
  * Run via PM2:  pm2 start ecosystem.config.js --only sdc-scheduler-updater
@@ -27,7 +26,7 @@ const os               = require('os');
 const { execSync }     = require('child_process');
 
 const GITHUB_REPO       = 'danbelliveau2/SDC_Scheduler';
-const GITHUB_BRANCH     = 'master';
+const GITHUB_BRANCH     = 'main';   // Dan's active branch — master is stale
 const CHECK_INTERVAL_MS = 2 * 60 * 1000;
 const APP_DIR           = path.join(__dirname, '..');
 const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync'];
@@ -40,10 +39,12 @@ const SHA_FILE          = path.join(APP_DIR, '.update-sha');
 // logic below). Dan's repo-sync script is pulled individually via SAFE_FILES.
 const SAFE_DIRS = ['public'];
 
-// Individual files safe to replace from upstream
-const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore', 'server.js',
-                    'auth.js', 'cronJobs.js', 'emailService.js',
-                    'azureSync.js', 'azureDb.js',
+// Individual files safe to replace from upstream.
+// ⚠ server.js, db.js, cronJobs.js are EXCLUDED — they have been rewritten for
+//   MySQL (mysql2/promise) and must never be overwritten with Dan's SQLite version.
+//   auth.js and emailService.js are safe: they contain no direct DB calls.
+const SAFE_FILES = ['ARROW_ROUTING_RULES.md', '.gitignore',
+                    'auth.js', 'emailService.js',
                     'scripts/repo-sync.js'];  // pulled individually since scripts/ is excluded
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -213,7 +214,7 @@ async function checkAndUpdate() {
     }
 
     // 4. Sync new deps from upstream — only ADD new packages, never remove existing
-    // This preserves local extras: compression, mssql (needed for azureSync)
+    // This preserves local extras; only new upstream deps are added
     const upstreamPkgPath = path.join(tmpDir, 'package.json');
     if (fs.existsSync(upstreamPkgPath)) {
       const upstream = JSON.parse(fs.readFileSync(upstreamPkgPath, 'utf8'));
@@ -233,11 +234,27 @@ async function checkAndUpdate() {
       }
     }
 
-    // 5. Apply local patches on top of upstream files — runs after every pull so
+    // 5. Mirror public/ into custom-public/ so our overlay stays current.
+    //    custom-public/ is served before public/ in Express, giving us a
+    //    writable layer for local patches on top of Dan's ACL-locked public/ files.
+    const customPublicDir = path.join(APP_DIR, 'custom-public');
+    const publicDir = path.join(APP_DIR, 'public');
+    if (fs.existsSync(publicDir) && fs.existsSync(customPublicDir)) {
+      for (const f of fs.readdirSync(publicDir)) {
+        const src = path.join(publicDir, f);
+        const dst = path.join(customPublicDir, f);
+        if (fs.statSync(src).isFile()) {
+          try { fs.copyFileSync(src, dst); } catch (_) {}
+        }
+      }
+      log('  Mirrored public/ → custom-public/');
+    }
+
+    // 6. Apply local patches on top of upstream files — runs after every pull so
     //    fixes survive upstream updates without forking Dan's repo.
     applyLocalPatches(APP_DIR);
 
-    // 6. Restart PM2 apps
+    // 7. Restart PM2 apps
     for (const name of PM2_APP_NAMES) {
       log(`Restarting ${name}…`);
       try { run(`pm2 restart ${name} --update-env`); }

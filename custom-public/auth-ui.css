@@ -84,11 +84,15 @@
 }
 .sdc-auth-link:hover { color: #0c5fa3; }
 
-/* User pill — fixed top-right corner; floats above the toolbar. */
+/* User pill — anchored at the bottom-left of the main content area, just
+   past the sidebar, on the same row as the schedule footer's Quote vs
+   Schedule button. Stays visible across every view (Projects, Schedule,
+   Setup, etc.) so the "who's logged in" indicator is always one glance
+   away from the Rev pin. */
 .sdc-auth-pill {
   position: fixed;
-  top: 8px;
-  right: 12px;
+  bottom: 10px;
+  left: 92px; /* sidebar is ~72px wide; leave a small gap */
   z-index: 5000;
   display: inline-flex;
   align-items: center;
@@ -135,12 +139,25 @@
 }
 .sdc-auth-signout:hover { background: #f1f5f9; color: #dc2626; }
 
-/* Phase 4.1 — "who's editing" presence strip. Sits just below the user pill
-   in the top-right; one circle per active collaborator (excluding self). */
+.sdc-auth-changepw {
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 50%;
+  opacity: 0.6;
+}
+.sdc-auth-changepw:hover { background: #f1f5f9; opacity: 1; }
+
+/* Phase 4.1 — "who's editing" presence strip. Sits just to the right of
+   the user pill at the bottom-left; one circle per active collaborator
+   (excluding self). */
 .sdc-presence-strip {
   position: fixed;
-  top: 44px;
-  right: 12px;
+  bottom: 12px;
+  left: 280px; /* clears the user pill */
   z-index: 4900;
   display: flex;
   gap: 4px;

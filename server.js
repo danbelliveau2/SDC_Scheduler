@@ -12,38 +12,28 @@
  *   7. Projects     — /api/projects/*  (machines, duplicate, baseline, etc.)
  *   8. Estimates    — /api/estimate/*  (xlsx parsing + project auto-generation)
  *   9. Financials   — /api/financials/*
- *  10. Azure manual — /api/azure/push, /api/azure/pull (admin)
- *  11. Bootstrap    — startServer(), SIGTERM handler
+ *  10. Bootstrap    — startServer(), SIGTERM handler
  *
  * Conventions for new routes:
  *   - Guard writes with `requireRole('editor' | 'admin')`
  *   - End task mutations with `io.emit('tasks:updated', { project })`
- *   - Call `sync('tasks')` (or the relevant table) for Azure push
  *   - Use `logHistory(taskId, project, action, …)` for audit trail
  */
 const express = require('express');
 const http    = require('http');
 const path = require('path');
+const fs = require('fs');
 const XLSX = require('xlsx');
 const compression = require('compression');
 const bcrypt = require('bcryptjs');
 const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
-const azureSync = require('./azureSync');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
 // emailService is optional — when nodemailer isn't installed or SMTP_HOST is
 // empty, it returns a no-op stub so the comment POST handler doesn't crash.
 let emailSvc;
 try { emailSvc = require('./emailService'); }
 catch (_) { emailSvc = { sendMentionEmail: () => {}, sendDigest: () => {} }; }
-
-// Await Azure SQL sync after every write — Azure SQL is the primary store.
-// Errors are caught and logged so a transient Azure outage never breaks the response.
-async function sync(...tables) {
-  await Promise.all(tables.map(t => azureSync.syncTable(t).catch(err =>
-    console.warn(`[sync] ${t} failed (non-fatal):`, err.message)
-  )));
-}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -101,6 +91,17 @@ app.use((req, res, next) => {
   }
   next();
 });
+// Serve auth-ui.js with minlength patched to 1 (file ACL is read-only)
+app.get('/auth-ui.js', (req, res) => {
+  const src = fs.existsSync(path.join(__dirname, 'custom-public', 'auth-ui.js'))
+    ? path.join(__dirname, 'custom-public', 'auth-ui.js')
+    : path.join(__dirname, 'public', 'auth-ui.js');
+  const content = fs.readFileSync(src, 'utf8').replace(/minlength="6"/g, 'minlength="1"');
+  res.type('application/javascript').send(content);
+});
+// custom-public/ overlays public/ — auto-updater writes to public/ (ACL-locked for us),
+// so Dan's latest frontend updates land in custom-public/ instead.
+app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, lastModified: true }));
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true }));
 
 // ─── Phase 3 (Auth): public auth routes — defined BEFORE the global
@@ -117,7 +118,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
-  await pool.query('UPDATE users SET last_login = ? WHERE id = ?', [new Date().toISOString(), user.id]);
+  await pool.query('UPDATE users SET last_login = ? WHERE id = ?', [new Date().toISOString().slice(0, 19).replace('T', ' '), user.id]);
   const token = signToken(user);
   res.json({
     token,
@@ -173,7 +174,7 @@ app.post('/api/auth/register', async (req, res) => {
       ...(roleNote ? { note: roleNote } : {}),
     });
   } catch (e) {
-    if (String(e.message).includes('ER_DUP_ENTRY') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });
+    if (e.code === 'ER_DUP_ENTRY' || String(e.message).includes('Duplicate entry') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });
     res.status(500).json({ error: 'Failed to register: ' + e.message });
   }
 });
@@ -420,8 +421,8 @@ app.post('/api/tasks', requireRole('editor'), async (req, res) => {
     req.body.department || null,
     req.body.sub_department || null,
     req.body.assignee || null,
-    req.body.start_date || null,
-    req.body.end_date || null,
+    req.body.start_date ? String(req.body.start_date).slice(0, 10) : null,
+    req.body.end_date ? String(req.body.end_date).slice(0, 10) : null,
     req.body.duration_days ?? null,
     req.body.predecessors || null,
     req.body.is_milestone ? 1 : 0,
@@ -442,7 +443,6 @@ app.post('/api/tasks', requireRole('editor'), async (req, res) => {
   await logHistory(task.id, task.project, 'create', null, null, task, null);
   res.json(task);
   io.emit('tasks:updated', { project: task.project || null });
-  await sync('tasks');
 });
 
 app.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
@@ -460,10 +460,16 @@ app.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
     });
   }
 
+  const INT_FIELDS = new Set(['duration_days','progress','allocation','priority','duration_link_task_id','is_action']);
+  const DATE_FIELDS = new Set(['start_date','end_date','baseline_start_date','baseline_end_date','completed_on']);
   const updates = {};
   for (const f of FIELDS) {
     if (f in req.body) {
-      if (f === 'is_milestone') updates[f] = req.body[f] ? 1 : 0;
+      if (f === 'is_milestone' || f === 'is_action') updates[f] = req.body[f] ? 1 : 0;
+      else if (INT_FIELDS.has(f)) updates[f] = req.body[f] == null || req.body[f] === '' ? null : Number(req.body[f]) || 0;
+      // ISO 8601 datetimes ('2026-06-20T00:00:00.000Z') overflow the date columns —
+      // trim to YYYY-MM-DD so MySQL never throws ER_DATA_TOO_LONG mid-request.
+      else if (DATE_FIELDS.has(f)) updates[f] = req.body[f] ? String(req.body[f]).slice(0, 10) : null;
       else updates[f] = req.body[f] === '' ? null : req.body[f];
     }
   }
@@ -524,7 +530,6 @@ app.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   await logHistory(id, updated.project, 'update', null, existing, updated, null);
   res.json(updated);
   io.emit('tasks:updated', { project: updated.project || null });
-  await sync('tasks');
 });
 
 app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
@@ -540,7 +545,6 @@ app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   await cascadeSchedule();
   res.json({ ok: true });
   io.emit('tasks:updated', { project: before?.project || null });
-  await sync('tasks');
 });
 
 app.get('/api/settings', async (req, res) => {
@@ -561,7 +565,6 @@ app.put('/api/settings/:key', requireRole('admin'), async (req, res) => {
   );
   res.json({ ok: true });
   io.emit('settings:updated', { key });
-  await sync('settings');
 });
 
 // ---------- Team members ----------
@@ -582,7 +585,6 @@ app.post('/api/team', requireRole('editor'), async (req, res) => {
   const [[row]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [result.insertId]);
   res.json(row);
   io.emit('team:updated');
-  await sync('team_members');
 });
 
 app.put('/api/team/:id', requireRole('editor'), async (req, res) => {
@@ -603,14 +605,12 @@ app.put('/api/team/:id', requireRole('editor'), async (req, res) => {
   if (Object.keys(updates).length === 0) return res.json(existing);
   if (updates.name && updates.name !== existing.name) {
     await pool.query('UPDATE tasks SET assignee = ? WHERE assignee = ?', [updates.name, existing.name]);
-    await sync('tasks');
   }
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   await pool.query(`UPDATE team_members SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
   const [[updated]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [id]);
   res.json(updated);
   io.emit('team:updated');
-  await sync('team_members');
 });
 
 app.delete('/api/team/:id', requireRole('editor'), async (req, res) => {
@@ -618,7 +618,6 @@ app.delete('/api/team/:id', requireRole('editor'), async (req, res) => {
   await pool.query('DELETE FROM team_members WHERE id = ?', [id]);
   res.json({ ok: true });
   io.emit('team:updated');
-  await sync('team_members');
 });
 
 app.post('/api/team/reorder', requireRole('editor'), async (req, res) => {
@@ -1036,7 +1035,6 @@ app.post('/api/import/smartsheet', requireRole('admin'), async (req, res) => {
       tasksCreated: items.length,
       addedMembers,
     });
-    await sync('tasks', 'team_members');
   } catch (err) {
     console.error('Smartsheet import failed:', err);
     res.status(500).json({ error: err.message || 'Import failed' });
@@ -1766,7 +1764,6 @@ app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
             ? `Computed FAT is ${Math.abs(scheduleVariance)} days BEFORE the quoted date — testing was extended to absorb slack but couldn't fill the full window. Check schedule.`
             : 'Schedule fits the delivery window.',
     });
-    await sync('tasks', 'settings');
   } catch (err) {
     console.error('Estimate create failed:', err);
     res.status(500).json({ error: err.message || 'Create failed' });
@@ -1917,7 +1914,6 @@ app.post('/api/import/schedule', requireRole('admin'), async (req, res) => {
 
     const inserted = dataRows.length;
     res.json({ ok: true, project: projectName, inserted, mode });
-    await sync('tasks', 'projects');
   } catch (err) {
     console.error('[import/schedule]', err);
     res.status(500).json({ error: err.message });
@@ -1939,7 +1935,6 @@ app.post('/api/baseline/set', requireRole('editor'), async (req, res) => {
     [project]
   );
   res.json({ ok: true, baselined: result.affectedRows });
-  await sync('tasks');
 });
 
 app.post('/api/baseline/clear', requireRole('editor'), async (req, res) => {
@@ -1950,7 +1945,6 @@ app.post('/api/baseline/clear', requireRole('editor'), async (req, res) => {
     [project]
   );
   res.json({ ok: true, cleared: result.affectedRows });
-  await sync('tasks');
 });
 
 // ---------- Multi-machine: duplicate one machine's tasks into another ----------
@@ -2211,7 +2205,7 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
     }
   }
 
-  const now = new Date().toISOString();
+  const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
   const [r] = await pool.query(
     'INSERT INTO task_comments (task_id, project, author_id, author_name, body, mentions, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [taskId, task.project, authorId, authorName, body, JSON.stringify(mentions), now, now]
@@ -2303,7 +2297,6 @@ app.post('/api/financials', requireRole('editor'), async (req, res) => {
   );
   const [[row]] = await pool.query('SELECT * FROM project_financials WHERE id = ?', [result.insertId]);
   res.json(row);
-  await sync('project_financials');
 });
 
 app.put('/api/financials/:id', requireRole('editor'), async (req, res) => {
@@ -2324,14 +2317,12 @@ app.put('/api/financials/:id', requireRole('editor'), async (req, res) => {
   await pool.query(`UPDATE project_financials SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
   const [[row]] = await pool.query('SELECT * FROM project_financials WHERE id = ?', [id]);
   res.json(row);
-  await sync('project_financials');
 });
 
 app.delete('/api/financials/:id', requireRole('editor'), async (req, res) => {
   const id = Number(req.params.id);
   await pool.query('DELETE FROM project_financials WHERE id = ?', [id]);
   res.json({ ok: true });
-  await sync('project_financials');
 });
 
 app.post('/api/financials/seed', requireRole('editor'), async (req, res) => {
@@ -2397,7 +2388,6 @@ app.post('/api/projects', requireRole('editor'), async (req, res) => {
   );
   const [[row]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
   res.status(201).json(row);
-  await sync('projects');
   notifyClients('projects_changed');
 });
 
@@ -2418,14 +2408,12 @@ app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
   if (updates.name && updates.name !== existing.name) {
     await pool.query('UPDATE tasks SET project = ? WHERE project = ?', [updates.name, existing.name]);
     await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
-    await sync('tasks', 'project_financials');
   }
 
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
   await pool.query(`UPDATE projects SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
   const [[row]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
   res.json(row);
-  await sync('projects');
   notifyClients('projects_changed');
 });
 
@@ -2437,7 +2425,6 @@ app.delete('/api/projects/:id', requireRole('admin'), async (req, res) => {
   await pool.query('DELETE FROM project_financials WHERE project = ?', [existing.name]);
   await pool.query('DELETE FROM projects WHERE id = ?', [id]);
   res.json({ ok: true });
-  await sync('tasks', 'project_financials', 'projects');
   notifyClients('projects_changed');
 });
 
@@ -2694,7 +2681,7 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
     const [[newUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?', [r.insertId]);
     res.status(201).json(newUser);
   } catch (e) {
-    if (String(e.message).includes('ER_DUP_ENTRY') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'Email already registered.' });
+    if (e.code === 'ER_DUP_ENTRY' || String(e.message).includes('Duplicate entry') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'Email already registered.' });
     res.status(500).json({ error: 'Failed to create user: ' + e.message });
   }
 });
@@ -2727,26 +2714,12 @@ app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
 // Health check — used by Electron shell to detect server readiness
 app.get('/health', (_req, res) => res.json({ ok: true, service: 'scheduler' }));
 
-// ─── Phase 6 — Azure SQL manual sync (admin only) ─────────────────────────
-// POST /api/azure/push  → overwrite Azure with local
-// POST /api/azure/pull  → overwrite local with Azure (destructive)
-// GET  /api/azure/status → connection state + last-sync info
-app.get('/api/azure/status', (req, res) => {
-  res.json({
-    enabled: azureSync.ENABLED,
-    push_on_boot: process.env.AZURE_PUSH_ON_BOOT === 'true',
-    pull_on_boot: process.env.AZURE_PULL_ON_BOOT === 'true',
-  });
-});
-app.post('/api/azure/push', requireRole('admin'), async (_req, res) => {
-  if (!azureSync.ENABLED) return res.status(400).json({ error: 'Azure SQL not configured' });
-  try { await azureSync.pushAll(); res.json({ ok: true }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-app.post('/api/azure/pull', requireRole('admin'), async (_req, res) => {
-  if (!azureSync.ENABLED) return res.status(400).json({ error: 'Azure SQL not configured' });
-  try { await azureSync.pullAll(); res.json({ ok: true }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
+// Global error handler — catches unhandled promise rejections from async routes
+// (Express 4 does not auto-catch async throws without this)
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('[scheduler] Unhandled route error:', err.message);
+  if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
 });
 
 // ── Exportable entry point (used by Electron in-process execution) ────────────
@@ -2764,13 +2737,11 @@ async function startServer({ port } = {}) {
     else              console.log('[scheduler] Auth: DISABLED — set AUTH_ENABLED=true in .env to require login');
   });
   server.on('error', err => console.error('[scheduler] Server error:', err.message));
-  // Init Azure sync in background — does not block server startup or requests.
-  azureSync.init(pool).catch(err => console.warn('[AzureSync] Background init error:', err.message));
   // Phase 7 (email): kick off any scheduled cron jobs (digest emails etc.).
   // Wrapped in typeof check so a missing cronJobs.js doesn't crash boot.
   try {
     const cron = require('./cronJobs');
-    if (cron && typeof cron.start === 'function') cron.start({ db: pool, emailSvc });
+    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc });
   } catch (_) { /* cronJobs.js is optional */ }
   return server;
 }
