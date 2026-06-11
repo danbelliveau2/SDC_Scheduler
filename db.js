@@ -154,6 +154,66 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE users ADD INDEX idx_users_email (email)`).catch(() => {});
+
+  // v8.1: "Parts in Shop" — PM-facing list of parts physically at the SDC shop.
+  // Mirrors the Smartsheet sheet: priority rank, job/project, part details,
+  // finishing status, ownership (PM/Engineer), and BOM/complete checkboxes.
+  // sort_order drives manual drag re-prioritization; rank is the user's numeric
+  // priority bucket (-2..N). Independent from the tasks table.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shop_parts (
+      id                INT AUTO_INCREMENT PRIMARY KEY,
+      \`rank\`          INT,
+      job               VARCHAR(255),
+      qty               INT,
+      part_no           VARCHAR(255),
+      description       TEXT,
+      shop_release      VARCHAR(64),
+      new_mod           VARCHAR(32),
+      location          VARCHAR(255),
+      out_for_finishing VARCHAR(255),
+      priority          VARCHAR(32),
+      comments          TEXT,
+      engineer          VARCHAR(255),
+      pm                VARCHAR(255),
+      added_to_bom      TINYINT(1) DEFAULT 0,
+      part_complete     TINYINT(1) DEFAULT 0,
+      completed_on      VARCHAR(64),
+      sort_order        INT DEFAULT 0,
+      created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE shop_parts ADD INDEX idx_shop_parts_job (job)`).catch(() => {});
+
+  // v8.x: "Vendor PO Track" — every PO sent to an outside vendor (China custom
+  // parts). Status (green done / blue partial / navy late / yellow due-soon) is
+  // derived client-side from complete/partial + ETA (PO Date + Lead Time weeks).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS vendor_pos (
+      id            INT AUTO_INCREMENT PRIMARY KEY,
+      priority      INT,
+      po            VARCHAR(255),
+      job           VARCHAR(255),
+      vendor        VARCHAR(255),
+      po_date       VARCHAR(64),
+      lead_time     INT,
+      eta           VARCHAR(64),
+      ship_date     VARCHAR(64),
+      delivery_date VARCHAR(64),
+      tracking      VARCHAR(255),
+      po_price      VARCHAR(64),
+      pm            VARCHAR(255),
+      comments      TEXT,
+      partial       TINYINT(1) DEFAULT 0,
+      complete      TINYINT(1) DEFAULT 0,
+      completed_on  VARCHAR(64),
+      sort_order    INT DEFAULT 0,
+      created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE vendor_pos ADD INDEX idx_vendor_pos_vendor (vendor)`).catch(() => {});
 }
 
 const DEFAULT_SETTINGS = {

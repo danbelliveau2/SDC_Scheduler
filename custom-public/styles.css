@@ -2059,7 +2059,9 @@ main {
    sets flex:1 + min-height:0; without an explicit overflow:auto, any
    content past the visible viewport gets clipped. (Bug Dan hit: Build /
    Wire department cards were cut off at the bottom of the page.) */
-#view-dashboard.active {
+#view-dashboard.active,
+#view-shop-parts.active,
+#view-vendor-pos.active {
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -7427,6 +7429,8 @@ td.sales-suppressed {
 .dept-rel-check { flex: none; width: 14px; text-align: center; color: var(--sdc-green, #74c415); font-weight: 800; }
 .dept-rel-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dept-rel-date { font-variant-numeric: tabular-nums; }
+.dept-rel-date-cur { display: block; }
+.dept-rel-date-base { display: block; font-size: 10px; color: var(--text-muted, #64748b); }
 .dept-rel-var { text-align: right; }
 /* Resources status filter — reuses the main Gantt's .view-bracket segmented
    toggle (blue when active), just with smaller text labels. */
@@ -7602,6 +7606,262 @@ td.sales-suppressed {
   color: var(--sdc-dark, #061d39);
   border: 1px solid var(--border, #e2e8f0);
 }
+
+/* ---------- Parts in Shop (card view) ---------- */
+.shop-parts-page { padding: 18px 22px 180px; }
+.shop-parts-head { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+/* Quick-add bar */
+.sp-head-top { display: flex; align-items: center; gap: 12px; }
+.sp-head-top .projects-page-title { margin-right: auto; }
+/* Combined historical strip up top: on-time donut + avg-lead-by-vendor list. */
+.vpo-headstat { display: flex; align-items: stretch; gap: 14px; padding: 6px 12px; background: var(--sdc-blue-light, #aacee8); background: color-mix(in srgb, var(--sdc-primary, #1574c4) 8%, #fff); border: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 22%, #fff); border-radius: 10px; }
+.vpo-hs-ontime { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding-right: 14px; border-right: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 18%, #fff); }
+.vpo-hs-ontime svg { width: 46px; height: 46px; }
+.vpo-hs-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sdc-dark, #061d39); font-weight: 800; }
+.vpo-hs-sub { font-size: 10px; font-weight: 700; color: var(--text-muted, #64748b); }
+.vpo-hs-lead { display: flex; flex-direction: column; gap: 2px; min-width: 180px; }
+.vpo-hs-leadlist { max-height: 64px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
+.vpo-hs-leadrow { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 6px; font-size: 11px; align-items: center; }
+.vpo-hs-vn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sdc-dark, #061d39); }
+.vpo-hs-avg { text-align: right; font-weight: 700; color: var(--sdc-primary, #1574c4); }
+/* Shop Parts head-stat: on-time only, so drop the divider/padding. */
+.sp-headstat .vpo-hs-ontime { border-right: none; padding-right: 0; }
+.sp-add-toggle { white-space: nowrap; }
+.sp-add-bar { display: flex; gap: 8px 10px; flex-wrap: wrap; align-items: flex-end; background: var(--surface-alt, #f1f5f9); padding: 12px; border-radius: 10px; border: 1px solid var(--border, #e2e8f0); }
+.sp-add-bar.is-hidden { display: none; }
+.sp-add-f { display: flex; flex-direction: column; gap: 2px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted, #64748b); }
+.sp-add-f-grow { flex: 1; min-width: 140px; }
+.sp-add-bar input, .sp-add-bar select { padding: 7px 9px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: 13px; background: #fff; }
+.sp-add-pn { width: 130px; }
+.sp-add-qty { width: 56px; }
+.sp-add-job { width: 110px; }
+.sp-add-due { width: 140px; }
+.sp-add-type { width: 100px; }
+.sp-add-pm, .sp-add-eng { width: 110px; }
+.sp-add-notes { width: 100%; }
+.sp-add-btn { align-self: flex-end; }
+.shop-parts-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sp-search { padding: 6px 10px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: 13px; min-width: 200px; margin-left: auto; }
+/* List + project groups */
+.sp-group { margin-bottom: 16px; }
+.sp-group-head { font-size: 13px; font-weight: 700; color: var(--sdc-dark, #061d39); padding: 6px 2px; border-bottom: 2px solid var(--sdc-primary, #1574c4); margin-bottom: 8px; }
+.sp-group-count { color: var(--text-muted, #64748b); font-weight: 600; margin-left: 8px; font-size: 12px; }
+.sp-cards { display: flex; flex-direction: column; gap: 7px; }
+/* Card */
+.sp-card { border: 1px solid var(--border, #e2e8f0); border-radius: 9px; background: var(--surface, #fff); box-shadow: 0 1px 2px rgba(15,23,42,0.04); overflow: hidden; }
+.sp-card.is-complete { background: #fef9c3; border-color: #fde68a; }
+.sp-card-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; }
+.sp-reorder { display: flex; flex-direction: column; align-items: center; gap: 1px; flex: none; width: 26px; }
+.sp-rank { font-size: 11px; font-weight: 700; color: var(--text-muted, #64748b); }
+.sp-up, .sp-down { border: none; background: none; cursor: pointer; color: var(--text-muted, #94a3b8); font-size: 10px; line-height: 1; padding: 1px; }
+.sp-up:hover, .sp-down:hover { color: var(--sdc-primary, #1574c4); }
+.sp-card-body { flex: 1; min-width: 0; cursor: pointer; }
+.sp-card-line1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sp-pn { font-weight: 700; font-size: 13px; color: var(--sdc-dark, #061d39); }
+.sp-desc { color: var(--text, #334155); font-size: 13px; }
+.sp-type { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.03em; }
+.sp-type.is-new { background: var(--sdc-blue-light, #aacee8); color: var(--sdc-dark, #061d39); }
+.sp-type.is-mod { background: #fde68a; color: #713f12; }
+.sp-card-line2 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+.sp-chip { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface-alt, #f1f5f9); color: var(--text, #334155); white-space: nowrap; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.sp-chip-lbl { font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; font-size: 9px; opacity: 0.65; margin-right: 4px; }
+.sp-chip-proj { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 14%, white); color: var(--sdc-dark, #061d39); }
+.sp-chip.sp-pm { background: color-mix(in srgb, var(--sdc-green, #74c415) 18%, white); color: #2f6a13; }
+.sp-chip.sp-muted { background: transparent; color: var(--text-muted, #64748b); border: 1px solid var(--border, #e2e8f0); }
+.sp-chip.sp-due.is-late { background: #fee2e2; color: #b91c1c; }
+.sp-done { display: flex; align-items: center; gap: 5px; flex: none; font-size: 11px; color: var(--text-muted, #64748b); cursor: pointer; }
+/* Expanded detail editor */
+.sp-card-details { border-top: 1px solid var(--border, #e2e8f0); padding: 12px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 3%, white); }
+.sp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px 12px; }
+.sp-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-muted, #64748b); }
+.sp-field-check { flex-direction: row; align-items: center; gap: 6px; }
+.sp-dinput { padding: 5px 7px; border: 1px solid var(--border, #e2e8f0); border-radius: 5px; font-size: 12px; background: #fff; }
+.sp-del { margin-top: 10px; border: 1px solid #fca5a5; background: #fff; color: #b91c1c; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.sp-del:hover { background: #fee2e2; }
+.sp-empty { text-align: center; padding: 28px; color: var(--text-muted, #64748b); font-style: italic; }
+/* Top dashboards — SDC HMI style: clean white cards, lime/blue, big numbers. */
+.sp-dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 4px 0 6px; align-items: start; }
+.vpo-dash-main { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.vpo-dash-sub { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 520px; }
+@media (max-width: 1200px) { .vpo-dash-main { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Open-by-project: aligned Job / Parts / Behind columns + header. */
+.sp-dproj-head, .sp-dprow { display: grid; grid-template-columns: minmax(0, 1fr) 44px 52px; gap: 6px; align-items: center; }
+.sp-dproj-head { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #64748b); font-weight: 700; padding-bottom: 3px; border-bottom: 1px solid var(--border, #e2e8f0); margin-bottom: 3px; }
+.sp-dprow { font-size: 12px; padding: 1px 0; }
+.sp-dprow .sp-dproj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-dcount { text-align: center; font-weight: 700; color: var(--sdc-dark, #061d39); }
+.sp-dbehind { text-align: center; }
+.sp-dhint { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--sdc-dark, #061d39); background: var(--surface-alt, #f1f5f9); padding: 1px 7px; border-radius: 999px; }
+.sp-dcard-gauge { text-align: center; }
+.sp-donut { display: inline-block; margin: 2px 0; }
+.sp-dbehind-days { font-weight: 700; color: var(--sdc-dark, #061d39); }
+.sp-dlist-sm { font-size: 11px; }
+.sp-dcard { background: var(--surface, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 12px; padding: 12px 14px; box-shadow: 0 1px 3px rgba(15,23,42,0.05); }
+.sp-dcard-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; color: var(--sdc-dark, #061d39); display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.sp-dcard-num { text-align: center; }
+.sp-dnum { font-size: 38px; font-weight: 800; color: var(--sdc-primary, #1574c4); line-height: 1.1; }
+.sp-dsub { font-size: 11px; color: var(--text-muted, #64748b); }
+.sp-dash-range { font-size: 11px; padding: 2px 4px; border: 1px solid var(--border, #e2e8f0); border-radius: 5px; background: #fff; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.sp-dbar { display: flex; height: 16px; border-radius: 8px; overflow: hidden; background: #eef2f6; }
+.sp-dbar-seg.sp-dbar-done { background: var(--sdc-green, #74c415); }
+.sp-dbar-seg.sp-dbar-open { background: var(--sdc-blue-light, #aacee8); }
+.sp-dbar-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; font-size: 11px; color: var(--text, #334155); }
+.sp-dbar-legend .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
+.sp-dbar-legend .sw-done { background: var(--sdc-green, #74c415); }
+.sp-dbar-legend .sw-open { background: var(--sdc-blue-light, #aacee8); }
+.sp-dtotal { margin-left: auto; font-weight: 700; color: var(--sdc-dark, #061d39); }
+.sp-dlist { display: flex; flex-direction: column; gap: 3px; }
+.sp-drow { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 46px; align-items: center; gap: 8px; font-size: 12px; }
+.sp-drow .sp-ddays, .sp-drow .sp-dbehind-days { text-align: right; white-space: nowrap; }
+.sp-dproj-list .sp-drow { display: flex; }
+.sp-dpn { font-weight: 700; color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-drow .sp-dproj { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted, #64748b); }
+/* Behind-schedule / Longest-open rows with little uppercase column headers. */
+.sp-dash-main { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .sp-dash-main { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.sp-bhead, .sp-brow { display: grid; grid-template-columns: minmax(0, 1.5fr) 60px 72px 50px; gap: 8px; align-items: center; }
+.sp-bhead-3, .sp-brow-3 { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 50px; }
+.sp-bhead { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #64748b); font-weight: 700; padding-bottom: 3px; border-bottom: 1px solid var(--border, #e2e8f0); margin-bottom: 3px; }
+.sp-bhead span:nth-child(3), .sp-bhead span:nth-child(4) { text-align: right; }
+.sp-bhead-3 span:nth-child(3) { text-align: right; }
+.sp-brow { font-size: 12px; }
+.sp-brow .sp-dpn { font-weight: 700; color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-brow .sp-dproj { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted, #64748b); }
+.sp-brow .sp-deta { text-align: right; font-size: 11px; color: var(--text-muted, #64748b); white-space: nowrap; }
+.sp-brow .sp-cvar { text-align: right; }
+.sp-dproj { color: var(--text-muted, #64748b); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-ddays { font-weight: 700; color: var(--sdc-primary, #1574c4); }
+.sp-dempty { font-size: 12px; color: var(--text-muted, #64748b); font-style: italic; }
+.sp-dproj-list { max-height: 170px; overflow-y: auto; }
+.sp-dlate { margin-left: auto; font-size: 10px; font-weight: 700; color: var(--sdc-dark, #061d39); background: var(--sdc-accent, #ffde51); padding: 1px 8px; border-radius: 999px; text-transform: none; letter-spacing: 0; }
+.sp-dlate-pill { font-size: 10px; font-weight: 700; color: var(--sdc-dark, #061d39); background: var(--sdc-accent, #ffde51); padding: 0 6px; border-radius: 999px; margin-left: 6px; }
+
+/* Sections (Top 10 + By project) */
+.sp-section { margin-top: 16px; }
+.sp-section-head { font-size: 13px; font-weight: 700; color: var(--sdc-dark, #061d39); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
+/* Top 10 — responsive grid of compact rows with a rank badge. */
+/* Top 10 — one straight vertical list, 1→10. */
+.sp-top-list { display: flex; flex-direction: column; gap: 5px; max-width: 780px; }
+.sp-top-li { display: flex; align-items: center; gap: 8px; }
+.sp-top-rank { flex: none; width: 22px; text-align: right; font-weight: 700; font-size: 12px; color: var(--text-muted, #64748b); }
+.sp-top-row { flex: 1; min-width: 0; border: 1px solid var(--border, #e2e8f0); border-radius: 8px; }
+/* Project cards — exactly 4 across so the description gets maximum room. */
+.sp-proj-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1100px) { .sp-proj-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.sp-proj-card { border: 1px solid var(--border, #e2e8f0); border-radius: 10px; background: var(--surface, #fff); overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.sp-proj-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 8%, white); border-bottom: 1px solid var(--border, #e2e8f0); }
+.sp-proj-name { font-weight: 700; font-size: 13px; color: var(--sdc-dark, #061d39); }
+.sp-proj-body { display: flex; flex-direction: column; }
+/* Thin column-header row inside each project card. */
+.sp-card-colhead { font-size: 9px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted, #64748b); font-weight: 700; background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); padding-top: 2px; padding-bottom: 2px; }
+
+/* ── Vendor PO Track ── */
+.vpo-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: 11px; color: var(--text-muted, #64748b); }
+.vpo-leg { display: inline-flex; align-items: center; }
+.vpo-leg i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; margin-right: 5px; }
+.vpo-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; box-shadow: 0 0 0 1px rgba(15,23,42,0.12); }
+.vpo-po { font-weight: 700; color: var(--sdc-dark, #061d39); cursor: pointer; }
+.vpo-job, .vpo-vendor, .vpo-track { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vpo-eta, .vpo-ship { font-size: 12px; color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vpo-track { font-size: 11px; color: var(--text-muted, #64748b); }
+.vpo-fsel { padding: 5px 8px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: 12px; background: #fff; }
+.vpo-search { padding: 6px 10px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: 13px; min-width: 200px; margin-left: auto; }
+.vpo-del { margin-top: 10px; border: 1px solid #fca5a5; background: #fff; color: #b91c1c; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.vpo-page .sp-prow-line { display: grid; grid-template-columns: 16px 64px minmax(0, 1fr) 84px 30px 26px; gap: 6px; align-items: center; padding: 4px 8px; }
+.vpo-page .sp-flat .sp-prow-line, .vpo-page .vpo-head { display: grid; grid-template-columns: 18px 76px 104px 104px 90px 90px minmax(0, 1fr) 36px 36px; gap: 8px; align-items: center; padding: 5px 10px; }
+.vpo-page .vpo-head, .vpo-page .vpo-cardhead { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; color: var(--text-muted, #64748b); background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); }
+/* Completed-in-range list: PO · Job · variance-to-ETA. */
+.sp-comp-head, .sp-comprow { display: grid; grid-template-columns: 52px minmax(0, 1fr) 44px 48px; gap: 8px; align-items: center; }
+.sp-comp-head span:nth-child(3), .sp-comp-head span:nth-child(4) { text-align: right; }
+.sp-comprow { font-size: 12px; }
+.sp-comprow .sp-dproj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-comprow .sp-deta, .sp-comprow .sp-cvar { text-align: right; }
+.sp-cvar { font-weight: 700; font-size: 11px; white-space: nowrap; }
+.sp-cvar.is-late { color: var(--sdc-dark, #061d39); }
+.sp-cvar.is-early { color: #5a8a13; }
+.sp-cvar.is-ontime { color: var(--sdc-primary, #1574c4); }
+/* Late / In-transit dashboard rows: PO · Vendor · ETA · metric. Partial = blue tint. */
+.sp-late-head, .sp-laterow { display: grid; grid-template-columns: 52px minmax(0, 1fr) 74px 60px; gap: 8px; align-items: center; }
+.sp-late-head { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #64748b); font-weight: 700; padding-bottom: 3px; border-bottom: 1px solid var(--border, #e2e8f0); margin-bottom: 3px; }
+.sp-late-head span:nth-child(3), .sp-late-head span:nth-child(4) { text-align: right; }
+.sp-laterow { font-size: 12px; padding: 2px 4px; border-radius: 4px; }
+.sp-laterow .sp-dproj { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-laterow .sp-deta, .sp-laterow .sp-cvar { text-align: right; }
+.sp-laterow.is-partial { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 16%, white); }
+.sp-deta { font-size: 11px; color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Shipped (has tracking) — tint the whole row lime so it reads "on its way". */
+.vpo-page .vpo-st-shipped { background: color-mix(in srgb, #befa4f 22%, white); }
+.vpo-page .vpo-st-complete { background: color-mix(in srgb, #74c415 12%, white); }
+/* Compact part row (used in Top 10 + project cards) */
+.sp-prow { border-bottom: 1px solid var(--border, #e2e8f0); }
+.sp-prow:last-child { border-bottom: none; }
+.sp-prow.is-complete { background: #fef9c3; }
+/* Row colour encodes type: MOD = SDC light yellow, new = white (default). */
+.sp-prow.is-mod:not(.is-complete) { background: color-mix(in srgb, var(--sdc-accent, #ffde51) 26%, #fff); }
+.sp-prow-top { display: flex; align-items: center; gap: 8px; padding: 7px 10px; }
+.sp-prow-reorder { display: flex; flex-direction: column; gap: 1px; flex: none; }
+.sp-prow-reorder button { border: none; background: none; cursor: pointer; color: var(--text-muted, #94a3b8); font-size: 9px; line-height: 1; padding: 1px; }
+.sp-prow-reorder button:hover { color: var(--sdc-primary, #1574c4); }
+.sp-prow-body { flex: 1; min-width: 0; cursor: pointer; }
+.sp-prow-title { display: flex; align-items: center; gap: 6px; }
+.sp-prow-desc { font-size: 11px; color: var(--text-muted, #64748b); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-prow-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.sp-prow .sp-done { flex: none; }
+/* Horizontal row: ▲▼ · Qty · [Job] · PartNo — Desc · Due · ✓ */
+/* Card row grid (no Job column — the card header is the job). Fixed columns so
+   Part No. / Description line up straight down within the card. */
+.sp-prow-line { display: grid; grid-template-columns: 18px 26px 90px minmax(0, 1fr) 54px 20px; align-items: center; gap: 5px; padding: 4px 8px; }
+.sp-qty { flex: none; font-weight: 700; font-size: 12px; color: var(--text, #334155); min-width: 26px; text-align: right; }
+.sp-jobcell { flex: none; font-size: 11px; font-weight: 600; color: var(--sdc-dark, #061d39); background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, white); padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.sp-namecell { flex: 1; min-width: 0; font-size: 12px; color: var(--text-muted, #64748b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.sp-namecell b { color: var(--sdc-dark, #061d39); }
+/* Part No. — plain text (type is encoded by the whole-row colour, not a pill). */
+.sp-pncell { flex: none; font-weight: 700; font-size: 12px; color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.sp-duecell { flex: none; font-size: 12px; color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sp-duecell.is-late { color: var(--sdc-dark, #061d39); font-weight: 700; }
+/* Priority — gradient of SDC blue: 1 darkest (hot) → 3 lightest (low). */
+.sp-pri { flex: none; display: inline-block; min-width: 18px; text-align: center; border: 1px solid transparent; font-weight: 700; font-size: 12px; border-radius: 6px; padding: 2px 5px; cursor: pointer; }
+.sp-pri.pri-1 { background: var(--sdc-dark, #061d39); color: #fff; }
+.sp-pri.pri-2 { background: var(--sdc-primary, #1574c4); color: #fff; }
+.sp-pri.pri-3 { background: var(--sdc-blue-light, #aacee8); color: var(--sdc-dark, #061d39); }
+.sp-qty-wrap { flex: none; display: inline-flex; align-items: center; gap: 2px; }
+.sp-qty-inp { width: 34px; padding: 3px 2px; border: 1px solid var(--border, #e2e8f0); border-radius: 5px; font-size: 12px; text-align: center; }
+.sp-qty-steps { display: flex; flex-direction: column; }
+.sp-qty-step { border: 1px solid var(--border, #e2e8f0); background: #fff; cursor: pointer; font-size: 8px; line-height: 1; padding: 0 3px; color: var(--text-muted, #64748b); }
+.sp-qty-step:first-child { border-radius: 4px 4px 0 0; border-bottom: none; }
+.sp-qty-step:last-child { border-radius: 0 0 4px 4px; }
+.sp-qty-step:hover { color: var(--sdc-primary, #1574c4); background: var(--surface-alt, #f1f5f9); }
+.sp-pmcell { flex: none; font-size: 11px; color: var(--text-muted, #64748b); white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+/* Flat list view — aligned columns so PN / Description start at the same x on
+   every row (Job column wide enough for "1145 / 1146"). Header labels each one. */
+.sp-flat { display: flex; flex-direction: column; border: 1px solid var(--border, #e2e8f0); border-radius: 10px; overflow: hidden; background: var(--surface, #fff); }
+.sp-flat .sp-prow-line,
+.sp-list-head {
+  display: grid;
+  grid-template-columns: 46px 96px 74px 152px minmax(0, 1fr) 92px 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+}
+.sp-list-head { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; color: var(--text-muted, #64748b); background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); }
+.sp-flat .sp-jobcell { background: none; padding: 0; font-weight: 600; }
+/* Card view — shrink everything except the description (the key info). */
+.sp-proj-card .sp-prow-line { gap: 5px; padding: 4px 8px; }
+.sp-proj-card .sp-pri { font-size: 10px; min-width: 15px; padding: 1px 3px; }
+.sp-proj-card .sp-pncell { font-size: 11px; }
+.sp-proj-card .sp-qty-inp { width: 24px; font-size: 11px; padding: 2px 1px; }
+.sp-proj-card .sp-duecell { font-size: 11px; }
+.sp-proj-card .sp-namecell { font-size: 12px; color: var(--text, #334155); flex: 1; }
+/* New/Mod + priority legend strip under the toolbar. */
+.sp-legend { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 6px; }
+.sp-legend-pri { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted, #64748b); }
+.sp-legend-pri .sp-pri { font-size: 10px; min-width: 14px; padding: 0 4px; cursor: default; }
+/* Filter selects + due */
+.sp-fsel { padding: 5px 8px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: 12px; background: #fff; }
+.sp-fdue { font-size: 11px; color: var(--text-muted, #64748b); display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.sp-fdue-inp { padding: 4px 6px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: 12px; }
+.sp-add-pri { width: 92px; }
+.sp-add-desc { width: 100%; }
 
 /* ---------- Resources section (lives below the Team grid) ---------- */
 .resources-section {

@@ -60,6 +60,21 @@ const api = {
       return fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json());
     },
   },
+  // Shop Parts (Parts in Shop) — independent from tasks; its own table + routes.
+  shopParts: {
+    list:   () => fetch('/api/shop-parts').then(r => r.json()),
+    create: (data) => { window._lastLocalEdit = Date.now(); return fetch('/api/shop-parts', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
+    update: (id, data) => { window._lastLocalEdit = Date.now(); return fetch(`/api/shop-parts/${id}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
+    remove: (id) => { window._lastLocalEdit = Date.now(); return fetch(`/api/shop-parts/${id}`, { method: 'DELETE' }).then(r => r.json()); },
+    reorder: (order) => fetch('/api/shop-parts/reorder', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ order }) }).then(r => r.json()),
+  },
+  // Vendor POs (Vendor PO Track) — independent table + routes.
+  vendorPOs: {
+    list:   () => fetch('/api/vendor-pos').then(r => r.json()),
+    create: (data) => { window._lastLocalEdit = Date.now(); return fetch('/api/vendor-pos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
+    update: (id, data) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
+    remove: (id) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'DELETE' }).then(r => r.json()); },
+  },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
   baseline: {
@@ -7501,6 +7516,705 @@ function renderDashboard() {
   });
 }
 
+// ── Parts in Shop ───────────────────────────────────────────────────────────
+// PM-facing grid of parts physically at the SDC shop. Its own table/API (not
+// tasks). Inline-editable cells, add/delete, filter (Open/Complete/All), search,
+// and group-by-job. Completed rows highlight yellow like the source Smartsheet.
+const SHOP_COLS = [
+  { key: 'rank',              label: 'Rank',               type: 'num',  w: '52px'  },
+  { key: 'job',               label: 'Job #',              type: 'text', w: '78px'  },
+  { key: 'qty',               label: 'QTY',                type: 'num',  w: '46px'  },
+  { key: 'part_no',           label: 'Part No.',           type: 'text', w: '120px' },
+  { key: 'description',       label: 'Description',        type: 'text', w: 'auto'  },
+  { key: 'shop_release',      label: 'Shop Release',       type: 'text', w: '92px'  },
+  { key: 'new_mod',           label: 'New/MOD',            type: 'mod',  w: '140px' },
+  { key: 'location',          label: 'Location/Machinist', type: 'text', w: '120px' },
+  { key: 'out_for_finishing', label: 'Out for Finishing',  type: 'text', w: '120px' },
+  { key: 'comments',          label: 'Comments',           type: 'text', w: '150px' },
+  { key: 'engineer',          label: 'Engineer',           type: 'text', w: '100px' },
+  { key: 'pm',                label: 'PM',                 type: 'pm',   w: '110px' },
+  { key: 'added_to_bom',      label: 'BOM',                type: 'check', w: '42px' },
+  { key: 'part_complete',     label: 'Done',               type: 'check', w: '46px' },
+];
+let _shopPartsState = null;
+let _shopAddOpen = false; // the add form is collapsed by default
+function _shopState() {
+  if (_shopPartsState) return _shopPartsState;
+  let s = { filter: 'open', search: '', view: 'list', fPri: 'all', fPm: 'all', fEng: 'all', fDue: '', dashRange: 7 };
+  try { s = Object.assign(s, JSON.parse(localStorage.getItem('sdcShopPartsState') || '{}')); } catch (_) {}
+  if (s.view !== 'cards') s.view = 'list';
+  _shopPartsState = s;
+  return s;
+}
+// Priority level: 1 = hot (now), 2 = hit the due date, 3 = low. Blank → 3.
+function _shopPri(r) { const n = parseInt(r && r.priority, 10); return (n === 1 || n === 2 || n === 3) ? n : 3; }
+// Small SDC-style donut gauge (e.g. on-time delivery %). Green high, lime mid.
+function _shopDonut(pct, size = 76) {
+  const cx = size / 2, cy = size / 2, r = size * 0.36, sw = size * 0.15, C = 2 * Math.PI * r;
+  const frac = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
+  const len = frac * C, gap = C - len;
+  const color = pct == null ? '#cbd5e1' : (pct >= 90 ? '#74c415' : (pct >= 70 ? '#befa4f' : '#1574c4'));
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="sp-donut">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="${sw}"/>
+    ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${len} ${gap}" transform="rotate(-90 ${cx} ${cy})" stroke-linecap="round"/>` : ''}
+    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.24}" font-weight="800" fill="#1f2937" style="font-family:sans-serif">${pct == null ? '—' : pct + '%'}</text>
+  </svg>`;
+}
+// Set a part's priority (1/2/3) from the click popup.
+async function _shopSetPri(id, val) {
+  const r = (state.shopParts || []).find(x => x.id === id);
+  if (!r) return;
+  r.priority = String(val);
+  renderShopPartsPage();
+  const upd = await api.shopParts.update(id, { priority: String(val) });
+  if (upd) Object.assign(r, upd);
+}
+// Qty +/- stepper — updates in place without a full re-render (keeps scroll/pos).
+async function _shopBumpQty(id, d) {
+  const r = (state.shopParts || []).find(x => x.id === id);
+  if (!r) return;
+  const next = Math.max(0, (Number(r.qty) || 0) + d);
+  r.qty = next;
+  const inp = document.querySelector(`.sp-qty-inp[data-id="${id}"]`);
+  if (inp) inp.value = next;
+  const upd = await api.shopParts.update(id, { qty: next });
+  if (upd) Object.assign(r, upd);
+}
+function _saveShopState() { try { localStorage.setItem('sdcShopPartsState', JSON.stringify(_shopPartsState)); } catch (_) {} }
+
+async function loadShopParts() {
+  try { state.shopParts = await api.shopParts.list(); }
+  catch (_) { state.shopParts = []; }
+  renderShopPartsPage();
+}
+
+// Date helpers — the sheet mixes "06/09/26" strings with ISO from the date picker.
+function _shopFmtDue(v) { const s = String(v || ''); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? fmtDate(s) : s; }
+function _shopDueMs(v) {
+  const s = String(v || ''); let iso = null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) iso = s;
+  else { const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); if (m) { let y = m[3]; if (y.length === 2) y = '20' + y; iso = `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`; } }
+  if (!iso) return null;
+  const t = Date.parse(iso + 'T00:00:00'); return isNaN(t) ? null : t;
+}
+// Filtered rows, sorted by priority (1→3) then soonest due date.
+function _shopDisplayedRows(all, st) {
+  let rows = all.slice();
+  if (st.filter === 'open') rows = rows.filter(r => !r.part_complete);
+  else if (st.filter === 'complete') rows = rows.filter(r => r.part_complete);
+  if (st.fPri && st.fPri !== 'all') rows = rows.filter(r => _shopPri(r) === Number(st.fPri));
+  if (st.fPm && st.fPm !== 'all') rows = rows.filter(r => (r.pm || '') === st.fPm);
+  if (st.fEng && st.fEng !== 'all') rows = rows.filter(r => (r.engineer || '') === st.fEng);
+  if (st.fDue) { const lim = Date.parse(st.fDue + 'T23:59:59'); if (!isNaN(lim)) rows = rows.filter(r => { const m = _shopDueMs(r.shop_release); return m != null && m <= lim; }); }
+  const q = (st.search || '').trim().toLowerCase();
+  if (q) rows = rows.filter(r => [r.job, r.part_no, r.description, r.pm, r.engineer, r.comments]
+    .some(v => String(v || '').toLowerCase().includes(q)));
+  const dms = r => { const m = _shopDueMs(r.shop_release); return m == null ? Infinity : m; };
+  rows.sort((a, b) => _shopPri(a) - _shopPri(b) || dms(a) - dms(b) || (a.id - b.id));
+  return rows;
+}
+// Move a part up/down — swaps priority (sort_order) with its neighbour. In
+// "by project" view the neighbour is within the same job (per-project priority);
+// in "overall" it's the global neighbour.
+async function _shopReorder(id, dir, scope) {
+  const all = state.shopParts || [];
+  let seq;
+  if (!scope || scope === 'overall') {
+    // Top-10 list = open parts in overall-priority order.
+    seq = _shopDisplayedRows(all, { filter: 'open', search: '', view: 'overall' });
+  } else {
+    // Within a project card — reorder just that project's parts.
+    seq = _shopDisplayedRows(all, _shopState()).filter(r => ((r.job && r.job.trim()) ? r.job : 'Not assigned') === scope);
+  }
+  const idx = seq.findIndex(r => r.id === id);
+  const tgt = idx + dir;
+  if (idx < 0 || tgt < 0 || tgt >= seq.length) return;
+  const a = seq[idx], b = seq[tgt];
+  const ao = a.sort_order, bo = b.sort_order;
+  a.sort_order = bo; b.sort_order = ao;
+  renderShopPartsPage();
+  await api.shopParts.update(a.id, { sort_order: a.sort_order });
+  await api.shopParts.update(b.id, { sort_order: b.sort_order });
+}
+
+function renderShopPartsPage() {
+  const root = document.getElementById('shop-parts-page');
+  if (!root) return;
+  const st = _shopState();
+  const all = Array.isArray(state.shopParts) ? state.shopParts : [];
+  const rows = _shopDisplayedRows(all, st);
+  const openCount = all.filter(r => !r.part_complete).length;
+
+  const teamNames = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
+  const projOpts = Array.isArray(state.tasks) ? uniqueValues('project').filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales') : [];
+  const jobOpts = [...new Set([...all.map(r => r.job).filter(Boolean), ...projOpts])].sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+  const pmVals  = [...new Set(all.map(r => r.pm).filter(Boolean))].sort();
+  const engVals = [...new Set(all.map(r => r.engineer).filter(Boolean))].sort();
+  const pmList  = `<datalist id="shop-pm-list">${[...new Set([...teamNames, ...pmVals, ...engVals])].map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
+  const modList = `<datalist id="shop-mod-list">${['New Part-Initial Release', 'New Part-Redesign', 'MOD', 'MOD/NEW', 'AT BUILD'].map(o => `<option value="${o}"></option>`).join('')}</datalist>`;
+  const jobList = `<datalist id="shop-job-list">${jobOpts.map(j => `<option value="${escapeHtml(j)}"></option>`).join('')}</datalist>`;
+
+  // Detail editor field (shown when a card is expanded).
+  const detailInput = (r, c) => {
+    const val = r[c.key];
+    const a = `data-id="${r.id}" data-field="${c.key}"`;
+    let inp;
+    if (c.type === 'check') inp = `<input type="checkbox" ${a} ${val ? 'checked' : ''}/>`;
+    else if (c.type === 'num') inp = `<input type="number" step="any" class="sp-dinput" ${a} value="${val ?? ''}"/>`;
+    else if (c.type === 'pm') inp = `<input type="text" list="shop-pm-list" class="sp-dinput" ${a} value="${escapeHtml(val || '')}"/>`;
+    else if (c.type === 'mod') inp = `<input type="text" list="shop-mod-list" class="sp-dinput" ${a} value="${escapeHtml(val || '')}"/>`;
+    else inp = `<input type="text" class="sp-dinput" ${a} value="${escapeHtml(val || '')}"/>`;
+    return `<label class="sp-field${c.type === 'check' ? ' sp-field-check' : ''}"><span>${escapeHtml(c.label)}</span>${inp}</label>`;
+  };
+  // Expand editor = the fields not already inline in the row (qty/complete) or
+  // the legacy rank. Everything else stays editable here.
+  const detailFields = (r) => SHOP_COLS.filter(c => !['qty', 'part_complete', 'rank'].includes(c.key)).map(c => detailInput(r, c)).join('');
+
+  // Priority select (1 hot / 2 due / 3 low), color-coded inline.
+  const priSel = (r) => { const p = _shopPri(r); return `<span class="sp-pri pri-${p}" data-pri="${r.id}" title="Priority ${p} — click to change">${p}</span>`; };
+  const partHeader = `<div class="sp-list-head"><span>Pri</span><span>Job</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span></span></div>`;
+
+  // One row: Priority · [Job] · Qty(stepper) · PartNo — Description · Type · Due ·
+  // [PM] · ✓complete. Click the name to expand the full editor.
+  const partRow = (r, showProject) => {
+    const done = !!r.part_complete;
+    const isMod = /mod/i.test(r.new_mod || '');
+    const due = r.shop_release;
+    const overdue = !done && _shopDueMs(due) != null && _shopDueMs(due) < Date.now();
+    const pn = r.part_no || '(no #)';
+    // Type encoded by ROW colour (mod = SDC light yellow, new = white) like the
+    // Vendor PO page. Part No. is plain text (no pill). Row shows the must-sees:
+    // priority · qty · PN · (description faint) · due · ✓.
+    return `<div class="sp-prow${done ? ' is-complete' : ''}${isMod ? ' is-mod' : ''}" data-id="${r.id}">
+      <div class="sp-prow-line">
+        ${priSel(r)}
+        ${showProject ? `<span class="sp-jobcell">${escapeHtml(r.job || 'Not assigned')}</span>` : ''}
+        <span class="sp-qty-wrap"><input type="number" min="0" class="sp-qty-inp" data-id="${r.id}" data-field="qty" value="${r.qty ?? 1}" title="Qty"/></span>
+        <span class="sp-pncell" data-toggle="${r.id}" title="${isMod ? 'MOD' : 'New part'} · ${escapeHtml(pn)} — click to edit">${escapeHtml(pn)}</span>
+        <span class="sp-namecell" data-toggle="${r.id}" title="${escapeHtml(r.description || '')}">${escapeHtml(r.description || '')}</span>
+        <span class="sp-duecell${overdue ? ' is-late' : ''}">${due ? escapeHtml(_shopFmtDue(due)) : ''}</span>
+        <label class="sp-done" title="Mark complete → moves to Complete"><input type="checkbox" data-id="${r.id}" data-field="part_complete" ${done ? 'checked' : ''}/></label>
+      </div>
+      <div class="sp-card-details" data-details="${r.id}" hidden><div class="sp-fields">${detailFields(r)}</div><button class="sp-del" data-id="${r.id}" type="button">Delete part</button></div>
+    </div>`;
+  };
+
+  // Priority-1 (hot) open parts — the "work on these now" list.
+  const pri1 = _shopDisplayedRows(all, { filter: 'open' }).filter(r => _shopPri(r) === 1);
+  const topHtml = pri1.length
+    ? `<div class="sp-flat">${partHeader}${pri1.map(r => partRow(r, true)).join('')}</div>`
+    : '<p class="sp-empty">No priority-1 parts right now.</p>';
+
+  // Main area — List (flat) or Cards (by project).
+  let mainHtml;
+  if (rows.length === 0) {
+    mainHtml = '<p class="sp-empty">No parts to show.</p>';
+  } else if (st.view === 'cards') {
+    const groups = {};
+    rows.forEach(r => { const k = (r.job && r.job.trim()) ? r.job : 'Not assigned'; (groups[k] = groups[k] || []).push(r); });
+    mainHtml = `<div class="sp-proj-grid">${Object.keys(groups).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(job =>
+      `<section class="sp-proj-card">
+        <header class="sp-proj-head"><span class="sp-proj-name">${escapeHtml(job)}</span><span class="sp-group-count">${groups[job].length}</span></header>
+        <div class="sp-proj-body"><div class="sp-prow-line sp-card-colhead"><span>Pri</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span></span></div>${groups[job].map(r => partRow(r, false)).join('')}</div>
+      </section>`).join('')}</div>`;
+  } else {
+    mainHtml = `<div class="sp-flat">${partHeader}${rows.map(r => partRow(r, true)).join('')}</div>`;
+  }
+
+  // ── Top dashboards (SDC HMI style: clean cards, lime/blue, big numbers) ──
+  const now = Date.now();
+  const openParts = all.filter(r => !r.part_complete);
+  const doneParts = all.filter(r => r.part_complete);
+  const totalParts = all.length || 1;
+  const donePctW = Math.round((doneParts.length / totalParts) * 100);
+  const openPctW = 100 - donePctW;
+  const dashRange = [7, 14, 21, 28, 99999].includes(Number(st.dashRange)) ? Number(st.dashRange) : 7;
+  const cutoff = dashRange >= 99999 ? -Infinity : now - dashRange * 86400000;
+  const toWeeks = (days) => Math.round((Math.max(0, days) / 7) * 2) / 2;
+  // All-time = every completed part (even ones with no completed_on on file); a
+  // specific range needs a date to place it, so undated completes only show in All time.
+  const completedInRange = dashRange >= 99999 ? doneParts.length : doneParts.filter(r => { const t = r.completed_on ? Date.parse(r.completed_on) : NaN; return !isNaN(t) && t >= cutoff; }).length;
+  const weeksOpen = (r) => { const t = Date.parse(r.created_at); return isNaN(t) ? 0 : toWeeks((now - t) / 86400000); };
+  const oldest = [...openParts].sort((a, b) => (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0)).slice(0, 5);
+  const rangeOpts = [{ v: 7, t: '1 week' }, { v: 14, t: '2 weeks' }, { v: 21, t: '3 weeks' }, { v: 28, t: '4 weeks' }, { v: 99999, t: 'All time' }];
+  // Late = open + past its due date. Per-project open counts (with late markers).
+  const lateOpen = openParts.map(r => { const m = _shopDueMs(r.shop_release); return { r, late: (m != null && m < now) ? Math.floor((now - m) / 86400000) : -1 }; }).filter(x => x.late >= 0);
+  const lateCount = lateOpen.length;
+  const behindList = [...lateOpen].sort((a, b) => b.late - a.late).slice(0, 5);
+  const byProj = {};
+  openParts.forEach(r => { const k = (r.job && r.job.trim()) ? r.job : 'Not assigned'; const m = _shopDueMs(r.shop_release); (byProj[k] = byProj[k] || { n: 0, late: 0 }); byProj[k].n++; if (m != null && m < now) byProj[k].late++; });
+  const projRows = Object.keys(byProj).sort((a, b) => byProj[b].n - byProj[a].n);
+  // On-time delivery — of parts completed in the range that had a due date, how
+  // many finished on/before it. All-time uses every dated completion.
+  const compRange = dashRange >= 99999 ? doneParts.filter(r => r.completed_on) : doneParts.filter(r => { const t = r.completed_on ? Date.parse(r.completed_on) : NaN; return !isNaN(t) && t >= cutoff; });
+  const compWithDue = compRange.filter(r => _shopDueMs(r.shop_release) != null);
+  const onTimeN = compWithDue.filter(r => Date.parse(r.completed_on) <= _shopDueMs(r.shop_release) + 86400000).length;
+  const onTimePct = compWithDue.length ? Math.round((onTimeN / compWithDue.length) * 100) : null;
+  const dueStrOf = (r) => r.shop_release ? _shopFmtDue(r.shop_release) : '—';
+  const rangeSelect = `<select class="sp-dash-range">${rangeOpts.map(o => `<option value="${o.v}"${dashRange === o.v ? ' selected' : ''}>${o.t}</option>`).join('')}</select>`;
+  const dashHtml = `
+    <div class="sp-dash sp-dash-main">
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">Open by project <span class="sp-dhint">${lateCount} behind</span></div>
+        <div class="sp-dproj-head"><span>Job</span><span>Parts</span><span>Behind</span></div>
+        <div class="sp-dproj-list">${projRows.length ? projRows.map(p => `<div class="sp-dprow"><span class="sp-dproj">${escapeHtml(p)}</span><span class="sp-dcount">${byProj[p].n}</span><span class="sp-dbehind">${byProj[p].late ? `<span class="sp-dlate-pill">${byProj[p].late}</span>` : '—'}</span></div>`).join('') : '<div class="sp-dempty">No open parts</div>'}</div>
+      </div>
+      <div class="sp-dcard sp-dcard-num">
+        <div class="sp-dcard-head">Completed ${rangeSelect}</div>
+        <div class="sp-dnum">${completedInRange}</div>
+        <div class="sp-dsub">parts completed</div>
+      </div>
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">Behind schedule <span class="sp-dhint">${lateCount}</span></div>
+        <div class="sp-bhead"><span>Part No.</span><span>Job</span><span>Due</span><span>Behind</span></div>
+        <div class="sp-dlist">${behindList.length ? behindList.map(x => `<div class="sp-brow"><span class="sp-dpn">${escapeHtml(x.r.part_no || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.job || '')}</span><span class="sp-deta">${escapeHtml(dueStrOf(x.r))}</span><span class="sp-cvar is-late">${toWeeks(x.late)}w</span></div>`).join('') : '<div class="sp-dempty">Nothing behind 🎉</div>'}</div>
+      </div>
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">Longest open</div>
+        <div class="sp-bhead sp-bhead-3"><span>Part No.</span><span>Job</span><span>Open</span></div>
+        <div class="sp-dlist">${oldest.length ? oldest.map(r => `<div class="sp-brow sp-brow-3"><span class="sp-dpn">${escapeHtml(r.part_no || '—')}</span><span class="sp-dproj">${escapeHtml(r.job || '')}</span><span class="sp-cvar">${weeksOpen(r)}w</span></div>`).join('') : '<div class="sp-dempty">Nothing open 🎉</div>'}</div>
+      </div>
+    </div>`;
+
+  // On-time delivery sits up top, left of the + Add part button (like Vendor PO).
+  const headStat = `
+    <div class="vpo-headstat sp-headstat">
+      <div class="vpo-hs-ontime">
+        <span class="vpo-hs-label">On-time delivery</span>
+        ${_shopDonut(onTimePct)}
+        <span class="vpo-hs-sub">${compWithDue.length ? `${onTimeN}/${compWithDue.length}` : '—'}</span>
+      </div>
+    </div>`;
+
+  const sel = (val, opts, attr) => `<select ${attr}>${opts.map(o => `<option value="${escapeHtml(o.v)}"${val === o.v ? ' selected' : ''}>${escapeHtml(o.t)}</option>`).join('')}</select>`;
+  const pmFilterOpts  = [{ v: 'all', t: 'PM: all' },  ...pmVals.map(v => ({ v, t: v }))];
+  const engFilterOpts = [{ v: 'all', t: 'Eng: all' }, ...engVals.map(v => ({ v, t: v }))];
+
+  root.innerHTML = `
+    <div class="shop-parts-head">
+      <div class="sp-head-top">
+        <h1 class="projects-page-title">Parts in Shop</h1>
+        ${headStat}
+        <button class="btn-primary sp-add-toggle" data-action="toggle-add" type="button">${_shopAddOpen ? '✕ Close' : '＋ Add part'}</button>
+      </div>
+      <form class="sp-add-bar${_shopAddOpen ? '' : ' is-hidden'}" data-action="add-form">
+        <label class="sp-add-f"><span>Priority</span><select name="priority" class="sp-add-pri"><option value="1">1 · Hot</option><option value="2">2 · Due</option><option value="3" selected>3 · Low</option></select></label>
+        <label class="sp-add-f"><span>Qty</span><input name="qty" type="number" min="1" value="1" class="sp-add-qty"/></label>
+        <label class="sp-add-f"><span>Project</span><input name="job" list="shop-job-list" class="sp-add-job" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>Part No.</span><input name="part_no" class="sp-add-pn" autocomplete="off"/></label>
+        <label class="sp-add-f sp-add-f-grow"><span>Description</span><input name="description" class="sp-add-desc" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>Type</span><select name="type" class="sp-add-type"><option value="New Part-Initial Release">New Part</option><option value="MOD">MOD</option></select></label>
+        <label class="sp-add-f"><span>Due</span><input name="shop_release" type="date" class="sp-add-due"/></label>
+        <label class="sp-add-f"><span>Engineer</span><input name="engineer" list="shop-pm-list" class="sp-add-eng" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>PM</span><input name="pm" list="shop-pm-list" class="sp-add-pm" autocomplete="off"/></label>
+        <label class="sp-add-f sp-add-f-grow"><span>Notes</span><input name="comments" class="sp-add-notes" autocomplete="off"/></label>
+        <button class="btn-primary sp-add-btn" type="submit">Add</button>
+      </form>
+      <div class="shop-parts-toolbar">
+        <div class="seg-control sp-view">
+          <button class="seg-btn${st.view === 'list' ? ' is-active' : ''}" data-view="list" type="button">List</button>
+          <button class="seg-btn${st.view === 'cards' ? ' is-active' : ''}" data-view="cards" type="button">Cards</button>
+        </div>
+        <div class="seg-control sp-filter">
+          <button class="seg-btn${st.filter === 'open' ? ' is-active' : ''}" data-filter="open" type="button">Open ${openCount}</button>
+          <button class="seg-btn${st.filter === 'complete' ? ' is-active' : ''}" data-filter="complete" type="button">Complete</button>
+          <button class="seg-btn${st.filter === 'all' ? ' is-active' : ''}" data-filter="all" type="button">All</button>
+        </div>
+        ${sel(st.fPri, [{ v: 'all', t: 'Priority: all' }, { v: '1', t: '1 · Hot' }, { v: '2', t: '2 · Due' }, { v: '3', t: '3 · Low' }], 'class="sp-fsel" data-fk="fPri"')}
+        ${sel(st.fPm, pmFilterOpts, 'class="sp-fsel" data-fk="fPm"')}
+        ${sel(st.fEng, engFilterOpts, 'class="sp-fsel" data-fk="fEng"')}
+        <label class="sp-fdue">Due ≤ <input type="date" class="sp-fdue-inp" value="${escapeHtml(st.fDue || '')}"/></label>
+        <input type="search" class="sp-search" placeholder="Search…" value="${escapeHtml(st.search || '')}"/>
+      </div>
+      <div class="vpo-legend sp-legend">
+        <span class="vpo-leg"><i style="background:#fff;border:1px solid var(--border,#e2e8f0)"></i>New part</span>
+        <span class="vpo-leg"><i style="background:var(--sdc-accent,#ffde51)"></i>MOD</span>
+        <span class="sp-legend-pri">Priority: <i class="sp-pri pri-1">1</i> hot · <i class="sp-pri pri-2">2</i> · <i class="sp-pri pri-3">3</i> low</span>
+      </div>
+    </div>
+    ${dashHtml}
+    <section class="sp-section sp-top">
+      <header class="sp-section-head">🔴 Priority 1 parts</header>
+      ${topHtml}
+    </section>
+    <section class="sp-section sp-projects">
+      <header class="sp-section-head">${st.view === 'cards' ? 'By project' : 'All parts'}</header>
+      ${mainHtml}
+    </section>
+    ${pmList}${modList}${jobList}`;
+
+  // Add part
+  root.querySelector('[data-action="add-form"]').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const data = {
+      priority: f.priority.value,
+      qty: f.qty.value === '' ? 1 : Number(f.qty.value),
+      job: f.job.value.trim() || null,
+      part_no: f.part_no.value.trim() || null,
+      description: f.description.value.trim() || null,
+      new_mod: f.type.value,
+      shop_release: f.shop_release.value || null,
+      engineer: f.engineer.value.trim() || null,
+      pm: f.pm.value.trim() || null,
+      comments: f.comments.value.trim() || null,
+      part_complete: 0,
+    };
+    const created = await api.shopParts.create(data);
+    if (created && created.id) { state.shopParts.push(created); f.reset(); _shopAddOpen = true; renderShopPartsPage(); const pn = document.querySelector('.sp-add-pn'); if (pn) pn.focus(); }
+  });
+  // Toggle the collapsible add form
+  const addToggle = root.querySelector('[data-action="toggle-add"]');
+  if (addToggle) addToggle.addEventListener('click', () => {
+    _shopAddOpen = !_shopAddOpen; renderShopPartsPage();
+    if (_shopAddOpen) { const pn = document.querySelector('.sp-add-pn'); if (pn) pn.focus(); }
+  });
+  // View toggle + filter chips + filter selects + due + search
+  root.querySelectorAll('.sp-view [data-view]').forEach(b => b.addEventListener('click', () => { st.view = b.dataset.view; _saveShopState(); renderShopPartsPage(); }));
+  root.querySelectorAll('.sp-filter [data-filter]').forEach(b => b.addEventListener('click', () => { st.filter = b.dataset.filter; _saveShopState(); renderShopPartsPage(); }));
+  root.querySelectorAll('.sp-fsel').forEach(s => s.addEventListener('change', () => { st[s.dataset.fk] = s.value; _saveShopState(); renderShopPartsPage(); }));
+  const dueF = root.querySelector('.sp-fdue-inp');
+  if (dueF) dueF.addEventListener('change', () => { st.fDue = dueF.value; _saveShopState(); renderShopPartsPage(); });
+  const dashRangeEl = root.querySelector('.sp-dash-range');
+  if (dashRangeEl) dashRangeEl.addEventListener('change', () => { st.dashRange = Number(dashRangeEl.value); _saveShopState(); renderShopPartsPage(); });
+  const searchEl = root.querySelector('.sp-search');
+  searchEl.addEventListener('input', () => {
+    st.search = searchEl.value; _saveShopState(); renderShopPartsPage();
+    const s2 = document.querySelector('.sp-search');
+    if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); }
+  });
+  // Priority — click the number, pick from a popup (no inline arrows).
+  root.querySelectorAll('.sp-pri[data-pri]').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const id = Number(el.dataset.pri);
+    showContextMenu(e.clientX, e.clientY, [
+      { label: '1 · Hot — now', onClick: () => _shopSetPri(id, 1) },
+      { label: '2 · Hit the due date', onClick: () => _shopSetPri(id, 2) },
+      { label: '3 · Low', onClick: () => _shopSetPri(id, 3) },
+    ]);
+  }));
+  // Expand/collapse a row to edit its full details
+  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
+    const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
+    if (d) d.hidden = !d.hidden;
+  }));
+  // Field edits (delegated). Bound ONCE — root persists across re-renders, so
+  // re-binding every render would stack duplicate handlers.
+  if (!root.dataset.changeBound) { root.dataset.changeBound = '1'; root.addEventListener('change', async (e) => {
+    const el = e.target.closest('[data-id][data-field]');
+    if (!el) return;
+    const id = Number(el.dataset.id), field = el.dataset.field;
+    let val;
+    if (el.type === 'checkbox') val = el.checked ? 1 : 0;
+    else if (el.type === 'number') val = el.value === '' ? null : Number(el.value);
+    else val = el.value;
+    const updated = await api.shopParts.update(id, { [field]: val });
+    const row = state.shopParts.find(r => r.id === id);
+    if (row && updated) Object.assign(row, updated);
+    if (field === 'part_complete' || field === 'priority' || field === 'job') renderShopPartsPage();
+  }); }
+  // Delete
+  root.querySelectorAll('.sp-del').forEach(btn => btn.addEventListener('click', async () => {
+    const id = Number(btn.dataset.id);
+    const r = state.shopParts.find(x => x.id === id);
+    const ok = await showConfirmDialog({ title: 'Delete part?', message: `Delete "${escapeHtml(r?.part_no || r?.description || 'this part')}"?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
+    if (!ok) return;
+    await api.shopParts.remove(id);
+    state.shopParts = state.shopParts.filter(x => x.id !== id);
+    renderShopPartsPage();
+  }));
+}
+
+// ── Vendor PO Track ─────────────────────────────────────────────────────────
+const VPO_COLS = [
+  { key: 'priority', label: 'Priority', type: 'num' },
+  { key: 'po', label: 'PO #', type: 'text' },
+  { key: 'job', label: 'Job #', type: 'text' },
+  { key: 'vendor', label: 'Vendor', type: 'text' },
+  { key: 'po_date', label: 'PO Date', type: 'date' },
+  { key: 'lead_time', label: 'Lead (wks)', type: 'num' },
+  { key: 'eta', label: 'ETA', type: 'date' },
+  { key: 'ship_date', label: 'Ship Date', type: 'date' },
+  { key: 'delivery_date', label: 'Delivery', type: 'date' },
+  { key: 'tracking', label: 'Tracking #', type: 'text' },
+  { key: 'po_price', label: 'PO Price', type: 'text' },
+  { key: 'pm', label: 'PM', type: 'pm' },
+  { key: 'comments', label: 'Comments', type: 'text' },
+];
+// SDC status palette + legend. green done · blue partial · navy late · yellow due-soon.
+const VPO_STATUS = {
+  complete: { label: 'Complete', color: '#74c415' },
+  shipped:  { label: 'Shipped',  color: '#befa4f' },
+  partial:  { label: 'Partial',  color: '#1574c4' },
+  late:     { label: 'Late',     color: '#061d39' },
+  soon:     { label: 'Due ≤1 wk', color: '#ffde51' },
+  open:     { label: 'Open',     color: '#d9d9d9' },
+};
+let _vpoState = null;
+let _vpoAddOpen = false;
+function _vpoStateGet() {
+  if (_vpoState) return _vpoState;
+  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', dashRange: 7 };
+  try { s = Object.assign(s, JSON.parse(localStorage.getItem('sdcVendorPoState') || '{}')); } catch (_) {}
+  if (s.view !== 'cards') s.view = 'list';
+  _vpoState = s; return s;
+}
+function _vpoSave() { try { localStorage.setItem('sdcVendorPoState', JSON.stringify(_vpoState)); } catch (_) {} }
+function _vpoFmtDate(v) { const s = String(v || ''); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? fmtDate(s) : s; }
+function _vpoEtaMs(r) {
+  if (r.eta) { const t = Date.parse(r.eta + 'T00:00:00'); if (!isNaN(t)) return t; }
+  if (r.po_date && r.lead_time) { const t = Date.parse(r.po_date + 'T00:00:00'); if (!isNaN(t)) return t + Number(r.lead_time) * 7 * 86400000; }
+  return null;
+}
+// Actual lead time in weeks (½-snap): PO Date → completion date. null when we
+// don't know one of them (so it's left blank / excluded from averages).
+function _vpoActualWeeks(r) {
+  const o = Date.parse(r.po_date || '');
+  const c = Date.parse(r.completed_on || r.delivery_date || '');
+  if (isNaN(o) || isNaN(c) || c < o) return null;
+  return Math.round(((c - o) / 604800000) * 2) / 2;
+}
+function _vpoStatusOf(r) {
+  if (r.complete) return 'complete';
+  if (r.tracking && String(r.tracking).trim()) return 'shipped'; // has tracking = on its way
+  if (r.partial) return 'partial';
+  const e = _vpoEtaMs(r);
+  if (e != null) { if (e < Date.now()) return 'late'; if (e - Date.now() <= 7 * 86400000) return 'soon'; }
+  return 'open';
+}
+async function loadVendorPOs() {
+  try { state.vendorPOs = await api.vendorPOs.list(); } catch (_) { state.vendorPOs = []; }
+  renderVendorPOsPage();
+}
+function _vpoRows(all, st) {
+  let rows = all.slice();
+  if (st.filter === 'open') rows = rows.filter(r => !r.complete);
+  else if (st.filter === 'complete') rows = rows.filter(r => r.complete);
+  if (st.fVendor && st.fVendor !== 'all') rows = rows.filter(r => (r.vendor || '') === st.fVendor);
+  if (st.fPm && st.fPm !== 'all') rows = rows.filter(r => (r.pm || '') === st.fPm);
+  if (st.fStatus && st.fStatus !== 'all') rows = rows.filter(r => _vpoStatusOf(r) === st.fStatus);
+  const q = (st.search || '').trim().toLowerCase();
+  if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments].some(v => String(v || '').toLowerCase().includes(q)));
+  const eta = r => { const m = _vpoEtaMs(r); return m == null ? Infinity : m; };
+  rows.sort((a, b) => (a.complete ? 1 : 0) - (b.complete ? 1 : 0) || eta(a) - eta(b) || (a.id - b.id));
+  return rows;
+}
+async function _vpoSetField(id, field, val) {
+  const r = (state.vendorPOs || []).find(x => x.id === id); if (!r) return;
+  const upd = await api.vendorPOs.update(id, { [field]: val });
+  if (upd) Object.assign(r, upd); else r[field] = val;
+}
+
+function renderVendorPOsPage() {
+  const root = document.getElementById('vendor-pos-page');
+  if (!root) return;
+  const st = _vpoStateGet();
+  const all = Array.isArray(state.vendorPOs) ? state.vendorPOs : [];
+  const rows = _vpoRows(all, st);
+  const openCount = all.filter(r => !r.complete).length;
+  const vendors = [...new Set(all.map(r => r.vendor).filter(Boolean))].sort();
+  const pms = [...new Set(all.map(r => r.pm).filter(Boolean))].sort();
+  const teamNames = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
+  const pmList = `<datalist id="vpo-pm-list">${[...new Set([...teamNames, ...pms])].map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
+  const vendorList = `<datalist id="vpo-vendor-list">${vendors.map(v => `<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>`;
+
+  const detailInput = (r, c) => {
+    const val = r[c.key];
+    const a = `data-id="${r.id}" data-field="${c.key}"`;
+    let inp;
+    if (c.type === 'num') inp = `<input type="number" step="any" class="sp-dinput" ${a} value="${val ?? ''}"/>`;
+    else if (c.type === 'date') inp = `<input type="date" class="sp-dinput" ${a} value="${/^\d{4}-\d{2}-\d{2}$/.test(String(val || '')) ? val : ''}"/>`;
+    else if (c.type === 'pm') inp = `<input type="text" list="vpo-pm-list" class="sp-dinput" ${a} value="${escapeHtml(val || '')}"/>`;
+    else inp = `<input type="text" class="sp-dinput" ${a} value="${escapeHtml(val || '')}"/>`;
+    return `<label class="sp-field"><span>${escapeHtml(c.label)}</span>${inp}</label>`;
+  };
+  const detailFields = (r) => VPO_COLS.map(c => detailInput(r, c)).join('');
+
+  const row = (r, mode) => {
+    const isList = mode === 'list';
+    const sName = _vpoStatusOf(r);
+    const s = VPO_STATUS[sName];
+    const e = _vpoEtaMs(r);
+    const etaStr = e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '';
+    return `<div class="sp-prow vpo-row vpo-st-${sName}" data-id="${r.id}">
+      <div class="sp-prow-line">
+        <span class="vpo-dot" style="background:${s.color}" title="${s.label}"></span>
+        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}</span>
+        <span class="vpo-job">${escapeHtml(r.job || '')}</span>
+        ${isList ? `<span class="vpo-vendor">${escapeHtml(r.vendor || '')}</span>` : ''}
+        <span class="vpo-eta">${etaStr}</span>
+        ${isList ? `<span class="vpo-ship">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : ''}</span>` : ''}
+        ${isList ? `<span class="vpo-track" title="${escapeHtml(r.tracking || '')}">${escapeHtml(r.tracking || '')}</span>` : ''}
+        <label class="sp-done" title="Partial shipment"><input type="checkbox" data-id="${r.id}" data-field="partial" ${r.partial ? 'checked' : ''}/></label>
+        <label class="sp-done" title="Complete"><input type="checkbox" data-id="${r.id}" data-field="complete" ${r.complete ? 'checked' : ''}/></label>
+      </div>
+      <div class="sp-card-details" data-details="${r.id}" hidden><div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
+    </div>`;
+  };
+
+  const listHead = `<div class="sp-list-head vpo-head"><span></span><span>PO #</span><span>Job</span><span>Vendor</span><span>ETA</span><span>Ship</span><span>Tracking</span><span>Part</span><span>Done</span></div>`;
+  const cardHead = `<div class="sp-prow-line vpo-cardhead"><span></span><span>PO #</span><span>Job</span><span>ETA</span><span>Part</span><span>Done</span></div>`;
+
+  let mainHtml;
+  if (rows.length === 0) mainHtml = '<p class="sp-empty">No POs to show.</p>';
+  else if (st.view === 'cards') {
+    const groups = {};
+    rows.forEach(r => { const k = r.vendor && r.vendor.trim() ? r.vendor : 'No vendor'; (groups[k] = groups[k] || []).push(r); });
+    mainHtml = `<div class="sp-proj-grid">${Object.keys(groups).sort((a, b) => a.localeCompare(b)).map(vn =>
+      `<section class="sp-proj-card"><header class="sp-proj-head"><span class="sp-proj-name">${escapeHtml(vn)}</span><span class="sp-group-count">${groups[vn].length}</span></header><div class="sp-proj-body">${cardHead}${groups[vn].map(r => row(r, 'card')).join('')}</div></section>`).join('')}</div>`;
+  } else {
+    mainHtml = `<div class="sp-flat">${listHead}${rows.map(r => row(r, 'list')).join('')}</div>`;
+  }
+
+  const sel = (val, opts, attr) => `<select ${attr}>${opts.map(o => `<option value="${escapeHtml(o.v)}"${val === o.v ? ' selected' : ''}>${escapeHtml(o.t)}</option>`).join('')}</select>`;
+  const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('');
+
+  // ── Dashboards ──
+  const nowMs = Date.now();
+  const openPOs = all.filter(r => !r.complete);
+  const donePOs = all.filter(r => r.complete);
+  const dRange = [7, 14, 21, 28, 99999].includes(Number(st.dashRange)) ? Number(st.dashRange) : 7;
+  const dCut = dRange >= 99999 ? -Infinity : nowMs - dRange * 86400000;
+  // Best-available completion date: completed_on, else delivery, else ship.
+  const compDate = (r) => { for (const d of [r.completed_on, r.delivery_date, r.ship_date]) { const t = d ? Date.parse(d) : NaN; if (!isNaN(t)) return t; } return null; };
+  // All-time = every completed PO (even ones with no date on file); a specific
+  // range needs a date to place it, so undated completes only show in All time.
+  const compInRange = dRange >= 99999 ? donePOs.slice() : donePOs.filter(r => { const t = compDate(r); return t != null && t >= dCut; });
+  const lateList = openPOs.map(r => { const e = _vpoEtaMs(r); return { r, late: (e != null && e < nowMs) ? Math.floor((nowMs - e) / 86400000) : -1 }; }).filter(x => x.late >= 0);
+  const inTransit = openPOs.filter(r => r.tracking && String(r.tracking).trim());
+  const byVendor = {};
+  openPOs.forEach(r => { const k = r.vendor && r.vendor.trim() ? r.vendor : 'No vendor'; const e = _vpoEtaMs(r); byVendor[k] = byVendor[k] || { n: 0, late: 0 }; byVendor[k].n++; if (e != null && e < nowMs) byVendor[k].late++; });
+  const vendorRows = Object.keys(byVendor).sort((a, b) => byVendor[b].n - byVendor[a].n);
+  const compEta = compInRange.filter(r => _vpoEtaMs(r) != null && compDate(r) != null);
+  const onTimeN = compEta.filter(r => compDate(r) <= _vpoEtaMs(r) + 86400000).length;
+  const onTimePct = compEta.length ? Math.round((onTimeN / compEta.length) * 100) : null;
+  const oldestOpen = [...openPOs].sort((a, b) => (Date.parse(a.po_date) || 0) - (Date.parse(b.po_date) || 0)).slice(0, 5);
+  const weeksOut = (r) => { const t = Date.parse(r.po_date); if (isNaN(t)) return 0; return Math.round((Math.max(0, (nowMs - t) / 86400000) / 7) * 2) / 2; };
+  // Completed-in-range list with how close each landed to its ETA.
+  const compRows = compInRange.map(r => { const e = _vpoEtaMs(r); const c = compDate(r); const v = (e != null && c != null) ? Math.round((c - e) / 86400000) : null; return { r, v, took: _vpoActualWeeks(r) }; })
+    .sort((a, b) => (compDate(b.r) || 0) - (compDate(a.r) || 0)).slice(0, 8);
+  // Average actual lead time per vendor (only completed POs where we know both dates).
+  const leadByVendor = {};
+  donePOs.forEach(r => { const a = _vpoActualWeeks(r); if (a != null && r.vendor) { (leadByVendor[r.vendor] = leadByVendor[r.vendor] || { sum: 0, n: 0 }); leadByVendor[r.vendor].sum += a; leadByVendor[r.vendor].n++; } });
+  const leadRows = Object.keys(leadByVendor).map(k => ({ vendor: k, avg: Math.round((leadByVendor[k].sum / leadByVendor[k].n) * 2) / 2, n: leadByVendor[k].n })).sort((a, b) => b.n - a.n);
+  const cvar = (vDays) => { if (vDays == null) return '<span class="sp-cvar">—</span>'; const w = Math.round((vDays / 7) * 2) / 2; if (w > 0) return `<span class="sp-cvar is-late">${w}w late</span>`; if (w < 0) return `<span class="sp-cvar is-early">${-w}w early</span>`; return '<span class="sp-cvar is-ontime">on time</span>'; };
+  const lateWeeks = (days) => Math.round((days / 7) * 2) / 2;
+  const etaStrOf = (r) => { const e = _vpoEtaMs(r); return e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '—'; };
+  const vRangeOpts = [{ v: 7, t: '1 week' }, { v: 14, t: '2 weeks' }, { v: 21, t: '3 weeks' }, { v: 28, t: '4 weeks' }, { v: 99999, t: 'All time' }];
+  const dashHtml = `
+    <div class="sp-dash vpo-dash-main">
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">Open by vendor <span class="sp-dhint">${lateList.length} late</span></div>
+        <div class="sp-dproj-head"><span>Vendor</span><span>POs</span><span>Late</span></div>
+        <div class="sp-dproj-list">${vendorRows.length ? vendorRows.map(vn => `<div class="sp-dprow"><span class="sp-dproj">${escapeHtml(vn)}</span><span class="sp-dcount">${byVendor[vn].n}</span><span class="sp-dbehind">${byVendor[vn].late ? `<span class="sp-dlate-pill">${byVendor[vn].late}</span>` : '—'}</span></div>`).join('') : '<div class="sp-dempty">No open POs</div>'}</div>
+      </div>
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">In transit <span class="sp-dhint">${inTransit.length}</span></div>
+        <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>ETA</span><span>Ship</span></div>
+        <div class="sp-dlist">${inTransit.length ? inTransit.slice(0, 8).map(r => `<div class="sp-laterow${r.partial ? ' is-partial' : ''}" title="${r.partial ? 'Partial shipment' : ''}"><span class="sp-dpn">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-deta">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : '—'}</span></div>`).join('') : '<div class="sp-dempty">Nothing in transit</div>'}</div>
+      </div>
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">Late POs <span class="sp-dhint">${lateList.length}</span></div>
+        <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>ETA</span><span>Late</span></div>
+        <div class="sp-dlist">${lateList.length ? [...lateList].sort((a, b) => b.late - a.late).slice(0, 8).map(x => `<div class="sp-laterow${x.r.partial ? ' is-partial' : ''}" title="${x.r.partial ? 'Partial shipment' : ''}"><span class="sp-dpn">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.vendor || '')}</span><span class="sp-deta">${etaStrOf(x.r)}</span><span class="sp-cvar is-late">${lateWeeks(x.late)}w</span></div>`).join('') : '<div class="sp-dempty">Nothing late 🎉</div>'}</div>
+      </div>
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">Completed <select class="vpo-dash-range">${vRangeOpts.map(o => `<option value="${o.v}"${dRange === o.v ? ' selected' : ''}>${o.t}</option>`).join('')}</select> <span class="sp-dhint">${compInRange.length}</span></div>
+        <div class="sp-comp-head"><span>PO #</span><span>Job</span><span>Lead</span><span>Took</span></div>
+        <div class="sp-dlist">${compRows.length ? compRows.map(x => `<div class="sp-comprow"><span class="sp-dpn">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.job || '')}</span><span class="sp-deta">${x.r.lead_time != null && x.r.lead_time !== '' ? x.r.lead_time + 'w' : '—'}</span><span class="sp-cvar">${x.took != null ? x.took + 'w' : '—'}</span></div>`).join('') : '<div class="sp-dempty">None completed in range</div>'}</div>
+      </div>
+      <div class="sp-dcard">
+        <div class="sp-dcard-head">Longest outstanding</div>
+        <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>Due</span><span>Out</span></div>
+        <div class="sp-dlist">${oldestOpen.length ? oldestOpen.map(r => `<div class="sp-laterow"><span class="sp-dpn">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-cvar">${weeksOut(r)}w</span></div>`).join('') : '<div class="sp-dempty">None open 🎉</div>'}</div>
+      </div>
+    </div>`;
+
+  // Compact historical strip that lives up top, left of the Add PO button:
+  // on-time delivery donut + avg-lead-by-vendor mini list, combined in one visual.
+  const headStat = `
+    <div class="vpo-headstat">
+      <div class="vpo-hs-ontime">
+        <span class="vpo-hs-label">On-time delivery</span>
+        ${_shopDonut(onTimePct)}
+        <span class="vpo-hs-sub">${compEta.length ? `${onTimeN}/${compEta.length}` : '—'}</span>
+      </div>
+      <div class="vpo-hs-lead">
+        <span class="vpo-hs-label">Avg lead by vendor</span>
+        <div class="vpo-hs-leadlist">${leadRows.length ? leadRows.slice(0, 12).map(x => `<div class="vpo-hs-leadrow"><span class="vpo-hs-vn">${escapeHtml(x.vendor)}</span><span class="vpo-hs-avg">${x.avg}w</span></div>`).join('') : '<div class="sp-dempty">No data yet</div>'}</div>
+      </div>
+    </div>`;
+
+  root.innerHTML = `
+    <div class="shop-parts-head">
+      <div class="sp-head-top">
+        <h1 class="projects-page-title">Vendor PO Track</h1>
+        ${headStat}
+        <button class="btn-primary sp-add-toggle" data-action="vpo-toggle-add" type="button">${_vpoAddOpen ? '✕ Close' : '＋ Add PO'}</button>
+      </div>
+      <form class="sp-add-bar${_vpoAddOpen ? '' : ' is-hidden'}" data-action="vpo-add-form">
+        <label class="sp-add-f"><span>PO #</span><input name="po" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>Job #</span><input name="job" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>Vendor</span><input name="vendor" list="vpo-vendor-list" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>PO Date</span><input name="po_date" type="date"/></label>
+        <label class="sp-add-f"><span>Lead (wks)</span><input name="lead_time" type="number" min="0" style="width:64px"/></label>
+        <label class="sp-add-f"><span>PM</span><input name="pm" list="vpo-pm-list" autocomplete="off"/></label>
+        <label class="sp-add-f sp-add-f-grow"><span>Comments</span><input name="comments" autocomplete="off"/></label>
+        <button class="btn-primary sp-add-btn" type="submit">Add</button>
+      </form>
+      <div class="shop-parts-toolbar">
+        <div class="seg-control sp-view">
+          <button class="seg-btn${st.view === 'list' ? ' is-active' : ''}" data-vview="list" type="button">List</button>
+          <button class="seg-btn${st.view === 'cards' ? ' is-active' : ''}" data-vview="cards" type="button">Cards</button>
+        </div>
+        <div class="seg-control sp-filter">
+          <button class="seg-btn${st.filter === 'open' ? ' is-active' : ''}" data-vfilter="open" type="button">Open ${openCount}</button>
+          <button class="seg-btn${st.filter === 'complete' ? ' is-active' : ''}" data-vfilter="complete" type="button">Complete</button>
+          <button class="seg-btn${st.filter === 'all' ? ' is-active' : ''}" data-vfilter="all" type="button">All</button>
+        </div>
+        ${sel(st.fStatus, [{ v: 'all', t: 'Status: all' }, { v: 'late', t: 'Late' }, { v: 'shipped', t: 'Shipped' }, { v: 'soon', t: 'Due ≤1 wk' }, { v: 'partial', t: 'Partial' }, { v: 'complete', t: 'Complete' }], 'class="vpo-fsel" data-fk="fStatus"')}
+        ${sel(st.fVendor, [{ v: 'all', t: 'Vendor: all' }, ...vendors.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fVendor"')}
+        ${sel(st.fPm, [{ v: 'all', t: 'PM: all' }, ...pms.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fPm"')}
+        <input type="search" class="vpo-search" placeholder="Search PO / job / vendor / tracking…" value="${escapeHtml(st.search || '')}"/>
+      </div>
+      <div class="vpo-legend">${legend}</div>
+    </div>
+    ${dashHtml}
+    ${mainHtml}
+    ${pmList}${vendorList}`;
+
+  root.querySelector('[data-action="vpo-toggle-add"]').addEventListener('click', () => { _vpoAddOpen = !_vpoAddOpen; renderVendorPOsPage(); if (_vpoAddOpen) { const p = root.querySelector('input[name="po"]'); if (p) p.focus(); } });
+  root.querySelector('[data-action="vpo-add-form"]').addEventListener('submit', async (e) => {
+    e.preventDefault(); const f = e.target;
+    const data = { po: f.po.value.trim() || null, job: f.job.value.trim() || null, vendor: f.vendor.value.trim() || null, po_date: f.po_date.value || null, lead_time: f.lead_time.value === '' ? null : Number(f.lead_time.value), pm: f.pm.value.trim() || null, comments: f.comments.value.trim() || null, complete: 0, partial: 0 };
+    const created = await api.vendorPOs.create(data);
+    if (created && created.id) { state.vendorPOs.push(created); f.reset(); _vpoAddOpen = true; renderVendorPOsPage(); }
+  });
+  root.querySelectorAll('.sp-view [data-vview]').forEach(b => b.addEventListener('click', () => { st.view = b.dataset.vview; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.sp-filter [data-vfilter]').forEach(b => b.addEventListener('click', () => { st.filter = b.dataset.vfilter; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.vpo-fsel').forEach(s => s.addEventListener('change', () => { st[s.dataset.fk] = s.value; _vpoSave(); renderVendorPOsPage(); }));
+  const vdr = root.querySelector('.vpo-dash-range');
+  if (vdr) vdr.addEventListener('change', () => { st.dashRange = Number(vdr.value); _vpoSave(); renderVendorPOsPage(); });
+  const se = root.querySelector('.vpo-search');
+  se.addEventListener('input', () => { st.search = se.value; _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
+  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => { const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`); if (d) d.hidden = !d.hidden; }));
+  if (!root.dataset.changeBound) {
+    root.dataset.changeBound = '1';
+    root.addEventListener('change', async (e) => {
+      const el = e.target.closest('[data-id][data-field]'); if (!el) return;
+      const id = Number(el.dataset.id), field = el.dataset.field;
+      let val; if (el.type === 'checkbox') val = el.checked ? 1 : 0; else if (el.type === 'number') val = el.value === '' ? null : Number(el.value); else val = el.value;
+      await _vpoSetField(id, field, val);
+      if (['complete', 'partial', 'tracking', 'vendor', 'eta', 'po_date', 'lead_time'].includes(field)) renderVendorPOsPage();
+    });
+  }
+  root.querySelectorAll('.vpo-del').forEach(btn => btn.addEventListener('click', async () => {
+    const id = Number(btn.dataset.id); const r = state.vendorPOs.find(x => x.id === id);
+    const ok = await showConfirmDialog({ title: 'Delete PO?', message: `Delete PO "${escapeHtml(r?.po || 'this PO')}"?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
+    if (!ok) return; await api.vendorPOs.remove(id); state.vendorPOs = state.vendorPOs.filter(x => x.id !== id); renderVendorPOsPage();
+  }));
+}
+
 function renderProjectsPage() {
   const root = document.getElementById('projects-page');
   if (!root) return;
@@ -8913,8 +9627,15 @@ async function deleteProject(project) {
   if (!project) return;
   const tasks = state.tasks.filter(t => t.project === project);
   if (tasks.length === 0) return; // nothing to delete; silent
-  // No confirmation popup — right-click → Delete is already 2 intentional clicks.
-  // User explicitly requested this.
+  // Confirm first — deleting a project wipes all its rows and can't be undone.
+  const ok = await showConfirmDialog({
+    title: 'Delete project?',
+    message: `Permanently delete "${project}" and its ${tasks.length} task${tasks.length === 1 ? '' : 's'}? This can't be undone.`,
+    okLabel: 'Delete',
+    cancelLabel: 'Cancel',
+    danger: true,
+  });
+  if (!ok) return;
   // Bypass the anchor-protection in the regular DELETE handler by clearing
   // anchor_key first on those rows.
   for (const t of tasks) {
@@ -14855,12 +15576,23 @@ function renderTeamDashboard() {
   const releaseItems = releaseTasks.map(t => {
     const baseName = t.name || anchorLabelFor(inferredAnchorKey(t));
     const done = (Number(t.progress) || 0) >= 100;
-    const sched  = t.baseline_end_date || t.baseline_start_date || t.start_date || t.end_date || '';
-    const actual = done ? (t.completed_on || t.end_date || t.start_date || '') : '';
-    let v = 0;
-    if (sched && actual) v = Math.round((new Date(actual + 'T00:00:00') - new Date(sched + 'T00:00:00')) / 86400000);
-    else if (!done && sched && sched < todayISO) v = Math.round((todayMs - new Date(sched + 'T00:00:00').getTime()) / 86400000);
-    return { id: t.id, project: t.project, name: baseName, done, sched, actual, chip: deptVarChip(v) };
+    // Scheduled = the CURRENT schedule date (what the Schedule view shows).
+    // Baseline = the ORIGINAL date if the project was baselined, else null → N/A.
+    const current  = t.end_date || t.start_date || '';
+    const baseline = t.baseline_end_date || t.baseline_start_date || '';
+    const actual   = done ? (t.completed_on || current) : '';
+    // Variance reads against the original baseline (how far we slipped from plan);
+    // if there's no baseline, fall back to overdue-vs-today for not-done items.
+    const eff = done ? actual : current;
+    let chip;
+    if (baseline && eff) {
+      chip = deptVarChip(Math.round((new Date(eff + 'T00:00:00') - new Date(baseline + 'T00:00:00')) / 86400000));
+    } else if (!done && current && current < todayISO) {
+      chip = deptVarChip(Math.round((todayMs - new Date(current + 'T00:00:00').getTime()) / 86400000));
+    } else {
+      chip = done ? { text: 'done', tone: 'success' } : { text: 'on track', tone: 'info' };
+    }
+    return { id: t.id, project: t.project, name: baseName, done, current, baseline, actual, chip };
   });
   deptRenderReleaseGrid('dept-releases-body', releaseItems,
     `No ${releasesTitle.toLowerCase()} for the selected projects.`);
@@ -14886,7 +15618,10 @@ function deptRenderReleaseGrid(bodyId, items, emptyText) {
     <button type="button" class="dept-rel-row" data-i="${i}">
       <span class="dept-rel-project" title="${escapeHtml(it.project || '')}">${escapeHtml(it.project || '—')}</span>
       <span class="dept-rel-name"><span class="dept-rel-check">${it.done ? '✓' : ''}</span><span class="dept-rel-name-text">${escapeHtml(it.name)}</span></span>
-      <span class="dept-rel-date">${it.sched ? fmtDate(it.sched) : '—'}</span>
+      <span class="dept-rel-date">
+        <span class="dept-rel-date-cur">${it.current ? fmtDate(it.current) : '—'}</span>
+        <span class="dept-rel-date-base">${it.baseline ? 'orig ' + fmtDate(it.baseline) : 'orig N/A'}</span>
+      </span>
       <span class="dept-rel-date">${it.actual ? fmtDate(it.actual) : '—'}</span>
       <span class="dept-rel-var"><span class="dashboard-chip chip-${it.chip.tone}">${escapeHtml(it.chip.text)}</span></span>
     </button>`).join('');
@@ -15244,7 +15979,11 @@ function renderResources() {
     });
   }
   if (projSel) {
-    const projects = [...new Set(state.tasks.map(t => t.project).filter(Boolean))].sort();
+    // Active projects only — drop templates (scaffolding) and Sales-workspace
+    // schedules (pre-quote) so "All projects" means real, active work.
+    const projects = [...new Set(state.tasks.map(t => t.project).filter(Boolean))]
+      .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+      .sort();
     projSel.innerHTML = '<option value="">All projects</option>' +
       projects.map(p => `<option value="${escapeHtml(p)}" ${state.resources.project === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
   }
@@ -16932,6 +17671,8 @@ function setView(view) {
     state.resources.barHeight = friendlyResRowToPx(4);
     renderTeam();
   }
+  else if (view === 'shop-parts') loadShopParts();
+  else if (view === 'vendor-pos') loadVendorPOs();
   else if (view === 'projects')  renderProjectsPage();
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
