@@ -1,49 +1,33 @@
-#!/usr/bin/env node
 'use strict';
 /**
- * create-admin.js — Seed or update an admin user in the SDC Scheduler database.
+ * create-admin.js — CLI tool to create or update an admin user in MySQL.
  *
  * Usage:
- *   node create-admin.js --email dan@sdcautomation.com --name "Dan Belliveau" --password "yourpass"
- *   node create-admin.js --email someone@example.com --name "Someone" --password "pw" --role editor
+ *   node create-admin.js [email] [password] [role]
  *
- * Run this once after setting AUTH_ENABLED=true in .env to create the first
- * login. Idempotent — re-running with the same email updates name/password/
- * role on the existing row.
+ * Defaults:
+ *   email    = akamuju@sdcautomation.com
+ *   password = sdc_secure_password
+ *   role     = admin
  */
-
-const args = process.argv.slice(2);
-const get  = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
-
-const email    = get('--email');
-const name     = get('--name');
-const password = get('--password');
-const role     = get('--role') || 'admin';
-
-if (!email || !name || !password) {
-  console.error('Usage: node create-admin.js --email <email> --name "<full name>" --password "<password>" [--role admin|editor|viewer]');
-  process.exit(1);
-}
-
-if (!['admin', 'editor', 'viewer'].includes(role)) {
-  console.error('Invalid role. Must be admin, editor, or viewer.');
-  process.exit(1);
-}
-
+require('dotenv').config();
 const bcrypt = require('bcryptjs');
-const db     = require('./db');
+const { pool } = require('./mysqlDb');
 
-const hash = bcrypt.hashSync(password, 12);
+async function main() {
+  const email    = process.argv[2] || 'akamuju@sdcautomation.com';
+  const password = process.argv[3] || 'sdc_secure_password';
+  const role     = process.argv[4] || 'admin';
 
-db.prepare(`
-  INSERT INTO users (email, name, password_hash, role, active)
-  VALUES (?, ?, ?, ?, 1)
-  ON CONFLICT(email) DO UPDATE SET
-    name          = excluded.name,
-    password_hash = excluded.password_hash,
-    role          = excluded.role,
-    active        = 1
-`).run(email, name, hash, role);
+  const hash = await bcrypt.hash(password, 10);
+  await pool.query(
+    `INSERT INTO users (email, name, password_hash, role)
+     VALUES (?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), role = VALUES(role)`,
+    [email, email.split('@')[0], hash, role]
+  );
+  console.log(`User ${email} (${role}) created/updated.`);
+  process.exit(0);
+}
 
-console.log(`User "${name}" <${email}> upserted with role "${role}".`);
-console.log('Set AUTH_ENABLED=true in .env, then restart the server to require login.');
+main().catch(e => { console.error(e.message); process.exit(1); });
