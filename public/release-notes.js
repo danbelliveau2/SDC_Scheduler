@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.1',
+    date: '2026-06-11',
+    notes: [
+      'Projects-tab UX polish, in-app popups everywhere, predecessor-cell + baseline fixes, and the move to a shared MySQL backend.',
+      '',
+      'PROJECTS TAB:',
+      '   ▸ "New project from template" now uses an in-app modal (centered, SDC-styled) instead of a browser popup. Duplicate-name check shows inline.',
+      '   ▸ Creating a project drops it straight into the list and does NOT auto-open the schedule — click it when you\'re ready. A toast confirms.',
+      '   ▸ Delete (right-click → Delete → confirm) now removes the row immediately — no more navigating away and back to see it gone.',
+      '',
+      'SCHEDULE GRID + GANTT:',
+      '   ▸ Predecessor cell: typing now APPENDS at the cursor instead of wiping the whole value — e.g. open "3FF", go to the end, type "+2W" → "3FF+2W". (Select-all still replaces.)',
+      '   ▸ Baseline overlay fixed: the dashed ghost now sits in the correct spot (was drifting months off) AND renders on top of the bar so you can see where it would have ended.',
+      '   ▸ All drift indicators read in weeks + half-weeks, never days. Baseline drift behind = red, ahead = green.',
+      '',
+      'BEHIND THE SCENES:',
+      '   ▸ Backend migrated from per-machine SQLite to one shared MySQL database — your machine, the server, and everyone else now read/write the same data, so nothing entered in one place goes missing in another.',
+    ],
+  },
+  {
     version: '9.0',
     date: '2026-06-11',
     notes: [
