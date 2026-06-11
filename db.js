@@ -44,6 +44,13 @@ async function init() {
     await pool.query(`ALTER TABLE tasks ADD INDEX ${idx} (${col})`).catch(() => {});
   }
 
+  // Migration: tables created before Rev 8 used VARCHAR(20) for date columns,
+  // which overflows when a full ISO timestamp (24 chars) is written —
+  // "Data too long for column 'start_date'". Widen to match the CREATE above.
+  for (const col of ['start_date', 'end_date', 'baseline_start_date', 'baseline_end_date', 'completed_on']) {
+    await pool.query(`ALTER TABLE tasks MODIFY ${col} VARCHAR(32)`).catch(() => {});
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (
       \`key\`      VARCHAR(255) PRIMARY KEY,
