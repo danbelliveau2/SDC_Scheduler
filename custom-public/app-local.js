@@ -104,3 +104,5 @@ if (typeof api !== 'undefined') {
     setTimeout(tryInit, 800);
   }
 })();
+
+// 2026-06-11: end-to-end marker — this line was committed and pushed by the in-process repo auto-sync running as SYSTEM.
