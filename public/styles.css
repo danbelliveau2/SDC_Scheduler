@@ -6291,6 +6291,27 @@ body[data-view="setup"] #btn-add { display: none; }
   border-top: 0;
 }
 .app-dialog-danger .modal-head h2 { color: #b91c1c; }
+.app-dialog-input {
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 7px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+.app-dialog-input:focus {
+  outline: none;
+  border-color: var(--sdc-primary, #1574c4);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sdc-primary, #1574c4) 18%, transparent);
+}
+.app-dialog-error {
+  margin-top: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b91c1c;
+}
+.app-dialog-error.hidden { display: none; }
 
 /* v4.64: Password dialog. SDC-blue background, SDC-lime border so it reads
    as an in-app credential prompt and not a generic browser thing. */

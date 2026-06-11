@@ -825,6 +825,53 @@ function showAlertDialog(opts = {}) {
   });
 }
 
+// In-app text prompt (replaces the browser-native prompt()). Returns a Promise
+// resolving to the trimmed string, or null on cancel. opts.validate(value) may
+// return an error string to show inline (keeps the dialog open) or null to pass.
+function showPromptDialog(opts = {}) {
+  return new Promise(resolve => {
+    document.getElementById('app-prompt-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'app-prompt-dialog';
+    overlay.className = 'modal-overlay app-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card app-dialog">
+        ${opts.title ? `<div class="modal-head"><h2>${escapeHtml(opts.title)}</h2></div>` : ''}
+        <div class="modal-body">
+          ${opts.message ? `<div class="app-dialog-message">${_formatDialogMessage(opts.message)}</div>` : ''}
+          <input type="text" class="app-dialog-input" autocomplete="off" placeholder="${escapeHtml(opts.placeholder || '')}" />
+          <div class="app-dialog-error hidden"></div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost" data-action="cancel">${escapeHtml(opts.cancelLabel || 'Cancel')}</button>
+          <button type="button" class="btn-primary" data-action="ok">${escapeHtml(opts.okLabel || 'OK')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('.app-dialog-input');
+    if (opts.value) input.value = opts.value;
+    const errEl = overlay.querySelector('.app-dialog-error');
+    const done = (result) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(result); };
+    const submit = () => {
+      const val = input.value.trim();
+      if (opts.validate) {
+        const err = opts.validate(val);
+        if (err) { errEl.textContent = err; errEl.classList.remove('hidden'); input.focus(); return; }
+      }
+      done(val || null);
+    };
+    overlay.querySelector('[data-action="cancel"]').onclick = () => done(null);
+    overlay.querySelector('[data-action="ok"]').onclick = submit;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      else if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    };
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => input.focus(), 0);
+  });
+}
+
 // v4.64: SDC-themed password prompt (replaces the browser-native prompt()).
 // Renders an in-app modal with the SDC blue + lime branding, returns a
 // Promise that resolves to the entered string or null on cancel.
@@ -2268,10 +2315,11 @@ function enterCellEdit(td, taskId, col) {
   };
   document.addEventListener('mousedown', onOutsideMousedown, true);
 
-  // First printable keystroke after entering edit mode replaces the entire cell value
-  // — so click-then-type overwrites without the user having to select-all first.
-  // Date inputs are skipped (they have their own keyboard handling).
-  let firstType = true;
+  // The input opens with all text selected (input.select() above), so typing
+  // immediately overwrites — but if the user clicks/arrows to reposition the
+  // cursor (deselecting), typing inserts at the cursor like a normal field.
+  // (We deliberately do NOT force-wipe on first keystroke — that nuked the value
+  // even after the user had repositioned to append, e.g. adding "+2W" to "3FF".)
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); finalize(true); return; }
     if (e.key === 'Escape') { e.preventDefault(); finalize(false); return; }
@@ -2289,13 +2337,6 @@ function enterCellEdit(td, taskId, col) {
       });
       return;
     }
-    // Single printable character (no modifier other than Shift), and we haven't typed
-    // yet → wipe the existing value so the keystroke becomes the entire new content.
-    const isPrintable = e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey;
-    if (firstType && isPrintable && input.type !== 'date') {
-      input.value = '';
-    }
-    firstType = false;
   });
   input.addEventListener('blur', () => finalize(true));
 }
@@ -4304,8 +4345,18 @@ function drawBaselineGhosts() {
     const beMs = new Date(task.baseline_end_date + 'T00:00:00').getTime();
     if (Number.isNaN(bsMs) || Number.isNaN(beMs)) continue;
 
-    const ghostX = ((bsMs - startMs) / 86400000) * pxPerDay;
-    const ghostW = Math.max(2, ((beMs - bsMs) / 86400000 + 1) * pxPerDay);
+    // Anchor the ghost to the bar's ACTUAL x + scale instead of recomputing an
+    // absolute x from gantt_start. The gantt_start-based math drifted out of sync
+    // with frappe's real bar placement and threw the ghost months off (e.g. a
+    // task pushed +2wk showed its baseline far to the RIGHT instead of just left).
+    // For a real bar, derive px/day from the bar's own width ÷ its duration; for
+    // milestones (fixed-width diamonds) fall back to the global px/day.
+    const csMs = new Date(task.start_date + 'T00:00:00').getTime();
+    const ceMs = new Date(task.end_date + 'T00:00:00').getTime();
+    const curDurDays = (ceMs - csMs) / 86400000 + 1;
+    const ppd = (!task.is_milestone && curDurDays > 0 && barW > 0) ? (barW / curDurDays) : pxPerDay;
+    const ghostX = barX + ((bsMs - csMs) / 86400000) * ppd;
+    const ghostW = Math.max(2, ((beMs - bsMs) / 86400000 + 1) * ppd);
 
     const startDrift = driftDays(task.baseline_start_date, task.start_date);
     const endDrift   = driftDays(task.baseline_end_date,   task.end_date);
@@ -4334,7 +4385,11 @@ function drawBaselineGhosts() {
     ghost.setAttribute('stroke-width', '1.5');
     ghost.setAttribute('stroke-dasharray', '5 3');
     ghost.setAttribute('pointer-events', 'none');
-    wrap.insertBefore(ghost, wrap.firstChild);
+    // Top layer (appendChild, per CLAUDE.md) so the dashed baseline outline —
+    // especially where it would have ENDED — stays visible on top of the current
+    // bar instead of being hidden behind it. It's a fill:none outline, so the
+    // bar's label underneath still reads.
+    wrap.appendChild(ghost);
 
     // Drift label — bare "+Nd" / "−Nd" in the task's dark color. No pill, no
     // "baseline" wording. ALWAYS placed to the LEFT of the bar (anchored to the
@@ -4345,7 +4400,9 @@ function drawBaselineGhosts() {
     const driftMag = Math.abs(startDrift);
     if (driftMag > 0 && !task.is_milestone) {
       const isLate = startDrift > 0;
-      const labelText = `${isLate ? '+' : '−'}${driftMag}d`;
+      // Weeks + half-weeks, never days (business-days ÷ 5, half-week snap).
+      const driftWks = (Math.round((driftMag / 5) * 2) / 2) || 0.5;
+      const labelText = `${isLate ? '+' : '−'}${driftWks}w`;
       const text = document.createElementNS(SVG_NS, 'text');
       text.setAttribute('class', 'baseline-drift-label');
       text.setAttribute('x', barX - 4);
@@ -4353,7 +4410,8 @@ function drawBaselineGhosts() {
       text.setAttribute('text-anchor', 'end');
       text.setAttribute('font-size', '10');
       text.setAttribute('font-weight', '700');
-      text.setAttribute('fill', labelFill);
+      // Behind (later than baseline) = red; ahead (earlier) = green.
+      text.setAttribute('fill', isLate ? '#dc2626' : '#15803d');
       text.setAttribute('stroke', '#ffffff');
       text.setAttribute('stroke-width', '3');
       text.setAttribute('paint-order', 'stroke');
@@ -4740,7 +4798,9 @@ function drawScheduleStatus() {
       } catch (_) { /* SVG not measurable yet — fall back to default cx */ }
     }
     const cy = barY + barH / 2;
-    const label = `${ahead ? '+' : '−'}${Math.abs(diffDays)}d`;
+    // Weeks + half-weeks, never days (business-days ÷ 5, half-week snap).
+    const driftWks = (Math.round((Math.abs(diffDays) / 5) * 2) / 2) || 0.5;
+    const label = `${ahead ? '+' : '−'}${driftWks}w`;
     const padX = 5, chipH = Math.max(12, barH - 2);
     // Estimate width — text is short, ~7px per char + padding.
     const w = label.length * 6.5 + padX * 2;
@@ -4770,8 +4830,8 @@ function drawScheduleStatus() {
     // Tooltip for the chip — extra context on hover.
     const title = document.createElementNS(SVG_NS, 'title');
     title.textContent = ahead
-      ? `${Math.abs(diffDays)} working day${Math.abs(diffDays) === 1 ? '' : 's'} AHEAD of schedule (${actualPct.toFixed(0)}% complete, expected ${expectedPct.toFixed(0)}%)`
-      : `${Math.abs(diffDays)} working day${Math.abs(diffDays) === 1 ? '' : 's'} BEHIND schedule (${actualPct.toFixed(0)}% complete, expected ${expectedPct.toFixed(0)}%)`;
+      ? `${driftWks} week${driftWks === 1 ? '' : 's'} AHEAD of schedule (${actualPct.toFixed(0)}% complete, expected ${expectedPct.toFixed(0)}%)`
+      : `${driftWks} week${driftWks === 1 ? '' : 's'} BEHIND schedule (${actualPct.toFixed(0)}% complete, expected ${expectedPct.toFixed(0)}%)`;
     g.appendChild(title);
     wrap.appendChild(g);
   }
@@ -8359,18 +8419,25 @@ function renderProjectsPage() {
       );
       if (wsTemplates.length === 1) {
         const tmpl = wsTemplates[0];
-        const name = prompt(`New ${ws} schedule from "${tmpl}":\n\nEnter the new project name.`);
-        if (!name || !name.trim()) return;
-        const trimmed = name.trim();
-        if (state.tasks.some(t => t.project === trimmed)) {
-          alert(`A project named "${trimmed}" already exists.`);
-          return;
-        }
+        const trimmed = await showPromptDialog({
+          title: `New ${ws} schedule`,
+          message: `From template "${tmpl}". Enter the new project name:`,
+          placeholder: 'Project name',
+          okLabel: 'Create',
+          validate: (v) => {
+            if (!v) return 'Enter a project name.';
+            if (state.tasks.some(t => t.project === v)) return `A project named "${v}" already exists.`;
+            return null;
+          },
+        });
+        if (!trimmed) return;
         await duplicateProject(tmpl, trimmed);
         setProjectWorkspace(trimmed, ws);
         recordRecentProject(trimmed);
         saveProjectTabs();
-        setView('schedule');
+        // Show it in the list immediately — do NOT auto-open the schedule.
+        if (state.view === 'projects') renderProjectsPage();
+        showToast(`Created "${trimmed}" — click it to open.`);
         return;
       }
       // 0 or >1 templates → fall back to the legacy picker.
@@ -9653,6 +9720,13 @@ async function deleteProject(project) {
   if (state.projectWorkspaces) delete state.projectWorkspaces[project];
   saveProjectTabs();
   await loadTasks();
+  // loadTasks → render() doesn't repaint the Projects/Favorites/Recents lists,
+  // so the deleted row would linger until a manual navigation. Refresh explicitly
+  // so it disappears immediately.
+  if (state.view === 'projects')  renderProjectsPage();
+  if (state.view === 'favorites') renderFavoritesPage();
+  if (state.view === 'recents')   renderRecentsPage();
+  showToast(`Deleted "${project}".`);
 }
 
 // Pull every task from another project into THIS one. Used to fold a stray project
