@@ -172,6 +172,61 @@ db.exec(`
     last_login    TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+  -- v8.1: "Parts in Shop" — PM-facing list of parts physically at the SDC shop.
+  -- Mirrors the Smartsheet sheet: priority rank, job/project, part details,
+  -- finishing status, ownership (PM/Engineer), and BOM/complete checkboxes.
+  -- sort_order drives manual drag re-prioritization; rank is the user's numeric
+  -- priority bucket (-2..N). Independent from the tasks table.
+  CREATE TABLE IF NOT EXISTS shop_parts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    rank              INTEGER,
+    job               TEXT,
+    qty               INTEGER,
+    part_no           TEXT,
+    description       TEXT,
+    shop_release      TEXT,
+    new_mod           TEXT,
+    location          TEXT,
+    out_for_finishing TEXT,
+    priority          TEXT,
+    comments          TEXT,
+    engineer          TEXT,
+    pm                TEXT,
+    added_to_bom      INTEGER DEFAULT 0,
+    part_complete     INTEGER DEFAULT 0,
+    sort_order        INTEGER DEFAULT 0,
+    created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_shop_parts_job ON shop_parts(job);
+
+  -- v8.x: "Vendor PO Track" — every PO sent to an outside vendor (China custom
+  -- parts). Status (green done / blue partial / navy late / yellow due-soon) is
+  -- derived client-side from complete/partial + ETA (PO Date + Lead Time weeks).
+  CREATE TABLE IF NOT EXISTS vendor_pos (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    priority      INTEGER,
+    po            TEXT,
+    job           TEXT,
+    vendor        TEXT,
+    po_date       TEXT,
+    lead_time     INTEGER,
+    eta           TEXT,
+    ship_date     TEXT,
+    delivery_date TEXT,
+    tracking      TEXT,
+    po_price      TEXT,
+    pm            TEXT,
+    comments      TEXT,
+    partial       INTEGER DEFAULT 0,
+    complete      INTEGER DEFAULT 0,
+    completed_on  TEXT,
+    sort_order    INTEGER DEFAULT 0,
+    created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TEXT DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS idx_vendor_pos_vendor ON vendor_pos(vendor);
 `);
 
 // Phase 5 conflict-detection: version column on tasks. Bumped on every UPDATE.
@@ -315,6 +370,11 @@ if (!columnExists('team_members', 'is_lead')) {
 }
 if (!columnExists('team_members', 'specialty')) {
   db.exec('ALTER TABLE team_members ADD COLUMN specialty TEXT');
+}
+// shop_parts: completion timestamp (set when part_complete flips to 1) so the
+// dashboard can count "completed in the last N days".
+if (!columnExists('shop_parts', 'completed_on')) {
+  db.exec('ALTER TABLE shop_parts ADD COLUMN completed_on TEXT');
 }
 const migrations = [
   { col: 'project',        sql: 'ALTER TABLE tasks ADD COLUMN project TEXT' },

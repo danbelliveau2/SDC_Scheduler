@@ -718,6 +718,108 @@ app.post('/api/team/reorder', requireRole('editor'), async (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Shop Parts (Parts in Shop) — PM-facing list of parts at the SDC shop ─────
+const SHOP_PART_FIELDS = ['rank', 'job', 'qty', 'part_no', 'description', 'shop_release', 'new_mod', 'location', 'out_for_finishing', 'priority', 'comments', 'engineer', 'pm', 'added_to_bom', 'part_complete', 'sort_order'];
+const _shopBool = (f) => f === 'added_to_bom' || f === 'part_complete';
+
+app.get('/api/shop-parts', (req, res) => {
+  res.json(db.prepare('SELECT * FROM shop_parts ORDER BY sort_order, rank, id').all());
+});
+
+app.post('/api/shop-parts', requireRole('editor'), (req, res) => {
+  const b = req.body || {};
+  const cols = [], vals = [];
+  for (const f of SHOP_PART_FIELDS) {
+    if (f in b) { cols.push(f); vals.push(_shopBool(f) ? (b[f] ? 1 : 0) : b[f]); }
+  }
+  if (!cols.includes('sort_order')) {
+    const m = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM shop_parts').get().m;
+    cols.push('sort_order'); vals.push(m + 1);
+  }
+  const result = db.prepare(`INSERT INTO shop_parts (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...vals);
+  res.json(db.prepare('SELECT * FROM shop_parts WHERE id = ?').get(result.lastInsertRowid));
+  io.emit('shop_parts:updated');
+});
+
+app.put('/api/shop-parts/:id', requireRole('editor'), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM shop_parts WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const updates = {};
+  for (const f of SHOP_PART_FIELDS) {
+    if (f in req.body) updates[f] = _shopBool(f) ? (req.body[f] ? 1 : 0) : req.body[f];
+  }
+  if (Object.keys(updates).length === 0) return res.json(existing);
+  // Stamp / clear the completion timestamp when part_complete flips.
+  if ('part_complete' in updates) {
+    if (updates.part_complete && !existing.part_complete) updates.completed_on = new Date().toISOString();
+    else if (!updates.part_complete) updates.completed_on = null;
+  }
+  updates.updated_at = new Date().toISOString();
+  const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE shop_parts SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
+  res.json(db.prepare('SELECT * FROM shop_parts WHERE id = ?').get(id));
+  io.emit('shop_parts:updated');
+});
+
+app.delete('/api/shop-parts/:id', requireRole('editor'), (req, res) => {
+  db.prepare('DELETE FROM shop_parts WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+  io.emit('shop_parts:updated');
+});
+
+app.post('/api/shop-parts/reorder', requireRole('editor'), (req, res) => {
+  const { order } = req.body;
+  if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
+  const stmt = db.prepare('UPDATE shop_parts SET sort_order = ? WHERE id = ?');
+  db.exec('BEGIN');
+  try { order.forEach((id, idx) => stmt.run(idx, id)); db.exec('COMMIT'); }
+  catch (e) { db.exec('ROLLBACK'); throw e; }
+  res.json({ ok: true });
+});
+
+// ── Vendor POs (Vendor PO Track) — POs sent to outside vendors ──────────────
+const VPO_FIELDS = ['priority', 'po', 'job', 'vendor', 'po_date', 'lead_time', 'eta', 'ship_date', 'delivery_date', 'tracking', 'po_price', 'pm', 'comments', 'partial', 'complete', 'sort_order'];
+const _vpoBool = (f) => f === 'partial' || f === 'complete';
+
+app.get('/api/vendor-pos', (req, res) => {
+  res.json(db.prepare('SELECT * FROM vendor_pos ORDER BY sort_order, priority, id').all());
+});
+
+app.post('/api/vendor-pos', requireRole('editor'), (req, res) => {
+  const b = req.body || {};
+  const cols = [], vals = [];
+  for (const f of VPO_FIELDS) { if (f in b) { cols.push(f); vals.push(_vpoBool(f) ? (b[f] ? 1 : 0) : b[f]); } }
+  if (!cols.includes('sort_order')) { const m = db.prepare('SELECT COALESCE(MAX(sort_order),0) AS m FROM vendor_pos').get().m; cols.push('sort_order'); vals.push(m + 1); }
+  const result = db.prepare(`INSERT INTO vendor_pos (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...vals);
+  res.json(db.prepare('SELECT * FROM vendor_pos WHERE id = ?').get(result.lastInsertRowid));
+  io.emit('vendor_pos:updated');
+});
+
+app.put('/api/vendor-pos/:id', requireRole('editor'), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM vendor_pos WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const updates = {};
+  for (const f of VPO_FIELDS) { if (f in req.body) updates[f] = _vpoBool(f) ? (req.body[f] ? 1 : 0) : req.body[f]; }
+  if (Object.keys(updates).length === 0) return res.json(existing);
+  if ('complete' in updates) {
+    if (updates.complete && !existing.complete) updates.completed_on = new Date().toISOString();
+    else if (!updates.complete) updates.completed_on = null;
+  }
+  updates.updated_at = new Date().toISOString();
+  const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+  db.prepare(`UPDATE vendor_pos SET ${setClause} WHERE id = ?`).run(...Object.values(updates), id);
+  res.json(db.prepare('SELECT * FROM vendor_pos WHERE id = ?').get(id));
+  io.emit('vendor_pos:updated');
+});
+
+app.delete('/api/vendor-pos/:id', requireRole('editor'), (req, res) => {
+  db.prepare('DELETE FROM vendor_pos WHERE id = ?').run(Number(req.params.id));
+  res.json({ ok: true });
+  io.emit('vendor_pos:updated');
+});
+
 app.post('/api/tasks/reorder', requireRole('editor'), async (req, res) => {
   const { order } = req.body;
   if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });

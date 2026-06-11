@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.0',
+    date: '2026-06-11',
+    notes: [
+      'Two new shop-floor tracking tabs — Parts in Shop and Vendor PO Track — each a full card/list workspace with its own dashboards, all in the SDC colorway.',
+      '',
+      'PARTS IN SHOP (sidebar → Parts in Shop):',
+      '   ▸ List + Cards views, priority 1/2/3 as a click-to-change SDC-blue gradient pill (1 dark = hot → 3 light = low).',
+      '   ▸ Row colour encodes type — MOD = SDC light yellow, new part = white — with a New/MOD + priority legend under the toolbar.',
+      '   ▸ Part No. is plain text (description gets the room); right-click-free inline qty + complete checkbox; click any row to expand the full editor.',
+      '   ▸ Dashboards: Open by project · Completed (range selector) · Behind schedule (Part / Job / Due / weeks behind) · Longest open (weeks). On-time delivery donut pinned up top by the Add button.',
+      '',
+      'VENDOR PO TRACK (sidebar → Vendor PO Track):',
+      '   ▸ Status auto-colours (Complete / Shipped / Partial / Late / Due ≤1 wk / Open), by-vendor cards, everything in weeks + half-weeks (never days).',
+      '   ▸ Dashboards in one row: Open by vendor · In transit · Late POs · Completed (PO / Job / Lead / Took) · Longest outstanding (with due date). On-time delivery + Avg lead by vendor combined into one widget up top.',
+      '',
+      'OTHER:',
+      '   ▸ Project delete now asks for confirmation.',
+      '   ▸ Departments "All projects" dropdown is active-only.',
+    ],
+  },
+  {
     version: '8.0',
     date: '2026-06-09',
     notes: [
