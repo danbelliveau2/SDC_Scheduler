@@ -2871,7 +2871,63 @@ async function startServer({ port } = {}) {
     const cron = require('./cronJobs');
     if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc });
   } catch (_) { /* cronJobs.js is optional */ }
+  startRepoAutoSync();
   return server;
+}
+
+// ── Repo auto-sync ────────────────────────────────────────────────────────────
+// Replaces scripts/repo-sync.js, which broke when PM2 moved to a SYSTEM
+// service: SYSTEM isn't the repo owner (git "dubious ownership"), has no git
+// identity, and has no GitHub credentials — and the scripts/ files are
+// SYSTEM-ACL-locked so the script itself can't be patched. This runs the same
+// job in-process instead: when the auto-updater pulls new files from Dan's
+// repo, commit + push them to origin so the centralized repo tracks Dan's
+// version. Lives here because server.js is on the updater's preserved list
+// and the app already runs as SYSTEM. Disable with REPO_AUTO_SYNC=off.
+function startRepoAutoSync() {
+  if ((process.env.REPO_AUTO_SYNC || '').toLowerCase() === 'off') return;
+  const { execSync } = require('child_process');
+  const repoRoot = path.join(__dirname, '..');
+  if (!fs.existsSync(path.join(repoRoot, '.git'))) return; // Electron / standalone installs have no repo
+
+  // Everything the auto-updater writes (SAFE_DIRS + SAFE_FILES + dep merge + custom-public mirror).
+  const SYNC_PATHS = [
+    'SDC_Scheduler/public', 'SDC_Scheduler/custom-public',
+    'SDC_Scheduler/auth.js', 'SDC_Scheduler/emailService.js',
+    'SDC_Scheduler/scripts/repo-sync.js',
+    'SDC_Scheduler/package.json', 'SDC_Scheduler/package-lock.json',
+    'SDC_Scheduler/ARROW_ROUTING_RULES.md', 'SDC_Scheduler/.gitignore',
+  ];
+  // safe.directory: git runs as SYSTEM but the repo is owned by a user account.
+  // credential store file: SYSTEM has no credential-manager entries; the file is
+  // ACL-locked to SYSTEM/Administrators/akamuju.
+  const GIT_FLAGS = `-c safe.directory="${repoRoot.replace(/\\/g, '/')}"`
+    + ' -c user.name="SDC Repo Sync" -c user.email="repo-sync@stevendouglas.local"'
+    + ' -c credential.helper= -c "credential.helper=store --file=C:/ProgramData/SDC_Scheduler/git-credentials"';
+  const git = (args) => execSync(`git -C "${repoRoot}" ${GIT_FLAGS} ${args}`, { stdio: 'pipe', timeout: 60000 }).toString().trim();
+
+  let lastError = '';
+  const tick = () => {
+    try {
+      git(`add ${SYNC_PATHS.map(s => `"${s}"`).join(' ')}`);
+      let staged = true;
+      try { git('diff --cached --quiet'); staged = false; } catch { staged = true; }
+      if (!staged) return;
+      let danSha = 'unknown';
+      try { danSha = fs.readFileSync(path.join(__dirname, '.update-sha'), 'utf8').trim().slice(0, 7); } catch {}
+      git(`commit -m "chore(scheduler): sync from danbelliveau2@${danSha}"`);
+      git('push origin master');
+      lastError = '';
+      console.log(`[repo-sync] Committed and pushed scheduler sync (danbelliveau2@${danSha}).`);
+    } catch (e) {
+      // Log each distinct failure once — not every 5 minutes forever.
+      const msg = (e.stderr ? e.stderr.toString() : e.message || '').trim().slice(0, 300);
+      if (msg !== lastError) { lastError = msg; console.error(`[repo-sync] ${msg}`); }
+    }
+  };
+  setTimeout(tick, 30 * 1000);            // first pass shortly after boot (updater restarts us post-pull)
+  setInterval(tick, 5 * 60 * 1000);
+  console.log('[repo-sync] In-process repo auto-sync armed (every 5 min).');
 }
 
 if (require.main === module) {
