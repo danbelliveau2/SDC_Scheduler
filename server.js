@@ -539,6 +539,28 @@ app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   if (t && t.anchor_key && t.anchor_key !== 'backlog') {
     return res.status(400).json({ error: 'Anchor milestones cannot be deleted.' });
   }
+  // Sever references to this task BEFORE deleting it, so nobody is left holding a
+  // dangling link. Task predecessors store bare task-ids ("123FS"); financial
+  // triggers store "#<taskId>". We drop only the segment that points at THIS id —
+  // everything else is untouched, so other rows don't move or re-date.
+  const stripRef = (predStr, marker) => {
+    if (!predStr) return predStr;
+    const kept = String(predStr).split(',').map(s => s.trim()).filter(Boolean).filter(seg => {
+      const m = seg.match(marker ? /^#(\d+)/ : /^(\d+)/);
+      return !(m && Number(m[1]) === id);
+    });
+    return kept.join(', ');
+  };
+  const [taskRefs] = await pool.query('SELECT id, predecessors FROM tasks WHERE predecessors LIKE ?', [`%${id}%`]);
+  for (const r of taskRefs) {
+    const np = stripRef(r.predecessors, false);
+    if (np !== r.predecessors) await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [np || null, r.id]);
+  }
+  const [finRefs] = await pool.query('SELECT id, predecessors FROM project_financials WHERE predecessors LIKE ?', [`%#${id}%`]);
+  for (const r of finRefs) {
+    const np = stripRef(r.predecessors, true);
+    if (np !== r.predecessors) await pool.query('UPDATE project_financials SET predecessors = ? WHERE id = ?', [np || null, r.id]);
+  }
   await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
   if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
   if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee);
@@ -1227,10 +1249,6 @@ function parseEstimateWorkbook(buf) {
     const dataRow = rows[4] || [];
     const colByLabel = (labelRe) => header.findIndex(c => labelRe.test(String(c || '').trim()));
     const val = (col) => col < 0 ? 0 : (Number(dataRow[col]) || 0);
-    // Map each named header column. Multiple "ME & CE" / "MB & EB"
-    // columns appear (Testing, Teardown, Install). Walk them in order.
-    const allMeCe = header.map((c, i) => (/^ME & CE$/i.test(String(c || '').trim()) ? i : -1)).filter(i => i >= 0);
-    const allMbEb = header.map((c, i) => (/^MB & EB$/i.test(String(c || '').trim()) ? i : -1)).filter(i => i >= 0);
     // Section 10 — design + build labor
     section10 = {
       parts:       0,
@@ -1245,29 +1263,29 @@ function parseEstimateWorkbook(buf) {
       mech_build:  val(colByLabel(/^Mechanical Build$/i)),
       elec_build:  val(colByLabel(/^Electrical Build$/i)),
     };
-    // Section 40 — Testing engineering (first ME & CE) + Testing shop
-    // (first MB & EB). Dumps the lump into mech_eng / mech_build —
-    // the variance modal sums those keys for the test_debug bucket so
-    // the totals end up correct without needing per-discipline breakdown.
-    section40 = {
+    // Section 40 (Testing) + Section 50 (Teardown & Install): engineering /
+    // shop lumps. Classify each "ME & CE" / "MB & EB" column by the GROUP
+    // banner in row 2 (forward-filled across merged header cells): Testing →
+    // section 40, Teardown/Install → section 50. WARRANTY — and PM / MFG /
+    // anything else — is intentionally ignored; it isn't scheduled. Eng lump
+    // goes to mech_eng, shop lump to mech_build (the buckets downstream expect).
+    const groupRow = rows[1] || [];
+    const groupAt = [];
+    { let g = ''; for (let i = 0; i < header.length; i++) { const raw = String(groupRow[i] == null ? '' : groupRow[i]).trim(); if (raw) g = raw; groupAt[i] = g; } }
+    const blankSection = () => ({
       parts: 0, mech_eng: 0, ce_design: 0, ce_software: 0, ce_database: 0,
-      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0,
-      mech_build: 0, elec_build: 0,
-    };
-    if (allMeCe[0] >= 0) section40.mech_eng   = val(allMeCe[0]);
-    if (allMbEb[0] >= 0) section40.mech_build = val(allMbEb[0]);
-    // Section 50 — Teardown engineering + shop (2nd ME&CE + MB&EB),
-    // Install engineering + shop (3rd ME&CE + MB&EB). Sum eng-side
-    // into mech_eng, shop-side into mech_build. Same lump approach.
-    section50 = {
-      parts: 0, mech_eng: 0, ce_design: 0, ce_software: 0, ce_database: 0,
-      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0,
-      mech_build: 0, elec_build: 0,
-    };
-    if (allMeCe[1] >= 0) section50.mech_eng   += val(allMeCe[1]); // teardown eng
-    if (allMbEb[1] >= 0) section50.mech_build += val(allMbEb[1]); // teardown shop
-    if (allMeCe[2] >= 0) section50.mech_eng   += val(allMeCe[2]); // install eng
-    if (allMbEb[2] >= 0) section50.mech_build += val(allMbEb[2]); // install shop
+      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0, mech_build: 0, elec_build: 0,
+    });
+    section40 = blankSection();
+    section50 = blankSection();
+    header.forEach((c, i) => {
+      const label = String(c == null ? '' : c).trim();
+      const g = groupAt[i] || '';
+      const tgt = /testing/i.test(g) ? section40 : (/teardown|install/i.test(g) ? section50 : null);
+      if (!tgt) return; // Warranty / Complete Design and Build / etc. → ignored
+      if (/^ME & CE$/i.test(label))      tgt.mech_eng   += val(i);
+      else if (/^MB & EB$/i.test(label)) tgt.mech_build += val(i);
+    });
     // Parts cost — last numeric column with a big value (the "Parts Cost" header
     // sits to the right of the labor columns). Pick the FIRST data-row value
     // that's > 1000 past column 16.
@@ -1392,6 +1410,30 @@ app.post('/api/project/:project/quote', requireRole('editor'), async (req, res) 
 });
 app.delete('/api/project/:project/quote', requireRole('editor'), async (req, res) => {
   await pool.query('DELETE FROM settings WHERE `key` = ?', [`project_quote:${req.params.project}`]);
+  res.json({ ok: true });
+});
+
+// Persist the actual estimate .xlsx (base64) WITH the project, separate from the
+// parsed quote numbers, so it survives, can be re-downloaded to verify, and can
+// be re-parsed on demand ("Update numbers from estimate"). Stored in its own
+// settings key so the (frequently-loaded) quote payload stays small.
+app.get('/api/project/:project/estimate-file', async (req, res) => {
+  const key = `project_estimate:${req.params.project}`;
+  const [[row]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [key]);
+  if (!row) return res.json(null);
+  try { res.json(JSON.parse(row.value)); } catch { res.json(null); }
+});
+app.post('/api/project/:project/estimate-file', requireRole('editor'), async (req, res) => {
+  const key = `project_estimate:${req.params.project}`;
+  const value = JSON.stringify({
+    name: (req.body && req.body.name) || 'estimate.xlsx',
+    data: (req.body && req.body.data) || '',
+    uploaded_at: new Date().toISOString(),
+  });
+  await pool.query(
+    'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+    [key, value]
+  );
   res.json({ ok: true });
 });
 
