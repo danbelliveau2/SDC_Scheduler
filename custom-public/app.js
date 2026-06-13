@@ -341,6 +341,35 @@ function predParse(displayString) {
   }).join(', ');
 }
 
+// ── Financial-milestone trigger storage ──────────────────────────────────────
+// Financial triggers track the TASK, not the line, exactly like grid
+// predecessors. A task ref is stored as "#<taskId>" (e.g. "#7FF +2w") so it
+// follows the task when rows are added / removed / reordered. Anchors (PO / FAT /
+// Ship) pass through unchanged. A BARE number is a legacy line ref that still
+// resolves positionally and self-heals to "#id" when its project is active.
+// finPredDisplay: stored → what the user sees (line numbers). finPredParse: what
+// the user typed (line numbers) → stored ("#id"). Both rely on the active
+// project's lineByTaskId / taskIdByLine maps.
+function finPredDisplay(stored) {
+  if (!stored) return '';
+  return String(stored).split(',').map(s => {
+    const t = s.trim(); if (!t) return '';
+    const m = t.match(/^#(\d+)(.*)$/);
+    if (m) { const line = lineByTaskId[Number(m[1])]; return line == null ? '' : (line + m[2]).toUpperCase(); }
+    return t.toUpperCase(); // legacy bare line number, or an anchor alias
+  }).filter(Boolean).join(', ');
+}
+function finPredParse(displayed) {
+  if (!displayed) return '';
+  return String(displayed).split(',').map(s => {
+    const t = s.trim(); if (!t) return '';
+    if (t.startsWith('#')) return t.toUpperCase(); // already a task ref — leave it
+    const m = t.match(/^(\d+)(.*)$/);
+    if (m) { const id = taskIdByLine[Number(m[1])]; return id != null ? ('#' + id + m[2]).toUpperCase() : t.toUpperCase(); }
+    return t.toUpperCase(); // anchor alias (PO / FAT / Ship)
+  }).filter(Boolean).join(', ');
+}
+
 // Walk HIERARCHY + anchors as if nothing is collapsed. Returns the canonical task ID
 // order — used to assign line numbers that stay STABLE across collapse / expand
 // operations, so predecessor displays never flip to "?id" just because a section is
@@ -2593,6 +2622,16 @@ function pushUndoSnapshot(task, fields, description) {
 async function performUndo() {
   const entry = state.undoStack.pop();
   if (!entry) { syncUndoButton(); return; }
+  // Undo an "add row" → delete the created row; redo will re-create it.
+  if (entry.kind === 'create') {
+    try { await api.remove(entry.taskId); }
+    catch (err) { console.error('undo(create) failed', err); }
+    state.redoStack.push({ kind: 'create', payload: entry.payload, description: entry.description });
+    while (state.redoStack.length > UNDO_STACK_MAX) state.redoStack.shift();
+    await loadTasks();
+    syncUndoButton(); syncRedoButton();
+    return;
+  }
   // Capture current state of the changed fields BEFORE we revert so redo can
   // re-apply them. Look up the task fresh from state.tasks (entry only holds
   // taskId + the original `before` snapshot, not the post-edit values).
@@ -2620,6 +2659,19 @@ async function performUndo() {
 async function performRedo() {
   const entry = state.redoStack.pop();
   if (!entry) { syncRedoButton(); return; }
+  // Redo an "add row" → re-create the row from its payload (new id is fine).
+  if (entry.kind === 'create') {
+    try {
+      const c = await api.create(entry.payload);
+      if (c && c.id) {
+        state.undoStack.push({ kind: 'create', taskId: c.id, payload: entry.payload, description: entry.description });
+        while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+      }
+    } catch (err) { console.error('redo(create) failed', err); }
+    await loadTasks();
+    syncUndoButton(); syncRedoButton();
+    return;
+  }
   // Capture current state as a new undo entry, then apply the redo snapshot.
   const task = state.tasks.find(t => t.id === entry.taskId);
   if (task) {
@@ -10072,6 +10124,52 @@ async function duplicateProject(source, targetName = null) {
     }).join(', ');
     if (remapped) await api.update(oldToNewId[t.id], { predecessors: remapped });
   }
+  // Clone the source's FINANCIAL MILESTONES too, carrying their predecessor
+  // links over. Tasks were cloned in the same sort_order, so line-number
+  // predecessors ("1", "19ss", "28") and anchor refs (PO / FAT / Ship) resolve
+  // to the matching task in the new project verbatim — no remap needed. We reset
+  // due_date (so it re-derives from the predecessor against THIS project's dates)
+  // and paid (a fresh project starts unpaid). Doing this here means the new
+  // project already has milestones, so the generic default-seed — which only
+  // fires on a project with zero financials — never overrides the template's.
+  // Only clone financials if tasks were actually created. A failed/partial clone
+  // (empty id map) would otherwise leave orphan milestones with null/garbage
+  // triggers on a task-less project. Also mark the project as already-seeded so
+  // the generic default-seed can never add a SECOND set on top of these.
+  if (Object.keys(oldToNewId).length > 0) try {
+    (state._financialsSeededFor ||= {})[trimmed] = true;
+    // Clear any financials already on the target FIRST, so re-cloning into a name
+    // that exists (e.g. a prior failed clone left orphan milestones, or the seed
+    // ran) never stacks a second set on top. The clone is the single source of
+    // truth for a cloned project's milestones.
+    const existingFin = await api.financials.list(trimmed);
+    for (const ef of existingFin) { await api.financials.remove(ef.id); }
+    const srcFin = await api.financials.list(source);
+    srcFin.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    // Remap task-ref triggers ("#oldId" → "#newId") via the same old→new task-id
+    // map used for grid predecessors, so each milestone points at the CLONED task.
+    // Anchors (PO/FAT/Ship) and legacy bare-line refs pass through unchanged (the
+    // clone preserves row order, so a bare line still lands on the right task and
+    // self-heals to "#id" when the new project is opened).
+    const remapFinPred = (pred) => !pred ? null : String(pred).split(',').map(s => {
+      const t = s.trim(); if (!t) return '';
+      const m = t.match(/^#(\d+)(.*)$/);
+      if (m) { const nid = oldToNewId[Number(m[1])]; return nid != null ? ('#' + nid + m[2]) : ''; }
+      return t;
+    }).filter(Boolean).join(', ') || null;
+    for (const f of srcFin) {
+      await api.financials.create({
+        project: trimmed,
+        name: f.name,
+        percent: f.percent,
+        amount: f.amount,
+        due_date: null,
+        paid: 0,
+        predecessors: remapFinPred(f.predecessors),
+        sync_to_anchor: f.sync_to_anchor || null,
+      });
+    }
+  } catch (e) { console.error('clone financials failed', e); }
   // Open the new tab and switch to it.
   if (!state.openProjects.includes(trimmed)) state.openProjects.push(trimmed);
   state.filters.project = trimmed;
@@ -11554,7 +11652,7 @@ async function createTaskBelow(taskId) {
   if (!t) return;
   const project = state.filters.project || t.project || null;
   const sortOrder = (Number(t.sort_order) || 0) + 0.5;
-  const created = await api.create({
+  const payload = {
     name: 'New task',
     project,
     phase_group: t.phase_group || null,
@@ -11564,8 +11662,16 @@ async function createTaskBelow(taskId) {
     // the new row IN M2, not silently make it shared.
     machine: t.machine || null,
     sort_order: sortOrder,
-  });
+  };
+  const created = await api.create(payload);
   if (!created || created.error) return;
+  // Record an undo entry so the topbar Undo can remove an accidental add.
+  // kind:'create' → undo deletes this row; redo re-creates it from the payload.
+  state.undoStack.push({ kind: 'create', taskId: created.id, payload, description: `Add row below "${t.name || 'task'}"` });
+  while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+  state.redoStack = [];
+  syncUndoButton();
+  syncRedoButton();
   await loadTasks();
   const newTr = document.querySelector(`tr[data-id="${created.id}"]`);
   if (newTr) {
@@ -11908,6 +12014,32 @@ async function loadFinancialsForProject(project) {
     await api.financials.seed(project);
     rows = await api.financials.list(project);
   }
+  // Self-heal legacy line-number triggers → task refs ("#id"). CRITICAL SAFETY:
+  // only convert a line when taskIdByLine maps it to a task that ACTUALLY BELONGS
+  // to THIS project. The line-map is global/active-project state, so during a
+  // project switch it can momentarily reflect a DIFFERENT project — converting
+  // then would silently point a trigger at another project's task (cross-project
+  // corruption). The project-membership check makes that impossible: a mismatched
+  // map simply leaves the legacy line ref untouched (it still resolves positionally
+  // until the project is genuinely active).
+  if (project === state.filters.project) {
+    const safeHeal = (stored) => String(stored).split(',').map(s => {
+      const t = s.trim(); if (!t) return '';
+      if (t.startsWith('#') || !/^\d/.test(t)) return t; // already a task ref, or an anchor
+      const m = t.match(/^(\d+)(.*)$/);
+      const id = taskIdByLine[Number(m[1])];
+      const tk = id != null && state.tasks.find(x => x.id === id);
+      return (tk && tk.project === project) ? ('#' + id + m[2]).toUpperCase() : t;
+    }).filter(Boolean).join(', ');
+    for (const r of rows) {
+      if (!r.predecessors) continue;
+      const healed = safeHeal(r.predecessors);
+      if (healed && healed !== r.predecessors) {
+        r.predecessors = healed;
+        api.financials.update(r.id, { predecessors: healed }).catch(() => {});
+      }
+    }
+  }
   // Apply anchor-sync overrides — if a row points at an anchor (e.g. 'fat'), its
   // due_date follows the predecessor's date for display. Edits to the row's date
   // still save, but the live value reflects the trigger each render.
@@ -11963,9 +12095,19 @@ function resolveFinancialTrigger(ref, project) {
     target = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === aliasKey);
   }
   if (!target) {
-    const n = Number(prefix);
-    if (Number.isInteger(n) && taskIdByLine[n]) {
-      target = state.tasks.find(t => t.id === taskIdByLine[n]);
+    if (prefix.startsWith('#')) {
+      // Task-identity ref (e.g. "#7") — points at the task by its permanent ID,
+      // so it follows the task when rows are added/removed. This is the format
+      // financial triggers store going forward (mirrors grid predecessors).
+      const id = Number(prefix.slice(1));
+      if (Number.isInteger(id)) target = state.tasks.find(t => t.project === project && t.id === id);
+    } else {
+      // Legacy bare line number — resolve positionally (self-heals to "#id" when
+      // its project is the active/rendered one; see loadFinancialsForProject).
+      const n = Number(prefix);
+      if (Number.isInteger(n) && taskIdByLine[n]) {
+        target = state.tasks.find(t => t.id === taskIdByLine[n]);
+      }
     }
   }
   if (!target) return null;
@@ -12152,7 +12294,11 @@ async function openQuoteCompareModal(project, providedQuote) {
   const hb = quote?.hours_breakdown;
   const s10 = hb?.section_10 || {}, s40 = hb?.section_40 || {}, s50 = hb?.section_50 || {};
   const quoted = {
-    mech_eng:    safe(s10.mech) + safe(s50.mech),
+    // Mechanical Engineering = DESIGN-phase ME only (section 10), matching the
+    // schedule's design_build/mech bucket. Section-50 ME (teardown/install/
+    // warranty engineering, which the horizontal estimate lumps as "ME & CE")
+    // belongs to the install bucket, NOT design — see `install` below.
+    mech_eng:    safe(s10.mech),
     ce_design:   safe(s10.ce_des),
     ce_drawings: safe(s10.ce_drw),
     ce_software: safe(s10.ce_sw),
@@ -12170,7 +12316,8 @@ async function openQuoteCompareModal(project, providedQuote) {
     shop_debug:  safe(s40.build) + safe(s40.wire_panel) + safe(s40.wire_machine),
     teardown:    safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine),
     install:     safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
-                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision),
+                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision)
+                 + safe(s50.mech), // teardown/install engineering (ME&CE lump)
   };
   // Configure Machine = 5% of testing engineering hours.
   quoted.configure = Math.round(quoted.test_debug * 0.05);
@@ -12348,6 +12495,10 @@ async function openQuoteCompareModal(project, providedQuote) {
       ],
     },
   ];
+  // Detailed breakdown — rows mirror the schedule task-for-task. Per Dan: the
+  // per-task lines show only SCHEDULED hours; the QUOTED amount + variance are
+  // shown once per SUBSECTION (Mechanical Engineering / Controls Engineering /
+  // …) on its total row, because the estimate only has per-discipline totals.
   const SECTIONS = isSales ? SECTIONS_SALES : SECTIONS_DETAILED;
   // Flatten all rows (across sub-groups in detailed mode) for the rowsByKey
   // lookup that wireInputs / applyChanges / consolidation logic reads.
@@ -12355,7 +12506,7 @@ async function openQuoteCompareModal(project, providedQuote) {
   const rowsByKey = {};
   SECTIONS.forEach(s => allRows(s).forEach(r => { rowsByKey[r.k] = r; }));
   // Column count varies — sales projects hide the Remaining column.
-  const colCount = isSales ? 5 : 6;
+  const colCount = isSales ? 6 : 7; // Discipline, Weeks, Alloc/People, Scheduled, Quoted, Variance (+ Remaining when not sales)
 
   // PENDING STATE — edits live here until Done is pressed. Keyed by row
   // storage key (r.k). Undefined means "no override; use base value."
@@ -12446,6 +12597,7 @@ async function openQuoteCompareModal(project, providedQuote) {
         <td class="num quote-milestone-cell">—</td>
         <td class="num quote-milestone-cell">—</td>
         <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
         ${isSales ? '' : '<td class="num quote-milestone-cell">—</td>'}
       </tr>`;
     }
@@ -12458,7 +12610,10 @@ async function openQuoteCompareModal(project, providedQuote) {
       else if (variance > st.q * 0.10) varCls = 'var-over';
       else if (variance > 0) varCls = 'var-near';
     }
-    const varText = st.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    const varText = st.q === 0 ? '—'
+      : variance === 0 ? 'On&nbsp;target'
+      : variance < 0 ? `Under ${Math.abs(variance).toLocaleString()}`
+      : `Over ${variance.toLocaleString()}`;
     const weeksTitle = taskCount === 0
       ? 'No tasks in this bucket yet — add a task to the schedule first.'
       : (r.taskId
@@ -12496,12 +12651,11 @@ async function openQuoteCompareModal(project, providedQuote) {
       ${labelCell}
       <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
       ${peopleOrAllocCell}
-      <td class="num quote-sched-cell">
-        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override. Saved per-task in detailed mode, per-bucket in sales mode." />
-        <span class="quote-sched-slash">/</span>
-        <span class="quote-sched-s">${st.s.toLocaleString()}</span>
-      </td>
-      <td class="num quote-variance ${varCls}">${varText}</td>
+      <td class="num quote-sched-s">${st.s.toLocaleString()}</td>
+      ${r.taskId
+        ? `<td class="num quote-cell-muted">·</td><td class="num quote-cell-muted">·</td>`
+        : `<td class="num"><input type="number" min="0" max="9999" step="1" class="quote-q-input" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override." /></td>
+           <td class="num quote-variance ${varCls}">${varText}</td>`}
       ${isSales ? '' : `<td class="num">${st.rem.toLocaleString()}</td>`}
     </tr>`;
   }
@@ -12517,25 +12671,40 @@ async function openQuoteCompareModal(project, providedQuote) {
     }
     return { q, s, rem };
   }
+  // Quoted total for a set of detailed rows = the estimate's per-discipline
+  // total: sum of the DISTINCT estimate buckets the group's tasks map to (the
+  // estimate has no per-task quoted, so we never sum line-by-line).
+  function subsectionQuoted(rows) {
+    const bkeys = new Set();
+    for (const r of rows) {
+      if (!r.taskId) continue;
+      const tk = state.tasks.find(x => x.id === r.taskId);
+      const bk = tk && TASK_BUCKET(tk);
+      if (bk) bkeys.add(bk);
+    }
+    let q = 0; bkeys.forEach(k => { q += (quoted[k] || 0); });
+    return q;
+  }
   function buildGroupTotalRow(groupLabel, rows) {
     const t = computeRowsTotals(rows);
-    const variance = t.s - t.q;
+    const qTotal = subsectionQuoted(rows);
+    const variance = t.s - qTotal;
     let varCls = 'var-zero';
-    if (t.q > 0) {
+    if (qTotal > 0) {
       if (variance < 0) varCls = 'var-under';
-      else if (variance > t.q * 0.10) varCls = 'var-over';
+      else if (variance > qTotal * 0.10) varCls = 'var-over';
       else if (variance > 0) varCls = 'var-near';
     }
-    const varText = t.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    const varText = qTotal === 0 ? '—'
+      : variance === 0 ? 'On&nbsp;target'
+      : variance < 0 ? `Under ${Math.abs(variance).toLocaleString()}`
+      : `Over ${variance.toLocaleString()}`;
     return `<tr class="quote-row quote-group-total-row">
-      <td class="quote-group-total-label">${escapeHtml(groupLabel || 'Group')} total</td>
+      <td class="quote-group-total-label">${escapeHtml(groupLabel || 'Group')}</td>
       <td class="num">—</td>
       <td class="num">—</td>
-      <td class="num quote-sched-cell">
-        <span class="quote-sched-q">${t.q ? t.q.toLocaleString() : '—'}</span>
-        <span class="quote-sched-slash">/</span>
-        <span class="quote-sched-s">${t.s.toLocaleString()}</span>
-      </td>
+      <td class="num quote-sched-s">${t.s.toLocaleString()}</td>
+      <td class="num quote-sched-q">${qTotal ? qTotal.toLocaleString() : '—'}</td>
       <td class="num quote-variance ${varCls}">${varText}</td>
       ${isSales ? '' : `<td class="num">${t.rem.toLocaleString()}</td>`}
     </tr>`;
@@ -12583,14 +12752,25 @@ async function openQuoteCompareModal(project, providedQuote) {
     }).join('');
   }
   function computeTotals() {
-    let totalQ = 0, totalS = 0, totalR = 0;
+    let totalS = 0, totalR = 0;
+    const bkeys = new Set();
     for (const section of SECTIONS) {
       for (const r of allRows(section)) {
         if (r.milestone) continue; // milestone rows have no hours to total
         const st = computeRowState(r);
-        totalQ += st.q; totalS += st.s; totalR += st.rem;
+        totalS += st.s; totalR += st.rem;
+        // Grand quoted = sum of the estimate's distinct buckets (matches the
+        // subsection totals), never a per-task sum.
+        if (r.taskId) {
+          const tk = state.tasks.find(x => x.id === r.taskId);
+          const bk = tk && TASK_BUCKET(tk);
+          if (bk) bkeys.add(bk);
+        } else {
+          (r.keys || [r.k]).forEach(k => bkeys.add(k));
+        }
       }
     }
+    let totalQ = 0; bkeys.forEach(k => { totalQ += (quoted[k] || 0); });
     return { totalQ, totalS, totalR };
   }
   function buildFooterHtml() {
@@ -12605,12 +12785,12 @@ async function openQuoteCompareModal(project, providedQuote) {
         <td>Total</td>
         <td class="num">—</td>
         <td class="num">—</td>
-        <td class="num quote-sched-cell">
-          <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
-          <span class="quote-sched-slash">/</span>
-          <span class="quote-sched-s">${totalS.toLocaleString()}</span>
-        </td>
-        <td class="num quote-variance ${varCls}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
+        <td class="num quote-sched-s">${totalS.toLocaleString()}</td>
+        <td class="num quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</td>
+        <td class="num quote-variance ${varCls}">${totalQ === 0 ? '—'
+          : totalV === 0 ? 'On&nbsp;target'
+          : totalV < 0 ? `Under ${Math.abs(totalV).toLocaleString()}`
+          : `Over ${totalV.toLocaleString()}`}</td>
         ${isSales ? '' : `<td class="num">${totalR.toLocaleString()}</td>`}
       </tr>`;
   }
@@ -12649,7 +12829,9 @@ async function openQuoteCompareModal(project, providedQuote) {
         </div>
         ${quote
           ? `<div style="margin:0 0 12px;font-size:12px;color:#475569;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span style="flex:1 1 auto;min-width:240px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
+              <span id="quote-estimate-name" style="flex:1 1 auto;min-width:200px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
+              <button type="button" class="quote-action-btn" data-action="view-estimate" title="Download the estimate file attached to this project so you can verify it." style="display:none;">⬇ View estimate</button>
+              <button type="button" class="quote-action-btn" data-action="update-estimate" title="Re-read the attached estimate file and refresh the Quoted hours from it. Use this after you change the estimate." style="display:none;">↻ Update numbers from estimate</button>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor (billing events tied to anchors, e.g. 30% at PO / 60% at FAT / 10% at Ship). Stays open on top so you can confirm billing while the comparison is still in view.">$ Financial Milestones</button>
               <label class="btn-ghost" style="cursor:pointer;border:1px solid #cbd5e1;color:#334155;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
                 Replace estimate…
@@ -12670,23 +12852,31 @@ async function openQuoteCompareModal(project, providedQuote) {
                a slash) get the real estate they need. Sums to 100% so the
                table is responsive inside the wider 880px modal card. -->
           <colgroup>
-            <col style="width: ${isSales ? '34%' : '28%'};">  <!-- Discipline -->
-            <col style="width: 10%;">                          <!-- Weeks -->
-            <col style="width: 11%;">                          <!-- People # -->
-            <col style="width: ${isSales ? '32%' : '28%'};">   <!-- Quoted / Scheduled -->
-            <col style="width: 13%;">                          <!-- Variance -->
+            <col style="width: ${isSales ? '34%' : '30%'};">  <!-- Discipline / task -->
+            <col style="width: 9%;">                           <!-- Weeks -->
+            <col style="width: 10%;">                          <!-- Alloc / People -->
+            <col style="width: 13%;">                          <!-- Scheduled -->
+            <col style="width: 13%;">                          <!-- Quoted -->
+            <col style="width: ${isSales ? '21%' : '12%'};">   <!-- Variance (US/OS — short) -->
             ${isSales ? '' : '<col style="width: 13%;">'}      <!-- Remaining -->
           </colgroup>
           <thead>
+            <!-- Grouped header: Weeks / Alloc / Scheduled describe what's IN THE
+                 SCHEDULE; Quoted (from the estimate) is its own thing; Variance
+                 compares them. -->
+            <tr class="quote-head-groups">
+              <th rowspan="2" style="text-align:left;vertical-align:middle;">Discipline</th>
+              <th class="quote-grp" colspan="3">In the schedule</th>
+              <th rowspan="2" class="num" style="vertical-align:middle;" title="Quoted hours from the estimate (per discipline).">Quoted</th>
+              <th rowspan="2" class="num" style="vertical-align:middle;" title="Scheduled vs Quoted. 'Over' = more scheduled than quoted (amber); 'Under' = fewer (green).">Variance</th>
+              ${isSales ? '' : '<th rowspan="2" class="num" style="vertical-align:middle;" title="Scheduled hours still to be worked.">Remaining</th>'}
+            </tr>
             <tr>
-              <th style="text-align:left;">Discipline</th>
               <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations.">Weeks</th>
               ${isSales
-                ? `<th class="num" title="People assigned to this phase. Defaults to 1. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People.">People&nbsp;#</th>`
-                : `<th class="num" title="Allocation % for this task. Each row = one resource. Drop to 25% to model a part-time helper, or use the + Add resource button at the end of the section to add another full-time person.">Alloc&nbsp;%</th>`}
-              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted&nbsp;/&nbsp;Scheduled</th>
-              <th class="num" title="Scheduled − Quoted. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
-              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: scheduled_hrs × (1 − task_progress%/100).">Remaining</th>`}
+                ? `<th class="num" title="People assigned to this phase. Defaults to 1.">People&nbsp;#</th>`
+                : `<th class="num" title="Allocation % for this task. Drop to 25% to model a part-time helper.">Alloc&nbsp;%</th>`}
+              <th class="num" title="Scheduled hours = duration × allocation × 8 (summed per discipline).">Scheduled</th>
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -12696,7 +12886,7 @@ async function openQuoteCompareModal(project, providedQuote) {
       <div class="modal-foot">
         <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
         <button type="button" class="btn-secondary" data-action="close">Cancel</button>
-        <button type="button" class="btn-primary" data-action="apply" id="quote-apply-btn" disabled>Apply</button>
+        <button type="button" class="btn-primary" data-action="apply" id="quote-apply-btn">Apply</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -12801,7 +12991,11 @@ async function openQuoteCompareModal(project, providedQuote) {
     const btn = overlay.querySelector('#quote-apply-btn');
     const hint = overlay.querySelector('#quote-pending-hint');
     if (btn) {
-      btn.disabled = !hasPending;
+      // Always clickable — Apply doubles as "done/close". With no pending grid
+      // edits it just closes (and still saves sold-delivery / penalty changes,
+      // which applyChanges detects on its own). Disabling it left users stuck
+      // unable to close via the button.
+      btn.disabled = false;
       // When the only "pending" thing is consolidation, surface it on the
       // button so the user knows what Apply is about to do.
       if (!hasEdits && consolidation.length > 0) {
@@ -13007,6 +13201,12 @@ async function openQuoteCompareModal(project, providedQuote) {
         || penaltyChanged
         || Object.keys(pendingPeople).length
         || Object.keys(pendingQuoted).length;
+      // Nothing to apply (no quote edits, no grid edits) → just close. Apply
+      // acts as "done" so the user isn't stuck unable to close via the button.
+      const hasGridWork = Object.keys(pendingWeeks).length
+        || Object.keys(pendingAlloc).length
+        || pendingConsolidationRows().length;
+      if (!needsQuoteSave && !hasGridWork) { return; } // nothing to apply — finally{} closes
       if (needsQuoteSave) {
         const updated = { ...(quote || {}) };
         // Carry all contract fields forward — sold delivery + penalty
@@ -13129,9 +13329,13 @@ async function openQuoteCompareModal(project, providedQuote) {
         ? `Schedule updated — ${consolidatedCount} task(s) consolidated.`
         : 'Schedule updated.';
       showToast(msg, { kind: 'success' });
-      close();
     } catch (err) {
       showToast('Failed to apply: ' + (err.message || err), { kind: 'error' });
+    } finally {
+      // ALWAYS close the popup on Apply — even if a background update errored
+      // (the error still shows as a toast). Apply = "done", so it must never
+      // leave the user stuck with the modal open.
+      close();
     }
   }
   overlay.querySelector('[data-action="apply"]').addEventListener('click', applyChanges);
@@ -13139,6 +13343,41 @@ async function openQuoteCompareModal(project, providedQuote) {
   // "Load estimate file…" — pick an xlsx, parse it, PERSIST the quote on the
   // project so future opens of this modal show the comparison without
   // re-loading. Reopens this modal with the saved quote.
+  // Build a quote from parsed estimate numbers, PRESERVING the existing quote's
+  // other fields (sold delivery, penalty, headcount, overrides) so re-parsing only
+  // refreshes the hours.
+  const _safe = (v) => Math.round(v || 0);
+  const _buildSection = (s) => ({
+    mech:         _safe(s.mech_eng),
+    ce_des:       Math.round(_safe(s.ce_design) * 0.5),
+    ce_drw:       _safe(s.ce_design) - Math.round(_safe(s.ce_design) * 0.5),
+    ce_sw:        _safe(s.ce_software),
+    hmi:          _safe(s.gen_hmi),
+    robot:        _safe(s.gen_robot),
+    vision:       _safe(s.gen_vision),
+    build:        _safe(s.mech_build),
+    wire_panel:   Math.round(_safe(s.elec_build) * 0.25),
+    wire_machine: _safe(s.elec_build) - Math.round(_safe(s.elec_build) * 0.25),
+  });
+  const quoteFromParsed = (parsed) => ({
+    ...(quote || {}),
+    hours_per_section: parsed.hours_per_section,
+    hours_breakdown: {
+      section_10: _buildSection(parsed.hours_per_section.section_10),
+      section_40: _buildSection(parsed.hours_per_section.section_40),
+      section_50: _buildSection(parsed.hours_per_section.section_50),
+    },
+  });
+  const parseEstimateB64 = async (b64) => {
+    const r = await fetch('/api/estimate/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file: b64 }) });
+    const parsed = await r.json();
+    if (!r.ok) throw new Error(parsed.error || 'Could not parse estimate.');
+    return parsed;
+  };
+  const saveQuote = (q) => fetch(`/api/project/${encodeURIComponent(project)}/quote`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q) });
+
+  // Upload / replace: store the raw file on the project (so it STAYS and can be
+  // viewed) AND refresh the Quoted numbers from it.
   const fileEl = overlay.querySelector('#quote-compare-file');
   if (fileEl) {
     fileEl.addEventListener('change', async () => {
@@ -13147,50 +13386,55 @@ async function openQuoteCompareModal(project, providedQuote) {
       try {
         const buf = await file.arrayBuffer();
         const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-        const r = await fetch('/api/estimate/parse', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: b64 }),
-        });
-        const parsed = await r.json();
-        if (!r.ok) { await showAlertDialog({ title: "Couldn't parse estimate", message: parsed.error || 'Unknown error.' }); return; }
-        const safe = (v) => Math.round(v || 0);
-        const buildSection = (s) => ({
-          mech:         safe(s.mech_eng),
-          ce_des:       Math.round(safe(s.ce_design) * 0.5),
-          ce_drw:       safe(s.ce_design) - Math.round(safe(s.ce_design) * 0.5),
-          ce_sw:        safe(s.ce_software),
-          hmi:          safe(s.gen_hmi),
-          robot:        safe(s.gen_robot),
-          vision:       safe(s.gen_vision),
-          build:        safe(s.mech_build),
-          wire_panel:   Math.round(safe(s.elec_build) * 0.25),
-          wire_machine: safe(s.elec_build) - Math.round(safe(s.elec_build) * 0.25),
-        });
-        const reloadedQuote = {
-          hours_per_section: parsed.hours_per_section,
-          hours_breakdown: {
-            section_10: buildSection(parsed.hours_per_section.section_10),
-            section_40: buildSection(parsed.hours_per_section.section_40),
-            section_50: buildSection(parsed.hours_per_section.section_50),
-          },
-        };
-        // Persist on the project so future opens of this modal load it
-        // automatically — no need to pick the file every time.
-        try {
-          await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(reloadedQuote),
-          });
-        } catch (_) {}
+        const parsed = await parseEstimateB64(b64);
+        await fetch(`/api/project/${encodeURIComponent(project)}/estimate-file`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, data: b64 }),
+        }).catch(() => {});
+        const newQuote = quoteFromParsed(parsed);
+        await saveQuote(newQuote).catch(() => {});
         close();
-        openQuoteCompareModal(project, reloadedQuote);
+        openQuoteCompareModal(project, newQuote);
       } catch (err) {
-        await showAlertDialog({ title: "Couldn't read file", message: err.message || String(err) });
+        await showAlertDialog({ title: "Couldn't read estimate", message: err.message || String(err) });
       }
     });
   }
+
+  // Reveal the attached file name + wire the View (download) and Update buttons.
+  (async () => {
+    let est = null;
+    try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/estimate-file`); est = await r.json(); } catch (_) {}
+    if (!est || !est.data) return;
+    const nameEl = overlay.querySelector('#quote-estimate-name');
+    const viewBtn = overlay.querySelector('[data-action="view-estimate"]');
+    const updBtn  = overlay.querySelector('[data-action="update-estimate"]');
+    if (nameEl) nameEl.textContent = `📎 ${est.name || 'estimate.xlsx'} attached`;
+    if (viewBtn) {
+      viewBtn.style.display = '';
+      viewBtn.onclick = () => {
+        try {
+          const bytes = Uint8Array.from(atob(est.data), c => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = est.name || 'estimate.xlsx'; a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (e) { showAlertDialog({ title: 'Download failed', message: String(e) }); }
+      };
+    }
+    if (updBtn) {
+      updBtn.style.display = '';
+      updBtn.onclick = async () => {
+        try {
+          const parsed = await parseEstimateB64(est.data);
+          const newQuote = quoteFromParsed(parsed);
+          await saveQuote(newQuote).catch(() => {});
+          close();
+          openQuoteCompareModal(project, newQuote);
+        } catch (e) { await showAlertDialog({ title: "Couldn't update from estimate", message: e.message || String(e) }); }
+      };
+    }
+  })();
 }
 
 function openFinancialsModal(project) {
@@ -13312,7 +13556,7 @@ function openFinancialsModal(project) {
                 <tr data-id="${r.id}" title="Right-click to add or delete a milestone">
                   <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                   <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
-                  <td><input type="text" data-field="predecessors" value="${escapeHtml(r.predecessors || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
+                  <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                   <td>
                     <input type="date" data-field="due_date" value="${dateValue}"
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
@@ -13384,6 +13628,7 @@ function openFinancialsModal(project) {
           let value;
           if (el.type === 'checkbox') value = el.checked ? 1 : 0;
           else if (el.type === 'number') value = el.value === '' ? null : Number(el.value);
+          else if (field === 'predecessors') value = finPredParse(el.value) || null; // line typed → "#id" stored
           else value = el.value || null;
           // Build the save promise + register it so close() can await
           // it before refreshing state.financials. Without this, a
@@ -19512,3 +19757,40 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ── New-build watcher ────────────────────────────────────────────────────────
+// Repeated confusion came from testing a STALE tab: a fix ships, but the open
+// page is still running old code (reopening a modal doesn't reload the JS). This
+// compares the build version this page loaded against the one the server is now
+// serving (index.html is no-store, so it's always current) and shows a one-click
+// reload bar when they differ. Checks on focus + every 60s.
+(function watchForNewBuild() {
+  const myScript = document.querySelector('script[src*="app.js"]');
+  const m = myScript && myScript.src.match(/v=([0-9-]+)/);
+  const myVer = m && m[1];
+  if (!myVer) return;
+  let barShown = false;
+  const showBar = () => {
+    if (barShown || document.getElementById('new-build-bar')) return;
+    barShown = true;
+    const bar = document.createElement('div');
+    bar.id = 'new-build-bar';
+    bar.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:99999;background:#061d39;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.3);font-size:13px;font-weight:600;display:flex;align-items:center;gap:12px;';
+    bar.innerHTML = '<span>A newer version is available.</span>';
+    const btn = document.createElement('button');
+    btn.textContent = 'Reload now';
+    btn.style.cssText = 'background:#ffde51;color:#061d39;border:none;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer;';
+    btn.onclick = () => location.reload(true);
+    bar.appendChild(btn);
+    document.body.appendChild(bar);
+  };
+  const check = async () => {
+    try {
+      const html = await (await fetch('/', { cache: 'no-store' })).text();
+      const live = html.match(/app\.js\?v=([0-9-]+)/);
+      if (live && live[1] !== myVer) showBar();
+    } catch (_) { /* offline / transient — ignore */ }
+  };
+  window.addEventListener('focus', check);
+  setInterval(check, 60000);
+})();

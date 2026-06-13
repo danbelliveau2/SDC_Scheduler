@@ -6498,29 +6498,66 @@ body[data-view="setup"] #btn-add { display: none; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.quote-compare-table th {
+/* Whole header = one tight SDC dark-blue band, white text — matches the
+   Section 10/40/50 bars so the head reads as a single branded strip, not a
+   pile of mismatched cells. */
+/* Override the GLOBAL `th,td { height:44px; line-height:34px }` rule — it was
+   forcing the header band tall. Every cell here is content-height. */
+.quote-compare-table th, .quote-compare-table td { height: auto; line-height: 1.35; }
+.quote-compare-table thead th {
+  background: var(--sdc-primary, #1574c4); /* SDC blue — distinct from the navy section bars */
+  color: #fff;
   text-align: left;
-  font-size: 11px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-muted, #64748b);
-  border-bottom: 1px solid var(--border, #cbd5e1);
-  padding: 6px 8px;
+  font-weight: 700;
+  height: auto;
+  line-height: 1.2;
+  border-bottom: 2px solid var(--sdc-dark, #061d39);
+  border-left: 1px solid rgba(255,255,255,0.15);
+  padding: 3px 8px;
+  white-space: nowrap;
 }
-.quote-compare-table th.num { text-align: right; }
-.quote-compare-table td { padding: 6px 8px; border-bottom: 1px solid #f1f5f9; }
-.quote-compare-table td.num { text-align: right; }
+.quote-compare-table thead th:first-child { border-left: none; }
+/* Group banner row ("In the schedule"): centered, slightly lighter, very short. */
+.quote-head-groups th { text-align: center; padding: 2px 8px 0; border-left: none; }
+/* "In the schedule" group (the banner + Weeks/Alloc/Scheduled below it) gets a
+   LIGHT-BLUE header with dark text, so it's clearly distinct from the
+   Quoted / Variance / Remaining side (which stays SDC blue + white). */
+.quote-head-groups .quote-grp {
+  background: var(--sdc-blue-light, #aacee8);
+  color: var(--sdc-dark, #061d39);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+.quote-head-groups + tr th { /* Weeks / Alloc % / Scheduled labels */
+  background: var(--sdc-blue-light, #aacee8);
+  color: var(--sdc-dark, #061d39);
+  border-left-color: rgba(6,29,57,0.12);
+  padding-top: 1px;
+  padding-bottom: 3px;
+}
+/* Thin, tidy rows; all numbers centered in their columns. */
+.quote-compare-table td { padding: 3px 8px; border-bottom: 1px solid #f4f6f9; font-size: 12px; }
+.quote-compare-table th { padding: 2px 8px; font-weight: 700; }
+.quote-compare-table td.num, .quote-compare-table th.num { text-align: center; }
+/* Muted placeholder cells (per-task lines compare at the subsection level). */
+.quote-compare-table td.quote-cell-muted { color: #cbd5e1; text-align: center; }
+/* Per-task rows indented so the subsection total stands out. */
+.quote-compare-table tbody tr.quote-row:not(.quote-group-total-row) td:first-child { padding-left: 22px; color: var(--text, #334155); }
 .quote-compare-table tfoot .totals-row td { font-weight: 700; border-top: 2px solid #cbd5e1; }
 .quote-people-input,
 .quote-q-input,
 .quote-weeks-input {
-  width: 64px;
-  padding: 2px 6px;
+  width: 56px;
+  padding: 1px 6px;
   border: 1px solid var(--border, #cbd5e1);
   border-radius: 4px;
   font-size: 13px;
   font-weight: 600;
-  text-align: right;
+  text-align: center;
   background: white;
   color: var(--text);
 }
@@ -6606,13 +6643,15 @@ body[data-view="setup"] #btn-add { display: none; }
    without being mistaken for an editable row. */
 .quote-row.quote-group-total-row td {
   font-weight: 700;
-  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, white);
-  border-top: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 40%, white);
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 7%, white);
+  border-top: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 30%, white);
+  border-bottom: 2px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 22%, white);
+  padding-top: 4px; padding-bottom: 4px;
 }
 .quote-group-total-label {
   text-transform: uppercase;
   font-size: 11px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.03em;
   color: #0c4a6e;
 }
 .quote-row.quote-group-total-row .quote-sched-q {
@@ -6649,13 +6688,14 @@ body[data-view="setup"] #btn-add { display: none; }
    uppercase muted text on a faint surface. */
 .quote-compare-table .quote-subsection-head td {
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted, #64748b);
-  background: var(--surface-alt, #f8fafc);
-  padding: 6px 8px 4px 18px;
-  border-bottom: 1px solid var(--border, #e5e7eb);
+  letter-spacing: 0.05em;
+  color: var(--sdc-dark, #061d39);
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 9%, #fff);
+  padding: 4px 8px 4px 12px;
+  border-bottom: none;
+  border-left: 3px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 45%, #fff);
 }
 .quote-milestone-glyph {
   color: var(--anchor-fill, #74c415);

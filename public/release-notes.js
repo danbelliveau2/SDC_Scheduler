@@ -4,6 +4,29 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.2',
+    date: '2026-06-12',
+    notes: [
+      'Financial milestones tied to tasks, a redesigned Quote vs Schedule comparison, persistent estimate files, and safer schedule edits.',
+      '',
+      'FINANCIAL MILESTONES:',
+      '   ▸ Triggers now track the TASK, not the line number — add or delete rows and each trigger follows its task (stored as the task id, shown as the current line). Same model as the grid predecessors.',
+      '   ▸ Creating a project from the template carries the milestones + their triggers across, remapped to the new project\'s tasks. No more duplicate/empty milestone sets.',
+      '   ▸ Deleting a task clears any dangling references (task predecessors AND milestone triggers) and leaves every other row put.',
+      '',
+      'QUOTE VS SCHEDULE:',
+      '   ▸ Compares at SECTION/DISCIPLINE totals — each discipline\'s estimate total (Mechanical / Controls / General Engineering, Build, Wire; Section 40/50 Engineering + Shop) vs the summed scheduled hours. Per-task lines still show, but Quoted/variance roll up to the subsection.',
+      '   ▸ Estimate parser fixed — Mechanical Engineering no longer pulls in teardown/install; Warranty / PM / MFG excluded; section 40/50 mapped strictly by group.',
+      '   ▸ Variance reads "Under N / Over N" (green = under, amber = over). Clean SDC-blue header, "In the schedule" group highlighted in light blue, thin rows, centered numbers.',
+      '   ▸ Apply now always closes the popup (and saves sold-delivery / penalty).',
+      '   ▸ The estimate file is SAVED on the project — View it, and "Update numbers from estimate" re-reads it on demand.',
+      '',
+      'OTHER:',
+      '   ▸ Undo now covers "Add row below".',
+      '   ▸ A "new version available — Reload now" bar appears when a newer build is deployed, so you\'re never stuck on a stale tab.',
+    ],
+  },
+  {
     version: '9.1',
     date: '2026-06-11',
     notes: [
