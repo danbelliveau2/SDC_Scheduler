@@ -118,6 +118,15 @@ const api = {
       } catch (err) { state._financialsApiBroken = true; return { ok: false }; }
     },
   },
+  notes: {
+    get: async (project) => {
+      try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/notes`); if (!r.ok) return null; return await r.json(); }
+      catch (_) { return null; }
+    },
+    save: async (project, data) => fetch(`/api/project/${encodeURIComponent(project)}/notes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || { sessions: [] }),
+    }),
+  },
 };
 
 // Disciplines = roles that get assigned to project tasks. Keep in sync with the server-side
@@ -245,6 +254,7 @@ const state = {
   // lazily on first read (via loadProjectQuote). Used by the stats
   // popup to read sold_delivery_weeks for the Duration row.
   projectQuotes: {},
+  projectNotes: {}, // per-project meeting notes blob: { sessions: [...] }
   // Toggle for the $ Financial Gantt overlay. Persisted to localStorage via
   // saveScheduleView so it sticks across reloads.
   showFinancials: false,
@@ -11118,6 +11128,478 @@ function render() {
   // taskIdByLine is rebuilt for the new project, so a line-number
   // Trigger that should resolve fails and the button stays stuck red.
   try { refreshFinancialsButtonState(); } catch (_) {}
+  try { renderProjectNotes(); } catch (_) {}
+}
+
+// ── Project Notes ─────────────────────────────────────────────────────────────
+// A collapsible panel under the schedule: meeting "sessions" on the left
+// (dated, collapsible, free notes), and starred items promoted to "Key
+// information" on the right. One JSON blob per project (state.projectNotes).
+function _notesGenId() { return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+let _notesSaveTimer = null;
+function saveProjectNotes(project) {
+  clearTimeout(_notesSaveTimer);
+  _notesSaveTimer = setTimeout(() => {
+    api.notes.save(project, state.projectNotes[project] || { sessions: [] }).catch(() => {});
+  }, 500);
+}
+// Transient (not persisted) per-meeting composer drafts + the id of the note
+// currently open for editing. Cleared on Add / Done.
+const _notesDrafts = {};
+function _notesDraft(mid) { return _notesDrafts[mid] || (_notesDrafts[mid] = { text: '', showRef: false, showDue: false, ref: '', due: '' }); }
+let _notesEditId = null;
+let _notesEditHint = null;   // item id showing the "needs informed + date" hint
+let _notesDragId = null;
+let _notesKeyView = 'cards';  // schedule Key-information column: 'cards' (by dept) | 'list'
+
+// Focus a <select> and pop its dropdown open immediately (so clicking 👤 shows
+// the list without a second click). showPicker() isn't in every browser, so
+// guard it.
+function _notesOpenSelect(el, sel) {
+  const node = el.querySelector(sel);
+  if (!node) return;
+  node.focus();
+  try { node.showPicker(); } catch (_) {}
+}
+
+// Reorder a note within its meeting: move `dragId` to just before/after
+// `targetId`. Only reorders when both notes live in the same meeting.
+function _notesReorder(project, dragId, targetId, before) {
+  if (dragId === targetId) return;
+  const data = state.projectNotes[project];
+  const s = (data.sessions || []).find(s => (s.items || []).some(i => i.id === dragId) && (s.items || []).some(i => i.id === targetId));
+  if (!s) return;
+  const from = s.items.findIndex(i => i.id === dragId);
+  const [moved] = s.items.splice(from, 1);
+  let to = s.items.findIndex(i => i.id === targetId);
+  if (!before) to += 1;
+  s.items.splice(to, 0, moved);
+  saveProjectNotes(project); renderProjectNotes();
+}
+
+// Department groups for the reference dropdown / key-info grouping, in order.
+// Shop is split into mechanical builders (build) + electrical builders (wire).
+const NOTES_DEPT_GROUPS = [
+  { key: 'pm',       label: 'Project Managers' },
+  { key: 'mech',     label: 'Mechanical Engineering' },
+  { key: 'controls', label: 'Controls Engineering' },
+  { key: 'build',    label: 'Mechanical Builders' },
+  { key: 'wire',     label: 'Electrical Builders' },
+];
+function _notesDeptLabel(key) { const g = NOTES_DEPT_GROUPS.find(x => x.key === key); return g ? g.label : 'Other'; }
+function _notesRefIsDept(ref) { return !!ref && ref.indexOf('dept:') === 0; }
+// What a reference shows as: a person's name, a department label, or N/A.
+function _notesRefDisplay(ref) {
+  if (!ref) return '';
+  if (ref === 'N/A') return 'N/A';
+  if (_notesRefIsDept(ref)) return _notesDeptLabel(ref.slice(5));
+  return ref;
+}
+// Which department bucket a reference belongs to (for grouping Key information).
+function _notesRefDeptKey(ref) {
+  if (!ref || ref === 'N/A') return 'general';
+  if (_notesRefIsDept(ref)) return ref.slice(5);
+  const m = (state.team || []).find(x => x.name === ref);
+  return (m && m.discipline) ? m.discipline : 'general';
+}
+
+// Reference dropdown: whole-department picks first, then people grouped by
+// department (PMs → Mech Eng → Controls Eng → Mech Builders → Elec Builders).
+// Leads get a light-gray background (no label) so they read as the go-to.
+function _notesRefOptions(selected) {
+  const sel = selected || '';
+  const team = (state.team || []).filter(m => m && m.name && !isPlaceholder(m.name) && m.active !== 0);
+  const sortLeadFirst = (a, b) => ((!!b.is_lead) - (!!a.is_lead)) || a.name.localeCompare(b.name);
+  const opt = (m) => `<option value="${escapeHtml(m.name)}"${sel === m.name ? ' selected' : ''}${m.is_lead ? ' style="background:#eef2f6"' : ''}>${escapeHtml(m.name)}</option>`;
+  let html = `<option value=""${sel === '' ? ' selected' : ''}>— who —</option>`;
+  html += `<option value="N/A"${sel === 'N/A' ? ' selected' : ''}>N/A</option>`;
+  // Whole-team / department picks.
+  html += `<optgroup label="Departments (whole team)">` + NOTES_DEPT_GROUPS.map(g => {
+    const v = 'dept:' + g.key;
+    return `<option value="${v}"${sel === v ? ' selected' : ''}>${escapeHtml(g.label)}</option>`;
+  }).join('') + `</optgroup>`;
+  // Individual people, grouped by department.
+  const used = new Set();
+  for (const g of NOTES_DEPT_GROUPS) {
+    const members = team.filter(m => m.discipline === g.key).sort(sortLeadFirst);
+    members.forEach(m => used.add(m.name));
+    if (!members.length) continue;
+    html += `<optgroup label="${escapeHtml(g.label)}">` + members.map(opt).join('') + `</optgroup>`;
+  }
+  const others = team.filter(m => !used.has(m.name)).sort(sortLeadFirst);
+  if (others.length) html += `<optgroup label="Other">` + others.map(opt).join('') + `</optgroup>`;
+  return html;
+}
+
+// Format an ISO date (YYYY-MM-DD) as plain MM/DD/YYYY for display.
+function _notesFmtDate(iso) {
+  if (!iso) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : iso;
+}
+
+// Header row above the notes list — aligns with the item grid columns.
+function _notesListHeadHtml() {
+  return `<div class="notes-list-head">
+    <span></span><span></span><span>Description</span><span>Informed</span><span>Date</span>
+  </div>`;
+}
+
+function _notesItemHtml(it) {
+  // Edit mode — full controls for this one note. (Opened by clicking the row
+  // text or via right-click → Edit. Click Done, or click away, to finish.)
+  if (_notesEditId === it.id) {
+    const hint = _notesEditHint === it.id
+      ? `<div class="notes-edit-hint">⚠ An action needs an <strong>informed person</strong> and a <strong>date</strong>. Set both, then right-click → Turn into action.</div>` : '';
+    return `<div class="notes-item notes-item-editing" data-item="${it.id}">
+      <button class="notes-star ${it.starred ? 'is-on' : ''}" data-star="${it.id}" title="Star → Key information">${it.starred ? '★' : '☆'}</button>
+      <div class="notes-edit-fields">
+        <textarea class="notes-item-text" data-item-text="${it.id}" rows="1" placeholder="Note…">${escapeHtml(it.text || '')}</textarea>
+        <div class="notes-edit-row">
+          <label>Informed <select class="notes-item-ref" data-item-ref="${it.id}">${_notesRefOptions(it.ref)}</select></label>
+          <label>Date <input type="date" class="notes-item-due" data-item-due="${it.id}" value="${escapeHtml(it.due || '')}" /></label>
+          <button class="notes-edit-done" data-edit-done="${it.id}" type="button">Done</button>
+        </div>
+        ${hint}
+      </div>
+    </div>`;
+  }
+  // Display mode — grid row: [drag] [★] [description] [informed] [date].
+  // ★ always visible; drag handle reveals on hover. Click text to edit;
+  // right-click the row for Edit / Star / Turn into action / Delete.
+  const isDept = _notesRefIsDept(it.ref);
+  const refCell = it.ref
+    ? `<span class="notes-chip ${isDept ? 'dept' : (it.ref === 'N/A' ? 'na' : 'ref')}">${isDept ? '👥' : (it.ref === 'N/A' ? '' : '👤')} ${escapeHtml(_notesRefDisplay(it.ref))}</span>`
+    : '';
+  const dateCell = it.due ? escapeHtml(_notesFmtDate(it.due)) : '';
+  return `<div class="notes-item${it.actioned ? ' is-actioned' : ''}" data-item="${it.id}">
+    <span class="notes-drag" draggable="true" data-drag="${it.id}" title="Drag to reorder">⠿</span>
+    <button class="notes-star ${it.starred ? 'is-on' : ''}" data-star="${it.id}" title="${it.starred ? 'Unstar — remove from Key information' : 'Star → pin to Key information'}">${it.starred ? '★' : '☆'}</button>
+    <div class="notes-note-text" data-edit-text="${it.id}" title="Click to edit (right-click for more)">${it.actioned ? '✓ ' : ''}${(it.text || '').trim() ? escapeHtml(it.text) : '<span class="notes-note-ph">(empty)</span>'}</div>
+    <div class="notes-cell-assigned">${refCell}</div>
+    <div class="notes-cell-date">${dateCell}</div>
+  </div>`;
+}
+
+function _notesMeetingHtml(s) {
+  const itemCount = (s.items || []).length;
+  const d = _notesDraft(s.id);
+  const composer = `<div class="notes-composer" data-composer="${s.id}">
+    <div class="notes-composer-line">
+      <input class="notes-comp-text" data-comp-text="${s.id}" value="${escapeHtml(d.text)}" placeholder="Add a note — press Enter…" />
+      <button class="notes-comp-flag ${d.showRef ? 'is-on' : ''}" data-comp-toggle-ref="${s.id}" type="button" title="Inform a person or department">👤</button>
+      <button class="notes-comp-flag ${d.showDue ? 'is-on' : ''}" data-comp-toggle-due="${s.id}" type="button" title="Add a date">📅</button>
+      <button class="notes-comp-add" data-comp-add="${s.id}" type="button">Add</button>
+    </div>
+    ${(d.showRef || d.showDue) ? `<div class="notes-comp-extra">
+      ${d.showRef ? `<select class="notes-comp-ref" data-comp-ref="${s.id}">${_notesRefOptions(d.ref)}</select>` : ''}
+      ${d.showDue ? `<input type="date" class="notes-comp-due" data-comp-due="${s.id}" value="${escapeHtml(d.due)}" />` : ''}
+    </div>` : ''}
+  </div>`;
+  const items = itemCount ? _notesListHeadHtml() + (s.items || []).map(_notesItemHtml).join('') : '';
+  return `<div class="notes-session${s.collapsed ? ' is-collapsed' : ''}" data-session="${s.id}">
+    <div class="notes-session-head">
+      <button class="notes-session-caret" data-toggle-session="${s.id}" title="Collapse / expand">${s.collapsed ? '▸' : '▾'}</button>
+      <input class="notes-session-title" data-session-title="${s.id}" value="${escapeHtml(s.title || '')}" placeholder="Meeting title" />
+      <input type="date" class="notes-session-date" data-session-date="${s.id}" value="${escapeHtml(s.date || '')}" />
+      <span class="notes-session-count">${itemCount} note${itemCount === 1 ? '' : 's'}</span>
+      <button class="notes-session-del" data-del-session="${s.id}" title="Delete this meeting">🗑</button>
+    </div>
+    ${s.collapsed ? '' : `<div class="notes-session-body">${composer}<div class="notes-list">${items}</div></div>`}
+  </div>`;
+}
+function renderProjectNotes() {
+  const el = document.getElementById('schedule-notes');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  if (!project || state.view !== 'schedule') { el.style.display = 'none'; return; }
+  el.style.display = '';
+  if (!state.projectNotes[project]) {
+    el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span></div>`;
+    api.notes.get(project).then(data => {
+      state.projectNotes[project] = (data && Array.isArray(data.sessions)) ? data : { sessions: [] };
+      if ((state.filters && state.filters.project) === project) renderProjectNotes();
+    });
+    return;
+  }
+  const data = state.projectNotes[project];
+  const collapsed = el.classList.contains('is-collapsed');
+  const starred = [];
+  data.sessions.forEach(s => (s.items || []).forEach(it => { if (it.starred && (it.text || '').trim()) starred.push({ s, it }); }));
+  const bar = `<div class="notes-bar" data-action="toggle-notes">
+    <span class="notes-bar-title">📝 Notes</span>
+    <span class="notes-count">${data.sessions.length} meeting${data.sessions.length === 1 ? '' : 's'} · ${starred.length} key</span>
+    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+  </div>`;
+  if (collapsed) { el.innerHTML = bar; _wireNotes(el, project); layoutNotesPanel(); return; }
+  const anyExpanded = data.sessions.some(s => !s.collapsed);
+  const collapseAllBtn = data.sessions.length
+    ? `<button class="notes-collapse-all" data-action="collapse-all" type="button" title="${anyExpanded ? 'Collapse every meeting' : 'Expand every meeting'}">${anyExpanded ? 'Collapse all' : 'Expand all'}</button>`
+    : '';
+  const sessionsHtml = data.sessions.length
+    ? data.sessions.map(_notesMeetingHtml).join('')
+    : `<div class="notes-empty">No meetings yet — add one to start jotting notes.</div>`;
+  // Key information for THIS project's schedule — a grid with headers, columns
+  // running sideways (Description | Meeting | Informed | Date), just like the
+  // meeting list. Cards = grouped by department; List = flat, sorted by date.
+  const keyRefChip = (ref) => ref && ref !== 'N/A'
+    ? `<span class="notes-chip ${_notesRefIsDept(ref) ? 'dept' : 'ref'}">${_notesRefIsDept(ref) ? '👥' : '👤'} ${escapeHtml(_notesRefDisplay(ref))}</span>` : '';
+  // withDept: list view adds a Department column (cards don't need it — the
+  // card IS the department).
+  const keyRow = ({ s, it }, withDept) => {
+    const dv = it.due || s.date;
+    const dk = _notesRefDeptKey(it.ref);
+    const deptCell = withDept ? `<span class="nkr-dept">${escapeHtml(dk === 'general' ? 'General' : _notesDeptLabel(dk))}</span>` : '';
+    return `<div class="notes-key-row${withDept ? ' has-dept' : ''}" data-item="${it.id}">
+      <button class="notes-star is-on" data-star="${it.id}" title="Unstar">★</button>
+      <span class="nkr-desc">${escapeHtml(it.text)}</span>
+      ${deptCell}
+      <span class="nkr-meeting">${escapeHtml(s.title || 'Meeting')}</span>
+      <span class="nkr-informed">${keyRefChip(it.ref)}</span>
+      <span class="nkr-date">${dv ? escapeHtml(_notesFmtDate(dv)) : ''}</span>
+    </div>`;
+  };
+  const keyHead = (withDept) => `<div class="notes-key-row notes-key-head${withDept ? ' has-dept' : ''}"><span></span><span>Description</span>${withDept ? '<span>Dept</span>' : ''}<span>Meeting</span><span>Informed</span><span>Date</span></div>`;
+  let keyHtml;
+  if (starred.length) {
+    if (_notesKeyView === 'list') {
+      keyHtml = keyHead(true) + starred.slice()
+        .sort((a, b) => ((a.it.due || a.s.date || '9999-99-99').localeCompare(b.it.due || b.s.date || '9999-99-99')))
+        .map(rec => keyRow(rec, true)).join('');
+    } else {
+      // Each department is its OWN card (header + its own grid inside).
+      const byDept = {};
+      starred.forEach(rec => { const k = _notesRefDeptKey(rec.it.ref); (byDept[k] = byDept[k] || []).push(rec); });
+      const order = [...NOTES_DEPT_GROUPS.map(g => g.key), 'general'];
+      keyHtml = `<div class="notes-key-cards">` + order.filter(k => byDept[k] && byDept[k].length).map(k =>
+        `<div class="notes-key-card"><div class="notes-key-card-head">${escapeHtml(k === 'general' ? 'General' : _notesDeptLabel(k))}<span class="notes-key-card-count">${byDept[k].length}</span></div><div class="notes-key-card-body">${keyHead(false)}${byDept[k].map(rec => keyRow(rec, false)).join('')}</div></div>`
+      ).join('') + `</div>`;
+    }
+  } else {
+    keyHtml = `<div class="notes-empty">Star a note on the left to pin it here as key information.</div>`;
+  }
+  const keyViewToggle = starred.length ? `<span class="notes-keyview">
+      <button class="notes-kv ${_notesKeyView === 'cards' ? 'is-on' : ''}" data-keyview="cards" type="button">Cards</button>
+      <button class="notes-kv ${_notesKeyView === 'list' ? 'is-on' : ''}" data-keyview="list" type="button">List</button>
+    </span>` : '';
+  el.innerHTML = bar + `
+    <div class="notes-body">
+      <div class="notes-col notes-sessions">
+        <div class="notes-col-head"><span>Meetings</span><span class="notes-col-head-actions">${collapseAllBtn}<button class="notes-new-session" data-action="new-session" type="button">+ New meeting</button></span></div>
+        <div class="notes-col-scroll">${sessionsHtml}</div>
+      </div>
+      <div class="notes-col notes-key">
+        <div class="notes-col-head"><span>★ Key information</span>${keyViewToggle}</div>
+        <div class="notes-col-scroll">${keyHtml}</div>
+      </div>
+    </div>`;
+  _wireNotes(el, project);
+  // Auto-size note textareas to their content.
+  el.querySelectorAll('.notes-item-text').forEach(ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
+  layoutNotesPanel();
+}
+
+// Notes lives BELOW the schedule, never over it. When expanded we lock the
+// schedule split to the FULL height it fills on its own (so the schedule keeps
+// its complete view), switch the whole schedule view to scroll, and let the
+// notes panel flow underneath — scroll down to reach it, scroll up for the
+// schedule. The notes panel never covers any part of the schedule.
+
+// Measure the height the split fills WITHOUT the notes panel competing for
+// space. Critical: when notes is expanded it's flex:0 0 auto with real content,
+// which squeezes the flex:1 split — so we must take notes OUT of the column
+// (display:none) and drop the scroll lock before reading offsetHeight, then
+// restore. Reading offsetHeight forces a synchronous reflow, so no paint
+// happens between hide and restore (no flicker).
+function _measureSplitFullHeight() {
+  const view  = document.getElementById('view-schedule');
+  const split = document.getElementById('schedule-split');
+  const el    = document.getElementById('schedule-notes');
+  if (!view || !split || !el) return 0;
+  const hadOpen  = view.classList.contains('notes-open');
+  const prevFlex = split.style.flex;
+  const prevDisp = el.style.display;
+  view.classList.remove('notes-open');   // overflow:hidden → split flexes to fill
+  split.style.flex = '';                  // back to flex:1
+  el.style.display = 'none';              // notes out of the flex column
+  const h = split.offsetHeight;           // sync reflow → true full height
+  el.style.display = prevDisp || '';      // restore
+  if (hadOpen) view.classList.add('notes-open');
+  if (prevFlex) split.style.flex = prevFlex;
+  return h;
+}
+// The height to lock the split at when notes is open: the schedule's FULL
+// content height (all grid rows / gantt bars, no internal scroll). The whole
+// schedule view then becomes ONE long scrolling page — grid/gantt, then footer,
+// then notes — so a single click-drag (setupPagePan) pans from the top of the
+// schedule straight down to the notes. A short schedule just shrinks to its
+// content with the notes right beneath it.
+function _notesSplitLockHeight() {
+  const grid  = document.getElementById('schedule-grid');
+  const gantt = document.getElementById('schedule-gantt');
+  let contentH = 0;
+  if (grid)  contentH = Math.max(contentH, grid.scrollHeight);
+  if (gantt) contentH = Math.max(contentH, gantt.scrollHeight);
+  return contentH > 0 ? contentH + 4 : _measureSplitFullHeight();
+}
+function layoutNotesPanel() {
+  const view  = document.getElementById('view-schedule');
+  const split = document.getElementById('schedule-split');
+  const el    = document.getElementById('schedule-notes');
+  if (!view || !split || !el) return;
+  const open = el.style.display !== 'none' && !el.classList.contains('is-collapsed');
+  if (open) {
+    // Lock only on the open transition; later renders keep the existing lock so
+    // we don't reset the user's scroll position mid-interaction.
+    if (!view.classList.contains('notes-open')) {
+      split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
+      view.classList.add('notes-open');
+    }
+  } else {
+    view.classList.remove('notes-open');
+    split.style.flex = '';
+  }
+}
+// Re-measure on window resize so the locked split keeps the right height.
+window.addEventListener('resize', () => {
+  const view = document.getElementById('view-schedule');
+  if (!view || !view.classList.contains('notes-open')) return;
+  const split = document.getElementById('schedule-split');
+  if (split) split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
+});
+function _wireNotes(el, project) {
+  const data = state.projectNotes[project];
+  const findSession = id => data.sessions.find(s => s.id === id);
+  const findItem = id => { for (const s of data.sessions) { const it = (s.items || []).find(x => x.id === id); if (it) return { s, it }; } return null; };
+  // Push the composer draft for meeting `mid` into the notes list.
+  const commitDraft = (mid) => {
+    const s = findSession(mid); if (!s) return;
+    const d = _notesDraft(mid);
+    const text = (d.text || '').trim();
+    if (!text) { const inp = el.querySelector(`[data-comp-text="${mid}"]`); inp?.focus(); return; }
+    (s.items = s.items || []).unshift({
+      id: _notesGenId(), text, starred: false,
+      ref: d.showRef ? (d.ref || '') : '',
+      due: d.showDue ? (d.due || '') : '',
+    });
+    _notesDrafts[mid] = { text: '', showRef: false, showDue: false, ref: '', due: '' };
+    saveProjectNotes(project); renderProjectNotes();
+    el.querySelector(`[data-comp-text="${mid}"]`)?.focus();
+  };
+  el.onclick = (e) => {
+    const t = e.target;
+    if (t.closest('[data-action="new-session"]')) {
+      e.stopPropagation();
+      const today = new Date().toISOString().slice(0, 10);
+      data.sessions.unshift({ id: _notesGenId(), title: 'Meeting', date: today, collapsed: false, items: [] });
+      saveProjectNotes(project); renderProjectNotes();
+      el.querySelector('.notes-comp-text')?.focus();
+      return;
+    }
+    if (t.closest('[data-action="toggle-notes"]')) {
+      const willOpen = el.classList.contains('is-collapsed');
+      el.classList.toggle('is-collapsed');
+      renderProjectNotes();
+      // On open, bring the notes panel into view (with room below it to scroll).
+      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
+      return;
+    }
+    if (t.closest('[data-action="collapse-all"]')) { const anyOpen = data.sessions.some(s => !s.collapsed); data.sessions.forEach(s => { s.collapsed = anyOpen; }); saveProjectNotes(project); renderProjectNotes(); return; }
+    const kv = t.closest('[data-keyview]'); if (kv) { _notesKeyView = kv.dataset.keyview; renderProjectNotes(); return; }
+    const tog = t.closest('[data-toggle-session]'); if (tog) { const s = findSession(tog.dataset.toggleSession); if (s) { s.collapsed = !s.collapsed; saveProjectNotes(project); renderProjectNotes(); } return; }
+    // Composer controls
+    const cadd = t.closest('[data-comp-add]'); if (cadd) { commitDraft(cadd.dataset.compAdd); return; }
+    const ctr = t.closest('[data-comp-toggle-ref]'); if (ctr) { const id = ctr.dataset.compToggleRef; const d = _notesDraft(id); d.showRef = !d.showRef; renderProjectNotes(); if (d.showRef) _notesOpenSelect(el, `[data-comp-ref="${id}"]`); return; }
+    const ctd = t.closest('[data-comp-toggle-due]'); if (ctd) { const id = ctd.dataset.compToggleDue; const d = _notesDraft(id); d.showDue = !d.showDue; renderProjectNotes(); if (d.showDue) _notesOpenSelect(el, `[data-comp-due="${id}"]`); return; }
+    // Item controls
+    const star = t.closest('[data-star]'); if (star) { const f = findItem(star.dataset.star); if (f) { f.it.starred = !f.it.starred; saveProjectNotes(project); renderProjectNotes(); } return; }
+    const etxt = t.closest('[data-edit-text]'); if (etxt) { _notesEditId = etxt.dataset.editText; _notesEditHint = null; renderProjectNotes(); const ta = el.querySelector(`[data-item-text="${_notesEditId}"]`); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } return; }
+    const done = t.closest('[data-edit-done]'); if (done) { _notesEditId = null; _notesEditHint = null; saveProjectNotes(project); renderProjectNotes(); return; }
+    const delS = t.closest('[data-del-session]'); if (delS) { data.sessions = data.sessions.filter(s => s.id !== delS.dataset.delSession); saveProjectNotes(project); renderProjectNotes(); return; }
+  };
+  // Right-click a note row → in-app menu: Edit / Star / Turn into action / Delete.
+  el.oncontextmenu = (e) => {
+    const row = e.target.closest('.notes-item[data-item]');
+    if (!row) return;
+    const f = findItem(row.dataset.item);
+    if (!f) return;
+    e.preventDefault();
+    const id = row.dataset.item;
+    showContextMenu(e.clientX, e.clientY, [
+      { label: '✎ Edit', onClick: () => { _notesEditId = id; renderProjectNotes(); el.querySelector(`[data-item-text="${id}"]`)?.focus(); } },
+      { label: f.it.starred ? '☆ Unstar' : '★ Star → Key info', onClick: () => { f.it.starred = !f.it.starred; saveProjectNotes(project); renderProjectNotes(); } },
+      ...(f.it.actioned ? [] : [{ label: '⚡ Turn into action', onClick: () => _notesTurnIntoAction(project, id, e.clientX, e.clientY) }]),
+      { separator: true },
+      { label: '🗑 Delete', danger: true, onClick: () => { if (_notesEditId === id) _notesEditId = null; data.sessions.forEach(s => { s.items = (s.items || []).filter(x => x.id !== id); }); saveProjectNotes(project); renderProjectNotes(); } },
+    ]);
+  };
+  // Drag a note (by its ⠿ handle) to reorder it within its meeting.
+  el.ondragstart = (e) => { const h = e.target.closest('[data-drag]'); if (!h) return; _notesDragId = h.dataset.drag; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', _notesDragId); } catch (_) {} };
+  el.ondragover = (e) => { if (_notesDragId && e.target.closest('.notes-item[data-item]')) e.preventDefault(); };
+  el.ondrop = (e) => {
+    const row = e.target.closest('.notes-item[data-item]');
+    if (!row || !_notesDragId) return;
+    e.preventDefault();
+    const targetId = row.dataset.item;
+    const before = e.clientY < (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+    _notesReorder(project, _notesDragId, targetId, before);
+    _notesDragId = null;
+  };
+  el.oninput = (e) => {
+    const t = e.target;
+    if (t.matches('[data-session-title]')) { const s = findSession(t.dataset.sessionTitle); if (s) { s.title = t.value; saveProjectNotes(project); } }
+    else if (t.matches('[data-session-date]')) { const s = findSession(t.dataset.sessionDate); if (s) { s.date = t.value; saveProjectNotes(project); } }
+    else if (t.matches('[data-comp-text]')) { _notesDraft(t.dataset.compText).text = t.value; }
+    else if (t.matches('[data-item-text]')) { const f = findItem(t.dataset.itemText); if (f) { f.it.text = t.value; saveProjectNotes(project); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; } }
+  };
+  // Enter in the composer text box commits the note.
+  el.onkeydown = (e) => {
+    if (e.key === 'Enter' && e.target.matches('[data-comp-text]')) { e.preventDefault(); commitDraft(e.target.dataset.compText); }
+  };
+  // change events (selects + date inputs) don't bubble through oninput reliably
+  el.onchange = (e) => {
+    const t = e.target;
+    if (t.matches('[data-comp-ref]')) { _notesDraft(t.dataset.compRef).ref = t.value || ''; }
+    else if (t.matches('[data-comp-due]')) { _notesDraft(t.dataset.compDue).due = t.value || ''; }
+    else if (t.matches('[data-item-ref]')) { const f = findItem(t.dataset.itemRef); if (f) { f.it.ref = t.value || ''; saveProjectNotes(project); } }
+    else if (t.matches('[data-item-due]')) { const f = findItem(t.dataset.itemDue); if (f) { f.it.due = t.value || ''; saveProjectNotes(project); } }
+  };
+}
+
+// Turn a note into a real schedule action. An action MUST have an assignee
+// (a real person, not N/A) and a due date — if either is missing we open the
+// note's editor so they can be filled in first. Then pops the standard section
+// picker (so it lands in the right phase/dept) and creates the is_action row.
+function _notesTurnIntoAction(project, itemId, x, y) {
+  const data = state.projectNotes[project];
+  let found = null;
+  for (const s of data.sessions) { const it = (s.items || []).find(x => x.id === itemId); if (it) { found = it; break; } }
+  if (!found) return;
+  const text = (found.text || '').trim();
+  const hasRef = found.ref && found.ref !== 'N/A';
+  if (!text || !hasRef || !found.due) {
+    // No browser alert — open the note's editor inline with a hint so they can
+    // fill in the missing reference / date right there.
+    _notesEditId = itemId;
+    _notesEditHint = itemId;
+    renderProjectNotes();
+    document.querySelector(`[data-item-text="${itemId}"]`)?.focus();
+    return;
+  }
+  showSectionPicker(x, y, async (g, d, s) => {
+    await api.create({
+      name: text,
+      phase_group: g, department: d, sub_department: s, project,
+      is_action: 1, duration_days: 0, is_milestone: 1,
+      assignee: found.ref,
+      start_date: found.due, end_date: found.due,
+    });
+    found.actioned = true;
+    saveProjectNotes(project);
+    if (state.scheduleView.actionsMode === 'schedule') { state.scheduleView.actionsMode = 'combined'; saveScheduleView(); syncActionsModeButtons(); }
+    await loadTasks();
+    renderProjectNotes();
+  }, { okLabel: 'Turn into action', title: 'Where should this action go?' });
 }
 
 function renderAssigneeFilterBanner() { /* removed — personal view is a simple list in the Actions tab */ }
@@ -13813,6 +14295,39 @@ function setupGridPan() {
   });
 }
 
+// Click-and-drag to scroll the WHOLE schedule page vertically — active only
+// when notes is open (the moment #view-schedule itself scrolls: grid → footer
+// → notes are one long page). Grab anywhere that isn't an input/button/divider
+// and drag up/down. The grid/gantt's own horizontal pans still work alongside
+// this (their vertical scroll is a no-op now that they're full-height).
+function setupPagePan() {
+  const view = document.getElementById('view-schedule');
+  if (!view || view._pagePanWired) return;
+  view._pagePanWired = true;
+  view.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (!view.classList.contains('notes-open')) return;        // only when the page scrolls
+    if (e.target.closest('input, select, textarea, button, a, .schedule-divider, .row-height-bar, [draggable="true"]')) return;
+    const startY = e.clientY;
+    const startTop = view.scrollTop;
+    let panning = false;
+    const onMove = (ev) => {
+      const dy = ev.clientY - startY;
+      if (!panning && Math.abs(dy) > 4) { panning = true; view.classList.add('page-panning'); try { window.getSelection()?.removeAllRanges(); } catch (_) {} }
+      if (panning) { ev.preventDefault(); view.scrollTop = startTop - dy; }
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      view.classList.remove('page-panning');
+      // Swallow the click after a real pan so clicking a note doesn't open its editor.
+      if (panning) { const sw = (ev) => { ev.stopPropagation(); ev.preventDefault(); }; view.addEventListener('click', sw, { capture: true, once: true }); }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
 // v4.72: showSectionPicker accepts an opts.okLabel override (and an opts.title).
 // Default "Create" still works for the schedule's + Add task / + Add action
 // flows where the picker DOES commit the new task. The Actions page quick-add
@@ -14521,6 +15036,110 @@ function renderActionsPage() {
   // the cards keep showing the big-picture health even when the list above
   // is narrowed by a chip.
   renderActionsDeptDashboard(allActions, todayMs);
+  // Key Information — starred notes from every project's schedule, as cards.
+  renderActionsKeyInfo();
+}
+
+// Cross-project "Key information" on the Notes & Actions tab. Every project's
+// STARRED notes, shown as either a Card view (grouped by department) or a flat,
+// sortable List view. A department filter applies to both. Notes are stored per
+// project (state.projectNotes) and lazy-loaded only for the active schedule, so
+// here we bulk-fetch any we don't have yet, then render.
+const _actionsKeyInfo = { view: 'cards', sort: 'date', dept: '', filter: 'all' };
+function renderActionsKeyInfo() {
+  const host = document.getElementById('actions-keyinfo');
+  if (!host) return;
+  const projects = uniqueValues('project')
+    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+    .sort();
+  const missing = projects.filter(p => !state.projectNotes[p]);
+  if (missing.length) {
+    host.innerHTML = `<div class="actions-keyinfo-head">★ Key Information</div><div class="actions-empty">Loading notes…</div>`;
+    missing.forEach(p => {
+      api.notes.get(p)
+        .then(d => { state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] }; })
+        .catch(() => { state.projectNotes[p] = { sessions: [] }; })
+        .finally(() => { if (projects.every(pp => state.projectNotes[pp]) && state.view === 'actions') renderActionsKeyInfo(); });
+    });
+    return;
+  }
+  const order = [...NOTES_DEPT_GROUPS.map(g => g.key), 'general'];
+  const st = _actionsKeyInfo;
+  // Flatten every starred note across all projects into one record list.
+  let recs = [];
+  projects.forEach(p => (state.projectNotes[p].sessions || []).forEach(s => (s.items || []).forEach(it => {
+    if (it.starred && (it.text || '').trim()) recs.push({ project: p, text: it.text.trim(), ref: it.ref || '', due: it.due || '', dept: _notesRefDeptKey(it.ref), mdate: s.date || '', meeting: s.title || 'Meeting' });
+  })));
+  if (st.dept) recs = recs.filter(r => r.dept === st.dept);
+
+  // Controls: view toggle + department filter (+ sort, in list view).
+  const deptOpts = `<option value="">All departments</option>` +
+    NOTES_DEPT_GROUPS.map(g => `<option value="${g.key}"${st.dept === g.key ? ' selected' : ''}>${escapeHtml(g.label)}</option>`).join('') +
+    `<option value="general"${st.dept === 'general' ? ' selected' : ''}>General</option>`;
+  const sortOpts = [['date', 'Date'], ['project', 'Project'], ['dept', 'Department'], ['ref', 'Informed']]
+    .map(([v, l]) => `<option value="${v}"${st.sort === v ? ' selected' : ''}>${l}</option>`).join('');
+  const filterOpts = [['all', 'Everything'], ['date', 'Has a date'], ['person', 'Has informed person']]
+    .map(([v, l]) => `<option value="${v}"${st.filter === v ? ' selected' : ''}>${l}</option>`).join('');
+  const controls = `<div class="aki-controls">
+    <div class="aki-viewtoggle">
+      <button class="aki-vt ${st.view === 'cards' ? 'is-on' : ''}" data-aki-view="cards" type="button">Cards</button>
+      <button class="aki-vt ${st.view === 'list' ? 'is-on' : ''}" data-aki-view="list" type="button">List</button>
+    </div>
+    <label class="aki-ctl">Dept <select data-aki-dept>${deptOpts}</select></label>
+    ${st.view === 'list' ? `<label class="aki-ctl">Sort <select data-aki-sort>${sortOpts}</select></label>
+    <label class="aki-ctl">Show <select data-aki-filter>${filterOpts}</select></label>` : ''}
+  </div>`;
+
+  const refChip = (ref) => ref && ref !== 'N/A'
+    ? `<span class="notes-chip ${_notesRefIsDept(ref) ? 'dept' : 'ref'}">${_notesRefIsDept(ref) ? '👥' : '👤'} ${escapeHtml(_notesRefDisplay(ref))}</span>` : '';
+  const empty = `<div class="actions-empty">No starred notes${st.dept ? ' for this department' : ''} yet. Star notes in a project's schedule (📝 Notes) to surface them here.</div>`;
+
+  let body;
+  if (!recs.length) {
+    body = empty;
+  } else if (st.view === 'list') {
+    let listRecs = recs;
+    if (st.filter === 'date') listRecs = listRecs.filter(r => !!r.due);
+    else if (st.filter === 'person') listRecs = listRecs.filter(r => r.ref && r.ref !== 'N/A' && !_notesRefIsDept(r.ref));
+    const sorted = listRecs.slice().sort((a, b) => {
+      if (st.sort === 'date') return (a.due || '9999-99-99').localeCompare(b.due || '9999-99-99') || a.project.localeCompare(b.project);
+      if (st.sort === 'project') return a.project.localeCompare(b.project) || (a.due || '').localeCompare(b.due || '');
+      if (st.sort === 'dept') return (order.indexOf(a.dept) - order.indexOf(b.dept)) || a.project.localeCompare(b.project);
+      if (st.sort === 'ref') return _notesRefDisplay(a.ref).localeCompare(_notesRefDisplay(b.ref)) || a.project.localeCompare(b.project);
+      return 0;
+    });
+    const rows = sorted.map(r => `<div class="aki-lrow">
+      <span class="aki-lc-project">${escapeHtml(r.project)}</span>
+      <span class="aki-lc-note">${escapeHtml(r.text)}</span>
+      <span class="aki-lc-ref">${refChip(r.ref)}</span>
+      <span class="aki-lc-date">${r.due ? escapeHtml(_notesFmtDate(r.due)) : ''}</span>
+    </div>`).join('');
+    body = sorted.length
+      ? `<div class="aki-list"><div class="aki-lrow aki-lhead"><span>Project</span><span>Note</span><span>Informed</span><span>Date</span></div>${rows}</div>`
+      : `<div class="actions-empty">No starred notes match that filter.</div>`;
+  } else {
+    // Cards = one card per PROJECT, broken out by department inside.
+    const byProject = {};
+    recs.forEach(r => { (byProject[r.project] = byProject[r.project] || []).push(r); });
+    const cards = projects.filter(p => byProject[p] && byProject[p].length).map(p => {
+      const byDept = {};
+      byProject[p].forEach(r => { (byDept[r.dept] = byDept[r.dept] || []).push(r); });
+      const groups = order.filter(k => byDept[k] && byDept[k].length).map(k =>
+        `<div class="aki-group"><div class="aki-group-head">${escapeHtml(k === 'general' ? 'General' : _notesDeptLabel(k))}</div>${byDept[k].map(r =>
+          `<div class="aki-item">${escapeHtml(r.text)}<span class="aki-src">${escapeHtml(r.meeting)}${r.mdate ? ' · ' + escapeHtml(r.mdate) : ''}${r.ref && r.ref !== 'N/A' ? ' · ' + (_notesRefIsDept(r.ref) ? '👥 ' : '@') + escapeHtml(_notesRefDisplay(r.ref)) : ''}${r.due ? ' · ' + escapeHtml(_notesFmtDate(r.due)) : ''}</span></div>`).join('')}</div>`
+      ).join('');
+      return `<div class="aki-card"><div class="aki-card-head">${escapeHtml(p)}<span class="aki-count">${byProject[p].length}</span></div><div class="aki-card-body">${groups}</div></div>`;
+    }).join('');
+    body = `<div class="aki-cards">${cards}</div>`;
+  }
+
+  host.innerHTML = `<div class="actions-keyinfo-head">★ Key Information</div>${controls}${body}`;
+  host.onclick = (e) => { const vt = e.target.closest('[data-aki-view]'); if (vt) { _actionsKeyInfo.view = vt.dataset.akiView; renderActionsKeyInfo(); } };
+  host.onchange = (e) => {
+    if (e.target.matches('[data-aki-dept]')) { _actionsKeyInfo.dept = e.target.value; renderActionsKeyInfo(); }
+    else if (e.target.matches('[data-aki-sort]')) { _actionsKeyInfo.sort = e.target.value; renderActionsKeyInfo(); }
+    else if (e.target.matches('[data-aki-filter]')) { _actionsKeyInfo.filter = e.target.value; renderActionsKeyInfo(); }
+  };
 }
 
 // v4.65: two cascading dropdowns — Department → Person — instead of v4.63's
@@ -19492,6 +20111,7 @@ async function init() {
   }, true);
   tbodyEl.addEventListener('contextmenu', handleRowContextMenu);
   setupGridPan();
+  setupPagePan();
   setupRowCrossHighlight();
 
   // Filters popover — toggled by the topbar's Filters button. Inner controls are

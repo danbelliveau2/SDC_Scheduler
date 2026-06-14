@@ -1437,6 +1437,26 @@ app.post('/api/project/:project/estimate-file', requireRole('editor'), async (re
   res.json({ ok: true });
 });
 
+// ── Project notes — meeting "sessions" (collapsible, dated) + starred key info.
+// Stored as one JSON blob per project: { sessions: [{ id, title, date,
+// collapsed, items: [{ id, text, starred }] }] }.
+app.get('/api/project/:project/notes', async (req, res) => {
+  const key = `project_notes:${req.params.project}`;
+  const [[row]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [key]);
+  if (!row) return res.json(null);
+  try { res.json(JSON.parse(row.value)); } catch { res.json(null); }
+});
+app.post('/api/project/:project/notes', requireRole('editor'), async (req, res) => {
+  const key = `project_notes:${req.params.project}`;
+  const value = JSON.stringify(req.body || { sessions: [] });
+  await pool.query(
+    'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+    [key, value]
+  );
+  res.json({ ok: true });
+  io.emit('notes:updated', { project: req.params.project });
+});
+
 app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
   try {
     const projectName = (req.body.project || '').toString().trim();
