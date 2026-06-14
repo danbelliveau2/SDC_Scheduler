@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.5',
+    date: '2026-06-14',
+    notes: [
+      'Project Notes — a per-project meeting-notes workspace with starred "Key Information" — plus a reworked Notes & Actions tab and a click-drag schedule page.',
+      '',
+      'NOTES (per project, below the schedule):',
+      '   ▸ A collapsible Notes panel lives under the schedule. Open it and the whole schedule becomes one long page — click-drag anywhere to pan up/down, with room below to work in the middle of the screen.',
+      '   ▸ Left = Meetings: add a meeting, jot notes from a composer line on top, press Enter; notes drop into a clean grid below. Collapse-all, per-meeting collapse, drag-to-reorder.',
+      '   ▸ Each note can optionally be INFORMED (a person or whole department — leads listed first) and given a DATE. Toggle 👤 / 📅 only when you need them.',
+      '   ▸ Right-click a note → Edit / Star / Turn into action / Delete. Turning into an action needs an informed person + date and adds it to the schedule + that person\'s list.',
+      '   ▸ Right = Key Information: star a note to pin it here. Cards (one per department) or List view (with a Department column) — nothing clips.',
+      '',
+      'NOTES & ACTIONS TAB (was Actions):',
+      '   ▸ Renamed. Below your actions, a cross-project Key Information section pulls every project\'s starred notes together — Cards (one card per job, broken out by department) or a sortable/filterable List (sort by date / project / dept / informed; show only items with a date or an informed person).',
+      '',
+      'POLISH:',
+      '   ▸ Signed-in user is now just an initials circle in the sidebar (above Rev) — click for name / role / change password / sign out. No more overlapping the top bar.',
+      '   ▸ Wider sidebar so labels fit; project tabs show a pointer (not a grab hand); Quote vs Schedule header font is now uniform.',
+    ],
+  },
+  {
     version: '9.2',
     date: '2026-06-12',
     notes: [
