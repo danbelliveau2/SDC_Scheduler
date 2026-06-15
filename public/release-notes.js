@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.6',
+    date: '2026-06-14',
+    notes: [
+      'Notes polish — a simpler note composer and a cleaner "informed" model.',
+      '',
+      'WRITING A NOTE:',
+      '   ▸ Row 1 is the note (full width). Row 2 has two small black icons — a person and a calendar.',
+      '   ▸ Click an icon and it expands IN PLACE into its picker (the people list / calendar pops open right there) — no panel off to the side, no second click.',
+      '   ▸ Nothing shows on the note until you hit Add.',
+      '',
+      'INFORMED (was "reference"):',
+      '   ▸ Inform ONE OR MORE people — each shows as a chip, with an × to remove. (Tell an engineer AND a shop person in one note.)',
+      '   ▸ No department field — a person\'s department is already known from the Departments tab, so Key Information still groups by department (a cross-team note shows under each).',
+      '   ▸ Dates show short as MM/DD/YY.',
+      '',
+      'EDITING:',
+      '   ▸ Click a note to edit it; click off and it\'s done — no need to hit Done. Right-click for Edit / Star / Turn into action / Delete.',
+    ],
+  },
+  {
     version: '9.5',
     date: '2026-06-14',
     notes: [
