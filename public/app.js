@@ -8384,10 +8384,17 @@ function _procOpenPoPanel(job, vname, poId) {
   const ordered = po.lines.map(l => l.ordered).filter(Boolean).sort()[0];
   const due = po.lines.map(l => l.expected).filter(Boolean).sort().slice(-1)[0];
   const rows = po.lines.map(l => {
+    // Row tint by status, matching the card-dot legend: received → green,
+    // overdue → red, on order (not yet due) → yellow.
+    let cls = 'ppo-line-received';
+    if (l.status !== 'received') {
+      const exp = l.expected ? Date.parse(l.expected + 'T00:00:00') : NaN;
+      cls = (!isNaN(exp) && exp < Date.now()) ? 'ppo-line-late' : 'ppo-line-pending';
+    }
     const rcvd = l.status === 'received'
       ? `<span class="ppo-rcvd-ok">✓ ${fmt(l.receivedDate)}</span>`
       : `<span class="ppo-rcvd-exp">Exp ${fmt(l.expected)}</span>`;
-    return `<div class="ppo-line">
+    return `<div class="ppo-line ${cls}">
       <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(l.partNumber || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(l.desc || '')}">${escapeHtml(l.desc || '')}</span></span>
       <span class="num">${l.qty ?? ''}</span>
       <span>${fmt(l.ordered)}</span>
