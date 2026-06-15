@@ -844,6 +844,26 @@ app.get('/api/eto/readiness/:job', async (req, res) => {
   }
 });
 
+// Vendor Status for one job — POs grouped by supplier with received progress
+// (Build Readiness "Vendor Status" view). Cached 5 min; ?refresh=1 busts it.
+const _vendorStatusCache = new Map();
+app.get('/api/eto/vendors/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _vendorStatusCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  try {
+    const data = await etoDb.getVendorStatus(job);
+    _vendorStatusCache.set(job, { at: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error('[eto] vendor status failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
 // Pull PO data from ETO into vendor_pos. Default scope covers linked projects;
 // body {scope:'all'} also pulls every open PO across the whole ERP.
 app.post('/api/eto/sync-vendor-pos', requireRole('editor'), async (req, res) => {
@@ -2499,7 +2519,7 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
       const to = userRow ? userRow.email : null;
       if (to && emailSvc && emailSvc.sendMentionEmail) {
         emailSvc.sendMentionEmail({
-          db, to, taskId, taskName: task.name, project: task.project,
+          pool, to, taskId, taskName: task.name, project: task.project,
           commentBody: body, authorName,
         }).catch(() => {});
       }

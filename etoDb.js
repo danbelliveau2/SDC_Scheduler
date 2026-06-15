@@ -109,6 +109,9 @@ async function getPoDetailsMulti(projectIds) {
       c.CName AS Supplier,
       pod.PurchaseDetailID,
       pod.ItemID,
+      eim.ItemCompanyID   AS PartNumber,
+      eim.ItemDescription AS PartDesc,
+      eim.Manufacturer    AS Manufacturer,
       pod.PurchaseQty,
       pod.PurchasePrice,
       pod.DateRequired,
@@ -433,6 +436,60 @@ async function getPoLines(projectId, poId) {
   }));
 }
 
+/**
+ * Vendor Status for one job — POs grouped by supplier with received progress,
+ * mirroring the Build Readiness app's Vendor Status view. Each PO carries its
+ * line items so the UI can expand a PO inline. Built from one PO-details query.
+ */
+async function getVendorStatus(projectId) {
+  const rows = await getPoDetailsMulti([projectId]);
+  const now = Date.now();
+  const byVendor = {};
+  for (const r of rows) {
+    const vname = r.Supplier || 'Unknown';
+    const v = byVendor[vname] || (byVendor[vname] = { name: vname, pos: {} });
+    const poKey = String(r.PurchaseOrderID);
+    const po = v.pos[poKey] || (v.pos[poKey] = { po: poKey, poDate: isoDate(r.PurchaseDate), lines: [] });
+    const due = r.DateRevised || r.DateRequired || r.PurchaseDateRevised || r.PurchaseDateRequired;
+    po.lines.push({
+      partNumber: r.PartNumber, desc: r.PartDesc, manufacturer: r.Manufacturer,
+      qty: r.PurchaseQty, received: r.ReceivedQty, price: r.PurchasePrice,
+      ordered: isoDate(r.PurchaseDate), expected: isoDate(due),
+      receivedDate: isoDate(r.LastReceivedDate),
+      status: r.ReceivedQty >= r.PurchaseQty ? 'received' : 'open',
+    });
+  }
+
+  const overdue = (l) => l.status === 'open' && l.expected && new Date(l.expected).getTime() < now;
+  const vendors = Object.values(byVendor).map(v => {
+    const pos = Object.values(v.pos).map(po => {
+      const total = po.lines.length;
+      const received = po.lines.filter(l => l.status === 'received').length;
+      const anyOverdue = po.lines.some(overdue);
+      po.itemCount = total;
+      po.received = received;
+      po.pct = total ? Math.round((received / total) * 100) : 0;
+      po.price = po.lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.price) || 0), 0);
+      po.status = received === total ? 'received' : anyOverdue ? 'pastdue' : 'open';
+      return po;
+    });
+    pos.sort((a, b) => (a.status === 'received' ? 1 : 0) - (b.status === 'received' ? 1 : 0) || Number(a.po) - Number(b.po));
+    const itemCount = pos.reduce((s, p) => s + p.itemCount, 0);
+    const receivedItems = pos.reduce((s, p) => s + p.received, 0);
+    const anyOverdue = pos.some(p => p.status === 'pastdue');
+    return {
+      name: v.name, poCount: pos.length, itemCount, receivedItems,
+      pct: itemCount ? Math.round((receivedItems / itemCount) * 100) : 0,
+      status: receivedItems === itemCount ? 'received' : anyOverdue ? 'pastdue' : 'open',
+      pos,
+    };
+  });
+  // Incomplete vendors first (past-due, then open), then received; ties by name.
+  const rank = { pastdue: 0, open: 1, received: 2 };
+  vendors.sort((a, b) => rank[a.status] - rank[b.status] || a.pct - b.pct || a.name.localeCompare(b.name));
+  return { job: projectId, vendors, generatedAt: new Date().toISOString() };
+}
+
 // ── Vendor PO sync (ETO → scheduler MySQL) ───────────────────────────────────
 
 function isoDate(d) {
@@ -586,5 +643,6 @@ module.exports = {
   getOpenPoJobs,
   getPoLines,
   getReadiness,
+  getVendorStatus,
   syncVendorPOs,
 };

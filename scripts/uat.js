@@ -382,6 +382,54 @@ async function suiteEto() {
     assert(typeof r.body.pos === 'number', 'no pos count');
     assert(typeof r.body.created === 'number' && typeof r.body.updated === 'number', 'no created/updated counts');
   });
+
+  await it('GET /api/eto/readiness/:job returns totals + specs', async () => {
+    const r = await fetch('GET', '/api/eto/readiness/1129');
+    eq(r.status, 200);
+    assert(r.body.totals && typeof r.body.totals.pct === 'number', 'no totals.pct');
+    assert(Array.isArray(r.body.specs), 'no specs array');
+    assert(Array.isArray(r.body.partsList), 'no partsList array');
+  });
+
+  await it('GET /api/eto/readiness with non-numeric job returns 400', async () => {
+    const r = await fetch('GET', '/api/eto/readiness/abc');
+    eq(r.status, 400);
+  });
+
+  await it('GET /api/eto/vendors/:job returns vendor-grouped POs', async () => {
+    const r = await fetch('GET', '/api/eto/vendors/1129');
+    eq(r.status, 200);
+    assert(Array.isArray(r.body.vendors), 'no vendors array');
+    if (r.body.vendors.length) {
+      const v = r.body.vendors[0];
+      assert(v.name && typeof v.pct === 'number' && Array.isArray(v.pos), 'vendor shape wrong');
+    }
+  });
+
+  await it('GET /api/eto/po/:job/:po/lines returns line items', async () => {
+    const vendors = await fetch('GET', '/api/eto/vendors/1129');
+    const firstPo = vendors.body.vendors?.[0]?.pos?.[0]?.po;
+    if (!firstPo) { skip++; return; }
+    const r = await fetch('GET', `/api/eto/po/1129/${firstPo}/lines`);
+    eq(r.status, 200);
+    assert(Array.isArray(r.body), 'lines not an array');
+  });
+}
+
+async function suiteReliability() {
+  console.log('\n── Reliability: health, status, backups ──');
+
+  await it('GET /api/status returns db + uptime (auth required)', async () => {
+    const r = await fetch('GET', '/api/status');
+    eq(r.status, 200);
+    assert(r.body.db && typeof r.body.db.ok === 'boolean', 'no db.ok');
+    assert(typeof r.body.uptimeSeconds === 'number', 'no uptimeSeconds');
+  });
+
+  await it('POST /api/backup as editor returns 403 (admin required)', async () => {
+    const r = await fetch('POST', '/api/backup', {});
+    eq(r.status, 403);
+  });
 }
 
 async function suiteSocketIo() {
@@ -474,6 +522,7 @@ async function suiteScale() {
     await suiteProjects();
     await suiteLegacyGone();
     await suiteEto();
+    await suiteReliability();
     await suiteSocketIo();
     await suiteScale();
   } catch (e) {

@@ -2321,57 +2321,80 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-tab.is-active .proc-tab-n { background: #e3f0fa; color: var(--sdc-primary); }
 .proc-tab-hint { margin-left: auto; font-size: 11px; color: #94a3b8; font-style: italic; }
 
-/* Procurement — flat Parts List table */
-.proc-plist { margin-top: 12px; border: 1px solid #e8edf3; border-radius: 8px; overflow: hidden; background: white; }
-.proc-plist-head, .proc-plrow {
-  display: grid;
-  /* part no · description (remainder) · assembly · qty · unit$ · mfr · po · order · exp · status */
-  grid-template-columns: minmax(115px, max-content) 1fr 200px 44px 78px 125px 64px 72px 72px 108px;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  font-size: 12px;
+/* Vendors tab — Build Readiness "Vendor Status" cards */
+.proc-vendors { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; padding-top: 12px; }
+.proc-vcard { border: 1px solid #e2e8f0; border-radius: 10px; background: #fff; padding: 12px 14px; box-shadow: 0 1px 2px rgba(6,29,57,0.04); }
+.proc-vcard-head { display: flex; align-items: center; gap: 9px; }
+.proc-vavatar {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10.5px; font-weight: 800; color: #fff; background: var(--sdc-primary, #1574c4);
 }
-.proc-plist-head {
-  background: var(--sdc-dark, #061d39);
-  color: rgba(255,255,255,0.75);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  position: sticky;
-  top: 0;
-  z-index: 2;
+.proc-vname { font-size: 13.5px; font-weight: 700; color: #0f172a; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-vbadge { flex: 0 0 auto; font-size: 9px; font-weight: 800; letter-spacing: 0.4px; padding: 2px 7px; border-radius: 4px; }
+.vstat-ok   { background: #e8f7d8; color: #3f6212; }
+.vstat-bad  { background: #fee2e2; color: #b91c1c; }
+.vstat-warn { background: #e3f0fa; color: #1574c4; }
+.proc-vmeta { font-size: 11.5px; color: #64748b; margin: 4px 0 6px; }
+.proc-vbar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.proc-vbar-row .proc-bar { flex: 1 1 auto; width: auto; height: 8px; }
+.proc-vpos { border-top: 1px solid #f1f5f9; }
+.proc-vpo { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid #f5f8fb; cursor: pointer; font-size: 12px; }
+.proc-vpo:last-child { border-bottom: none; }
+.proc-vpo:hover { background: #f1f7fc; }
+.proc-vpo-rcvd { margin-left: auto; color: #475569; font-size: 11.5px; }
+.proc-vpo-go { color: #94a3b8; font-size: 15px; font-weight: 700; width: 12px; text-align: center; }
+.proc-vpo:hover .proc-vpo-go { color: var(--sdc-primary, #1574c4); }
+
+/* PO detail slide-out panel (Build Readiness style) */
+.proc-po-overlay { position: fixed; inset: 0; z-index: 1200; display: flex; justify-content: flex-end; }
+.proc-po-backdrop { position: absolute; inset: 0; background: rgba(6, 29, 57, 0.28); }
+.proc-po-panel {
+  position: relative; width: 620px; max-width: 92vw; height: 100%;
+  background: #fff; box-shadow: -8px 0 28px rgba(6, 29, 57, 0.18);
+  display: flex; flex-direction: column; overflow-y: auto;
+  /* Natural resting position is on-screen (flush right). No transform offset, so
+     the panel can never get stuck off-screen if frame painting is throttled. */
 }
-.proc-plrow { border-bottom: 1px solid #f1f5f9; }
-.proc-plrow:last-child { border-bottom: none; }
-.proc-plrow:nth-child(even) { background: #fafcfe; }
-.proc-plrow:hover { background: #f1f7fc; }
-.proc-plrow-overdue { background: #fef2f2; }
-.proc-plrow-overdue:hover { background: #fee9e9; }
-.proc-plist .num, .proc-plist-head .num { text-align: right; }
-.proc-plsrc { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
-.proc-plsrc-pn { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; font-weight: 700; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.proc-plsrc-desc { font-size: 10.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.proc-plpo { font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-weight: 700; color: #334155; }
-.proc-pill {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 5px;
-  font-size: 9.5px;
-  font-weight: 800;
-  letter-spacing: 0.4px;
-  white-space: nowrap;
-  justify-self: start;
+.ppo-head { display: flex; align-items: center; gap: 11px; padding: 16px 18px; border-bottom: 1px solid #e2e8f0; }
+.ppo-head .proc-vavatar { width: 30px; height: 30px; font-size: 11px; }
+.ppo-head-name { flex: 1 1 auto; min-width: 0; }
+.ppo-vname { font-size: 14px; font-weight: 800; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ppo-ponum { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; font-weight: 700; color: #64748b; }
+.ppo-close { background: none; border: none; font-size: 16px; color: #64748b; cursor: pointer; padding: 4px 6px; border-radius: 6px; }
+.ppo-close:hover { background: #f1f5f9; color: #0f172a; }
+.ppo-summary { display: flex; flex-wrap: wrap; gap: 18px 26px; padding: 14px 18px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; }
+.ppo-stat { display: flex; flex-direction: column; gap: 3px; }
+.ppo-sk { font-size: 9.5px; font-weight: 800; letter-spacing: 0.4px; text-transform: uppercase; color: #94a3b8; }
+.ppo-sv { font-size: 13.5px; font-weight: 700; color: #0f172a; }
+.ppo-prog { flex: 1 1 200px; }
+.ppo-prog .proc-bar { width: 100%; height: 8px; margin-top: 2px; }
+.ppo-prog .proc-pct { font-size: 12px; }
+.ppo-lines { padding: 4px 0 24px; }
+.ppo-line { display: grid; grid-template-columns: minmax(150px, 1.7fr) 44px 78px 80px 96px 78px; gap: 8px; align-items: center; padding: 7px 18px; border-bottom: 1px solid #f1f5f9; font-size: 11.5px; }
+.ppo-line .num { text-align: right; }
+.ppo-line-head { background: #fff; position: sticky; top: 0; font-size: 9.5px; font-weight: 800; letter-spacing: 0.3px; text-transform: uppercase; color: #64748b; border-bottom: 1px solid #e2e8f0; }
+.ppo-line-part { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.ppo-line-pn { font-family: ui-monospace, Consolas, monospace; font-weight: 700; color: #1574c4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ppo-line-desc { font-size: 10.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ppo-rcvd-ok { color: #3f6212; font-weight: 700; }
+.ppo-rcvd-exp { color: #b45309; font-weight: 700; }
+
+/* Per-project Procurement drawer (opens down like Notes) */
+.schedule-proc-drawer { flex: 0 0 auto; display: flex; flex-direction: column; }
+.schedule-proc-drawer.is-collapsed .proc-drawer-body { display: none; }
+.proc-drawer-body { background: var(--surface, #fff); padding: 0 14px 24px; overflow: visible; }
+.proc-drawer-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 4px; margin-bottom: 4px;
+  border-bottom: 1px solid #e2e8f0;
 }
-.proc-pill i { font-style: normal; font-weight: 600; opacity: 0.75; font-size: 9px; }
-.proc-pill-ok   { background: #e8f7d8; color: #3f6212; }
-.proc-pill-bad  { background: #fee2e2; color: #b91c1c; }
-.proc-pill-warn { background: #fef3c7; color: #92400e; }
-.proc-pill-info { background: #e3f0fa; color: #1574c4; }
-.proc-pill-hold { background: #f1f5f9; color: #64748b; }
+.proc-drawer-full {
+  margin-left: auto; font-size: 12px; font-weight: 700;
+  color: var(--sdc-primary, #1574c4); background: none; border: none;
+  cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.proc-drawer-full:hover { text-decoration: underline; }
 
 /* System Status panel (Setup) */
 .sys-status-grid { display: flex; flex-direction: column; gap: 8px; }
