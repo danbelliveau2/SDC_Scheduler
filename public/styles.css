@@ -4351,17 +4351,24 @@ body.customer-view .schedule-footer { display: none; }
 /* Composer — the single "entry line" on top of each meeting. Reference / Due
    only appear when their 👤 / 📅 toggle is on (off by default — out of the way). */
 .notes-composer { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, #fff); border: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 30%, #fff); border-radius: 7px; padding: 6px; margin-bottom: 8px; }
-.notes-composer-line { display: flex; align-items: center; gap: 6px; }
-.notes-comp-text { flex: 1 1 auto; border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 13px; padding: 5px 8px; font-family: inherit; color: var(--text, #1e293b); background: #fff; min-width: 0; }
+.notes-comp-text { display: block; width: 100%; border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 13px; padding: 5px 8px; font-family: inherit; color: var(--text, #1e293b); background: #fff; margin-bottom: 6px; }
 .notes-comp-text:focus { outline: none; border-color: var(--sdc-primary, #1574c4); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 20%, transparent); }
-.notes-comp-flag { flex: none; width: 30px; height: 30px; border: 1px solid var(--border, #cbd5e1); background: #fff; border-radius: 5px; cursor: pointer; font-size: 14px; opacity: 0.55; }
-.notes-comp-flag:hover { opacity: 1; }
-.notes-comp-flag.is-on { opacity: 1; border-color: var(--sdc-primary, #1574c4); background: var(--sdc-blue-light, #aacee8); }
-.notes-comp-add { flex: none; border: none; background: var(--sdc-primary, #1574c4); color: #fff; font-weight: 700; font-size: 12px; border-radius: 5px; padding: 6px 14px; cursor: pointer; }
+/* Row 2 — small black person + calendar icons that expand IN PLACE into their
+   picker when clicked. + Add. */
+.notes-composer-row2 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.notes-comp-ico { flex: none; width: 30px; height: 30px; border: 1px solid var(--border, #cbd5e1); background: #fff; border-radius: 5px; cursor: pointer; color: var(--sdc-dark, #061d39); display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.notes-comp-ico:hover { border-color: var(--sdc-primary, #1574c4); color: var(--sdc-primary, #1574c4); }
+.notes-comp-due { flex: none; border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 12px; padding: 4px 6px; background: #fff; color: var(--text, #334155); font-family: inherit; }
+.notes-comp-due:focus { outline: none; border-color: var(--sdc-primary, #1574c4); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 20%, transparent); }
+.notes-comp-add { flex: none; margin-left: auto; border: none; background: var(--sdc-primary, #1574c4); color: #fff; font-weight: 700; font-size: 12px; border-radius: 5px; padding: 6px 16px; cursor: pointer; }
 .notes-comp-add:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 85%, #000); }
-.notes-comp-extra { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border, #cbd5e1); }
-.notes-comp-extra label { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted, #64748b); }
-.notes-comp-ref, .notes-comp-due { border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 12px; padding: 3px 6px; background: #fff; color: var(--text, #334155); font-family: inherit; }
+/* Multi-person Informed picker — chips for who's picked + an add dropdown. */
+.notes-inf-box { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.notes-inf-chip { display: inline-flex; align-items: center; gap: 3px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, #fff); color: var(--sdc-dark, #061d39); border-radius: 999px; padding: 2px 4px 2px 8px; font-size: 11px; font-weight: 600; }
+.notes-inf-x { border: none; background: none; cursor: pointer; color: var(--sdc-dark, #061d39); opacity: 0.55; font-size: 13px; line-height: 1; padding: 0 2px; }
+.notes-inf-x:hover { opacity: 1; color: #dc2626; }
+.notes-inf-add { border: 1px solid var(--sdc-primary, #1574c4); border-radius: 5px; font-size: 12px; padding: 3px 5px; background: #fff; color: var(--text, #334155); font-family: inherit; }
+.notes-inf-add:focus { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 20%, transparent); }
 /* Submitted notes — a grid with headers. Columns:
    drag | ★ | ⚡ | description | assigned to | date. The header row + every
    item share the SAME template so the Assigned-to / Date columns line up. */
@@ -4389,7 +4396,8 @@ body.customer-view .schedule-footer { display: none; }
 .notes-note-text { font-size: 12.5px; line-height: 1.4; color: var(--text, #1e293b); white-space: pre-wrap; cursor: text; min-width: 0; padding: 2px 2px; border-radius: 4px; }
 .notes-note-text:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, transparent); }
 .notes-note-ph { color: var(--text-muted, #cbd5e1); font-style: italic; }
-.notes-cell-assigned, .notes-cell-date { min-width: 0; }
+.notes-cell-assigned { min-width: 0; display: flex; flex-wrap: wrap; gap: 3px; }
+.notes-cell-date { min-width: 0; }
 .notes-cell-date { font-size: 12px; color: var(--text-muted, #64748b); white-space: nowrap; }
 .notes-edit-hint { font-size: 11.5px; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 5px; padding: 4px 8px; }
 .notes-chip { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 1px 8px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
@@ -4445,8 +4453,10 @@ body.customer-view .schedule-footer { display: none; }
 .notes-key-head { font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #94a3b8); border-bottom: 1px solid var(--border, #eef2f6); position: sticky; top: 0; background: var(--surface, #fff); }
 .notes-key-row .notes-star { font-size: 14px; }
 .nkr-desc { color: var(--text, #1e293b); line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
-.nkr-informed { min-width: 0; }
+.nkr-informed { min-width: 0; display: flex; flex-wrap: wrap; gap: 3px; }
 .nkr-informed .notes-chip { white-space: normal; overflow: visible; text-overflow: clip; max-width: none; }
+.aki-lc-ref { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.aki-lc-ref .notes-chip { white-space: normal; overflow: visible; text-overflow: clip; max-width: none; }
 .nkr-meeting { color: var(--text-muted, #64748b); min-width: 0; overflow-wrap: anywhere; }
 .nkr-date { color: var(--text-muted, #64748b); white-space: nowrap; }
 .notes-key-grouphead { font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sdc-primary, #1574c4); padding: 6px 4px 2px; }

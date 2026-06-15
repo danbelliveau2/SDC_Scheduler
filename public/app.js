@@ -11146,7 +11146,10 @@ function saveProjectNotes(project) {
 // Transient (not persisted) per-meeting composer drafts + the id of the note
 // currently open for editing. Cleared on Add / Done.
 const _notesDrafts = {};
-function _notesDraft(mid) { return _notesDrafts[mid] || (_notesDrafts[mid] = { text: '', showRef: false, showDue: false, ref: '', due: '' }); }
+function _notesDraft(mid) { return _notesDrafts[mid] || (_notesDrafts[mid] = { text: '', showInf: false, showDue: false, informed: [], due: '' }); }
+// Plain black (currentColor) icons — person + calendar — for the composer.
+const NOTES_PERSON_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>`;
+const NOTES_CAL_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>`;
 let _notesEditId = null;
 let _notesEditHint = null;   // item id showing the "needs informed + date" hint
 let _notesDragId = null;
@@ -11231,11 +11234,55 @@ function _notesRefOptions(selected) {
   return html;
 }
 
-// Format an ISO date (YYYY-MM-DD) as plain MM/DD/YYYY for display.
+// People <optgroup>s grouped by department (leads on top), optionally excluding
+// already-picked names. No leading placeholder option — callers add their own.
+function _notesPeopleOptgroups(exclude) {
+  const skip = new Set(exclude || []);
+  const team = (state.team || []).filter(m => m && m.name && !isPlaceholder(m.name) && m.active !== 0 && !skip.has(m.name));
+  const sortLeadFirst = (a, b) => ((!!b.is_lead) - (!!a.is_lead)) || a.name.localeCompare(b.name);
+  const opt = (m) => `<option value="${escapeHtml(m.name)}"${m.is_lead ? ' style="background:#eef2f6"' : ''}>${escapeHtml(m.name)}</option>`;
+  let html = '';
+  const used = new Set();
+  for (const g of NOTES_DEPT_GROUPS) {
+    const members = team.filter(m => m.discipline === g.key).sort(sortLeadFirst);
+    members.forEach(m => used.add(m.name));
+    if (!members.length) continue;
+    html += `<optgroup label="${escapeHtml(g.label)}">` + members.map(opt).join('') + `</optgroup>`;
+  }
+  const others = team.filter(m => !used.has(m.name)).sort(sortLeadFirst);
+  if (others.length) html += `<optgroup label="Other">` + others.map(opt).join('') + `</optgroup>`;
+  return html;
+}
+// Multi-person "informed" picker — chips for who's picked + a dropdown to add
+// more. `scope` ('comp' | 'item') tags the events; `id` is the meeting/note id.
+function _notesInformedPicker(scope, id, informed) {
+  const chips = (informed || []).map(n =>
+    `<span class="notes-inf-chip">${escapeHtml(n)}<button type="button" class="notes-inf-x" data-inf-remove="${id}" data-inf-scope="${scope}" data-inf-name="${escapeHtml(n)}" title="Remove">×</button></span>`).join('');
+  return `<span class="notes-inf-box">${chips}<select class="notes-inf-add" data-inf-add="${id}" data-inf-scope="${scope}"><option value="">${(informed && informed.length) ? '+ add' : 'Informed…'}</option>${_notesPeopleOptgroups(informed)}</select></span>`;
+}
+
+// Format an ISO date (YYYY-MM-DD) as a short MM/DD/YY for display (8 chars).
 function _notesFmtDate(iso) {
   if (!iso) return '';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  return m ? `${m[2]}/${m[3]}/${m[1]}` : iso;
+  return m ? `${m[2]}/${m[3]}/${m[1].slice(2)}` : iso;
+}
+// The people a note informs — an array of names. Migrates legacy single-value
+// `ref` (a person name; old dept:/N-A refs become "no one informed").
+function _infList(obj) {
+  if (Array.isArray(obj.informed)) return obj.informed.filter(Boolean);
+  if (obj.ref && obj.ref !== 'N/A' && obj.ref.indexOf('dept:') !== 0) return [obj.ref];
+  return [];
+}
+// A person's department key (from the Departments tab), or 'general' if unknown.
+function _personDept(name) {
+  const m = (state.team || []).find(x => x.name === name);
+  return (m && m.discipline) ? m.discipline : 'general';
+}
+// The set of department keys a note touches (one per informed person).
+function _noteDeptKeys(obj) {
+  const ks = [...new Set(_infList(obj).map(_personDept))];
+  return ks.length ? ks : ['general'];
 }
 
 // Header row above the notes list — aligns with the item grid columns.
@@ -11256,7 +11303,7 @@ function _notesItemHtml(it) {
       <div class="notes-edit-fields">
         <textarea class="notes-item-text" data-item-text="${it.id}" rows="1" placeholder="Note…">${escapeHtml(it.text || '')}</textarea>
         <div class="notes-edit-row">
-          <label>Informed <select class="notes-item-ref" data-item-ref="${it.id}">${_notesRefOptions(it.ref)}</select></label>
+          <label>Informed ${_notesInformedPicker('item', it.id, _infList(it))}</label>
           <label>Date <input type="date" class="notes-item-due" data-item-due="${it.id}" value="${escapeHtml(it.due || '')}" /></label>
           <button class="notes-edit-done" data-edit-done="${it.id}" type="button">Done</button>
         </div>
@@ -11267,10 +11314,7 @@ function _notesItemHtml(it) {
   // Display mode — grid row: [drag] [★] [description] [informed] [date].
   // ★ always visible; drag handle reveals on hover. Click text to edit;
   // right-click the row for Edit / Star / Turn into action / Delete.
-  const isDept = _notesRefIsDept(it.ref);
-  const refCell = it.ref
-    ? `<span class="notes-chip ${isDept ? 'dept' : (it.ref === 'N/A' ? 'na' : 'ref')}">${isDept ? '👥' : (it.ref === 'N/A' ? '' : '👤')} ${escapeHtml(_notesRefDisplay(it.ref))}</span>`
-    : '';
+  const refCell = _infList(it).map(n => `<span class="notes-chip ref">👤 ${escapeHtml(n)}</span>`).join(' ');
   const dateCell = it.due ? escapeHtml(_notesFmtDate(it.due)) : '';
   return `<div class="notes-item${it.actioned ? ' is-actioned' : ''}" data-item="${it.id}">
     <span class="notes-drag" draggable="true" data-drag="${it.id}" title="Drag to reorder">⠿</span>
@@ -11284,17 +11328,21 @@ function _notesItemHtml(it) {
 function _notesMeetingHtml(s) {
   const itemCount = (s.items || []).length;
   const d = _notesDraft(s.id);
+  // Row 1 = the note (full width). Row 2 = a small person icon + calendar icon.
+  // Clicking an icon EXPANDS IT IN PLACE into its picker (right there — never a
+  // separate panel beside it). Informed takes one or more people; department is
+  // derived from the Departments tab, so there's no dept field.
   const composer = `<div class="notes-composer" data-composer="${s.id}">
-    <div class="notes-composer-line">
-      <input class="notes-comp-text" data-comp-text="${s.id}" value="${escapeHtml(d.text)}" placeholder="Add a note — press Enter…" />
-      <button class="notes-comp-flag ${d.showRef ? 'is-on' : ''}" data-comp-toggle-ref="${s.id}" type="button" title="Inform a person or department">👤</button>
-      <button class="notes-comp-flag ${d.showDue ? 'is-on' : ''}" data-comp-toggle-due="${s.id}" type="button" title="Add a date">📅</button>
+    <input class="notes-comp-text" data-comp-text="${s.id}" value="${escapeHtml(d.text)}" placeholder="Add a note — press Enter…" />
+    <div class="notes-composer-row2">
+      ${d.showInf
+        ? _notesInformedPicker('comp', s.id, d.informed)
+        : `<button class="notes-comp-ico" data-comp-toggle-inf="${s.id}" type="button" title="Inform people">${NOTES_PERSON_ICON}</button>`}
+      ${d.showDue
+        ? `<input type="date" class="notes-comp-due" data-comp-due="${s.id}" value="${escapeHtml(d.due)}" />`
+        : `<button class="notes-comp-ico" data-comp-toggle-due="${s.id}" type="button" title="Add a date">${NOTES_CAL_ICON}</button>`}
       <button class="notes-comp-add" data-comp-add="${s.id}" type="button">Add</button>
     </div>
-    ${(d.showRef || d.showDue) ? `<div class="notes-comp-extra">
-      ${d.showRef ? `<select class="notes-comp-ref" data-comp-ref="${s.id}">${_notesRefOptions(d.ref)}</select>` : ''}
-      ${d.showDue ? `<input type="date" class="notes-comp-due" data-comp-due="${s.id}" value="${escapeHtml(d.due)}" />` : ''}
-    </div>` : ''}
   </div>`;
   const items = itemCount ? _notesListHeadHtml() + (s.items || []).map(_notesItemHtml).join('') : '';
   return `<div class="notes-session${s.collapsed ? ' is-collapsed' : ''}" data-session="${s.id}">
@@ -11342,20 +11390,19 @@ function renderProjectNotes() {
   // Key information for THIS project's schedule — a grid with headers, columns
   // running sideways (Description | Meeting | Informed | Date), just like the
   // meeting list. Cards = grouped by department; List = flat, sorted by date.
-  const keyRefChip = (ref) => ref && ref !== 'N/A'
-    ? `<span class="notes-chip ${_notesRefIsDept(ref) ? 'dept' : 'ref'}">${_notesRefIsDept(ref) ? '👥' : '👤'} ${escapeHtml(_notesRefDisplay(ref))}</span>` : '';
+  const keyInfChips = (it) => _infList(it).map(n => `<span class="notes-chip ref">👤 ${escapeHtml(n)}</span>`).join(' ');
   // withDept: list view adds a Department column (cards don't need it — the
   // card IS the department).
   const keyRow = ({ s, it }, withDept) => {
     const dv = it.due || s.date;
-    const dk = _notesRefDeptKey(it.ref);
-    const deptCell = withDept ? `<span class="nkr-dept">${escapeHtml(dk === 'general' ? 'General' : _notesDeptLabel(dk))}</span>` : '';
+    const dks = _noteDeptKeys(it);
+    const deptCell = withDept ? `<span class="nkr-dept">${escapeHtml(dks.map(k => k === 'general' ? 'General' : _notesDeptLabel(k)).join(', '))}</span>` : '';
     return `<div class="notes-key-row${withDept ? ' has-dept' : ''}" data-item="${it.id}">
       <button class="notes-star is-on" data-star="${it.id}" title="Unstar">★</button>
       <span class="nkr-desc">${escapeHtml(it.text)}</span>
       ${deptCell}
       <span class="nkr-meeting">${escapeHtml(s.title || 'Meeting')}</span>
-      <span class="nkr-informed">${keyRefChip(it.ref)}</span>
+      <span class="nkr-informed">${keyInfChips(it)}</span>
       <span class="nkr-date">${dv ? escapeHtml(_notesFmtDate(dv)) : ''}</span>
     </div>`;
   };
@@ -11367,9 +11414,10 @@ function renderProjectNotes() {
         .sort((a, b) => ((a.it.due || a.s.date || '9999-99-99').localeCompare(b.it.due || b.s.date || '9999-99-99')))
         .map(rec => keyRow(rec, true)).join('');
     } else {
-      // Each department is its OWN card (header + its own grid inside).
+      // Each department is its OWN card. A note shows under every department it
+      // informs (so a cross-team note appears in each).
       const byDept = {};
-      starred.forEach(rec => { const k = _notesRefDeptKey(rec.it.ref); (byDept[k] = byDept[k] || []).push(rec); });
+      starred.forEach(rec => _noteDeptKeys(rec.it).forEach(k => { (byDept[k] = byDept[k] || []).push(rec); }));
       const order = [...NOTES_DEPT_GROUPS.map(g => g.key), 'general'];
       keyHtml = `<div class="notes-key-cards">` + order.filter(k => byDept[k] && byDept[k].length).map(k =>
         `<div class="notes-key-card"><div class="notes-key-card-head">${escapeHtml(k === 'general' ? 'General' : _notesDeptLabel(k))}<span class="notes-key-card-count">${byDept[k].length}</span></div><div class="notes-key-card-body">${keyHead(false)}${byDept[k].map(rec => keyRow(rec, false)).join('')}</div></div>`
@@ -11479,10 +11527,10 @@ function _wireNotes(el, project) {
     if (!text) { const inp = el.querySelector(`[data-comp-text="${mid}"]`); inp?.focus(); return; }
     (s.items = s.items || []).unshift({
       id: _notesGenId(), text, starred: false,
-      ref: d.showRef ? (d.ref || '') : '',
-      due: d.showDue ? (d.due || '') : '',
+      informed: (d.informed || []).slice(),
+      due: d.due || '',
     });
-    _notesDrafts[mid] = { text: '', showRef: false, showDue: false, ref: '', due: '' };
+    _notesDrafts[mid] = { text: '', showInf: false, showDue: false, informed: [], due: '' };
     saveProjectNotes(project); renderProjectNotes();
     el.querySelector(`[data-comp-text="${mid}"]`)?.focus();
   };
@@ -11509,8 +11557,15 @@ function _wireNotes(el, project) {
     const tog = t.closest('[data-toggle-session]'); if (tog) { const s = findSession(tog.dataset.toggleSession); if (s) { s.collapsed = !s.collapsed; saveProjectNotes(project); renderProjectNotes(); } return; }
     // Composer controls
     const cadd = t.closest('[data-comp-add]'); if (cadd) { commitDraft(cadd.dataset.compAdd); return; }
-    const ctr = t.closest('[data-comp-toggle-ref]'); if (ctr) { const id = ctr.dataset.compToggleRef; const d = _notesDraft(id); d.showRef = !d.showRef; renderProjectNotes(); if (d.showRef) _notesOpenSelect(el, `[data-comp-ref="${id}"]`); return; }
+    const cti = t.closest('[data-comp-toggle-inf]'); if (cti) { const id = cti.dataset.compToggleInf; const d = _notesDraft(id); d.showInf = !d.showInf; renderProjectNotes(); if (d.showInf) _notesOpenSelect(el, `[data-inf-add="${id}"][data-inf-scope="comp"]`); return; }
     const ctd = t.closest('[data-comp-toggle-due]'); if (ctd) { const id = ctd.dataset.compToggleDue; const d = _notesDraft(id); d.showDue = !d.showDue; renderProjectNotes(); if (d.showDue) _notesOpenSelect(el, `[data-comp-due="${id}"]`); return; }
+    // Remove an informed person (chip ×) — composer draft or a note.
+    const infx = t.closest('[data-inf-remove]'); if (infx) {
+      const id = infx.dataset.infRemove, nm = infx.dataset.infName;
+      if (infx.dataset.infScope === 'comp') { const d = _notesDraft(id); d.informed = (d.informed || []).filter(n => n !== nm); }
+      else { const f = findItem(id); if (f) { f.it.informed = _infList(f.it).filter(n => n !== nm); delete f.it.ref; saveProjectNotes(project); } }
+      renderProjectNotes(); return;
+    }
     // Item controls
     const star = t.closest('[data-star]'); if (star) { const f = findItem(star.dataset.star); if (f) { f.it.starred = !f.it.starred; saveProjectNotes(project); renderProjectNotes(); } return; }
     const etxt = t.closest('[data-edit-text]'); if (etxt) { _notesEditId = etxt.dataset.editText; _notesEditHint = null; renderProjectNotes(); const ta = el.querySelector(`[data-item-text="${_notesEditId}"]`); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } return; }
@@ -11559,10 +11614,32 @@ function _wireNotes(el, project) {
   // change events (selects + date inputs) don't bubble through oninput reliably
   el.onchange = (e) => {
     const t = e.target;
-    if (t.matches('[data-comp-ref]')) { _notesDraft(t.dataset.compRef).ref = t.value || ''; }
-    else if (t.matches('[data-comp-due]')) { _notesDraft(t.dataset.compDue).due = t.value || ''; }
-    else if (t.matches('[data-item-ref]')) { const f = findItem(t.dataset.itemRef); if (f) { f.it.ref = t.value || ''; saveProjectNotes(project); } }
+    if (t.matches('[data-inf-add]')) {
+      // Add a person to the informed list (composer draft or a note).
+      const id = t.dataset.infAdd, nm = t.value;
+      if (!nm) return;
+      const scope = t.dataset.infScope;
+      if (scope === 'comp') { const d = _notesDraft(id); d.informed = d.informed || []; if (!d.informed.includes(nm)) d.informed.push(nm); }
+      else { const f = findItem(id); if (f) { const list = _infList(f.it); if (!list.includes(nm)) list.push(nm); f.it.informed = list; delete f.it.ref; saveProjectNotes(project); } }
+      renderProjectNotes();
+      // Keep the list open so you can add more people right away.
+      _notesOpenSelect(el, `[data-inf-add="${id}"][data-inf-scope="${scope}"]`);
+      return;
+    }
+    if (t.matches('[data-comp-due]')) { _notesDraft(t.dataset.compDue).due = t.value || ''; }
     else if (t.matches('[data-item-due]')) { const f = findItem(t.dataset.itemDue); if (f) { f.it.due = t.value || ''; saveProjectNotes(project); } }
+  };
+  // Finish editing a note as soon as focus leaves its editor (click off) — no
+  // need to hit Done. A 0ms defer lets focus land first so moving between the
+  // note's own fields (text → informed → date) doesn't close it.
+  el.onfocusout = (e) => {
+    const item = e.target.closest('.notes-item-editing');
+    if (!item) return;
+    setTimeout(() => {
+      if (_notesEditId && item.isConnected && !item.contains(document.activeElement)) {
+        _notesEditId = null; _notesEditHint = null; saveProjectNotes(project); renderProjectNotes();
+      }
+    }, 0);
   };
 }
 
@@ -11576,10 +11653,10 @@ function _notesTurnIntoAction(project, itemId, x, y) {
   for (const s of data.sessions) { const it = (s.items || []).find(x => x.id === itemId); if (it) { found = it; break; } }
   if (!found) return;
   const text = (found.text || '').trim();
-  const hasRef = found.ref && found.ref !== 'N/A';
-  if (!text || !hasRef || !found.due) {
+  const informed = _infList(found);
+  if (!text || !informed.length || !found.due) {
     // No browser alert — open the note's editor inline with a hint so they can
-    // fill in the missing reference / date right there.
+    // fill in the missing informed person / date right there.
     _notesEditId = itemId;
     _notesEditHint = itemId;
     renderProjectNotes();
@@ -11591,7 +11668,7 @@ function _notesTurnIntoAction(project, itemId, x, y) {
       name: text,
       phase_group: g, department: d, sub_department: s, project,
       is_action: 1, duration_days: 0, is_milestone: 1,
-      assignee: found.ref,
+      assignee: informed[0],
       start_date: found.due, end_date: found.due,
     });
     found.actioned = true;
@@ -15065,12 +15142,13 @@ function renderActionsKeyInfo() {
   }
   const order = [...NOTES_DEPT_GROUPS.map(g => g.key), 'general'];
   const st = _actionsKeyInfo;
-  // Flatten every starred note across all projects into one record list.
+  // Flatten every starred note across all projects into one record list. Each
+  // note carries its informed people + the departments they belong to.
   let recs = [];
   projects.forEach(p => (state.projectNotes[p].sessions || []).forEach(s => (s.items || []).forEach(it => {
-    if (it.starred && (it.text || '').trim()) recs.push({ project: p, text: it.text.trim(), ref: it.ref || '', due: it.due || '', dept: _notesRefDeptKey(it.ref), mdate: s.date || '', meeting: s.title || 'Meeting' });
+    if (it.starred && (it.text || '').trim()) recs.push({ project: p, text: it.text.trim(), informed: _infList(it), due: it.due || '', depts: _noteDeptKeys(it), mdate: s.date || '', meeting: s.title || 'Meeting' });
   })));
-  if (st.dept) recs = recs.filter(r => r.dept === st.dept);
+  if (st.dept) recs = recs.filter(r => r.depts.includes(st.dept));
 
   // Controls: view toggle + department filter (+ sort, in list view).
   const deptOpts = `<option value="">All departments</option>` +
@@ -15090,8 +15168,8 @@ function renderActionsKeyInfo() {
     <label class="aki-ctl">Show <select data-aki-filter>${filterOpts}</select></label>` : ''}
   </div>`;
 
-  const refChip = (ref) => ref && ref !== 'N/A'
-    ? `<span class="notes-chip ${_notesRefIsDept(ref) ? 'dept' : 'ref'}">${_notesRefIsDept(ref) ? '👥' : '👤'} ${escapeHtml(_notesRefDisplay(ref))}</span>` : '';
+  const informedChips = (arr) => (arr || []).map(n => `<span class="notes-chip ref">👤 ${escapeHtml(n)}</span>`).join(' ');
+  const informedSrc = (arr) => (arr || []).length ? ' · ' + arr.map(n => '@' + n).join(', ') : '';
   const empty = `<div class="actions-empty">No starred notes${st.dept ? ' for this department' : ''} yet. Star notes in a project's schedule (📝 Notes) to surface them here.</div>`;
 
   let body;
@@ -15100,33 +15178,34 @@ function renderActionsKeyInfo() {
   } else if (st.view === 'list') {
     let listRecs = recs;
     if (st.filter === 'date') listRecs = listRecs.filter(r => !!r.due);
-    else if (st.filter === 'person') listRecs = listRecs.filter(r => r.ref && r.ref !== 'N/A' && !_notesRefIsDept(r.ref));
+    else if (st.filter === 'person') listRecs = listRecs.filter(r => r.informed.length);
     const sorted = listRecs.slice().sort((a, b) => {
       if (st.sort === 'date') return (a.due || '9999-99-99').localeCompare(b.due || '9999-99-99') || a.project.localeCompare(b.project);
       if (st.sort === 'project') return a.project.localeCompare(b.project) || (a.due || '').localeCompare(b.due || '');
-      if (st.sort === 'dept') return (order.indexOf(a.dept) - order.indexOf(b.dept)) || a.project.localeCompare(b.project);
-      if (st.sort === 'ref') return _notesRefDisplay(a.ref).localeCompare(_notesRefDisplay(b.ref)) || a.project.localeCompare(b.project);
+      if (st.sort === 'dept') return (order.indexOf(a.depts[0]) - order.indexOf(b.depts[0])) || a.project.localeCompare(b.project);
+      if (st.sort === 'ref') return (a.informed[0] || '').localeCompare(b.informed[0] || '') || a.project.localeCompare(b.project);
       return 0;
     });
     const rows = sorted.map(r => `<div class="aki-lrow">
       <span class="aki-lc-project">${escapeHtml(r.project)}</span>
       <span class="aki-lc-note">${escapeHtml(r.text)}</span>
-      <span class="aki-lc-ref">${refChip(r.ref)}</span>
+      <span class="aki-lc-ref">${informedChips(r.informed)}</span>
       <span class="aki-lc-date">${r.due ? escapeHtml(_notesFmtDate(r.due)) : ''}</span>
     </div>`).join('');
     body = sorted.length
       ? `<div class="aki-list"><div class="aki-lrow aki-lhead"><span>Project</span><span>Note</span><span>Informed</span><span>Date</span></div>${rows}</div>`
       : `<div class="actions-empty">No starred notes match that filter.</div>`;
   } else {
-    // Cards = one card per PROJECT, broken out by department inside.
+    // Cards = one card per PROJECT, broken out by department inside (a note
+    // shows under every department it informs).
     const byProject = {};
     recs.forEach(r => { (byProject[r.project] = byProject[r.project] || []).push(r); });
     const cards = projects.filter(p => byProject[p] && byProject[p].length).map(p => {
       const byDept = {};
-      byProject[p].forEach(r => { (byDept[r.dept] = byDept[r.dept] || []).push(r); });
+      byProject[p].forEach(r => r.depts.forEach(k => { (byDept[k] = byDept[k] || []).push(r); }));
       const groups = order.filter(k => byDept[k] && byDept[k].length).map(k =>
         `<div class="aki-group"><div class="aki-group-head">${escapeHtml(k === 'general' ? 'General' : _notesDeptLabel(k))}</div>${byDept[k].map(r =>
-          `<div class="aki-item">${escapeHtml(r.text)}<span class="aki-src">${escapeHtml(r.meeting)}${r.mdate ? ' · ' + escapeHtml(r.mdate) : ''}${r.ref && r.ref !== 'N/A' ? ' · ' + (_notesRefIsDept(r.ref) ? '👥 ' : '@') + escapeHtml(_notesRefDisplay(r.ref)) : ''}${r.due ? ' · ' + escapeHtml(_notesFmtDate(r.due)) : ''}</span></div>`).join('')}</div>`
+          `<div class="aki-item">${escapeHtml(r.text)}<span class="aki-src">${escapeHtml(r.meeting)}${r.mdate ? ' · ' + escapeHtml(r.mdate) : ''}${informedSrc(r.informed)}${r.due ? ' · ' + escapeHtml(_notesFmtDate(r.due)) : ''}</span></div>`).join('')}</div>`
       ).join('');
       return `<div class="aki-card"><div class="aki-card-head">${escapeHtml(p)}<span class="aki-count">${byProject[p].length}</span></div><div class="aki-card-body">${groups}</div></div>`;
     }).join('');
