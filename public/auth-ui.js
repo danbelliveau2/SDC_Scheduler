@@ -165,10 +165,10 @@ function _openModal() {
   });
 }
 
-// ── user pill in the bottom footer ───────────────────────────────────────
-// Lives in #schedule-footer next to the Quote vs Schedule button. Falls
-// back to body-fixed bottom-left if the footer isn't on the page (e.g.
-// the user opens a non-schedule view first).
+// ── user avatar in the sidebar (above the Rev pill) ──────────────────────
+// Just a small circle with the signed-in person's initials so it never sits
+// over any controls. Click it for a small popup: name, role, change password,
+// sign out.
 function _renderUserPill() {
   if (!window.sdcAuth.authEnabled || !window.sdcAuth.user) return;
   if (document.getElementById('sdc-auth-pill')) return;
@@ -178,14 +178,20 @@ function _renderUserPill() {
   pill.id = 'sdc-auth-pill';
   pill.className = 'sdc-auth-pill';
   pill.innerHTML = `
-    <span class="sdc-auth-avatar" style="background:${u.avatar_color || '#1574c4'};">${initials}</span>
-    <span class="sdc-auth-name">${u.name}</span>
-    <span class="sdc-auth-role">${u.role}</span>
-    <button type="button" class="sdc-auth-changepw" title="Change password">🔑</button>
-    <button type="button" class="sdc-auth-signout" title="Sign out">×</button>
+    <button type="button" class="sdc-auth-avatar" style="background:${u.avatar_color || '#1574c4'};" title="${u.name} · ${u.role}">${initials}</button>
+    <div class="sdc-auth-menu" hidden>
+      <div class="sdc-auth-menu-name">${u.name}</div>
+      <div class="sdc-auth-menu-role">${u.role}</div>
+      <button type="button" class="sdc-auth-changepw">🔑 Change password</button>
+      <button type="button" class="sdc-auth-signout">Sign out</button>
+    </div>
   `;
+  const menu = pill.querySelector('.sdc-auth-menu');
+  const closeMenu = () => { menu.hidden = true; };
+  pill.querySelector('.sdc-auth-avatar').addEventListener('click', (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; });
   pill.querySelector('.sdc-auth-signout').addEventListener('click', () => window.sdcAuth.signOut());
-  pill.querySelector('.sdc-auth-changepw').addEventListener('click', () => _showChangePasswordModal());
+  pill.querySelector('.sdc-auth-changepw').addEventListener('click', () => { closeMenu(); _showChangePasswordModal(); });
+  document.addEventListener('click', (e) => { if (!pill.contains(e.target)) closeMenu(); });
 
   document.body.appendChild(pill);
 }

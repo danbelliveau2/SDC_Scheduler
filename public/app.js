@@ -124,6 +124,15 @@ const api = {
       } catch (err) { state._financialsApiBroken = true; return { ok: false }; }
     },
   },
+  notes: {
+    get: async (project) => {
+      try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/notes`); if (!r.ok) return null; return await r.json(); }
+      catch (_) { return null; }
+    },
+    save: async (project, data) => fetch(`/api/project/${encodeURIComponent(project)}/notes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || { sessions: [] }),
+    }),
+  },
 };
 
 // Disciplines = roles that get assigned to project tasks. Keep in sync with the server-side
@@ -251,6 +260,7 @@ const state = {
   // lazily on first read (via loadProjectQuote). Used by the stats
   // popup to read sold_delivery_weeks for the Duration row.
   projectQuotes: {},
+  projectNotes: {}, // per-project meeting notes blob: { sessions: [...] }
   // Toggle for the $ Financial Gantt overlay. Persisted to localStorage via
   // saveScheduleView so it sticks across reloads.
   showFinancials: false,
@@ -345,6 +355,35 @@ function predParse(displayString) {
     const id = taskIdByLine[line];
     return ((id != null ? id : line) + m[2]).toUpperCase();
   }).join(', ');
+}
+
+// ── Financial-milestone trigger storage ──────────────────────────────────────
+// Financial triggers track the TASK, not the line, exactly like grid
+// predecessors. A task ref is stored as "#<taskId>" (e.g. "#7FF +2w") so it
+// follows the task when rows are added / removed / reordered. Anchors (PO / FAT /
+// Ship) pass through unchanged. A BARE number is a legacy line ref that still
+// resolves positionally and self-heals to "#id" when its project is active.
+// finPredDisplay: stored → what the user sees (line numbers). finPredParse: what
+// the user typed (line numbers) → stored ("#id"). Both rely on the active
+// project's lineByTaskId / taskIdByLine maps.
+function finPredDisplay(stored) {
+  if (!stored) return '';
+  return String(stored).split(',').map(s => {
+    const t = s.trim(); if (!t) return '';
+    const m = t.match(/^#(\d+)(.*)$/);
+    if (m) { const line = lineByTaskId[Number(m[1])]; return line == null ? '' : (line + m[2]).toUpperCase(); }
+    return t.toUpperCase(); // legacy bare line number, or an anchor alias
+  }).filter(Boolean).join(', ');
+}
+function finPredParse(displayed) {
+  if (!displayed) return '';
+  return String(displayed).split(',').map(s => {
+    const t = s.trim(); if (!t) return '';
+    if (t.startsWith('#')) return t.toUpperCase(); // already a task ref — leave it
+    const m = t.match(/^(\d+)(.*)$/);
+    if (m) { const id = taskIdByLine[Number(m[1])]; return id != null ? ('#' + id + m[2]).toUpperCase() : t.toUpperCase(); }
+    return t.toUpperCase(); // anchor alias (PO / FAT / Ship)
+  }).filter(Boolean).join(', ');
 }
 
 // Walk HIERARCHY + anchors as if nothing is collapsed. Returns the canonical task ID
@@ -2599,6 +2638,16 @@ function pushUndoSnapshot(task, fields, description) {
 async function performUndo() {
   const entry = state.undoStack.pop();
   if (!entry) { syncUndoButton(); return; }
+  // Undo an "add row" → delete the created row; redo will re-create it.
+  if (entry.kind === 'create') {
+    try { await api.remove(entry.taskId); }
+    catch (err) { console.error('undo(create) failed', err); }
+    state.redoStack.push({ kind: 'create', payload: entry.payload, description: entry.description });
+    while (state.redoStack.length > UNDO_STACK_MAX) state.redoStack.shift();
+    await loadTasks();
+    syncUndoButton(); syncRedoButton();
+    return;
+  }
   // Capture current state of the changed fields BEFORE we revert so redo can
   // re-apply them. Look up the task fresh from state.tasks (entry only holds
   // taskId + the original `before` snapshot, not the post-edit values).
@@ -2626,6 +2675,19 @@ async function performUndo() {
 async function performRedo() {
   const entry = state.redoStack.pop();
   if (!entry) { syncRedoButton(); return; }
+  // Redo an "add row" → re-create the row from its payload (new id is fine).
+  if (entry.kind === 'create') {
+    try {
+      const c = await api.create(entry.payload);
+      if (c && c.id) {
+        state.undoStack.push({ kind: 'create', taskId: c.id, payload: entry.payload, description: entry.description });
+        while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+      }
+    } catch (err) { console.error('redo(create) failed', err); }
+    await loadTasks();
+    syncUndoButton(); syncRedoButton();
+    return;
+  }
   // Capture current state as a new undo entry, then apply the redo snapshot.
   const task = state.tasks.find(t => t.id === entry.taskId);
   if (task) {
@@ -10585,6 +10647,52 @@ async function duplicateProject(source, targetName = null) {
     }).join(', ');
     if (remapped) await api.update(oldToNewId[t.id], { predecessors: remapped });
   }
+  // Clone the source's FINANCIAL MILESTONES too, carrying their predecessor
+  // links over. Tasks were cloned in the same sort_order, so line-number
+  // predecessors ("1", "19ss", "28") and anchor refs (PO / FAT / Ship) resolve
+  // to the matching task in the new project verbatim — no remap needed. We reset
+  // due_date (so it re-derives from the predecessor against THIS project's dates)
+  // and paid (a fresh project starts unpaid). Doing this here means the new
+  // project already has milestones, so the generic default-seed — which only
+  // fires on a project with zero financials — never overrides the template's.
+  // Only clone financials if tasks were actually created. A failed/partial clone
+  // (empty id map) would otherwise leave orphan milestones with null/garbage
+  // triggers on a task-less project. Also mark the project as already-seeded so
+  // the generic default-seed can never add a SECOND set on top of these.
+  if (Object.keys(oldToNewId).length > 0) try {
+    (state._financialsSeededFor ||= {})[trimmed] = true;
+    // Clear any financials already on the target FIRST, so re-cloning into a name
+    // that exists (e.g. a prior failed clone left orphan milestones, or the seed
+    // ran) never stacks a second set on top. The clone is the single source of
+    // truth for a cloned project's milestones.
+    const existingFin = await api.financials.list(trimmed);
+    for (const ef of existingFin) { await api.financials.remove(ef.id); }
+    const srcFin = await api.financials.list(source);
+    srcFin.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    // Remap task-ref triggers ("#oldId" → "#newId") via the same old→new task-id
+    // map used for grid predecessors, so each milestone points at the CLONED task.
+    // Anchors (PO/FAT/Ship) and legacy bare-line refs pass through unchanged (the
+    // clone preserves row order, so a bare line still lands on the right task and
+    // self-heals to "#id" when the new project is opened).
+    const remapFinPred = (pred) => !pred ? null : String(pred).split(',').map(s => {
+      const t = s.trim(); if (!t) return '';
+      const m = t.match(/^#(\d+)(.*)$/);
+      if (m) { const nid = oldToNewId[Number(m[1])]; return nid != null ? ('#' + nid + m[2]) : ''; }
+      return t;
+    }).filter(Boolean).join(', ') || null;
+    for (const f of srcFin) {
+      await api.financials.create({
+        project: trimmed,
+        name: f.name,
+        percent: f.percent,
+        amount: f.amount,
+        due_date: null,
+        paid: 0,
+        predecessors: remapFinPred(f.predecessors),
+        sync_to_anchor: f.sync_to_anchor || null,
+      });
+    }
+  } catch (e) { console.error('clone financials failed', e); }
   // Open the new tab and switch to it.
   if (!state.openProjects.includes(trimmed)) state.openProjects.push(trimmed);
   state.filters.project = trimmed;
@@ -11533,6 +11641,555 @@ function render() {
   // taskIdByLine is rebuilt for the new project, so a line-number
   // Trigger that should resolve fails and the button stays stuck red.
   try { refreshFinancialsButtonState(); } catch (_) {}
+  try { renderProjectNotes(); } catch (_) {}
+}
+
+// ── Project Notes ─────────────────────────────────────────────────────────────
+// A collapsible panel under the schedule: meeting "sessions" on the left
+// (dated, collapsible, free notes), and starred items promoted to "Key
+// information" on the right. One JSON blob per project (state.projectNotes).
+function _notesGenId() { return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+let _notesSaveTimer = null;
+function saveProjectNotes(project) {
+  clearTimeout(_notesSaveTimer);
+  _notesSaveTimer = setTimeout(() => {
+    api.notes.save(project, state.projectNotes[project] || { sessions: [] }).catch(() => {});
+  }, 500);
+}
+// Transient (not persisted) per-meeting composer drafts + the id of the note
+// currently open for editing. Cleared on Add / Done.
+const _notesDrafts = {};
+function _notesDraft(mid) { return _notesDrafts[mid] || (_notesDrafts[mid] = { text: '', showInf: false, showDue: false, informed: [], due: '' }); }
+// Plain black (currentColor) icons — person + calendar — for the composer.
+const NOTES_PERSON_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>`;
+const NOTES_CAL_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="17" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></svg>`;
+let _notesEditId = null;
+let _notesEditHint = null;   // item id showing the "needs informed + date" hint
+let _notesDragId = null;
+let _notesKeyView = 'cards';  // schedule Key-information column: 'cards' (by dept) | 'list'
+
+// Focus a <select> and pop its dropdown open immediately (so clicking 👤 shows
+// the list without a second click). showPicker() isn't in every browser, so
+// guard it.
+function _notesOpenSelect(el, sel) {
+  const node = el.querySelector(sel);
+  if (!node) return;
+  node.focus();
+  try { node.showPicker(); } catch (_) {}
+}
+
+// Reorder a note within its meeting: move `dragId` to just before/after
+// `targetId`. Only reorders when both notes live in the same meeting.
+function _notesReorder(project, dragId, targetId, before) {
+  if (dragId === targetId) return;
+  const data = state.projectNotes[project];
+  const s = (data.sessions || []).find(s => (s.items || []).some(i => i.id === dragId) && (s.items || []).some(i => i.id === targetId));
+  if (!s) return;
+  const from = s.items.findIndex(i => i.id === dragId);
+  const [moved] = s.items.splice(from, 1);
+  let to = s.items.findIndex(i => i.id === targetId);
+  if (!before) to += 1;
+  s.items.splice(to, 0, moved);
+  saveProjectNotes(project); renderProjectNotes();
+}
+
+// Department groups for the reference dropdown / key-info grouping, in order.
+// Shop is split into mechanical builders (build) + electrical builders (wire).
+const NOTES_DEPT_GROUPS = [
+  { key: 'pm',       label: 'Project Managers' },
+  { key: 'mech',     label: 'Mechanical Engineering' },
+  { key: 'controls', label: 'Controls Engineering' },
+  { key: 'build',    label: 'Mechanical Builders' },
+  { key: 'wire',     label: 'Electrical Builders' },
+];
+function _notesDeptLabel(key) { const g = NOTES_DEPT_GROUPS.find(x => x.key === key); return g ? g.label : 'Other'; }
+function _notesRefIsDept(ref) { return !!ref && ref.indexOf('dept:') === 0; }
+// What a reference shows as: a person's name, a department label, or N/A.
+function _notesRefDisplay(ref) {
+  if (!ref) return '';
+  if (ref === 'N/A') return 'N/A';
+  if (_notesRefIsDept(ref)) return _notesDeptLabel(ref.slice(5));
+  return ref;
+}
+// Which department bucket a reference belongs to (for grouping Key information).
+function _notesRefDeptKey(ref) {
+  if (!ref || ref === 'N/A') return 'general';
+  if (_notesRefIsDept(ref)) return ref.slice(5);
+  const m = (state.team || []).find(x => x.name === ref);
+  return (m && m.discipline) ? m.discipline : 'general';
+}
+
+// Reference dropdown: whole-department picks first, then people grouped by
+// department (PMs → Mech Eng → Controls Eng → Mech Builders → Elec Builders).
+// Leads get a light-gray background (no label) so they read as the go-to.
+function _notesRefOptions(selected) {
+  const sel = selected || '';
+  const team = (state.team || []).filter(m => m && m.name && !isPlaceholder(m.name) && m.active !== 0);
+  const sortLeadFirst = (a, b) => ((!!b.is_lead) - (!!a.is_lead)) || a.name.localeCompare(b.name);
+  const opt = (m) => `<option value="${escapeHtml(m.name)}"${sel === m.name ? ' selected' : ''}${m.is_lead ? ' style="background:#eef2f6"' : ''}>${escapeHtml(m.name)}</option>`;
+  let html = `<option value=""${sel === '' ? ' selected' : ''}>— who —</option>`;
+  html += `<option value="N/A"${sel === 'N/A' ? ' selected' : ''}>N/A</option>`;
+  // Whole-team / department picks.
+  html += `<optgroup label="Departments (whole team)">` + NOTES_DEPT_GROUPS.map(g => {
+    const v = 'dept:' + g.key;
+    return `<option value="${v}"${sel === v ? ' selected' : ''}>${escapeHtml(g.label)}</option>`;
+  }).join('') + `</optgroup>`;
+  // Individual people, grouped by department.
+  const used = new Set();
+  for (const g of NOTES_DEPT_GROUPS) {
+    const members = team.filter(m => m.discipline === g.key).sort(sortLeadFirst);
+    members.forEach(m => used.add(m.name));
+    if (!members.length) continue;
+    html += `<optgroup label="${escapeHtml(g.label)}">` + members.map(opt).join('') + `</optgroup>`;
+  }
+  const others = team.filter(m => !used.has(m.name)).sort(sortLeadFirst);
+  if (others.length) html += `<optgroup label="Other">` + others.map(opt).join('') + `</optgroup>`;
+  return html;
+}
+
+// People <optgroup>s grouped by department (leads on top), optionally excluding
+// already-picked names. No leading placeholder option — callers add their own.
+function _notesPeopleOptgroups(exclude) {
+  const skip = new Set(exclude || []);
+  const team = (state.team || []).filter(m => m && m.name && !isPlaceholder(m.name) && m.active !== 0 && !skip.has(m.name));
+  const sortLeadFirst = (a, b) => ((!!b.is_lead) - (!!a.is_lead)) || a.name.localeCompare(b.name);
+  const opt = (m) => `<option value="${escapeHtml(m.name)}"${m.is_lead ? ' style="background:#eef2f6"' : ''}>${escapeHtml(m.name)}</option>`;
+  let html = '';
+  const used = new Set();
+  for (const g of NOTES_DEPT_GROUPS) {
+    const members = team.filter(m => m.discipline === g.key).sort(sortLeadFirst);
+    members.forEach(m => used.add(m.name));
+    if (!members.length) continue;
+    html += `<optgroup label="${escapeHtml(g.label)}">` + members.map(opt).join('') + `</optgroup>`;
+  }
+  const others = team.filter(m => !used.has(m.name)).sort(sortLeadFirst);
+  if (others.length) html += `<optgroup label="Other">` + others.map(opt).join('') + `</optgroup>`;
+  return html;
+}
+// Multi-person "informed" picker — chips for who's picked + a dropdown to add
+// more. `scope` ('comp' | 'item') tags the events; `id` is the meeting/note id.
+function _notesInformedPicker(scope, id, informed) {
+  const chips = (informed || []).map(n =>
+    `<span class="notes-inf-chip">${escapeHtml(n)}<button type="button" class="notes-inf-x" data-inf-remove="${id}" data-inf-scope="${scope}" data-inf-name="${escapeHtml(n)}" title="Remove">×</button></span>`).join('');
+  return `<span class="notes-inf-box">${chips}<select class="notes-inf-add" data-inf-add="${id}" data-inf-scope="${scope}"><option value="">${(informed && informed.length) ? '+ add' : 'Informed…'}</option>${_notesPeopleOptgroups(informed)}</select></span>`;
+}
+
+// Format an ISO date (YYYY-MM-DD) as a short MM/DD/YY for display (8 chars).
+function _notesFmtDate(iso) {
+  if (!iso) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[2]}/${m[3]}/${m[1].slice(2)}` : iso;
+}
+// The people a note informs — an array of names. Migrates legacy single-value
+// `ref` (a person name; old dept:/N-A refs become "no one informed").
+function _infList(obj) {
+  if (Array.isArray(obj.informed)) return obj.informed.filter(Boolean);
+  if (obj.ref && obj.ref !== 'N/A' && obj.ref.indexOf('dept:') !== 0) return [obj.ref];
+  return [];
+}
+// A person's department key (from the Departments tab), or 'general' if unknown.
+function _personDept(name) {
+  const m = (state.team || []).find(x => x.name === name);
+  return (m && m.discipline) ? m.discipline : 'general';
+}
+// The set of department keys a note touches (one per informed person).
+function _noteDeptKeys(obj) {
+  const ks = [...new Set(_infList(obj).map(_personDept))];
+  return ks.length ? ks : ['general'];
+}
+
+// Header row above the notes list — aligns with the item grid columns.
+function _notesListHeadHtml() {
+  return `<div class="notes-list-head">
+    <span></span><span></span><span>Description</span><span>Informed</span><span>Date</span>
+  </div>`;
+}
+
+function _notesItemHtml(it) {
+  // Edit mode — full controls for this one note. (Opened by clicking the row
+  // text or via right-click → Edit. Click Done, or click away, to finish.)
+  if (_notesEditId === it.id) {
+    const hint = _notesEditHint === it.id
+      ? `<div class="notes-edit-hint">⚠ An action needs an <strong>informed person</strong> and a <strong>date</strong>. Set both, then right-click → Turn into action.</div>` : '';
+    return `<div class="notes-item notes-item-editing" data-item="${it.id}">
+      <button class="notes-star ${it.starred ? 'is-on' : ''}" data-star="${it.id}" title="Star → Key information">${it.starred ? '★' : '☆'}</button>
+      <div class="notes-edit-fields">
+        <textarea class="notes-item-text" data-item-text="${it.id}" rows="1" placeholder="Note…">${escapeHtml(it.text || '')}</textarea>
+        <div class="notes-edit-row">
+          <label>Informed ${_notesInformedPicker('item', it.id, _infList(it))}</label>
+          <label>Date <input type="date" class="notes-item-due" data-item-due="${it.id}" value="${escapeHtml(it.due || '')}" /></label>
+          <button class="notes-edit-done" data-edit-done="${it.id}" type="button">Done</button>
+        </div>
+        ${hint}
+      </div>
+    </div>`;
+  }
+  // Display mode — grid row: [drag] [★] [description] [informed] [date].
+  // ★ always visible; drag handle reveals on hover. Click text to edit;
+  // right-click the row for Edit / Star / Turn into action / Delete.
+  const refCell = _infList(it).map(n => `<span class="notes-chip ref">👤 ${escapeHtml(n)}</span>`).join(' ');
+  const dateCell = it.due ? escapeHtml(_notesFmtDate(it.due)) : '';
+  return `<div class="notes-item${it.actioned ? ' is-actioned' : ''}" data-item="${it.id}">
+    <span class="notes-drag" draggable="true" data-drag="${it.id}" title="Drag to reorder">⠿</span>
+    <button class="notes-star ${it.starred ? 'is-on' : ''}" data-star="${it.id}" title="${it.starred ? 'Unstar — remove from Key information' : 'Star → pin to Key information'}">${it.starred ? '★' : '☆'}</button>
+    <div class="notes-note-text" data-edit-text="${it.id}" title="Click to edit (right-click for more)">${it.actioned ? '✓ ' : ''}${(it.text || '').trim() ? escapeHtml(it.text) : '<span class="notes-note-ph">(empty)</span>'}</div>
+    <div class="notes-cell-assigned">${refCell}</div>
+    <div class="notes-cell-date">${dateCell}</div>
+  </div>`;
+}
+
+function _notesMeetingHtml(s) {
+  const itemCount = (s.items || []).length;
+  const d = _notesDraft(s.id);
+  // Row 1 = the note (full width). Row 2 = a small person icon + calendar icon.
+  // Clicking an icon EXPANDS IT IN PLACE into its picker (right there — never a
+  // separate panel beside it). Informed takes one or more people; department is
+  // derived from the Departments tab, so there's no dept field.
+  const composer = `<div class="notes-composer" data-composer="${s.id}">
+    <input class="notes-comp-text" data-comp-text="${s.id}" value="${escapeHtml(d.text)}" placeholder="Add a note — press Enter…" />
+    <div class="notes-composer-row2">
+      ${d.showInf
+        ? _notesInformedPicker('comp', s.id, d.informed)
+        : `<button class="notes-comp-ico" data-comp-toggle-inf="${s.id}" type="button" title="Inform people">${NOTES_PERSON_ICON}</button>`}
+      ${d.showDue
+        ? `<input type="date" class="notes-comp-due" data-comp-due="${s.id}" value="${escapeHtml(d.due)}" />`
+        : `<button class="notes-comp-ico" data-comp-toggle-due="${s.id}" type="button" title="Add a date">${NOTES_CAL_ICON}</button>`}
+      <button class="notes-comp-add" data-comp-add="${s.id}" type="button">Add</button>
+    </div>
+  </div>`;
+  const items = itemCount ? _notesListHeadHtml() + (s.items || []).map(_notesItemHtml).join('') : '';
+  return `<div class="notes-session${s.collapsed ? ' is-collapsed' : ''}" data-session="${s.id}">
+    <div class="notes-session-head">
+      <button class="notes-session-caret" data-toggle-session="${s.id}" title="Collapse / expand">${s.collapsed ? '▸' : '▾'}</button>
+      <input class="notes-session-title" data-session-title="${s.id}" value="${escapeHtml(s.title || '')}" placeholder="Meeting title" />
+      <input type="date" class="notes-session-date" data-session-date="${s.id}" value="${escapeHtml(s.date || '')}" />
+      <span class="notes-session-count">${itemCount} note${itemCount === 1 ? '' : 's'}</span>
+      <button class="notes-session-del" data-del-session="${s.id}" title="Delete this meeting">🗑</button>
+    </div>
+    ${s.collapsed ? '' : `<div class="notes-session-body">${composer}<div class="notes-list">${items}</div></div>`}
+  </div>`;
+}
+function renderProjectNotes() {
+  const el = document.getElementById('schedule-notes');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  if (!project || state.view !== 'schedule') { el.style.display = 'none'; return; }
+  el.style.display = '';
+  if (!state.projectNotes[project]) {
+    el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span></div>`;
+    api.notes.get(project).then(data => {
+      state.projectNotes[project] = (data && Array.isArray(data.sessions)) ? data : { sessions: [] };
+      if ((state.filters && state.filters.project) === project) renderProjectNotes();
+    });
+    return;
+  }
+  const data = state.projectNotes[project];
+  const collapsed = el.classList.contains('is-collapsed');
+  const starred = [];
+  data.sessions.forEach(s => (s.items || []).forEach(it => { if (it.starred && (it.text || '').trim()) starred.push({ s, it }); }));
+  const bar = `<div class="notes-bar" data-action="toggle-notes">
+    <span class="notes-bar-title">📝 Notes</span>
+    <span class="notes-count">${data.sessions.length} meeting${data.sessions.length === 1 ? '' : 's'} · ${starred.length} key</span>
+    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+  </div>`;
+  if (collapsed) { el.innerHTML = bar; _wireNotes(el, project); layoutNotesPanel(); return; }
+  const anyExpanded = data.sessions.some(s => !s.collapsed);
+  const collapseAllBtn = data.sessions.length
+    ? `<button class="notes-collapse-all" data-action="collapse-all" type="button" title="${anyExpanded ? 'Collapse every meeting' : 'Expand every meeting'}">${anyExpanded ? 'Collapse all' : 'Expand all'}</button>`
+    : '';
+  const sessionsHtml = data.sessions.length
+    ? data.sessions.map(_notesMeetingHtml).join('')
+    : `<div class="notes-empty">No meetings yet — add one to start jotting notes.</div>`;
+  // Key information for THIS project's schedule — a grid with headers, columns
+  // running sideways (Description | Meeting | Informed | Date), just like the
+  // meeting list. Cards = grouped by department; List = flat, sorted by date.
+  const keyInfChips = (it) => _infList(it).map(n => `<span class="notes-chip ref">👤 ${escapeHtml(n)}</span>`).join(' ');
+  // withDept: list view adds a Department column (cards don't need it — the
+  // card IS the department).
+  const keyRow = ({ s, it }, withDept) => {
+    const dv = it.due || s.date;
+    const dks = _noteDeptKeys(it);
+    const deptCell = withDept ? `<span class="nkr-dept">${escapeHtml(dks.map(k => k === 'general' ? 'General' : _notesDeptLabel(k)).join(', '))}</span>` : '';
+    return `<div class="notes-key-row${withDept ? ' has-dept' : ''}" data-item="${it.id}">
+      <button class="notes-star is-on" data-star="${it.id}" title="Unstar">★</button>
+      <span class="nkr-desc">${escapeHtml(it.text)}</span>
+      ${deptCell}
+      <span class="nkr-meeting">${escapeHtml(s.title || 'Meeting')}</span>
+      <span class="nkr-informed">${keyInfChips(it)}</span>
+      <span class="nkr-date">${dv ? escapeHtml(_notesFmtDate(dv)) : ''}</span>
+    </div>`;
+  };
+  const keyHead = (withDept) => `<div class="notes-key-row notes-key-head${withDept ? ' has-dept' : ''}"><span></span><span>Description</span>${withDept ? '<span>Dept</span>' : ''}<span>Meeting</span><span>Informed</span><span>Date</span></div>`;
+  let keyHtml;
+  if (starred.length) {
+    if (_notesKeyView === 'list') {
+      keyHtml = keyHead(true) + starred.slice()
+        .sort((a, b) => ((a.it.due || a.s.date || '9999-99-99').localeCompare(b.it.due || b.s.date || '9999-99-99')))
+        .map(rec => keyRow(rec, true)).join('');
+    } else {
+      // Each department is its OWN card. A note shows under every department it
+      // informs (so a cross-team note appears in each).
+      const byDept = {};
+      starred.forEach(rec => _noteDeptKeys(rec.it).forEach(k => { (byDept[k] = byDept[k] || []).push(rec); }));
+      const order = [...NOTES_DEPT_GROUPS.map(g => g.key), 'general'];
+      keyHtml = `<div class="notes-key-cards">` + order.filter(k => byDept[k] && byDept[k].length).map(k =>
+        `<div class="notes-key-card"><div class="notes-key-card-head">${escapeHtml(k === 'general' ? 'General' : _notesDeptLabel(k))}<span class="notes-key-card-count">${byDept[k].length}</span></div><div class="notes-key-card-body">${keyHead(false)}${byDept[k].map(rec => keyRow(rec, false)).join('')}</div></div>`
+      ).join('') + `</div>`;
+    }
+  } else {
+    keyHtml = `<div class="notes-empty">Star a note on the left to pin it here as key information.</div>`;
+  }
+  const keyViewToggle = starred.length ? `<span class="notes-keyview">
+      <button class="notes-kv ${_notesKeyView === 'cards' ? 'is-on' : ''}" data-keyview="cards" type="button">Cards</button>
+      <button class="notes-kv ${_notesKeyView === 'list' ? 'is-on' : ''}" data-keyview="list" type="button">List</button>
+    </span>` : '';
+  el.innerHTML = bar + `
+    <div class="notes-body">
+      <div class="notes-col notes-sessions">
+        <div class="notes-col-head"><span>Meetings</span><span class="notes-col-head-actions">${collapseAllBtn}<button class="notes-new-session" data-action="new-session" type="button">+ New meeting</button></span></div>
+        <div class="notes-col-scroll">${sessionsHtml}</div>
+      </div>
+      <div class="notes-col notes-key">
+        <div class="notes-col-head"><span>★ Key information</span>${keyViewToggle}</div>
+        <div class="notes-col-scroll">${keyHtml}</div>
+      </div>
+    </div>`;
+  _wireNotes(el, project);
+  // Auto-size note textareas to their content.
+  el.querySelectorAll('.notes-item-text').forEach(ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
+  layoutNotesPanel();
+}
+
+// Notes lives BELOW the schedule, never over it. When expanded we lock the
+// schedule split to the FULL height it fills on its own (so the schedule keeps
+// its complete view), switch the whole schedule view to scroll, and let the
+// notes panel flow underneath — scroll down to reach it, scroll up for the
+// schedule. The notes panel never covers any part of the schedule.
+
+// Measure the height the split fills WITHOUT the notes panel competing for
+// space. Critical: when notes is expanded it's flex:0 0 auto with real content,
+// which squeezes the flex:1 split — so we must take notes OUT of the column
+// (display:none) and drop the scroll lock before reading offsetHeight, then
+// restore. Reading offsetHeight forces a synchronous reflow, so no paint
+// happens between hide and restore (no flicker).
+function _measureSplitFullHeight() {
+  const view  = document.getElementById('view-schedule');
+  const split = document.getElementById('schedule-split');
+  const el    = document.getElementById('schedule-notes');
+  if (!view || !split || !el) return 0;
+  const hadOpen  = view.classList.contains('notes-open');
+  const prevFlex = split.style.flex;
+  const prevDisp = el.style.display;
+  view.classList.remove('notes-open');   // overflow:hidden → split flexes to fill
+  split.style.flex = '';                  // back to flex:1
+  el.style.display = 'none';              // notes out of the flex column
+  const h = split.offsetHeight;           // sync reflow → true full height
+  el.style.display = prevDisp || '';      // restore
+  if (hadOpen) view.classList.add('notes-open');
+  if (prevFlex) split.style.flex = prevFlex;
+  return h;
+}
+// The height to lock the split at when notes is open: the schedule's FULL
+// content height (all grid rows / gantt bars, no internal scroll). The whole
+// schedule view then becomes ONE long scrolling page — grid/gantt, then footer,
+// then notes — so a single click-drag (setupPagePan) pans from the top of the
+// schedule straight down to the notes. A short schedule just shrinks to its
+// content with the notes right beneath it.
+function _notesSplitLockHeight() {
+  const grid  = document.getElementById('schedule-grid');
+  const gantt = document.getElementById('schedule-gantt');
+  let contentH = 0;
+  if (grid)  contentH = Math.max(contentH, grid.scrollHeight);
+  if (gantt) contentH = Math.max(contentH, gantt.scrollHeight);
+  return contentH > 0 ? contentH + 4 : _measureSplitFullHeight();
+}
+function layoutNotesPanel() {
+  const view  = document.getElementById('view-schedule');
+  const split = document.getElementById('schedule-split');
+  const el    = document.getElementById('schedule-notes');
+  if (!view || !split || !el) return;
+  const open = el.style.display !== 'none' && !el.classList.contains('is-collapsed');
+  if (open) {
+    // Lock only on the open transition; later renders keep the existing lock so
+    // we don't reset the user's scroll position mid-interaction.
+    if (!view.classList.contains('notes-open')) {
+      split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
+      view.classList.add('notes-open');
+    }
+  } else {
+    view.classList.remove('notes-open');
+    split.style.flex = '';
+  }
+}
+// Re-measure on window resize so the locked split keeps the right height.
+window.addEventListener('resize', () => {
+  const view = document.getElementById('view-schedule');
+  if (!view || !view.classList.contains('notes-open')) return;
+  const split = document.getElementById('schedule-split');
+  if (split) split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
+});
+function _wireNotes(el, project) {
+  const data = state.projectNotes[project];
+  const findSession = id => data.sessions.find(s => s.id === id);
+  const findItem = id => { for (const s of data.sessions) { const it = (s.items || []).find(x => x.id === id); if (it) return { s, it }; } return null; };
+  // Push the composer draft for meeting `mid` into the notes list.
+  const commitDraft = (mid) => {
+    const s = findSession(mid); if (!s) return;
+    const d = _notesDraft(mid);
+    const text = (d.text || '').trim();
+    if (!text) { const inp = el.querySelector(`[data-comp-text="${mid}"]`); inp?.focus(); return; }
+    (s.items = s.items || []).unshift({
+      id: _notesGenId(), text, starred: false,
+      informed: (d.informed || []).slice(),
+      due: d.due || '',
+    });
+    _notesDrafts[mid] = { text: '', showInf: false, showDue: false, informed: [], due: '' };
+    saveProjectNotes(project); renderProjectNotes();
+    el.querySelector(`[data-comp-text="${mid}"]`)?.focus();
+  };
+  el.onclick = (e) => {
+    const t = e.target;
+    if (t.closest('[data-action="new-session"]')) {
+      e.stopPropagation();
+      const today = new Date().toISOString().slice(0, 10);
+      data.sessions.unshift({ id: _notesGenId(), title: 'Meeting', date: today, collapsed: false, items: [] });
+      saveProjectNotes(project); renderProjectNotes();
+      el.querySelector('.notes-comp-text')?.focus();
+      return;
+    }
+    if (t.closest('[data-action="toggle-notes"]')) {
+      const willOpen = el.classList.contains('is-collapsed');
+      el.classList.toggle('is-collapsed');
+      renderProjectNotes();
+      // On open, bring the notes panel into view (with room below it to scroll).
+      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
+      return;
+    }
+    if (t.closest('[data-action="collapse-all"]')) { const anyOpen = data.sessions.some(s => !s.collapsed); data.sessions.forEach(s => { s.collapsed = anyOpen; }); saveProjectNotes(project); renderProjectNotes(); return; }
+    const kv = t.closest('[data-keyview]'); if (kv) { _notesKeyView = kv.dataset.keyview; renderProjectNotes(); return; }
+    const tog = t.closest('[data-toggle-session]'); if (tog) { const s = findSession(tog.dataset.toggleSession); if (s) { s.collapsed = !s.collapsed; saveProjectNotes(project); renderProjectNotes(); } return; }
+    // Composer controls
+    const cadd = t.closest('[data-comp-add]'); if (cadd) { commitDraft(cadd.dataset.compAdd); return; }
+    const cti = t.closest('[data-comp-toggle-inf]'); if (cti) { const id = cti.dataset.compToggleInf; const d = _notesDraft(id); d.showInf = !d.showInf; renderProjectNotes(); if (d.showInf) _notesOpenSelect(el, `[data-inf-add="${id}"][data-inf-scope="comp"]`); return; }
+    const ctd = t.closest('[data-comp-toggle-due]'); if (ctd) { const id = ctd.dataset.compToggleDue; const d = _notesDraft(id); d.showDue = !d.showDue; renderProjectNotes(); if (d.showDue) _notesOpenSelect(el, `[data-comp-due="${id}"]`); return; }
+    // Remove an informed person (chip ×) — composer draft or a note.
+    const infx = t.closest('[data-inf-remove]'); if (infx) {
+      const id = infx.dataset.infRemove, nm = infx.dataset.infName;
+      if (infx.dataset.infScope === 'comp') { const d = _notesDraft(id); d.informed = (d.informed || []).filter(n => n !== nm); }
+      else { const f = findItem(id); if (f) { f.it.informed = _infList(f.it).filter(n => n !== nm); delete f.it.ref; saveProjectNotes(project); } }
+      renderProjectNotes(); return;
+    }
+    // Item controls
+    const star = t.closest('[data-star]'); if (star) { const f = findItem(star.dataset.star); if (f) { f.it.starred = !f.it.starred; saveProjectNotes(project); renderProjectNotes(); } return; }
+    const etxt = t.closest('[data-edit-text]'); if (etxt) { _notesEditId = etxt.dataset.editText; _notesEditHint = null; renderProjectNotes(); const ta = el.querySelector(`[data-item-text="${_notesEditId}"]`); if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); } return; }
+    const done = t.closest('[data-edit-done]'); if (done) { _notesEditId = null; _notesEditHint = null; saveProjectNotes(project); renderProjectNotes(); return; }
+    const delS = t.closest('[data-del-session]'); if (delS) { data.sessions = data.sessions.filter(s => s.id !== delS.dataset.delSession); saveProjectNotes(project); renderProjectNotes(); return; }
+  };
+  // Right-click a note row → in-app menu: Edit / Star / Turn into action / Delete.
+  el.oncontextmenu = (e) => {
+    const row = e.target.closest('.notes-item[data-item]');
+    if (!row) return;
+    const f = findItem(row.dataset.item);
+    if (!f) return;
+    e.preventDefault();
+    const id = row.dataset.item;
+    showContextMenu(e.clientX, e.clientY, [
+      { label: '✎ Edit', onClick: () => { _notesEditId = id; renderProjectNotes(); el.querySelector(`[data-item-text="${id}"]`)?.focus(); } },
+      { label: f.it.starred ? '☆ Unstar' : '★ Star → Key info', onClick: () => { f.it.starred = !f.it.starred; saveProjectNotes(project); renderProjectNotes(); } },
+      ...(f.it.actioned ? [] : [{ label: '⚡ Turn into action', onClick: () => _notesTurnIntoAction(project, id, e.clientX, e.clientY) }]),
+      { separator: true },
+      { label: '🗑 Delete', danger: true, onClick: () => { if (_notesEditId === id) _notesEditId = null; data.sessions.forEach(s => { s.items = (s.items || []).filter(x => x.id !== id); }); saveProjectNotes(project); renderProjectNotes(); } },
+    ]);
+  };
+  // Drag a note (by its ⠿ handle) to reorder it within its meeting.
+  el.ondragstart = (e) => { const h = e.target.closest('[data-drag]'); if (!h) return; _notesDragId = h.dataset.drag; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', _notesDragId); } catch (_) {} };
+  el.ondragover = (e) => { if (_notesDragId && e.target.closest('.notes-item[data-item]')) e.preventDefault(); };
+  el.ondrop = (e) => {
+    const row = e.target.closest('.notes-item[data-item]');
+    if (!row || !_notesDragId) return;
+    e.preventDefault();
+    const targetId = row.dataset.item;
+    const before = e.clientY < (row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2);
+    _notesReorder(project, _notesDragId, targetId, before);
+    _notesDragId = null;
+  };
+  el.oninput = (e) => {
+    const t = e.target;
+    if (t.matches('[data-session-title]')) { const s = findSession(t.dataset.sessionTitle); if (s) { s.title = t.value; saveProjectNotes(project); } }
+    else if (t.matches('[data-session-date]')) { const s = findSession(t.dataset.sessionDate); if (s) { s.date = t.value; saveProjectNotes(project); } }
+    else if (t.matches('[data-comp-text]')) { _notesDraft(t.dataset.compText).text = t.value; }
+    else if (t.matches('[data-item-text]')) { const f = findItem(t.dataset.itemText); if (f) { f.it.text = t.value; saveProjectNotes(project); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; } }
+  };
+  // Enter in the composer text box commits the note.
+  el.onkeydown = (e) => {
+    if (e.key === 'Enter' && e.target.matches('[data-comp-text]')) { e.preventDefault(); commitDraft(e.target.dataset.compText); }
+  };
+  // change events (selects + date inputs) don't bubble through oninput reliably
+  el.onchange = (e) => {
+    const t = e.target;
+    if (t.matches('[data-inf-add]')) {
+      // Add a person to the informed list (composer draft or a note).
+      const id = t.dataset.infAdd, nm = t.value;
+      if (!nm) return;
+      const scope = t.dataset.infScope;
+      if (scope === 'comp') { const d = _notesDraft(id); d.informed = d.informed || []; if (!d.informed.includes(nm)) d.informed.push(nm); }
+      else { const f = findItem(id); if (f) { const list = _infList(f.it); if (!list.includes(nm)) list.push(nm); f.it.informed = list; delete f.it.ref; saveProjectNotes(project); } }
+      renderProjectNotes();
+      // Keep the list open so you can add more people right away.
+      _notesOpenSelect(el, `[data-inf-add="${id}"][data-inf-scope="${scope}"]`);
+      return;
+    }
+    if (t.matches('[data-comp-due]')) { _notesDraft(t.dataset.compDue).due = t.value || ''; }
+    else if (t.matches('[data-item-due]')) { const f = findItem(t.dataset.itemDue); if (f) { f.it.due = t.value || ''; saveProjectNotes(project); } }
+  };
+  // Finish editing a note as soon as focus leaves its editor (click off) — no
+  // need to hit Done. A 0ms defer lets focus land first so moving between the
+  // note's own fields (text → informed → date) doesn't close it.
+  el.onfocusout = (e) => {
+    const item = e.target.closest('.notes-item-editing');
+    if (!item) return;
+    setTimeout(() => {
+      if (_notesEditId && item.isConnected && !item.contains(document.activeElement)) {
+        _notesEditId = null; _notesEditHint = null; saveProjectNotes(project); renderProjectNotes();
+      }
+    }, 0);
+  };
+}
+
+// Turn a note into a real schedule action. An action MUST have an assignee
+// (a real person, not N/A) and a due date — if either is missing we open the
+// note's editor so they can be filled in first. Then pops the standard section
+// picker (so it lands in the right phase/dept) and creates the is_action row.
+function _notesTurnIntoAction(project, itemId, x, y) {
+  const data = state.projectNotes[project];
+  let found = null;
+  for (const s of data.sessions) { const it = (s.items || []).find(x => x.id === itemId); if (it) { found = it; break; } }
+  if (!found) return;
+  const text = (found.text || '').trim();
+  const informed = _infList(found);
+  if (!text || !informed.length || !found.due) {
+    // No browser alert — open the note's editor inline with a hint so they can
+    // fill in the missing informed person / date right there.
+    _notesEditId = itemId;
+    _notesEditHint = itemId;
+    renderProjectNotes();
+    document.querySelector(`[data-item-text="${itemId}"]`)?.focus();
+    return;
+  }
+  showSectionPicker(x, y, async (g, d, s) => {
+    await api.create({
+      name: text,
+      phase_group: g, department: d, sub_department: s, project,
+      is_action: 1, duration_days: 0, is_milestone: 1,
+      assignee: informed[0],
+      start_date: found.due, end_date: found.due,
+    });
+    found.actioned = true;
+    saveProjectNotes(project);
+    if (state.scheduleView.actionsMode === 'schedule') { state.scheduleView.actionsMode = 'combined'; saveScheduleView(); syncActionsModeButtons(); }
+    await loadTasks();
+    renderProjectNotes();
+  }, { okLabel: 'Turn into action', title: 'Where should this action go?' });
 }
 
 function renderAssigneeFilterBanner() { /* removed — personal view is a simple list in the Actions tab */ }
@@ -12067,7 +12724,7 @@ async function createTaskBelow(taskId) {
   if (!t) return;
   const project = state.filters.project || t.project || null;
   const sortOrder = (Number(t.sort_order) || 0) + 0.5;
-  const created = await api.create({
+  const payload = {
     name: 'New task',
     project,
     phase_group: t.phase_group || null,
@@ -12077,8 +12734,16 @@ async function createTaskBelow(taskId) {
     // the new row IN M2, not silently make it shared.
     machine: t.machine || null,
     sort_order: sortOrder,
-  });
+  };
+  const created = await api.create(payload);
   if (!created || created.error) return;
+  // Record an undo entry so the topbar Undo can remove an accidental add.
+  // kind:'create' → undo deletes this row; redo re-creates it from the payload.
+  state.undoStack.push({ kind: 'create', taskId: created.id, payload, description: `Add row below "${t.name || 'task'}"` });
+  while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+  state.redoStack = [];
+  syncUndoButton();
+  syncRedoButton();
   await loadTasks();
   const newTr = document.querySelector(`tr[data-id="${created.id}"]`);
   if (newTr) {
@@ -12421,6 +13086,32 @@ async function loadFinancialsForProject(project) {
     await api.financials.seed(project);
     rows = await api.financials.list(project);
   }
+  // Self-heal legacy line-number triggers → task refs ("#id"). CRITICAL SAFETY:
+  // only convert a line when taskIdByLine maps it to a task that ACTUALLY BELONGS
+  // to THIS project. The line-map is global/active-project state, so during a
+  // project switch it can momentarily reflect a DIFFERENT project — converting
+  // then would silently point a trigger at another project's task (cross-project
+  // corruption). The project-membership check makes that impossible: a mismatched
+  // map simply leaves the legacy line ref untouched (it still resolves positionally
+  // until the project is genuinely active).
+  if (project === state.filters.project) {
+    const safeHeal = (stored) => String(stored).split(',').map(s => {
+      const t = s.trim(); if (!t) return '';
+      if (t.startsWith('#') || !/^\d/.test(t)) return t; // already a task ref, or an anchor
+      const m = t.match(/^(\d+)(.*)$/);
+      const id = taskIdByLine[Number(m[1])];
+      const tk = id != null && state.tasks.find(x => x.id === id);
+      return (tk && tk.project === project) ? ('#' + id + m[2]).toUpperCase() : t;
+    }).filter(Boolean).join(', ');
+    for (const r of rows) {
+      if (!r.predecessors) continue;
+      const healed = safeHeal(r.predecessors);
+      if (healed && healed !== r.predecessors) {
+        r.predecessors = healed;
+        api.financials.update(r.id, { predecessors: healed }).catch(() => {});
+      }
+    }
+  }
   // Apply anchor-sync overrides — if a row points at an anchor (e.g. 'fat'), its
   // due_date follows the predecessor's date for display. Edits to the row's date
   // still save, but the live value reflects the trigger each render.
@@ -12476,9 +13167,19 @@ function resolveFinancialTrigger(ref, project) {
     target = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === aliasKey);
   }
   if (!target) {
-    const n = Number(prefix);
-    if (Number.isInteger(n) && taskIdByLine[n]) {
-      target = state.tasks.find(t => t.id === taskIdByLine[n]);
+    if (prefix.startsWith('#')) {
+      // Task-identity ref (e.g. "#7") — points at the task by its permanent ID,
+      // so it follows the task when rows are added/removed. This is the format
+      // financial triggers store going forward (mirrors grid predecessors).
+      const id = Number(prefix.slice(1));
+      if (Number.isInteger(id)) target = state.tasks.find(t => t.project === project && t.id === id);
+    } else {
+      // Legacy bare line number — resolve positionally (self-heals to "#id" when
+      // its project is the active/rendered one; see loadFinancialsForProject).
+      const n = Number(prefix);
+      if (Number.isInteger(n) && taskIdByLine[n]) {
+        target = state.tasks.find(t => t.id === taskIdByLine[n]);
+      }
     }
   }
   if (!target) return null;
@@ -12665,7 +13366,11 @@ async function openQuoteCompareModal(project, providedQuote) {
   const hb = quote?.hours_breakdown;
   const s10 = hb?.section_10 || {}, s40 = hb?.section_40 || {}, s50 = hb?.section_50 || {};
   const quoted = {
-    mech_eng:    safe(s10.mech) + safe(s50.mech),
+    // Mechanical Engineering = DESIGN-phase ME only (section 10), matching the
+    // schedule's design_build/mech bucket. Section-50 ME (teardown/install/
+    // warranty engineering, which the horizontal estimate lumps as "ME & CE")
+    // belongs to the install bucket, NOT design — see `install` below.
+    mech_eng:    safe(s10.mech),
     ce_design:   safe(s10.ce_des),
     ce_drawings: safe(s10.ce_drw),
     ce_software: safe(s10.ce_sw),
@@ -12683,7 +13388,8 @@ async function openQuoteCompareModal(project, providedQuote) {
     shop_debug:  safe(s40.build) + safe(s40.wire_panel) + safe(s40.wire_machine),
     teardown:    safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine),
     install:     safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
-                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision),
+                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision)
+                 + safe(s50.mech), // teardown/install engineering (ME&CE lump)
   };
   // Configure Machine = 5% of testing engineering hours.
   quoted.configure = Math.round(quoted.test_debug * 0.05);
@@ -12861,6 +13567,10 @@ async function openQuoteCompareModal(project, providedQuote) {
       ],
     },
   ];
+  // Detailed breakdown — rows mirror the schedule task-for-task. Per Dan: the
+  // per-task lines show only SCHEDULED hours; the QUOTED amount + variance are
+  // shown once per SUBSECTION (Mechanical Engineering / Controls Engineering /
+  // …) on its total row, because the estimate only has per-discipline totals.
   const SECTIONS = isSales ? SECTIONS_SALES : SECTIONS_DETAILED;
   // Flatten all rows (across sub-groups in detailed mode) for the rowsByKey
   // lookup that wireInputs / applyChanges / consolidation logic reads.
@@ -12868,7 +13578,7 @@ async function openQuoteCompareModal(project, providedQuote) {
   const rowsByKey = {};
   SECTIONS.forEach(s => allRows(s).forEach(r => { rowsByKey[r.k] = r; }));
   // Column count varies — sales projects hide the Remaining column.
-  const colCount = isSales ? 5 : 6;
+  const colCount = isSales ? 6 : 7; // Discipline, Weeks, Alloc/People, Scheduled, Quoted, Variance (+ Remaining when not sales)
 
   // PENDING STATE — edits live here until Done is pressed. Keyed by row
   // storage key (r.k). Undefined means "no override; use base value."
@@ -12959,6 +13669,7 @@ async function openQuoteCompareModal(project, providedQuote) {
         <td class="num quote-milestone-cell">—</td>
         <td class="num quote-milestone-cell">—</td>
         <td class="num quote-milestone-cell">—</td>
+        <td class="num quote-milestone-cell">—</td>
         ${isSales ? '' : '<td class="num quote-milestone-cell">—</td>'}
       </tr>`;
     }
@@ -12971,7 +13682,10 @@ async function openQuoteCompareModal(project, providedQuote) {
       else if (variance > st.q * 0.10) varCls = 'var-over';
       else if (variance > 0) varCls = 'var-near';
     }
-    const varText = st.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    const varText = st.q === 0 ? '—'
+      : variance === 0 ? 'On&nbsp;target'
+      : variance < 0 ? `Under ${Math.abs(variance).toLocaleString()}`
+      : `Over ${variance.toLocaleString()}`;
     const weeksTitle = taskCount === 0
       ? 'No tasks in this bucket yet — add a task to the schedule first.'
       : (r.taskId
@@ -13009,12 +13723,11 @@ async function openQuoteCompareModal(project, providedQuote) {
       ${labelCell}
       <td class="num"><input type="number" min="0" max="200" step="0.5" class="quote-weeks-input" data-bucket="${escapeHtml(r.k)}" value="${st.weeks.toFixed(1)}" ${weeksDisabled} title="${escapeHtml(weeksTitle)}" /></td>
       ${peopleOrAllocCell}
-      <td class="num quote-sched-cell">
-        <input type="number" min="0" max="9999" step="1" class="quote-q-input quote-q-inline" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override. Saved per-task in detailed mode, per-bucket in sales mode." />
-        <span class="quote-sched-slash">/</span>
-        <span class="quote-sched-s">${st.s.toLocaleString()}</span>
-      </td>
-      <td class="num quote-variance ${varCls}">${varText}</td>
+      <td class="num quote-sched-s">${st.s.toLocaleString()}</td>
+      ${r.taskId
+        ? `<td class="num quote-cell-muted">·</td><td class="num quote-cell-muted">·</td>`
+        : `<td class="num"><input type="number" min="0" max="9999" step="1" class="quote-q-input" data-bucket="${escapeHtml(r.k)}" value="${st.q}" title="Quoted hours — type to override." /></td>
+           <td class="num quote-variance ${varCls}">${varText}</td>`}
       ${isSales ? '' : `<td class="num">${st.rem.toLocaleString()}</td>`}
     </tr>`;
   }
@@ -13030,25 +13743,40 @@ async function openQuoteCompareModal(project, providedQuote) {
     }
     return { q, s, rem };
   }
+  // Quoted total for a set of detailed rows = the estimate's per-discipline
+  // total: sum of the DISTINCT estimate buckets the group's tasks map to (the
+  // estimate has no per-task quoted, so we never sum line-by-line).
+  function subsectionQuoted(rows) {
+    const bkeys = new Set();
+    for (const r of rows) {
+      if (!r.taskId) continue;
+      const tk = state.tasks.find(x => x.id === r.taskId);
+      const bk = tk && TASK_BUCKET(tk);
+      if (bk) bkeys.add(bk);
+    }
+    let q = 0; bkeys.forEach(k => { q += (quoted[k] || 0); });
+    return q;
+  }
   function buildGroupTotalRow(groupLabel, rows) {
     const t = computeRowsTotals(rows);
-    const variance = t.s - t.q;
+    const qTotal = subsectionQuoted(rows);
+    const variance = t.s - qTotal;
     let varCls = 'var-zero';
-    if (t.q > 0) {
+    if (qTotal > 0) {
       if (variance < 0) varCls = 'var-under';
-      else if (variance > t.q * 0.10) varCls = 'var-over';
+      else if (variance > qTotal * 0.10) varCls = 'var-over';
       else if (variance > 0) varCls = 'var-near';
     }
-    const varText = t.q === 0 ? '—' : (variance > 0 ? '+' : '') + variance.toLocaleString();
+    const varText = qTotal === 0 ? '—'
+      : variance === 0 ? 'On&nbsp;target'
+      : variance < 0 ? `Under ${Math.abs(variance).toLocaleString()}`
+      : `Over ${variance.toLocaleString()}`;
     return `<tr class="quote-row quote-group-total-row">
-      <td class="quote-group-total-label">${escapeHtml(groupLabel || 'Group')} total</td>
+      <td class="quote-group-total-label">${escapeHtml(groupLabel || 'Group')}</td>
       <td class="num">—</td>
       <td class="num">—</td>
-      <td class="num quote-sched-cell">
-        <span class="quote-sched-q">${t.q ? t.q.toLocaleString() : '—'}</span>
-        <span class="quote-sched-slash">/</span>
-        <span class="quote-sched-s">${t.s.toLocaleString()}</span>
-      </td>
+      <td class="num quote-sched-s">${t.s.toLocaleString()}</td>
+      <td class="num quote-sched-q">${qTotal ? qTotal.toLocaleString() : '—'}</td>
       <td class="num quote-variance ${varCls}">${varText}</td>
       ${isSales ? '' : `<td class="num">${t.rem.toLocaleString()}</td>`}
     </tr>`;
@@ -13096,14 +13824,25 @@ async function openQuoteCompareModal(project, providedQuote) {
     }).join('');
   }
   function computeTotals() {
-    let totalQ = 0, totalS = 0, totalR = 0;
+    let totalS = 0, totalR = 0;
+    const bkeys = new Set();
     for (const section of SECTIONS) {
       for (const r of allRows(section)) {
         if (r.milestone) continue; // milestone rows have no hours to total
         const st = computeRowState(r);
-        totalQ += st.q; totalS += st.s; totalR += st.rem;
+        totalS += st.s; totalR += st.rem;
+        // Grand quoted = sum of the estimate's distinct buckets (matches the
+        // subsection totals), never a per-task sum.
+        if (r.taskId) {
+          const tk = state.tasks.find(x => x.id === r.taskId);
+          const bk = tk && TASK_BUCKET(tk);
+          if (bk) bkeys.add(bk);
+        } else {
+          (r.keys || [r.k]).forEach(k => bkeys.add(k));
+        }
       }
     }
+    let totalQ = 0; bkeys.forEach(k => { totalQ += (quoted[k] || 0); });
     return { totalQ, totalS, totalR };
   }
   function buildFooterHtml() {
@@ -13118,12 +13857,12 @@ async function openQuoteCompareModal(project, providedQuote) {
         <td>Total</td>
         <td class="num">—</td>
         <td class="num">—</td>
-        <td class="num quote-sched-cell">
-          <span class="quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</span>
-          <span class="quote-sched-slash">/</span>
-          <span class="quote-sched-s">${totalS.toLocaleString()}</span>
-        </td>
-        <td class="num quote-variance ${varCls}">${totalQ === 0 ? '—' : (totalV > 0 ? '+' : '') + totalV.toLocaleString()}</td>
+        <td class="num quote-sched-s">${totalS.toLocaleString()}</td>
+        <td class="num quote-sched-q">${totalQ ? totalQ.toLocaleString() : '—'}</td>
+        <td class="num quote-variance ${varCls}">${totalQ === 0 ? '—'
+          : totalV === 0 ? 'On&nbsp;target'
+          : totalV < 0 ? `Under ${Math.abs(totalV).toLocaleString()}`
+          : `Over ${totalV.toLocaleString()}`}</td>
         ${isSales ? '' : `<td class="num">${totalR.toLocaleString()}</td>`}
       </tr>`;
   }
@@ -13162,7 +13901,9 @@ async function openQuoteCompareModal(project, providedQuote) {
         </div>
         ${quote
           ? `<div style="margin:0 0 12px;font-size:12px;color:#475569;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span style="flex:1 1 auto;min-width:240px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
+              <span id="quote-estimate-name" style="flex:1 1 auto;min-width:200px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
+              <button type="button" class="quote-action-btn" data-action="view-estimate" title="Download the estimate file attached to this project so you can verify it." style="display:none;">⬇ View estimate</button>
+              <button type="button" class="quote-action-btn" data-action="update-estimate" title="Re-read the attached estimate file and refresh the Quoted hours from it. Use this after you change the estimate." style="display:none;">↻ Update numbers from estimate</button>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor (billing events tied to anchors, e.g. 30% at PO / 60% at FAT / 10% at Ship). Stays open on top so you can confirm billing while the comparison is still in view.">$ Financial Milestones</button>
               <label class="btn-ghost" style="cursor:pointer;border:1px solid #cbd5e1;color:#334155;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
                 Replace estimate…
@@ -13183,23 +13924,31 @@ async function openQuoteCompareModal(project, providedQuote) {
                a slash) get the real estate they need. Sums to 100% so the
                table is responsive inside the wider 880px modal card. -->
           <colgroup>
-            <col style="width: ${isSales ? '34%' : '28%'};">  <!-- Discipline -->
-            <col style="width: 10%;">                          <!-- Weeks -->
-            <col style="width: 11%;">                          <!-- People # -->
-            <col style="width: ${isSales ? '32%' : '28%'};">   <!-- Quoted / Scheduled -->
-            <col style="width: 13%;">                          <!-- Variance -->
+            <col style="width: ${isSales ? '34%' : '30%'};">  <!-- Discipline / task -->
+            <col style="width: 9%;">                           <!-- Weeks -->
+            <col style="width: 10%;">                          <!-- Alloc / People -->
+            <col style="width: 13%;">                          <!-- Scheduled -->
+            <col style="width: 13%;">                          <!-- Quoted -->
+            <col style="width: ${isSales ? '21%' : '12%'};">   <!-- Variance (US/OS — short) -->
             ${isSales ? '' : '<col style="width: 13%;">'}      <!-- Remaining -->
           </colgroup>
           <thead>
+            <!-- Grouped header: Weeks / Alloc / Scheduled describe what's IN THE
+                 SCHEDULE; Quoted (from the estimate) is its own thing; Variance
+                 compares them. -->
+            <tr class="quote-head-groups">
+              <th rowspan="2" style="text-align:left;vertical-align:middle;">Discipline</th>
+              <th class="quote-grp" colspan="3">In the schedule</th>
+              <th rowspan="2" class="num" style="vertical-align:middle;" title="Quoted hours from the estimate (per discipline).">Quoted</th>
+              <th rowspan="2" class="num" style="vertical-align:middle;" title="Scheduled vs Quoted. 'Over' = more scheduled than quoted (amber); 'Under' = fewer (green).">Variance</th>
+              ${isSales ? '' : '<th rowspan="2" class="num" style="vertical-align:middle;" title="Scheduled hours still to be worked.">Remaining</th>'}
+            </tr>
             <tr>
-              <th style="text-align:left;">Discipline</th>
               <th class="num" title="Phase duration in work-weeks (1 week = 5 working days). Editing here updates the underlying task durations.">Weeks</th>
               ${isSales
-                ? `<th class="num" title="People assigned to this phase. Defaults to 1. Fractional values allowed (e.g. 1.25 = one full-timer + one at 25%). Scheduled hrs = Weeks × 40 × allocation × People.">People&nbsp;#</th>`
-                : `<th class="num" title="Allocation % for this task. Each row = one resource. Drop to 25% to model a part-time helper, or use the + Add resource button at the end of the section to add another full-time person.">Alloc&nbsp;%</th>`}
-              <th class="num" title="Quoted (from estimate, editable) / Scheduled (Weeks × 40 × allocation × People).">Quoted&nbsp;/&nbsp;Scheduled</th>
-              <th class="num" title="Scheduled − Quoted. Green ≤ quote, amber within 10% over, red &gt;10% over.">Variance</th>
-              ${isSales ? '' : `<th class="num" title="Scheduled hours still to be worked: scheduled_hrs × (1 − task_progress%/100).">Remaining</th>`}
+                ? `<th class="num" title="People assigned to this phase. Defaults to 1.">People&nbsp;#</th>`
+                : `<th class="num" title="Allocation % for this task. Drop to 25% to model a part-time helper.">Alloc&nbsp;%</th>`}
+              <th class="num" title="Scheduled hours = duration × allocation × 8 (summed per discipline).">Scheduled</th>
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -13210,7 +13959,7 @@ async function openQuoteCompareModal(project, providedQuote) {
       <div class="modal-foot">
         <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
         <button type="button" class="btn-secondary" data-action="close">Cancel</button>
-        <button type="button" class="btn-primary" data-action="apply" id="quote-apply-btn" disabled>Apply</button>
+        <button type="button" class="btn-primary" data-action="apply" id="quote-apply-btn">Apply</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
@@ -13318,7 +14067,11 @@ async function openQuoteCompareModal(project, providedQuote) {
     const btn = overlay.querySelector('#quote-apply-btn');
     const hint = overlay.querySelector('#quote-pending-hint');
     if (btn) {
-      btn.disabled = !hasPending;
+      // Always clickable — Apply doubles as "done/close". With no pending grid
+      // edits it just closes (and still saves sold-delivery / penalty changes,
+      // which applyChanges detects on its own). Disabling it left users stuck
+      // unable to close via the button.
+      btn.disabled = false;
       // When the only "pending" thing is consolidation, surface it on the
       // button so the user knows what Apply is about to do.
       if (!hasEdits && consolidation.length > 0) {
@@ -13524,6 +14277,12 @@ async function openQuoteCompareModal(project, providedQuote) {
         || penaltyChanged
         || Object.keys(pendingPeople).length
         || Object.keys(pendingQuoted).length;
+      // Nothing to apply (no quote edits, no grid edits) → just close. Apply
+      // acts as "done" so the user isn't stuck unable to close via the button.
+      const hasGridWork = Object.keys(pendingWeeks).length
+        || Object.keys(pendingAlloc).length
+        || pendingConsolidationRows().length;
+      if (!needsQuoteSave && !hasGridWork) { return; } // nothing to apply — finally{} closes
       if (needsQuoteSave) {
         const updated = { ...(quote || {}) };
         // Carry all contract fields forward — sold delivery + penalty
@@ -13646,9 +14405,13 @@ async function openQuoteCompareModal(project, providedQuote) {
         ? `Schedule updated — ${consolidatedCount} task(s) consolidated.`
         : 'Schedule updated.';
       showToast(msg, { kind: 'success' });
-      close();
     } catch (err) {
       showToast('Failed to apply: ' + (err.message || err), { kind: 'error' });
+    } finally {
+      // ALWAYS close the popup on Apply — even if a background update errored
+      // (the error still shows as a toast). Apply = "done", so it must never
+      // leave the user stuck with the modal open.
+      close();
     }
   }
   overlay.querySelector('[data-action="apply"]').addEventListener('click', applyChanges);
@@ -13656,6 +14419,41 @@ async function openQuoteCompareModal(project, providedQuote) {
   // "Load estimate file…" — pick an xlsx, parse it, PERSIST the quote on the
   // project so future opens of this modal show the comparison without
   // re-loading. Reopens this modal with the saved quote.
+  // Build a quote from parsed estimate numbers, PRESERVING the existing quote's
+  // other fields (sold delivery, penalty, headcount, overrides) so re-parsing only
+  // refreshes the hours.
+  const _safe = (v) => Math.round(v || 0);
+  const _buildSection = (s) => ({
+    mech:         _safe(s.mech_eng),
+    ce_des:       Math.round(_safe(s.ce_design) * 0.5),
+    ce_drw:       _safe(s.ce_design) - Math.round(_safe(s.ce_design) * 0.5),
+    ce_sw:        _safe(s.ce_software),
+    hmi:          _safe(s.gen_hmi),
+    robot:        _safe(s.gen_robot),
+    vision:       _safe(s.gen_vision),
+    build:        _safe(s.mech_build),
+    wire_panel:   Math.round(_safe(s.elec_build) * 0.25),
+    wire_machine: _safe(s.elec_build) - Math.round(_safe(s.elec_build) * 0.25),
+  });
+  const quoteFromParsed = (parsed) => ({
+    ...(quote || {}),
+    hours_per_section: parsed.hours_per_section,
+    hours_breakdown: {
+      section_10: _buildSection(parsed.hours_per_section.section_10),
+      section_40: _buildSection(parsed.hours_per_section.section_40),
+      section_50: _buildSection(parsed.hours_per_section.section_50),
+    },
+  });
+  const parseEstimateB64 = async (b64) => {
+    const r = await fetch('/api/estimate/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file: b64 }) });
+    const parsed = await r.json();
+    if (!r.ok) throw new Error(parsed.error || 'Could not parse estimate.');
+    return parsed;
+  };
+  const saveQuote = (q) => fetch(`/api/project/${encodeURIComponent(project)}/quote`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q) });
+
+  // Upload / replace: store the raw file on the project (so it STAYS and can be
+  // viewed) AND refresh the Quoted numbers from it.
   const fileEl = overlay.querySelector('#quote-compare-file');
   if (fileEl) {
     fileEl.addEventListener('change', async () => {
@@ -13664,50 +14462,55 @@ async function openQuoteCompareModal(project, providedQuote) {
       try {
         const buf = await file.arrayBuffer();
         const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-        const r = await fetch('/api/estimate/parse', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: b64 }),
-        });
-        const parsed = await r.json();
-        if (!r.ok) { await showAlertDialog({ title: "Couldn't parse estimate", message: parsed.error || 'Unknown error.' }); return; }
-        const safe = (v) => Math.round(v || 0);
-        const buildSection = (s) => ({
-          mech:         safe(s.mech_eng),
-          ce_des:       Math.round(safe(s.ce_design) * 0.5),
-          ce_drw:       safe(s.ce_design) - Math.round(safe(s.ce_design) * 0.5),
-          ce_sw:        safe(s.ce_software),
-          hmi:          safe(s.gen_hmi),
-          robot:        safe(s.gen_robot),
-          vision:       safe(s.gen_vision),
-          build:        safe(s.mech_build),
-          wire_panel:   Math.round(safe(s.elec_build) * 0.25),
-          wire_machine: safe(s.elec_build) - Math.round(safe(s.elec_build) * 0.25),
-        });
-        const reloadedQuote = {
-          hours_per_section: parsed.hours_per_section,
-          hours_breakdown: {
-            section_10: buildSection(parsed.hours_per_section.section_10),
-            section_40: buildSection(parsed.hours_per_section.section_40),
-            section_50: buildSection(parsed.hours_per_section.section_50),
-          },
-        };
-        // Persist on the project so future opens of this modal load it
-        // automatically — no need to pick the file every time.
-        try {
-          await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(reloadedQuote),
-          });
-        } catch (_) {}
+        const parsed = await parseEstimateB64(b64);
+        await fetch(`/api/project/${encodeURIComponent(project)}/estimate-file`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, data: b64 }),
+        }).catch(() => {});
+        const newQuote = quoteFromParsed(parsed);
+        await saveQuote(newQuote).catch(() => {});
         close();
-        openQuoteCompareModal(project, reloadedQuote);
+        openQuoteCompareModal(project, newQuote);
       } catch (err) {
-        await showAlertDialog({ title: "Couldn't read file", message: err.message || String(err) });
+        await showAlertDialog({ title: "Couldn't read estimate", message: err.message || String(err) });
       }
     });
   }
+
+  // Reveal the attached file name + wire the View (download) and Update buttons.
+  (async () => {
+    let est = null;
+    try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/estimate-file`); est = await r.json(); } catch (_) {}
+    if (!est || !est.data) return;
+    const nameEl = overlay.querySelector('#quote-estimate-name');
+    const viewBtn = overlay.querySelector('[data-action="view-estimate"]');
+    const updBtn  = overlay.querySelector('[data-action="update-estimate"]');
+    if (nameEl) nameEl.textContent = `📎 ${est.name || 'estimate.xlsx'} attached`;
+    if (viewBtn) {
+      viewBtn.style.display = '';
+      viewBtn.onclick = () => {
+        try {
+          const bytes = Uint8Array.from(atob(est.data), c => c.charCodeAt(0));
+          const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = est.name || 'estimate.xlsx'; a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (e) { showAlertDialog({ title: 'Download failed', message: String(e) }); }
+      };
+    }
+    if (updBtn) {
+      updBtn.style.display = '';
+      updBtn.onclick = async () => {
+        try {
+          const parsed = await parseEstimateB64(est.data);
+          const newQuote = quoteFromParsed(parsed);
+          await saveQuote(newQuote).catch(() => {});
+          close();
+          openQuoteCompareModal(project, newQuote);
+        } catch (e) { await showAlertDialog({ title: "Couldn't update from estimate", message: e.message || String(e) }); }
+      };
+    }
+  })();
 }
 
 function openFinancialsModal(project) {
@@ -13829,7 +14632,7 @@ function openFinancialsModal(project) {
                 <tr data-id="${r.id}" title="Right-click to add or delete a milestone">
                   <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                   <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
-                  <td><input type="text" data-field="predecessors" value="${escapeHtml(r.predecessors || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
+                  <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                   <td>
                     <input type="date" data-field="due_date" value="${dateValue}"
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
@@ -13901,6 +14704,7 @@ function openFinancialsModal(project) {
           let value;
           if (el.type === 'checkbox') value = el.checked ? 1 : 0;
           else if (el.type === 'number') value = el.value === '' ? null : Number(el.value);
+          else if (field === 'predecessors') value = finPredParse(el.value) || null; // line typed → "#id" stored
           else value = el.value || null;
           // Build the save promise + register it so close() can await
           // it before refreshing state.financials. Without this, a
@@ -14079,6 +14883,39 @@ function setupGridPan() {
         const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
         panel.addEventListener('click', swallow, { capture: true, once: true });
       }
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// Click-and-drag to scroll the WHOLE schedule page vertically — active only
+// when notes is open (the moment #view-schedule itself scrolls: grid → footer
+// → notes are one long page). Grab anywhere that isn't an input/button/divider
+// and drag up/down. The grid/gantt's own horizontal pans still work alongside
+// this (their vertical scroll is a no-op now that they're full-height).
+function setupPagePan() {
+  const view = document.getElementById('view-schedule');
+  if (!view || view._pagePanWired) return;
+  view._pagePanWired = true;
+  view.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (!view.classList.contains('notes-open')) return;        // only when the page scrolls
+    if (e.target.closest('input, select, textarea, button, a, .schedule-divider, .row-height-bar, [draggable="true"]')) return;
+    const startY = e.clientY;
+    const startTop = view.scrollTop;
+    let panning = false;
+    const onMove = (ev) => {
+      const dy = ev.clientY - startY;
+      if (!panning && Math.abs(dy) > 4) { panning = true; view.classList.add('page-panning'); try { window.getSelection()?.removeAllRanges(); } catch (_) {} }
+      if (panning) { ev.preventDefault(); view.scrollTop = startTop - dy; }
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      view.classList.remove('page-panning');
+      // Swallow the click after a real pan so clicking a note doesn't open its editor.
+      if (panning) { const sw = (ev) => { ev.stopPropagation(); ev.preventDefault(); }; view.addEventListener('click', sw, { capture: true, once: true }); }
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -14793,6 +15630,112 @@ function renderActionsPage() {
   // the cards keep showing the big-picture health even when the list above
   // is narrowed by a chip.
   renderActionsDeptDashboard(allActions, todayMs);
+  // Key Information — starred notes from every project's schedule, as cards.
+  renderActionsKeyInfo();
+}
+
+// Cross-project "Key information" on the Notes & Actions tab. Every project's
+// STARRED notes, shown as either a Card view (grouped by department) or a flat,
+// sortable List view. A department filter applies to both. Notes are stored per
+// project (state.projectNotes) and lazy-loaded only for the active schedule, so
+// here we bulk-fetch any we don't have yet, then render.
+const _actionsKeyInfo = { view: 'cards', sort: 'date', dept: '', filter: 'all' };
+function renderActionsKeyInfo() {
+  const host = document.getElementById('actions-keyinfo');
+  if (!host) return;
+  const projects = uniqueValues('project')
+    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+    .sort();
+  const missing = projects.filter(p => !state.projectNotes[p]);
+  if (missing.length) {
+    host.innerHTML = `<div class="actions-keyinfo-head">★ Key Information</div><div class="actions-empty">Loading notes…</div>`;
+    missing.forEach(p => {
+      api.notes.get(p)
+        .then(d => { state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] }; })
+        .catch(() => { state.projectNotes[p] = { sessions: [] }; })
+        .finally(() => { if (projects.every(pp => state.projectNotes[pp]) && state.view === 'actions') renderActionsKeyInfo(); });
+    });
+    return;
+  }
+  const order = [...NOTES_DEPT_GROUPS.map(g => g.key), 'general'];
+  const st = _actionsKeyInfo;
+  // Flatten every starred note across all projects into one record list. Each
+  // note carries its informed people + the departments they belong to.
+  let recs = [];
+  projects.forEach(p => (state.projectNotes[p].sessions || []).forEach(s => (s.items || []).forEach(it => {
+    if (it.starred && (it.text || '').trim()) recs.push({ project: p, text: it.text.trim(), informed: _infList(it), due: it.due || '', depts: _noteDeptKeys(it), mdate: s.date || '', meeting: s.title || 'Meeting' });
+  })));
+  if (st.dept) recs = recs.filter(r => r.depts.includes(st.dept));
+
+  // Controls: view toggle + department filter (+ sort, in list view).
+  const deptOpts = `<option value="">All departments</option>` +
+    NOTES_DEPT_GROUPS.map(g => `<option value="${g.key}"${st.dept === g.key ? ' selected' : ''}>${escapeHtml(g.label)}</option>`).join('') +
+    `<option value="general"${st.dept === 'general' ? ' selected' : ''}>General</option>`;
+  const sortOpts = [['date', 'Date'], ['project', 'Project'], ['dept', 'Department'], ['ref', 'Informed']]
+    .map(([v, l]) => `<option value="${v}"${st.sort === v ? ' selected' : ''}>${l}</option>`).join('');
+  const filterOpts = [['all', 'Everything'], ['date', 'Has a date'], ['person', 'Has informed person']]
+    .map(([v, l]) => `<option value="${v}"${st.filter === v ? ' selected' : ''}>${l}</option>`).join('');
+  const controls = `<div class="aki-controls">
+    <div class="aki-viewtoggle">
+      <button class="aki-vt ${st.view === 'cards' ? 'is-on' : ''}" data-aki-view="cards" type="button">Cards</button>
+      <button class="aki-vt ${st.view === 'list' ? 'is-on' : ''}" data-aki-view="list" type="button">List</button>
+    </div>
+    <label class="aki-ctl">Dept <select data-aki-dept>${deptOpts}</select></label>
+    ${st.view === 'list' ? `<label class="aki-ctl">Sort <select data-aki-sort>${sortOpts}</select></label>
+    <label class="aki-ctl">Show <select data-aki-filter>${filterOpts}</select></label>` : ''}
+  </div>`;
+
+  const informedChips = (arr) => (arr || []).map(n => `<span class="notes-chip ref">👤 ${escapeHtml(n)}</span>`).join(' ');
+  const informedSrc = (arr) => (arr || []).length ? ' · ' + arr.map(n => '@' + n).join(', ') : '';
+  const empty = `<div class="actions-empty">No starred notes${st.dept ? ' for this department' : ''} yet. Star notes in a project's schedule (📝 Notes) to surface them here.</div>`;
+
+  let body;
+  if (!recs.length) {
+    body = empty;
+  } else if (st.view === 'list') {
+    let listRecs = recs;
+    if (st.filter === 'date') listRecs = listRecs.filter(r => !!r.due);
+    else if (st.filter === 'person') listRecs = listRecs.filter(r => r.informed.length);
+    const sorted = listRecs.slice().sort((a, b) => {
+      if (st.sort === 'date') return (a.due || '9999-99-99').localeCompare(b.due || '9999-99-99') || a.project.localeCompare(b.project);
+      if (st.sort === 'project') return a.project.localeCompare(b.project) || (a.due || '').localeCompare(b.due || '');
+      if (st.sort === 'dept') return (order.indexOf(a.depts[0]) - order.indexOf(b.depts[0])) || a.project.localeCompare(b.project);
+      if (st.sort === 'ref') return (a.informed[0] || '').localeCompare(b.informed[0] || '') || a.project.localeCompare(b.project);
+      return 0;
+    });
+    const rows = sorted.map(r => `<div class="aki-lrow">
+      <span class="aki-lc-project">${escapeHtml(r.project)}</span>
+      <span class="aki-lc-note">${escapeHtml(r.text)}</span>
+      <span class="aki-lc-ref">${informedChips(r.informed)}</span>
+      <span class="aki-lc-date">${r.due ? escapeHtml(_notesFmtDate(r.due)) : ''}</span>
+    </div>`).join('');
+    body = sorted.length
+      ? `<div class="aki-list"><div class="aki-lrow aki-lhead"><span>Project</span><span>Note</span><span>Informed</span><span>Date</span></div>${rows}</div>`
+      : `<div class="actions-empty">No starred notes match that filter.</div>`;
+  } else {
+    // Cards = one card per PROJECT, broken out by department inside (a note
+    // shows under every department it informs).
+    const byProject = {};
+    recs.forEach(r => { (byProject[r.project] = byProject[r.project] || []).push(r); });
+    const cards = projects.filter(p => byProject[p] && byProject[p].length).map(p => {
+      const byDept = {};
+      byProject[p].forEach(r => r.depts.forEach(k => { (byDept[k] = byDept[k] || []).push(r); }));
+      const groups = order.filter(k => byDept[k] && byDept[k].length).map(k =>
+        `<div class="aki-group"><div class="aki-group-head">${escapeHtml(k === 'general' ? 'General' : _notesDeptLabel(k))}</div>${byDept[k].map(r =>
+          `<div class="aki-item">${escapeHtml(r.text)}<span class="aki-src">${escapeHtml(r.meeting)}${r.mdate ? ' · ' + escapeHtml(r.mdate) : ''}${informedSrc(r.informed)}${r.due ? ' · ' + escapeHtml(_notesFmtDate(r.due)) : ''}</span></div>`).join('')}</div>`
+      ).join('');
+      return `<div class="aki-card"><div class="aki-card-head">${escapeHtml(p)}<span class="aki-count">${byProject[p].length}</span></div><div class="aki-card-body">${groups}</div></div>`;
+    }).join('');
+    body = `<div class="aki-cards">${cards}</div>`;
+  }
+
+  host.innerHTML = `<div class="actions-keyinfo-head">★ Key Information</div>${controls}${body}`;
+  host.onclick = (e) => { const vt = e.target.closest('[data-aki-view]'); if (vt) { _actionsKeyInfo.view = vt.dataset.akiView; renderActionsKeyInfo(); } };
+  host.onchange = (e) => {
+    if (e.target.matches('[data-aki-dept]')) { _actionsKeyInfo.dept = e.target.value; renderActionsKeyInfo(); }
+    else if (e.target.matches('[data-aki-sort]')) { _actionsKeyInfo.sort = e.target.value; renderActionsKeyInfo(); }
+    else if (e.target.matches('[data-aki-filter]')) { _actionsKeyInfo.filter = e.target.value; renderActionsKeyInfo(); }
+  };
 }
 
 // v4.65: two cascading dropdowns — Department → Person — instead of v4.63's
@@ -19834,6 +20777,7 @@ async function init() {
   }, true);
   tbodyEl.addEventListener('contextmenu', handleRowContextMenu);
   setupGridPan();
+  setupPagePan();
   setupRowCrossHighlight();
 
   // Filters popover — toggled by the topbar's Filters button. Inner controls are
@@ -20111,3 +21055,40 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ── New-build watcher ────────────────────────────────────────────────────────
+// Repeated confusion came from testing a STALE tab: a fix ships, but the open
+// page is still running old code (reopening a modal doesn't reload the JS). This
+// compares the build version this page loaded against the one the server is now
+// serving (index.html is no-store, so it's always current) and shows a one-click
+// reload bar when they differ. Checks on focus + every 60s.
+(function watchForNewBuild() {
+  const myScript = document.querySelector('script[src*="app.js"]');
+  const m = myScript && myScript.src.match(/v=([0-9-]+)/);
+  const myVer = m && m[1];
+  if (!myVer) return;
+  let barShown = false;
+  const showBar = () => {
+    if (barShown || document.getElementById('new-build-bar')) return;
+    barShown = true;
+    const bar = document.createElement('div');
+    bar.id = 'new-build-bar';
+    bar.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:99999;background:#061d39;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.3);font-size:13px;font-weight:600;display:flex;align-items:center;gap:12px;';
+    bar.innerHTML = '<span>A newer version is available.</span>';
+    const btn = document.createElement('button');
+    btn.textContent = 'Reload now';
+    btn.style.cssText = 'background:#ffde51;color:#061d39;border:none;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer;';
+    btn.onclick = () => location.reload(true);
+    bar.appendChild(btn);
+    document.body.appendChild(bar);
+  };
+  const check = async () => {
+    try {
+      const html = await (await fetch('/', { cache: 'no-store' })).text();
+      const live = html.match(/app\.js\?v=([0-9-]+)/);
+      if (live && live[1] !== myVer) showBar();
+    } catch (_) { /* offline / transient — ignore */ }
+  };
+  window.addEventListener('focus', check);
+  setInterval(check, 60000);
+})();
