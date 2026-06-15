@@ -10,11 +10,61 @@
  * clock and fires once per qualifying window.
  */
 
-function start({ pool, emailSvc }) {
+function start({ pool, emailSvc, etoDb, io, ops }) {
   if (!pool) return;
   let cron;
   try { cron = require('node-cron'); }
   catch (_) { cron = null; }
+
+  // Nightly DB backup at 02:00 ET. On failure, alert the first admin by email
+  // (no-op if SMTP is off — the failure is still logged loudly either way).
+  if (ops && typeof ops.runBackup === 'function') {
+    const backupTick = async () => {
+      try {
+        await ops.runBackup();
+      } catch (e) {
+        if (emailSvc && emailSvc.ENABLED && typeof emailSvc.sendAlert === 'function') {
+          try {
+            const [admins] = await pool.query("SELECT email FROM users WHERE role = 'admin' AND active = 1 AND email IS NOT NULL ORDER BY id LIMIT 1");
+            if (admins[0]) await emailSvc.sendAlert({ to: admins[0].email, subject: '[SDC Scheduler] Nightly DB backup FAILED', text: `The scheduled database backup failed:\n\n${e.message}\n\nCheck MYSQLDUMP_PATH and disk space on the server.` });
+          } catch (_) {}
+        }
+      }
+    };
+    if (cron) {
+      cron.schedule('0 2 * * *', backupTick, { timezone: 'America/New_York' });
+      console.log('[cron] Registered: nightly DB backup at 02:00 ET');
+    } else {
+      let lastBackupDay = '';
+      setInterval(() => {
+        const now = new Date();
+        if (now.getHours() === 2 && now.getMinutes() < 30) {
+          const tag = now.toISOString().slice(0, 10);
+          if (lastBackupDay !== tag) { lastBackupDay = tag; backupTick(); }
+        }
+      }, 20 * 60 * 1000);
+      console.log('[cron] node-cron not installed — nightly backup via 20m setInterval fallback');
+    }
+  }
+
+  // ETO → vendor_pos sync every 30 min (no-op when ETO_* env vars unset).
+  // Scope 'all': refreshes every ETO-synced row + pulls newly cut open POs
+  // across the whole ERP, so the tracker stays comprehensive on its own.
+  if (etoDb && etoDb.CONFIGURED) {
+    const etoTick = async () => {
+      try {
+        const r = await etoDb.syncVendorPOs(pool, 'all');
+        if (ops && typeof ops.recordEtoSync === 'function') ops.recordEtoSync(r);
+        if ((r.created || r.updated) && io) io.emit('vendor_pos:updated');
+        console.log(`[cron] ETO vendor PO sync: ${r.pos} POs across ${r.jobs} jobs (${r.created} new, ${r.updated} updated)`);
+      } catch (e) {
+        console.warn('[cron] ETO vendor PO sync failed:', e.message);
+      }
+    };
+    setInterval(etoTick, 30 * 60 * 1000);
+    setTimeout(etoTick, 15 * 1000); // first pass shortly after boot
+    console.log('[cron] Registered: ETO vendor PO sync every 30 min');
+  }
 
   const tickAtNineAmWeekdays = async () => {
     if (!emailSvc || !emailSvc.ENABLED) return;

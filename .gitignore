@@ -6,6 +6,10 @@ scheduler.db
 scheduler.db-shm
 scheduler.db-wal
 
+# Database backup dumps — runtime data (full DB contents), never source
+backups/
+*.sql
+
 # Local IDE / tooling
 .claude/
 .vscode/

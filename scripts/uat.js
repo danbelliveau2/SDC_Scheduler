@@ -13,7 +13,7 @@
  */
 const http = require('http');
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.UAT_BASE || 'http://localhost:3000';
 let pass = 0, fail = 0, skip = 0;
 const failures = [];
 let TOKEN = '';
@@ -326,18 +326,61 @@ async function suiteProjects() {
   });
 }
 
-async function suiteAzure() {
-  console.log('\n── Phase 6: Azure SQL ──');
+async function suiteLegacyGone() {
+  console.log('\n── Legacy: Azure layer removed in MySQL migration ──');
 
-  await it('GET /api/azure/status reports enabled + flags', async () => {
+  await it('GET /api/azure/status is gone (404)', async () => {
     const r = await fetch('GET', '/api/azure/status');
-    eq(r.status, 200);
-    assert(typeof r.body.enabled === 'boolean');
+    eq(r.status, 404);
   });
 
-  await it('POST /api/azure/push as editor returns 403 (admin required)', async () => {
+  await it('POST /api/azure/push is gone (404)', async () => {
     const r = await fetch('POST', '/api/azure/push', {});
-    eq(r.status, 403);
+    eq(r.status, 404);
+  });
+}
+
+async function suiteEto() {
+  console.log('\n── Total ETO bridge ──');
+
+  let configured = false;
+  await it('GET /api/eto/status returns configured + connected flags', async () => {
+    const r = await fetch('GET', '/api/eto/status');
+    eq(r.status, 200);
+    assert(typeof r.body.configured === 'boolean', 'configured flag missing');
+    assert(typeof r.body.connected === 'boolean', 'connected flag missing');
+    configured = r.body.configured && r.body.connected;
+  });
+
+  await it('GET /api/eto/project with non-numeric job returns 400', async () => {
+    const r = await fetch('GET', '/api/eto/project/abc');
+    eq(r.status, 400);
+  });
+
+  await it('GET /api/eto/costing with non-numeric job returns 400', async () => {
+    const r = await fetch('GET', '/api/eto/costing/abc');
+    eq(r.status, 400);
+  });
+
+  if (!configured) { console.log('  (skip live ETO checks — not configured/connected)'); skip += 3; return; }
+
+  await it('GET /api/eto/project/:job returns name for a real job', async () => {
+    const r = await fetch('GET', '/api/eto/project/1129');
+    eq(r.status, 200);
+    assert(r.body.ProjectName, 'no ProjectName');
+  });
+
+  await it('GET /api/eto/project/:job returns 404 for a bogus job', async () => {
+    const r = await fetch('GET', '/api/eto/project/99999999');
+    eq(r.status, 404);
+  });
+
+  await it('POST /api/eto/sync-vendor-pos (editor) runs and reports counts', async () => {
+    const r = await fetch('POST', '/api/eto/sync-vendor-pos', {});
+    eq(r.status, 200);
+    eq(r.body.ok, true);
+    assert(typeof r.body.pos === 'number', 'no pos count');
+    assert(typeof r.body.created === 'number' && typeof r.body.updated === 'number', 'no created/updated counts');
   });
 }
 
@@ -429,7 +472,8 @@ async function suiteScale() {
     await suiteTeam();
     await suiteSettings();
     await suiteProjects();
-    await suiteAzure();
+    await suiteLegacyGone();
+    await suiteEto();
     await suiteSocketIo();
     await suiteScale();
   } catch (e) {

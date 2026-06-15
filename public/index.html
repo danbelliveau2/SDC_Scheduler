@@ -100,6 +100,15 @@
       </span>
       <span class="app-sidebar-label">Vendor POs</span>
     </button>
+    <button class="app-sidebar-icon" data-view="procurement" type="button" title="Procurement — build readiness per assembly from Total ETO: received / ordered / no-PO rollups for every BOM.">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <!-- Open box / package icon — reads as "parts / procurement". -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Procurement</span>
+    </button>
     <button class="app-sidebar-icon" data-view="setup" type="button" title="Setup — colors, defaults, estimate rules">
       <span class="app-sidebar-glyph">⚙</span>
       <span class="app-sidebar-label">Setup</span>
@@ -554,8 +563,24 @@
       <div id="vendor-pos-page" class="shop-parts-page vpo-page"></div>
     </section>
 
+    <!-- Procurement — per-assembly build readiness pulled live from Total ETO.
+         Body built by renderProcurementPage() in app.js. -->
+    <section id="view-procurement" class="view">
+      <div id="procurement-page" class="shop-parts-page proc-page"></div>
+    </section>
+
     <section id="view-setup" class="view">
       <div class="setup-pane">
+        <!-- System Status — reliability at a glance (uptime, DB, backups, ETO
+             sync). Populated by renderSystemStatus() in app.js. Visible UI so
+             health can be checked without ever opening dev tools. -->
+        <section class="setup-card" id="setup-status-card">
+          <header class="setup-card-head">
+            <h2>System Status</h2>
+            <p>Live health of the scheduler — server, database, backups, and the Total ETO link.</p>
+          </header>
+          <div id="system-status-body" class="sys-status-body">Loading…</div>
+        </section>
         <section class="setup-card">
           <header class="setup-card-head">
             <h2>Brand Palette</h2>

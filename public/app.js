@@ -75,6 +75,12 @@ const api = {
     update: (id, data) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
     remove: (id) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'DELETE' }).then(r => r.json()); },
   },
+  // Total ETO bridge — read-only pulls from the ERP (optional, server-gated).
+  eto: {
+    status: () => fetch('/api/eto/status').then(r => r.json()),
+    syncVendorPOs: (scope) => { window._lastLocalEdit = Date.now(); return fetch('/api/eto/sync-vendor-pos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ scope: scope || 'linked' }) }).then(r => r.json()); },
+    poLines: (job, po) => fetch(`/api/eto/po/${encodeURIComponent(job)}/${encodeURIComponent(po)}/lines`).then(r => { if (!r.ok) throw new Error(`lines fetch failed (${r.status})`); return r.json(); }),
+  },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
   baseline: {
@@ -8014,7 +8020,7 @@ let _vpoState = null;
 let _vpoAddOpen = false;
 function _vpoStateGet() {
   if (_vpoState) return _vpoState;
-  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', dashRange: 7 };
+  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', fJob: 'all', dashRange: 7 };
   try { s = Object.assign(s, JSON.parse(localStorage.getItem('sdcVendorPoState') || '{}')); } catch (_) {}
   if (s.view !== 'cards') s.view = 'list';
   _vpoState = s; return s;
@@ -8042,9 +8048,475 @@ function _vpoStatusOf(r) {
   if (e != null) { if (e < Date.now()) return 'late'; if (e - Date.now() <= 7 * 86400000) return 'soon'; }
   return 'open';
 }
+// Total ETO availability — checked once; ETO UI (sync button, banner chip,
+// quote actuals) only renders when the server actually has ETO_* configured,
+// so every page stays clean otherwise.
+let _etoAvailable = false;
+let _etoChecked = false;
+function _etoCheckOnce() {
+  if (_etoChecked) return;
+  _etoChecked = true;
+  api.eto.status().then(s => {
+    if (s && s.configured) {
+      _etoAvailable = true;
+      try { renderVendorPOsPage(); } catch (_) {}
+      try { renderProjectTabs(); } catch (_) {}
+    }
+  }).catch(() => {});
+}
+
+// ── Total ETO project-link chip (schedule banner) ───────────────────────────
+// A project links to the ERP through its job number (=== ETO ProjectID).
+// The chip shows the link state and opens an in-app prompt to set it.
+const _etoNameCache = {}; // job → official ETO name, or null when not found
+
+function _etoBannerChipHtml(project) {
+  if (!_etoAvailable) return '';
+  const job = (state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number) || '';
+  if (!job) {
+    return `<button type="button" id="eto-link-chip" class="eto-chip eto-chip-unlinked" title="Link this schedule to a Total ETO job — turns on automatic vendor PO sync and live cost actuals for this project.">🔗 Link ETO job…</button>`;
+  }
+  const known = _etoNameCache[job]; // undefined = not looked up yet
+  const bad = known === null;
+  const title = bad ? `Job ${job} was not found in Total ETO — click to fix the number.`
+    : known ? `Linked to Total ETO job ${job} — ${known}. Vendor POs and cost actuals sync from the ERP. Click to change.`
+    : `Linked to Total ETO job ${job}. Click to change.`;
+  return `<button type="button" id="eto-link-chip" class="eto-chip${bad ? ' eto-chip-bad' : ''}" title="${escapeHtml(title)}">ETO #${escapeHtml(job)}${bad ? ' ✗' : ''}</button>`;
+}
+
+function _wireEtoBannerChip(banner, project) {
+  const chip = banner.querySelector('#eto-link-chip');
+  if (!chip) return;
+  const job = (state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number) || '';
+  // Lazy one-time validation: fetch the official ETO name for the tooltip.
+  if (job && _etoNameCache[job] === undefined) {
+    fetch(`/api/eto/project/${encodeURIComponent(job)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(info => { _etoNameCache[job] = info ? (info.ProjectName || '') : null; try { renderProjectTabs(); } catch (_) {} })
+      .catch(() => {});
+  }
+  chip.addEventListener('click', () => _etoLinkJobFlow(project));
+}
+
+async function _etoLinkJobFlow(project) {
+  const idx = state.projectsIndex && state.projectsIndex[project];
+  if (!idx) { showToast('Project record not loaded yet — try again in a second.', { kind: 'error' }); return; }
+  const current = idx.job_number || '';
+  const val = await showPromptDialog({
+    title: 'Link to Total ETO',
+    message: `Enter the Total ETO job number for "${project}". The vendor PO sync and live cost actuals follow this link.`,
+    placeholder: 'e.g. 1129',
+    value: current,
+    validate: v => (v === '' || /^\d+$/.test(v)) ? null : 'Job number must be digits only',
+    okLabel: 'Save',
+  });
+  if (val === null || val === current) return; // cancelled or unchanged
+  // Verify against the ERP before saving — typos get caught here, visibly.
+  let info = null;
+  try {
+    const r = await fetch(`/api/eto/project/${encodeURIComponent(val)}`);
+    if (r.ok) info = await r.json();
+    else if (r.status !== 404) { const e = await r.json().catch(() => ({})); showToast(`ETO lookup failed: ${e.error || r.status}`, { kind: 'error' }); return; }
+  } catch (e) { showToast(`ETO lookup failed: ${e.message}`, { kind: 'error' }); return; }
+  if (!info) { showToast(`Job ${val} was not found in Total ETO — check the number.`, { kind: 'error' }); return; }
+  try {
+    const r = await fetch(`/api/projects/${idx.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_number: val }) });
+    if (!r.ok) throw new Error(`save failed (${r.status})`);
+  } catch (e) { showToast(`Could not save the job number: ${e.message}`, { kind: 'error' }); return; }
+  idx.job_number = val;
+  _etoNameCache[val] = info.ProjectName || '';
+  showToast(`Linked to ETO job ${val} — ${info.ProjectName}`, { kind: 'success' });
+  try { renderProjectTabs(); } catch (_) {}
+}
+
+// ETO actuals strip inside the Quote vs Schedule modal — live est-vs-actual
+// hours, materials, total cost and margin from the ERP costing view.
+async function _loadQuoteEtoActuals(project, overlay) {
+  try {
+    if (!_etoAvailable) return;
+    const job = state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number;
+    if (!job) return;
+    const r = await fetch(`/api/eto/costing/${encodeURIComponent(job)}`);
+    if (!r.ok) return;
+    const c = await r.json();
+    const box = overlay.querySelector('#quote-eto-actuals');
+    if (!box) return;
+    const hrs = v => v == null ? '—' : Math.round(Number(v)).toLocaleString();
+    const usd = v => v == null ? '—' : '$' + Math.round(Number(v)).toLocaleString();
+    const pct = v => v == null ? '—' : Number(v).toFixed(1) + '%';
+    const over = (est, act) => est != null && act != null && Number(act) > Number(est);
+    const cell = (label, estStr, actStr, isOver, tip) => `
+      <div class="eto-stat" title="${escapeHtml(tip)}">
+        <span class="eto-stat-label">${label}</span>
+        <span class="eto-stat-vals"><span class="eto-stat-est">${estStr}</span> est&nbsp;·&nbsp;<span class="eto-stat-act${isOver ? ' is-over' : ''}">${actStr}</span> act</span>
+      </div>`;
+    box.hidden = false;
+    box.innerHTML = `
+      <div class="eto-actuals-head">Total ETO actuals — job ${escapeHtml(String(job))} <span class="eto-actuals-hint">live from the ERP</span></div>
+      <div class="eto-actuals-grid">
+        ${cell('Eng hours', hrs(c.EstEngHrs), hrs(c.ActEngHrs), over(c.EstEngHrs, c.ActEngHrs), 'Engineering hours — estimate vs actual hours booked in Total ETO')}
+        ${cell('Mfg hours', hrs(c.EstMfgHrs), hrs(c.ActMfgHrs), over(c.EstMfgHrs, c.ActMfgHrs), 'Manufacturing hours — estimate vs actual hours booked in Total ETO')}
+        ${cell('Materials', usd(c.EstMaterials), usd(c.ActMaterials), over(c.EstMaterials, c.ActMaterials), 'Material cost — estimate vs actual (purchased + inventory pulls)')}
+        ${cell('Total cost', usd(c.TotalEstimate), usd(c.TotalActualCost), over(c.TotalEstimate, c.TotalActualCost), 'Total project cost — estimate vs actual')}
+        ${cell('Margin', pct(c.BudgetMargin), pct(c.ActualMargin), c.BudgetMargin != null && c.ActualMargin != null && Number(c.ActualMargin) < Number(c.BudgetMargin), 'Margin — budget vs actual. Red when actual margin is below budget.')}
+      </div>`;
+  } catch (_) { /* cosmetic — modal works fine without the strip */ }
+}
+
+// ── Procurement page (build readiness from Total ETO) ───────────────────────
+// Per-assembly received / ordered / no-PO rollups for a linked job's BOM.
+// Ported from the standalone Build Readiness Report app; same math, rendered
+// in the scheduler's own grid style. Read-only — nothing here writes anywhere.
+let _procState = { job: '', tab: 'assemblies', filter: 'all', pstatus: 'all', search: '', open: {} };
+try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
+function _procSave() { try { localStorage.setItem('sdcProcState', JSON.stringify({ ..._procState, open: {} })); } catch (_) {} }
+const _procCache = {};   // job → readiness payload
+let _procLoading = false;
+
+function _procLinkedJobs() {
+  const out = [];
+  const idx = state.projectsIndex || {};
+  for (const name of Object.keys(idx)) {
+    if (idx[name].job_number) out.push({ name, job: idx[name].job_number });
+  }
+  return out.sort((a, b) => Number(a.job) - Number(b.job));
+}
+
+async function loadProcurement(forceRefresh) {
+  _etoCheckOnce();
+  const root = document.getElementById('procurement-page');
+  if (!root) return;
+  const jobs = _procLinkedJobs();
+  // Default to the first linked project, but never stomp a free-form job the
+  // user loaded via the Job # box (BRR-style: any ETO job is loadable).
+  if (!_procState.job && jobs.length) _procState.job = jobs[0].job;
+  if (!_procState.job) { renderProcurementPage(); return; }
+  const job = _procState.job;
+  if (_procCache[job] && !forceRefresh) { renderProcurementPage(); return; }
+  _procLoading = true;
+  renderProcurementPage();
+  try {
+    const r = await fetch(`/api/eto/readiness/${encodeURIComponent(job)}${forceRefresh ? '?refresh=1' : ''}`);
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      _procCache[job] = { error: e.error || `Request failed (${r.status})` };
+    } else {
+      _procCache[job] = await r.json();
+    }
+  } catch (e) {
+    _procCache[job] = { error: e.message };
+  }
+  _procLoading = false;
+  renderProcurementPage();
+}
+
+function _procBarColor(pct) { return pct >= 90 ? '#74c415' : pct >= 60 ? '#eab308' : '#dc2626'; }
+// Compact money — $843K / $12.4K / $730. Assembly rows are tight on space.
+function _procUsd(v) {
+  const n = Number(v) || 0;
+  if (n <= 0) return '—';
+  if (n >= 1000000) return '$' + (n / 1000000).toFixed(1) + 'M';
+  if (n >= 10000) return '$' + Math.round(n / 1000) + 'K';
+  if (n >= 1000) return '$' + (n / 1000).toFixed(1) + 'K';
+  return '$' + n.toLocaleString();
+}
+
+// Status for the flat Parts List — received/hold/noPO are absolute; ordered
+// parts get an urgency reading against their expected (or required) date.
+function _procPartStatus(p) {
+  if (p.status === 'received') return { key: 'received', label: 'RECEIVED', cls: 'ok', sub: '' };
+  if (p.hold) return { key: 'hold', label: 'ON HOLD', cls: 'hold', sub: 'in ETO' };
+  if (p.status === 'noPO') return { key: 'noPO', label: 'NO PO', cls: 'bad', sub: '' };
+  const due = p.expDate || p.requiredDate;
+  if (due) {
+    const diff = Math.ceil((Date.parse(due + 'T00:00:00') - Date.now()) / 86400000);
+    if (isNaN(diff)) return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
+    if (diff < 0) return { key: 'overdue', label: 'OVERDUE', cls: 'bad', sub: `${Math.abs(diff)}d late` };
+    if (diff <= 14) return { key: 'soon', label: 'DUE SOON', cls: 'warn', sub: `in ${diff}d` };
+    return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: `in ${diff}d` };
+  }
+  return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
+}
+
+function _procPartsTable(data) {
+  const q = (_procState.search || '').toLowerCase();
+  const want = _procState.pstatus;
+  const rows = (data.partsList || []).filter(p => {
+    const st = _procPartStatus(p);
+    if (want !== 'all' && st.key !== want) return false;
+    if (q && ![p.pn, p.desc, p.manufacturer, p.parentPN, p.parentDesc, p.poId].some(v => String(v || '').toLowerCase().includes(q))) return false;
+    return true;
+  });
+  if (!rows.length) return `<div class="proc-empty">No parts match the current filter or search.</div>`;
+  const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+  const fmt = d => d ? fmtDate(d) : '—';
+  return `<div class="proc-plist">
+    <div class="proc-plist-head"><span>Part No</span><span>Description</span><span>Assembly / Source</span><span class="num">Qty</span><span class="num">Unit $</span><span>Mfr</span><span>PO #</span><span>Order</span><span>Exp</span><span>Status</span></div>
+    ${rows.map(p => {
+      const st = _procPartStatus(p);
+      return `<div class="proc-plrow${st.key === 'overdue' ? ' proc-plrow-overdue' : ''}">
+        <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
+        <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
+        <span class="proc-plsrc"><span class="proc-plsrc-pn">${escapeHtml(p.parentPN || 'LOOSE')}</span><span class="proc-plsrc-desc">${escapeHtml(p.parentDesc || '')}</span></span>
+        <span class="num">${p.qty ?? ''}</span>
+        <span class="num">${usd(p.unitPrice)}</span>
+        <span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>
+        <span class="proc-plpo">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
+        <span>${fmt(p.orderDate)}</span>
+        <span>${fmt(p.expDate || p.requiredDate)}</span>
+        <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function _procAssemblyRow(node, depth) {
+  const st = node.stats || { total: 0, received: 0, noPO: 0, ordered: 0, pct: 0 };
+  const open = !!_procState.open[node.id];
+  const partsBits = [`${st.received}/${st.total} parts`];
+  if (node.children.length) partsBits.push(`${node.children.length} sub-assy`);
+  if (st.noPO) partsBits.push(`<span class="proc-nopo">${st.noPO} no PO</span>`);
+  let html = `
+    <div class="proc-arow${depth > 0 ? ' proc-arow-nested' : ''}" data-aid="${escapeHtml(String(node.id))}" style="padding-left:${10 + depth * 26}px;--d:${depth}">
+      <span class="proc-caret">${open ? '▾' : '▸'}</span>
+      <button class="proc-pn" data-copy="${escapeHtml(node.pn)}" type="button" title="Click to copy part number">${escapeHtml(node.pn)}</button>
+      <span class="proc-adesc">${escapeHtml(node.desc || '')}<span class="proc-ameta">${partsBits.join(' · ')}</span></span>
+      <span class="proc-acost" title="Purchased material cost for this assembly — qty × latest PO unit price per part. In-house parts with no PO price count as $0.">${_procUsd(st.cost)}</span>
+      <span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, st.pct)}%;background:${_procBarColor(st.pct)}"></span></span>
+      <span class="proc-pct" style="color:${_procBarColor(st.pct)}">${st.pct}%</span>
+    </div>`;
+  if (open) {
+    for (const child of node.children) html += _procAssemblyRow(child, depth + 1);
+    if (node.parts.length) {
+      const q = (_procState.search || '').toLowerCase();
+      const parts = q
+        ? node.parts.filter(p => [p.pn, p.desc, p.manufacturer].some(v => String(v || '').toLowerCase().includes(q)))
+        : node.parts;
+      const money = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+      html += `<div class="proc-parts" style="margin-left:${36 + depth * 26}px">
+        <div class="proc-phead"><span></span><span>Part No</span><span>Description</span><span>Mfr</span><span class="num">Qty</span><span class="num">Unit $</span><span class="num">Ext $</span><span class="num">PO / Rcvd</span></div>
+        ${parts.map(p => `
+          <div class="proc-prow proc-prow-${p.status}">
+            <span class="proc-dot proc-dot-${p.status}" title="${p.status === 'received' ? 'Received' : p.status === 'ordered' ? 'On order' : p.hold ? 'On hold in ETO' : 'No PO'}"></span>
+            <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
+            <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
+            <span class="proc-pmfr">${escapeHtml(p.manufacturer || '')}</span>
+            <span class="num">${p.qty ?? ''}</span>
+            <span class="num">${money(p.unitPrice)}</span>
+            <span class="num">${money((Number(p.qty) || 0) * (Number(p.unitPrice) || 0))}</span>
+            <span class="num">${p.poQty ?? 0} / ${p.receivedQty ?? 0}</span>
+          </div>`).join('')}
+      </div>`;
+    }
+  }
+  return html;
+}
+
+function renderProcurementPage() {
+  const root = document.getElementById('procurement-page');
+  if (!root) return;
+  const jobs = _procLinkedJobs();
+
+  if (!_etoAvailable) {
+    root.innerHTML = `<div class="shop-parts-head"><div class="sp-head-top"><h1 class="projects-page-title">Procurement</h1></div></div>
+      <div class="proc-empty">Total ETO is not connected on this server, so the Procurement page has nothing to show. Set the ETO_* values in .env and restart.</div>`;
+    return;
+  }
+  // One control does both: the dropdown lists linked projects for a one-click
+  // switch, and its last entry ("Load a different job…") opens an in-app prompt
+  // to pull ANY ETO job — so there's no separate free-text box + Load button.
+  const options = [...jobs];
+  if (_procState.job && !jobs.some(j => j.job === _procState.job)) {
+    const loaded = _procCache[_procState.job];
+    options.unshift({ job: _procState.job, name: (loaded && loaded.projectName) ? `${loaded.projectName} (not linked)` : '(not linked to a project)' });
+  }
+  const picker = `<select id="proc-job-pick" class="proc-job-pick" title="Pick a linked project, or choose 'Load a different job…' to pull any ETO job">
+    ${options.length ? '' : '<option value="" disabled selected>Select a job…</option>'}
+    ${options.map(j => `<option value="${escapeHtml(j.job)}" ${j.job === _procState.job ? 'selected' : ''}>#${escapeHtml(j.job)} — ${escapeHtml(j.name)}</option>`).join('')}
+    <option value="__other__">🔍 Load a different job…</option>
+  </select>`;
+
+  const data = _procCache[_procState.job];
+  let body, headStat = '';
+  if (!_procState.job) {
+    body = `<div class="proc-empty">Pick a job from the dropdown, or choose <b>🔍 Load a different job…</b> to pull any ETO job. Linking a project via the <b>🔗</b> chip on its banner adds it to the dropdown automatically.</div>`;
+  } else if (_procLoading) {
+    body = `<div class="proc-empty">Loading BOM readiness from Total ETO… first load on a job takes a few seconds.</div>`;
+  } else if (!data) {
+    body = `<div class="proc-empty">Pick a job to load.</div>`;
+  } else if (data.error) {
+    body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
+  } else {
+    const t = data.totals;
+    headStat = `<div class="proc-headstat" title="${t.received} of ${t.parts} unique parts received · ${t.ordered} on order · ${t.noPO} with no PO">
+      <span class="proc-headstat-label">Readiness</span>
+      <span class="proc-bar proc-bar-lg"><span class="proc-bar-fill" style="width:${t.pct}%;background:${_procBarColor(t.pct)}"></span></span>
+      <span class="proc-pct" style="color:${_procBarColor(t.pct)}">${t.pct}%</span>
+      <span class="proc-headstat-sub">${t.parts} parts · <span class="${t.noPO ? 'proc-nopo' : ''}">${t.noPO} no PO</span>${t.cost ? ` · <span title="Total purchased material cost across the job — qty × latest PO unit price per unique part.">${_procUsd(t.cost)} materials</span>` : ''}</span>
+    </div>`;
+    const f = _procState.filter;
+    const q = (_procState.search || '').toLowerCase();
+    const keep = (a) => {
+      const pct = a.stats ? a.stats.pct : 0;
+      if (f === 'ready' && pct < 100) return false;
+      if (f === 'close' && (pct < 60 || pct >= 100)) return false;
+      if (f === 'blocked' && pct >= 60) return false;
+      if (q) {
+        const inMeta = [a.pn, a.desc].some(v => String(v || '').toLowerCase().includes(q));
+        const inParts = (function walk(n) {
+          if (n.parts.some(p => [p.pn, p.desc, p.manufacturer].some(v => String(v || '').toLowerCase().includes(q)))) return true;
+          return n.children.some(walk);
+        })(a);
+        if (!inMeta && !inParts) return false;
+      }
+      return true;
+    };
+    if (data.specs.length === 0) {
+      body = `<div class="proc-empty">Total ETO has no BOM data for job ${escapeHtml(String(data.job))} yet — engineering hasn't released assemblies into the product structure. Check back once the BOM exists.</div>`;
+    } else if (_procState.tab === 'parts') {
+      body = _procPartsTable(data);
+    } else {
+      const specHtml = data.specs.map(spec => {
+        const assemblies = spec.assemblies.filter(keep);
+        if (!assemblies.length) return '';
+        const specCost = spec.assemblies.reduce((s, a) => s + ((a.stats && a.stats.cost) || 0), 0);
+        return `<div class="proc-spec">
+          <div class="proc-spec-head"><span>Spec ${escapeHtml(String(spec.specId))} — ${escapeHtml(spec.specName || '')}</span><span class="proc-spec-cost" title="Purchased materials for this spec — sum of its assembly costs.">${_procUsd(specCost)}</span></div>
+          ${assemblies.map(a => _procAssemblyRow(a, 0)).join('')}
+        </div>`;
+      }).join('');
+      const grand = data.specs.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
+      const grandBar = `<div class="proc-grand">
+        <span>Grand total — purchased materials across all assemblies</span>
+        <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
+      </div>`;
+      body = specHtml ? specHtml + grandBar : `<div class="proc-empty">Nothing matches the current filter or search.</div>`;
+    }
+  }
+
+  const seg = (val, key, label) => `<button class="seg-btn${_procState.filter === val ? ' is-active' : ''}" data-pfilter="${val}" type="button">${label}</button>`;
+  const isParts = _procState.tab === 'parts';
+  const tabStrip = (data && !data.error && !_procLoading && data.specs && data.specs.length) ? `
+    <div class="proc-tabs">
+      <button class="proc-tab${!isParts ? ' is-active' : ''}" data-ptab="assemblies" type="button">Assemblies <span class="proc-tab-n">${data.specs.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
+      <button class="proc-tab${isParts ? ' is-active' : ''}" data-ptab="parts" type="button">Parts List <span class="proc-tab-n">${(data.partsList || []).length}</span></button>
+      <span class="proc-tab-hint">Click any part number to copy</span>
+    </div>` : '';
+  root.innerHTML = `
+    <div class="shop-parts-head">
+      <div class="sp-head-top">
+        <h1 class="projects-page-title">Procurement</h1>
+        ${headStat}
+        <button class="btn-secondary sp-add-toggle" id="proc-refresh" type="button" title="Re-pull the BOM and PO status from Total ETO (bypasses the 5-minute cache)">⟳ Refresh</button>
+      </div>
+      <div class="shop-parts-toolbar">
+        ${picker}
+        ${isParts
+          ? `<select id="proc-pstatus" class="proc-job-pick" title="Filter parts by status">
+              ${[['all','Status: all'],['noPO','No PO'],['overdue','Overdue'],['soon','Due ≤2 wk'],['ordered','On order'],['received','Received'],['hold','On hold']].map(([v,t]) => `<option value="${v}" ${_procState.pstatus === v ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>`
+          : `<div class="seg-control proc-filter">
+              ${seg('all', 'f', 'All')}${seg('ready', 'f', 'Ready')}${seg('close', 'f', 'Close')}${seg('blocked', 'f', 'Blocked')}
+            </div>`}
+        <input type="search" class="vpo-search" id="proc-search" placeholder="Search parts, assemblies, manufacturers…" value="${escapeHtml(_procState.search || '')}"/>
+        ${isParts ? '' : `<button class="btn-ghost btn-tight" id="proc-expand" type="button">Expand all</button>
+        <button class="btn-ghost btn-tight" id="proc-collapse" type="button">Collapse all</button>`}
+      </div>
+      ${tabStrip}
+      <div class="vpo-legend"><span class="proc-dot proc-dot-received"></span> Received&nbsp;&nbsp;<span class="proc-dot proc-dot-ordered"></span> On order&nbsp;&nbsp;<span class="proc-dot proc-dot-noPO"></span> No PO&nbsp;&nbsp;·&nbsp;&nbsp;Ready = 100% · Close ≥ 60% · Blocked &lt; 60%${data && data.generatedAt ? `&nbsp;&nbsp;·&nbsp;&nbsp;<span class="proc-asof">ETO data as of ${new Date(data.generatedAt).toLocaleTimeString()}</span>` : ''}</div>
+    </div>
+    <div class="proc-body">${body}</div>`;
+
+  // wiring
+  const pick = root.querySelector('#proc-job-pick');
+  if (pick) pick.addEventListener('change', async () => {
+    if (pick.value === '__other__') {
+      pick.value = _procState.job || ''; // restore the visible selection while the dialog is open
+      const v = await showPromptDialog({
+        title: 'Load an ETO job',
+        message: 'Enter any Total ETO job number to load its build readiness. It does not need to be linked to a schedule.',
+        placeholder: 'e.g. 1160',
+        validate: x => (/^\d+$/.test(x) ? null : 'Job number must be digits only'),
+        okLabel: 'Load',
+      });
+      if (!v) return; // cancelled
+      try {
+        const r = await fetch(`/api/eto/project/${encodeURIComponent(v)}`);
+        if (r.status === 404) { showToast(`Job ${v} was not found in Total ETO — check the number.`, { kind: 'error' }); return; }
+        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(`ETO lookup failed: ${e.error || r.status}`, { kind: 'error' }); return; }
+        const info = await r.json();
+        showToast(`Loading job ${v} — ${info.ProjectName}`, { duration: 2000 });
+      } catch (e) { showToast(`ETO lookup failed: ${e.message}`, { kind: 'error' }); return; }
+      _procState.job = v; _procState.open = {}; _procSave();
+      loadProcurement();
+      return;
+    }
+    _procState.job = pick.value; _procState.open = {}; _procSave(); loadProcurement();
+  });
+  root.querySelector('#proc-refresh').addEventListener('click', () => loadProcurement(true));
+  root.querySelectorAll('[data-pfilter]').forEach(b => b.addEventListener('click', () => { _procState.filter = b.dataset.pfilter; _procSave(); renderProcurementPage(); }));
+  const se = root.querySelector('#proc-search');
+  if (se) se.addEventListener('input', () => {
+    _procState.search = se.value; _procSave(); renderProcurementPage();
+    const s2 = root.querySelector('#proc-search');
+    if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); }
+  });
+  root.querySelectorAll('[data-ptab]').forEach(b => b.addEventListener('click', () => { _procState.tab = b.dataset.ptab; _procSave(); renderProcurementPage(); }));
+  const pstatus = root.querySelector('#proc-pstatus');
+  if (pstatus) pstatus.addEventListener('change', () => { _procState.pstatus = pstatus.value; _procSave(); renderProcurementPage(); });
+  const allIds = [];
+  (function collect(nodes) { (nodes || []).forEach(n => { if (n.isAssembly) { allIds.push(n.id); collect(n.children); } }); })(data && data.specs ? data.specs.flatMap(s => s.assemblies) : []);
+  const expandBtn = root.querySelector('#proc-expand');
+  if (expandBtn) expandBtn.addEventListener('click', () => { allIds.forEach(id => _procState.open[id] = true); renderProcurementPage(); });
+  const collapseBtn = root.querySelector('#proc-collapse');
+  if (collapseBtn) collapseBtn.addEventListener('click', () => { _procState.open = {}; renderProcurementPage(); });
+  root.querySelectorAll('.proc-arow').forEach(row => row.addEventListener('click', (e) => {
+    if (e.target.closest('[data-copy]')) return; // PN click = copy, not toggle
+    const id = row.dataset.aid;
+    _procState.open[id] = !_procState.open[id];
+    renderProcurementPage();
+  }));
+  root.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => {
+    const pn = b.dataset.copy;
+    if (!pn) return;
+    try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {}
+  }));
+}
+
 async function loadVendorPOs() {
   try { state.vendorPOs = await api.vendorPOs.list(); } catch (_) { state.vendorPOs = []; }
   renderVendorPOsPage();
+}
+
+// Live ETO part lines for one PO — lazy-loaded when a synced row is expanded.
+const _vpoLinesCache = {}; // "job|po" → lines[]
+async function _vpoLoadLines(box) {
+  const job = box.dataset.linesJob, po = box.dataset.linesPo;
+  const key = `${job}|${po}`;
+  if (!_vpoLinesCache[key]) {
+    box.innerHTML = '<div class="vpo-lines-note">Loading parts from Total ETO…</div>';
+    try { _vpoLinesCache[key] = await api.eto.poLines(job, po); }
+    catch (e) { box.innerHTML = `<div class="vpo-lines-note">⚠ Could not load part lines: ${escapeHtml(e.message)}</div>`; delete _vpoLinesCache[key]; return; }
+  }
+  const lines = _vpoLinesCache[key];
+  if (!lines.length) { box.innerHTML = '<div class="vpo-lines-note">No part lines on this PO in ETO.</div>'; return; }
+  const fmt = d => d ? fmtDate(d) : '—';
+  box.innerHTML = `
+    <div class="vpo-lines-title">Parts on this PO <span class="vpo-lines-src">live from Total ETO</span></div>
+    <div class="vpo-lines-head"><span></span><span>Part No</span><span>Description</span><span class="num">Qty</span><span class="num">Rcvd</span><span>Due</span><span class="num">Price</span></div>
+    ${lines.map(l => {
+      const due = l.dateRevised || l.dateRequired;
+      const revised = !!(l.dateRevised && l.dateRequired && l.dateRevised !== l.dateRequired);
+      return `<div class="vpo-line vpo-line-${l.status}">
+        <span class="proc-dot proc-dot-${l.status === 'received' ? 'received' : 'ordered'}" title="${l.status === 'received' ? 'Received' : 'Open'}"></span>
+        <span class="vpo-line-pn">${escapeHtml(l.partNumber || '—')}</span>
+        <span class="vpo-line-desc" title="${escapeHtml(l.desc || '')}">${escapeHtml(l.desc || '')}</span>
+        <span class="num">${l.qty ?? ''}</span>
+        <span class="num">${l.received ?? 0}</span>
+        <span class="${revised ? 'vpo-line-revised' : ''}" title="${revised ? `Buyer revised this date — originally ${fmt(l.dateRequired)}` : ''}">${fmt(due)}${revised ? ' ↻' : ''}</span>
+        <span class="num">${l.price != null ? '$' + Number(l.price).toFixed(2) : '—'}</span>
+      </div>`;
+    }).join('')}`;
 }
 function _vpoRows(all, st) {
   let rows = all.slice();
@@ -8053,6 +8525,7 @@ function _vpoRows(all, st) {
   if (st.fVendor && st.fVendor !== 'all') rows = rows.filter(r => (r.vendor || '') === st.fVendor);
   if (st.fPm && st.fPm !== 'all') rows = rows.filter(r => (r.pm || '') === st.fPm);
   if (st.fStatus && st.fStatus !== 'all') rows = rows.filter(r => _vpoStatusOf(r) === st.fStatus);
+  if (st.fJob && st.fJob !== 'all') rows = rows.filter(r => String(r.job || '') === st.fJob);
   const q = (st.search || '').trim().toLowerCase();
   if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments].some(v => String(v || '').toLowerCase().includes(q)));
   const eta = r => { const m = _vpoEtaMs(r); return m == null ? Infinity : m; };
@@ -8074,6 +8547,7 @@ function renderVendorPOsPage() {
   const openCount = all.filter(r => !r.complete).length;
   const vendors = [...new Set(all.map(r => r.vendor).filter(Boolean))].sort();
   const pms = [...new Set(all.map(r => r.pm).filter(Boolean))].sort();
+  const jobsList = [...new Set(all.map(r => r.job).filter(Boolean))].sort((a, b) => Number(b) - Number(a) || String(a).localeCompare(String(b)));
   const teamNames = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
   const pmList = `<datalist id="vpo-pm-list">${[...new Set([...teamNames, ...pms])].map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
   const vendorList = `<datalist id="vpo-vendor-list">${vendors.map(v => `<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>`;
@@ -8096,19 +8570,27 @@ function renderVendorPOsPage() {
     const s = VPO_STATUS[sName];
     const e = _vpoEtaMs(r);
     const etaStr = e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '';
+    // Buyer revised the date in ETO → show the slip right on the row.
+    const slipped = r.eto_synced && r.eta && r.eta_original && r.eta !== r.eta_original;
+    const slipTip = slipped
+      ? (r.eta > r.eta_original
+          ? `Slipped from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`
+          : `Moved up from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`)
+      : '';
+    const slipMark = slipped ? ` <span class="vpo-slip" title="${escapeHtml(slipTip)}">↻</span>` : '';
     return `<div class="sp-prow vpo-row vpo-st-${sName}" data-id="${r.id}">
       <div class="sp-prow-line">
         <span class="vpo-dot" style="background:${s.color}" title="${s.label}"></span>
-        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}</span>
+        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}${r.eto_synced ? ' <span class="vpo-eto-pill" title="Auto-synced from Total ETO — vendor, dates, price and done status refresh from the ERP every 30 minutes. PM, comments and tracking stay yours.">ETO</span>' : ''}</span>
         <span class="vpo-job">${escapeHtml(r.job || '')}</span>
         ${isList ? `<span class="vpo-vendor">${escapeHtml(r.vendor || '')}</span>` : ''}
-        <span class="vpo-eta">${etaStr}</span>
+        <span class="vpo-eta">${etaStr}${slipMark}</span>
         ${isList ? `<span class="vpo-ship">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : ''}</span>` : ''}
         ${isList ? `<span class="vpo-track" title="${escapeHtml(r.tracking || '')}">${escapeHtml(r.tracking || '')}</span>` : ''}
         <label class="sp-done" title="Partial shipment"><input type="checkbox" data-id="${r.id}" data-field="partial" ${r.partial ? 'checked' : ''}/></label>
         <label class="sp-done" title="Complete"><input type="checkbox" data-id="${r.id}" data-field="complete" ${r.complete ? 'checked' : ''}/></label>
       </div>
-      <div class="sp-card-details" data-details="${r.id}" hidden><div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
+      <div class="sp-card-details" data-details="${r.id}" hidden>${r.eto_synced && r.job && r.po ? `<div class="vpo-lines" data-lines-job="${escapeHtml(r.job)}" data-lines-po="${escapeHtml(r.po)}"></div>` : ''}<div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
     </div>`;
   };
 
@@ -8127,7 +8609,8 @@ function renderVendorPOsPage() {
   }
 
   const sel = (val, opts, attr) => `<select ${attr}>${opts.map(o => `<option value="${escapeHtml(o.v)}"${val === o.v ? ' selected' : ''}>${escapeHtml(o.t)}</option>`).join('')}</select>`;
-  const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('');
+  const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('')
+    + (_etoAvailable ? '<span class="vpo-leg" title="The buyer entered a revised date in Total ETO — the ETA shown is the new promise; hover the ↻ on a row to see the original."><span class="vpo-slip">↻</span> date revised in ETO</span>' : '');
 
   // ── Dashboards ──
   const nowMs = Date.now();
@@ -8210,6 +8693,7 @@ function renderVendorPOsPage() {
       <div class="sp-head-top">
         <h1 class="projects-page-title">Vendor PO Track</h1>
         ${headStat}
+        ${_etoAvailable ? `<button class="btn-secondary sp-add-toggle" data-action="vpo-eto-sync" data-scope="all" type="button" title="Pull the latest PO status from Total ETO — every open PO across the whole ERP, plus a refresh of everything already here. Runs automatically every 30 min; this is the on-demand version.">⟳ Sync from ETO</button>` : ''}
         <button class="btn-primary sp-add-toggle" data-action="vpo-toggle-add" type="button">${_vpoAddOpen ? '✕ Close' : '＋ Add PO'}</button>
       </div>
       <form class="sp-add-bar${_vpoAddOpen ? '' : ' is-hidden'}" data-action="vpo-add-form">
@@ -8235,6 +8719,7 @@ function renderVendorPOsPage() {
         ${sel(st.fStatus, [{ v: 'all', t: 'Status: all' }, { v: 'late', t: 'Late' }, { v: 'shipped', t: 'Shipped' }, { v: 'soon', t: 'Due ≤1 wk' }, { v: 'partial', t: 'Partial' }, { v: 'complete', t: 'Complete' }], 'class="vpo-fsel" data-fk="fStatus"')}
         ${sel(st.fVendor, [{ v: 'all', t: 'Vendor: all' }, ...vendors.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fVendor"')}
         ${sel(st.fPm, [{ v: 'all', t: 'PM: all' }, ...pms.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fPm"')}
+        ${sel(st.fJob, [{ v: 'all', t: 'Job: all' }, ...jobsList.map(v => ({ v, t: `#${v}` }))], 'class="vpo-fsel" data-fk="fJob"')}
         <input type="search" class="vpo-search" placeholder="Search PO / job / vendor / tracking…" value="${escapeHtml(st.search || '')}"/>
       </div>
       <div class="vpo-legend">${legend}</div>
@@ -8244,6 +8729,24 @@ function renderVendorPOsPage() {
     ${pmList}${vendorList}`;
 
   root.querySelector('[data-action="vpo-toggle-add"]').addEventListener('click', () => { _vpoAddOpen = !_vpoAddOpen; renderVendorPOsPage(); if (_vpoAddOpen) { const p = root.querySelector('input[name="po"]'); if (p) p.focus(); } });
+  _etoCheckOnce(); // reveal the ETO sync buttons if the server has ETO configured
+  root.querySelectorAll('[data-action="vpo-eto-sync"]').forEach(etoBtn => etoBtn.addEventListener('click', async () => {
+    const scope = etoBtn.dataset.scope || 'linked';
+    const label = etoBtn.textContent;
+    etoBtn.disabled = true; etoBtn.textContent = '⟳ Syncing…';
+    try {
+      const r = await api.eto.syncVendorPOs(scope);
+      if (r && r.ok) {
+        showToast(`ETO sync done — ${r.pos} PO${r.pos === 1 ? '' : 's'} across ${r.jobs} job${r.jobs === 1 ? '' : 's'} (${r.created} new, ${r.updated} updated)`, { kind: 'success' });
+        await loadVendorPOs();
+        return; // loadVendorPOs re-rendered the page; this button is gone
+      }
+      showToast(`ETO sync failed: ${(r && r.error) || 'unknown error'}`, { kind: 'error' });
+    } catch (e) {
+      showToast(`ETO sync failed: ${e.message}`, { kind: 'error' });
+    }
+    etoBtn.disabled = false; etoBtn.textContent = label;
+  }));
   root.querySelector('[data-action="vpo-add-form"]').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target;
     const data = { po: f.po.value.trim() || null, job: f.job.value.trim() || null, vendor: f.vendor.value.trim() || null, po_date: f.po_date.value || null, lead_time: f.lead_time.value === '' ? null : Number(f.lead_time.value), pm: f.pm.value.trim() || null, comments: f.comments.value.trim() || null, complete: 0, partial: 0 };
@@ -8257,7 +8760,16 @@ function renderVendorPOsPage() {
   if (vdr) vdr.addEventListener('change', () => { st.dashRange = Number(vdr.value); _vpoSave(); renderVendorPOsPage(); });
   const se = root.querySelector('.vpo-search');
   se.addEventListener('input', () => { st.search = se.value; _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
-  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => { const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`); if (d) d.hidden = !d.hidden; }));
+  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
+    const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
+    if (!d) return;
+    d.hidden = !d.hidden;
+    // Synced rows: pull the PO's actual part lines from ETO on first open.
+    if (!d.hidden) {
+      const box = d.querySelector('.vpo-lines');
+      if (box && !box.dataset.loaded) { box.dataset.loaded = '1'; _vpoLoadLines(box); }
+    }
+  }));
   if (!root.dataset.changeBound) {
     root.dataset.changeBound = '1';
     root.addEventListener('change', async (e) => {
@@ -9154,7 +9666,8 @@ function renderProjectTabs() {
       wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
-      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>${_etoBannerChipHtml(p)}`;
+      _wireEtoBannerChip(banner, p);
     }
   }
 
@@ -12692,6 +13205,7 @@ async function openQuoteCompareModal(project, providedQuote) {
           <tbody>${rowsHtml}</tbody>
           <tfoot>${buildFooterHtml()}</tfoot>
         </table>
+        <div id="quote-eto-actuals" class="quote-eto-actuals" hidden></div>
       </div>
       <div class="modal-foot">
         <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
@@ -12711,6 +13225,9 @@ async function openQuoteCompareModal(project, providedQuote) {
   overlay.querySelector('[data-action="financials"]').onclick = () => {
     openFinancialsModal(project);
   };
+  // ETO actuals strip — fills in async below the hours table when this
+  // project is linked to a Total ETO job. No link / no ETO → stays hidden.
+  _loadQuoteEtoActuals(project, overlay);
   // Helper — POST the freshly-merged quote and refresh caches/popup.
   // Used by sold delivery, penalty toggle, and penalty weeks inputs.
   const _saveQuoteMerge = async (patch) => {
@@ -16776,8 +17293,70 @@ function ensureSetupDraft() {
   }
 }
 
+// System Status panel (Setup) — fetches /api/status and renders a glanceable
+// health card. Read-only; the only action is a manual "Back up now" (admin).
+function _fmtAgo(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - Date.parse(iso);
+  if (isNaN(ms)) return iso;
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ago`;
+  if (h > 0) return `${h}h ago`;
+  if (m > 0) return `${m}m ago`;
+  return 'just now';
+}
+function _fmtUptime(sec) {
+  if (sec == null) return '—';
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  return [d ? `${d}d` : '', h ? `${h}h` : '', `${m}m`].filter(Boolean).join(' ');
+}
+async function renderSystemStatus() {
+  const box = document.getElementById('system-status-body');
+  if (!box) return;
+  let s;
+  try { s = await fetch('/api/status').then(r => r.json()); }
+  catch (e) { box.innerHTML = `<div class="sys-stat-row sys-bad">⚠ Could not reach the server: ${escapeHtml(e.message)}</div>`; return; }
+
+  const dot = ok => `<span class="sys-dot ${ok ? 'sys-dot-ok' : 'sys-dot-bad'}"></span>`;
+  const bk = s.lastBackup;
+  const backupLine = !bk ? `${dot(false)} No backup yet this session — runs nightly at 2 AM, or back up now`
+    : bk.ok ? `${dot(true)} Last backup ${_fmtAgo(bk.at)} · ${bk.file} (${Math.round((bk.sizeBytes || 0) / 1024).toLocaleString()} KB)`
+            : `${dot(false)} Last backup FAILED ${_fmtAgo(bk.at)} — ${escapeHtml(bk.error || '')}`;
+  const sync = s.lastEtoSync;
+  const syncLine = sync
+    ? `${dot(true)} ETO sync ${_fmtAgo(sync.at)} · ${sync.pos} POs (${sync.created} new, ${sync.updated} updated)`
+    : `${dot(true)} No ETO sync yet this session — runs every 30 min`;
+
+  box.innerHTML = `
+    <div class="sys-status-grid">
+      <div class="sys-stat-row">${dot(s.ok)} <b>Server</b> — up ${_fmtUptime(s.uptimeSeconds)} · v${escapeHtml(String(s.version))} · Node ${escapeHtml(String(s.node))}</div>
+      <div class="sys-stat-row">${dot(s.db && s.db.ok)} <b>Database</b> — ${s.db && s.db.ok ? `reachable (${s.db.latencyMs}ms)` : `UNREACHABLE: ${escapeHtml((s.db && s.db.error) || '')}`}</div>
+      <div class="sys-stat-row"><b>Backups</b> — ${backupLine}</div>
+      <div class="sys-stat-row"><b>Total ETO</b> — ${syncLine}</div>
+      <div class="sys-stat-foot">
+        <span class="sys-stat-hint">Backups kept ${s.backup ? s.backup.keepDays : 14} days in <code>${escapeHtml(s.backup ? s.backup.dir : 'backups')}</code></span>
+        <span style="flex:1"></span>
+        <button class="btn-secondary btn-tight" id="sys-backup-now" type="button">Back up now</button>
+        <button class="btn-ghost btn-tight" id="sys-status-refresh" type="button">↻ Refresh</button>
+      </div>
+    </div>`;
+  const refresh = box.querySelector('#sys-status-refresh');
+  if (refresh) refresh.addEventListener('click', renderSystemStatus);
+  const backupBtn = box.querySelector('#sys-backup-now');
+  if (backupBtn) backupBtn.addEventListener('click', async () => {
+    backupBtn.disabled = true; backupBtn.textContent = 'Backing up…';
+    try {
+      const r = await fetch('/api/backup', { method: 'POST' }).then(x => x.json());
+      if (r.ok) showToast(`Backup created — ${r.file} (${Math.round((r.sizeBytes || 0) / 1024).toLocaleString()} KB)`, { kind: 'success' });
+      else showToast(`Backup failed: ${r.error || 'unknown error'}`, { kind: 'error' });
+    } catch (e) { showToast(`Backup failed: ${e.message}`, { kind: 'error' }); }
+    renderSystemStatus();
+  });
+}
+
 function renderSetup() {
   ensureSetupDraft();
+  try { renderSystemStatus(); } catch (_) {}
   const d = state.setupDraft;
 
   // (Row-height now lives in the schedule toolbar — used to be a slider here.)
@@ -17727,6 +18306,9 @@ function setView(view) {
   // Departments instead so they don't get a blank page.
   if (view === 'dashboard') view = 'team';
   state.view = view;
+  // Survive reloads: F5 / Ctrl+Shift+R reopens the view you were on instead
+  // of always dumping you back on the schedule.
+  try { localStorage.setItem('sdcActiveView', view); } catch (_) {}
   document.body.dataset.view = view;
   // Update the legacy .tab buttons (if any still exist) and the sidebar
   // icons — both share the data-view attribute, so a single CSS active
@@ -17747,6 +18329,7 @@ function setView(view) {
   }
   else if (view === 'shop-parts') loadShopParts();
   else if (view === 'vendor-pos') loadVendorPOs();
+  else if (view === 'procurement') loadProcurement();
   else if (view === 'projects')  renderProjectsPage();
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
@@ -18937,8 +19520,11 @@ async function init() {
     if (resp.ok) {
       const projects = await resp.json();
       state.projectWorkspaces = state.projectWorkspaces || {};
+      state.projectsIndex = {};
       for (const p of projects) {
         if (!p || !p.name) continue;
+        // ETO integration + project-link chip need the row id and job number.
+        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '' };
         // Server stores the legacy literal 'default' for projects that
         // never had an explicit workspace set; map that to our canonical
         // DEFAULT_WORKSPACE ('Active'). Anything else must be in the
@@ -18951,6 +19537,7 @@ async function init() {
       try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
     }
   } catch (_) {}
+  _etoCheckOnce(); // resolve ETO availability early so chips/buttons render on first paint
 
   document.getElementById('btn-save-setup').addEventListener('click', saveSetup);
   document.getElementById('btn-reset-setup').addEventListener('click', discardSetup);
@@ -19493,12 +20080,24 @@ async function init() {
     }
   });
 
+  // Restore the last-open view after a reload. Schedule is the default so it
+  // needs no restore; the password-gated Departments view is skipped unless
+  // this browser session already unlocked it.
+  try {
+    const savedView = localStorage.getItem('sdcActiveView');
+    if (savedView && savedView !== 'schedule' && document.getElementById(`view-${savedView}`)
+        && !(savedView === 'team' && !sessionStorage.getItem('sdcTeamAuth'))) {
+      setView(savedView);
+    }
+  } catch (_) {}
+
   loadTasks();
   // After team loads, if a personId is persisted from a prior session,
-  // route into personal mode (assignee filter + schedule view + banner).
-  // Team has to be loaded first so the member name can be resolved.
+  // route into personal mode (assignee filter + schedule view + banner) —
+  // but only when the user was last on the schedule; a restored Procurement /
+  // Vendor PO / Shop Parts view should stay where the user left it.
   loadTeam().then(() => {
-    if (_actionsPageState.personId != null) {
+    if (_actionsPageState.personId != null && state.view === 'schedule') {
       routePersonalMode(_actionsPageState.personId);
     }
   });

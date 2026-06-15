@@ -29,6 +29,7 @@ const bcrypt = require('bcryptjs');
 const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
+const ops = require('./ops'); // backups, health/status, crash logging
 // emailService is optional — when nodemailer isn't installed or SMTP_HOST is
 // empty, it returns a no-op stub so the comment POST handler doesn't crash.
 let emailSvc;
@@ -154,7 +155,7 @@ app.post('/api/auth/register', async (req, res) => {
   const name     = (req.body.name     || '').toString().trim();
   const password = (req.body.password || '').toString();
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
-  if (password.length < 1)           return res.status(400).json({ error: 'password is required' });
+  if (password.length < 8)           return res.status(400).json({ error: 'password must be at least 8 characters' });
   try {
     const hash = bcrypt.hashSync(password, 12);
     const [r] = await pool.query(
@@ -540,6 +541,10 @@ app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
     return res.status(400).json({ error: 'Anchor milestones cannot be deleted.' });
   }
   await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
+  // The live DB has no FK cascade, so clean up the task's comments here or they
+  // orphan (point at a gone task_id). History is intentionally kept — it's the
+  // audit trail, and the delete itself is logged just below.
+  await pool.query('DELETE FROM task_comments WHERE task_id = ?', [id]);
   if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
   if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee);
   await cascadeSchedule();
@@ -752,6 +757,96 @@ app.delete('/api/vendor-pos/:id', requireRole('editor'), async (req, res) => {
   await pool.query('DELETE FROM vendor_pos WHERE id = ?', [Number(req.params.id)]);
   res.json({ ok: true });
   io.emit('vendor_pos:updated');
+});
+
+// ── Total ETO bridge (read-only ERP integration, optional) ───────────────────
+// etoDb.js connects to the Total ETO SQL Server when ETO_* env vars are set.
+// Join key: projects.job_number === ETO ProjectID.
+const etoDb = require('./etoDb');
+
+app.get('/api/eto/status', async (_req, res) => {
+  if (!etoDb.CONFIGURED) return res.json({ configured: false, connected: false });
+  try {
+    await etoDb.ping();
+    res.json({ configured: true, connected: true });
+  } catch (e) {
+    res.json({ configured: true, connected: false, error: e.message });
+  }
+});
+
+// Validate a job number against ETO — returns the official project name.
+app.get('/api/eto/project/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  try {
+    const info = await etoDb.getProjectInfo(job);
+    if (!info) return res.status(404).json({ error: `No ETO project ${job}` });
+    res.json(info);
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Est-vs-actual hours / labor / materials / margin from ETO costing views.
+app.get('/api/eto/costing/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  try {
+    const costing = await etoDb.getProjectCosting(job);
+    if (!costing) return res.status(404).json({ error: `No ETO costing for project ${job}` });
+    res.json(costing);
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Procurement readiness — the full BOM walk per spec with received / ordered /
+// no-PO rollups. Heavy on the ERP (correlated subqueries per part), so results
+// are cached in memory for 5 minutes; ?refresh=1 busts the cache.
+const _readinessCache = new Map(); // job → { at, data }
+app.get('/api/eto/readiness/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _readinessCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  try {
+    const data = await etoDb.getReadiness(job);
+    if (!data) return res.status(404).json({ error: `No ETO specs found for job ${job}` });
+    _readinessCache.set(job, { at: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error('[eto] readiness failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Pull PO data from ETO into vendor_pos. Default scope covers linked projects;
+// body {scope:'all'} also pulls every open PO across the whole ERP.
+app.post('/api/eto/sync-vendor-pos', requireRole('editor'), async (req, res) => {
+  const scope = req.body && req.body.scope === 'all' ? 'all' : 'linked';
+  try {
+    const result = await etoDb.syncVendorPOs(pool, scope);
+    ops.recordEtoSync(result);
+    res.json({ ok: true, ...result });
+    if (result.created || result.updated) io.emit('vendor_pos:updated');
+  } catch (e) {
+    console.error('[eto] vendor PO sync failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Live line items for one PO — the expandable parts view in the tracker.
+app.get('/api/eto/po/:job/:po/lines', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  const po = parseInt(req.params.po, 10);
+  if (!Number.isInteger(job) || !Number.isInteger(po)) return res.status(400).json({ error: 'job and po must be numbers' });
+  try {
+    res.json(await etoDb.getPoLines(job, po));
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
 });
 
 app.post('/api/tasks/reorder', requireRole('editor'), async (req, res) => {
@@ -2521,8 +2616,13 @@ app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
   if (Object.keys(updates).length === 0) return res.json(existing);
 
   if (updates.name && updates.name !== existing.name) {
+    // Rows are linked to a project by NAME, so a rename has to follow through
+    // every name-keyed table or they orphan. (vendor_pos/shop_parts are keyed
+    // by job number, not name, so a rename correctly leaves them alone.)
     await pool.query('UPDATE tasks SET project = ? WHERE project = ?', [updates.name, existing.name]);
     await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
+    await pool.query('UPDATE task_history SET project = ? WHERE project = ?', [updates.name, existing.name]);
+    await pool.query('UPDATE task_comments SET project = ? WHERE project = ?', [updates.name, existing.name]);
   }
 
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
@@ -2827,7 +2927,27 @@ app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
 });
 
 // Health check — used by Electron shell to detect server readiness
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'scheduler' }));
+// Liveness probe (public, no auth). Light by design — pings the DB and reports
+// uptime, but no filesystem paths. Full detail is on /api/status (auth'd).
+app.get('/health', async (_req, res) => {
+  const s = await ops.getStatus(pool);
+  res.json({ ok: s.ok, service: 'scheduler', uptimeSeconds: s.uptimeSeconds, db: { ok: s.db.ok } });
+});
+
+// Full reliability snapshot for the in-app Status panel.
+app.get('/api/status', requireAuth, async (_req, res) => {
+  res.json(await ops.getStatus(pool));
+});
+
+// On-demand DB backup (admin). The nightly cron does this automatically.
+app.post('/api/backup', requireRole('admin'), async (_req, res) => {
+  try {
+    const r = await ops.runBackup();
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // Global error handler — catches unhandled promise rejections from async routes
 // (Express 4 does not auto-catch async throws without this)
@@ -2856,10 +2976,22 @@ async function startServer({ port } = {}) {
   // Wrapped in typeof check so a missing cronJobs.js doesn't crash boot.
   try {
     const cron = require('./cronJobs');
-    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc });
+    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops });
   } catch (_) { /* cronJobs.js is optional */ }
   return server;
 }
+
+// Crash safety net — a stray throw/rejection anywhere shouldn't vanish silently.
+// We log a full trail (PM2 keeps the file) so post-mortem isn't guesswork. An
+// uncaughtException leaves the process in an undefined state, so we exit and let
+// PM2 restart cleanly; a lone unhandledRejection is logged but not fatal.
+process.on('uncaughtException', (err) => {
+  console.error('[scheduler] UNCAUGHT EXCEPTION — exiting for clean PM2 restart:', err && err.stack || err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[scheduler] UNHANDLED REJECTION:', reason && reason.stack || reason);
+});
 
 if (require.main === module) {
   startServer().then(_server => {

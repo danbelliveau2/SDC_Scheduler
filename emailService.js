@@ -112,4 +112,22 @@ async function sendDigest({ db, to, items }) {
   });
 }
 
-module.exports = { ENABLED, sendMentionEmail, sendDigest };
+/**
+ * sendAlert — fire-and-forget ops alert (backup failed, DB unreachable, etc.).
+ * Deliberately bypasses notification_log/dedupe so it has no DB dependency and
+ * works even if the DB is the thing that's down. No-op when SMTP is disabled.
+ */
+async function sendAlert({ to, subject, text }) {
+  if (!ENABLED || !to) return { sent: false, reason: 'disabled' };
+  const t = _getTransport();
+  if (!t) return { sent: false, reason: 'no_transport' };
+  try {
+    await t.sendMail({ from: FROM, to, subject, text, html: `<pre style="font:13px monospace">${String(text || '').replace(/[<>]/g, '')}</pre>` });
+    return { sent: true };
+  } catch (e) {
+    console.warn('[email] alert failed:', e.message);
+    return { sent: false, reason: e.message };
+  }
+}
+
+module.exports = { ENABLED, sendMentionEmail, sendDigest, sendAlert };

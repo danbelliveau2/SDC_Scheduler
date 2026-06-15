@@ -2000,6 +2000,7 @@ body.customer-view .customer-view-flatten.is-active {
 
 /* ---------- Buttons ---------- */
 .btn-primary,
+.btn-secondary,
 .btn-ghost,
 .btn-danger {
   padding: 9px 16px;
@@ -2009,6 +2010,390 @@ body.customer-view .customer-view-flatten.is-active {
   border: 1px solid transparent;
   font-weight: 500;
   font-family: inherit;
+}
+.btn-secondary {
+  background: white;
+  color: var(--sdc-primary);
+  border-color: var(--sdc-primary);
+  font-weight: 700;
+}
+.btn-secondary:hover { background: #eaf3fb; }
+.btn-secondary:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Total ETO integration ──────────────────────────────────────────────── */
+/* Banner chip — shows whether the active project is linked to an ETO job */
+.eto-chip {
+  margin-left: 8px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  background: #e3f0fa;
+  color: var(--sdc-primary);
+  border: 1px solid #aacee8;
+}
+.eto-chip:hover { background: #d3e6f7; }
+.eto-chip-unlinked {
+  background: white;
+  color: #64748b;
+  border: 1px dashed #94a3b8;
+  font-weight: 600;
+}
+.eto-chip-unlinked:hover { color: var(--sdc-primary); border-color: var(--sdc-primary); background: white; }
+.eto-chip-bad { background: #fef2f2; color: #b91c1c; border-color: #fca5a5; }
+
+/* Vendor PO row pill — marks rows the ETO sync owns */
+.vpo-eto-pill {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  background: #e3f0fa;
+  color: var(--sdc-primary);
+  border: 1px solid #aacee8;
+  vertical-align: 1px;
+}
+
+/* Quote vs Schedule modal — live actuals strip from the ERP */
+.quote-eto-actuals { margin-top: 14px; border-top: 1px solid #e2e8f0; padding-top: 10px; }
+.eto-actuals-head {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #475569;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.eto-actuals-hint { font-weight: 500; color: #94a3b8; text-transform: none; letter-spacing: 0; }
+.eto-actuals-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.eto-stat { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px; }
+.eto-stat-label { display: block; font-size: 10.5px; font-weight: 700; color: #64748b; margin-bottom: 2px; }
+.eto-stat-vals { font-size: 12.5px; color: #334155; white-space: nowrap; }
+.eto-stat-act.is-over { color: #dc2626; font-weight: 700; }
+
+/* ── Procurement page (build readiness from Total ETO) ─────────────────── */
+.proc-empty {
+  margin: 24px;
+  padding: 28px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  color: #475569;
+  font-size: 13.5px;
+  text-align: center;
+}
+.proc-error { color: #b45309; background: #fef3c7; border-color: #fcd34d; }
+.proc-job-pick {
+  padding: 7px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  /* The project name is the widest thing in the toolbar — give it room */
+  max-width: 380px;
+}
+.proc-jobbox { display: inline-flex; align-items: center; gap: 6px; }
+.proc-jobbox-label { font-size: 12px; font-weight: 700; color: #475569; }
+.proc-job-input {
+  width: 76px; /* job numbers are 4 digits — small column, per the grid rules */
+  padding: 7px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.proc-headstat { display: flex; align-items: center; gap: 10px; margin-left: 14px; flex: 1 1 auto; min-width: 0; }
+.proc-headstat-label { font-size: 11px; font-weight: 800; letter-spacing: 0.5px; color: #64748b; text-transform: uppercase; }
+.proc-headstat-sub { font-size: 12px; color: #64748b; white-space: nowrap; }
+.proc-bar {
+  display: inline-block;
+  width: 110px;
+  height: 7px;
+  background: #e2e8f0;
+  border-radius: 4px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.proc-bar-lg { width: 160px; }
+.proc-bar-fill { display: block; height: 100%; border-radius: 4px; }
+.proc-pct { font-size: 12.5px; font-weight: 800; min-width: 38px; text-align: right; }
+.proc-nopo { color: #dc2626; font-weight: 700; }
+.proc-asof { color: #94a3b8; }
+
+/* Cap the readable width — on ultrawide monitors an uncapped 1fr description
+   column shoves the numbers a full screen away from the text they describe. */
+.proc-body { padding: 0 18px 32px; max-width: 1560px; }
+.proc-spec {
+  margin-top: 16px;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(6, 29, 57, 0.04);
+}
+.proc-spec-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #334155;
+  background: #eef2f7;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 8px 14px;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+.proc-spec-cost { font-size: 12px; font-weight: 800; color: #475569; cursor: help; }
+.proc-grand {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: var(--sdc-dark, #061d39);
+  color: white;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.proc-grand-amt { font-size: 16px; font-weight: 800; color: var(--sdc-accent, #ffde51); cursor: help; }
+.proc-arow {
+  display: grid;
+  /* caret · PN pill · description (takes the remainder) · cost · bar · pct */
+  grid-template-columns: 18px minmax(110px, max-content) 1fr 76px 120px 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px 7px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  cursor: pointer;
+}
+.proc-arow:last-child { border-bottom: none; }
+/* Hierarchy guide-rails: one faint vertical line per ancestor level, drawn in
+   the middle of each indent gutter. Because same-depth rows stack contiguously
+   and every row repaints the rails for all its ancestors, the per-row segments
+   line up into continuous tree lines. --d (set inline = depth) controls how
+   many rails to draw; depth 0 (top-level) draws none. background-color is kept
+   separate from this background-image so striping/hover don't erase the rails. */
+.proc-arow {
+  position: relative;
+  background-image: repeating-linear-gradient(90deg, #cdd8e4 0 1.5px, transparent 1.5px 26px);
+  background-position: 22px 0;
+  background-size: calc(var(--d, 0) * 26px) 100%;
+  background-repeat: no-repeat;
+}
+.proc-arow:hover { background-color: #f4f8fc; }
+/* Elbow: a short horizontal tick from the row's own rail into its content, so
+   each nested row visibly "branches" off its parent rail. Only on nested rows
+   (depth >= 1); the rail sits mid-gutter at 26·d − 4px, the elbow runs from
+   there to just under the expand caret. */
+.proc-arow-nested::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: calc(var(--d) * 26px - 4px);
+  width: 14px;
+  height: 0;
+  border-top: 1.5px solid #c0cddb;
+  pointer-events: none;
+}
+.proc-caret { color: #94a3b8; font-size: 11px; }
+.proc-pn {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--sdc-primary);
+  background: #e3f0fa;
+  border: 1px solid #aacee8;
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: copy;
+  white-space: nowrap;
+}
+.proc-pn:hover { background: #d3e6f7; }
+.proc-pn-sm { font-size: 10.5px; padding: 1px 6px; background: #f1f5f9; border-color: #e2e8f0; color: #334155; }
+.proc-adesc { font-size: 13px; color: #0f172a; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-acost { font-size: 12px; font-weight: 700; color: #475569; text-align: right; white-space: nowrap; cursor: help; }
+.proc-ameta { margin-left: 10px; font-size: 11.5px; font-weight: 500; color: #64748b; }
+
+.proc-parts { margin: 2px 12px 10px 36px; border: 1px solid #e8edf3; border-radius: 8px; overflow: hidden; }
+.proc-phead, .proc-prow {
+  display: grid;
+  /* dot · part no · description (remainder) · mfr · qty · unit$ · ext$ · PO/Rcvd */
+  grid-template-columns: 22px minmax(120px, max-content) 1fr 140px 48px 84px 92px 80px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.proc-phead {
+  background: #f8fafc;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #64748b;
+  border-bottom: 1px solid #e8edf3;
+}
+.proc-prow { border-bottom: 1px solid #f1f5f9; }
+.proc-prow:last-child { border-bottom: none; }
+.proc-prow:nth-child(even) { background: #fafcfe; }
+.proc-prow .num, .proc-phead .num { text-align: right; }
+.proc-pdesc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #334155; }
+.proc-pmfr { font-size: 11px; color: #64748b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.proc-dot-received { background: #74c415; }
+.proc-dot-ordered { background: #1574c4; }
+.proc-dot-noPO { background: #dc2626; }
+.proc-prow-noPO .proc-pdesc { color: #b91c1c; }
+
+/* Vendor PO Track — expandable ETO part lines inside a synced row */
+.vpo-lines { margin: 8px 0 10px; border: 1px solid #e8edf3; border-radius: 8px; overflow: hidden; background: white; }
+.vpo-lines-note { padding: 10px 12px; font-size: 12px; color: #64748b; }
+.vpo-lines-title {
+  padding: 7px 12px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #475569;
+  background: #eef2f7;
+  border-bottom: 1px solid #e2e8f0;
+}
+.vpo-lines-src { font-weight: 500; color: #94a3b8; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.vpo-lines-head, .vpo-line {
+  display: grid;
+  /* dot · part no · description (remainder) · qty · rcvd · due · price */
+  grid-template-columns: 22px minmax(120px, max-content) 1fr 48px 48px 96px 86px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.vpo-lines-head {
+  background: #f8fafc;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #64748b;
+  border-bottom: 1px solid #e8edf3;
+}
+.vpo-line { border-bottom: 1px solid #f1f5f9; }
+.vpo-line:last-child { border-bottom: none; }
+.vpo-line .num, .vpo-lines-head .num { text-align: right; }
+.vpo-line-pn { font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-weight: 700; color: #334155; white-space: nowrap; }
+.vpo-line-desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #334155; }
+.vpo-line-revised { color: #b45309; font-weight: 700; }
+.vpo-slip { color: #b45309; font-weight: 800; cursor: help; }
+
+/* Procurement — sub-tabs (Assemblies / Parts List) */
+.proc-tabs { display: flex; align-items: center; gap: 22px; border-bottom: 1px solid #e2e8f0; margin-top: 4px; padding: 0 4px; }
+.proc-tab {
+  padding: 9px 2px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #64748b;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -1px;
+}
+.proc-tab.is-active { color: var(--sdc-primary); border-bottom-color: var(--sdc-primary); font-weight: 700; }
+.proc-tab-n { font-size: 10px; font-weight: 700; background: #eef2f7; color: #64748b; padding: 1px 6px; border-radius: 4px; }
+.proc-tab.is-active .proc-tab-n { background: #e3f0fa; color: var(--sdc-primary); }
+.proc-tab-hint { margin-left: auto; font-size: 11px; color: #94a3b8; font-style: italic; }
+
+/* Procurement — flat Parts List table */
+.proc-plist { margin-top: 12px; border: 1px solid #e8edf3; border-radius: 8px; overflow: hidden; background: white; }
+.proc-plist-head, .proc-plrow {
+  display: grid;
+  /* part no · description (remainder) · assembly · qty · unit$ · mfr · po · order · exp · status */
+  grid-template-columns: minmax(115px, max-content) 1fr 200px 44px 78px 125px 64px 72px 72px 108px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.proc-plist-head {
+  background: var(--sdc-dark, #061d39);
+  color: rgba(255,255,255,0.75);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.proc-plrow { border-bottom: 1px solid #f1f5f9; }
+.proc-plrow:last-child { border-bottom: none; }
+.proc-plrow:nth-child(even) { background: #fafcfe; }
+.proc-plrow:hover { background: #f1f7fc; }
+.proc-plrow-overdue { background: #fef2f2; }
+.proc-plrow-overdue:hover { background: #fee9e9; }
+.proc-plist .num, .proc-plist-head .num { text-align: right; }
+.proc-plsrc { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+.proc-plsrc-pn { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; font-weight: 700; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proc-plsrc-desc { font-size: 10.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proc-plpo { font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-weight: 700; color: #334155; }
+.proc-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  justify-self: start;
+}
+.proc-pill i { font-style: normal; font-weight: 600; opacity: 0.75; font-size: 9px; }
+.proc-pill-ok   { background: #e8f7d8; color: #3f6212; }
+.proc-pill-bad  { background: #fee2e2; color: #b91c1c; }
+.proc-pill-warn { background: #fef3c7; color: #92400e; }
+.proc-pill-info { background: #e3f0fa; color: #1574c4; }
+.proc-pill-hold { background: #f1f5f9; color: #64748b; }
+
+/* System Status panel (Setup) */
+.sys-status-grid { display: flex; flex-direction: column; gap: 8px; }
+.sys-stat-row { font-size: 13px; color: #334155; line-height: 1.5; }
+.sys-stat-row b { color: #0f172a; font-weight: 700; margin-right: 2px; }
+.sys-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.sys-dot-ok { background: #74c415; }
+.sys-dot-bad { background: #dc2626; }
+.sys-bad { color: #b91c1c; }
+.sys-stat-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding-top: 10px; border-top: 1px solid #eef2f7; }
+.sys-stat-hint { font-size: 11.5px; color: #94a3b8; }
+.sys-stat-hint code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; font-size: 11px; color: #475569; }
+
+/* .btn-ghost is built for the dark topbar (white text). On these light
+   surfaces — Procurement toolbar + System Status — that renders white-on-white
+   and is unreadable. Override to dark text on a light pill in those contexts. */
+.proc-page .btn-ghost,
+.sys-stat-foot .btn-ghost {
+  background: #fff;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  font-weight: 600;
+}
+.proc-page .btn-ghost:hover,
+.sys-stat-foot .btn-ghost:hover {
+  background: #eef2f7;
+  color: #0f172a;
+  border-color: #94a3b8;
 }
 .btn-primary {
   background: var(--sdc-accent);
@@ -2061,7 +2446,8 @@ main {
    Wire department cards were cut off at the bottom of the page.) */
 #view-dashboard.active,
 #view-shop-parts.active,
-#view-vendor-pos.active {
+#view-vendor-pos.active,
+#view-procurement.active {
   overflow-y: auto;
   overflow-x: hidden;
 }
