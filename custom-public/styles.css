@@ -45,7 +45,7 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
-  margin-left: 76px;       /* matches .app-sidebar width */
+  margin-left: 90px;       /* matches .app-sidebar width */
 }
 
 /* ==========================================================================
@@ -57,7 +57,7 @@ body {
   top: 0;
   left: 0;
   bottom: 0;
-  width: 76px;
+  width: 90px;
   background: var(--sdc-dark, #061d39);
   border-right: 1px solid rgba(255,255,255,0.06);
   display: flex;
@@ -139,8 +139,12 @@ body {
 }
 .app-sidebar-label {
   font-size: 10px;
-  line-height: 1;
-  white-space: nowrap;
+  line-height: 1.1;
+  white-space: normal;       /* multi-word labels ("Notes & Actions") wrap at the space… */
+  overflow-wrap: normal;     /* …but a single word ("Departments") never breaks mid-word */
+  letter-spacing: 0;         /* claw back width so single words fit on one line */
+  text-align: center;
+  width: 100%;
 }
 .app-sidebar-revision {
   margin-bottom: 8px;
@@ -942,7 +946,9 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 }
 /* Drag-to-reorder states. The All-projects pseudo-tab is non-draggable so
    these never apply to it. */
-.project-tab[draggable="true"] { cursor: grab; }
+/* Tabs are draggable to reorder, but clicking to switch is the primary action,
+   so show the pointer — only switch to the grabbing hand during an actual drag. */
+.project-tab[draggable="true"] { cursor: pointer; }
 .project-tab.dragging {
   opacity: 0.5;
   cursor: grabbing;
@@ -4294,6 +4300,173 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   background: #b91c1c;
 }
 body.customer-view .schedule-footer { display: none; }
+
+/* ── Project Notes panel (below the schedule) ──────────────────────────────── */
+.schedule-notes { flex: 0 0 auto; display: flex; flex-direction: column; background: #fff; }
+.schedule-notes.is-collapsed { height: auto; }
+/* When notes is open the whole schedule view scrolls; the schedule split is
+   pinned (in JS, .notes-open) to its CONTENT height (capped at the viewport)
+   so the notes panel flows right below the schedule with no empty gap. The
+   big padding-bottom guarantees there's always room below the notes so you
+   can scroll the panel up into the middle of the screen to work on it. */
+#view-schedule.notes-open { overflow-y: auto; padding-bottom: 45vh; }
+/* Click-drag to pan the whole page vertically (setupPagePan). */
+#view-schedule.page-panning, #view-schedule.page-panning * { cursor: grabbing !important; user-select: none !important; }
+.notes-bar {
+  display: flex; align-items: center; gap: 12px; cursor: pointer;
+  padding: 12px 20px; background: var(--sdc-dark, #061d39); color: #fff;
+  font-size: 15px; font-weight: 800; letter-spacing: 0.02em; flex: 0 0 auto; user-select: none;
+  border-top: 2px solid var(--sdc-primary, #1574c4);
+}
+.notes-bar:hover { background: color-mix(in srgb, var(--sdc-dark, #061d39) 88%, #fff); }
+.notes-bar-title { letter-spacing: 0.02em; }
+.notes-count { color: var(--sdc-blue-light, #aacee8); font-weight: 700; font-size: 12px; }
+.notes-bar-caret { margin-left: auto; opacity: 0.9; font-size: 16px; }
+.notes-body { flex: 0 0 auto; display: flex; gap: 0; align-items: stretch; }
+.notes-col { flex: 1 1 50%; display: flex; flex-direction: column; min-width: 0; }
+.notes-col.notes-key { border-left: 1px solid var(--border, #e2e8f0); background: color-mix(in srgb, var(--sdc-accent, #ffde51) 8%, #fff); }
+.notes-col-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 14px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sdc-dark, #061d39); background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); position: sticky; top: 0; z-index: 2; }
+.notes-col-head-actions { display: flex; align-items: center; gap: 8px; }
+.notes-keyview { display: inline-flex; border: 1px solid var(--border, #cbd5e1); border-radius: 6px; overflow: hidden; }
+.notes-kv { border: none; background: #fff; color: var(--text-muted, #64748b); font-size: 10px; font-weight: 700; padding: 2px 9px; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.notes-kv.is-on { background: var(--sdc-primary, #1574c4); color: #fff; }
+.notes-collapse-all { border: 1px solid var(--border, #cbd5e1); background: #fff; color: var(--sdc-dark, #061d39); font-weight: 700; font-size: 11px; border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.notes-collapse-all:hover { border-color: var(--sdc-primary, #1574c4); color: var(--sdc-primary, #1574c4); }
+.notes-col-scroll { padding: 8px 10px; }
+.notes-new-session { border: 1px solid var(--sdc-primary, #1574c4); background: #fff; color: var(--sdc-primary, #1574c4); font-weight: 700; font-size: 11px; border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.notes-new-session:hover { background: var(--sdc-blue-light, #aacee8); }
+.notes-empty { color: var(--text-muted, #94a3b8); font-size: 12px; font-style: italic; padding: 10px 6px; }
+/* Session card */
+.notes-session { border: 1px solid var(--border, #e2e8f0); border-radius: 8px; margin-bottom: 8px; overflow: hidden; background: #fff; }
+.notes-session-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 8%, #fff); border-bottom: 1px solid var(--border, #eef2f6); }
+.notes-session.is-collapsed .notes-session-head { border-bottom: none; }
+.notes-session-caret { border: none; background: none; cursor: pointer; color: var(--sdc-dark, #061d39); font-size: 11px; padding: 0 2px; }
+.notes-session-title { flex: 1 1 auto; border: none; background: transparent; font-weight: 700; font-size: 13px; color: var(--sdc-dark, #061d39); padding: 2px 4px; min-width: 0; }
+.notes-session-title:focus { outline: none; background: #fff; box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 25%, transparent); border-radius: 4px; }
+.notes-session-date { border: 1px solid var(--border, #e2e8f0); border-radius: 5px; font-size: 11px; padding: 1px 4px; color: var(--text-muted, #64748b); background: #fff; flex: none; }
+.notes-session-del { border: none; background: none; cursor: pointer; opacity: 0.5; font-size: 12px; flex: none; }
+.notes-session-del:hover { opacity: 1; }
+.notes-session-count { font-size: 10px; color: var(--text-muted, #94a3b8); font-weight: 600; flex: none; white-space: nowrap; }
+.notes-session-body { padding: 6px 8px 8px; }
+/* Composer — the single "entry line" on top of each meeting. Reference / Due
+   only appear when their 👤 / 📅 toggle is on (off by default — out of the way). */
+.notes-composer { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, #fff); border: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 30%, #fff); border-radius: 7px; padding: 6px; margin-bottom: 8px; }
+.notes-comp-text { display: block; width: 100%; border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 13px; padding: 5px 8px; font-family: inherit; color: var(--text, #1e293b); background: #fff; margin-bottom: 6px; }
+.notes-comp-text:focus { outline: none; border-color: var(--sdc-primary, #1574c4); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 20%, transparent); }
+/* Row 2 — small black person + calendar icons that expand IN PLACE into their
+   picker when clicked. + Add. */
+.notes-composer-row2 { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.notes-comp-ico { flex: none; width: 30px; height: 30px; border: 1px solid var(--border, #cbd5e1); background: #fff; border-radius: 5px; cursor: pointer; color: var(--sdc-dark, #061d39); display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.notes-comp-ico:hover { border-color: var(--sdc-primary, #1574c4); color: var(--sdc-primary, #1574c4); }
+.notes-comp-due { flex: none; border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 12px; padding: 4px 6px; background: #fff; color: var(--text, #334155); font-family: inherit; }
+.notes-comp-due:focus { outline: none; border-color: var(--sdc-primary, #1574c4); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 20%, transparent); }
+.notes-comp-add { flex: none; margin-left: auto; border: none; background: var(--sdc-primary, #1574c4); color: #fff; font-weight: 700; font-size: 12px; border-radius: 5px; padding: 6px 16px; cursor: pointer; }
+.notes-comp-add:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 85%, #000); }
+/* Multi-person Informed picker — chips for who's picked + an add dropdown. */
+.notes-inf-box { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.notes-inf-chip { display: inline-flex; align-items: center; gap: 3px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, #fff); color: var(--sdc-dark, #061d39); border-radius: 999px; padding: 2px 4px 2px 8px; font-size: 11px; font-weight: 600; }
+.notes-inf-x { border: none; background: none; cursor: pointer; color: var(--sdc-dark, #061d39); opacity: 0.55; font-size: 13px; line-height: 1; padding: 0 2px; }
+.notes-inf-x:hover { opacity: 1; color: #dc2626; }
+.notes-inf-add { border: 1px solid var(--sdc-primary, #1574c4); border-radius: 5px; font-size: 12px; padding: 3px 5px; background: #fff; color: var(--text, #334155); font-family: inherit; }
+.notes-inf-add:focus { outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 20%, transparent); }
+/* Submitted notes — a grid with headers. Columns:
+   drag | ★ | ⚡ | description | assigned to | date. The header row + every
+   item share the SAME template so the Assigned-to / Date columns line up. */
+.notes-list { display: flex; flex-direction: column; gap: 1px; }
+.notes-list-head,
+.notes-item:not(.notes-item-editing) {
+  display: grid;
+  grid-template-columns: 16px 20px minmax(0, 1fr) 152px 116px;
+  align-items: center; gap: 8px;
+}
+.notes-item.is-actioned .notes-note-text { color: var(--text-muted, #64748b); }
+.notes-list-head { padding: 2px 2px 4px; font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #94a3b8); border-bottom: 1px solid var(--border, #eef2f6); margin-bottom: 2px; }
+.notes-item:not(.notes-item-editing) { padding: 3px 2px; border-radius: 5px; }
+.notes-item:hover { background: var(--surface-alt, #f8fafc); }
+.notes-drag { cursor: grab; color: #cbd5e1; font-size: 13px; line-height: 1; user-select: none; text-align: center; opacity: 0; transition: opacity 0.1s; }
+.notes-item:hover .notes-drag { opacity: 1; }
+.notes-drag:hover { color: var(--text-muted, #94a3b8); }
+.notes-drag:active { cursor: grabbing; }
+.notes-star { border: none; background: none; cursor: pointer; font-size: 15px; line-height: 1.3; color: #cbd5e1; padding: 0; }
+.notes-star.is-on { color: var(--sdc-primary, #1574c4); }
+.notes-star:hover { color: var(--sdc-primary, #1574c4); }
+.notes-act { border: 1px solid var(--sdc-primary, #1574c4); background: #fff; color: var(--sdc-primary, #1574c4); font-size: 11px; line-height: 1; border-radius: 999px; width: 20px; height: 20px; padding: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.notes-act:hover { background: var(--sdc-primary, #1574c4); color: #fff; }
+.notes-act.is-done { border-color: #16a34a; color: #16a34a; background: color-mix(in srgb, #16a34a 10%, #fff); cursor: default; }
+.notes-note-text { font-size: 12.5px; line-height: 1.4; color: var(--text, #1e293b); white-space: pre-wrap; cursor: text; min-width: 0; padding: 2px 2px; border-radius: 4px; }
+.notes-note-text:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 6%, transparent); }
+.notes-note-ph { color: var(--text-muted, #cbd5e1); font-style: italic; }
+.notes-cell-assigned { min-width: 0; display: flex; flex-wrap: wrap; gap: 3px; }
+.notes-cell-date { min-width: 0; }
+.notes-cell-date { font-size: 12px; color: var(--text-muted, #64748b); white-space: nowrap; }
+.notes-edit-hint { font-size: 11.5px; color: #b45309; background: #fffbeb; border: 1px solid #fde68a; border-radius: 5px; padding: 4px 8px; }
+.notes-chip { display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px; font-weight: 600; border-radius: 999px; padding: 1px 8px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.notes-chip.ref { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, #fff); color: var(--sdc-dark, #061d39); }
+.notes-chip.dept { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 16%, #fff); color: var(--sdc-dark, #061d39); }
+.notes-chip.na { background: var(--surface-alt, #f1f5f9); color: var(--text-muted, #94a3b8); }
+.notes-chip.due { background: color-mix(in srgb, var(--sdc-accent, #ffde51) 30%, #fff); color: #713f12; }
+/* Note in edit mode — full controls */
+.notes-item-editing { display: flex; align-items: flex-start; gap: 8px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 5%, #fff); padding: 6px; border-radius: 5px; border: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 25%, #fff); }
+.notes-edit-fields { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.notes-item-text { width: 100%; resize: none; border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 12.5px; line-height: 1.4; padding: 4px 6px; font-family: inherit; color: var(--text, #1e293b); background: #fff; overflow: hidden; min-width: 0; }
+.notes-item-text:focus { outline: none; border-color: var(--sdc-primary, #1574c4); }
+.notes-edit-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.notes-edit-row label { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted, #64748b); }
+.notes-item-ref, .notes-item-due { border: 1px solid var(--border, #e2e8f0); border-radius: 5px; font-size: 12px; padding: 3px 6px; background: #fff; color: var(--text, #334155); min-width: 0; font-family: inherit; }
+.notes-item-ref:focus, .notes-item-due:focus { outline: none; border-color: var(--sdc-primary, #1574c4); }
+.notes-edit-done { border: none; background: var(--sdc-primary, #1574c4); color: #fff; font-weight: 700; font-size: 11px; border-radius: 5px; padding: 4px 12px; cursor: pointer; margin-left: auto; }
+.notes-edit-done:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 85%, #000); }
+/* Notes & Actions tab — Key Information cards (one per project) */
+.actions-keyinfo { margin-top: 18px; }
+.actions-keyinfo-head { font-size: 13px; font-weight: 800; color: var(--sdc-dark, #061d39); margin-bottom: 8px; }
+.aki-controls { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; flex-wrap: wrap; }
+.aki-viewtoggle { display: inline-flex; border: 1px solid var(--border, #cbd5e1); border-radius: 6px; overflow: hidden; }
+.aki-vt { border: none; background: #fff; color: var(--text-muted, #64748b); font-size: 12px; font-weight: 700; padding: 4px 12px; cursor: pointer; }
+.aki-vt.is-on { background: var(--sdc-primary, #1574c4); color: #fff; }
+.aki-ctl { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted, #64748b); }
+.aki-ctl select { border: 1px solid var(--border, #cbd5e1); border-radius: 5px; font-size: 12px; padding: 3px 6px; background: #fff; color: var(--text, #334155); font-family: inherit; text-transform: none; font-weight: 400; }
+/* List view — flat sortable grid */
+.aki-list { display: flex; flex-direction: column; border: 1px solid var(--border, #e2e8f0); border-radius: 8px; overflow: hidden; }
+.aki-lrow { display: grid; grid-template-columns: 200px minmax(0, 1fr) 180px 110px; gap: 10px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--surface-alt, #f1f5f9); font-size: 12.5px; }
+.aki-lrow:last-child { border-bottom: none; }
+.aki-lhead { background: var(--surface-alt, #f1f5f9); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #64748b); }
+.aki-lc-project { font-weight: 700; color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aki-lc-note { color: var(--text, #1e293b); min-width: 0; }
+.aki-lc-date { color: var(--text-muted, #64748b); white-space: nowrap; }
+.aki-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.aki-card { border: 1px solid var(--border, #e2e8f0); border-radius: 8px; background: #fff; overflow: hidden; }
+.aki-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; font-weight: 800; font-size: 12.5px; color: #fff; background: var(--sdc-dark, #061d39); }
+.aki-count { background: var(--sdc-accent, #ffde51); color: var(--sdc-dark, #061d39); font-size: 11px; font-weight: 800; border-radius: 999px; padding: 0 8px; }
+.aki-card-body { padding: 8px 10px; }
+.aki-group { margin-bottom: 8px; }
+.aki-group-head { font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sdc-primary, #1574c4); margin-bottom: 2px; }
+.aki-item { font-size: 12.5px; line-height: 1.4; color: var(--text, #1e293b); padding: 3px 0; border-bottom: 1px solid var(--surface-alt, #f1f5f9); }
+.aki-src { display: block; font-size: 10px; color: var(--text-muted, #94a3b8); margin-top: 1px; }
+/* Personal view (signed in) hides the cross-project Key Information, same as the list. */
+.actions-page.is-signed-in .actions-keyinfo { display: none; }
+/* Key info — a grid with headers, columns running sideways (like the meeting
+   list): ★ | Description | Meeting | Informed | Date. */
+.notes-key-row { display: grid; grid-template-columns: 20px minmax(0, 1.5fr) minmax(0, 1fr) 132px 84px; align-items: start; gap: 8px; padding: 5px 4px; border-bottom: 1px solid var(--surface-alt, #f1f5f9); font-size: 12.5px; }
+.notes-key-row.has-dept { grid-template-columns: 20px minmax(0, 1.4fr) 116px minmax(0, 1fr) 132px 84px; }
+.notes-key-head { align-items: end; }
+.nkr-dept { color: var(--sdc-primary, #1574c4); font-weight: 700; font-size: 11px; overflow-wrap: anywhere; min-width: 0; }
+.notes-key-head { font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, #94a3b8); border-bottom: 1px solid var(--border, #eef2f6); position: sticky; top: 0; background: var(--surface, #fff); }
+.notes-key-row .notes-star { font-size: 14px; }
+.nkr-desc { color: var(--text, #1e293b); line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.nkr-informed { min-width: 0; display: flex; flex-wrap: wrap; gap: 3px; }
+.nkr-informed .notes-chip { white-space: normal; overflow: visible; text-overflow: clip; max-width: none; }
+.aki-lc-ref { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.aki-lc-ref .notes-chip { white-space: normal; overflow: visible; text-overflow: clip; max-width: none; }
+.nkr-meeting { color: var(--text-muted, #64748b); min-width: 0; overflow-wrap: anywhere; }
+.nkr-date { color: var(--text-muted, #64748b); white-space: nowrap; }
+.notes-key-grouphead { font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sdc-primary, #1574c4); padding: 6px 4px 2px; }
+/* Card view — each department is its own card with its own grid inside. */
+.notes-key-cards { display: flex; flex-direction: column; gap: 10px; }
+.notes-key-card { border: 1px solid var(--border, #e2e8f0); border-radius: 8px; overflow: hidden; background: #fff; }
+.notes-key-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; font-weight: 800; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: #fff; background: var(--sdc-primary, #1574c4); }
+.notes-key-card-count { background: #fff; color: var(--sdc-primary, #1574c4); font-size: 11px; font-weight: 800; border-radius: 999px; padding: 0 8px; }
+.notes-key-card-body { padding: 4px 10px 8px; }
+.notes-key-card-body .notes-key-head { background: #fff; }
 .btn-icon {
   width: 28px;
   height: 28px;
@@ -6528,9 +6701,9 @@ body[data-view="setup"] #btn-add { display: none; }
 .quote-head-groups .quote-grp {
   background: var(--sdc-blue-light, #aacee8);
   color: var(--sdc-dark, #061d39);
-  font-size: 9px;
-  letter-spacing: 0.08em;
   text-align: center;
+  /* font-size / weight / letter-spacing inherited from thead th so every
+     header cell reads at the same size and boldness. */
 }
 .quote-head-groups + tr th { /* Weeks / Alloc % / Scheduled labels */
   background: var(--sdc-blue-light, #aacee8);

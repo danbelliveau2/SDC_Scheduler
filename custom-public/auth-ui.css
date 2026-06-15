@@ -89,67 +89,72 @@
    Schedule button. Stays visible across every view (Projects, Schedule,
    Setup, etc.) so the "who's logged in" indicator is always one glance
    away from the Rev pin. */
+/* Signed-in user: just an initials circle in the sidebar rail, sitting just
+   above the Rev pill so it never overlaps any controls. Click for a popup. */
 .sdc-auth-pill {
   position: fixed;
-  bottom: 10px;
-  left: 92px; /* sidebar is ~72px wide; leave a small gap */
+  left: 0;
+  bottom: 66px;            /* just above the Rev pill */
+  width: 90px;             /* sidebar rail width — centers the circle */
+  display: flex;
+  justify-content: center;
   z-index: 5000;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(255,255,255,0.96);
-  border: 1px solid #cbd5e1;
-  border-radius: 999px;
-  padding: 4px 6px 4px 4px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #334155;
-  box-shadow: 0 2px 6px rgba(15,23,42,0.08);
 }
 .sdc-auth-avatar {
-  width: 24px;
-  height: 24px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.85);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
 }
-.sdc-auth-name { font-weight: 600; }
-.sdc-auth-role {
+.sdc-auth-avatar:hover { border-color: var(--sdc-accent, #ffde51); }
+/* Popup — opens to the right of the avatar, over the content area. */
+.sdc-auth-menu {
+  position: absolute;
+  left: 68px;
+  bottom: -6px;
+  min-width: 152px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(15,23,42,0.18);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sdc-auth-menu[hidden] { display: none; }
+.sdc-auth-menu-name { font-weight: 700; font-size: 13px; color: #1e293b; }
+.sdc-auth-menu-role {
+  align-self: flex-start;
   background: #e0f2fe;
   color: #0c4a6e;
   padding: 1px 6px;
   border-radius: 999px;
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
 }
-.sdc-auth-signout {
+.sdc-auth-menu button {
+  text-align: left;
   background: transparent;
   border: none;
-  color: #94a3b8;
-  font-size: 18px;
-  line-height: 1;
   cursor: pointer;
-  padding: 0 6px;
-  border-radius: 50%;
+  font-size: 12px;
+  color: #334155;
+  padding: 5px 6px;
+  border-radius: 5px;
 }
-.sdc-auth-signout:hover { background: #f1f5f9; color: #dc2626; }
-
-.sdc-auth-changepw {
-  background: transparent;
-  border: none;
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px;
-  border-radius: 50%;
-  opacity: 0.6;
-}
-.sdc-auth-changepw:hover { background: #f1f5f9; opacity: 1; }
+.sdc-auth-menu button:hover { background: #f1f5f9; }
+.sdc-auth-menu .sdc-auth-signout:hover { background: #fef2f2; color: #dc2626; }
 
 /* Phase 4.1 — "who's editing" presence strip. Sits just to the right of
    the user pill at the bottom-left; one circle per active collaborator
