@@ -250,7 +250,15 @@ async function getBomRows(projectId, specId) {
           FROM tblReceiverLog rl
           JOIN tblPurchaseOrderDetails pod2 ON rl.PurchaseDetailID = pod2.PurchaseDetailID
           WHERE pod2.ProjectID = @projectId AND pod2.ItemID = eps.ChildID
-        ), 0) AS ReceivedQty
+        ), 0) AS ReceivedQty,
+        -- Qty pulled from SDC inventory/stock for this job (no PO). Fulfilled
+        -- pulls are physically in the factory, so they count toward "have it"
+        -- the same as a PO receipt — otherwise stock parts read as "no PO".
+        ISNULL((
+          SELECT SUM(ip.PullQty)
+          FROM vwCostingInventoryPullsRaw ip
+          WHERE ip.ProjectID = @projectId AND ip.ItemID = eps.ChildID AND ip.FulfilledStatus = 1
+        ), 0) AS PulledQty
       FROM tblEngProductStructure eps
       JOIN tblEngItemMaster child  ON eps.ChildID  = child.ItemID
       JOIN tblEngItemMaster parent ON eps.ParentID = parent.ItemID
@@ -278,6 +286,12 @@ function _buildTree(rows) {
   return { assemblyIds, childrenMap, deduped };
 }
 
+// Raw-BOM-row helpers: a part is "in hand" if it's been received on a PO OR
+// pulled from SDC inventory/stock. Stock pulls have no PO, so without this a
+// part sitting in the factory (pulled from stock) reads as "no PO".
+function _pulled(r) { return Number(r.PulledQty) || 0; }
+function _inHand(r) { return (Number(r.ReceivedQty) || 0) + _pulled(r); }
+
 function _leafParts(nodeId, childrenMap, assemblyIds, visited = new Set()) {
   if (visited.has(nodeId)) return [];
   visited.add(nodeId);
@@ -295,9 +309,10 @@ function _assemblyStats(nodeId, childrenMap, assemblyIds) {
     _leafParts(nodeId, childrenMap, assemblyIds).reduce((acc, p) => { acc[p.ChildID] = acc[p.ChildID] || p; return acc; }, {})
   );
   const total = unique.length;
-  const received = unique.filter(p => p.ReceivedQty >= p.ItemQty).length;
-  const noPO = unique.filter(p => p.POQty === 0 && p.ReceivedQty < p.ItemQty && !p.ItemHold).length;
-  const ordered = unique.filter(p => p.POQty > 0 && p.ReceivedQty < p.ItemQty).length;
+  const received = unique.filter(p => _inHand(p) >= p.ItemQty).length;
+  // "No PO" only when there is genuinely no source: no PO, no stock pull, not in.
+  const noPO = unique.filter(p => p.POQty === 0 && _pulled(p) === 0 && _inHand(p) < p.ItemQty && !p.ItemHold).length;
+  const ordered = unique.filter(p => _inHand(p) < p.ItemQty && (p.POQty > 0 || _pulled(p) > 0)).length;
   // Material cost = qty × latest PO unit price. In-house parts without a PO
   // price contribute $0, so this reads as "purchased materials" per assembly.
   const cost = unique.reduce((s, p) => s + (Number(p.ItemQty) || 0) * (Number(p.UnitPrice) || 0), 0);
@@ -305,6 +320,11 @@ function _assemblyStats(nodeId, childrenMap, assemblyIds) {
 }
 
 function _partJson(child) {
+  const pulled = _pulled(child);
+  const inHand = _inHand(child);
+  // In hand from stock (pulled) with no PO receipt → flag so the UI can label it
+  // "in stock" rather than "received".
+  const inStock = inHand >= child.ItemQty && (Number(child.ReceivedQty) || 0) < child.ItemQty && pulled > 0;
   return {
     id: child.ChildID,
     pn: child.ChildPN,
@@ -314,10 +334,12 @@ function _partJson(child) {
     qty: child.ItemQty,
     poQty: child.POQty,
     receivedQty: child.ReceivedQty,
+    pulledQty: pulled,
+    inStock,
     hold: !!child.ItemHold,
     unitPrice: child.UnitPrice || 0,
     requiredDate: child.RequiredDate ? new Date(child.RequiredDate).toISOString().slice(0, 10) : null,
-    status: child.ReceivedQty >= child.ItemQty ? 'received' : child.POQty > 0 ? 'ordered' : 'noPO',
+    status: inHand >= child.ItemQty ? 'received' : (child.POQty > 0 || pulled > 0) ? 'ordered' : 'noPO',
   };
 }
 
@@ -416,9 +438,9 @@ async function getReadiness(projectId) {
   const uniqueParts = Object.values(jobUnique);
   const totals = {
     parts: uniqueParts.length,
-    received: uniqueParts.filter(p => p.ReceivedQty >= p.ItemQty).length,
-    noPO: uniqueParts.filter(p => p.POQty === 0 && p.ReceivedQty < p.ItemQty && !p.ItemHold).length,
-    ordered: uniqueParts.filter(p => p.POQty > 0 && p.ReceivedQty < p.ItemQty).length,
+    received: uniqueParts.filter(p => _inHand(p) >= p.ItemQty).length,
+    noPO: uniqueParts.filter(p => p.POQty === 0 && _pulled(p) === 0 && _inHand(p) < p.ItemQty && !p.ItemHold).length,
+    ordered: uniqueParts.filter(p => _inHand(p) < p.ItemQty && (p.POQty > 0 || _pulled(p) > 0)).length,
     cost: Math.round(uniqueParts.reduce((s, p) => s + (Number(p.ItemQty) || 0) * (Number(p.UnitPrice) || 0), 0)),
   };
   totals.pct = totals.parts ? Math.round((totals.received / totals.parts) * 100) : 0;

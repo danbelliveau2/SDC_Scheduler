@@ -8549,6 +8549,7 @@ function _procUsd(v) {
 // delivery status. Complements the Assemblies (BOM tree) and Vendors (by-supplier)
 // views — this is the part-centric cut.
 function _procPartStatus(p) {
+  if (p.inStock) return { key: 'received', label: 'IN STOCK', cls: 'ok', sub: 'from inventory' };
   if (p.status === 'received') return { key: 'received', label: 'RECEIVED', cls: 'ok', sub: '' };
   if (p.hold) return { key: 'hold', label: 'ON HOLD', cls: 'hold', sub: 'in ETO' };
   if (p.status === 'noPO') return { key: 'noPO', label: 'NO PO', cls: 'bad', sub: '' };
@@ -8680,7 +8681,7 @@ function _procAssemblyRow(node, depth) {
         <div class="proc-phead"><span></span><span>Part No</span><span>Description</span><span>Mfr</span><span class="num">Qty</span><span class="num">Unit $</span><span class="num">Ext $</span><span class="num">PO / Rcvd</span></div>
         ${parts.map(p => `
           <div class="proc-prow proc-prow-${p.status}">
-            <span class="proc-dot proc-dot-${p.status}" title="${p.status === 'received' ? 'Received' : p.status === 'ordered' ? 'On order' : p.hold ? 'On hold in ETO' : 'No PO'}"></span>
+            <span class="proc-dot proc-dot-${p.status}" title="${p.inStock ? 'In stock (pulled from inventory — no PO needed)' : p.status === 'received' ? 'Received' : p.status === 'ordered' ? 'On order' : p.hold ? 'On hold in ETO' : 'No PO'}"></span>
             <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
             <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
             <span class="proc-pmfr">${escapeHtml(p.manufacturer || '')}</span>
