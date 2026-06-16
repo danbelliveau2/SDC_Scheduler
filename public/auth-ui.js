@@ -52,15 +52,18 @@ window.fetch = async function (input, init) {
     init.headers.set('Authorization', 'Bearer ' + window.sdcAuth.token);
   }
   const res = await _originalFetch(input, init);
-  // 401 from /api/auth/me on boot when auth is on → show login modal.
-  // 401 elsewhere → token expired, sign out + show login.
-  // 403 → user lacks the role, show toast.
+  // 401 → only treat as "session expired" when we ACTUALLY HELD a token that the
+  // server rejected. Without this guard, any stray 401 wiped the token and
+  // trapped the user behind the login modal mid-work ("surprise logout"). When
+  // auth is on but we never had a token, _boot() handles showing the modal.
+  // 403 → user lacks the role, show toast (NOT a logout).
   if (res.status === 401) {
-    // Don't loop: skip /api/auth/login + /api/auth/register endpoints.
     const url = (typeof input === 'string') ? input : (input?.url || '');
-    if (!/\/api\/auth\/(login|register)/.test(url)) {
+    const isAuthEndpoint = /\/api\/auth\/(login|register)/.test(url);
+    if (!isAuthEndpoint && window.sdcAuth.token) {
       localStorage.removeItem(TOKEN_KEY);
       window.sdcAuth.token = null;
+      if (typeof showToast === 'function') showToast('Your session expired — please sign in again.', { kind: 'error' });
       _openModal();
     }
   } else if (res.status === 403) {
@@ -116,9 +119,11 @@ function _openModal() {
         <label>Password
           <input type="password" name="password" required autocomplete="current-password" minlength="1" />
         </label>
+        <p class="sdc-auth-hint" id="sdc-auth-hint" hidden>Pick a password you'll remember.</p>
         <p class="sdc-auth-error" id="sdc-auth-error" hidden></p>
         <button type="submit" class="btn-primary">Sign in</button>
         <button type="button" class="sdc-auth-link" id="sdc-auth-toggle-register">Need an account? Register</button>
+        <button type="button" class="sdc-auth-link" id="sdc-auth-forgot">Forgot password?</button>
       </form>
     </div>
   `;
@@ -126,11 +131,17 @@ function _openModal() {
   const form = _modalEl.querySelector('#sdc-auth-form');
   let isRegister = false;
   const toggle = _modalEl.querySelector('#sdc-auth-toggle-register');
+  const hint   = _modalEl.querySelector('#sdc-auth-hint');
+  const forgot = _modalEl.querySelector('#sdc-auth-forgot');
   toggle.addEventListener('click', () => {
     isRegister = !isRegister;
     const h2 = _modalEl.querySelector('h2');
     h2.textContent = isRegister ? 'Create account' : 'Sign in';
     toggle.textContent = isRegister ? 'Have an account? Sign in' : 'Need an account? Register';
+    hint.hidden = !isRegister;            // password rule only matters when creating
+    forgot.hidden = isRegister;           // no "forgot" while registering
+    const pwInput = form.querySelector('input[name="password"]');
+    if (pwInput) pwInput.setAttribute('autocomplete', isRegister ? 'new-password' : 'current-password');
     if (isRegister && !form.querySelector('input[name="name"]')) {
       const nameLbl = document.createElement('label');
       nameLbl.innerHTML = 'Name <input type="text" name="name" required autocomplete="name" />';
@@ -138,6 +149,13 @@ function _openModal() {
     } else {
       form.querySelector('label:has(input[name="name"])')?.remove();
     }
+  });
+  // No self-service reset (internal tool, no guaranteed email) — point the user
+  // at the fast path: any admin can reset it instantly in Setup → Users.
+  forgot.addEventListener('click', () => {
+    const err = _modalEl.querySelector('#sdc-auth-error');
+    err.innerHTML = 'Ask an SDC admin to reset your password — they can do it in <b>Setup → Users</b> and give you a temporary one to sign in with.';
+    err.hidden = false;
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();

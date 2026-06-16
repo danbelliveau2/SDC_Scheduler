@@ -164,6 +164,17 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE users ADD INDEX idx_users_email (email)`).catch(() => {});
+  // Normalize any legacy emails stored with stray case/whitespace so they match
+  // the trim+lowercase login lookup. Per-row + guarded so a (rare) collision
+  // can't abort boot. Idempotent — only touches rows that aren't already clean.
+  try {
+    const [dirty] = await pool.query('SELECT id, email FROM users WHERE email <> LOWER(TRIM(email))');
+    for (const r of dirty) {
+      try { await pool.query('UPDATE users SET email = ? WHERE id = ?', [String(r.email).trim().toLowerCase(), r.id]); }
+      catch (e) { console.warn(`[db] could not normalize email for user ${r.id}: ${e.message}`); }
+    }
+    if (dirty.length) console.log(`[db] normalized ${dirty.length} user email(s) to trim+lowercase`);
+  } catch (_) { /* users table may be mid-migration on a fresh DB */ }
 
   // v9.0: "Parts in Shop" — PM-facing list of parts physically at the SDC shop.
   // NOTE: `rank` is a reserved word in MySQL 8 — must be backticked everywhere.

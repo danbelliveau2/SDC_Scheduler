@@ -113,11 +113,17 @@ app.post('/api/auth/login', async (req, res) => {
   const email    = (req.body.email    || '').toString().trim().toLowerCase();
   const password = (req.body.password || '').toString();
   if (!email || !password) return res.status(400).json({ error: 'email and password required' });
-  const [rows] = await pool.query('SELECT * FROM users WHERE email = ? AND active = 1', [email]);
+  // Look up by email only (don't fold `active` into the match) so a deactivated
+  // user gets a clear, actionable message instead of a misleading "invalid
+  // email or password". Match is whitespace/case-insensitive on the input side;
+  // stored emails are normalized on write + by the boot migration.
+  const [rows] = await pool.query('SELECT * FROM users WHERE LOWER(TRIM(email)) = ?', [email]);
   const user = rows[0] || null;
-  if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
-  if (!bcrypt.compareSync(password, user.password_hash)) {
+  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
     return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+  if (!user.active) {
+    return res.status(403).json({ error: 'This account is disabled. Ask an admin to re-enable it (Setup → Users).', code: 'ACCOUNT_DISABLED' });
   }
   await pool.query('UPDATE users SET last_login = ? WHERE id = ?', [new Date().toISOString().slice(0, 19).replace('T', ' '), user.id]);
   const token = signToken(user);
@@ -138,13 +144,13 @@ app.put('/api/auth/password', requireAuth, async (req, res) => {
   if (!current_password || !new_password)
     return res.status(400).json({ error: 'current_password and new_password are required' });
   if (String(new_password).length < 1)
-    return res.status(400).json({ error: 'new password cannot be empty' });
+    return res.status(400).json({ error: 'New password cannot be empty.' });
   const [urows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.authUser.id]);
   const user = urows[0] || null;
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (!bcrypt.compareSync(current_password, user.password_hash))
+  if (!(await bcrypt.compare(current_password, user.password_hash)))
     return res.status(401).json({ error: 'Current password is incorrect' });
-  const hash = bcrypt.hashSync(String(new_password), 12);
+  const hash = await bcrypt.hash(String(new_password), 12);
   await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, user.id]);
   sync('task_comments');
   res.json({ ok: true, message: 'Password updated successfully' });
@@ -155,9 +161,9 @@ app.post('/api/auth/register', async (req, res) => {
   const name     = (req.body.name     || '').toString().trim();
   const password = (req.body.password || '').toString();
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
-  if (password.length < 8)           return res.status(400).json({ error: 'password must be at least 8 characters' });
+  if (password.length < 1)           return res.status(400).json({ error: 'Password is required.' });
   try {
-    const hash = bcrypt.hashSync(password, 12);
+    const hash = await bcrypt.hash(password, 12);
     const [r] = await pool.query(
       `INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'editor')`,
       [email, name, hash]
@@ -2988,11 +2994,11 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   const { email, name, password, role = 'editor', avatar_color = '#1574c4' } = req.body || {};
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
   if (!['viewer', 'editor', 'admin'].includes(role)) return res.status(400).json({ error: 'invalid role' });
-  if (String(password).length < 1) return res.status(400).json({ error: 'password is required' });
+  if (String(password).length < 1) return res.status(400).json({ error: 'Password is required.' });
   try {
     const [r] = await pool.query(
       'INSERT INTO users (email,name,password_hash,role,active,avatar_color) VALUES (?,?,?,?,1,?)',
-      [email.toLowerCase().trim(), name.trim(), bcrypt.hashSync(password, 12), role, avatar_color]
+      [email.toLowerCase().trim(), name.trim(), await bcrypt.hash(password, 12), role, avatar_color]
     );
     io.emit('users:updated');
     const [[newUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?', [r.insertId]);
@@ -3011,9 +3017,11 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const upd = {};
   for (const k of allowed) {
     if (req.body[k] === undefined) continue;
-    upd[k] = (k === 'active') ? (req.body[k] ? 1 : 0) : req.body[k];
+    if (k === 'active') upd[k] = req.body[k] ? 1 : 0;
+    else if (k === 'email') upd[k] = String(req.body[k]).trim().toLowerCase(); // keep normalized so login matches
+    else upd[k] = req.body[k];
   }
-  if (req.body.password) upd.password_hash = bcrypt.hashSync(req.body.password, 12);
+  if (req.body.password) upd.password_hash = await bcrypt.hash(String(req.body.password), 12);
   if (!Object.keys(upd).length) return res.json(u);
   const setClause = Object.keys(upd).map(k => `${k}=?`).join(',');
   await pool.query(`UPDATE users SET ${setClause} WHERE id=?`, [...Object.values(upd), id]);
@@ -3022,11 +3030,50 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   res.json(updUser);
 });
 
+// Hard-delete a user account. Guarded: you can't delete yourself, and you can't
+// remove the last admin (that would lock everyone out of user management).
+// History/comments attribute by name string (no FK), so removing the row is safe.
+// To temporarily lock someone instead, use the active=0 toggle (PUT).
 app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
-  await pool.query('UPDATE users SET active=0 WHERE id=?', [Number(req.params.id)]);
+  const id = Number(req.params.id);
+  const [[u]] = await pool.query('SELECT id, role FROM users WHERE id=?', [id]);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  if (req.authUser && Number(req.authUser.id) === id) {
+    return res.status(400).json({ error: "You can't delete your own account." });
+  }
+  if (u.role === 'admin') {
+    const [[{ n }]] = await pool.query("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND id<>?", [id]);
+    if (n === 0) return res.status(400).json({ error: "Can't delete the last admin account." });
+  }
+  await pool.query('DELETE FROM users WHERE id=?', [id]);
   io.emit('users:updated');
-  res.json({ ok: true });
+  res.json({ ok: true, deleted: id });
 });
+
+// Admin "unlock this person" — set a new password (or generate a temp one) and
+// re-activate the account in a single call. This is the forgot-password path:
+// an admin resets it here and reads the temp password to the user.
+app.post('/api/users/:id/reset-password', requireRole('admin'), async (req, res) => {
+  const id = Number(req.params.id);
+  const [[u]] = await pool.query('SELECT id,email,name FROM users WHERE id=?', [id]);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  let pw = (req.body && req.body.new_password ? String(req.body.new_password) : '').trim();
+  let generated = false;
+  if (!pw) { pw = _genTempPassword(); generated = true; }
+  if (pw.length < 1) return res.status(400).json({ error: 'New password cannot be empty.' });
+  const hash = await bcrypt.hash(pw, 12);
+  await pool.query('UPDATE users SET password_hash=?, active=1 WHERE id=?', [hash, id]);
+  io.emit('users:updated');
+  // Only echo the password back when WE generated it, so the admin can relay it.
+  res.json({ ok: true, email: u.email, name: u.name, reactivated: true, ...(generated ? { tempPassword: pw } : {}) });
+});
+
+// Readable temp password: 3 short words + 2 digits (no ambiguous chars).
+function _genTempPassword() {
+  const words = ['blue', 'lime', 'gear', 'bolt', 'fast', 'spark', 'steel', 'motor', 'shaft', 'cam', 'weld', 'panel'];
+  const pick = () => words[Math.floor(Math.random() * words.length)];
+  return `${pick()}-${pick()}-${pick()}-${Math.floor(10 + Math.random() * 89)}`;
+}
 
 // Health check — used by Electron shell to detect server readiness
 // Liveness probe (public, no auth). Light by design — pings the DB and reports

@@ -18789,9 +18789,131 @@ async function renderSystemStatus() {
   });
 }
 
+// Users admin panel (Setup) — admin-only account management so a locked-out
+// teammate can be fixed in-app (reset password / re-enable) instead of via the
+// server CLI. Self-guards: a non-admin gets 403 → the whole card stays hidden.
+async function renderUsersAdmin() {
+  const card = document.getElementById('setup-users-card');
+  const box  = document.getElementById('users-admin-body');
+  if (!card || !box) return;
+  // Client-side guard: when auth is on, only admins ever see this card (the
+  // server also enforces it — this just avoids a needless fetch + any flash).
+  if (window.sdcAuth && window.sdcAuth.authEnabled && window.sdcAuth.user && window.sdcAuth.user.role !== 'admin') {
+    card.hidden = true; return;
+  }
+  let users;
+  try {
+    const r = await fetch('/api/users');
+    if (r.status === 403 || r.status === 401) { card.hidden = true; return; } // not an admin
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    users = await r.json();
+  } catch (e) { card.hidden = false; box.innerHTML = `<div class="sys-stat-row sys-bad">⚠ Could not load users: ${escapeHtml(e.message)}</div>`; return; }
+  card.hidden = false;
+
+  const roleOpts = (cur) => ['viewer', 'editor', 'admin'].map(r => `<option value="${r}" ${r === cur ? 'selected' : ''}>${r}</option>`).join('');
+  const rows = users.map(u => `
+    <tr class="ua-row${u.active ? '' : ' ua-disabled'}" data-uid="${u.id}">
+      <td class="ua-name">${escapeHtml(u.name || '')}</td>
+      <td class="ua-email">${escapeHtml(u.email || '')}</td>
+      <td><select class="ua-role" data-uid="${u.id}" title="Change role">${roleOpts(u.role)}</select></td>
+      <td class="ua-status">${u.active ? '<span class="ua-on">Active</span>' : '<span class="ua-off">Disabled</span>'}</td>
+      <td class="ua-actions">
+        <button class="btn-ghost btn-tight" data-ua-reset="${u.id}" type="button" title="Set a temporary password and re-enable this account">Reset password</button>
+        <button class="btn-ghost btn-tight" data-ua-toggle="${u.id}" data-active="${u.active ? 1 : 0}" type="button" title="${u.active ? 'Temporarily lock this account (keeps the record)' : 'Re-enable this account'}">${u.active ? 'Disable' : 'Enable'}</button>
+        <button class="btn-ghost btn-tight ua-del" data-ua-delete="${u.id}" type="button" title="Permanently remove this account">Delete</button>
+      </td>
+    </tr>`).join('');
+
+  box.innerHTML = `
+    <table class="users-admin-table">
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="ua-add">
+      <button class="btn-secondary btn-tight" id="ua-add-btn" type="button">+ Add user</button>
+      <button class="btn-ghost btn-tight" id="ua-refresh" type="button">↻ Refresh</button>
+    </div>`;
+
+  box.querySelector('#ua-refresh')?.addEventListener('click', renderUsersAdmin);
+
+  // Role change
+  box.querySelectorAll('.ua-role').forEach(sel => sel.addEventListener('change', async () => {
+    const id = sel.dataset.uid;
+    try {
+      const r = await fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: sel.value }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      showToast(`Role updated to ${sel.value}`, { kind: 'success' });
+    } catch (e) { showToast(`Could not change role: ${e.message}`, { kind: 'error' }); renderUsersAdmin(); }
+  }));
+
+  // Enable / disable
+  box.querySelectorAll('[data-ua-toggle]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.uaToggle;
+    const makeActive = btn.dataset.active === '0';
+    try {
+      const r = await fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: makeActive ? 1 : 0 }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      showToast(makeActive ? 'Account enabled' : 'Account disabled', { kind: 'success' });
+      renderUsersAdmin();
+    } catch (e) { showToast(`Could not update: ${e.message}`, { kind: 'error' }); }
+  }));
+
+  // Reset password → generate temp, re-enable, show it for the admin to relay
+  box.querySelectorAll('[data-ua-reset]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.uaReset;
+    const row = box.querySelector(`.ua-row[data-uid="${id}"]`);
+    const who = row ? row.querySelector('.ua-name').textContent : 'this user';
+    const ok = await showConfirmDialog?.({ title: 'Reset password', message: `Generate a temporary password for ${who} and re-enable the account? They'll use it to sign in, then can change it.` });
+    if (showConfirmDialog && !ok) return;
+    try {
+      const r = await fetch(`/api/users/${id}/reset-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      await showAlertDialog?.({ title: 'Temporary password', message: `Give ${body.name || who} this one-time password — they should change it after signing in:\n\n${body.tempPassword}` });
+      renderUsersAdmin();
+    } catch (e) { showToast(`Reset failed: ${e.message}`, { kind: 'error' }); }
+  }));
+
+  // Delete (permanent) — guarded server-side against self / last-admin.
+  box.querySelectorAll('[data-ua-delete]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.uaDelete;
+    const row = box.querySelector(`.ua-row[data-uid="${id}"]`);
+    const who = row ? `${row.querySelector('.ua-name').textContent} (${row.querySelector('.ua-email').textContent})` : 'this user';
+    const ok = await showConfirmDialog?.({ title: 'Delete user', message: `Permanently delete ${who}? This removes the sign-in account for good. To only lock them out temporarily, use Disable instead.`, okLabel: 'Delete', danger: true });
+    if (showConfirmDialog && !ok) return;
+    try {
+      const r = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      showToast('User deleted', { kind: 'success' });
+      renderUsersAdmin();
+    } catch (e) { showToast(`Could not delete: ${e.message}`, { kind: 'error' }); }
+  }));
+
+  // Add user
+  box.querySelector('#ua-add-btn')?.addEventListener('click', () => _uaAddUserFlow());
+}
+
+async function _uaAddUserFlow() {
+  const email = await showPromptDialog?.({ title: 'Add user', message: 'Email address', placeholder: 'name@sdcautomation.com', validate: v => /\S+@\S+\.\S+/.test(v) ? null : 'Enter a valid email' });
+  if (!email) return;
+  const name = await showPromptDialog?.({ title: 'Add user', message: `Display name for ${email}`, placeholder: 'Full name' });
+  if (!name) return;
+  const password = await showPromptDialog?.({ title: 'Add user', message: 'Temporary password', validate: v => (v && v.length >= 1) ? null : 'Password is required' });
+  if (!password) return;
+  try {
+    const r = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, name, password, role: 'editor' }) });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    showToast(`Added ${body.email} (editor)`, { kind: 'success' });
+    renderUsersAdmin();
+  } catch (e) { showToast(`Could not add user: ${e.message}`, { kind: 'error' }); }
+}
+
 function renderSetup() {
   ensureSetupDraft();
   try { renderSystemStatus(); } catch (_) {}
+  try { renderUsersAdmin(); } catch (_) {}
   const d = state.setupDraft;
 
   // (Row-height now lives in the schedule toolbar — used to be a slider here.)
