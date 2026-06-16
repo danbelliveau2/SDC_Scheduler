@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SDC Scheduler</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260601-160" />
-  <link rel="stylesheet" href="auth-ui.css?v=20260601-160" />
+  <link rel="stylesheet" href="styles.css?v=20260601-161" />
+  <link rel="stylesheet" href="auth-ui.css?v=20260601-161" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -894,19 +894,19 @@
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->
-  <script src="auth-ui.js?v=20260601-160"></script>
-  <script src="phases.js?v=20260601-160"></script>
-  <script src="release-notes.js?v=20260601-160"></script>
-  <script src="app.js?v=20260601-160"></script>
+  <script src="auth-ui.js?v=20260601-161"></script>
+  <script src="phases.js?v=20260601-161"></script>
+  <script src="release-notes.js?v=20260601-161"></script>
+  <script src="app.js?v=20260601-161"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
        loadCommentCounts, and initCommentsUI are available to app.js. -->
-  <script src="comments-ui.js?v=20260601-160"></script>
+  <script src="comments-ui.js?v=20260601-161"></script>
   <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
        broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
-  <script src="realtime-ui.js?v=20260601-160"></script>
+  <script src="realtime-ui.js?v=20260601-161"></script>
   <!-- Phase 4.1: "who's editing" presence pills, top-right under the user pill. -->
-  <script src="presence-ui.js?v=20260601-160"></script>
+  <script src="presence-ui.js?v=20260601-161"></script>
 </body>
 </html>

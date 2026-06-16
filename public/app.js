@@ -1229,7 +1229,9 @@ function cellHtml(t, key) {
       let driftChip = '';
       if (drift !== 0 && !t.is_milestone && !isAnchor && !done) {
         const ahead = drift > 0;
-        driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : ''}${drift}d</span>`;
+        // Half-week snap, same formula as the Gantt drift chip — never days.
+        const driftWks = (Math.round((Math.abs(drift) / 5) * 2) / 2) || 0.5;
+        driftChip = ` <span class="name-drift-chip ${ahead ? 'ahead' : 'behind'}">${ahead ? '+' : '−'}${driftWks}w</span>`;
       }
       // Backlog rows derive % from today's position between start/end (it's
       // not real work, just calendar ramp). All other rows read the stored
