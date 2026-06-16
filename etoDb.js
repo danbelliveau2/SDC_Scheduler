@@ -90,6 +90,55 @@ async function getProjectCosting(projectId) {
   return result.recordset[0] || null;
 }
 
+/**
+ * Part-cost financial summary for one project — mirrors Total ETO's "Part Cost"
+ * report card. MATERIALS only (purchased parts), not labor:
+ *   estimated  = vwProjectActualsVSEstimates.EstTotalMaterials  (planning baseline)
+ *   actual     = vwProjectActualsVSEstimates.ActTotalMaterials
+ *   purchased  = Σ(PO line qty × price)         — committed on POs
+ *   received   = Σ(received qty × price)         — physically in
+ *   paid       = Σ AP invoiced amount            — billed/paid to vendors
+ *   leftToPay  = purchased − paid                — committed but not yet billed
+ *   etc        = max(0, estimated − purchased)   — estimate-to-complete
+ * ETO has no per-project "budget" field (the BI gauge's budget is a report
+ * parameter), so `estimated` is the baseline rather than a hard budget.
+ */
+async function getPartCost(projectId) {
+  const db = await getPool();
+  const [po, paid, costing] = await Promise.all([
+    db.request().input('p', sql.Int, projectId).query(`
+      SELECT
+        ISNULL(SUM(pod.PurchaseQty * pod.PurchasePrice), 0) AS Purchased,
+        ISNULL(SUM(ISNULL(rl.QtyReceived, 0) * pod.PurchasePrice), 0) AS ReceivedValue
+      FROM tblPurchaseOrderDetails pod
+      LEFT JOIN (
+        SELECT PurchaseDetailID, SUM(QtyReceived) AS QtyReceived
+        FROM tblReceiverLog GROUP BY PurchaseDetailID
+      ) rl ON rl.PurchaseDetailID = pod.PurchaseDetailID
+      WHERE pod.ProjectID = @p`),
+    db.request().input('p', sql.Int, projectId).query(`
+      SELECT ISNULL(SUM(TotalInvoicedAmount), 0) AS Paid
+      FROM vwCostingPurchasedMaterialsInvoicedRaw WHERE ProjectID = @p`),
+    getProjectCosting(projectId).catch(() => null),
+  ]);
+  const purchased = Number(po.recordset[0].Purchased) || 0;
+  const received  = Number(po.recordset[0].ReceivedValue) || 0;
+  const paidAmt   = Number(paid.recordset[0].Paid) || 0;
+  const estimated = costing ? Number(costing.EstMaterials) || 0 : 0;
+  const actual    = costing ? Number(costing.ActMaterials) || 0 : 0;
+  const leftToPay = Math.max(0, purchased - paidAmt);
+  const etc       = Math.max(0, estimated - purchased);
+  return {
+    job: projectId,
+    estimated, actual, purchased, received, paid: paidAmt, leftToPay, etc,
+    projection: purchased + etc,
+    pctPaid:      purchased ? Math.round((paidAmt  / purchased) * 100) : 0,
+    pctReceived:  purchased ? Math.round((received / purchased) * 100) : 0,
+    pctOfEstimate: estimated ? Math.round((purchased / estimated) * 100) : null,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 /** PO detail lines (with received qty) for a set of ETO project IDs. */
 async function getPoDetailsMulti(projectIds) {
   if (!projectIds || projectIds.length === 0) return [];
@@ -179,6 +228,7 @@ async function getBomRows(projectId, specId) {
         child.ItemCompanyID   AS ChildPN,
         child.ItemDescription AS ChildDesc,
         child.Manufacturer    AS Manufacturer,
+        cat.CategoryDescription AS Category,
         eps.ParentID,
         parent.ItemCompanyID  AS ParentPN,
         eps.ItemQty,
@@ -204,6 +254,7 @@ async function getBomRows(projectId, specId) {
       FROM tblEngProductStructure eps
       JOIN tblEngItemMaster child  ON eps.ChildID  = child.ItemID
       JOIN tblEngItemMaster parent ON eps.ParentID = parent.ItemID
+      LEFT JOIN tlkpItemMaster_Categories cat ON child.ItemCategory = cat.ItemCategory
       WHERE eps.ProjectID = @projectId AND eps.SpecID = @specId
       ORDER BY parent.ItemCompanyID, child.ItemCompanyID
     `);
@@ -259,6 +310,7 @@ function _partJson(child) {
     pn: child.ChildPN,
     desc: child.ChildDesc,
     manufacturer: child.Manufacturer,
+    category: child.Category || null,
     qty: child.ItemQty,
     poQty: child.POQty,
     receivedQty: child.ReceivedQty,
@@ -301,6 +353,7 @@ async function getReadiness(projectId) {
     if (!poIndex[r.ItemID]) {
       poIndex[r.ItemID] = {
         poId: r.PurchaseOrderID,
+        supplier: r.Supplier || null,
         orderDate: isoDate(r.PurchaseDate),
         expDate: isoDate(r.DateRevised || r.DateRequired || r.PurchaseDateRevised || r.PurchaseDateRequired),
       };
@@ -320,6 +373,7 @@ async function getReadiness(projectId) {
         parentPN: node.pn === '???' ? 'LOOSE' : node.pn,
         parentDesc: node.desc || '',
         poId: po ? po.poId : null,
+        supplier: po ? po.supplier : null,
         orderDate: po ? po.orderDate : null,
         expDate: po ? po.expDate : null,
       });
@@ -471,6 +525,11 @@ async function getVendorStatus(projectId) {
       po.pct = total ? Math.round((received / total) * 100) : 0;
       po.price = po.lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.price) || 0), 0);
       po.status = received === total ? 'received' : anyOverdue ? 'pastdue' : 'open';
+      // Representative dates for the card: when fully received → latest
+      // arrival date; otherwise → latest expected (ETA) of the open lines.
+      const maxDate = (arr) => arr.filter(Boolean).sort().slice(-1)[0] || null;
+      po.receivedDate = maxDate(po.lines.map(l => l.receivedDate));
+      po.eta = maxDate(po.lines.filter(l => l.status === 'open').map(l => l.expected));
       return po;
     });
     pos.sort((a, b) => (a.status === 'received' ? 1 : 0) - (b.status === 'received' ? 1 : 0) || Number(a.po) - Number(b.po));
@@ -639,6 +698,7 @@ module.exports = {
   ping,
   getProjectInfo,
   getProjectCosting,
+  getPartCost,
   getPoDetailsMulti,
   getOpenPoJobs,
   getPoLines,

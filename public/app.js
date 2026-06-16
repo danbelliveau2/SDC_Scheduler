@@ -81,6 +81,7 @@ const api = {
     syncVendorPOs: (scope) => { window._lastLocalEdit = Date.now(); return fetch('/api/eto/sync-vendor-pos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ scope: scope || 'linked' }) }).then(r => r.json()); },
     poLines: (job, po) => fetch(`/api/eto/po/${encodeURIComponent(job)}/${encodeURIComponent(po)}/lines`).then(r => { if (!r.ok) throw new Error(`lines fetch failed (${r.status})`); return r.json(); }),
     vendors: (job) => fetch(`/api/eto/vendors/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`vendors fetch failed (${r.status})`); return r.json(); }),
+    partcost: (job) => fetch(`/api/eto/partcost/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`part cost fetch failed (${r.status})`); return r.json(); }),
   },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
@@ -8281,9 +8282,8 @@ async function _loadQuoteEtoActuals(project, overlay) {
 // Per-assembly received / ordered / no-PO rollups for a linked job's BOM.
 // Ported from the standalone Build Readiness Report app; same math, rendered
 // in the scheduler's own grid style. Read-only — nothing here writes anywhere.
-let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', search: '', open: {} };
+let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pfrom: '', pto: '', search: '', open: {} };
 try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
-if (_procState.tab === 'parts') _procState.tab = 'vendors'; // Parts List was replaced by Vendors
 const _procVendorCache = {}; // job → vendor-status payload
 function _procSave() { try { localStorage.setItem('sdcProcState', JSON.stringify({ ..._procState, open: {} })); } catch (_) {} }
 const _procCache = {};   // job → readiness payload
@@ -8309,11 +8309,16 @@ async function loadProcurement(forceRefresh) {
   if (!_procState.job) { renderProcurementPage(); return; }
   const job = _procState.job;
   if (forceRefresh) {
-    // Refresh busts the vendor-status cache too, server-side, so both tabs are fresh.
+    // Refresh busts the vendor-status + cost caches too, server-side, so all tabs are fresh.
     delete _procVendorCache[job];
+    delete _procCostCache[job];
     fetch(`/api/eto/vendors/${encodeURIComponent(job)}?refresh=1`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d && !d.error) { _procVendorCache[job] = d; if (_procState.job === job && _procState.tab === 'vendors') renderProcurementPage(); } })
+      .catch(() => {});
+    fetch(`/api/eto/partcost/${encodeURIComponent(job)}?refresh=1`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && !d.error) { _procCostCache[job] = d; if (_procState.job === job && _procState.tab === 'cost') renderProcurementPage(); } })
       .catch(() => {});
   }
   if (_procCache[job] && !forceRefresh) { renderProcurementPage(); return; }
@@ -8344,6 +8349,64 @@ function _procBarColor(pct) { return pct >= 90 ? '#74c415' : pct >= 60 ? '#eab30
 function _procRerender() {
   try { if (state.view === 'procurement') renderProcurementPage(); } catch (_) {}
   try { renderScheduleProcurement(); } catch (_) {}
+}
+
+// ── Cost tab (ETO "Part Cost" report card) ──────────────────────────────────
+// Materials-only financial summary: estimated → purchased → received → paid,
+// plus left-to-pay and estimate-to-complete. Lazily fetches /api/eto/partcost.
+const _procCostCache = {}; // job → part-cost payload
+function _procCostBody(job) {
+  const c = _procCostCache[job];
+  if (!c) {
+    api.eto.partcost(job)
+      .then(d => { _procCostCache[job] = d; _procRerender(); })
+      .catch(e => { _procCostCache[job] = { error: e.message }; _procRerender(); });
+    return `<div class="proc-empty">Loading part cost from Total ETO…</div>`;
+  }
+  if (c.error) return `<div class="proc-empty proc-error">⚠ ${escapeHtml(c.error)}</div>`;
+  return _procCostCard(c);
+}
+
+function _procCostCard(c) {
+  const usd = v => _procUsd(v); // exact whole dollars with commas, '—' for 0
+  const pctReceived = Math.min(100, c.pctReceived || 0);
+  const pctPaid = Math.min(100, c.pctPaid || 0);
+  // Estimate-coverage bar: how much of the materials estimate is committed (purchased).
+  const ofEst = c.pctOfEstimate;
+  const estColor = ofEst == null ? '#94a3b8' : _procBarColor(ofEst > 100 ? 0 : ofEst); // over-estimate = red
+  const row = (label, val, opts = {}) => `<div class="proc-cost-row${opts.strong ? ' is-strong' : ''}">
+      <span class="proc-cost-lbl${opts.cls ? ' ' + opts.cls : ''}">${label}</span>
+      <span class="proc-cost-val${opts.cls ? ' ' + opts.cls : ''}">${usd(val)}</span>
+    </div>`;
+  return `<div class="proc-cost-card">
+    <div class="proc-cost-grid">
+      ${row('Part Cost Estimated to Purchase', c.estimated)}
+      ${row('Part Cost Purchased', c.purchased)}
+      ${row('Part Cost Received', c.received)}
+      ${row('Part Cost Paid', c.paid, { cls: 'is-paid' })}
+      ${row('Purchased Left to Pay', c.leftToPay)}
+      ${row('Part Cost ETC (Estimate to Complete)', c.etc)}
+      ${row('Projected Total (Purchased + ETC)', c.projection, { strong: true })}
+    </div>
+    <div class="proc-cost-bars">
+      <div class="proc-cost-bar">
+        <div class="proc-cost-bar-head"><span>Paid of purchased</span><span style="color:${_procBarColor(pctPaid)}">${pctPaid}%</span></div>
+        <span class="proc-bar"><span class="proc-bar-fill" style="width:${pctPaid}%;background:${_procBarColor(pctPaid)}"></span></span>
+        <div class="proc-cost-bar-sub">${usd(c.paid)} paid · ${usd(c.leftToPay)} left to pay</div>
+      </div>
+      <div class="proc-cost-bar">
+        <div class="proc-cost-bar-head"><span>Received of purchased</span><span style="color:${_procBarColor(pctReceived)}">${pctReceived}%</span></div>
+        <span class="proc-bar"><span class="proc-bar-fill" style="width:${pctReceived}%;background:${_procBarColor(pctReceived)}"></span></span>
+        <div class="proc-cost-bar-sub">${usd(c.received)} received of ${usd(c.purchased)} purchased</div>
+      </div>
+      <div class="proc-cost-bar">
+        <div class="proc-cost-bar-head"><span>Purchased vs estimate</span><span style="color:${estColor}">${ofEst == null ? 'no estimate' : ofEst + '%'}</span></div>
+        <span class="proc-bar"><span class="proc-bar-fill" style="width:${ofEst == null ? 0 : Math.min(100, ofEst)}%;background:${estColor}"></span></span>
+        <div class="proc-cost-bar-sub">${ofEst == null ? 'Total ETO has no materials estimate on this job.' : `${usd(c.purchased)} purchased of ${usd(c.estimated)} estimated${ofEst > 100 ? ' — over estimate' : ''}`}</div>
+      </div>
+    </div>
+    <div class="proc-cost-note">Materials only (purchased parts), not labor. “Paid” is the AP-invoiced amount; estimate is Total ETO's materials estimate — ETO has no per-project budget figure.</div>
+  </div>`;
 }
 
 // Vendor cards for a job. opts.search / opts.vstatus filter (full page passes
@@ -8446,9 +8509,17 @@ function _procVendorCard(v) {
   const fmt = d => d ? fmtDate(d) : '—';
   const posHtml = v.pos.map(po => {
     const dot = po.status === 'received' ? 'received' : po.status === 'pastdue' ? 'noPO' : 'ordered';
+    // Received PO → arrival date; otherwise → expected ETA. Falls back to '—'.
+    const dateInfo = po.status === 'received'
+      ? (po.receivedDate ? { lbl: 'rcvd', val: fmt(po.receivedDate), cls: 'proc-vpo-date-rcvd' } : null)
+      : (po.eta ? { lbl: 'exp', val: fmt(po.eta), cls: po.status === 'pastdue' ? 'proc-vpo-date-late' : 'proc-vpo-date-exp' } : null);
+    const dateHtml = dateInfo
+      ? `<span class="proc-vpo-date ${dateInfo.cls}" title="${dateInfo.lbl === 'rcvd' ? 'Last received' : 'Expected delivery'}">${dateInfo.lbl} ${escapeHtml(dateInfo.val)}</span>`
+      : `<span class="proc-vpo-date"></span>`;
     return `<div class="proc-vpo" data-vpo="${escapeHtml(v.name)}|${escapeHtml(String(po.po))}" title="Open PO detail">
       <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(String(po.po))}" type="button" title="Click to copy PO number">${escapeHtml(String(po.po))}</button>
       <span class="proc-vpo-rcvd">${po.received}/${po.itemCount} rcvd</span>
+      ${dateHtml}
       <span class="proc-dot proc-dot-${dot}" title="${po.status === 'received' ? 'All received' : po.status === 'pastdue' ? 'Past due' : 'On order'}"></span>
       <span class="proc-vpo-go" aria-hidden="true">›</span>
     </div>`;
@@ -8465,26 +8536,134 @@ function _procVendorCard(v) {
   </div>`;
 }
 // Compact money — $843K / $12.4K / $730. Assembly rows are tight on space.
+// Exact whole-dollar amount with thousands separators — $5,200, $90,000, $228.
+// No K/M abbreviation, no decimals.
 function _procUsd(v) {
   const n = Number(v) || 0;
   if (n <= 0) return '—';
-  if (n >= 1000000) return '$' + (n / 1000000).toFixed(1) + 'M';
-  if (n >= 10000) return '$' + Math.round(n / 1000) + 'K';
-  if (n >= 1000) return '$' + (n / 1000).toFixed(1) + 'K';
-  return '$' + n.toLocaleString();
+  return '$' + Math.round(n).toLocaleString();
+}
+
+// ── Flat Parts List tab ──────────────────────────────────────────────────────
+// Every leaf-part occurrence across all assemblies, one row each, with PO +
+// delivery status. Complements the Assemblies (BOM tree) and Vendors (by-supplier)
+// views — this is the part-centric cut.
+function _procPartStatus(p) {
+  if (p.status === 'received') return { key: 'received', label: 'RECEIVED', cls: 'ok', sub: '' };
+  if (p.hold) return { key: 'hold', label: 'ON HOLD', cls: 'hold', sub: 'in ETO' };
+  if (p.status === 'noPO') return { key: 'noPO', label: 'NO PO', cls: 'bad', sub: '' };
+  const due = p.expDate || p.requiredDate;
+  if (due) {
+    const diff = Math.ceil((Date.parse(due + 'T00:00:00') - Date.now()) / 86400000);
+    if (isNaN(diff)) return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
+    if (diff < 0) return { key: 'overdue', label: 'OVERDUE', cls: 'bad', sub: `${Math.abs(diff)}d late` };
+    if (diff <= 14) return { key: 'soon', label: 'DUE SOON', cls: 'warn', sub: `in ${diff}d` };
+    return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: `in ${diff}d` };
+  }
+  return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
+}
+
+// Display fallbacks used for both rendering and the filter dropdowns, so the
+// option values line up exactly with what shows in the rows.
+function _procMfr(p) { return p.manufacturer || 'SDC'; }
+
+// Parts List filter bar — Status, Category, Manufacturer, Supplier, Purchase
+// date range. Options come straight from the loaded BOM so they always match
+// what's in the rows. Shared by the full page and the schedule drawer so both
+// filter identically (state lives on _procState). Mirrors the ETO report.
+function _procPartsFilterBar(data) {
+  if (!data || !Array.isArray(data.partsList)) return '';
+  const pstatusOpts = [['all', 'Status: all'], ['received', 'Received'], ['ordered', 'On order'], ['soon', 'Due soon'], ['overdue', 'Overdue'], ['noPO', 'No PO'], ['hold', 'On hold']];
+  const uniqSorted = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  const cats = uniqSorted(data.partsList.map(p => p.category));
+  const mfrs = uniqSorted(data.partsList.map(p => _procMfr(p)));
+  const sups = uniqSorted(data.partsList.map(p => p.supplier));
+  const opt = (cur, v, label) => `<option value="${escapeHtml(String(v))}" ${cur === v ? 'selected' : ''}>${escapeHtml(String(label))}</option>`;
+  const drop = (id, title, cur, values) => `<label class="proc-filt"><span class="proc-filt-lbl">${title}</span>
+    <select id="${id}" class="proc-job-pick">${opt(cur, 'all', 'All')}${values.map(v => opt(cur, v, v)).join('')}</select></label>`;
+  const active = _procState.pstatus !== 'all' || _procState.pcat !== 'all' || _procState.pmfr !== 'all' || _procState.psup !== 'all' || _procState.pfrom || _procState.pto;
+  return `<div class="proc-parts-filters">
+    <label class="proc-filt"><span class="proc-filt-lbl">Status</span>
+      <select id="proc-pstatus" class="proc-job-pick">${pstatusOpts.map(([v, t]) => `<option value="${v}" ${_procState.pstatus === v ? 'selected' : ''}>${v === 'all' ? 'All' : t}</option>`).join('')}</select></label>
+    ${drop('proc-pcat', 'Category', _procState.pcat, cats)}
+    ${drop('proc-pmfr', 'Manufacturer', _procState.pmfr, mfrs)}
+    ${drop('proc-psup', 'Supplier', _procState.psup, sups)}
+    <label class="proc-filt"><span class="proc-filt-lbl">Purchase from</span><input type="date" id="proc-pfrom" class="proc-date" value="${escapeHtml(_procState.pfrom || '')}"></label>
+    <label class="proc-filt"><span class="proc-filt-lbl">to</span><input type="date" id="proc-pto" class="proc-date" value="${escapeHtml(_procState.pto || '')}"></label>
+    ${active ? `<button class="btn-ghost btn-tight" id="proc-pclear" type="button">Clear filters</button>` : ''}
+  </div>`;
+}
+
+// Wire the parts filter controls inside `root`, re-rendering via `rerender`.
+function _wirePartsFilters(root, rerender) {
+  const bind = (id, key) => { const el = root.querySelector(id); if (el) el.addEventListener('change', () => { _procState[key] = el.value; _procSave(); rerender(); }); };
+  bind('#proc-pstatus', 'pstatus');
+  bind('#proc-pcat', 'pcat');
+  bind('#proc-pmfr', 'pmfr');
+  bind('#proc-psup', 'psup');
+  bind('#proc-pfrom', 'pfrom');
+  bind('#proc-pto', 'pto');
+  const pclear = root.querySelector('#proc-pclear');
+  if (pclear) pclear.addEventListener('click', () => { Object.assign(_procState, { pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pfrom: '', pto: '' }); _procSave(); rerender(); });
+}
+
+function _procPartsTable(data) {
+  const q = (_procState.search || '').toLowerCase();
+  const want = _procState.pstatus;
+  const cat = _procState.pcat, mfr = _procState.pmfr, sup = _procState.psup;
+  const from = _procState.pfrom || '', to = _procState.pto || '';
+  const rows = (data.partsList || []).filter(p => {
+    const st = _procPartStatus(p);
+    if (want !== 'all' && st.key !== want) return false;
+    if (cat !== 'all' && (p.category || '') !== cat) return false;
+    if (mfr !== 'all' && _procMfr(p) !== mfr) return false;
+    if (sup !== 'all' && (p.supplier || '') !== sup) return false;
+    if (from && (!p.orderDate || p.orderDate < from)) return false;
+    if (to && (!p.orderDate || p.orderDate > to)) return false;
+    if (q && ![p.pn, p.desc, p.category, p.manufacturer, p.supplier, p.parentPN, p.parentDesc, p.poId].some(v => String(v || '').toLowerCase().includes(q))) return false;
+    return true;
+  });
+  if (!rows.length) return `<div class="proc-empty">No parts match the current filter or search.</div>`;
+  const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+  const fmt = d => d ? fmtDate(d) : '—';
+  return `<div class="proc-plist">
+    <div class="proc-plist-head"><span>Part No</span><span>Description</span><span>Category</span><span>Assembly / Source</span><span class="num">Qty</span><span class="num">Unit $</span><span>Mfr</span><span>PO #</span><span>Order</span><span>Exp</span><span>Status</span></div>
+    ${rows.map(p => {
+      const st = _procPartStatus(p);
+      return `<div class="proc-plrow${st.key === 'overdue' ? ' proc-plrow-overdue' : ''}">
+        <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
+        <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
+        <span class="proc-plcat" title="${escapeHtml(p.category || '')}">${p.category ? escapeHtml(p.category) : '—'}</span>
+        <span class="proc-plsrc"><span class="proc-plsrc-pn">${escapeHtml(p.parentPN || 'LOOSE')}</span><span class="proc-plsrc-desc">${escapeHtml(p.parentDesc || '')}</span></span>
+        <span class="num">${p.qty ?? ''}</span>
+        <span class="num">${usd(p.unitPrice)}</span>
+        <span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>
+        <span class="proc-plpo">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
+        <span>${fmt(p.orderDate)}</span>
+        <span>${fmt(p.expDate || p.requiredDate)}</span>
+        <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
+      </div>`;
+    }).join('')}
+  </div>`;
 }
 
 function _procAssemblyRow(node, depth) {
   const st = node.stats || { total: 0, received: 0, noPO: 0, ordered: 0, pct: 0 };
   const open = !!_procState.open[node.id];
-  const partsBits = [`${st.received}/${st.total} parts`];
-  if (node.children.length) partsBits.push(`${node.children.length} sub-assy`);
-  if (st.noPO) partsBits.push(`<span class="proc-nopo">${st.noPO} no PO</span>`);
+  // Each meta fact is its own grid cell so they line up in columns down the page
+  // (parts under parts, sub-assy under sub-assy, no-PO under no-PO).
+  const partsCell = `${st.received}/${st.total} parts`;
+  const subCell   = node.children.length ? `${node.children.length} sub-assy` : '';
+  const noPoCell  = st.noPO ? `<span class="proc-nopo">${st.noPO} no PO</span>` : '';
   let html = `
     <div class="proc-arow${depth > 0 ? ' proc-arow-nested' : ''}" data-aid="${escapeHtml(String(node.id))}" style="padding-left:${10 + depth * 26}px;--d:${depth}">
       <span class="proc-caret">${open ? '▾' : '▸'}</span>
       <button class="proc-pn" data-copy="${escapeHtml(node.pn)}" type="button" title="Click to copy part number">${escapeHtml(node.pn)}</button>
-      <span class="proc-adesc">${escapeHtml(node.desc || '')}<span class="proc-ameta">${partsBits.join(' · ')}</span></span>
+      <span class="proc-aname" title="${escapeHtml(node.desc || '')}">${escapeHtml(node.desc || '')}</span>
+      <span class="proc-acol proc-acol-parts">${partsCell}</span>
+      <span class="proc-acol proc-acol-sub">${subCell}</span>
+      <span class="proc-acol proc-acol-nopo">${noPoCell}</span>
+      <span class="proc-aspacer"></span>
       <span class="proc-acost" title="Purchased material cost for this assembly — qty × latest PO unit price per part. In-house parts with no PO price count as $0.">${_procUsd(st.cost)}</span>
       <span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, st.pct)}%;background:${_procBarColor(st.pct)}"></span></span>
       <span class="proc-pct" style="color:${_procBarColor(st.pct)}">${st.pct}%</span>
@@ -8575,10 +8754,17 @@ function renderProcurementPage() {
       }
       return true;
     };
-    if (data.specs.length === 0) {
-      body = `<div class="proc-empty">Total ETO has no BOM data for job ${escapeHtml(String(data.job))} yet — engineering hasn't released assemblies into the product structure. Check back once the BOM exists.</div>`;
+    // Vendors + Cost don't need a released BOM (POs/invoices can exist first),
+    // so they render regardless. Assemblies + Parts are BOM-derived, so they
+    // show the "no BOM yet" notice when the product structure isn't released.
+    if (_procState.tab === 'cost') {
+      body = _procCostBody(_procState.job);
     } else if (_procState.tab === 'vendors') {
       body = _procVendorBody(_procState.job, { search: _procState.search, vstatus: _procState.vstatus });
+    } else if (data.specs.length === 0) {
+      body = `<div class="proc-empty">Total ETO has no BOM data for job ${escapeHtml(String(data.job))} yet — engineering hasn't released assemblies into the product structure. Check the Vendors and Cost tabs for PO activity, or back here once the BOM exists.</div>`;
+    } else if (_procState.tab === 'parts') {
+      body = _procPartsTable(data);
     } else {
       const specHtml = data.specs.map(spec => {
         const assemblies = spec.assemblies.filter(keep);
@@ -8600,13 +8786,20 @@ function renderProcurementPage() {
 
   const seg = (val, key, label) => `<button class="seg-btn${_procState.filter === val ? ' is-active' : ''}" data-pfilter="${val}" type="button">${label}</button>`;
   const isVendors = _procState.tab === 'vendors';
+  const isParts = _procState.tab === 'parts';
+  const isCost = _procState.tab === 'cost';
+  const isAssemblies = !isVendors && !isParts && !isCost;
   const vcount = _procVendorCache[_procState.job] && _procVendorCache[_procState.job].vendors ? _procVendorCache[_procState.job].vendors.length : null;
-  const tabStrip = (data && !data.error && !_procLoading && data.specs && data.specs.length) ? `
+  const tabStrip = (data && !data.error && !_procLoading && data.specs) ? `
     <div class="proc-tabs">
-      <button class="proc-tab${!isVendors ? ' is-active' : ''}" data-ptab="assemblies" type="button">Assemblies <span class="proc-tab-n">${data.specs.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
+      <button class="proc-tab${isAssemblies ? ' is-active' : ''}" data-ptab="assemblies" type="button">Assemblies <span class="proc-tab-n">${data.specs.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
+      <button class="proc-tab${isParts ? ' is-active' : ''}" data-ptab="parts" type="button">Parts List <span class="proc-tab-n">${(data.partsList || []).length}</span></button>
       <button class="proc-tab${isVendors ? ' is-active' : ''}" data-ptab="vendors" type="button">Vendors${vcount != null ? ` <span class="proc-tab-n">${vcount}</span>` : ''}</button>
+      <button class="proc-tab${isCost ? ' is-active' : ''}" data-ptab="cost" type="button">Cost</button>
       <span class="proc-tab-hint">Click any part / PO number to copy</span>
     </div>` : '';
+  // Filter bar only when the Parts tab actually has a BOM to filter.
+  const partsFilterBar = (isParts && data && data.specs && data.specs.length) ? _procPartsFilterBar(data) : '';
   root.innerHTML = `
     <div class="shop-parts-head">
       <div class="sp-head-top">
@@ -8620,14 +8813,17 @@ function renderProcurementPage() {
           ? `<select id="proc-vstatus" class="proc-job-pick" title="Filter vendors by status">
               ${[['all','Status: all'],['pastdue','Past due'],['open','Late / Exp'],['received','Received']].map(([v,t]) => `<option value="${v}" ${_procState.vstatus === v ? 'selected' : ''}>${t}</option>`).join('')}
             </select>`
-          : `<div class="seg-control proc-filter">
-              ${seg('all', 'f', 'All')}${seg('ready', 'f', 'Ready')}${seg('close', 'f', 'Close')}${seg('blocked', 'f', 'Blocked')}
-            </div>`}
-        <input type="search" class="vpo-search" id="proc-search" placeholder="${isVendors ? 'Search vendors or PO #…' : 'Search parts, assemblies, manufacturers…'}" value="${escapeHtml(_procState.search || '')}"/>
-        ${isVendors ? '' : `<button class="btn-ghost btn-tight" id="proc-expand" type="button">Expand all</button>
-        <button class="btn-ghost btn-tight" id="proc-collapse" type="button">Collapse all</button>`}
+          : isParts || isCost
+            ? '' /* parts filters live below the tabs; cost has no filters */
+            : `<div class="seg-control proc-filter">
+                ${seg('all', 'f', 'All')}${seg('ready', 'f', 'Ready')}${seg('close', 'f', 'Close')}${seg('blocked', 'f', 'Blocked')}
+              </div>`}
+        ${isCost ? '' : `<input type="search" class="vpo-search" id="proc-search" placeholder="${isVendors ? 'Search vendors or PO #…' : isParts ? 'Search parts, PO #, manufacturers…' : 'Search parts, assemblies, manufacturers…'}" value="${escapeHtml(_procState.search || '')}"/>`}
+        ${isAssemblies ? `<button class="btn-ghost btn-tight" id="proc-expand" type="button">Expand all</button>
+        <button class="btn-ghost btn-tight" id="proc-collapse" type="button">Collapse all</button>` : ''}
       </div>
       ${tabStrip}
+      ${partsFilterBar}
       <div class="vpo-legend"><span class="proc-dot proc-dot-received"></span> Received&nbsp;&nbsp;<span class="proc-dot proc-dot-ordered"></span> On order&nbsp;&nbsp;<span class="proc-dot proc-dot-noPO"></span> No PO&nbsp;&nbsp;·&nbsp;&nbsp;Ready = 100% · Close ≥ 60% · Blocked &lt; 60%${data && data.generatedAt ? `&nbsp;&nbsp;·&nbsp;&nbsp;<span class="proc-asof">ETO data as of ${new Date(data.generatedAt).toLocaleTimeString()}</span>` : ''}</div>
     </div>
     <div class="proc-body">${body}</div>`;
@@ -8669,6 +8865,7 @@ function renderProcurementPage() {
   root.querySelectorAll('[data-ptab]').forEach(b => b.addEventListener('click', () => { _procState.tab = b.dataset.ptab; _procSave(); renderProcurementPage(); }));
   const vstatus = root.querySelector('#proc-vstatus');
   if (vstatus) vstatus.addEventListener('change', () => { _procState.vstatus = vstatus.value; _procSave(); renderProcurementPage(); });
+  _wirePartsFilters(root, renderProcurementPage);
   root.querySelectorAll('[data-vpo]').forEach(row => row.addEventListener('click', (e) => {
     if (e.target.closest('[data-copy]')) return; // PO-number click = copy, not open
     const k = row.dataset.vpo, i = k.indexOf('|');
@@ -12225,9 +12422,9 @@ function renderScheduleProcurement() {
 
   let body;
   if (data.error) body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
-  else if (!data.specs || !data.specs.length) body = `<div class="proc-empty">Total ETO has no BOM for job ${escapeHtml(String(job))} yet.</div>`;
   else {
-    const t = data.totals;
+    const t = data.totals || { pct: 0, parts: 0, noPO: 0, cost: 0 };
+    const specsArr = data.specs || [];
     const head = `<div class="proc-drawer-head">
       <span class="proc-headstat-label">Readiness</span>
       <span class="proc-bar proc-bar-lg"><span class="proc-bar-fill" style="width:${t.pct}%;background:${_procBarColor(t.pct)}"></span></span>
@@ -12235,25 +12432,38 @@ function renderScheduleProcurement() {
       <span class="proc-headstat-sub">${t.parts} parts · <span class="${t.noPO ? 'proc-nopo' : ''}">${t.noPO} no PO</span>${t.cost ? ` · ${_procUsd(t.cost)} materials` : ''}</span>
       <button class="proc-drawer-full" data-action="proc-open-full" type="button" title="Open the full Procurement page (parts list, all jobs)">Full view →</button>
     </div>`;
-    // Drawer mirrors the full page's Assemblies | Vendors tabs.
-    const dtab = (_procState.drawerTab === 'vendors') ? 'vendors' : 'assemblies';
+    // Drawer mirrors the full page's Assemblies | Parts List | Vendors | Cost tabs.
+    const dtab = ['vendors', 'parts', 'cost'].includes(_procState.drawerTab) ? _procState.drawerTab : 'assemblies';
     const vcount = _procVendorCache[job] && _procVendorCache[job].vendors ? _procVendorCache[job].vendors.length : null;
     const tabs = `<div class="proc-tabs proc-drawer-tabs">
-      <button class="proc-tab${dtab === 'assemblies' ? ' is-active' : ''}" data-dtab="assemblies" type="button">Assemblies <span class="proc-tab-n">${data.specs.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
+      <button class="proc-tab${dtab === 'assemblies' ? ' is-active' : ''}" data-dtab="assemblies" type="button">Assemblies <span class="proc-tab-n">${specsArr.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
+      <button class="proc-tab${dtab === 'parts' ? ' is-active' : ''}" data-dtab="parts" type="button">Parts List <span class="proc-tab-n">${(data.partsList || []).length}</span></button>
       <button class="proc-tab${dtab === 'vendors' ? ' is-active' : ''}" data-dtab="vendors" type="button">Vendors${vcount != null ? ` <span class="proc-tab-n">${vcount}</span>` : ''}</button>
+      <button class="proc-tab${dtab === 'cost' ? ' is-active' : ''}" data-dtab="cost" type="button">Cost</button>
+      ${dtab === 'assemblies' && specsArr.length ? `<span class="proc-drawer-tab-actions">
+        <button class="btn-ghost btn-tight" data-dexpand="1" type="button">Expand all</button>
+        <button class="btn-ghost btn-tight" data-dcollapse="1" type="button">Collapse all</button>
+      </span>` : ''}
     </div>`;
+    // Vendors + Cost render even with no BOM (POs/invoices can land first).
     let inner;
-    if (dtab === 'vendors') {
+    if (dtab === 'cost') {
+      inner = _procCostBody(job);
+    } else if (dtab === 'vendors') {
       inner = _procVendorBody(job); // no filters in the drawer — show all
+    } else if (!specsArr.length) {
+      inner = `<div class="proc-empty">Total ETO has no BOM for job ${escapeHtml(String(job))} yet — check the Vendors and Cost tabs for PO activity.</div>`;
+    } else if (dtab === 'parts') {
+      inner = _procPartsFilterBar(data) + _procPartsTable(data); // same filters as the full page
     } else {
-      const specs = data.specs.map(spec => {
+      const specs = specsArr.map(spec => {
         const specCost = spec.assemblies.reduce((s, a) => s + ((a.stats && a.stats.cost) || 0), 0);
         return `<div class="proc-spec">
           <div class="proc-spec-head"><span>Spec ${escapeHtml(String(spec.specId))} — ${escapeHtml(spec.specName || '')}</span><span class="proc-spec-cost">${_procUsd(specCost)}</span></div>
           ${spec.assemblies.map(a => _procAssemblyRow(a, 0)).join('')}
         </div>`;
       }).join('');
-      const grand = data.specs.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
+      const grand = specsArr.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
       inner = specs + `<div class="proc-grand">
         <span>Grand total — purchased materials across all assemblies</span>
         <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
@@ -12284,6 +12494,20 @@ function _wireProcDrawer(el, job, project) {
     }
     const dtab = t.closest('[data-dtab]');
     if (dtab) { _procState.drawerTab = dtab.dataset.dtab; _procSave(); renderScheduleProcurement(); return; }
+    if (t.closest('[data-dexpand]') || t.closest('[data-dcollapse]')) {
+      const expand = !!t.closest('[data-dexpand]');
+      _procState.open = _procState.open || {};
+      if (expand) {
+        const data = _procCache[job];
+        const ids = [];
+        (function collect(nodes) { (nodes || []).forEach(n => { if (n.isAssembly) { ids.push(n.id); collect(n.children); } }); })(data && data.specs ? data.specs.flatMap(s => s.assemblies) : []);
+        ids.forEach(id => { _procState.open[id] = true; });
+      } else {
+        _procState.open = {};
+      }
+      renderScheduleProcurement();
+      return;
+    }
     const copyBtn = t.closest('[data-copy]');
     if (copyBtn) { const pn = copyBtn.dataset.copy; if (pn) { try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {} } return; }
     const vpo = t.closest('[data-vpo]');
@@ -12291,6 +12515,9 @@ function _wireProcDrawer(el, job, project) {
     const arow = t.closest('.proc-arow');
     if (arow) { _procState.open = _procState.open || {}; const id = arow.dataset.aid; _procState.open[id] = !_procState.open[id]; renderScheduleProcurement(); return; }
   };
+  // Parts filters fire `change`/`click` on fresh elements each render — bind them
+  // separately from the onclick delegation above.
+  _wirePartsFilters(el, renderScheduleProcurement);
 }
 function _wireNotes(el, project) {
   const data = state.projectNotes[project];
@@ -21083,11 +21310,14 @@ async function init() {
   setupRevisionPill();
 
   // Project tab bar
-  // + New tab — opens the Workspaces side panel so the user can pick or build
-  // a schedule. Right-click → legacy picker fallback (the estimate +
-  // Smartsheet flows still live there until they're migrated to the panel).
+  // + New tab — opens the project picker (pick an existing schedule, or build
+  // one from an SDC estimate sheet / Smartsheet import). NOTE: this used to call
+  // openSidebarPanel('workspaces'), but that "workspaces side panel" was never
+  // built — no #app-sidebar-panel markup exists (on main either), so left-click
+  // silently did nothing. The picker is the complete, working flow; point both
+  // left-click and the right-click fallback at it.
   document.getElementById('btn-add-project').addEventListener('click', () => {
-    openSidebarPanel('workspaces');
+    showProjectAddPicker();
   });
   document.getElementById('btn-add-project').addEventListener('contextmenu', (e) => {
     e.preventDefault();

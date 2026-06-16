@@ -2175,9 +2175,13 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-grand-amt { font-size: 16px; font-weight: 800; color: var(--sdc-accent, #ffde51); cursor: help; }
 .proc-arow {
   display: grid;
-  /* caret · PN pill · description · cost · bar · pct. Description and the bar
-     both flex (2:1) so a wide screen fills with a longer bar, not a dead gap. */
-  grid-template-columns: 18px minmax(110px, max-content) minmax(220px, 2fr) 76px minmax(120px, 1fr) 48px;
+  /* caret · PN pill · description · cost · bar · pct. Each row is its OWN grid,
+     so content-sized columns wouldn't align row-to-row — use FIXED widths so
+     every row lines up in identical columns (true horizontal symmetry), packed
+     left (justify-content:start) instead of stretched across a wide screen. */
+  /* …descriptive columns…, then a 1fr spacer that pushes cost/bar/pct to the
+     right edge while the left columns stay packed and aligned. */
+  grid-template-columns: 18px 132px 300px 96px 88px 80px 1fr 92px 104px 44px;
   align-items: center;
   gap: 10px;
   padding: 7px 12px 7px 10px;
@@ -2228,15 +2232,18 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .proc-pn:hover { background: #d3e6f7; }
 .proc-pn-sm { font-size: 10.5px; padding: 1px 6px; background: #f1f5f9; border-color: #e2e8f0; color: #334155; }
-.proc-adesc { font-size: 13px; color: #0f172a; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-aname { font-size: 13px; color: #0f172a; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proc-acost { font-size: 12px; font-weight: 700; color: #475569; text-align: right; white-space: nowrap; cursor: help; }
-.proc-ameta { margin-left: 10px; font-size: 11.5px; font-weight: 500; color: #64748b; }
+/* Meta facts each in their own aligned column (parts / sub-assy / no-PO). */
+.proc-acol { font-size: 11.5px; font-weight: 500; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .proc-parts { margin: 2px 12px 10px 36px; border: 1px solid #e8edf3; border-radius: 8px; overflow: hidden; }
 .proc-phead, .proc-prow {
   display: grid;
-  /* dot · part no · description (remainder) · mfr · qty · unit$ · ext$ · PO/Rcvd */
-  grid-template-columns: 22px minmax(120px, max-content) 1fr 140px 48px 84px 92px 80px;
+  /* dot · part no · description (remainder) · mfr · qty · unit$ · ext$ · PO/Rcvd.
+     Part-no is a FIXED width (not max-content) so every row's description starts
+     at the same x — long part numbers no longer shove their description right. */
+  grid-template-columns: 22px 260px 1fr 140px 48px 84px 92px 80px;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
@@ -2324,6 +2331,7 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-tab-n { font-size: 10px; font-weight: 700; background: #eef2f7; color: #64748b; padding: 1px 6px; border-radius: 4px; }
 .proc-tab.is-active .proc-tab-n { background: #e3f0fa; color: var(--sdc-primary); }
 .proc-tab-hint { margin-left: auto; font-size: 11px; color: #94a3b8; font-style: italic; }
+.proc-drawer-tab-actions { margin-left: auto; display: inline-flex; gap: 8px; }
 
 /* Vendors tab — Build Readiness "Vendor Status" cards */
 .proc-vendors { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; padding-top: 12px; }
@@ -2346,9 +2354,91 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-vpo { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid #f5f8fb; cursor: pointer; font-size: 12px; }
 .proc-vpo:last-child { border-bottom: none; }
 .proc-vpo:hover { background: #f1f7fc; }
-.proc-vpo-rcvd { margin-left: auto; color: #475569; font-size: 11.5px; }
+.proc-vpo-rcvd { margin-left: auto; color: #475569; font-size: 11.5px; min-width: 62px; text-align: right; }
+.proc-vpo-date { min-width: 78px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; color: #64748b; }
+.proc-vpo-date-rcvd { color: #5a9e10; }
+.proc-vpo-date-exp { color: #64748b; }
+.proc-vpo-date-late { color: #dc2626; font-weight: 600; }
 .proc-vpo-go { color: #94a3b8; font-size: 15px; font-weight: 700; width: 12px; text-align: center; }
 .proc-vpo:hover .proc-vpo-go { color: var(--sdc-primary, #1574c4); }
+
+/* Procurement — Cost tab (ETO "Part Cost" summary) */
+.proc-cost-card { margin-top: 14px; display: grid; grid-template-columns: minmax(320px, 460px) 1fr; gap: 22px 32px; align-items: start; }
+.proc-cost-grid { border: 1px solid #e8edf3; border-radius: 10px; overflow: hidden; background: white; }
+.proc-cost-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 9px 14px; border-bottom: 1px solid #f1f5f9; }
+.proc-cost-row:last-child { border-bottom: none; }
+.proc-cost-row.is-strong { background: #f7fafc; border-top: 2px solid #e2e8f0; }
+.proc-cost-lbl { font-size: 12.5px; color: #475569; }
+.proc-cost-val { font-size: 13.5px; font-weight: 700; color: #1e293b; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.proc-cost-row.is-strong .proc-cost-lbl, .proc-cost-row.is-strong .proc-cost-val { font-weight: 800; color: #0f172a; }
+.proc-cost-lbl.is-paid, .proc-cost-val.is-paid { color: #5a9e10; }
+.proc-cost-bars { display: flex; flex-direction: column; gap: 16px; }
+.proc-cost-bar .proc-bar { display: block; height: 12px; border-radius: 6px; margin: 4px 0 3px; }
+.proc-cost-bar-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; color: #334155; }
+.proc-cost-bar-sub { font-size: 11px; color: #94a3b8; }
+.proc-cost-note { grid-column: 1 / -1; font-size: 11px; color: #94a3b8; font-style: italic; max-width: 760px; }
+@media (max-width: 880px) { .proc-cost-card { grid-template-columns: 1fr; } }
+
+/* Procurement — Parts List filter bar */
+.proc-parts-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; margin-top: 10px; padding: 10px 12px; background: #f7fafc; border: 1px solid #e8edf3; border-radius: 8px; }
+.proc-filt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.proc-filt-lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.3px; text-transform: uppercase; color: #64748b; }
+.proc-parts-filters .proc-job-pick { min-width: 150px; }
+.proc-date { height: 30px; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 12px; color: #334155; background: white; }
+.proc-parts-filters #proc-pclear { align-self: flex-end; margin-bottom: 1px; }
+
+/* Procurement — flat Parts List table */
+.proc-plist { margin-top: 12px; border: 1px solid #e8edf3; border-radius: 8px; overflow: hidden; background: white; }
+.proc-plist-head, .proc-plrow {
+  display: grid;
+  /* part no · description (remainder) · category · assembly · qty · unit$ · mfr · po · order · exp · status */
+  grid-template-columns: minmax(115px, max-content) 1fr 132px 190px 44px 78px 115px 64px 72px 72px 108px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.proc-plcat { font-size: 11px; color: #475569; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proc-plist-head {
+  background: var(--sdc-dark, #061d39);
+  color: rgba(255,255,255,0.75);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.proc-plrow { border-bottom: 1px solid #f1f5f9; }
+.proc-plrow:last-child { border-bottom: none; }
+.proc-plrow:nth-child(even) { background: #fafcfe; }
+.proc-plrow:hover { background: #f1f7fc; }
+.proc-plrow-overdue { background: #fef2f2; }
+.proc-plrow-overdue:hover { background: #fee9e9; }
+.proc-plist .num, .proc-plist-head .num { text-align: right; }
+.proc-plsrc { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
+.proc-plsrc-pn { font-family: ui-monospace, Consolas, monospace; font-size: 9.5px; font-weight: 700; color: #64748b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proc-plsrc-desc { font-size: 10.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proc-plpo { font-family: ui-monospace, Consolas, monospace; font-size: 11px; font-weight: 700; color: #334155; }
+.proc-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  justify-self: start;
+}
+.proc-pill i { font-style: normal; font-weight: 600; opacity: 0.75; font-size: 9px; }
+.proc-pill-ok   { background: #e8f7d8; color: #3f6212; }
+.proc-pill-bad  { background: #fee2e2; color: #b91c1c; }
+.proc-pill-warn { background: #fef3c7; color: #92400e; }
+.proc-pill-info { background: #e3f0fa; color: #1574c4; }
+.proc-pill-hold { background: #f1f5f9; color: #64748b; }
 
 /* PO detail slide-out panel (Build Readiness style) */
 .proc-po-overlay { position: fixed; inset: 0; z-index: 1200; display: flex; justify-content: flex-end; }

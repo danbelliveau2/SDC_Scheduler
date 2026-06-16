@@ -414,6 +414,152 @@ async function suiteEto() {
     eq(r.status, 200);
     assert(Array.isArray(r.body), 'lines not an array');
   });
+
+  await it('GET /api/eto/partcost/:job returns the full cost shape', async () => {
+    const r = await fetch('GET', '/api/eto/partcost/1129');
+    eq(r.status, 200);
+    for (const k of ['estimated', 'actual', 'purchased', 'received', 'paid', 'leftToPay', 'etc', 'projection']) {
+      assert(typeof r.body[k] === 'number', `partcost.${k} not a number`);
+    }
+  });
+
+  await it('GET /api/eto/partcost with non-numeric job returns 400', async () => {
+    const r = await fetch('GET', '/api/eto/partcost/abc');
+    eq(r.status, 400);
+  });
+}
+
+// Deep edge-case coverage for the Procurement surface (Parts List + filters,
+// Category, Cost tab, vendor dates). Lives apart from suiteEto so the happy
+// path and the corner cases read separately.
+async function suiteProcurementEdge() {
+  console.log('\n── Procurement edge cases ──');
+
+  const st = await fetch('GET', '/api/eto/status');
+  const connected = st.body && st.body.configured && st.body.connected;
+  if (!connected) { console.log('  (skip — ETO not connected)'); skip += 18; return; }
+
+  // ── new data fields flow through ──
+  await it('readiness partsList carries category + supplier on every row', async () => {
+    const r = await fetch('GET', '/api/eto/readiness/1129');
+    eq(r.status, 200);
+    const pl = r.body.partsList || [];
+    assert(pl.length > 0, 'no parts');
+    assert(pl.every(p => 'category' in p), 'a part is missing the category key');
+    assert(pl.every(p => 'supplier' in p), 'a part is missing the supplier key');
+    assert(pl.some(p => p.category), 'no part has a non-null category');
+  });
+
+  await it('vendors POs carry eta + receivedDate keys', async () => {
+    const r = await fetch('GET', '/api/eto/vendors/1129');
+    const pos = (r.body.vendors || []).flatMap(v => v.pos);
+    assert(pos.length > 0, 'no POs');
+    assert(pos.every(p => 'eta' in p && 'receivedDate' in p), 'PO missing eta/receivedDate');
+    // received POs should expose an arrival date; open POs an ETA (not both null unless truly unknown)
+    const recv = pos.filter(p => p.status === 'received');
+    assert(recv.length === 0 || recv.some(p => p.receivedDate), 'no received PO has a receivedDate');
+  });
+
+  // ── partcost invariants ──
+  await it('partcost invariants hold (leftToPay / etc / projection / pct ranges)', async () => {
+    const r = await fetch('GET', '/api/eto/partcost/1129');
+    const c = r.body;
+    eq(c.leftToPay, Math.max(0, c.purchased - c.paid), 'leftToPay formula');
+    eq(c.etc, Math.max(0, c.estimated - c.purchased), 'etc formula');
+    eq(Math.round(c.projection), Math.round(c.purchased + c.etc), 'projection formula');
+    assert(c.pctPaid >= 0, 'pctPaid negative');
+    assert(c.pctReceived >= 0, 'pctReceived negative');
+    assert(c.received <= c.purchased + 0.01, 'received value exceeds purchased');
+  });
+
+  // ── no-data job (real ETO job with no released BOM / no POs) ──
+  await it('readiness for a no-BOM job returns 200 with empty specs', async () => {
+    const r = await fetch('GET', '/api/eto/readiness/1158');
+    eq(r.status, 200);
+    assert(Array.isArray(r.body.specs) && r.body.specs.length === 0, 'expected empty specs');
+    assert(Array.isArray(r.body.partsList) && r.body.partsList.length === 0, 'expected empty partsList');
+  });
+
+  await it('vendors for a no-PO job returns 200 with empty vendors', async () => {
+    const r = await fetch('GET', '/api/eto/vendors/1158');
+    eq(r.status, 200);
+    assert(Array.isArray(r.body.vendors) && r.body.vendors.length === 0, 'expected empty vendors');
+  });
+
+  await it('partcost for a no-PO job returns zeros (not an error)', async () => {
+    const r = await fetch('GET', '/api/eto/partcost/1158');
+    eq(r.status, 200);
+    eq(r.body.purchased, 0, 'purchased should be 0');
+    eq(r.body.paid, 0, 'paid should be 0');
+  });
+
+  // ── bogus / malformed inputs ──
+  await it('readiness for a bogus job returns 404', async () => {
+    const r = await fetch('GET', '/api/eto/readiness/99999999');
+    eq(r.status, 404);
+  });
+
+  await it('vendors for a bogus job returns 200 empty (no crash)', async () => {
+    const r = await fetch('GET', '/api/eto/vendors/99999999');
+    eq(r.status, 200);
+    assert(Array.isArray(r.body.vendors), 'vendors not array');
+  });
+
+  await it('partcost for a bogus job returns 200 zeros (no crash)', async () => {
+    const r = await fetch('GET', '/api/eto/partcost/99999999');
+    eq(r.status, 200);
+    eq(r.body.purchased, 0);
+  });
+
+  await it('partcost for a negative job id returns 200 zeros (no SQL error)', async () => {
+    const r = await fetch('GET', '/api/eto/partcost/-5');
+    eq(r.status, 200);
+    eq(r.body.purchased, 0);
+  });
+
+  await it('po lines with non-numeric job returns 400', async () => {
+    const r = await fetch('GET', '/api/eto/po/abc/123/lines');
+    eq(r.status, 400);
+  });
+
+  await it('po lines with non-numeric PO returns 400', async () => {
+    const r = await fetch('GET', '/api/eto/po/1129/abc/lines');
+    eq(r.status, 400);
+  });
+
+  await it('po lines for a PO that is not on the job returns 200 empty', async () => {
+    const r = await fetch('GET', '/api/eto/po/1129/99999999/lines');
+    eq(r.status, 200);
+    assert(Array.isArray(r.body) && r.body.length === 0, 'expected empty lines');
+  });
+
+  // ── caching ──
+  await it('partcost second call is served from cache', async () => {
+    await fetch('GET', '/api/eto/partcost/1129'); // prime
+    const r = await fetch('GET', '/api/eto/partcost/1129');
+    eq(r.status, 200);
+    eq(r.body.cached, true, 'second call not flagged cached');
+  });
+
+  await it('partcost ?refresh=1 bypasses the cache', async () => {
+    const r = await fetch('GET', '/api/eto/partcost/1129?refresh=1');
+    eq(r.status, 200);
+    assert(!r.body.cached, 'refresh still returned cached');
+  });
+
+  await it('readiness ?refresh=1 bypasses the cache', async () => {
+    await fetch('GET', '/api/eto/readiness/1129');
+    const r = await fetch('GET', '/api/eto/readiness/1129?refresh=1');
+    eq(r.status, 200);
+    assert(!r.body.cached, 'refresh still returned cached');
+  });
+
+  await it('category join produces sensible values (not raw ints)', async () => {
+    const r = await fetch('GET', '/api/eto/readiness/1129');
+    const cats = [...new Set((r.body.partsList || []).map(p => p.category).filter(Boolean))];
+    assert(cats.length > 0, 'no categories');
+    assert(cats.every(c => typeof c === 'string' && /[A-Za-z]/.test(c)), `category looks non-text: ${JSON.stringify(cats)}`);
+  });
 }
 
 async function suiteReliability() {
@@ -522,6 +668,7 @@ async function suiteScale() {
     await suiteProjects();
     await suiteLegacyGone();
     await suiteEto();
+    await suiteProcurementEdge();
     await suiteReliability();
     await suiteSocketIo();
     await suiteScale();

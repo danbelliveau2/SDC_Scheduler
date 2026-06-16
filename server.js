@@ -864,6 +864,26 @@ app.get('/api/eto/vendors/:job', async (req, res) => {
   }
 });
 
+// Part-cost financial summary for one job (estimated / purchased / received /
+// paid / left-to-pay / ETC). Mirrors ETO's "Part Cost" report. Cached 5 min.
+const _partCostCache = new Map();
+app.get('/api/eto/partcost/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _partCostCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  try {
+    const data = await etoDb.getPartCost(job);
+    _partCostCache.set(job, { at: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error('[eto] part cost failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
 // Pull PO data from ETO into vendor_pos. Default scope covers linked projects;
 // body {scope:'all'} also pulls every open PO across the whole ERP.
 app.post('/api/eto/sync-vendor-pos', requireRole('editor'), async (req, res) => {
