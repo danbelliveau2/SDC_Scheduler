@@ -83,6 +83,10 @@ const api = {
     vendors: (job) => fetch(`/api/eto/vendors/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`vendors fetch failed (${r.status})`); return r.json(); }),
     partcost: (job) => fetch(`/api/eto/partcost/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`part cost fetch failed (${r.status})`); return r.json(); }),
   },
+  agent: {
+    status: () => fetch('/api/agent/status').then(r => r.json()),
+    ask: (question, context) => fetch('/api/agent/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, context }) }).then(async r => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || `request failed (${r.status})`); return b; }),
+  },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
   baseline: {
@@ -871,6 +875,77 @@ function showAlertDialog(opts = {}) {
     setTimeout(() => overlay.querySelector('[data-action="ok"]')?.focus(), 0);
   });
 }
+
+// ── SDC Assistant (local Ollama, read-only) ─────────────────────────────────
+// Floating "Ask" button + chat panel. Sends questions to /api/agent/ask, which
+// runs a read-only tool loop (DB queries + ETO lookups) and answers in English.
+let _agentOpen = false, _agentStatus = null, _agentBusy = false;
+const _agentMsgs = [];
+function _initAgentUI() {
+  if (document.getElementById('sdc-agent-fab')) return;
+  const fab = document.createElement('button');
+  fab.id = 'sdc-agent-fab'; fab.type = 'button';
+  fab.title = 'Ask the SDC assistant (read-only)';
+  fab.textContent = '✨ Ask';
+  fab.addEventListener('click', _toggleAgentPanel);
+  document.body.appendChild(fab);
+}
+function _toggleAgentPanel() {
+  _agentOpen = !_agentOpen;
+  if (_agentOpen && !_agentStatus) {
+    api.agent.status().then(s => { _agentStatus = s; if (_agentOpen) _renderAgentPanel(); }).catch(() => { _agentStatus = { reachable: false }; if (_agentOpen) _renderAgentPanel(); });
+  }
+  _renderAgentPanel();
+}
+function _agentContext() {
+  const p = state.filters && state.filters.project;
+  if (!p) return '';
+  const job = state.projectsIndex && state.projectsIndex[p] && state.projectsIndex[p].job_number;
+  return `The user is currently viewing the schedule "${p}"${job ? ` (ETO job ${job})` : ''}.`;
+}
+function _renderAgentPanel() {
+  let panel = document.getElementById('sdc-agent-panel');
+  if (!_agentOpen) { if (panel) panel.remove(); return; }
+  if (!panel) { panel = document.createElement('div'); panel.id = 'sdc-agent-panel'; document.body.appendChild(panel); }
+  const s = _agentStatus;
+  const setupHint = s && !s.reachable ? `Ollama isn't reachable. Start Ollama and reopen this panel.`
+    : (s && s.hasModel === false) ? `Model <code>${escapeHtml(s.model || '')}</code> isn't installed — run <code>ollama pull ${escapeHtml(s.model || '')}</code> on the server, then reopen.`
+    : '';
+  const msgsHtml = _agentMsgs.map(m => {
+    if (m.role === 'user') return `<div class="agent-msg agent-user">${escapeHtml(m.text)}</div>`;
+    if (m.role === 'error') return `<div class="agent-msg agent-err">⚠ ${escapeHtml(m.text)}</div>`;
+    const tools = (m.tools && m.tools.length) ? `<div class="agent-tools">${m.tools.map(t => `<span class="agent-tool" title="${escapeHtml(JSON.stringify(t.args || {}))}">${t.ok ? '✓' : '✗'} ${escapeHtml(t.name)}</span>`).join('')}</div>` : '';
+    return `<div class="agent-msg agent-bot">${_formatDialogMessage(m.text)}${tools}</div>`;
+  }).join('');
+  panel.innerHTML = `
+    <div class="agent-head"><span class="agent-title">✨ SDC Assistant</span><span class="agent-sub">read-only${s && s.model ? ' · ' + escapeHtml(s.model) : ''}</span><button class="agent-close" data-act="close" type="button" title="Close">✕</button></div>
+    ${setupHint ? `<div class="agent-setup">${setupHint}</div>` : ''}
+    <div class="agent-body" id="agent-body">${msgsHtml || `<div class="agent-empty">Ask about schedules, parts, POs, or cost — e.g. <i>“Which parts on 1129 have no PO?”</i> or <i>“How many tasks are overdue?”</i></div>`}${_agentBusy ? `<div class="agent-msg agent-bot agent-thinking">Thinking…</div>` : ''}</div>
+    <form class="agent-form" id="agent-form">
+      <input type="text" id="agent-input" placeholder="Ask a question…" autocomplete="off" ${_agentBusy ? 'disabled' : ''}/>
+      <button type="submit" class="btn-primary" ${_agentBusy ? 'disabled' : ''}>Send</button>
+    </form>`;
+  panel.querySelector('[data-act="close"]').onclick = () => { _agentOpen = false; _renderAgentPanel(); };
+  panel.querySelector('#agent-form').onsubmit = (e) => { e.preventDefault(); _agentSend(); };
+  const body = panel.querySelector('#agent-body'); if (body) body.scrollTop = body.scrollHeight;
+  const inp = panel.querySelector('#agent-input'); if (inp && !_agentBusy) inp.focus();
+}
+async function _agentSend() {
+  const inp = document.getElementById('agent-input');
+  const q = inp ? inp.value.trim() : '';
+  if (!q || _agentBusy) return;
+  _agentMsgs.push({ role: 'user', text: q });
+  _agentBusy = true; _renderAgentPanel();
+  try {
+    const r = await api.agent.ask(q, _agentContext());
+    _agentMsgs.push({ role: 'assistant', text: r.answer || '(no answer)', tools: r.tools });
+  } catch (e) {
+    _agentMsgs.push({ role: 'error', text: e.message });
+  } finally {
+    _agentBusy = false; _renderAgentPanel();
+  }
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _initAgentUI); else _initAgentUI();
 
 // In-app text prompt (replaces the browser-native prompt()). Returns a Promise
 // resolving to the trimmed string, or null on cancel. opts.validate(value) may

@@ -30,6 +30,7 @@ const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
 const ops = require('./ops'); // backups, health/status, crash logging
+const agent = require('./agent'); // local-Ollama read-only assistant
 // emailService is optional — when nodemailer isn't installed or SMTP_HOST is
 // empty, it returns a no-op stub so the comment POST handler doesn't crash.
 let emailSvc;
@@ -926,6 +927,24 @@ app.put('/api/eto/partcost/:job/estimate', requireRole('editor'), async (req, re
      ON DUPLICATE KEY UPDATE materials_estimate = VALUES(materials_estimate), updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP`,
     [String(job), n, (req.authUser && req.authUser.name) || req.user || null]);
   res.json({ ok: true, estimate: n });
+});
+
+// ── Assistant (local Ollama, read-only) ──────────────────────────────────────
+app.get('/api/agent/status', async (_req, res) => {
+  try { res.json(await agent.status()); }
+  catch (e) { res.status(503).json({ reachable: false, error: e.message }); }
+});
+app.post('/api/agent/ask', requireRole('viewer'), async (req, res) => {
+  const question = (req.body && req.body.question || '').toString();
+  const context = req.body && req.body.context ? String(req.body.context) : '';
+  if (!question.trim()) return res.status(400).json({ error: 'question required' });
+  try {
+    const out = await agent.ask({ pool, etoDb, question, context });
+    res.json(out);
+  } catch (e) {
+    console.error('[agent] ask failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
 });
 
 // Pull PO data from ETO into vendor_pos. Default scope covers linked projects;
