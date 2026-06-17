@@ -28,9 +28,28 @@ import { z } from 'zod';
 const require = createRequire(import.meta.url);
 require('dotenv').config();                 // load .env before the pool is built
 const express = require('express');
-const { pool } = require('../mysqlDb');     // existing scheduler pool (CJS)
+const mysql = require('mysql2/promise');
 let etoDb = null;
 try { etoDb = require('../etoDb'); } catch (_) { /* ETO bridge optional */ }
+
+// Dedicated pool so the MCP server targets the PRODUCTION database (sdc_scheduler)
+// regardless of which DB the app's .env (MYSQL_DATABASE) points at on this box —
+// e.g. the dev app server uses sdc_scheduler_dev, but this MCP reads production.
+// Override any field with MCP_MYSQL_*; host/user/password fall back to the app's
+// MYSQL_* so you usually only set MCP_MYSQL_DATABASE (or nothing — it defaults to
+// the production database name).
+const MCP_DB = process.env.MCP_MYSQL_DATABASE || 'sdc_scheduler';
+const pool = mysql.createPool({
+  host:               process.env.MCP_MYSQL_HOST     || process.env.MYSQL_HOST     || 'localhost',
+  port:               Number(process.env.MCP_MYSQL_PORT || process.env.MYSQL_PORT) || 3306,
+  user:               process.env.MCP_MYSQL_USER     || process.env.MYSQL_USER     || 'root',
+  password:           process.env.MCP_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || '',
+  database:           MCP_DB,
+  waitForConnections: true,
+  connectionLimit:    5,
+  timezone:           'Z',
+  decimalNumbers:     true,
+});
 
 const MCP_TOKEN = process.env.MCP_TOKEN || '';
 const MCP_PORT  = Number(process.env.MCP_PORT) || 4100;
@@ -94,7 +113,7 @@ function buildServer() {
         `SELECT table_name AS tableName, table_rows AS approxRows
          FROM information_schema.tables
          WHERE table_schema = DATABASE() ORDER BY table_name`, 500);
-      return ok({ database: process.env.MYSQL_DATABASE || 'sdc_scheduler', tables: r.rows });
+      return ok({ database: MCP_DB, tables: r.rows });
     } catch (e) { return fail(e.message); }
   });
 
@@ -183,7 +202,7 @@ app.use(express.json({ limit: '1mb' }));
 app.get('/health', async (_req, res) => {
   let db = false;
   try { const c = await pool.getConnection(); await c.query('SELECT 1'); c.release(); db = true; } catch (_) {}
-  res.json({ ok: true, server: 'sdc-scheduler-db-mcp', db, eto: !!(etoDb && etoDb.CONFIGURED) });
+  res.json({ ok: true, server: 'sdc-scheduler-db-mcp', database: MCP_DB, db, eto: !!(etoDb && etoDb.CONFIGURED) });
 });
 
 // Bearer-token gate for the MCP endpoint.
@@ -216,7 +235,7 @@ app.delete('/mcp', methodNotAllowed);
 
 app.listen(MCP_PORT, MCP_HOST, () => {
   console.log(`[mcp] SDC Scheduler DB MCP server (read-only) on http://${MCP_HOST}:${MCP_PORT}/mcp`);
-  console.log(`[mcp] Auth: bearer token required. Total ETO bridge: ${etoDb && etoDb.CONFIGURED ? 'configured' : 'off'}.`);
+  console.log(`[mcp] Database: ${MCP_DB} · Auth: bearer token required · Total ETO bridge: ${etoDb && etoDb.CONFIGURED ? 'configured' : 'off'}.`);
 });
 
 process.on('uncaughtException', (e) => console.error('[mcp] uncaughtException:', e.message));

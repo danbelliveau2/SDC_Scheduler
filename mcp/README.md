@@ -31,6 +31,13 @@ MCP_HOST=0.0.0.0                     # optional (default 0.0.0.0)
 
 It also reads the usual `MYSQL_*` and `ETO_*` vars already in `.env`.
 
+**Which database it reads:** the MCP targets the **production** database (`sdc_scheduler`)
+by default — even on a box where the app server runs the dev database
+(`sdc_scheduler_dev`). Override with `MCP_MYSQL_DATABASE` (and optionally
+`MCP_MYSQL_HOST` / `MCP_MYSQL_PORT` / `MCP_MYSQL_USER` / `MCP_MYSQL_PASSWORD`,
+which otherwise fall back to the app's `MYSQL_*`). The target DB is printed on
+startup and returned by `/health`.
+
 ## Run
 
 ```
