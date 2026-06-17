@@ -85,7 +85,7 @@ const api = {
   },
   agent: {
     status: () => fetch('/api/agent/status').then(r => r.json()),
-    ask: (question, context) => fetch('/api/agent/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, context }) }).then(async r => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || `request failed (${r.status})`); return b; }),
+    ask: (question, context, history) => fetch('/api/agent/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, context, history: history || [] }) }).then(async r => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || `request failed (${r.status})`); return b; }),
   },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
@@ -876,11 +876,12 @@ function showAlertDialog(opts = {}) {
   });
 }
 
-// ── SDC Assistant (local Ollama, read-only) ─────────────────────────────────
-// Floating "Ask" button + chat panel. Sends questions to /api/agent/ask, which
-// runs a read-only tool loop (DB queries + ETO lookups) and answers in English.
+// ── SDC Assistant (Claude, read-only) ───────────────────────────────────────
+// Floating "Ask" button + chat panel. Streams from /api/agent/ask-stream,
+// remembers history across turns, renders markdown, and shows tool chips.
 let _agentOpen = false, _agentStatus = null, _agentBusy = false;
-const _agentMsgs = [];
+const _agentMsgs = [];      // visible chat log: {role:'user'|'assistant'|'error', text, tools?, usage?}
+let _agentHistory = [];     // Claude-format prior turns (sent back next request)
 function _initAgentUI() {
   if (document.getElementById('sdc-agent-fab')) return;
   const fab = document.createElement('button');
@@ -903,29 +904,82 @@ function _agentContext() {
   const job = state.projectsIndex && state.projectsIndex[p] && state.projectsIndex[p].job_number;
   return `The user is currently viewing the schedule "${p}"${job ? ` (ETO job ${job})` : ''}.`;
 }
+// Suggested starter prompts. Tailor a couple to the current project when open.
+function _agentStarters() {
+  const p = state.filters && state.filters.project;
+  const idx = p && state.projectsIndex && state.projectsIndex[p];
+  const job = idx && idx.job_number;
+  const base = ['How many tasks are overdue across all projects?', 'Which suppliers have past-due POs?'];
+  if (job) return [`How is job ${job} doing?`, `Which parts on ${job} have no PO?`, `What is the materials cost so far on ${job}?`];
+  if (p) return [`Tell me about "${p}"`, ...base];
+  return ['How is job 1129 doing?', ...base];
+}
+// Minimal, safe Markdown → HTML. Supports headings, bold/italic, inline code,
+// fenced code, lists, tables, links — all from escaped text, so it's XSS-safe.
+function _agentMd(src) {
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let s = esc(src || '');
+  // fenced code blocks
+  s = s.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c.replace(/^\n/, '')}</code></pre>`);
+  // headings
+  s = s.replace(/^(#{1,3})\s+(.+)$/gm, (_, h, t) => `<h${h.length}>${t}</h${h.length}>`);
+  // markdown tables: a block of lines starting and ending with |
+  s = s.replace(/(^\|.+\|\n\|[-:\s|]+\|\n(?:^\|.+\|\n?)+)/gm, (block) => {
+    const lines = block.trim().split('\n');
+    const cells = (ln) => ln.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+    const head = cells(lines[0]);
+    const rows = lines.slice(2).map(cells);
+    return `<table class="agent-md-tbl"><thead><tr>${head.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  });
+  // lists (group consecutive bullet lines)
+  s = s.replace(/(?:^[-*]\s+.+\n?)+/gm, (block) => `<ul>${block.trim().split('\n').map(ln => `<li>${ln.replace(/^[-*]\s+/, '')}</li>`).join('')}</ul>`);
+  s = s.replace(/(?:^\d+\.\s+.+\n?)+/gm, (block) => `<ol>${block.trim().split('\n').map(ln => `<li>${ln.replace(/^\d+\.\s+/, '')}</li>`).join('')}</ol>`);
+  // inline: bold, italic, code, links
+  s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, (_, c) => `<strong>${c}</strong>`);
+  s = s.replace(/(^|\W)\*([^*\n]+)\*(\W|$)/g, (_, a, c, b) => `${a}<em>${c}</em>${b}`);
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+  // paragraphs from blank-line separators (skip blocks already wrapped)
+  s = s.split(/\n{2,}/).map(p => /^<(h\d|ul|ol|pre|table)/i.test(p.trim()) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('\n');
+  return s;
+}
+function _agentToolsHtml(tools) {
+  if (!tools || !tools.length) return '';
+  return `<div class="agent-tools">${tools.map(t => `<span class="agent-tool" title="${escapeHtml(JSON.stringify(t.args || {}))}">${t.ok === false ? '✗' : '✓'} ${escapeHtml(t.name)}</span>`).join('')}</div>`;
+}
+function _agentUsageHtml(u) {
+  if (!u) return '';
+  const cached = u.cache_read_input_tokens || 0;
+  const inTok = u.input_tokens || 0;
+  const out = u.output_tokens || 0;
+  return `<div class="agent-usage" title="Tokens used (cached input + new input → output)">${inTok}+${out} tok${cached ? ` · ${cached} cached` : ''}</div>`;
+}
 function _renderAgentPanel() {
   let panel = document.getElementById('sdc-agent-panel');
   if (!_agentOpen) { if (panel) panel.remove(); return; }
   if (!panel) { panel = document.createElement('div'); panel.id = 'sdc-agent-panel'; document.body.appendChild(panel); }
   const s = _agentStatus;
-  const setupHint = s && !s.reachable ? `Ollama isn't reachable. Start Ollama and reopen this panel.`
-    : (s && s.hasModel === false) ? `Model <code>${escapeHtml(s.model || '')}</code> isn't installed — run <code>ollama pull ${escapeHtml(s.model || '')}</code> on the server, then reopen.`
+  const setupHint = s && s.setup ? escapeHtml(s.setup)
+    : s && !s.reachable ? 'The assistant isn’t configured. Set <code>ANTHROPIC_API_KEY</code> in the server <code>.env</code> and restart.'
     : '';
   const msgsHtml = _agentMsgs.map(m => {
     if (m.role === 'user') return `<div class="agent-msg agent-user">${escapeHtml(m.text)}</div>`;
     if (m.role === 'error') return `<div class="agent-msg agent-err">⚠ ${escapeHtml(m.text)}</div>`;
-    const tools = (m.tools && m.tools.length) ? `<div class="agent-tools">${m.tools.map(t => `<span class="agent-tool" title="${escapeHtml(JSON.stringify(t.args || {}))}">${t.ok ? '✓' : '✗'} ${escapeHtml(t.name)}</span>`).join('')}</div>` : '';
-    return `<div class="agent-msg agent-bot">${_formatDialogMessage(m.text)}${tools}</div>`;
+    const body = m.text ? _agentMd(m.text) : '';
+    return `<div class="agent-msg agent-bot">${body}${_agentToolsHtml(m.tools)}${_agentUsageHtml(m.usage)}</div>`;
   }).join('');
+  const startersHtml = (!_agentMsgs.length) ? `<div class="agent-empty">Ask about schedules, parts, POs, or cost.<div class="agent-starters">${_agentStarters().map(q => `<button class="agent-starter" data-starter="${escapeHtml(q)}" type="button">${escapeHtml(q)}</button>`).join('')}</div></div>` : '';
   panel.innerHTML = `
-    <div class="agent-head"><span class="agent-title">✨ SDC Assistant</span><span class="agent-sub">read-only${s && s.model ? ' · ' + escapeHtml(s.model) : ''}</span><button class="agent-close" data-act="close" type="button" title="Close">✕</button></div>
+    <div class="agent-head"><span class="agent-title">✨ SDC Assistant</span><span class="agent-sub">read-only${s && s.model ? ' · ' + escapeHtml(s.model) : ''}</span>${_agentMsgs.length ? `<button class="agent-clear" data-act="clear" type="button" title="Clear the conversation">Clear</button>` : ''}<button class="agent-close" data-act="close" type="button" title="Close">✕</button></div>
     ${setupHint ? `<div class="agent-setup">${setupHint}</div>` : ''}
-    <div class="agent-body" id="agent-body">${msgsHtml || `<div class="agent-empty">Ask about schedules, parts, POs, or cost — e.g. <i>“Which parts on 1129 have no PO?”</i> or <i>“How many tasks are overdue?”</i></div>`}${_agentBusy ? `<div class="agent-msg agent-bot agent-thinking">Thinking…</div>` : ''}</div>
+    <div class="agent-body" id="agent-body">${startersHtml}${msgsHtml}${_agentBusy ? '<div class="agent-msg agent-bot agent-thinking">Thinking…</div>' : ''}</div>
     <form class="agent-form" id="agent-form">
       <input type="text" id="agent-input" placeholder="Ask a question…" autocomplete="off" ${_agentBusy ? 'disabled' : ''}/>
       <button type="submit" class="btn-primary" ${_agentBusy ? 'disabled' : ''}>Send</button>
     </form>`;
   panel.querySelector('[data-act="close"]').onclick = () => { _agentOpen = false; _renderAgentPanel(); };
+  const clr = panel.querySelector('[data-act="clear"]'); if (clr) clr.onclick = () => { _agentMsgs.length = 0; _agentHistory = []; _renderAgentPanel(); };
+  panel.querySelectorAll('[data-starter]').forEach(b => b.onclick = () => { const q = b.dataset.starter; const inp = panel.querySelector('#agent-input'); if (inp) inp.value = q; _agentSend(); });
   panel.querySelector('#agent-form').onsubmit = (e) => { e.preventDefault(); _agentSend(); };
   const body = panel.querySelector('#agent-body'); if (body) body.scrollTop = body.scrollHeight;
   const inp = panel.querySelector('#agent-input'); if (inp && !_agentBusy) inp.focus();
@@ -937,8 +991,9 @@ async function _agentSend() {
   _agentMsgs.push({ role: 'user', text: q });
   _agentBusy = true; _renderAgentPanel();
   try {
-    const r = await api.agent.ask(q, _agentContext());
-    _agentMsgs.push({ role: 'assistant', text: r.answer || '(no answer)', tools: r.tools });
+    const r = await api.agent.ask(q, _agentContext(), _agentHistory);
+    if (Array.isArray(r.history)) _agentHistory = r.history;
+    _agentMsgs.push({ role: 'assistant', text: r.answer || '(no answer)', tools: r.tools, usage: r.usage });
   } catch (e) {
     _agentMsgs.push({ role: 'error', text: e.message });
   } finally {
@@ -8485,32 +8540,42 @@ function _procCostBody(job) {
   return _procCostCard(c);
 }
 
-// Radial budget gauge (SVG) — projected total spend against the budget (the
-// editable estimate). 270° arc; green ≤90% / amber ≤100% / red over budget.
-// Standalone SVG (not inside frappe-gantt), so CSS fonts apply normally.
+// Half-circle dome gauge (SVG), styled to match the Build-Readiness / Power BI
+// reference: 180° arc opening downward, big % in the centre, BI-style labels
+// (Budget · Projected · Remaining / Over) below. Color: blue ≤80% · amber ≤100%
+// · red over. Soft "Set a budget" hint when the ETO estimate is clearly the
+// default placeholder (so we don't scream "999%+" at a brand-new job).
 function _procCostGauge(c) {
   const usd = v => _procUsd(v);
-  const budget = Number(c.estimated) || 0;       // the (editable) materials budget
-  const spent = Number(c.purchased) || 0;        // committed on POs
-  const pct = budget ? Math.round((spent / budget) * 100) : null;
-  const frac = budget ? Math.min(1, spent / budget) : 0;
-  const remaining = Math.max(0, budget - spent);
-  const color = pct == null ? '#94a3b8' : pct <= 90 ? '#74c415' : pct <= 100 ? '#eab308' : '#dc2626';
-  const cx = 100, cy = 100, r = 76, sw = 16;
-  const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
-  const arc = (s, e) => { const [x1, y1] = pol(s), [x2, y2] = pol(e); const large = (e - s) > 180 ? 1 : 0; return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`; };
-  const center = pct == null ? 'set budget' : (pct > 999 ? '999%+' : pct + '%');
+  const budget = Number(c.estimated) || 0;
+  const spent = Number(c.purchased) || 0;
+  const projection = Number(c.projection) || 0;
+  // Treat the ETO default-ish placeholder as "not really set" so the gauge
+  // doesn't read 999% before a PM enters a real number.
+  const budgetUnset = !budget || (c.estimateSource === 'eto' && budget < spent * 0.25);
+  const pct = budgetUnset ? null : Math.round((spent / budget) * 100);
+  const projPct = budgetUnset ? null : Math.round((projection / budget) * 100);
+  const frac = budgetUnset ? 0 : Math.min(1, spent / budget);
+  const color = pct == null ? '#94a3b8' : pct <= 80 ? '#1574c4' : pct <= 100 ? '#eab308' : '#dc2626';
+
+  // Half-circle arc: dome opening downward, drawn from left end (180°) up over
+  // the top (90°) to the right end (0°). Parametric helper: f∈[0,1] → angle.
+  const cx = 130, cy = 120, r = 92, sw = 18;
+  const arcPoint = (f) => { const t = Math.PI * (1 - f); return [cx + r * Math.cos(t), cy - r * Math.sin(t)]; };
+  const pathTo = (f) => { const [x1, y1] = arcPoint(0), [x2, y2] = arcPoint(Math.max(0.0001, f)); return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`; };
+  const centerLabel = pct == null ? '—' : (pct > 999 ? '999%+' : pct + '%');
+
   return `<div class="proc-gauge">
-    <svg viewBox="0 0 200 175" class="proc-gauge-svg" role="img" aria-label="Purchased vs budget">
-      <path d="${arc(135, 405)}" fill="none" stroke="#e8edf3" stroke-width="${sw}" stroke-linecap="round"/>
-      ${budget ? `<path d="${arc(135, 135 + 270 * frac)}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>` : ''}
-      <text x="100" y="98" text-anchor="middle" class="proc-gauge-pct" style="fill:${color}">${center}</text>
-      <text x="100" y="120" text-anchor="middle" class="proc-gauge-cap">of budget${pct != null && pct > 100 ? ' — over' : ''}</text>
+    <svg viewBox="0 0 260 150" class="proc-gauge-svg" role="img" aria-label="Purchased vs budget">
+      <path d="${pathTo(1)}" fill="none" stroke="#e8edf3" stroke-width="${sw}" stroke-linecap="round"/>
+      ${!budgetUnset ? `<path d="${pathTo(frac)}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>` : ''}
+      <text x="${cx}" y="${cy - 18}" text-anchor="middle" class="proc-gauge-pct" style="fill:${color}">${centerLabel}</text>
+      <text x="${cx}" y="${cy + 2}" text-anchor="middle" class="proc-gauge-cap">${pct == null ? 'set a budget' : 'of budget' + (pct > 100 ? ' — over' : '')}</text>
     </svg>
     <div class="proc-gauge-legend">
-      <div><span class="proc-gauge-k">Budget (estimate)</span><span class="proc-gauge-v">${usd(budget)}</span></div>
-      <div><span class="proc-gauge-k">Purchased</span><span class="proc-gauge-v">${usd(spent)}</span></div>
-      <div><span class="proc-gauge-k">${spent > budget ? 'Over budget by' : 'Remaining'}</span><span class="proc-gauge-v">${usd(spent > budget ? spent - budget : remaining)}</span></div>
+      <div><span class="proc-gauge-k">Part Cost Budget</span><span class="proc-gauge-v">${usd(budget)}${budgetUnset && budget ? ' <i class="proc-gauge-hint">unset</i>' : ''}</span></div>
+      <div><span class="proc-gauge-k">Projected Total</span><span class="proc-gauge-v">${usd(projection)}${projPct != null ? ` <i>(${projPct}%)</i>` : ''}</span></div>
+      <div><span class="proc-gauge-k">${spent > budget && !budgetUnset ? 'Over budget by' : 'Remaining'}</span><span class="proc-gauge-v">${usd(spent > budget && !budgetUnset ? spent - budget : Math.max(0, budget - spent))}</span></div>
     </div>
   </div>`;
 }

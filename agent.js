@@ -1,24 +1,40 @@
 'use strict';
 /**
- * agent.js — local-Ollama, READ-ONLY assistant for the SDC Scheduler.
+ * agent.js — Anthropic Claude, READ-ONLY assistant for the SDC Scheduler.
  *
- * A small tool-using loop: the model (default llama3.1) decides when to call a
- * tool, the server runs it, feeds the result back, and the model answers in
- * plain English. Every tool is read-only:
+ * Tool-using loop: Claude decides when to call a tool, the server runs it, feeds
+ * the result back, and Claude answers in plain English. Every tool is read-only:
  *   - run_select / list_tables / describe_table  → scheduler MySQL (SELECT-only,
  *     READ ONLY transaction, row-capped — same guards as the MCP server)
- *   - eto_readiness / eto_vendors / eto_partcost  → Total ETO (read-only bridge)
+ *   - find_project / eto_readiness / eto_vendors / eto_partcost  → reads only
  * It cannot create, change, or delete anything.
  *
- * Env: OLLAMA_HOST (default http://localhost:11434), OLLAMA_MODEL (default llama3.1).
- * Degrades gracefully: clear errors when Ollama is unreachable or the model isn't pulled.
+ * Env:
+ *   ANTHROPIC_API_KEY  (required to activate the assistant)
+ *   ANTHROPIC_MODEL    (default claude-sonnet-4-6)
+ *   ANTHROPIC_MAX_TOKENS  (default 1024)
+ * Degrades gracefully: clear error when the key isn't set.
  */
 require('dotenv').config();
 
-const OLLAMA_HOST  = (process.env.OLLAMA_HOST || 'http://localhost:11434').replace(/\/$/, '');
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:3b';
-const MAX_ITERS    = 5;       // tool round-trips before we force a final answer
-const ROW_CAP      = 200;     // keep tool results small enough for the model's context
+let Anthropic = null;
+try { Anthropic = require('@anthropic-ai/sdk'); } catch (_) { /* SDK optional */ }
+
+const API_KEY    = process.env.ANTHROPIC_API_KEY || '';
+const MODEL      = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+const MAX_TOKENS = Number(process.env.ANTHROPIC_MAX_TOKENS) || 1024;
+const MAX_ITERS  = 8;       // tool round-trips before forcing a final answer
+const ROW_CAP    = 200;     // keep tool results small enough for context
+let _client = null;
+function _getClient() {
+  if (!API_KEY) throw new Error('ANTHROPIC_API_KEY is not set. Add it to .env to activate the assistant.');
+  if (!Anthropic) throw new Error('@anthropic-ai/sdk is not installed. Run: npm install @anthropic-ai/sdk');
+  if (!_client) {
+    const Ctor = Anthropic.Anthropic || Anthropic.default || Anthropic;
+    _client = new Ctor({ apiKey: API_KEY });
+  }
+  return _client;
+}
 
 const SYSTEM_PROMPT = `You are the SDC Scheduler assistant for a manufacturing project-scheduling app. Answer the user's question using ONLY data you fetch with the tools provided. You are STRICTLY READ-ONLY — never say you created, changed, or deleted anything.
 
@@ -44,22 +60,31 @@ CRITICAL output rules:
 - Your reply to the user is plain prose only. Once you have enough data, just answer.
 - Be concise, show the key numbers, and round. If a tool errors or genuinely returns nothing after a reasonable search, say so plainly rather than guessing.`;
 
+// Tools in Claude's format: { name, description, input_schema }.
 const TOOLS = [
-  { type: 'function', function: { name: 'find_project', description: 'Resolve a project/job the user mentions (by number, partial name, or loose phrasing like "PROJECT1129" or "the Schneider job") to its exact schedule name + ETO job number, plus a quick task rollup (count, % complete, overdue). ALWAYS use this first when the user names a project or job — do NOT hand-write project-search SQL.', parameters: { type: 'object', properties: { query: { type: 'string', description: "The user's project reference, e.g. '1129', 'PROJECT1129', 'Schneider'" } }, required: ['query'] } } },
-  { type: 'function', function: { name: 'list_tables', description: 'List tables in the scheduler database with approximate row counts.', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'describe_table', description: 'Show the columns of a scheduler table.', parameters: { type: 'object', properties: { table: { type: 'string', description: 'Table name, e.g. tasks' } }, required: ['table'] } } },
-  { type: 'function', function: { name: 'run_select', description: 'Run a single read-only SQL query (SELECT/WITH/EXPLAIN/SHOW/DESCRIBE) against the scheduler database and return rows as JSON.', parameters: { type: 'object', properties: { sql: { type: 'string', description: 'A single read-only SQL statement.' } }, required: ['sql'] } } },
-  { type: 'function', function: { name: 'eto_readiness', description: 'Total ETO build readiness for a job: totals (parts, received, noPO, cost, pct), per-assembly summary, and the list of parts with no PO.', parameters: { type: 'object', properties: { job: { type: 'integer', description: 'ETO job number, e.g. 1129' } }, required: ['job'] } } },
-  { type: 'function', function: { name: 'eto_vendors', description: 'Total ETO purchase orders for a job, grouped by supplier with received progress and status.', parameters: { type: 'object', properties: { job: { type: 'integer' } }, required: ['job'] } } },
-  { type: 'function', function: { name: 'eto_partcost', description: 'Total ETO materials cost summary for a job: estimated, purchased, received, paid, left to pay, ETC.', parameters: { type: 'object', properties: { job: { type: 'integer' } }, required: ['job'] } } },
+  { name: 'find_project', description: 'Resolve a project/job the user mentions (by number, partial name, or loose phrasing like "PROJECT1129" or "the Schneider job") to its exact schedule name + ETO job number, plus a quick task rollup (count, % complete, overdue). ALWAYS use this first when the user names a project or job — do NOT hand-write project-search SQL.', input_schema: { type: 'object', properties: { query: { type: 'string', description: "The user's project reference, e.g. '1129', 'PROJECT1129', 'Schneider'" } }, required: ['query'] } },
+  { name: 'list_tables', description: 'List tables in the scheduler database with approximate row counts.', input_schema: { type: 'object', properties: {} } },
+  { name: 'describe_table', description: 'Show the columns of a scheduler table.', input_schema: { type: 'object', properties: { table: { type: 'string', description: 'Table name, e.g. tasks' } }, required: ['table'] } },
+  { name: 'run_select', description: 'Run a single read-only SQL query (SELECT/WITH/EXPLAIN/SHOW/DESCRIBE) against the scheduler database and return rows as JSON.', input_schema: { type: 'object', properties: { sql: { type: 'string', description: 'A single read-only SQL statement.' } }, required: ['sql'] } },
+  { name: 'eto_readiness', description: 'Total ETO build readiness for a job: totals (parts, received, noPO, cost, pct), per-assembly summary, and the list of parts with no PO.', input_schema: { type: 'object', properties: { job: { type: 'integer', description: 'ETO job number, e.g. 1129' } }, required: ['job'] } },
+  { name: 'eto_vendors', description: 'Total ETO purchase orders for a job, grouped by supplier with received progress and status.', input_schema: { type: 'object', properties: { job: { type: 'integer' } }, required: ['job'] } },
+  { name: 'eto_partcost', description: 'Total ETO materials cost summary for a job: estimated, purchased, received, paid, left to pay, ETC.', input_schema: { type: 'object', properties: { job: { type: 'integer' } }, required: ['job'] } },
 ];
 
 // ── read-only SQL (mirror of the MCP guards) ─────────────────────────────────
+// Identifiers that must NEVER come back from a chatbot query, even though they
+// could plausibly appear in a SELECT (`SELECT password_hash FROM users` etc.).
+// Hashes are bcrypted, but they shouldn't be exposed via a chat tool.
+const FORBIDDEN_IDENT = /\b(password_hash|password|api_key|secret|auth_token|access_token|refresh_token|jwt_secret|reset_token|session_token|csrf_token)\b/i;
 function assertReadOnly(sql) {
   const s = String(sql || '').trim().replace(/;\s*$/, '');
   if (!s) throw new Error('Empty query.');
   if (s.includes(';')) throw new Error('Only one statement allowed.');
   if (!/^(select|with|explain|show|describe|desc)\b/i.test(s)) throw new Error('Only read-only queries are allowed.');
+  // `SELECT *` could pull password_hash by accident — disallow on tables that hold secrets.
+  if (/\bselect\s+\*\s+from\s+users\b/i.test(s)) throw new Error('SELECT * is not allowed on `users` (use explicit columns; password_hash is blocked).');
+  const m = s.match(FORBIDDEN_IDENT);
+  if (m) throw new Error(`Query references a sensitive column ("${m[0]}") — blocked.`);
   return s;
 }
 async function runReadOnly(pool, sql) {
@@ -138,115 +163,170 @@ async function execTool(name, args, pool, etoDb) {
   }
 }
 
-async function _chat(messages, useTools) {
-  // Cap each model turn so a hung/cold Ollama can't wedge the request forever.
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), Number(process.env.OLLAMA_TIMEOUT_MS) || 120000);
-  let res;
-  try {
-    res = await fetch(`${OLLAMA_HOST}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: OLLAMA_MODEL, messages, stream: false, ...(useTools ? { tools: TOOLS } : {}), options: { temperature: 0.2 } }),
-      signal: ctrl.signal,
-    });
-  } catch (e) {
-    if (e.name === 'AbortError') throw new Error('The model took too long to respond (timed out). Try a simpler question or a smaller model.');
-    throw new Error(`Could not reach Ollama at ${OLLAMA_HOST}: ${e.message}`);
-  } finally { clearTimeout(timer); }
-  if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    if (res.status === 404 || /not found|try pulling/i.test(t)) throw new Error(`Model "${OLLAMA_MODEL}" isn't installed. Run: ollama pull ${OLLAMA_MODEL}`);
-    throw new Error(`Ollama error (${res.status}): ${t.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  return data.message || {};
-}
-
-/** Reachability + whether the configured model is pulled. */
+/** Reachability for the UI's setup hint. No key → tells the user to set it. */
 async function status() {
-  try {
-    const r = await fetch(`${OLLAMA_HOST}/api/tags`, { method: 'GET' });
-    if (!r.ok) return { reachable: false, model: OLLAMA_MODEL, host: OLLAMA_HOST };
-    const data = await r.json();
-    const models = (data.models || []).map(m => m.name);
-    const hasModel = models.some(n => n === OLLAMA_MODEL || n.startsWith(OLLAMA_MODEL + ':'));
-    return { reachable: true, host: OLLAMA_HOST, model: OLLAMA_MODEL, hasModel, models };
-  } catch (e) {
-    return { reachable: false, host: OLLAMA_HOST, model: OLLAMA_MODEL, error: e.message };
-  }
+  return {
+    provider: 'anthropic',
+    model: MODEL,
+    reachable: !!API_KEY,
+    hasModel: !!API_KEY,
+    ...(API_KEY ? {} : { setup: 'Set ANTHROPIC_API_KEY in .env to activate the assistant.' }),
+  };
 }
 
-const TOOL_NAMES = new Set(TOOLS.map(t => t.function.name));
-
-// Find top-level balanced {...} JSON objects in text → [{ obj, start, end }].
-function _jsonObjects(text) {
-  const out = [];
-  const s = String(text || '');
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] !== '{') continue;
-    let depth = 0;
-    for (let j = i; j < s.length; j++) {
-      if (s[j] === '{') depth++;
-      else if (s[j] === '}') { if (--depth === 0) { try { out.push({ obj: JSON.parse(s.slice(i, j + 1)), start: i, end: j + 1 }); } catch (_) {} i = j; break; } }
-    }
-  }
-  return out;
-}
-// Small models sometimes EMIT a tool call as text instead of using the tool
-// mechanism. Recover those so we run them instead of showing raw JSON.
-function _salvageToolCalls(content) {
-  const calls = [];
-  for (const { obj } of _jsonObjects(content)) {
-    const name = obj.name || (obj.function && obj.function.name);
-    const args = obj.parameters || obj.arguments || (obj.function && (obj.function.parameters || obj.function.arguments)) || {};
-    if (name && TOOL_NAMES.has(name)) calls.push({ function: { name, arguments: args } });
-  }
-  return calls;
-}
-// Strip any leaked tool-call JSON + "I'll now call …" narration from the answer.
-function _cleanAnswer(content) {
-  let s = String(content || '');
-  for (const { obj, start, end } of _jsonObjects(s).reverse()) {
-    const name = obj.name || (obj.function && obj.function.name);
-    if (name && TOOL_NAMES.has(name)) s = s.slice(0, start) + s.slice(end);
-  }
-  s = s.replace(/^[^\n]*\b(I('| wi)ll now (call|use)|let me (call|use)|now (call|calling)|to (get|gather) (more )?(info|information|data)[^\n]*tools?)[^\n]*$/gim, '');
-  return s.replace(/\n{3,}/g, '\n\n').trim();
+// Collect plain-text chunks from Claude's `content` array (used after the
+// final no-more-tools turn, where we expect only text blocks).
+function _textOf(content) {
+  if (!Array.isArray(content)) return String(content || '').trim();
+  return content.filter(b => b.type === 'text').map(b => b.text || '').join('\n').trim();
 }
 
-/** Run the read-only assistant. Returns { answer, tools:[{name,args,ok}] }. */
-async function ask({ pool, etoDb, question, context }) {
+// Anthropic prompt caching: marking the system prompt + the last tool definition
+// with cache_control caches them on the first call; follow-up calls within ~5
+// minutes read those tokens at ~10% the price (and faster TTFT). Free, opt-in,
+// huge win for a chatbot that hits the same system prompt every turn.
+function _systemForCache() {
+  return [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }];
+}
+function _toolsForCache() {
+  // Cache the whole tool list by tagging the last one (cache breakpoints are
+  // sticky to the end of the prior chunk).
+  const arr = TOOLS.map(t => ({ ...t }));
+  arr[arr.length - 1] = { ...arr[arr.length - 1], cache_control: { type: 'ephemeral' } };
+  return arr;
+}
+
+// Build the Claude messages array from an optional client-supplied history.
+// History items are the same shape Claude returns: { role, content }. We accept
+// either string or Claude content-block arrays and pass them through.
+function _buildMessages(history, context, question) {
+  const msgs = Array.isArray(history) ? history.filter(h => h && h.role && h.content != null) : [];
+  const userText = (context ? 'Context for this question: ' + context + '\n\n' : '') + String(question);
+  msgs.push({ role: 'user', content: userText });
+  return msgs;
+}
+
+/**
+ * Run the read-only assistant (non-streaming).
+ * `history` (optional) is an array of prior {role, content} turns for multi-turn.
+ * Returns { answer, tools, history, usage }. `history` is the updated array
+ * the client should send next turn for continuity.
+ */
+async function ask({ pool, etoDb, question, context, history }) {
   if (!question || !String(question).trim()) throw new Error('Ask a question.');
-  const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
-  if (context) messages.push({ role: 'system', content: 'Context for this question: ' + context });
-  messages.push({ role: 'user', content: String(question) });
+  const client = _getClient();
+  const messages = _buildMessages(history, context, question);
 
   const toolLog = [];
+  let lastAssistantText = '';
+  let cumUsage = null;
   for (let i = 0; i < MAX_ITERS; i++) {
-    const msg = await _chat(messages, true);
-    messages.push(msg);
-    let calls = msg.tool_calls || [];
-    if (!calls.length) {
-      // Model may have written the tool call as text — recover and run it.
-      const salvaged = _salvageToolCalls(msg.content || '');
-      if (salvaged.length) calls = salvaged;
-      else { const answer = _cleanAnswer(msg.content) || '(no answer)'; return { answer, tools: toolLog }; }
+    const resp = await client.messages.create({
+      model: MODEL, max_tokens: MAX_TOKENS,
+      system: _systemForCache(), tools: _toolsForCache(),
+      messages,
+    });
+    if (resp.usage) cumUsage = _sumUsage(cumUsage, resp.usage);
+    messages.push({ role: 'assistant', content: resp.content });
+    const toolUses = (resp.content || []).filter(b => b.type === 'tool_use');
+    const textNow = _textOf(resp.content);
+    if (textNow) lastAssistantText = textNow;
+
+    if (!toolUses.length || resp.stop_reason !== 'tool_use') {
+      return { answer: textNow || lastAssistantText || '(no answer)', tools: toolLog, history: messages, usage: cumUsage };
     }
-    for (const tc of calls) {
-      const fn = tc.function || {};
-      let args = fn.arguments;
-      if (typeof args === 'string') { try { args = JSON.parse(args); } catch (_) { args = {}; } }
+    const toolResults = [];
+    for (const tu of toolUses) {
       let result;
-      try { result = await execTool(fn.name, args, pool, etoDb); }
+      try { result = await execTool(tu.name, tu.input || {}, pool, etoDb); }
       catch (e) { result = { error: e.message }; }
-      toolLog.push({ name: fn.name, args, ok: !(result && result.error) });
-      messages.push({ role: 'tool', tool_name: fn.name, content: JSON.stringify(result).slice(0, 8000) });
+      toolLog.push({ name: tu.name, args: tu.input || {}, ok: !(result && result.error) });
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: tu.id,
+        content: JSON.stringify(result).slice(0, 16000),
+        ...(result && result.error ? { is_error: true } : {}),
+      });
     }
+    messages.push({ role: 'user', content: toolResults });
   }
-  // Ran out of tool turns — get a final answer with the data already gathered.
-  const final = await _chat([...messages, { role: 'user', content: 'Answer now in plain prose for the user using the data gathered above. Do not call tools or output JSON.' }], false);
-  return { answer: _cleanAnswer(final.content) || '(no answer — try rephrasing)', tools: toolLog };
+
+  const final = await client.messages.create({
+    model: MODEL, max_tokens: MAX_TOKENS, system: _systemForCache(), messages,
+  });
+  if (final.usage) cumUsage = _sumUsage(cumUsage, final.usage);
+  return { answer: _textOf(final.content) || lastAssistantText || '(no answer — try rephrasing)', tools: toolLog, history: messages, usage: cumUsage };
 }
 
-module.exports = { ask, status, OLLAMA_MODEL, OLLAMA_HOST };
+// Accumulate usage counters across multiple Claude calls in one /ask request.
+function _sumUsage(a, b) {
+  const out = a || { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  out.input_tokens += b.input_tokens || 0;
+  out.output_tokens += b.output_tokens || 0;
+  out.cache_creation_input_tokens += b.cache_creation_input_tokens || 0;
+  out.cache_read_input_tokens += b.cache_read_input_tokens || 0;
+  return out;
+}
+
+/**
+ * Streaming variant — calls onEvent({type,...}) as text deltas / tool calls / done
+ * arrive, so the UI can render the answer word-by-word. Same read-only guarantees.
+ *   onEvent({type:'text_delta', text})
+ *   onEvent({type:'tool_start', name, args})
+ *   onEvent({type:'tool_done',  name, ok})
+ *   onEvent({type:'done', tools, usage, history})
+ *   onEvent({type:'error', error})
+ */
+async function askStream({ pool, etoDb, question, context, history, onEvent }) {
+  if (!question || !String(question).trim()) { onEvent({ type: 'error', error: 'Ask a question.' }); return; }
+  let client;
+  try { client = _getClient(); }
+  catch (e) { onEvent({ type: 'error', error: e.message }); return; }
+  const messages = _buildMessages(history, context, question);
+  const toolLog = [];
+  let cumUsage = null;
+
+  try {
+    for (let i = 0; i < MAX_ITERS; i++) {
+      const stream = client.messages.stream({
+        model: MODEL, max_tokens: MAX_TOKENS,
+        system: _systemForCache(), tools: _toolsForCache(),
+        messages,
+      });
+      stream.on('text', (delta) => { if (delta) onEvent({ type: 'text_delta', text: delta }); });
+      const final = await stream.finalMessage();
+      if (final.usage) cumUsage = _sumUsage(cumUsage, final.usage);
+      messages.push({ role: 'assistant', content: final.content });
+      const toolUses = (final.content || []).filter(b => b.type === 'tool_use');
+      if (!toolUses.length || final.stop_reason !== 'tool_use') {
+        onEvent({ type: 'done', tools: toolLog, usage: cumUsage, history: messages });
+        return;
+      }
+      const toolResults = [];
+      for (const tu of toolUses) {
+        onEvent({ type: 'tool_start', name: tu.name, args: tu.input || {} });
+        let result;
+        try { result = await execTool(tu.name, tu.input || {}, pool, etoDb); }
+        catch (e) { result = { error: e.message }; }
+        toolLog.push({ name: tu.name, args: tu.input || {}, ok: !(result && result.error) });
+        onEvent({ type: 'tool_done', name: tu.name, ok: !(result && result.error) });
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tu.id,
+          content: JSON.stringify(result).slice(0, 16000),
+          ...(result && result.error ? { is_error: true } : {}),
+        });
+      }
+      messages.push({ role: 'user', content: toolResults });
+    }
+    onEvent({ type: 'done', tools: toolLog, usage: cumUsage, history: messages });
+  } catch (e) {
+    // 401 = bad key. 429 = rate limit. Surface a clear message.
+    const msg = (e && e.status === 401) ? 'The ANTHROPIC_API_KEY was rejected. Check the key in .env and restart.'
+      : (e && e.status === 429) ? 'Rate-limited by Anthropic — wait a moment and try again.'
+      : (e && e.message) || String(e);
+    onEvent({ type: 'error', error: msg });
+  }
+}
+
+module.exports = { ask, askStream, status, MODEL };

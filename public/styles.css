@@ -2397,15 +2397,17 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-cost-bar-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; color: #334155; }
 .proc-cost-bar-sub { font-size: 11px; color: #94a3b8; }
 .proc-cost-note { grid-column: 1 / -1; font-size: 11px; color: #94a3b8; font-style: italic; max-width: 760px; }
-/* Budget gauge */
-.proc-gauge { display: flex; align-items: center; gap: 18px; margin-bottom: 8px; }
-.proc-gauge-svg { width: 168px; height: 147px; flex: 0 0 auto; }
-.proc-gauge-pct { font-family: sans-serif; font-weight: 800; font-size: 30px; }
-.proc-gauge-cap { font-family: sans-serif; font-size: 10.5px; fill: #94a3b8; }
-.proc-gauge-legend { display: flex; flex-direction: column; gap: 10px; }
+/* Budget gauge — half-circle dome, BI-style labels below */
+.proc-gauge { display: flex; align-items: center; gap: 22px; margin-bottom: 12px; }
+.proc-gauge-svg { width: 220px; height: 130px; flex: 0 0 auto; }
+.proc-gauge-pct { font-family: sans-serif; font-weight: 800; font-size: 32px; }
+.proc-gauge-cap { font-family: sans-serif; font-size: 11px; fill: #94a3b8; text-transform: lowercase; }
+.proc-gauge-legend { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .proc-gauge-legend > div { display: flex; flex-direction: column; }
-.proc-gauge-k { font-size: 11px; color: #64748b; }
-.proc-gauge-v { font-size: 14px; font-weight: 700; color: #1e293b; font-variant-numeric: tabular-nums; }
+.proc-gauge-k { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; font-weight: 700; }
+.proc-gauge-v { font-size: 15px; font-weight: 700; color: #1e293b; font-variant-numeric: tabular-nums; }
+.proc-gauge-v i { font-style: normal; font-weight: 600; color: #64748b; font-size: 12px; }
+.proc-gauge-hint { color: #b45309; font-weight: 600; font-size: 11px; margin-left: 4px; }
 @media (max-width: 880px) { .proc-cost-card { grid-template-columns: 1fr; } }
 
 /* SDC Assistant (local Ollama, read-only) */
@@ -2441,6 +2443,28 @@ body.customer-view .customer-view-flatten.is-active {
 .agent-form { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #eef2f7; }
 .agent-form input { flex: 1 1 auto; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; }
 .agent-form .btn-primary { padding: 8px 14px; }
+.agent-clear { margin-left: auto; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18); color: #cbd5e1; font-size: 11px; padding: 2px 8px; border-radius: 5px; cursor: pointer; }
+.agent-clear:hover { background: rgba(255,255,255,0.18); color: #fff; }
+.agent-starters { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.agent-starter { background: #f1f5f9; border: 1px solid #e2e8f0; color: #1e293b; font-size: 12.5px; padding: 7px 10px; border-radius: 7px; cursor: pointer; text-align: left; }
+.agent-starter:hover { background: #e3eef9; border-color: #cfe2f5; }
+.agent-caret { display: inline-block; animation: agentBlink 1s steps(2) infinite; color: #64748b; }
+@keyframes agentBlink { 50% { opacity: 0; } }
+.agent-usage { margin-top: 4px; font-size: 10px; color: #94a3b8; font-family: ui-monospace, Consolas, monospace; }
+/* Markdown inside an assistant bubble */
+.agent-bot p { margin: 0 0 6px; }
+.agent-bot p:last-child { margin-bottom: 0; }
+.agent-bot ul, .agent-bot ol { margin: 4px 0 6px; padding-left: 20px; }
+.agent-bot li { margin: 1px 0; }
+.agent-bot h1, .agent-bot h2, .agent-bot h3 { margin: 6px 0 4px; font-weight: 700; color: #0f172a; }
+.agent-bot h1 { font-size: 14px; } .agent-bot h2 { font-size: 13px; } .agent-bot h3 { font-size: 12.5px; }
+.agent-bot code { background: #e2e8f0; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+.agent-bot pre { background: #0f172a; color: #e2e8f0; padding: 8px 10px; border-radius: 6px; overflow-x: auto; font-size: 11.5px; margin: 4px 0; }
+.agent-bot pre code { background: transparent; padding: 0; }
+.agent-bot a { color: #1574c4; text-decoration: underline; }
+.agent-md-tbl { border-collapse: collapse; font-size: 12px; margin: 4px 0; width: 100%; }
+.agent-md-tbl th, .agent-md-tbl td { border: 1px solid #e2e8f0; padding: 3px 6px; text-align: left; }
+.agent-md-tbl th { background: #f1f5f9; font-weight: 700; }
 
 /* Procurement — Parts List filter bar */
 .proc-parts-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; margin-top: 10px; padding: 10px 12px; background: #f7fafc; border: 1px solid #e8edf3; border-radius: 8px; }
