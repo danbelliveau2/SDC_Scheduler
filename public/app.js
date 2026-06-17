@@ -8282,7 +8282,7 @@ async function _loadQuoteEtoActuals(project, overlay) {
 // Per-assembly received / ordered / no-PO rollups for a linked job's BOM.
 // Ported from the standalone Build Readiness Report app; same math, rendered
 // in the scheduler's own grid style. Read-only — nothing here writes anywhere.
-let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pfrom: '', pto: '', search: '', open: {} };
+let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '', search: '', open: {} };
 try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
 const _procVendorCache = {}; // job → vendor-status payload
 function _procSave() { try { localStorage.setItem('sdcProcState', JSON.stringify({ ..._procState, open: {} })); } catch (_) {} }
@@ -8355,7 +8355,50 @@ function _procRerender() {
 // Materials-only financial summary: estimated → purchased → received → paid,
 // plus left-to-pay and estimate-to-complete. Lazily fetches /api/eto/partcost.
 const _procCostCache = {}; // job → part-cost payload
+
+// One delegated listener (document-level) for the editable materials-estimate
+// controls, so they work whether the Cost card is on the full page or the drawer.
+function _procWireEstimateEditor() {
+  if (window._procEstWired) return;
+  window._procEstWired = true;
+  document.addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-action="proc-edit-estimate"]');
+    if (edit) { e.preventDefault(); _procEditEstimate(edit.dataset.job); return; }
+    const rev = e.target.closest('[data-action="proc-revert-estimate"]');
+    if (rev) { e.preventDefault(); _procRevertEstimate(rev.dataset.job); return; }
+  });
+}
+async function _procEditEstimate(job) {
+  const c = _procCostCache[job] || {};
+  const v = await showPromptDialog({
+    title: 'Materials estimate to purchase',
+    message: 'Enter the estimated materials cost (USD) for this job. It drives the “Purchased vs estimate” bar and Estimate-to-Complete. (Total ETO has no reliable per-job materials budget, so PMs set it here.)',
+    placeholder: 'e.g. 200000',
+    value: (c.estimateSource === 'user' && c.estimated != null) ? String(Math.round(c.estimated)) : '',
+    validate: x => /^\d{1,12}(\.\d{1,2})?$/.test(x) ? null : 'Enter a dollar amount — numbers only (e.g. 200000).',
+    okLabel: 'Save',
+  });
+  if (v === null) return;
+  await _procSaveEstimate(job, Number(v), 'Materials estimate saved');
+}
+async function _procRevertEstimate(job) {
+  await _procSaveEstimate(job, null, 'Reverted to the Total ETO estimate');
+}
+async function _procSaveEstimate(job, estimate, okMsg) {
+  try {
+    const r = await fetch(`/api/eto/partcost/${encodeURIComponent(job)}/estimate`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estimate }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || ('HTTP ' + r.status));
+    delete _procCostCache[job];
+    _procCostCache[job] = await api.eto.partcost(job);
+    _procRerender();
+    if (typeof showToast === 'function') showToast(okMsg, { kind: 'success' });
+  } catch (e) { if (typeof showToast === 'function') showToast('Could not save estimate: ' + e.message, { kind: 'error' }); }
+}
+
 function _procCostBody(job) {
+  _procWireEstimateEditor();
   const c = _procCostCache[job];
   if (!c) {
     api.eto.partcost(job)
@@ -8365,6 +8408,36 @@ function _procCostBody(job) {
   }
   if (c.error) return `<div class="proc-empty proc-error">⚠ ${escapeHtml(c.error)}</div>`;
   return _procCostCard(c);
+}
+
+// Radial budget gauge (SVG) — projected total spend against the budget (the
+// editable estimate). 270° arc; green ≤90% / amber ≤100% / red over budget.
+// Standalone SVG (not inside frappe-gantt), so CSS fonts apply normally.
+function _procCostGauge(c) {
+  const usd = v => _procUsd(v);
+  const budget = Number(c.estimated) || 0;       // the (editable) materials budget
+  const spent = Number(c.purchased) || 0;        // committed on POs
+  const pct = budget ? Math.round((spent / budget) * 100) : null;
+  const frac = budget ? Math.min(1, spent / budget) : 0;
+  const remaining = Math.max(0, budget - spent);
+  const color = pct == null ? '#94a3b8' : pct <= 90 ? '#74c415' : pct <= 100 ? '#eab308' : '#dc2626';
+  const cx = 100, cy = 100, r = 76, sw = 16;
+  const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+  const arc = (s, e) => { const [x1, y1] = pol(s), [x2, y2] = pol(e); const large = (e - s) > 180 ? 1 : 0; return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`; };
+  const center = pct == null ? 'set budget' : (pct > 999 ? '999%+' : pct + '%');
+  return `<div class="proc-gauge">
+    <svg viewBox="0 0 200 175" class="proc-gauge-svg" role="img" aria-label="Purchased vs budget">
+      <path d="${arc(135, 405)}" fill="none" stroke="#e8edf3" stroke-width="${sw}" stroke-linecap="round"/>
+      ${budget ? `<path d="${arc(135, 135 + 270 * frac)}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>` : ''}
+      <text x="100" y="98" text-anchor="middle" class="proc-gauge-pct" style="fill:${color}">${center}</text>
+      <text x="100" y="120" text-anchor="middle" class="proc-gauge-cap">of budget${pct != null && pct > 100 ? ' — over' : ''}</text>
+    </svg>
+    <div class="proc-gauge-legend">
+      <div><span class="proc-gauge-k">Budget (estimate)</span><span class="proc-gauge-v">${usd(budget)}</span></div>
+      <div><span class="proc-gauge-k">Purchased</span><span class="proc-gauge-v">${usd(spent)}</span></div>
+      <div><span class="proc-gauge-k">${spent > budget ? 'Over budget by' : 'Remaining'}</span><span class="proc-gauge-v">${usd(spent > budget ? spent - budget : remaining)}</span></div>
+    </div>
+  </div>`;
 }
 
 function _procCostCard(c) {
@@ -8378,9 +8451,21 @@ function _procCostCard(c) {
       <span class="proc-cost-lbl${opts.cls ? ' ' + opts.cls : ''}">${label}</span>
       <span class="proc-cost-val${opts.cls ? ' ' + opts.cls : ''}">${usd(val)}</span>
     </div>`;
+  // Editable estimate row — ETO's materials estimate is often unset, so a PM can
+  // enter the real number; it drives the "vs estimate" bar + ETC.
+  const estRow = `<div class="proc-cost-row proc-cost-estrow">
+      <span class="proc-cost-lbl">Part Cost Estimated to Purchase
+        <span class="proc-cost-estsrc">${c.estimateSource === 'user' ? 'entered by PM' : 'from Total ETO'}</span>
+      </span>
+      <span class="proc-cost-val">
+        <span class="proc-cost-estval">${usd(c.estimated)}</span>
+        <button class="proc-cost-edit" data-action="proc-edit-estimate" data-job="${escapeHtml(String(c.job))}" type="button" title="Enter the materials estimate for this job">✎ Edit</button>
+        ${c.estimateSource === 'user' ? `<button class="proc-cost-edit proc-cost-revert" data-action="proc-revert-estimate" data-job="${escapeHtml(String(c.job))}" type="button" title="Revert to the Total ETO estimate (${usd(c.etoEstimate)})">↺</button>` : ''}
+      </span>
+    </div>`;
   return `<div class="proc-cost-card">
     <div class="proc-cost-grid">
-      ${row('Part Cost Estimated to Purchase', c.estimated)}
+      ${estRow}
       ${row('Part Cost Purchased', c.purchased)}
       ${row('Part Cost Received', c.received)}
       ${row('Part Cost Paid', c.paid, { cls: 'is-paid' })}
@@ -8389,6 +8474,7 @@ function _procCostCard(c) {
       ${row('Projected Total (Purchased + ETC)', c.projection, { strong: true })}
     </div>
     <div class="proc-cost-bars">
+      ${_procCostGauge(c)}
       <div class="proc-cost-bar">
         <div class="proc-cost-bar-head"><span>Paid of purchased</span><span style="color:${_procBarColor(pctPaid)}">${pctPaid}%</span></div>
         <span class="proc-bar"><span class="proc-bar-fill" style="width:${pctPaid}%;background:${_procBarColor(pctPaid)}"></span></span>
@@ -8398,11 +8484,6 @@ function _procCostCard(c) {
         <div class="proc-cost-bar-head"><span>Received of purchased</span><span style="color:${_procBarColor(pctReceived)}">${pctReceived}%</span></div>
         <span class="proc-bar"><span class="proc-bar-fill" style="width:${pctReceived}%;background:${_procBarColor(pctReceived)}"></span></span>
         <div class="proc-cost-bar-sub">${usd(c.received)} received of ${usd(c.purchased)} purchased</div>
-      </div>
-      <div class="proc-cost-bar">
-        <div class="proc-cost-bar-head"><span>Purchased vs estimate</span><span style="color:${estColor}">${ofEst == null ? 'no estimate' : ofEst + '%'}</span></div>
-        <span class="proc-bar"><span class="proc-bar-fill" style="width:${ofEst == null ? 0 : Math.min(100, ofEst)}%;background:${estColor}"></span></span>
-        <div class="proc-cost-bar-sub">${ofEst == null ? 'Total ETO has no materials estimate on this job.' : `${usd(c.purchased)} purchased of ${usd(c.estimated)} estimated${ofEst > 100 ? ' — over estimate' : ''}`}</div>
       </div>
     </div>
     <div class="proc-cost-note">Materials only (purchased parts), not labor. “Paid” is the AP-invoiced amount; estimate is Total ETO's materials estimate — ETO has no per-project budget figure.</div>
@@ -8532,7 +8613,16 @@ function _procVendorCard(v) {
     </div>
     <div class="proc-vmeta">${v.poCount} PO${v.poCount === 1 ? '' : 's'} · ${v.itemCount} item${v.itemCount === 1 ? '' : 's'}</div>
     <div class="proc-vbar-row"><span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, v.pct)}%;background:${barColor}"></span></span><span class="proc-pct" style="color:${barColor}">${v.pct}%</span></div>
-    <div class="proc-vpos">${posHtml}</div>
+    <div class="proc-vpos">
+      <div class="proc-vpo proc-vpo-head">
+        <span class="proc-vpo-hpn" title="Purchase order number">PO #</span>
+        <span class="proc-vpo-rcvd" title="Items received / total on this PO">Received</span>
+        <span class="proc-vpo-date" title="Expected delivery (open) or received (closed) date">Date</span>
+        <span class="proc-dot" style="visibility:hidden"></span>
+        <span class="proc-vpo-go" style="visibility:hidden" aria-hidden="true">›</span>
+      </div>
+      ${posHtml}
+    </div>
   </div>`;
 }
 // Compact money — $843K / $12.4K / $730. Assembly rows are tight on space.
@@ -8582,14 +8672,19 @@ function _procPartsFilterBar(data) {
   const opt = (cur, v, label) => `<option value="${escapeHtml(String(v))}" ${cur === v ? 'selected' : ''}>${escapeHtml(String(label))}</option>`;
   const drop = (id, title, cur, values) => `<label class="proc-filt"><span class="proc-filt-lbl">${title}</span>
     <select id="${id}" class="proc-job-pick">${opt(cur, 'all', 'All')}${values.map(v => opt(cur, v, v)).join('')}</select></label>`;
-  const active = _procState.pstatus !== 'all' || _procState.pcat !== 'all' || _procState.pmfr !== 'all' || _procState.psup !== 'all' || _procState.pfrom || _procState.pto;
+  const mode = _procState.pdatemode === 'invoiced' ? 'invoiced' : 'purchase';
+  const dateLabel = mode === 'invoiced' ? 'Invoiced' : 'Purchased';
+  const seg = (val, label) => `<button class="seg-btn${mode === val ? ' is-active' : ''}" data-pdatemode="${val}" type="button">${label}</button>`;
+  const active = _procState.pstatus !== 'all' || _procState.pcat !== 'all' || _procState.pmfr !== 'all' || _procState.psup !== 'all' || _procState.pfrom || _procState.pto || mode !== 'purchase';
   return `<div class="proc-parts-filters">
     <label class="proc-filt"><span class="proc-filt-lbl">Status</span>
       <select id="proc-pstatus" class="proc-job-pick">${pstatusOpts.map(([v, t]) => `<option value="${v}" ${_procState.pstatus === v ? 'selected' : ''}>${v === 'all' ? 'All' : t}</option>`).join('')}</select></label>
     ${drop('proc-pcat', 'Category', _procState.pcat, cats)}
     ${drop('proc-pmfr', 'Manufacturer', _procState.pmfr, mfrs)}
     ${drop('proc-psup', 'Supplier', _procState.psup, sups)}
-    <label class="proc-filt"><span class="proc-filt-lbl">Purchase from</span><input type="date" id="proc-pfrom" class="proc-date" value="${escapeHtml(_procState.pfrom || '')}"></label>
+    <label class="proc-filt"><span class="proc-filt-lbl">Date type</span>
+      <div class="seg-control proc-datemode">${seg('purchase', 'Purchase')}${seg('invoiced', 'Invoiced')}</div></label>
+    <label class="proc-filt"><span class="proc-filt-lbl">${dateLabel} from</span><input type="date" id="proc-pfrom" class="proc-date" value="${escapeHtml(_procState.pfrom || '')}"></label>
     <label class="proc-filt"><span class="proc-filt-lbl">to</span><input type="date" id="proc-pto" class="proc-date" value="${escapeHtml(_procState.pto || '')}"></label>
     ${active ? `<button class="btn-ghost btn-tight" id="proc-pclear" type="button">Clear filters</button>` : ''}
   </div>`;
@@ -8604,8 +8699,12 @@ function _wirePartsFilters(root, rerender) {
   bind('#proc-psup', 'psup');
   bind('#proc-pfrom', 'pfrom');
   bind('#proc-pto', 'pto');
+  // Date Selector — apply the date range to Purchase date or Invoiced date.
+  root.querySelectorAll('[data-pdatemode]').forEach(b => b.addEventListener('click', () => {
+    _procState.pdatemode = b.dataset.pdatemode; _procSave(); rerender();
+  }));
   const pclear = root.querySelector('#proc-pclear');
-  if (pclear) pclear.addEventListener('click', () => { Object.assign(_procState, { pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pfrom: '', pto: '' }); _procSave(); rerender(); });
+  if (pclear) pclear.addEventListener('click', () => { Object.assign(_procState, { pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '' }); _procSave(); rerender(); });
 }
 
 function _procPartsTable(data) {
@@ -8619,8 +8718,9 @@ function _procPartsTable(data) {
     if (cat !== 'all' && (p.category || '') !== cat) return false;
     if (mfr !== 'all' && _procMfr(p) !== mfr) return false;
     if (sup !== 'all' && (p.supplier || '') !== sup) return false;
-    if (from && (!p.orderDate || p.orderDate < from)) return false;
-    if (to && (!p.orderDate || p.orderDate > to)) return false;
+    const dcol = _procState.pdatemode === 'invoiced' ? p.invoicedDate : p.orderDate;
+    if (from && (!dcol || dcol < from)) return false;
+    if (to && (!dcol || dcol > to)) return false;
     if (q && ![p.pn, p.desc, p.category, p.manufacturer, p.supplier, p.parentPN, p.parentDesc, p.poId].some(v => String(v || '').toLowerCase().includes(q))) return false;
     return true;
   });
@@ -8628,7 +8728,7 @@ function _procPartsTable(data) {
   const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
   const fmt = d => d ? fmtDate(d) : '—';
   return `<div class="proc-plist">
-    <div class="proc-plist-head"><span>Part No</span><span>Description</span><span>Category</span><span>Assembly / Source</span><span class="num">Qty</span><span class="num">Unit $</span><span>Mfr</span><span>PO #</span><span>Order</span><span>Exp</span><span>Status</span></div>
+    <div class="proc-plist-head"><span>Part No</span><span>Description</span><span>Category</span><span>Assembly / Source</span><span class="num">Qty</span><span class="num">Unit $</span><span>Mfr</span><span>PO #</span><span title="PO purchase date">Purchased</span><span title="AP invoice date">Invoiced</span><span>Exp</span><span>Status</span></div>
     ${rows.map(p => {
       const st = _procPartStatus(p);
       return `<div class="proc-plrow${st.key === 'overdue' ? ' proc-plrow-overdue' : ''}">
@@ -8641,10 +8741,29 @@ function _procPartsTable(data) {
         <span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>
         <span class="proc-plpo">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
         <span>${fmt(p.orderDate)}</span>
+        <span>${fmt(p.invoicedDate)}</span>
         <span>${fmt(p.expDate || p.requiredDate)}</span>
         <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
       </div>`;
     }).join('')}
+  </div>`;
+}
+
+// Column header for the assemblies grid — same 10-column track as .proc-arow so
+// labels sit over their columns. Explains the otherwise-cryptic cells
+// (6/7 parts, 2 sub-assy, 1 no PO, cost, readiness bar).
+function _procAssemblyHeader() {
+  return `<div class="proc-arow proc-ahead">
+    <span class="proc-caret"></span>
+    <span class="proc-ah">Assembly</span>
+    <span class="proc-ah">Description</span>
+    <span class="proc-ah" title="Parts received / total parts in this assembly (e.g. 6/7 parts)">Rcvd / Total</span>
+    <span class="proc-ah" title="Number of sub-assemblies under this assembly">Sub-assy</span>
+    <span class="proc-ah" title="Parts with no purchase order yet">No PO</span>
+    <span class="proc-aspacer"></span>
+    <span class="proc-ah proc-acost" title="Purchased material cost — qty × latest PO unit price per part">Material&nbsp;$</span>
+    <span class="proc-ah" title="Build readiness — % of parts received">Readiness</span>
+    <span class="proc-ah proc-pct">%</span>
   </div>`;
 }
 
@@ -8781,7 +8900,7 @@ function renderProcurementPage() {
         <span>Grand total — purchased materials across all assemblies</span>
         <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
       </div>`;
-      body = specHtml ? specHtml + grandBar : `<div class="proc-empty">Nothing matches the current filter or search.</div>`;
+      body = specHtml ? _procAssemblyHeader() + specHtml + grandBar : `<div class="proc-empty">Nothing matches the current filter or search.</div>`;
     }
   }
 
@@ -12465,7 +12584,7 @@ function renderScheduleProcurement() {
         </div>`;
       }).join('');
       const grand = specsArr.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
-      inner = specs + `<div class="proc-grand">
+      inner = _procAssemblyHeader() + specs + `<div class="proc-grand">
         <span>Grand total — purchased materials across all assemblies</span>
         <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
       </div>`;

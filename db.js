@@ -176,6 +176,18 @@ async function init() {
     if (dirty.length) console.log(`[db] normalized ${dirty.length} user email(s) to trim+lowercase`);
   } catch (_) { /* users table may be mid-migration on a fresh DB */ }
 
+  // Per-job materials-estimate override (PM-entered). ETO is read-only and its
+  // EstTotalMaterials is often unset, so PMs can enter the real estimate here;
+  // the Procurement Cost tab uses it for the "vs estimate" + ETC figures.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS job_estimates (
+      job                VARCHAR(255) PRIMARY KEY,
+      materials_estimate DECIMAL(14,2),
+      updated_by         VARCHAR(255),
+      updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   // v9.0: "Parts in Shop" — PM-facing list of parts physically at the SDC shop.
   // NOTE: `rank` is a reserved word in MySQL 8 — must be backticked everywhere.
   await pool.query(`

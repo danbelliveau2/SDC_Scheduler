@@ -357,17 +357,45 @@ function _nestedNode(nodeId, pn, desc, qty, childrenMap, assemblyIds) {
 }
 
 /**
+ * AP-invoice date per PO line for a project: PurchaseDetailID → latest APDocDate
+ * (ISO). Source of the parts list's "Invoiced" date. A line invoiced in pieces
+ * takes its most recent invoice date.
+ */
+async function getInvoiceDates(projectId) {
+  const db = await getPool();
+  const r = await db.request()
+    .input('projectId', sql.Int, projectId)
+    .query(`
+      SELECT PurchaseDetailID, MAX(APDocDate) AS InvoicedDate
+      FROM vwCostingPurchasedMaterialsInvoicedRaw
+      WHERE ProjectID = @projectId AND APDocDate IS NOT NULL
+      GROUP BY PurchaseDetailID
+    `);
+  const m = {};
+  for (const row of r.recordset) m[row.PurchaseDetailID] = isoDate(row.InvoicedDate);
+  return m;
+}
+
+/**
  * Full procurement readiness for one ETO project. Per spec: the top-level
  * assemblies (machines) as nested trees with stats, plus top-level loose
  * parts. Job totals roll up unique leaf parts across all specs.
  */
 async function getReadiness(projectId) {
-  const [info, specs, poRows] = await Promise.all([
+  const [info, specs, poRows, invByDetail] = await Promise.all([
     getProjectInfo(projectId),
     getSpecs(projectId),
     getPoDetailsMulti([projectId]).catch(() => []),
+    getInvoiceDates(projectId).catch(() => ({})),
   ]);
   if (!specs || specs.length === 0) return null;
+
+  // ItemID → latest AP-invoice date across that item's PO lines.
+  const invByItem = {};
+  for (const r of poRows) {
+    const d = invByDetail[r.PurchaseDetailID];
+    if (d && (!invByItem[r.ItemID] || d > invByItem[r.ItemID])) invByItem[r.ItemID] = d;
+  }
 
   // ItemID → first PO line (PO #, order date, expected date) for the parts list.
   const poIndex = {};
@@ -397,6 +425,7 @@ async function getReadiness(projectId) {
         poId: po ? po.poId : null,
         supplier: po ? po.supplier : null,
         orderDate: po ? po.orderDate : null,
+        invoicedDate: invByItem[p.id] || null,
         expDate: po ? po.expDate : null,
       });
     }

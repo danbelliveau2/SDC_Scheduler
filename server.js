@@ -873,21 +873,59 @@ app.get('/api/eto/vendors/:job', async (req, res) => {
 // Part-cost financial summary for one job (estimated / purchased / received /
 // paid / left-to-pay / ETC). Mirrors ETO's "Part Cost" report. Cached 5 min.
 const _partCostCache = new Map();
+// Merge a PM-entered materials estimate (job_estimates) onto the ETO base cost.
+// When set, it replaces `estimated` and recomputes the derived figures. Applied
+// fresh per request (cheap lookup) so the ETO cache stays pure.
+async function applyEstimateOverride(base, job) {
+  const out = { ...base, estimateSource: 'eto', etoEstimate: base.estimated };
+  try {
+    const [[ovr]] = await pool.query('SELECT materials_estimate FROM job_estimates WHERE job = ?', [String(job)]);
+    if (ovr && ovr.materials_estimate != null) {
+      const est = Number(ovr.materials_estimate);
+      out.estimated = est;
+      out.estimateSource = 'user';
+      out.etc = Math.max(0, est - out.purchased);
+      out.projection = out.purchased + out.etc;
+      out.pctOfEstimate = est ? Math.round((out.purchased / est) * 100) : null;
+    }
+  } catch (_) { /* table may not exist yet on a fresh DB — fall back to ETO */ }
+  return out;
+}
+
 app.get('/api/eto/partcost/:job', async (req, res) => {
   const job = parseInt(req.params.job, 10);
   if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
   const cached = _partCostCache.get(job);
   if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
-    return res.json({ ...cached.data, cached: true });
+    return res.json({ ...(await applyEstimateOverride(cached.data, job)), cached: true });
   }
   try {
     const data = await etoDb.getPartCost(job);
     _partCostCache.set(job, { at: Date.now(), data });
-    res.json(data);
+    res.json(await applyEstimateOverride(data, job));
   } catch (e) {
     console.error('[eto] part cost failed:', e.message);
     res.status(503).json({ error: e.message });
   }
+});
+
+// Set / clear the PM materials-estimate override for a job. Body { estimate }:
+// a non-negative number to set, or null/'' to revert to the ETO estimate.
+app.put('/api/eto/partcost/:job/estimate', requireRole('editor'), async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const raw = req.body ? req.body.estimate : undefined;
+  if (raw === null || raw === '' || raw === undefined) {
+    await pool.query('DELETE FROM job_estimates WHERE job = ?', [String(job)]);
+    return res.json({ ok: true, cleared: true });
+  }
+  const n = Number(raw);
+  if (!isFinite(n) || n < 0) return res.status(400).json({ error: 'estimate must be a non-negative number' });
+  await pool.query(
+    `INSERT INTO job_estimates (job, materials_estimate, updated_by) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE materials_estimate = VALUES(materials_estimate), updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP`,
+    [String(job), n, (req.authUser && req.authUser.name) || req.user || null]);
+  res.json({ ok: true, estimate: n });
 });
 
 // Pull PO data from ETO into vendor_pos. Default scope covers linked projects;
@@ -3127,6 +3165,15 @@ async function startServer({ port } = {}) {
     const cron = require('./cronJobs');
     if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops });
   } catch (_) { /* cronJobs.js is optional */ }
+  // Register + ETO-link any orphan task-tab schedules (e.g. "1160_…" that never
+  // got a projects row). Runs async so it never delays boot; refreshes clients
+  // if it linked anything. Optional + self-guarding.
+  try {
+    const { backfillProjects } = require('./backfillProjects');
+    backfillProjects(pool, etoDb)
+      .then(r => { if (r && (r.registered || r.linked)) { try { notifyClients('projects_changed'); } catch (_) {} } })
+      .catch(e => console.warn('[backfill] failed:', e.message));
+  } catch (_) { /* backfillProjects.js is optional */ }
   return server;
 }
 

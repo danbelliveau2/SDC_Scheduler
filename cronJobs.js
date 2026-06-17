@@ -64,6 +64,19 @@ function start({ pool, emailSvc, etoDb, io, ops }) {
     setInterval(etoTick, 30 * 60 * 1000);
     setTimeout(etoTick, 15 * 1000); // first pass shortly after boot
     console.log('[cron] Registered: ETO vendor PO sync every 30 min');
+
+    // Re-register / re-link orphan task-tab schedules every 30 min, so schedules
+    // created (or ETO jobs that appear) BETWEEN restarts get picked up without a
+    // reboot. Boot already runs this once (server.js); this is just the periodic
+    // re-check that covers future cases. Independent of the sync above.
+    let backfill = null;
+    try { ({ backfillProjects: backfill } = require('./backfillProjects')); } catch (_) {}
+    if (backfill) {
+      setInterval(() => {
+        backfill(pool, etoDb).catch(e => console.warn('[cron] project backfill failed:', e.message));
+      }, 30 * 60 * 1000);
+      console.log('[cron] Registered: orphan-schedule ETO backfill every 30 min');
+    }
   }
 
   const tickAtNineAmWeekdays = async () => {
