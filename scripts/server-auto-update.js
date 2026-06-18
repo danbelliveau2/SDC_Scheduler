@@ -235,20 +235,21 @@ async function checkAndUpdate() {
       }
     }
 
-    // 5. Mirror public/ into custom-public/ so our overlay stays current.
-    //    custom-public/ is served before public/ in Express, giving us a
-    //    writable layer for local patches on top of Dan's ACL-locked public/ files.
+    // 5. Wipe stale shadow files from custom-public/ — keep only local-only files
+    //    that don't come from Dan (e.g. app-local.js). public/ is now served
+    //    BEFORE custom-public/ in Express, so this is just cleanup; but clearing
+    //    prevents old files from committing to the repo via startRepoAutoSync.
     const customPublicDir = path.join(APP_DIR, 'custom-public');
-    const publicDir = path.join(APP_DIR, 'public');
-    if (fs.existsSync(publicDir) && fs.existsSync(customPublicDir)) {
-      for (const f of fs.readdirSync(publicDir)) {
-        const src = path.join(publicDir, f);
-        const dst = path.join(customPublicDir, f);
-        if (fs.statSync(src).isFile()) {
-          try { fs.copyFileSync(src, dst); } catch (_) {}
-        }
+    const LOCAL_ONLY_FILES = new Set(['app-local.js']);
+    if (fs.existsSync(customPublicDir)) {
+      for (const entry of fs.readdirSync(customPublicDir)) {
+        if (LOCAL_ONLY_FILES.has(entry)) continue;
+        try {
+          const fp = path.join(customPublicDir, entry);
+          if (fs.statSync(fp).isFile()) fs.unlinkSync(fp);
+        } catch (_) {}
       }
-      log('  Mirrored public/ → custom-public/');
+      log('  Cleared stale overrides from custom-public/ (kept local-only files).');
     }
 
     // 6. Apply local patches on top of upstream files — runs after every pull so

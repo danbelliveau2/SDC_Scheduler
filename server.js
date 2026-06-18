@@ -2916,11 +2916,14 @@ function startRepoAutoSync() {
   const repoRoot = path.join(__dirname, '..');
   if (!fs.existsSync(path.join(repoRoot, '.git'))) return; // Electron / standalone installs have no repo
 
-  // Everything the auto-updater writes (SAFE_DIRS + SAFE_FILES + dep merge + custom-public mirror).
+  // Everything the auto-updater writes (SAFE_DIRS + SAFE_FILES + dep merge).
+  // ⚠ custom-public/ excluded — it holds only local-only files (app-local.js);
+  //   committing Dan's files from there spreads stale shadow files to the repo.
+  // ⚠ scripts/repo-sync.js excluded — monorepo infrastructure we own; Dan's
+  //   version must not overwrite our SYNC_PATHS additions.
   const SYNC_PATHS = [
-    'SDC_Scheduler/public', 'SDC_Scheduler/custom-public',
+    'SDC_Scheduler/public',
     'SDC_Scheduler/auth.js', 'SDC_Scheduler/emailService.js',
-    'SDC_Scheduler/scripts/repo-sync.js',
     'SDC_Scheduler/package.json', 'SDC_Scheduler/package-lock.json',
     'SDC_Scheduler/ARROW_ROUTING_RULES.md', 'SDC_Scheduler/.gitignore',
   ];
