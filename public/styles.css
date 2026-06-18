@@ -1208,10 +1208,16 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  row-gap: 6px;
+  flex-wrap: nowrap;       /* ALWAYS one row — never wrap to a second line */
   width: 100%;
+  min-width: 0;
+  overflow-x: auto;        /* if the screen is too narrow to fit, scroll — don't wrap */
+  overflow-y: hidden;
 }
+/* Keep the toolbar's controls from collapsing/wrapping internally when space
+   gets tight — they stay their size and the flex gap soaks up / gives back
+   width; the row just gets denser as the window shrinks. */
+.schedule-toolbar > *:not(.toolbar-flex-gap) { flex: 0 0 auto; }
 /* Flexible gap pushes content RIGHT of it toward the right edge while keeping
    the Columns control flush LEFT. Used between Columns and the rest of the
    toolbar so the layout reads as "primary action on the left, everything else
