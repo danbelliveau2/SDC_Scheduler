@@ -13,7 +13,8 @@
  */
 
 const { execSync } = require('child_process');
-const path         = require('path');
+const fs   = require('fs');
+const path = require('path');
 
 const REPO_ROOT      = path.join(__dirname, '..', '..');
 const CHECK_INTERVAL = 2 * 60 * 1000;
@@ -23,9 +24,18 @@ const SYNC_PATHS = [
   'SDC_Scheduler/auth.js',
   'SDC_Scheduler/emailService.js',
   'SDC_Scheduler/db.js',
+  'SDC_Scheduler/package.json',
+  'SDC_Scheduler/package-lock.json',
   'SDC_Scheduler/ARROW_ROUTING_RULES.md',
   'SDC_Scheduler/.gitignore',
 ];
+
+// PM2 runs as SYSTEM; the repo is owned by a user account.
+// -c safe.directory lets git operate despite the ownership mismatch.
+// Identity + credential flags give SYSTEM a valid author and push target.
+const GIT_FLAGS = `-c safe.directory="${REPO_ROOT.replace(/\\/g, '/')}"`
+  + ' -c user.name="SDC Repo Sync" -c user.email="repo-sync@stevendouglas.local"'
+  + ' -c credential.helper= -c "credential.helper=store --file=C:/ProgramData/SDC_Scheduler/git-credentials"';
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -33,31 +43,18 @@ function log(msg) {
 }
 
 function git(args) {
-  return execSync(`git -C "${REPO_ROOT}" ${args}`, { stdio: 'pipe' }).toString().trim();
-}
-
-function hasChanges() {
-  try {
-    git(`add ${SYNC_PATHS.join(' ')}`);
-    execSync(`git -C "${REPO_ROOT}" diff --cached --quiet`, { stdio: 'pipe' });
-    // exit 0 = no staged changes
-    git('restore --staged .');
-    return false;
-  } catch {
-    // exit 1 = staged changes present
-    return true;
-  }
+  return execSync(`git -C "${REPO_ROOT}" ${GIT_FLAGS} ${args}`, { stdio: 'pipe', timeout: 60000 }).toString().trim();
 }
 
 async function syncRepo() {
   log('Checking for uncommitted scheduler changes…');
   try {
     // Stage the tracked paths
-    git(`add ${SYNC_PATHS.join(' ')}`);
+    git(`add ${SYNC_PATHS.map(s => `"${s}"`).join(' ')}`);
 
     // Check if anything is actually staged
     let staged = true;
-    try { execSync(`git -C "${REPO_ROOT}" diff --cached --quiet`, { stdio: 'pipe' }); staged = false; }
+    try { git('diff --cached --quiet'); staged = false; }
     catch { staged = true; }
 
     if (!staged) {
@@ -66,7 +63,6 @@ async function syncRepo() {
     }
 
     // Read the SHA the updater last synced to
-    const fs = require('fs');
     const shaFile = path.join(__dirname, '..', '.update-sha');
     const danSha  = fs.existsSync(shaFile) ? fs.readFileSync(shaFile, 'utf8').trim().slice(0, 7) : 'unknown';
 
