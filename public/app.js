@@ -1037,16 +1037,18 @@ function computeProjectStats(project, machine) {
 //
 // Skipped (returns 0):
 //   • Milestones, anchors, backlog — they have their own status logic.
-//   • Tasks at exactly 0% — not yet started, treated as on schedule.
 //   • Completed tasks (progress ≥ 100) — done is done; baseline handles
 //     finish variance.
+// 0% (not started) tasks: NEVER read "ahead" — a not-started task in the
+// future is just not started, not ahead. But once its start has passed with
+// no progress, it IS behind, so we show how far behind (full remaining work
+// projected from today lands past the scheduled end).
 function taskScheduleDelta(task) {
   if (!task || task.is_milestone || !task.start_date || !task.end_date) return 0;
   if (inferredAnchorKey(task)) return 0;
   if (isBacklogTask(task)) return 0;
   const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
   if (actualPct >= 100) return 0;  // Done — no drift chip.
-  if (actualPct <= 0)   return 0;  // Not started — treated as on schedule.
   const totalDays = businessDaysBetween(task.start_date, task.end_date);
   if (!totalDays || totalDays <= 0) return 0;
   const remainingBD = Math.max(0, Math.round((1 - actualPct / 100) * totalDays));
@@ -1060,15 +1062,19 @@ function taskScheduleDelta(task) {
   const projectedFinish = remainingBD === 0
     ? snappedToday
     : addBusinessDays(snappedToday, remainingBD - 1);
-  if (!projectedFinish || projectedFinish === task.end_date) return 0;
+  if (!projectedFinish) return 0;
   // Sign: projectedFinish BEFORE scheduledEnd → ahead; AFTER → behind.
+  let drift = 0;
   if (projectedFinish < task.end_date) {
     const span = businessDaysBetween(projectedFinish, task.end_date) || 0;
-    return Math.max(0, span - 1); // span is inclusive on both ends
-  } else {
+    drift = Math.max(0, span - 1); // span is inclusive on both ends
+  } else if (projectedFinish > task.end_date) {
     const span = businessDaysBetween(task.end_date, projectedFinish) || 0;
-    return -Math.max(0, span - 1);
+    drift = -Math.max(0, span - 1);
   }
+  // Not started: only ever flag BEHIND, never ahead.
+  if (actualPct <= 0 && drift >= 0) return 0;
+  return drift;
 }
 
 function applyFilters(tasks, opts = {}) {
