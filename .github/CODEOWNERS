@@ -1,0 +1,9 @@
+# Code ownership — drives automatic PR review requests.
+# Dan (@danbelliveau2) is the lead/owner of the whole repo: every pull request
+# automatically requests his review, and (with branch protection on) needs his
+# approval before it can merge into main.
+#
+# Abhi is the sub-developer: he works on feature/ and fix/ branches and opens
+# PRs that Dan reviews + merges. He does not push straight to main.
+
+*       @danbelliveau2

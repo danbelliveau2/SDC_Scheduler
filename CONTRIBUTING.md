@@ -4,6 +4,29 @@ Short version: read `CLAUDE.md`, branch off `main`, keep PRs small, never bump t
 
 ---
 
+## Roles & review (two-developer workflow)
+
+| Who | Role | What they do |
+|---|---|---|
+| **Dan** (`@danbelliveau2`) | **Lead / owner** | Owns `main`. Reviews + merges every PR. Pushes rev bumps. Sole person who edits `public/release-notes.js`. Code owner of the whole repo (`.github/CODEOWNERS`). |
+| **Abhi** | **Sub-developer** | Works on `feature/…` and `fix/…` branches and opens PRs into `main`. Does **not** push directly to `main` or merge his own PRs. |
+
+**The loop:**
+1. Abhi branches off `main` → `feature/<short-name>`, keeps it small.
+2. Pushes the branch and opens a PR into `main` (the PR template auto-fills — fill in the verification section).
+3. `CODEOWNERS` auto-requests **Dan's** review. Dan reviews, asks for changes if needed, then merges.
+4. `main` auto-deploys to prod (the server's auto-updater pulls `main` every ~2 min), so only merged-and-reviewed code reaches everyone.
+
+**Locking it down (one-time, Dan does this in GitHub):** Settings → Branches → add a rule for `main`:
+- ✅ Require a pull request before merging → Require approvals (1) → **Require review from Code Owners**.
+- ✅ Add Abhi as a collaborator with **Write** access (not Admin), so the branch rule forces him through PRs while Dan (Admin) can still push directly when needed.
+
+Until that rule is on, the convention above is honored by agreement: **Abhi opens PRs, Dan merges.**
+
+A map of where each kind of change lives is in **"Where things go"** below — start there when you pick up a task.
+
+---
+
 ## Local setup
 
 ```bash
