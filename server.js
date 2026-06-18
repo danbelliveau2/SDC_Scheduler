@@ -91,18 +91,22 @@ app.use((req, res, next) => {
   }
   next();
 });
-// Serve auth-ui.js with minlength patched to 1 (file ACL is read-only)
+// Serve auth-ui.js with minlength patched to 1. public/ is the canonical,
+// auto-updated source, so prefer it; only fall back to custom-public/ if the
+// file isn't in public/ (legacy/ACL-locked environments).
 app.get('/auth-ui.js', (req, res) => {
-  const src = fs.existsSync(path.join(__dirname, 'custom-public', 'auth-ui.js'))
-    ? path.join(__dirname, 'custom-public', 'auth-ui.js')
-    : path.join(__dirname, 'public', 'auth-ui.js');
+  const src = fs.existsSync(path.join(__dirname, 'public', 'auth-ui.js'))
+    ? path.join(__dirname, 'public', 'auth-ui.js')
+    : path.join(__dirname, 'custom-public', 'auth-ui.js');
   const content = fs.readFileSync(src, 'utf8').replace(/minlength="6"/g, 'minlength="1"');
   res.type('application/javascript').send(content);
 });
-// custom-public/ overlays public/ — auto-updater writes to public/ (ACL-locked for us),
-// so Dan's latest frontend updates land in custom-public/ instead.
-app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, lastModified: true }));
+// public/ is CANONICAL (auto-updater writes the latest frontend here) and is
+// served FIRST so it always wins. custom-public/ is served only as a fallback
+// for files that have no public/ twin (e.g. app-local.js) — a stale copy in
+// custom-public/ can no longer shadow the current public/ build.
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true }));
+app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, lastModified: true }));
 
 // ─── Phase 3 (Auth): public auth routes — defined BEFORE the global
 // requireAuth middleware so they don't need a token. /api/auth/me is also
