@@ -1,0 +1,12 @@
+{
+  "name": "sdc-scheduler-db-dxt",
+  "version": "1.0.0",
+  "description": "Read-only SDC Scheduler database — Claude Desktop extension (stdio MCP server)",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "mysql2": "^3.22.5",
+    "zod": "^4.4.3"
+  }
+}

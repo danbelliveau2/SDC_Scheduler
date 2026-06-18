@@ -75,18 +75,6 @@ const api = {
     update: (id, data) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
     remove: (id) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'DELETE' }).then(r => r.json()); },
   },
-  // Total ETO bridge — read-only pulls from the ERP (optional, server-gated).
-  eto: {
-    status: () => fetch('/api/eto/status').then(r => r.json()),
-    syncVendorPOs: (scope) => { window._lastLocalEdit = Date.now(); return fetch('/api/eto/sync-vendor-pos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ scope: scope || 'linked' }) }).then(r => r.json()); },
-    poLines: (job, po) => fetch(`/api/eto/po/${encodeURIComponent(job)}/${encodeURIComponent(po)}/lines`).then(r => { if (!r.ok) throw new Error(`lines fetch failed (${r.status})`); return r.json(); }),
-    vendors: (job) => fetch(`/api/eto/vendors/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`vendors fetch failed (${r.status})`); return r.json(); }),
-    partcost: (job) => fetch(`/api/eto/partcost/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`part cost fetch failed (${r.status})`); return r.json(); }),
-  },
-  agent: {
-    status: () => fetch('/api/agent/status').then(r => r.json()),
-    ask: (question, context, history) => fetch('/api/agent/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, context, history: history || [] }) }).then(async r => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || `request failed (${r.status})`); return b; }),
-  },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
   baseline: {
@@ -875,132 +863,6 @@ function showAlertDialog(opts = {}) {
     setTimeout(() => overlay.querySelector('[data-action="ok"]')?.focus(), 0);
   });
 }
-
-// ── SDC Assistant (Claude, read-only) ───────────────────────────────────────
-// Floating "Ask" button + chat panel. Streams from /api/agent/ask-stream,
-// remembers history across turns, renders markdown, and shows tool chips.
-let _agentOpen = false, _agentStatus = null, _agentBusy = false;
-const _agentMsgs = [];      // visible chat log: {role:'user'|'assistant'|'error', text, tools?, usage?}
-let _agentHistory = [];     // Claude-format prior turns (sent back next request)
-function _initAgentUI() {
-  if (document.getElementById('sdc-agent-fab')) return;
-  const fab = document.createElement('button');
-  fab.id = 'sdc-agent-fab'; fab.type = 'button';
-  fab.title = 'Ask the SDC assistant (read-only)';
-  fab.textContent = '✨ Ask';
-  fab.addEventListener('click', _toggleAgentPanel);
-  document.body.appendChild(fab);
-}
-function _toggleAgentPanel() {
-  _agentOpen = !_agentOpen;
-  if (_agentOpen && !_agentStatus) {
-    api.agent.status().then(s => { _agentStatus = s; if (_agentOpen) _renderAgentPanel(); }).catch(() => { _agentStatus = { reachable: false }; if (_agentOpen) _renderAgentPanel(); });
-  }
-  _renderAgentPanel();
-}
-function _agentContext() {
-  const p = state.filters && state.filters.project;
-  if (!p) return '';
-  const job = state.projectsIndex && state.projectsIndex[p] && state.projectsIndex[p].job_number;
-  return `The user is currently viewing the schedule "${p}"${job ? ` (ETO job ${job})` : ''}.`;
-}
-// Suggested starter prompts. Tailor a couple to the current project when open.
-function _agentStarters() {
-  const p = state.filters && state.filters.project;
-  const idx = p && state.projectsIndex && state.projectsIndex[p];
-  const job = idx && idx.job_number;
-  const base = ['How many tasks are overdue across all projects?', 'Which suppliers have past-due POs?'];
-  if (job) return [`How is job ${job} doing?`, `Which parts on ${job} have no PO?`, `What is the materials cost so far on ${job}?`];
-  if (p) return [`Tell me about "${p}"`, ...base];
-  return ['How is job 1129 doing?', ...base];
-}
-// Minimal, safe Markdown → HTML. Supports headings, bold/italic, inline code,
-// fenced code, lists, tables, links — all from escaped text, so it's XSS-safe.
-function _agentMd(src) {
-  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  let s = esc(src || '');
-  // fenced code blocks
-  s = s.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c.replace(/^\n/, '')}</code></pre>`);
-  // headings
-  s = s.replace(/^(#{1,3})\s+(.+)$/gm, (_, h, t) => `<h${h.length}>${t}</h${h.length}>`);
-  // markdown tables: a block of lines starting and ending with |
-  s = s.replace(/(^\|.+\|\n\|[-:\s|]+\|\n(?:^\|.+\|\n?)+)/gm, (block) => {
-    const lines = block.trim().split('\n');
-    const cells = (ln) => ln.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
-    const head = cells(lines[0]);
-    const rows = lines.slice(2).map(cells);
-    return `<table class="agent-md-tbl"><thead><tr>${head.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-  });
-  // lists (group consecutive bullet lines)
-  s = s.replace(/(?:^[-*]\s+.+\n?)+/gm, (block) => `<ul>${block.trim().split('\n').map(ln => `<li>${ln.replace(/^[-*]\s+/, '')}</li>`).join('')}</ul>`);
-  s = s.replace(/(?:^\d+\.\s+.+\n?)+/gm, (block) => `<ol>${block.trim().split('\n').map(ln => `<li>${ln.replace(/^\d+\.\s+/, '')}</li>`).join('')}</ol>`);
-  // inline: bold, italic, code, links
-  s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
-  s = s.replace(/\*\*([^*]+)\*\*/g, (_, c) => `<strong>${c}</strong>`);
-  s = s.replace(/(^|\W)\*([^*\n]+)\*(\W|$)/g, (_, a, c, b) => `${a}<em>${c}</em>${b}`);
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
-  // paragraphs from blank-line separators (skip blocks already wrapped)
-  s = s.split(/\n{2,}/).map(p => /^<(h\d|ul|ol|pre|table)/i.test(p.trim()) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('\n');
-  return s;
-}
-function _agentToolsHtml(tools) {
-  if (!tools || !tools.length) return '';
-  return `<div class="agent-tools">${tools.map(t => `<span class="agent-tool" title="${escapeHtml(JSON.stringify(t.args || {}))}">${t.ok === false ? '✗' : '✓'} ${escapeHtml(t.name)}</span>`).join('')}</div>`;
-}
-function _agentUsageHtml(u) {
-  if (!u) return '';
-  const cached = u.cache_read_input_tokens || 0;
-  const inTok = u.input_tokens || 0;
-  const out = u.output_tokens || 0;
-  return `<div class="agent-usage" title="Tokens used (cached input + new input → output)">${inTok}+${out} tok${cached ? ` · ${cached} cached` : ''}</div>`;
-}
-function _renderAgentPanel() {
-  let panel = document.getElementById('sdc-agent-panel');
-  if (!_agentOpen) { if (panel) panel.remove(); return; }
-  if (!panel) { panel = document.createElement('div'); panel.id = 'sdc-agent-panel'; document.body.appendChild(panel); }
-  const s = _agentStatus;
-  const setupHint = s && s.setup ? escapeHtml(s.setup)
-    : s && !s.reachable ? 'The assistant isn’t configured. Set <code>ANTHROPIC_API_KEY</code> in the server <code>.env</code> and restart.'
-    : '';
-  const msgsHtml = _agentMsgs.map(m => {
-    if (m.role === 'user') return `<div class="agent-msg agent-user">${escapeHtml(m.text)}</div>`;
-    if (m.role === 'error') return `<div class="agent-msg agent-err">⚠ ${escapeHtml(m.text)}</div>`;
-    const body = m.text ? _agentMd(m.text) : '';
-    return `<div class="agent-msg agent-bot">${body}${_agentToolsHtml(m.tools)}${_agentUsageHtml(m.usage)}</div>`;
-  }).join('');
-  const startersHtml = (!_agentMsgs.length) ? `<div class="agent-empty">Ask about schedules, parts, POs, or cost.<div class="agent-starters">${_agentStarters().map(q => `<button class="agent-starter" data-starter="${escapeHtml(q)}" type="button">${escapeHtml(q)}</button>`).join('')}</div></div>` : '';
-  panel.innerHTML = `
-    <div class="agent-head"><span class="agent-title">✨ SDC Assistant</span><span class="agent-sub">read-only${s && s.model ? ' · ' + escapeHtml(s.model) : ''}</span>${_agentMsgs.length ? `<button class="agent-clear" data-act="clear" type="button" title="Clear the conversation">Clear</button>` : ''}<button class="agent-close" data-act="close" type="button" title="Close">✕</button></div>
-    ${setupHint ? `<div class="agent-setup">${setupHint}</div>` : ''}
-    <div class="agent-body" id="agent-body">${startersHtml}${msgsHtml}${_agentBusy ? '<div class="agent-msg agent-bot agent-thinking">Thinking…</div>' : ''}</div>
-    <form class="agent-form" id="agent-form">
-      <input type="text" id="agent-input" placeholder="Ask a question…" autocomplete="off" ${_agentBusy ? 'disabled' : ''}/>
-      <button type="submit" class="btn-primary" ${_agentBusy ? 'disabled' : ''}>Send</button>
-    </form>`;
-  panel.querySelector('[data-act="close"]').onclick = () => { _agentOpen = false; _renderAgentPanel(); };
-  const clr = panel.querySelector('[data-act="clear"]'); if (clr) clr.onclick = () => { _agentMsgs.length = 0; _agentHistory = []; _renderAgentPanel(); };
-  panel.querySelectorAll('[data-starter]').forEach(b => b.onclick = () => { const q = b.dataset.starter; const inp = panel.querySelector('#agent-input'); if (inp) inp.value = q; _agentSend(); });
-  panel.querySelector('#agent-form').onsubmit = (e) => { e.preventDefault(); _agentSend(); };
-  const body = panel.querySelector('#agent-body'); if (body) body.scrollTop = body.scrollHeight;
-  const inp = panel.querySelector('#agent-input'); if (inp && !_agentBusy) inp.focus();
-}
-async function _agentSend() {
-  const inp = document.getElementById('agent-input');
-  const q = inp ? inp.value.trim() : '';
-  if (!q || _agentBusy) return;
-  _agentMsgs.push({ role: 'user', text: q });
-  _agentBusy = true; _renderAgentPanel();
-  try {
-    const r = await api.agent.ask(q, _agentContext(), _agentHistory);
-    if (Array.isArray(r.history)) _agentHistory = r.history;
-    _agentMsgs.push({ role: 'assistant', text: r.answer || '(no answer)', tools: r.tools, usage: r.usage });
-  } catch (e) {
-    _agentMsgs.push({ role: 'error', text: e.message });
-  } finally {
-    _agentBusy = false; _renderAgentPanel();
-  }
-}
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _initAgentUI); else _initAgentUI();
 
 // In-app text prompt (replaces the browser-native prompt()). Returns a Promise
 // resolving to the trimmed string, or null on cancel. opts.validate(value) may
@@ -8216,7 +8078,7 @@ let _vpoState = null;
 let _vpoAddOpen = false;
 function _vpoStateGet() {
   if (_vpoState) return _vpoState;
-  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', fJob: 'all', dashRange: 7 };
+  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', dashRange: 7 };
   try { s = Object.assign(s, JSON.parse(localStorage.getItem('sdcVendorPoState') || '{}')); } catch (_) {}
   if (s.view !== 'cards') s.view = 'list';
   _vpoState = s; return s;
@@ -8244,946 +8106,9 @@ function _vpoStatusOf(r) {
   if (e != null) { if (e < Date.now()) return 'late'; if (e - Date.now() <= 7 * 86400000) return 'soon'; }
   return 'open';
 }
-// Total ETO availability — checked once; ETO UI (sync button, banner chip,
-// quote actuals) only renders when the server actually has ETO_* configured,
-// so every page stays clean otherwise.
-let _etoAvailable = false;
-let _etoChecked = false;
-function _etoCheckOnce() {
-  if (_etoChecked) return;
-  _etoChecked = true;
-  api.eto.status().then(s => {
-    if (s && s.configured) {
-      _etoAvailable = true;
-      try { renderVendorPOsPage(); } catch (_) {}
-      try { renderProjectTabs(); } catch (_) {}
-    }
-  }).catch(() => {});
-}
-
-// ── Total ETO project-link chip (schedule banner) ───────────────────────────
-// A project links to the ERP through its job number (=== ETO ProjectID).
-// The chip shows the link state and opens an in-app prompt to set it.
-const _etoNameCache = {}; // job → official ETO name, or null when not found
-
-// SDC names projects "<job#>_<customer>…" (e.g. "1158_Panduit, …"), so the
-// leading digits are almost always the Total ETO ProjectID. Pull them out as a
-// suggestion — never auto-linked, only offered + validated on click.
-function _etoJobFromName(name) {
-  // Leading 3+ digits. No \b after — SDC names are "1158_…" and "_" is a word
-  // char, so \b wouldn't match there; just grab the leading digit run.
-  const m = String(name || '').match(/^\s*(\d{3,})/);
-  return m ? m[1] : '';
-}
-
-function _etoBannerChipHtml(project) {
-  if (!_etoAvailable) return '';
-  const job = (state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number) || '';
-  if (!job) {
-    const guess = _etoJobFromName(project);
-    if (guess) {
-      return `<button type="button" id="eto-link-chip" class="eto-chip eto-chip-unlinked" data-eto-guess="${escapeHtml(guess)}" title="Looks like Total ETO job ${escapeHtml(guess)} (from the project name). Click to verify against the ERP and link.">🔗 Link ETO #${escapeHtml(guess)}</button>`;
-    }
-    return `<button type="button" id="eto-link-chip" class="eto-chip eto-chip-unlinked" title="Link this schedule to a Total ETO job — turns on automatic vendor PO sync and live cost actuals for this project.">🔗 Link ETO job…</button>`;
-  }
-  const known = _etoNameCache[job]; // undefined = not looked up yet
-  const bad = known === null;
-  const title = bad ? `Job ${job} was not found in Total ETO — click to fix the number.`
-    : known ? `Linked to Total ETO job ${job} — ${known}. Vendor POs and cost actuals sync from the ERP. Click to change.`
-    : `Linked to Total ETO job ${job}. Click to change.`;
-  return `<button type="button" id="eto-link-chip" class="eto-chip${bad ? ' eto-chip-bad' : ''}" title="${escapeHtml(title)}">ETO #${escapeHtml(job)}${bad ? ' ✗' : ''}</button>`;
-}
-
-function _wireEtoBannerChip(banner, project) {
-  const chip = banner.querySelector('#eto-link-chip');
-  if (!chip) return;
-  const job = (state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number) || '';
-  // Lazy one-time validation: fetch the official ETO name for the tooltip.
-  if (job && _etoNameCache[job] === undefined) {
-    fetch(`/api/eto/project/${encodeURIComponent(job)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(info => { _etoNameCache[job] = info ? (info.ProjectName || '') : null; try { renderProjectTabs(); } catch (_) {} })
-      .catch(() => {});
-  }
-  const guess = chip.dataset.etoGuess;
-  chip.addEventListener('click', () => guess ? _etoLinkSuggested(project, guess) : _etoLinkJobFlow(project));
-}
-
-// Persist the job-number link. Updates the projects row if it exists, or
-// CREATES it when the project is only a task-tab with no projects-table row yet
-// (POST /api/projects is create-or-return). Returns true on success.
-async function _etoApplyJobLink(project, job, info) {
-  let idx = state.projectsIndex && state.projectsIndex[project];
-  try {
-    if (idx && idx.id) {
-      const r = await fetch(`/api/projects/${idx.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_number: job }) });
-      if (!r.ok) throw new Error(`save failed (${r.status})`);
-    } else {
-      const r = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: project, job_number: job }) });
-      if (!r.ok) throw new Error(`create failed (${r.status})`);
-      const row = await r.json();
-      state.projectsIndex = state.projectsIndex || {};
-      state.projectsIndex[project] = { id: row.id, job_number: job };
-      idx = state.projectsIndex[project];
-    }
-  } catch (e) { showToast(`Could not save the job number: ${e.message}`, { kind: 'error' }); return false; }
-  idx.job_number = job;
-  _etoNameCache[job] = info ? (info.ProjectName || '') : '';
-  showToast(`Linked to ETO job ${job}${info && info.ProjectName ? ' — ' + info.ProjectName : ''}`, { kind: 'success' });
-  try { renderProjectTabs(); } catch (_) {}
-  return true;
-}
-
-// One-click link of a name-derived job number — still validated against ETO.
-// If the guess isn't a real ETO job, fall back to the manual prompt (prefilled)
-// so nothing links silently and a wrong prefix is easy to correct.
-async function _etoLinkSuggested(project, guess) {
-  let info = null;
-  try {
-    const r = await fetch(`/api/eto/project/${encodeURIComponent(guess)}`);
-    if (r.ok) info = await r.json();
-    else if (r.status !== 404) return _etoLinkJobFlow(project, guess); // server error → manual
-  } catch (_) { return _etoLinkJobFlow(project, guess); }
-  if (!info) {
-    showToast(`Job ${guess} (from the name) isn't in Total ETO — enter the correct number.`, { kind: 'error' });
-    return _etoLinkJobFlow(project, guess);
-  }
-  await _etoApplyJobLink(project, guess, info);
-}
-
-async function _etoLinkJobFlow(project, prefill) {
-  const idx = state.projectsIndex && state.projectsIndex[project];
-  const current = (idx && idx.job_number) || '';
-  const val = await showPromptDialog({
-    title: 'Link to Total ETO',
-    message: `Enter the Total ETO job number for "${project}". The vendor PO sync and live cost actuals follow this link.`,
-    placeholder: 'e.g. 1129',
-    value: prefill || current,
-    validate: v => (v === '' || /^\d+$/.test(v)) ? null : 'Job number must be digits only',
-    okLabel: 'Save',
-  });
-  if (val === null || val === current) return; // cancelled or unchanged
-  // Verify against the ERP before saving — typos get caught here, visibly.
-  let info = null;
-  try {
-    const r = await fetch(`/api/eto/project/${encodeURIComponent(val)}`);
-    if (r.ok) info = await r.json();
-    else if (r.status !== 404) { const e = await r.json().catch(() => ({})); showToast(`ETO lookup failed: ${e.error || r.status}`, { kind: 'error' }); return; }
-  } catch (e) { showToast(`ETO lookup failed: ${e.message}`, { kind: 'error' }); return; }
-  if (!info) { showToast(`Job ${val} was not found in Total ETO — check the number.`, { kind: 'error' }); return; }
-  await _etoApplyJobLink(project, val, info);
-}
-
-// ETO actuals strip inside the Quote vs Schedule modal — live est-vs-actual
-// hours, materials, total cost and margin from the ERP costing view.
-async function _loadQuoteEtoActuals(project, overlay) {
-  try {
-    if (!_etoAvailable) return;
-    const job = state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number;
-    if (!job) return;
-    const r = await fetch(`/api/eto/costing/${encodeURIComponent(job)}`);
-    if (!r.ok) return;
-    const c = await r.json();
-    const box = overlay.querySelector('#quote-eto-actuals');
-    if (!box) return;
-    const hrs = v => v == null ? '—' : Math.round(Number(v)).toLocaleString();
-    const usd = v => v == null ? '—' : '$' + Math.round(Number(v)).toLocaleString();
-    const pct = v => v == null ? '—' : Number(v).toFixed(1) + '%';
-    const over = (est, act) => est != null && act != null && Number(act) > Number(est);
-    const cell = (label, estStr, actStr, isOver, tip) => `
-      <div class="eto-stat" title="${escapeHtml(tip)}">
-        <span class="eto-stat-label">${label}</span>
-        <span class="eto-stat-vals"><span class="eto-stat-est">${estStr}</span> est&nbsp;·&nbsp;<span class="eto-stat-act${isOver ? ' is-over' : ''}">${actStr}</span> act</span>
-      </div>`;
-    box.hidden = false;
-    box.innerHTML = `
-      <div class="eto-actuals-head">Total ETO actuals — job ${escapeHtml(String(job))} <span class="eto-actuals-hint">live from the ERP</span></div>
-      <div class="eto-actuals-grid">
-        ${cell('Eng hours', hrs(c.EstEngHrs), hrs(c.ActEngHrs), over(c.EstEngHrs, c.ActEngHrs), 'Engineering hours — estimate vs actual hours booked in Total ETO')}
-        ${cell('Mfg hours', hrs(c.EstMfgHrs), hrs(c.ActMfgHrs), over(c.EstMfgHrs, c.ActMfgHrs), 'Manufacturing hours — estimate vs actual hours booked in Total ETO')}
-        ${cell('Materials', usd(c.EstMaterials), usd(c.ActMaterials), over(c.EstMaterials, c.ActMaterials), 'Material cost — estimate vs actual (purchased + inventory pulls)')}
-        ${cell('Total cost', usd(c.TotalEstimate), usd(c.TotalActualCost), over(c.TotalEstimate, c.TotalActualCost), 'Total project cost — estimate vs actual')}
-        ${cell('Margin', pct(c.BudgetMargin), pct(c.ActualMargin), c.BudgetMargin != null && c.ActualMargin != null && Number(c.ActualMargin) < Number(c.BudgetMargin), 'Margin — budget vs actual. Red when actual margin is below budget.')}
-      </div>`;
-  } catch (_) { /* cosmetic — modal works fine without the strip */ }
-}
-
-// ── Procurement page (build readiness from Total ETO) ───────────────────────
-// Per-assembly received / ordered / no-PO rollups for a linked job's BOM.
-// Ported from the standalone Build Readiness Report app; same math, rendered
-// in the scheduler's own grid style. Read-only — nothing here writes anywhere.
-let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '', search: '', open: {} };
-try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
-const _procVendorCache = {}; // job → vendor-status payload
-function _procSave() { try { localStorage.setItem('sdcProcState', JSON.stringify({ ..._procState, open: {} })); } catch (_) {} }
-const _procCache = {};   // job → readiness payload
-let _procLoading = false;
-
-function _procLinkedJobs() {
-  const out = [];
-  const idx = state.projectsIndex || {};
-  for (const name of Object.keys(idx)) {
-    if (idx[name].job_number) out.push({ name, job: idx[name].job_number });
-  }
-  return out.sort((a, b) => Number(a.job) - Number(b.job));
-}
-
-async function loadProcurement(forceRefresh) {
-  _etoCheckOnce();
-  const root = document.getElementById('procurement-page');
-  if (!root) return;
-  const jobs = _procLinkedJobs();
-  // Default to the first linked project, but never stomp a free-form job the
-  // user loaded via the Job # box (BRR-style: any ETO job is loadable).
-  if (!_procState.job && jobs.length) _procState.job = jobs[0].job;
-  if (!_procState.job) { renderProcurementPage(); return; }
-  const job = _procState.job;
-  if (forceRefresh) {
-    // Refresh busts the vendor-status + cost caches too, server-side, so all tabs are fresh.
-    delete _procVendorCache[job];
-    delete _procCostCache[job];
-    fetch(`/api/eto/vendors/${encodeURIComponent(job)}?refresh=1`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d && !d.error) { _procVendorCache[job] = d; if (_procState.job === job && _procState.tab === 'vendors') renderProcurementPage(); } })
-      .catch(() => {});
-    fetch(`/api/eto/partcost/${encodeURIComponent(job)}?refresh=1`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d && !d.error) { _procCostCache[job] = d; if (_procState.job === job && _procState.tab === 'cost') renderProcurementPage(); } })
-      .catch(() => {});
-  }
-  if (_procCache[job] && !forceRefresh) { renderProcurementPage(); return; }
-  _procLoading = true;
-  renderProcurementPage();
-  try {
-    const r = await fetch(`/api/eto/readiness/${encodeURIComponent(job)}${forceRefresh ? '?refresh=1' : ''}`);
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      _procCache[job] = { error: e.error || `Request failed (${r.status})` };
-    } else {
-      _procCache[job] = await r.json();
-    }
-  } catch (e) {
-    _procCache[job] = { error: e.message };
-  }
-  _procLoading = false;
-  renderProcurementPage();
-}
-
-function _procBarColor(pct) { return pct >= 90 ? '#74c415' : pct >= 60 ? '#eab308' : '#dc2626'; }
-
-// ── Vendors tab (Build Readiness "Vendor Status" view) ──────────────────────
-// POs grouped by supplier, each with received progress + a status badge; click
-// a PO to expand its line items inline. Lazily fetches /api/eto/vendors/:job.
-// Re-render whichever procurement surface is showing (full page and/or the
-// schedule drawer). Each self-guards, so calling both is safe and cheap.
-function _procRerender() {
-  try { if (state.view === 'procurement') renderProcurementPage(); } catch (_) {}
-  try { renderScheduleProcurement(); } catch (_) {}
-}
-
-// ── Cost tab (ETO "Part Cost" report card) ──────────────────────────────────
-// Materials-only financial summary: estimated → purchased → received → paid,
-// plus left-to-pay and estimate-to-complete. Lazily fetches /api/eto/partcost.
-const _procCostCache = {}; // job → part-cost payload
-
-// One delegated listener (document-level) for the editable materials-estimate
-// controls, so they work whether the Cost card is on the full page or the drawer.
-function _procWireEstimateEditor() {
-  if (window._procEstWired) return;
-  window._procEstWired = true;
-  document.addEventListener('click', (e) => {
-    const edit = e.target.closest('[data-action="proc-edit-estimate"]');
-    if (edit) { e.preventDefault(); _procEditEstimate(edit.dataset.job); return; }
-    const rev = e.target.closest('[data-action="proc-revert-estimate"]');
-    if (rev) { e.preventDefault(); _procRevertEstimate(rev.dataset.job); return; }
-  });
-}
-async function _procEditEstimate(job) {
-  const c = _procCostCache[job] || {};
-  const v = await showPromptDialog({
-    title: 'Materials estimate to purchase',
-    message: 'Enter the estimated materials cost (USD) for this job. It drives the “Purchased vs estimate” bar and Estimate-to-Complete. (Total ETO has no reliable per-job materials budget, so PMs set it here.)',
-    placeholder: 'e.g. 200000',
-    value: (c.estimateSource === 'user' && c.estimated != null) ? String(Math.round(c.estimated)) : '',
-    validate: x => /^\d{1,12}(\.\d{1,2})?$/.test(x) ? null : 'Enter a dollar amount — numbers only (e.g. 200000).',
-    okLabel: 'Save',
-  });
-  if (v === null) return;
-  await _procSaveEstimate(job, Number(v), 'Materials estimate saved');
-}
-async function _procRevertEstimate(job) {
-  await _procSaveEstimate(job, null, 'Reverted to the Total ETO estimate');
-}
-async function _procSaveEstimate(job, estimate, okMsg) {
-  try {
-    const r = await fetch(`/api/eto/partcost/${encodeURIComponent(job)}/estimate`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estimate }),
-    });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || ('HTTP ' + r.status));
-    delete _procCostCache[job];
-    _procCostCache[job] = await api.eto.partcost(job);
-    _procRerender();
-    if (typeof showToast === 'function') showToast(okMsg, { kind: 'success' });
-  } catch (e) { if (typeof showToast === 'function') showToast('Could not save estimate: ' + e.message, { kind: 'error' }); }
-}
-
-function _procCostBody(job) {
-  _procWireEstimateEditor();
-  const c = _procCostCache[job];
-  if (!c) {
-    api.eto.partcost(job)
-      .then(d => { _procCostCache[job] = d; _procRerender(); })
-      .catch(e => { _procCostCache[job] = { error: e.message }; _procRerender(); });
-    return `<div class="proc-empty">Loading part cost from Total ETO…</div>`;
-  }
-  if (c.error) return `<div class="proc-empty proc-error">⚠ ${escapeHtml(c.error)}</div>`;
-  return _procCostCard(c);
-}
-
-// Half-circle dome gauge (SVG), styled to match the Build-Readiness / Power BI
-// reference: 180° arc opening downward, big % in the centre, BI-style labels
-// (Budget · Projected · Remaining / Over) below. Color: blue ≤80% · amber ≤100%
-// · red over. Soft "Set a budget" hint when the ETO estimate is clearly the
-// default placeholder (so we don't scream "999%+" at a brand-new job).
-function _procCostGauge(c) {
-  const usd = v => _procUsd(v);
-  const budget = Number(c.estimated) || 0;
-  const spent = Number(c.purchased) || 0;
-  const projection = Number(c.projection) || 0;
-  // Treat the ETO default-ish placeholder as "not really set" so the gauge
-  // doesn't read 999% before a PM enters a real number.
-  const budgetUnset = !budget || (c.estimateSource === 'eto' && budget < spent * 0.25);
-  const pct = budgetUnset ? null : Math.round((spent / budget) * 100);
-  const projPct = budgetUnset ? null : Math.round((projection / budget) * 100);
-  const frac = budgetUnset ? 0 : Math.min(1, spent / budget);
-  const color = pct == null ? '#94a3b8' : pct <= 80 ? '#1574c4' : pct <= 100 ? '#eab308' : '#dc2626';
-
-  // Half-circle arc: dome opening downward, drawn from left end (180°) up over
-  // the top (90°) to the right end (0°). Parametric helper: f∈[0,1] → angle.
-  const cx = 130, cy = 120, r = 92, sw = 18;
-  const arcPoint = (f) => { const t = Math.PI * (1 - f); return [cx + r * Math.cos(t), cy - r * Math.sin(t)]; };
-  const pathTo = (f) => { const [x1, y1] = arcPoint(0), [x2, y2] = arcPoint(Math.max(0.0001, f)); return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`; };
-  const centerLabel = pct == null ? '—' : (pct > 999 ? '999%+' : pct + '%');
-
-  return `<div class="proc-gauge">
-    <svg viewBox="0 0 260 150" class="proc-gauge-svg" role="img" aria-label="Purchased vs budget">
-      <path d="${pathTo(1)}" fill="none" stroke="#e8edf3" stroke-width="${sw}" stroke-linecap="round"/>
-      ${!budgetUnset ? `<path d="${pathTo(frac)}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>` : ''}
-      <text x="${cx}" y="${cy - 18}" text-anchor="middle" class="proc-gauge-pct" style="fill:${color}">${centerLabel}</text>
-      <text x="${cx}" y="${cy + 2}" text-anchor="middle" class="proc-gauge-cap">${pct == null ? 'set a budget' : 'of budget' + (pct > 100 ? ' — over' : '')}</text>
-    </svg>
-    <div class="proc-gauge-legend">
-      <div><span class="proc-gauge-k">Part Cost Budget</span><span class="proc-gauge-v">${usd(budget)}${budgetUnset && budget ? ' <i class="proc-gauge-hint">unset</i>' : ''}</span></div>
-      <div><span class="proc-gauge-k">Projected Total</span><span class="proc-gauge-v">${usd(projection)}${projPct != null ? ` <i>(${projPct}%)</i>` : ''}</span></div>
-      <div><span class="proc-gauge-k">${spent > budget && !budgetUnset ? 'Over budget by' : 'Remaining'}</span><span class="proc-gauge-v">${usd(spent > budget && !budgetUnset ? spent - budget : Math.max(0, budget - spent))}</span></div>
-    </div>
-  </div>`;
-}
-
-function _procCostCard(c) {
-  const usd = v => _procUsd(v); // exact whole dollars with commas, '—' for 0
-  const pctReceived = Math.min(100, c.pctReceived || 0);
-  const pctPaid = Math.min(100, c.pctPaid || 0);
-  // Estimate-coverage bar: how much of the materials estimate is committed (purchased).
-  const ofEst = c.pctOfEstimate;
-  const estColor = ofEst == null ? '#94a3b8' : _procBarColor(ofEst > 100 ? 0 : ofEst); // over-estimate = red
-  const row = (label, val, opts = {}) => `<div class="proc-cost-row${opts.strong ? ' is-strong' : ''}">
-      <span class="proc-cost-lbl${opts.cls ? ' ' + opts.cls : ''}">${label}</span>
-      <span class="proc-cost-val${opts.cls ? ' ' + opts.cls : ''}">${usd(val)}</span>
-    </div>`;
-  // Editable estimate row — ETO's materials estimate is often unset, so a PM can
-  // enter the real number; it drives the "vs estimate" bar + ETC.
-  const estRow = `<div class="proc-cost-row proc-cost-estrow">
-      <span class="proc-cost-lbl">Part Cost Estimated to Purchase
-        <span class="proc-cost-estsrc">${c.estimateSource === 'user' ? 'entered by PM' : 'from Total ETO'}</span>
-      </span>
-      <span class="proc-cost-val">
-        <span class="proc-cost-estval">${usd(c.estimated)}</span>
-        <button class="proc-cost-edit" data-action="proc-edit-estimate" data-job="${escapeHtml(String(c.job))}" type="button" title="Enter the materials estimate for this job">✎ Edit</button>
-        ${c.estimateSource === 'user' ? `<button class="proc-cost-edit proc-cost-revert" data-action="proc-revert-estimate" data-job="${escapeHtml(String(c.job))}" type="button" title="Revert to the Total ETO estimate (${usd(c.etoEstimate)})">↺</button>` : ''}
-      </span>
-    </div>`;
-  return `<div class="proc-cost-card">
-    <div class="proc-cost-grid">
-      ${estRow}
-      ${row('Part Cost Purchased', c.purchased)}
-      ${row('Part Cost Received', c.received)}
-      ${row('Part Cost Paid', c.paid, { cls: 'is-paid' })}
-      ${row('Purchased Left to Pay', c.leftToPay)}
-      ${row('Part Cost ETC (Estimate to Complete)', c.etc)}
-      ${row('Projected Total (Purchased + ETC)', c.projection, { strong: true })}
-    </div>
-    <div class="proc-cost-bars">
-      ${_procCostGauge(c)}
-      <div class="proc-cost-bar">
-        <div class="proc-cost-bar-head"><span>Paid of purchased</span><span style="color:${_procBarColor(pctPaid)}">${pctPaid}%</span></div>
-        <span class="proc-bar"><span class="proc-bar-fill" style="width:${pctPaid}%;background:${_procBarColor(pctPaid)}"></span></span>
-        <div class="proc-cost-bar-sub">${usd(c.paid)} paid · ${usd(c.leftToPay)} left to pay</div>
-      </div>
-      <div class="proc-cost-bar">
-        <div class="proc-cost-bar-head"><span>Received of purchased</span><span style="color:${_procBarColor(pctReceived)}">${pctReceived}%</span></div>
-        <span class="proc-bar"><span class="proc-bar-fill" style="width:${pctReceived}%;background:${_procBarColor(pctReceived)}"></span></span>
-        <div class="proc-cost-bar-sub">${usd(c.received)} received of ${usd(c.purchased)} purchased</div>
-      </div>
-    </div>
-    <div class="proc-cost-note">Materials only (purchased parts), not labor. “Paid” is the AP-invoiced amount; estimate is Total ETO's materials estimate — ETO has no per-project budget figure.</div>
-  </div>`;
-}
-
-// Vendor cards for a job. opts.search / opts.vstatus filter (full page passes
-// its controls; the drawer passes nothing → shows all). Lazily fetches.
-function _procVendorBody(job, opts) {
-  opts = opts || {};
-  const vd = _procVendorCache[job];
-  if (!vd) {
-    api.eto.vendors(job)
-      .then(d => { _procVendorCache[job] = d; _procRerender(); })
-      .catch(e => { _procVendorCache[job] = { error: e.message }; _procRerender(); });
-    return `<div class="proc-empty">Loading vendor status from Total ETO…</div>`;
-  }
-  if (vd.error) return `<div class="proc-empty proc-error">⚠ ${escapeHtml(vd.error)}</div>`;
-  if (!vd.vendors || !vd.vendors.length) return `<div class="proc-empty">Total ETO has no POs for this job yet.</div>`;
-  const q = (opts.search || '').toLowerCase();
-  const vs = opts.vstatus || 'all';
-  const vendors = vd.vendors.filter(v => {
-    if (vs && vs !== 'all' && v.status !== vs) return false;
-    if (q && !(v.name.toLowerCase().includes(q) || v.pos.some(p => String(p.po).toLowerCase().includes(q)))) return false;
-    return true;
-  });
-  if (!vendors.length) return `<div class="proc-empty">No vendors match the filter or search.</div>`;
-  return `<div class="proc-vendors">${vendors.map(_procVendorCard).join('')}</div>`;
-}
-
-// Right-side slide-out panel for one PO (Build Readiness style): header +
-// ordered/due/value summary + line-items table. Data comes from the cached
-// vendor status — no extra fetch. Triggered from the full page or the drawer.
-function _procOpenPoPanel(job, vname, poId) {
-  const vd = _procVendorCache[job];
-  const vendor = vd && vd.vendors && vd.vendors.find(v => v.name === vname);
-  const po = vendor && vendor.pos.find(p => String(p.po) === String(poId));
-  if (!po) return;
-  document.getElementById('proc-po-overlay')?.remove();
-  const fmt = d => d ? fmtDate(d) : '—';
-  const initials = (vname || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-  const badge = { received: ['RECEIVED', 'vstat-ok'], pastdue: ['PAST DUE', 'vstat-bad'], open: ['LATE / EXP', 'vstat-warn'] }[po.status] || ['', ''];
-  const barColor = _procBarColor(po.pct);
-  const ordered = po.lines.map(l => l.ordered).filter(Boolean).sort()[0];
-  const due = po.lines.map(l => l.expected).filter(Boolean).sort().slice(-1)[0];
-  const rows = po.lines.map(l => {
-    // Row tint by status, matching the card-dot legend: received → green,
-    // overdue → red, on order (not yet due) → yellow.
-    let cls = 'ppo-line-received';
-    if (l.status !== 'received') {
-      const exp = l.expected ? Date.parse(l.expected + 'T00:00:00') : NaN;
-      cls = (!isNaN(exp) && exp < Date.now()) ? 'ppo-line-late' : 'ppo-line-pending';
-    }
-    const rcvd = l.status === 'received'
-      ? `<span class="ppo-rcvd-ok">✓ ${fmt(l.receivedDate)}</span>`
-      : `<span class="ppo-rcvd-exp">Exp ${fmt(l.expected)}</span>`;
-    return `<div class="ppo-line ${cls}">
-      <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(l.partNumber || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(l.desc || '')}">${escapeHtml(l.desc || '')}</span></span>
-      <span class="num">${l.qty ?? ''}</span>
-      <span>${fmt(l.ordered)}</span>
-      <span>${fmt(l.expected)}</span>
-      <span>${rcvd}</span>
-      <span class="num">${l.price != null ? '$' + Number(l.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</span>
-    </div>`;
-  }).join('');
-  const overlay = document.createElement('div');
-  overlay.id = 'proc-po-overlay';
-  overlay.className = 'proc-po-overlay';
-  overlay.innerHTML = `
-    <div class="proc-po-backdrop" data-action="ppo-close"></div>
-    <aside class="proc-po-panel" role="dialog" aria-label="PO detail">
-      <div class="ppo-head">
-        <span class="proc-vavatar">${escapeHtml(initials)}</span>
-        <div class="ppo-head-name"><div class="ppo-vname" title="${escapeHtml(vname)}">${escapeHtml(vname)}</div><div class="ppo-ponum">PO #${escapeHtml(String(poId))}</div></div>
-        <span class="proc-vbadge ${badge[1]}">${badge[0]}</span>
-        <button class="ppo-close" data-action="ppo-close" type="button" title="Close">✕</button>
-      </div>
-      <div class="ppo-summary">
-        <div class="ppo-stat"><span class="ppo-sk">ORDERED</span><span class="ppo-sv">${fmt(ordered)}</span></div>
-        <div class="ppo-stat"><span class="ppo-sk">DUE</span><span class="ppo-sv">${fmt(due)}</span></div>
-        <div class="ppo-stat"><span class="ppo-sk">PO VALUE</span><span class="ppo-sv">$${Math.round(po.price).toLocaleString()}</span></div>
-        <div class="ppo-stat ppo-prog"><span class="ppo-sk">${po.received}/${po.itemCount} received</span><span class="proc-bar"><span class="proc-bar-fill" style="width:${po.pct}%;background:${barColor}"></span></span><span class="proc-pct" style="color:${barColor}">${po.pct}%</span></div>
-      </div>
-      <div class="ppo-lines">
-        <div class="ppo-line ppo-line-head"><span>PART</span><span class="num">QTY</span><span>ORDERED</span><span>EXPECTED</span><span>RECEIVED</span><span class="num">PRICE</span></div>
-        ${rows}
-      </div>
-    </aside>`;
-  document.body.appendChild(overlay);
-  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
-  overlay.querySelectorAll('[data-action="ppo-close"]').forEach(b => b.addEventListener('click', close));
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-  document.addEventListener('keydown', onKey);
-  // Force a reflow so the transform transition plays, then flip to the open
-  // state synchronously (rAF can no-op if the tab isn't actively painting).
-  void overlay.offsetWidth;
-  overlay.classList.add('is-open');
-}
-
-function _procVendorCard(v) {
-  const badge = { received: ['RECEIVED', 'vstat-ok'], pastdue: ['PAST DUE', 'vstat-bad'], open: ['LATE / EXP', 'vstat-warn'] }[v.status] || ['', ''];
-  const initials = (v.name || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-  const barColor = _procBarColor(v.pct);
-  const fmt = d => d ? fmtDate(d) : '—';
-  const posHtml = v.pos.map(po => {
-    const dot = po.status === 'received' ? 'received' : po.status === 'pastdue' ? 'noPO' : 'ordered';
-    // Received PO → arrival date; otherwise → expected ETA. Falls back to '—'.
-    const dateInfo = po.status === 'received'
-      ? (po.receivedDate ? { lbl: 'rcvd', val: fmt(po.receivedDate), cls: 'proc-vpo-date-rcvd' } : null)
-      : (po.eta ? { lbl: 'exp', val: fmt(po.eta), cls: po.status === 'pastdue' ? 'proc-vpo-date-late' : 'proc-vpo-date-exp' } : null);
-    const dateHtml = dateInfo
-      ? `<span class="proc-vpo-date ${dateInfo.cls}" title="${dateInfo.lbl === 'rcvd' ? 'Last received' : 'Expected delivery'}">${dateInfo.lbl} ${escapeHtml(dateInfo.val)}</span>`
-      : `<span class="proc-vpo-date"></span>`;
-    return `<div class="proc-vpo" data-vpo="${escapeHtml(v.name)}|${escapeHtml(String(po.po))}" title="Open PO detail">
-      <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(String(po.po))}" type="button" title="Click to copy PO number">${escapeHtml(String(po.po))}</button>
-      <span class="proc-vpo-rcvd">${po.received}/${po.itemCount} rcvd</span>
-      ${dateHtml}
-      <span class="proc-dot proc-dot-${dot}" title="${po.status === 'received' ? 'All received' : po.status === 'pastdue' ? 'Past due' : 'On order'}"></span>
-      <span class="proc-vpo-go" aria-hidden="true">›</span>
-    </div>`;
-  }).join('');
-  return `<div class="proc-vcard">
-    <div class="proc-vcard-head">
-      <span class="proc-vavatar">${escapeHtml(initials)}</span>
-      <span class="proc-vname" title="${escapeHtml(v.name)}">${escapeHtml(v.name)}</span>
-      <span class="proc-vbadge ${badge[1]}">${badge[0]}</span>
-    </div>
-    <div class="proc-vmeta">${v.poCount} PO${v.poCount === 1 ? '' : 's'} · ${v.itemCount} item${v.itemCount === 1 ? '' : 's'}</div>
-    <div class="proc-vbar-row"><span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, v.pct)}%;background:${barColor}"></span></span><span class="proc-pct" style="color:${barColor}">${v.pct}%</span></div>
-    <div class="proc-vpos">
-      <div class="proc-vpo proc-vpo-head">
-        <span class="proc-vpo-hpn" title="Purchase order number">PO #</span>
-        <span class="proc-vpo-rcvd" title="Items received / total on this PO">Received</span>
-        <span class="proc-vpo-date" title="Expected delivery (open) or received (closed) date">Date</span>
-        <span class="proc-dot" style="visibility:hidden"></span>
-        <span class="proc-vpo-go" style="visibility:hidden" aria-hidden="true">›</span>
-      </div>
-      ${posHtml}
-    </div>
-  </div>`;
-}
-// Compact money — $843K / $12.4K / $730. Assembly rows are tight on space.
-// Exact whole-dollar amount with thousands separators — $5,200, $90,000, $228.
-// No K/M abbreviation, no decimals.
-function _procUsd(v) {
-  const n = Number(v) || 0;
-  if (n <= 0) return '—';
-  return '$' + Math.round(n).toLocaleString();
-}
-
-// ── Flat Parts List tab ──────────────────────────────────────────────────────
-// Every leaf-part occurrence across all assemblies, one row each, with PO +
-// delivery status. Complements the Assemblies (BOM tree) and Vendors (by-supplier)
-// views — this is the part-centric cut.
-function _procPartStatus(p) {
-  if (p.inStock) return { key: 'received', label: 'IN STOCK', cls: 'ok', sub: 'from inventory' };
-  if (p.status === 'received') return { key: 'received', label: 'RECEIVED', cls: 'ok', sub: '' };
-  if (p.hold) return { key: 'hold', label: 'ON HOLD', cls: 'hold', sub: 'in ETO' };
-  if (p.status === 'noPO') return { key: 'noPO', label: 'NO PO', cls: 'bad', sub: '' };
-  const due = p.expDate || p.requiredDate;
-  if (due) {
-    const diff = Math.ceil((Date.parse(due + 'T00:00:00') - Date.now()) / 86400000);
-    if (isNaN(diff)) return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
-    if (diff < 0) return { key: 'overdue', label: 'OVERDUE', cls: 'bad', sub: `${Math.abs(diff)}d late` };
-    if (diff <= 14) return { key: 'soon', label: 'DUE SOON', cls: 'warn', sub: `in ${diff}d` };
-    return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: `in ${diff}d` };
-  }
-  return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
-}
-
-// Display fallbacks used for both rendering and the filter dropdowns, so the
-// option values line up exactly with what shows in the rows.
-function _procMfr(p) { return p.manufacturer || 'SDC'; }
-
-// Parts List filter bar — Status, Category, Manufacturer, Supplier, Purchase
-// date range. Options come straight from the loaded BOM so they always match
-// what's in the rows. Shared by the full page and the schedule drawer so both
-// filter identically (state lives on _procState). Mirrors the ETO report.
-function _procPartsFilterBar(data) {
-  if (!data || !Array.isArray(data.partsList)) return '';
-  const pstatusOpts = [['all', 'Status: all'], ['received', 'Received'], ['ordered', 'On order'], ['soon', 'Due soon'], ['overdue', 'Overdue'], ['noPO', 'No PO'], ['hold', 'On hold']];
-  const uniqSorted = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
-  const cats = uniqSorted(data.partsList.map(p => p.category));
-  const mfrs = uniqSorted(data.partsList.map(p => _procMfr(p)));
-  const sups = uniqSorted(data.partsList.map(p => p.supplier));
-  const opt = (cur, v, label) => `<option value="${escapeHtml(String(v))}" ${cur === v ? 'selected' : ''}>${escapeHtml(String(label))}</option>`;
-  const drop = (id, title, cur, values) => `<label class="proc-filt"><span class="proc-filt-lbl">${title}</span>
-    <select id="${id}" class="proc-job-pick">${opt(cur, 'all', 'All')}${values.map(v => opt(cur, v, v)).join('')}</select></label>`;
-  const mode = _procState.pdatemode === 'invoiced' ? 'invoiced' : 'purchase';
-  const dateLabel = mode === 'invoiced' ? 'Invoiced' : 'Purchased';
-  const seg = (val, label) => `<button class="seg-btn${mode === val ? ' is-active' : ''}" data-pdatemode="${val}" type="button">${label}</button>`;
-  const active = _procState.pstatus !== 'all' || _procState.pcat !== 'all' || _procState.pmfr !== 'all' || _procState.psup !== 'all' || _procState.pfrom || _procState.pto || mode !== 'purchase';
-  return `<div class="proc-parts-filters">
-    <label class="proc-filt"><span class="proc-filt-lbl">Status</span>
-      <select id="proc-pstatus" class="proc-job-pick">${pstatusOpts.map(([v, t]) => `<option value="${v}" ${_procState.pstatus === v ? 'selected' : ''}>${v === 'all' ? 'All' : t}</option>`).join('')}</select></label>
-    ${drop('proc-pcat', 'Category', _procState.pcat, cats)}
-    ${drop('proc-pmfr', 'Manufacturer', _procState.pmfr, mfrs)}
-    ${drop('proc-psup', 'Supplier', _procState.psup, sups)}
-    <label class="proc-filt"><span class="proc-filt-lbl">Date type</span>
-      <div class="seg-control proc-datemode">${seg('purchase', 'Purchase')}${seg('invoiced', 'Invoiced')}</div></label>
-    <label class="proc-filt"><span class="proc-filt-lbl">${dateLabel} from</span><input type="date" id="proc-pfrom" class="proc-date" value="${escapeHtml(_procState.pfrom || '')}"></label>
-    <label class="proc-filt"><span class="proc-filt-lbl">to</span><input type="date" id="proc-pto" class="proc-date" value="${escapeHtml(_procState.pto || '')}"></label>
-    ${active ? `<button class="btn-ghost btn-tight" id="proc-pclear" type="button">Clear filters</button>` : ''}
-  </div>`;
-}
-
-// Wire the parts filter controls inside `root`, re-rendering via `rerender`.
-function _wirePartsFilters(root, rerender) {
-  const bind = (id, key) => { const el = root.querySelector(id); if (el) el.addEventListener('change', () => { _procState[key] = el.value; _procSave(); rerender(); }); };
-  bind('#proc-pstatus', 'pstatus');
-  bind('#proc-pcat', 'pcat');
-  bind('#proc-pmfr', 'pmfr');
-  bind('#proc-psup', 'psup');
-  bind('#proc-pfrom', 'pfrom');
-  bind('#proc-pto', 'pto');
-  // Date Selector — apply the date range to Purchase date or Invoiced date.
-  root.querySelectorAll('[data-pdatemode]').forEach(b => b.addEventListener('click', () => {
-    _procState.pdatemode = b.dataset.pdatemode; _procSave(); rerender();
-  }));
-  const pclear = root.querySelector('#proc-pclear');
-  if (pclear) pclear.addEventListener('click', () => { Object.assign(_procState, { pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '' }); _procSave(); rerender(); });
-}
-
-function _procPartsTable(data) {
-  const q = (_procState.search || '').toLowerCase();
-  const want = _procState.pstatus;
-  const cat = _procState.pcat, mfr = _procState.pmfr, sup = _procState.psup;
-  const from = _procState.pfrom || '', to = _procState.pto || '';
-  const rows = (data.partsList || []).filter(p => {
-    const st = _procPartStatus(p);
-    if (want !== 'all' && st.key !== want) return false;
-    if (cat !== 'all' && (p.category || '') !== cat) return false;
-    if (mfr !== 'all' && _procMfr(p) !== mfr) return false;
-    if (sup !== 'all' && (p.supplier || '') !== sup) return false;
-    const dcol = _procState.pdatemode === 'invoiced' ? p.invoicedDate : p.orderDate;
-    if (from && (!dcol || dcol < from)) return false;
-    if (to && (!dcol || dcol > to)) return false;
-    if (q && ![p.pn, p.desc, p.category, p.manufacturer, p.supplier, p.parentPN, p.parentDesc, p.poId].some(v => String(v || '').toLowerCase().includes(q))) return false;
-    return true;
-  });
-  if (!rows.length) return `<div class="proc-empty">No parts match the current filter or search.</div>`;
-  const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-  const fmt = d => d ? fmtDate(d) : '—';
-  return `<div class="proc-plist">
-    <div class="proc-plist-head"><span>Part No</span><span>Description</span><span>Category</span><span>Assembly / Source</span><span class="num">Qty</span><span class="num">Unit $</span><span>Mfr</span><span>PO #</span><span title="PO purchase date">Purchased</span><span title="AP invoice date">Invoiced</span><span>Exp</span><span>Status</span></div>
-    ${rows.map(p => {
-      const st = _procPartStatus(p);
-      return `<div class="proc-plrow${st.key === 'overdue' ? ' proc-plrow-overdue' : ''}">
-        <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
-        <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
-        <span class="proc-plcat" title="${escapeHtml(p.category || '')}">${p.category ? escapeHtml(p.category) : '—'}</span>
-        <span class="proc-plsrc"><span class="proc-plsrc-pn">${escapeHtml(p.parentPN || 'LOOSE')}</span><span class="proc-plsrc-desc">${escapeHtml(p.parentDesc || '')}</span></span>
-        <span class="num">${p.qty ?? ''}</span>
-        <span class="num">${usd(p.unitPrice)}</span>
-        <span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>
-        <span class="proc-plpo">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
-        <span>${fmt(p.orderDate)}</span>
-        <span>${fmt(p.invoicedDate)}</span>
-        <span>${fmt(p.expDate || p.requiredDate)}</span>
-        <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
-      </div>`;
-    }).join('')}
-  </div>`;
-}
-
-// Column header for the assemblies grid — same 10-column track as .proc-arow so
-// labels sit over their columns. Explains the otherwise-cryptic cells
-// (6/7 parts, 2 sub-assy, 1 no PO, cost, readiness bar).
-function _procAssemblyHeader() {
-  return `<div class="proc-arow proc-ahead">
-    <span class="proc-caret"></span>
-    <span class="proc-ah">Assembly</span>
-    <span class="proc-ah">Description</span>
-    <span class="proc-ah" title="Parts received / total parts in this assembly (e.g. 6/7 parts)">Rcvd / Total</span>
-    <span class="proc-ah" title="Number of sub-assemblies under this assembly">Sub-assy</span>
-    <span class="proc-ah" title="Parts with no purchase order yet">No PO</span>
-    <span class="proc-aspacer"></span>
-    <span class="proc-ah proc-acost" title="Purchased material cost — qty × latest PO unit price per part">Material&nbsp;$</span>
-    <span class="proc-ah" title="Build readiness — % of parts received">Readiness</span>
-    <span class="proc-ah proc-pct">%</span>
-  </div>`;
-}
-
-function _procAssemblyRow(node, depth) {
-  const st = node.stats || { total: 0, received: 0, noPO: 0, ordered: 0, pct: 0 };
-  const open = !!_procState.open[node.id];
-  // Each meta fact is its own grid cell so they line up in columns down the page
-  // (parts under parts, sub-assy under sub-assy, no-PO under no-PO).
-  const partsCell = `${st.received}/${st.total} parts`;
-  const subCell   = node.children.length ? `${node.children.length} sub-assy` : '';
-  const noPoCell  = st.noPO ? `<span class="proc-nopo">${st.noPO} no PO</span>` : '';
-  let html = `
-    <div class="proc-arow${depth > 0 ? ' proc-arow-nested' : ''}" data-aid="${escapeHtml(String(node.id))}" style="padding-left:${10 + depth * 26}px;--d:${depth}">
-      <span class="proc-caret">${open ? '▾' : '▸'}</span>
-      <button class="proc-pn" data-copy="${escapeHtml(node.pn)}" type="button" title="Click to copy part number">${escapeHtml(node.pn)}</button>
-      <span class="proc-aname" title="${escapeHtml(node.desc || '')}">${escapeHtml(node.desc || '')}</span>
-      <span class="proc-acol proc-acol-parts">${partsCell}</span>
-      <span class="proc-acol proc-acol-sub">${subCell}</span>
-      <span class="proc-acol proc-acol-nopo">${noPoCell}</span>
-      <span class="proc-aspacer"></span>
-      <span class="proc-acost" title="Purchased material cost for this assembly — qty × latest PO unit price per part. In-house parts with no PO price count as $0.">${_procUsd(st.cost)}</span>
-      <span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, st.pct)}%;background:${_procBarColor(st.pct)}"></span></span>
-      <span class="proc-pct" style="color:${_procBarColor(st.pct)}">${st.pct}%</span>
-    </div>`;
-  if (open) {
-    for (const child of node.children) html += _procAssemblyRow(child, depth + 1);
-    if (node.parts.length) {
-      const q = (_procState.search || '').toLowerCase();
-      const parts = q
-        ? node.parts.filter(p => [p.pn, p.desc, p.manufacturer].some(v => String(v || '').toLowerCase().includes(q)))
-        : node.parts;
-      const money = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-      html += `<div class="proc-parts" style="margin-left:${36 + depth * 26}px">
-        <div class="proc-phead"><span></span><span>Part No</span><span>Description</span><span>Mfr</span><span class="num">Qty</span><span class="num">Unit $</span><span class="num">Ext $</span><span class="num">PO / Rcvd</span></div>
-        ${parts.map(p => `
-          <div class="proc-prow proc-prow-${p.status}">
-            <span class="proc-dot proc-dot-${p.status}" title="${p.inStock ? 'In stock (pulled from inventory — no PO needed)' : p.status === 'received' ? 'Received' : p.status === 'ordered' ? 'On order' : p.hold ? 'On hold in ETO' : 'No PO'}"></span>
-            <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
-            <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
-            <span class="proc-pmfr">${escapeHtml(p.manufacturer || '')}</span>
-            <span class="num">${p.qty ?? ''}</span>
-            <span class="num">${money(p.unitPrice)}</span>
-            <span class="num">${money((Number(p.qty) || 0) * (Number(p.unitPrice) || 0))}</span>
-            <span class="num">${p.poQty ?? 0} / ${p.receivedQty ?? 0}</span>
-          </div>`).join('')}
-      </div>`;
-    }
-  }
-  return html;
-}
-
-function renderProcurementPage() {
-  const root = document.getElementById('procurement-page');
-  if (!root) return;
-  const jobs = _procLinkedJobs();
-
-  if (!_etoAvailable) {
-    root.innerHTML = `<div class="shop-parts-head"><div class="sp-head-top"><h1 class="projects-page-title">Procurement</h1></div></div>
-      <div class="proc-empty">Total ETO is not connected on this server, so the Procurement page has nothing to show. Set the ETO_* values in .env and restart.</div>`;
-    return;
-  }
-  // One control does both: the dropdown lists linked projects for a one-click
-  // switch, and its last entry ("Load a different job…") opens an in-app prompt
-  // to pull ANY ETO job — so there's no separate free-text box + Load button.
-  const options = [...jobs];
-  if (_procState.job && !jobs.some(j => j.job === _procState.job)) {
-    const loaded = _procCache[_procState.job];
-    options.unshift({ job: _procState.job, name: (loaded && loaded.projectName) ? `${loaded.projectName} (not linked)` : '(not linked to a project)' });
-  }
-  const picker = `<select id="proc-job-pick" class="proc-job-pick" title="Pick a linked project, or choose 'Load a different job…' to pull any ETO job">
-    ${options.length ? '' : '<option value="" disabled selected>Select a job…</option>'}
-    ${options.map(j => `<option value="${escapeHtml(j.job)}" ${j.job === _procState.job ? 'selected' : ''}>#${escapeHtml(j.job)} — ${escapeHtml(j.name)}</option>`).join('')}
-    <option value="__other__">🔍 Load a different job…</option>
-  </select>`;
-
-  const data = _procCache[_procState.job];
-  let body, headStat = '';
-  if (!_procState.job) {
-    body = `<div class="proc-empty">Pick a job from the dropdown, or choose <b>🔍 Load a different job…</b> to pull any ETO job. Linking a project via the <b>🔗</b> chip on its banner adds it to the dropdown automatically.</div>`;
-  } else if (_procLoading) {
-    body = `<div class="proc-empty">Loading BOM readiness from Total ETO… first load on a job takes a few seconds.</div>`;
-  } else if (!data) {
-    body = `<div class="proc-empty">Pick a job to load.</div>`;
-  } else if (data.error) {
-    body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
-  } else {
-    const t = data.totals;
-    headStat = `<div class="proc-headstat" title="${t.received} of ${t.parts} unique parts received · ${t.ordered} on order · ${t.noPO} with no PO">
-      <span class="proc-headstat-label">Readiness</span>
-      <span class="proc-bar proc-bar-lg"><span class="proc-bar-fill" style="width:${t.pct}%;background:${_procBarColor(t.pct)}"></span></span>
-      <span class="proc-pct" style="color:${_procBarColor(t.pct)}">${t.pct}%</span>
-      <span class="proc-headstat-sub">${t.parts} parts · <span class="${t.noPO ? 'proc-nopo' : ''}">${t.noPO} no PO</span>${t.cost ? ` · <span title="Total purchased material cost across the job — qty × latest PO unit price per unique part.">${_procUsd(t.cost)} materials</span>` : ''}</span>
-    </div>`;
-    const f = _procState.filter;
-    const q = (_procState.search || '').toLowerCase();
-    const keep = (a) => {
-      const pct = a.stats ? a.stats.pct : 0;
-      if (f === 'ready' && pct < 100) return false;
-      if (f === 'close' && (pct < 60 || pct >= 100)) return false;
-      if (f === 'blocked' && pct >= 60) return false;
-      if (q) {
-        const inMeta = [a.pn, a.desc].some(v => String(v || '').toLowerCase().includes(q));
-        const inParts = (function walk(n) {
-          if (n.parts.some(p => [p.pn, p.desc, p.manufacturer].some(v => String(v || '').toLowerCase().includes(q)))) return true;
-          return n.children.some(walk);
-        })(a);
-        if (!inMeta && !inParts) return false;
-      }
-      return true;
-    };
-    // Vendors + Cost don't need a released BOM (POs/invoices can exist first),
-    // so they render regardless. Assemblies + Parts are BOM-derived, so they
-    // show the "no BOM yet" notice when the product structure isn't released.
-    if (_procState.tab === 'cost') {
-      body = _procCostBody(_procState.job);
-    } else if (_procState.tab === 'vendors') {
-      body = _procVendorBody(_procState.job, { search: _procState.search, vstatus: _procState.vstatus });
-    } else if (data.specs.length === 0) {
-      body = `<div class="proc-empty">Total ETO has no BOM data for job ${escapeHtml(String(data.job))} yet — engineering hasn't released assemblies into the product structure. Check the Vendors and Cost tabs for PO activity, or back here once the BOM exists.</div>`;
-    } else if (_procState.tab === 'parts') {
-      body = _procPartsTable(data);
-    } else {
-      const specHtml = data.specs.map(spec => {
-        const assemblies = spec.assemblies.filter(keep);
-        if (!assemblies.length) return '';
-        const specCost = spec.assemblies.reduce((s, a) => s + ((a.stats && a.stats.cost) || 0), 0);
-        return `<div class="proc-spec">
-          <div class="proc-spec-head"><span>Spec ${escapeHtml(String(spec.specId))} — ${escapeHtml(spec.specName || '')}</span><span class="proc-spec-cost" title="Purchased materials for this spec — sum of its assembly costs.">${_procUsd(specCost)}</span></div>
-          ${assemblies.map(a => _procAssemblyRow(a, 0)).join('')}
-        </div>`;
-      }).join('');
-      const grand = data.specs.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
-      const grandBar = `<div class="proc-grand">
-        <span>Grand total — purchased materials across all assemblies</span>
-        <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
-      </div>`;
-      body = specHtml ? _procAssemblyHeader() + specHtml + grandBar : `<div class="proc-empty">Nothing matches the current filter or search.</div>`;
-    }
-  }
-
-  const seg = (val, key, label) => `<button class="seg-btn${_procState.filter === val ? ' is-active' : ''}" data-pfilter="${val}" type="button">${label}</button>`;
-  const isVendors = _procState.tab === 'vendors';
-  const isParts = _procState.tab === 'parts';
-  const isCost = _procState.tab === 'cost';
-  const isAssemblies = !isVendors && !isParts && !isCost;
-  const vcount = _procVendorCache[_procState.job] && _procVendorCache[_procState.job].vendors ? _procVendorCache[_procState.job].vendors.length : null;
-  const tabStrip = (data && !data.error && !_procLoading && data.specs) ? `
-    <div class="proc-tabs">
-      <button class="proc-tab${isAssemblies ? ' is-active' : ''}" data-ptab="assemblies" type="button">Assemblies <span class="proc-tab-n">${data.specs.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
-      <button class="proc-tab${isParts ? ' is-active' : ''}" data-ptab="parts" type="button">Parts List <span class="proc-tab-n">${(data.partsList || []).length}</span></button>
-      <button class="proc-tab${isVendors ? ' is-active' : ''}" data-ptab="vendors" type="button">Vendors${vcount != null ? ` <span class="proc-tab-n">${vcount}</span>` : ''}</button>
-      <button class="proc-tab${isCost ? ' is-active' : ''}" data-ptab="cost" type="button">Cost</button>
-      <span class="proc-tab-hint">Click any part / PO number to copy</span>
-    </div>` : '';
-  // Filter bar only when the Parts tab actually has a BOM to filter.
-  const partsFilterBar = (isParts && data && data.specs && data.specs.length) ? _procPartsFilterBar(data) : '';
-  root.innerHTML = `
-    <div class="shop-parts-head">
-      <div class="sp-head-top">
-        <h1 class="projects-page-title">Procurement</h1>
-        ${headStat}
-        <button class="btn-secondary sp-add-toggle" id="proc-refresh" type="button" title="Re-pull the BOM and PO status from Total ETO (bypasses the 5-minute cache)">⟳ Refresh</button>
-      </div>
-      <div class="shop-parts-toolbar">
-        ${picker}
-        ${isVendors
-          ? `<select id="proc-vstatus" class="proc-job-pick" title="Filter vendors by status">
-              ${[['all','Status: all'],['pastdue','Past due'],['open','Late / Exp'],['received','Received']].map(([v,t]) => `<option value="${v}" ${_procState.vstatus === v ? 'selected' : ''}>${t}</option>`).join('')}
-            </select>`
-          : isParts || isCost
-            ? '' /* parts filters live below the tabs; cost has no filters */
-            : `<div class="seg-control proc-filter">
-                ${seg('all', 'f', 'All')}${seg('ready', 'f', 'Ready')}${seg('close', 'f', 'Close')}${seg('blocked', 'f', 'Blocked')}
-              </div>`}
-        ${isCost ? '' : `<input type="search" class="vpo-search" id="proc-search" placeholder="${isVendors ? 'Search vendors or PO #…' : isParts ? 'Search parts, PO #, manufacturers…' : 'Search parts, assemblies, manufacturers…'}" value="${escapeHtml(_procState.search || '')}"/>`}
-        ${isAssemblies ? `<button class="btn-ghost btn-tight" id="proc-expand" type="button">Expand all</button>
-        <button class="btn-ghost btn-tight" id="proc-collapse" type="button">Collapse all</button>` : ''}
-      </div>
-      ${tabStrip}
-      ${partsFilterBar}
-      <div class="vpo-legend"><span class="proc-dot proc-dot-received"></span> Received&nbsp;&nbsp;<span class="proc-dot proc-dot-ordered"></span> On order&nbsp;&nbsp;<span class="proc-dot proc-dot-noPO"></span> No PO&nbsp;&nbsp;·&nbsp;&nbsp;Ready = 100% · Close ≥ 60% · Blocked &lt; 60%${data && data.generatedAt ? `&nbsp;&nbsp;·&nbsp;&nbsp;<span class="proc-asof">ETO data as of ${new Date(data.generatedAt).toLocaleTimeString()}</span>` : ''}</div>
-    </div>
-    <div class="proc-body">${body}</div>`;
-
-  // wiring
-  const pick = root.querySelector('#proc-job-pick');
-  if (pick) pick.addEventListener('change', async () => {
-    if (pick.value === '__other__') {
-      pick.value = _procState.job || ''; // restore the visible selection while the dialog is open
-      const v = await showPromptDialog({
-        title: 'Load an ETO job',
-        message: 'Enter any Total ETO job number to load its build readiness. It does not need to be linked to a schedule.',
-        placeholder: 'e.g. 1160',
-        validate: x => (/^\d+$/.test(x) ? null : 'Job number must be digits only'),
-        okLabel: 'Load',
-      });
-      if (!v) return; // cancelled
-      try {
-        const r = await fetch(`/api/eto/project/${encodeURIComponent(v)}`);
-        if (r.status === 404) { showToast(`Job ${v} was not found in Total ETO — check the number.`, { kind: 'error' }); return; }
-        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(`ETO lookup failed: ${e.error || r.status}`, { kind: 'error' }); return; }
-        const info = await r.json();
-        showToast(`Loading job ${v} — ${info.ProjectName}`, { duration: 2000 });
-      } catch (e) { showToast(`ETO lookup failed: ${e.message}`, { kind: 'error' }); return; }
-      _procState.job = v; _procState.open = {}; _procSave();
-      loadProcurement();
-      return;
-    }
-    _procState.job = pick.value; _procState.open = {}; _procSave(); loadProcurement();
-  });
-  root.querySelector('#proc-refresh').addEventListener('click', () => loadProcurement(true));
-  root.querySelectorAll('[data-pfilter]').forEach(b => b.addEventListener('click', () => { _procState.filter = b.dataset.pfilter; _procSave(); renderProcurementPage(); }));
-  const se = root.querySelector('#proc-search');
-  if (se) se.addEventListener('input', () => {
-    _procState.search = se.value; _procSave(); renderProcurementPage();
-    const s2 = root.querySelector('#proc-search');
-    if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); }
-  });
-  root.querySelectorAll('[data-ptab]').forEach(b => b.addEventListener('click', () => { _procState.tab = b.dataset.ptab; _procSave(); renderProcurementPage(); }));
-  const vstatus = root.querySelector('#proc-vstatus');
-  if (vstatus) vstatus.addEventListener('change', () => { _procState.vstatus = vstatus.value; _procSave(); renderProcurementPage(); });
-  _wirePartsFilters(root, renderProcurementPage);
-  root.querySelectorAll('[data-vpo]').forEach(row => row.addEventListener('click', (e) => {
-    if (e.target.closest('[data-copy]')) return; // PO-number click = copy, not open
-    const k = row.dataset.vpo, i = k.indexOf('|');
-    _procOpenPoPanel(_procState.job, k.slice(0, i), k.slice(i + 1));
-  }));
-  const allIds = [];
-  (function collect(nodes) { (nodes || []).forEach(n => { if (n.isAssembly) { allIds.push(n.id); collect(n.children); } }); })(data && data.specs ? data.specs.flatMap(s => s.assemblies) : []);
-  const expandBtn = root.querySelector('#proc-expand');
-  if (expandBtn) expandBtn.addEventListener('click', () => { allIds.forEach(id => _procState.open[id] = true); renderProcurementPage(); });
-  const collapseBtn = root.querySelector('#proc-collapse');
-  if (collapseBtn) collapseBtn.addEventListener('click', () => { _procState.open = {}; renderProcurementPage(); });
-  root.querySelectorAll('.proc-arow').forEach(row => row.addEventListener('click', (e) => {
-    if (e.target.closest('[data-copy]')) return; // PN click = copy, not toggle
-    const id = row.dataset.aid;
-    _procState.open[id] = !_procState.open[id];
-    renderProcurementPage();
-  }));
-  root.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => {
-    const pn = b.dataset.copy;
-    if (!pn) return;
-    try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {}
-  }));
-}
-
 async function loadVendorPOs() {
   try { state.vendorPOs = await api.vendorPOs.list(); } catch (_) { state.vendorPOs = []; }
   renderVendorPOsPage();
-}
-
-// Live ETO part lines for one PO — lazy-loaded when a synced row is expanded.
-const _vpoLinesCache = {}; // "job|po" → lines[]
-async function _vpoLoadLines(box) {
-  const job = box.dataset.linesJob, po = box.dataset.linesPo;
-  const key = `${job}|${po}`;
-  if (!_vpoLinesCache[key]) {
-    box.innerHTML = '<div class="vpo-lines-note">Loading parts from Total ETO…</div>';
-    try { _vpoLinesCache[key] = await api.eto.poLines(job, po); }
-    catch (e) { box.innerHTML = `<div class="vpo-lines-note">⚠ Could not load part lines: ${escapeHtml(e.message)}</div>`; delete _vpoLinesCache[key]; return; }
-  }
-  const lines = _vpoLinesCache[key];
-  if (!lines.length) { box.innerHTML = '<div class="vpo-lines-note">No part lines on this PO in ETO.</div>'; return; }
-  const fmt = d => d ? fmtDate(d) : '—';
-  box.innerHTML = `
-    <div class="vpo-lines-title">Parts on this PO <span class="vpo-lines-src">live from Total ETO</span></div>
-    <div class="vpo-lines-head"><span></span><span>Part No</span><span>Description</span><span class="num">Qty</span><span class="num">Rcvd</span><span>Due</span><span class="num">Price</span></div>
-    ${lines.map(l => {
-      const due = l.dateRevised || l.dateRequired;
-      const revised = !!(l.dateRevised && l.dateRequired && l.dateRevised !== l.dateRequired);
-      return `<div class="vpo-line vpo-line-${l.status}">
-        <span class="proc-dot proc-dot-${l.status === 'received' ? 'received' : 'ordered'}" title="${l.status === 'received' ? 'Received' : 'Open'}"></span>
-        <span class="vpo-line-pn">${escapeHtml(l.partNumber || '—')}</span>
-        <span class="vpo-line-desc" title="${escapeHtml(l.desc || '')}">${escapeHtml(l.desc || '')}</span>
-        <span class="num">${l.qty ?? ''}</span>
-        <span class="num">${l.received ?? 0}</span>
-        <span class="${revised ? 'vpo-line-revised' : ''}" title="${revised ? `Buyer revised this date — originally ${fmt(l.dateRequired)}` : ''}">${fmt(due)}${revised ? ' ↻' : ''}</span>
-        <span class="num">${l.price != null ? '$' + Number(l.price).toFixed(2) : '—'}</span>
-      </div>`;
-    }).join('')}`;
 }
 function _vpoRows(all, st) {
   let rows = all.slice();
@@ -9192,7 +8117,6 @@ function _vpoRows(all, st) {
   if (st.fVendor && st.fVendor !== 'all') rows = rows.filter(r => (r.vendor || '') === st.fVendor);
   if (st.fPm && st.fPm !== 'all') rows = rows.filter(r => (r.pm || '') === st.fPm);
   if (st.fStatus && st.fStatus !== 'all') rows = rows.filter(r => _vpoStatusOf(r) === st.fStatus);
-  if (st.fJob && st.fJob !== 'all') rows = rows.filter(r => String(r.job || '') === st.fJob);
   const q = (st.search || '').trim().toLowerCase();
   if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments].some(v => String(v || '').toLowerCase().includes(q)));
   const eta = r => { const m = _vpoEtaMs(r); return m == null ? Infinity : m; };
@@ -9214,7 +8138,6 @@ function renderVendorPOsPage() {
   const openCount = all.filter(r => !r.complete).length;
   const vendors = [...new Set(all.map(r => r.vendor).filter(Boolean))].sort();
   const pms = [...new Set(all.map(r => r.pm).filter(Boolean))].sort();
-  const jobsList = [...new Set(all.map(r => r.job).filter(Boolean))].sort((a, b) => Number(b) - Number(a) || String(a).localeCompare(String(b)));
   const teamNames = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
   const pmList = `<datalist id="vpo-pm-list">${[...new Set([...teamNames, ...pms])].map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
   const vendorList = `<datalist id="vpo-vendor-list">${vendors.map(v => `<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>`;
@@ -9237,27 +8160,19 @@ function renderVendorPOsPage() {
     const s = VPO_STATUS[sName];
     const e = _vpoEtaMs(r);
     const etaStr = e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '';
-    // Buyer revised the date in ETO → show the slip right on the row.
-    const slipped = r.eto_synced && r.eta && r.eta_original && r.eta !== r.eta_original;
-    const slipTip = slipped
-      ? (r.eta > r.eta_original
-          ? `Slipped from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`
-          : `Moved up from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`)
-      : '';
-    const slipMark = slipped ? ` <span class="vpo-slip" title="${escapeHtml(slipTip)}">↻</span>` : '';
     return `<div class="sp-prow vpo-row vpo-st-${sName}" data-id="${r.id}">
       <div class="sp-prow-line">
         <span class="vpo-dot" style="background:${s.color}" title="${s.label}"></span>
-        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}${r.eto_synced ? ' <span class="vpo-eto-pill" title="Auto-synced from Total ETO — vendor, dates, price and done status refresh from the ERP every 30 minutes. PM, comments and tracking stay yours.">ETO</span>' : ''}</span>
+        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}</span>
         <span class="vpo-job">${escapeHtml(r.job || '')}</span>
         ${isList ? `<span class="vpo-vendor">${escapeHtml(r.vendor || '')}</span>` : ''}
-        <span class="vpo-eta">${etaStr}${slipMark}</span>
+        <span class="vpo-eta">${etaStr}</span>
         ${isList ? `<span class="vpo-ship">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : ''}</span>` : ''}
         ${isList ? `<span class="vpo-track" title="${escapeHtml(r.tracking || '')}">${escapeHtml(r.tracking || '')}</span>` : ''}
         <label class="sp-done" title="Partial shipment"><input type="checkbox" data-id="${r.id}" data-field="partial" ${r.partial ? 'checked' : ''}/></label>
         <label class="sp-done" title="Complete"><input type="checkbox" data-id="${r.id}" data-field="complete" ${r.complete ? 'checked' : ''}/></label>
       </div>
-      <div class="sp-card-details" data-details="${r.id}" hidden>${r.eto_synced && r.job && r.po ? `<div class="vpo-lines" data-lines-job="${escapeHtml(r.job)}" data-lines-po="${escapeHtml(r.po)}"></div>` : ''}<div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
+      <div class="sp-card-details" data-details="${r.id}" hidden><div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
     </div>`;
   };
 
@@ -9276,8 +8191,7 @@ function renderVendorPOsPage() {
   }
 
   const sel = (val, opts, attr) => `<select ${attr}>${opts.map(o => `<option value="${escapeHtml(o.v)}"${val === o.v ? ' selected' : ''}>${escapeHtml(o.t)}</option>`).join('')}</select>`;
-  const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('')
-    + (_etoAvailable ? '<span class="vpo-leg" title="The buyer entered a revised date in Total ETO — the ETA shown is the new promise; hover the ↻ on a row to see the original."><span class="vpo-slip">↻</span> date revised in ETO</span>' : '');
+  const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('');
 
   // ── Dashboards ──
   const nowMs = Date.now();
@@ -9360,7 +8274,6 @@ function renderVendorPOsPage() {
       <div class="sp-head-top">
         <h1 class="projects-page-title">Vendor PO Track</h1>
         ${headStat}
-        ${_etoAvailable ? `<button class="btn-secondary sp-add-toggle" data-action="vpo-eto-sync" data-scope="all" type="button" title="Pull the latest PO status from Total ETO — every open PO across the whole ERP, plus a refresh of everything already here. Runs automatically every 30 min; this is the on-demand version.">⟳ Sync from ETO</button>` : ''}
         <button class="btn-primary sp-add-toggle" data-action="vpo-toggle-add" type="button">${_vpoAddOpen ? '✕ Close' : '＋ Add PO'}</button>
       </div>
       <form class="sp-add-bar${_vpoAddOpen ? '' : ' is-hidden'}" data-action="vpo-add-form">
@@ -9386,7 +8299,6 @@ function renderVendorPOsPage() {
         ${sel(st.fStatus, [{ v: 'all', t: 'Status: all' }, { v: 'late', t: 'Late' }, { v: 'shipped', t: 'Shipped' }, { v: 'soon', t: 'Due ≤1 wk' }, { v: 'partial', t: 'Partial' }, { v: 'complete', t: 'Complete' }], 'class="vpo-fsel" data-fk="fStatus"')}
         ${sel(st.fVendor, [{ v: 'all', t: 'Vendor: all' }, ...vendors.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fVendor"')}
         ${sel(st.fPm, [{ v: 'all', t: 'PM: all' }, ...pms.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fPm"')}
-        ${sel(st.fJob, [{ v: 'all', t: 'Job: all' }, ...jobsList.map(v => ({ v, t: `#${v}` }))], 'class="vpo-fsel" data-fk="fJob"')}
         <input type="search" class="vpo-search" placeholder="Search PO / job / vendor / tracking…" value="${escapeHtml(st.search || '')}"/>
       </div>
       <div class="vpo-legend">${legend}</div>
@@ -9396,24 +8308,6 @@ function renderVendorPOsPage() {
     ${pmList}${vendorList}`;
 
   root.querySelector('[data-action="vpo-toggle-add"]').addEventListener('click', () => { _vpoAddOpen = !_vpoAddOpen; renderVendorPOsPage(); if (_vpoAddOpen) { const p = root.querySelector('input[name="po"]'); if (p) p.focus(); } });
-  _etoCheckOnce(); // reveal the ETO sync buttons if the server has ETO configured
-  root.querySelectorAll('[data-action="vpo-eto-sync"]').forEach(etoBtn => etoBtn.addEventListener('click', async () => {
-    const scope = etoBtn.dataset.scope || 'linked';
-    const label = etoBtn.textContent;
-    etoBtn.disabled = true; etoBtn.textContent = '⟳ Syncing…';
-    try {
-      const r = await api.eto.syncVendorPOs(scope);
-      if (r && r.ok) {
-        showToast(`ETO sync done — ${r.pos} PO${r.pos === 1 ? '' : 's'} across ${r.jobs} job${r.jobs === 1 ? '' : 's'} (${r.created} new, ${r.updated} updated)`, { kind: 'success' });
-        await loadVendorPOs();
-        return; // loadVendorPOs re-rendered the page; this button is gone
-      }
-      showToast(`ETO sync failed: ${(r && r.error) || 'unknown error'}`, { kind: 'error' });
-    } catch (e) {
-      showToast(`ETO sync failed: ${e.message}`, { kind: 'error' });
-    }
-    etoBtn.disabled = false; etoBtn.textContent = label;
-  }));
   root.querySelector('[data-action="vpo-add-form"]').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target;
     const data = { po: f.po.value.trim() || null, job: f.job.value.trim() || null, vendor: f.vendor.value.trim() || null, po_date: f.po_date.value || null, lead_time: f.lead_time.value === '' ? null : Number(f.lead_time.value), pm: f.pm.value.trim() || null, comments: f.comments.value.trim() || null, complete: 0, partial: 0 };
@@ -9427,16 +8321,7 @@ function renderVendorPOsPage() {
   if (vdr) vdr.addEventListener('change', () => { st.dashRange = Number(vdr.value); _vpoSave(); renderVendorPOsPage(); });
   const se = root.querySelector('.vpo-search');
   se.addEventListener('input', () => { st.search = se.value; _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
-  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
-    const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
-    if (!d) return;
-    d.hidden = !d.hidden;
-    // Synced rows: pull the PO's actual part lines from ETO on first open.
-    if (!d.hidden) {
-      const box = d.querySelector('.vpo-lines');
-      if (box && !box.dataset.loaded) { box.dataset.loaded = '1'; _vpoLoadLines(box); }
-    }
-  }));
+  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => { const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`); if (d) d.hidden = !d.hidden; }));
   if (!root.dataset.changeBound) {
     root.dataset.changeBound = '1';
     root.addEventListener('change', async (e) => {
@@ -10333,8 +9218,7 @@ function renderProjectTabs() {
       wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
-      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>${_etoBannerChipHtml(p)}`;
-      _wireEtoBannerChip(banner, p);
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
     }
   }
 
@@ -12247,7 +11131,6 @@ function render() {
   // Trigger that should resolve fails and the button stays stuck red.
   try { refreshFinancialsButtonState(); } catch (_) {}
   try { renderProjectNotes(); } catch (_) {}
-  try { renderScheduleProcurement(); } catch (_) {}
 }
 
 // ── Project Notes ─────────────────────────────────────────────────────────────
@@ -12612,12 +11495,9 @@ function _notesSplitLockHeight() {
 function layoutNotesPanel() {
   const view  = document.getElementById('view-schedule');
   const split = document.getElementById('schedule-split');
-  if (!view || !split) return;
-  // Lock the split (so the whole view becomes one scrolling page) when EITHER
-  // bottom drawer is open — Notes or Procurement. They share this machinery so
-  // opening one while the other is open keeps the lock instead of fighting it.
-  const isOpen = (id) => { const e = document.getElementById(id); return e && e.style.display !== 'none' && !e.classList.contains('is-collapsed'); };
-  const open = isOpen('schedule-notes') || isOpen('schedule-procurement');
+  const el    = document.getElementById('schedule-notes');
+  if (!view || !split || !el) return;
+  const open = el.style.display !== 'none' && !el.classList.contains('is-collapsed');
   if (open) {
     // Lock only on the open transition; later renders keep the existing lock so
     // we don't reset the user's scroll position mid-interaction.
@@ -12637,148 +11517,6 @@ window.addEventListener('resize', () => {
   const split = document.getElementById('schedule-split');
   if (split) split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
 });
-
-// ── Per-project Procurement drawer ──────────────────────────────────────────
-// Opens DOWN like the Notes drawer, scoped to the active project's ETO job:
-// readiness headline + assemblies-by-spec (reusing the Procurement page's row
-// renderer). Only shows on a real project's schedule when ETO is configured and
-// the project is linked to a job. Deep parts/job-picker live on the full page.
-function renderScheduleProcurement() {
-  const el = document.getElementById('schedule-procurement');
-  if (!el) return;
-  const project = state.filters && state.filters.project;
-  const idx = project && state.projectsIndex && state.projectsIndex[project];
-  const job = idx && idx.job_number;
-  if (!project || state.view !== 'schedule' || !_etoAvailable || !job) {
-    el.style.display = 'none';
-    el.classList.add('is-collapsed'); // never leave a hidden drawer "open" (would lock the split)
-    layoutNotesPanel();
-    return;
-  }
-  el.style.display = '';
-  const collapsed = el.classList.contains('is-collapsed');
-  const data = _procCache[job];
-  // Bar stat: show readiness only if it's already cached — don't fire the heavy
-  // BOM query just to label a collapsed bar; the job number is free meanwhile.
-  let stat = `ETO #${escapeHtml(String(job))}`;
-  if (data && data.totals) stat = `${data.totals.pct}% ready · <span class="${data.totals.noPO ? 'proc-nopo' : ''}">${data.totals.noPO} no PO</span>`;
-  const bar = `<div class="notes-bar proc-drawer-bar" data-action="toggle-proc-drawer">
-    <span class="notes-bar-title">📦 Procurement</span>
-    <span class="notes-count">${stat}</span>
-    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
-  </div>`;
-  if (collapsed) { el.innerHTML = bar; _wireProcDrawer(el, job, project); layoutNotesPanel(); return; }
-
-  if (!data) {
-    el.innerHTML = bar + `<div class="proc-drawer-body"><div class="proc-empty">Loading build readiness from Total ETO…</div></div>`;
-    _wireProcDrawer(el, job, project);
-    layoutNotesPanel();
-    fetch(`/api/eto/readiness/${encodeURIComponent(job)}`)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`request failed (${r.status})`)))
-      .then(d => { _procCache[job] = d; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); })
-      .catch(e => { _procCache[job] = { error: e.message }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
-    return;
-  }
-
-  let body;
-  if (data.error) body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
-  else {
-    const t = data.totals || { pct: 0, parts: 0, noPO: 0, cost: 0 };
-    const specsArr = data.specs || [];
-    const head = `<div class="proc-drawer-head">
-      <span class="proc-headstat-label">Readiness</span>
-      <span class="proc-bar proc-bar-lg"><span class="proc-bar-fill" style="width:${t.pct}%;background:${_procBarColor(t.pct)}"></span></span>
-      <span class="proc-pct" style="color:${_procBarColor(t.pct)}">${t.pct}%</span>
-      <span class="proc-headstat-sub">${t.parts} parts · <span class="${t.noPO ? 'proc-nopo' : ''}">${t.noPO} no PO</span>${t.cost ? ` · ${_procUsd(t.cost)} materials` : ''}</span>
-      <button class="proc-drawer-full" data-action="proc-open-full" type="button" title="Open the full Procurement page (parts list, all jobs)">Full view →</button>
-    </div>`;
-    // Drawer mirrors the full page's Assemblies | Parts List | Vendors | Cost tabs.
-    const dtab = ['vendors', 'parts', 'cost'].includes(_procState.drawerTab) ? _procState.drawerTab : 'assemblies';
-    const vcount = _procVendorCache[job] && _procVendorCache[job].vendors ? _procVendorCache[job].vendors.length : null;
-    const tabs = `<div class="proc-tabs proc-drawer-tabs">
-      <button class="proc-tab${dtab === 'assemblies' ? ' is-active' : ''}" data-dtab="assemblies" type="button">Assemblies <span class="proc-tab-n">${specsArr.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
-      <button class="proc-tab${dtab === 'parts' ? ' is-active' : ''}" data-dtab="parts" type="button">Parts List <span class="proc-tab-n">${(data.partsList || []).length}</span></button>
-      <button class="proc-tab${dtab === 'vendors' ? ' is-active' : ''}" data-dtab="vendors" type="button">Vendors${vcount != null ? ` <span class="proc-tab-n">${vcount}</span>` : ''}</button>
-      <button class="proc-tab${dtab === 'cost' ? ' is-active' : ''}" data-dtab="cost" type="button">Cost</button>
-      ${dtab === 'assemblies' && specsArr.length ? `<span class="proc-drawer-tab-actions">
-        <button class="btn-ghost btn-tight" data-dexpand="1" type="button">Expand all</button>
-        <button class="btn-ghost btn-tight" data-dcollapse="1" type="button">Collapse all</button>
-      </span>` : ''}
-    </div>`;
-    // Vendors + Cost render even with no BOM (POs/invoices can land first).
-    let inner;
-    if (dtab === 'cost') {
-      inner = _procCostBody(job);
-    } else if (dtab === 'vendors') {
-      inner = _procVendorBody(job); // no filters in the drawer — show all
-    } else if (!specsArr.length) {
-      inner = `<div class="proc-empty">Total ETO has no BOM for job ${escapeHtml(String(job))} yet — check the Vendors and Cost tabs for PO activity.</div>`;
-    } else if (dtab === 'parts') {
-      inner = _procPartsFilterBar(data) + _procPartsTable(data); // same filters as the full page
-    } else {
-      const specs = specsArr.map(spec => {
-        const specCost = spec.assemblies.reduce((s, a) => s + ((a.stats && a.stats.cost) || 0), 0);
-        return `<div class="proc-spec">
-          <div class="proc-spec-head"><span>Spec ${escapeHtml(String(spec.specId))} — ${escapeHtml(spec.specName || '')}</span><span class="proc-spec-cost">${_procUsd(specCost)}</span></div>
-          ${spec.assemblies.map(a => _procAssemblyRow(a, 0)).join('')}
-        </div>`;
-      }).join('');
-      const grand = specsArr.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
-      inner = _procAssemblyHeader() + specs + `<div class="proc-grand">
-        <span>Grand total — purchased materials across all assemblies</span>
-        <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
-      </div>`;
-    }
-    body = head + tabs + inner;
-  }
-  el.innerHTML = bar + `<div class="proc-drawer-body">${body}</div>`;
-  _wireProcDrawer(el, job, project);
-  layoutNotesPanel();
-}
-
-function _wireProcDrawer(el, job, project) {
-  // onclick (not addEventListener) so re-renders never stack duplicate handlers.
-  el.onclick = (e) => {
-    const t = e.target;
-    if (t.closest('[data-action="toggle-proc-drawer"]')) {
-      const willOpen = el.classList.contains('is-collapsed');
-      el.classList.toggle('is-collapsed');
-      renderScheduleProcurement();
-      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
-      return;
-    }
-    if (t.closest('[data-action="proc-open-full"]')) {
-      _procState.job = job; _procState.open = _procState.open || {}; _procSave();
-      setView('procurement');
-      return;
-    }
-    const dtab = t.closest('[data-dtab]');
-    if (dtab) { _procState.drawerTab = dtab.dataset.dtab; _procSave(); renderScheduleProcurement(); return; }
-    if (t.closest('[data-dexpand]') || t.closest('[data-dcollapse]')) {
-      const expand = !!t.closest('[data-dexpand]');
-      _procState.open = _procState.open || {};
-      if (expand) {
-        const data = _procCache[job];
-        const ids = [];
-        (function collect(nodes) { (nodes || []).forEach(n => { if (n.isAssembly) { ids.push(n.id); collect(n.children); } }); })(data && data.specs ? data.specs.flatMap(s => s.assemblies) : []);
-        ids.forEach(id => { _procState.open[id] = true; });
-      } else {
-        _procState.open = {};
-      }
-      renderScheduleProcurement();
-      return;
-    }
-    const copyBtn = t.closest('[data-copy]');
-    if (copyBtn) { const pn = copyBtn.dataset.copy; if (pn) { try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {} } return; }
-    const vpo = t.closest('[data-vpo]');
-    if (vpo) { const k = vpo.dataset.vpo, i = k.indexOf('|'); _procOpenPoPanel(job, k.slice(0, i), k.slice(i + 1)); return; }
-    const arow = t.closest('.proc-arow');
-    if (arow) { _procState.open = _procState.open || {}; const id = arow.dataset.aid; _procState.open[id] = !_procState.open[id]; renderScheduleProcurement(); return; }
-  };
-  // Parts filters fire `change`/`click` on fresh elements each render — bind them
-  // separately from the onclick delegation above.
-  _wirePartsFilters(el, renderScheduleProcurement);
-}
 function _wireNotes(el, project) {
   const data = state.projectNotes[project];
   const findSession = id => data.sessions.find(s => s.id === id);
@@ -14705,7 +13443,6 @@ async function openQuoteCompareModal(project, providedQuote) {
           <tbody>${rowsHtml}</tbody>
           <tfoot>${buildFooterHtml()}</tfoot>
         </table>
-        <div id="quote-eto-actuals" class="quote-eto-actuals" hidden></div>
       </div>
       <div class="modal-foot">
         <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
@@ -14725,9 +13462,6 @@ async function openQuoteCompareModal(project, providedQuote) {
   overlay.querySelector('[data-action="financials"]').onclick = () => {
     openFinancialsModal(project);
   };
-  // ETO actuals strip — fills in async below the hours table when this
-  // project is linked to a Total ETO job. No link / no ETO → stays hidden.
-  _loadQuoteEtoActuals(project, overlay);
   // Helper — POST the freshly-merged quote and refresh caches/popup.
   // Used by sold delivery, penalty toggle, and penalty weeks inputs.
   const _saveQuoteMerge = async (patch) => {
@@ -18987,192 +17721,8 @@ function ensureSetupDraft() {
   }
 }
 
-// System Status panel (Setup) — fetches /api/status and renders a glanceable
-// health card. Read-only; the only action is a manual "Back up now" (admin).
-function _fmtAgo(iso) {
-  if (!iso) return 'never';
-  const ms = Date.now() - Date.parse(iso);
-  if (isNaN(ms)) return iso;
-  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
-  if (d > 0) return `${d}d ago`;
-  if (h > 0) return `${h}h ago`;
-  if (m > 0) return `${m}m ago`;
-  return 'just now';
-}
-function _fmtUptime(sec) {
-  if (sec == null) return '—';
-  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-  return [d ? `${d}d` : '', h ? `${h}h` : '', `${m}m`].filter(Boolean).join(' ');
-}
-async function renderSystemStatus() {
-  const box = document.getElementById('system-status-body');
-  if (!box) return;
-  let s;
-  try { s = await fetch('/api/status').then(r => r.json()); }
-  catch (e) { box.innerHTML = `<div class="sys-stat-row sys-bad">⚠ Could not reach the server: ${escapeHtml(e.message)}</div>`; return; }
-
-  const dot = ok => `<span class="sys-dot ${ok ? 'sys-dot-ok' : 'sys-dot-bad'}"></span>`;
-  const bk = s.lastBackup;
-  const backupLine = !bk ? `${dot(false)} No backup yet this session — runs nightly at 2 AM, or back up now`
-    : bk.ok ? `${dot(true)} Last backup ${_fmtAgo(bk.at)} · ${bk.file} (${Math.round((bk.sizeBytes || 0) / 1024).toLocaleString()} KB)`
-            : `${dot(false)} Last backup FAILED ${_fmtAgo(bk.at)} — ${escapeHtml(bk.error || '')}`;
-  const sync = s.lastEtoSync;
-  const syncLine = sync
-    ? `${dot(true)} ETO sync ${_fmtAgo(sync.at)} · ${sync.pos} POs (${sync.created} new, ${sync.updated} updated)`
-    : `${dot(true)} No ETO sync yet this session — runs every 30 min`;
-
-  box.innerHTML = `
-    <div class="sys-status-grid">
-      <div class="sys-stat-row">${dot(s.ok)} <b>Server</b> — up ${_fmtUptime(s.uptimeSeconds)} · v${escapeHtml(String(s.version))} · Node ${escapeHtml(String(s.node))}</div>
-      <div class="sys-stat-row">${dot(s.db && s.db.ok)} <b>Database</b> — ${s.db && s.db.ok ? `reachable (${s.db.latencyMs}ms)` : `UNREACHABLE: ${escapeHtml((s.db && s.db.error) || '')}`}</div>
-      <div class="sys-stat-row"><b>Backups</b> — ${backupLine}</div>
-      <div class="sys-stat-row"><b>Total ETO</b> — ${syncLine}</div>
-      <div class="sys-stat-foot">
-        <span class="sys-stat-hint">Backups kept ${s.backup ? s.backup.keepDays : 14} days in <code>${escapeHtml(s.backup ? s.backup.dir : 'backups')}</code></span>
-        <span style="flex:1"></span>
-        <button class="btn-secondary btn-tight" id="sys-backup-now" type="button">Back up now</button>
-        <button class="btn-ghost btn-tight" id="sys-status-refresh" type="button">↻ Refresh</button>
-      </div>
-    </div>`;
-  const refresh = box.querySelector('#sys-status-refresh');
-  if (refresh) refresh.addEventListener('click', renderSystemStatus);
-  const backupBtn = box.querySelector('#sys-backup-now');
-  if (backupBtn) backupBtn.addEventListener('click', async () => {
-    backupBtn.disabled = true; backupBtn.textContent = 'Backing up…';
-    try {
-      const r = await fetch('/api/backup', { method: 'POST' }).then(x => x.json());
-      if (r.ok) showToast(`Backup created — ${r.file} (${Math.round((r.sizeBytes || 0) / 1024).toLocaleString()} KB)`, { kind: 'success' });
-      else showToast(`Backup failed: ${r.error || 'unknown error'}`, { kind: 'error' });
-    } catch (e) { showToast(`Backup failed: ${e.message}`, { kind: 'error' }); }
-    renderSystemStatus();
-  });
-}
-
-// Users admin panel (Setup) — admin-only account management so a locked-out
-// teammate can be fixed in-app (reset password / re-enable) instead of via the
-// server CLI. Self-guards: a non-admin gets 403 → the whole card stays hidden.
-async function renderUsersAdmin() {
-  const card = document.getElementById('setup-users-card');
-  const box  = document.getElementById('users-admin-body');
-  if (!card || !box) return;
-  // Client-side guard: when auth is on, only admins ever see this card (the
-  // server also enforces it — this just avoids a needless fetch + any flash).
-  if (window.sdcAuth && window.sdcAuth.authEnabled && window.sdcAuth.user && window.sdcAuth.user.role !== 'admin') {
-    card.hidden = true; return;
-  }
-  let users;
-  try {
-    const r = await fetch('/api/users');
-    if (r.status === 403 || r.status === 401) { card.hidden = true; return; } // not an admin
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    users = await r.json();
-  } catch (e) { card.hidden = false; box.innerHTML = `<div class="sys-stat-row sys-bad">⚠ Could not load users: ${escapeHtml(e.message)}</div>`; return; }
-  card.hidden = false;
-
-  const roleOpts = (cur) => ['viewer', 'editor', 'admin'].map(r => `<option value="${r}" ${r === cur ? 'selected' : ''}>${r}</option>`).join('');
-  const rows = users.map(u => `
-    <tr class="ua-row${u.active ? '' : ' ua-disabled'}" data-uid="${u.id}">
-      <td class="ua-name">${escapeHtml(u.name || '')}</td>
-      <td class="ua-email">${escapeHtml(u.email || '')}</td>
-      <td><select class="ua-role" data-uid="${u.id}" title="Change role">${roleOpts(u.role)}</select></td>
-      <td class="ua-status">${u.active ? '<span class="ua-on">Active</span>' : '<span class="ua-off">Disabled</span>'}</td>
-      <td class="ua-actions">
-        <button class="btn-ghost btn-tight" data-ua-reset="${u.id}" type="button" title="Set a temporary password and re-enable this account">Reset password</button>
-        <button class="btn-ghost btn-tight" data-ua-toggle="${u.id}" data-active="${u.active ? 1 : 0}" type="button" title="${u.active ? 'Temporarily lock this account (keeps the record)' : 'Re-enable this account'}">${u.active ? 'Disable' : 'Enable'}</button>
-        <button class="btn-ghost btn-tight ua-del" data-ua-delete="${u.id}" type="button" title="Permanently remove this account">Delete</button>
-      </td>
-    </tr>`).join('');
-
-  box.innerHTML = `
-    <table class="users-admin-table">
-      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="ua-add">
-      <button class="btn-secondary btn-tight" id="ua-add-btn" type="button">+ Add user</button>
-      <button class="btn-ghost btn-tight" id="ua-refresh" type="button">↻ Refresh</button>
-    </div>`;
-
-  box.querySelector('#ua-refresh')?.addEventListener('click', renderUsersAdmin);
-
-  // Role change
-  box.querySelectorAll('.ua-role').forEach(sel => sel.addEventListener('change', async () => {
-    const id = sel.dataset.uid;
-    try {
-      const r = await fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: sel.value }) });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
-      showToast(`Role updated to ${sel.value}`, { kind: 'success' });
-    } catch (e) { showToast(`Could not change role: ${e.message}`, { kind: 'error' }); renderUsersAdmin(); }
-  }));
-
-  // Enable / disable
-  box.querySelectorAll('[data-ua-toggle]').forEach(btn => btn.addEventListener('click', async () => {
-    const id = btn.dataset.uaToggle;
-    const makeActive = btn.dataset.active === '0';
-    try {
-      const r = await fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: makeActive ? 1 : 0 }) });
-      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
-      showToast(makeActive ? 'Account enabled' : 'Account disabled', { kind: 'success' });
-      renderUsersAdmin();
-    } catch (e) { showToast(`Could not update: ${e.message}`, { kind: 'error' }); }
-  }));
-
-  // Reset password → generate temp, re-enable, show it for the admin to relay
-  box.querySelectorAll('[data-ua-reset]').forEach(btn => btn.addEventListener('click', async () => {
-    const id = btn.dataset.uaReset;
-    const row = box.querySelector(`.ua-row[data-uid="${id}"]`);
-    const who = row ? row.querySelector('.ua-name').textContent : 'this user';
-    const ok = await showConfirmDialog?.({ title: 'Reset password', message: `Generate a temporary password for ${who} and re-enable the account? They'll use it to sign in, then can change it.` });
-    if (showConfirmDialog && !ok) return;
-    try {
-      const r = await fetch(`/api/users/${id}/reset-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-      await showAlertDialog?.({ title: 'Temporary password', message: `Give ${body.name || who} this one-time password — they should change it after signing in:\n\n${body.tempPassword}` });
-      renderUsersAdmin();
-    } catch (e) { showToast(`Reset failed: ${e.message}`, { kind: 'error' }); }
-  }));
-
-  // Delete (permanent) — guarded server-side against self / last-admin.
-  box.querySelectorAll('[data-ua-delete]').forEach(btn => btn.addEventListener('click', async () => {
-    const id = btn.dataset.uaDelete;
-    const row = box.querySelector(`.ua-row[data-uid="${id}"]`);
-    const who = row ? `${row.querySelector('.ua-name').textContent} (${row.querySelector('.ua-email').textContent})` : 'this user';
-    const ok = await showConfirmDialog?.({ title: 'Delete user', message: `Permanently delete ${who}? This removes the sign-in account for good. To only lock them out temporarily, use Disable instead.`, okLabel: 'Delete', danger: true });
-    if (showConfirmDialog && !ok) return;
-    try {
-      const r = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-      showToast('User deleted', { kind: 'success' });
-      renderUsersAdmin();
-    } catch (e) { showToast(`Could not delete: ${e.message}`, { kind: 'error' }); }
-  }));
-
-  // Add user
-  box.querySelector('#ua-add-btn')?.addEventListener('click', () => _uaAddUserFlow());
-}
-
-async function _uaAddUserFlow() {
-  const email = await showPromptDialog?.({ title: 'Add user', message: 'Email address', placeholder: 'name@sdcautomation.com', validate: v => /\S+@\S+\.\S+/.test(v) ? null : 'Enter a valid email' });
-  if (!email) return;
-  const name = await showPromptDialog?.({ title: 'Add user', message: `Display name for ${email}`, placeholder: 'Full name' });
-  if (!name) return;
-  const password = await showPromptDialog?.({ title: 'Add user', message: 'Temporary password', validate: v => (v && v.length >= 1) ? null : 'Password is required' });
-  if (!password) return;
-  try {
-    const r = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, name, password, role: 'editor' }) });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-    showToast(`Added ${body.email} (editor)`, { kind: 'success' });
-    renderUsersAdmin();
-  } catch (e) { showToast(`Could not add user: ${e.message}`, { kind: 'error' }); }
-}
-
 function renderSetup() {
   ensureSetupDraft();
-  try { renderSystemStatus(); } catch (_) {}
-  try { renderUsersAdmin(); } catch (_) {}
   const d = state.setupDraft;
 
   // (Row-height now lives in the schedule toolbar — used to be a slider here.)
@@ -20122,9 +18672,6 @@ function setView(view) {
   // Departments instead so they don't get a blank page.
   if (view === 'dashboard') view = 'team';
   state.view = view;
-  // Survive reloads: F5 / Ctrl+Shift+R reopens the view you were on instead
-  // of always dumping you back on the schedule.
-  try { localStorage.setItem('sdcActiveView', view); } catch (_) {}
   document.body.dataset.view = view;
   // Update the legacy .tab buttons (if any still exist) and the sidebar
   // icons — both share the data-view attribute, so a single CSS active
@@ -20145,7 +18692,6 @@ function setView(view) {
   }
   else if (view === 'shop-parts') loadShopParts();
   else if (view === 'vendor-pos') loadVendorPOs();
-  else if (view === 'procurement') loadProcurement();
   else if (view === 'projects')  renderProjectsPage();
   else if (view === 'favorites') renderFavoritesPage();
   else if (view === 'recents')   renderRecentsPage();
@@ -21336,11 +19882,8 @@ async function init() {
     if (resp.ok) {
       const projects = await resp.json();
       state.projectWorkspaces = state.projectWorkspaces || {};
-      state.projectsIndex = {};
       for (const p of projects) {
         if (!p || !p.name) continue;
-        // ETO integration + project-link chip need the row id and job number.
-        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '' };
         // Server stores the legacy literal 'default' for projects that
         // never had an explicit workspace set; map that to our canonical
         // DEFAULT_WORKSPACE ('Active'). Anything else must be in the
@@ -21353,7 +19896,6 @@ async function init() {
       try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
     }
   } catch (_) {}
-  _etoCheckOnce(); // resolve ETO availability early so chips/buttons render on first paint
 
   document.getElementById('btn-save-setup').addEventListener('click', saveSetup);
   document.getElementById('btn-reset-setup').addEventListener('click', discardSetup);
@@ -21692,14 +20234,11 @@ async function init() {
   setupRevisionPill();
 
   // Project tab bar
-  // + New tab — opens the project picker (pick an existing schedule, or build
-  // one from an SDC estimate sheet / Smartsheet import). NOTE: this used to call
-  // openSidebarPanel('workspaces'), but that "workspaces side panel" was never
-  // built — no #app-sidebar-panel markup exists (on main either), so left-click
-  // silently did nothing. The picker is the complete, working flow; point both
-  // left-click and the right-click fallback at it.
+  // + New tab — opens the Workspaces side panel so the user can pick or build
+  // a schedule. Right-click → legacy picker fallback (the estimate +
+  // Smartsheet flows still live there until they're migrated to the panel).
   document.getElementById('btn-add-project').addEventListener('click', () => {
-    showProjectAddPicker();
+    openSidebarPanel('workspaces');
   });
   document.getElementById('btn-add-project').addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -21900,24 +20439,12 @@ async function init() {
     }
   });
 
-  // Restore the last-open view after a reload. Schedule is the default so it
-  // needs no restore; the password-gated Departments view is skipped unless
-  // this browser session already unlocked it.
-  try {
-    const savedView = localStorage.getItem('sdcActiveView');
-    if (savedView && savedView !== 'schedule' && document.getElementById(`view-${savedView}`)
-        && !(savedView === 'team' && !sessionStorage.getItem('sdcTeamAuth'))) {
-      setView(savedView);
-    }
-  } catch (_) {}
-
   loadTasks();
   // After team loads, if a personId is persisted from a prior session,
-  // route into personal mode (assignee filter + schedule view + banner) —
-  // but only when the user was last on the schedule; a restored Procurement /
-  // Vendor PO / Shop Parts view should stay where the user left it.
+  // route into personal mode (assignee filter + schedule view + banner).
+  // Team has to be loaded first so the member name can be resolved.
   loadTeam().then(() => {
-    if (_actionsPageState.personId != null && state.view === 'schedule') {
+    if (_actionsPageState.personId != null) {
       routePersonalMode(_actionsPageState.personId);
     }
   });
