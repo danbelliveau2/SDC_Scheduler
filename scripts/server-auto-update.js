@@ -43,9 +43,10 @@ const SAFE_DIRS = ['public'];
 // ⚠ server.js, db.js, cronJobs.js are EXCLUDED — they have been rewritten for
 //   MySQL (mysql2/promise) and must never be overwritten with Dan's SQLite version.
 //   auth.js and emailService.js are safe: they contain no direct DB calls.
+// ⚠ scripts/repo-sync.js is intentionally excluded — it is monorepo infrastructure
+//   owned by this repo. Pulling Dan's version would wipe our SYNC_PATHS additions.
 const SAFE_FILES = ['ARROW_ROUTING_RULES.md', '.gitignore',
-                    'auth.js', 'emailService.js',
-                    'scripts/repo-sync.js'];  // pulled individually since scripts/ is excluded
+                    'auth.js', 'emailService.js'];
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -259,6 +260,26 @@ async function checkAndUpdate() {
       log(`Restarting ${name}…`);
       try { run(`pm2 restart ${name} --update-env`); }
       catch (e) { log(`pm2 restart warning (${name}): ${e.message}`); }
+    }
+
+    // 8. Keep sdc-scheduler-repo mirror in lockstep with Dan's repo.
+    //    This ensures any comparison of the mirror vs SDC_Scheduler/ is always
+    //    apples-to-apples — both at the same Dan commit.
+    const mirrorDir = path.join(APP_DIR, '..', 'sdc-scheduler-repo');
+    if (fs.existsSync(mirrorDir)) {
+      try {
+        require('child_process').execSync(
+          `git -C "${mirrorDir}" fetch origin --quiet`,
+          { stdio: 'pipe', timeout: 30000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+        );
+        require('child_process').execSync(
+          `git -C "${mirrorDir}" reset --hard origin/main`,
+          { stdio: 'pipe' }
+        );
+        log(`sdc-scheduler-repo mirror reset to Dan's latest (${remoteSha.slice(0, 7)}).`);
+      } catch (e) {
+        log(`Mirror sync warning (non-fatal): ${e.message}`);
+      }
     }
 
     storeSha(remoteSha);

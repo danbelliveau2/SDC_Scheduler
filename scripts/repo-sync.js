@@ -20,6 +20,8 @@ const CHECK_INTERVAL = 2 * 60 * 1000;
 
 const SYNC_PATHS = [
   'SDC_Scheduler/public',
+  'SDC_Scheduler/auth.js',
+  'SDC_Scheduler/emailService.js',
   'SDC_Scheduler/db.js',
   'SDC_Scheduler/ARROW_ROUTING_RULES.md',
   'SDC_Scheduler/.gitignore',
