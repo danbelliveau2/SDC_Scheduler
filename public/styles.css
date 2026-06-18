@@ -1207,17 +1207,24 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 .schedule-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: nowrap;       /* ALWAYS one row — never wrap to a second line */
   width: 100%;
   min-width: 0;
-  overflow-x: auto;        /* if the screen is too narrow to fit, scroll — don't wrap */
-  overflow-y: hidden;
+  /* No overflow scroll: controls SHRINK to fit instead of scrolling. (Can't
+     clip here either, or the dropdown menus would be cut off.) */
 }
-/* Keep the toolbar's controls from collapsing/wrapping internally when space
-   gets tight — they stay their size and the flex gap soaks up / gives back
-   width; the row just gets denser as the window shrinks. */
-.schedule-toolbar > *:not(.toolbar-flex-gap) { flex: 0 0 auto; }
+/* Icon groups + the primary Zoom-to-fit stay their size; the flexible gap
+   collapses first, then the text buttons shrink (ellipsis) so the row fits
+   without wrapping OR a scrollbar. */
+.schedule-toolbar .seg-control,
+.schedule-toolbar .view-bracket,
+.schedule-toolbar .toolbar-icon-btn,
+.schedule-toolbar .toolbar-divider,
+.schedule-toolbar .btn-fit { flex: 0 0 auto; }
+.schedule-toolbar .dropdown,
+.schedule-toolbar .schedule-project-filters { flex: 0 1 auto; min-width: 0; }
+.schedule-toolbar .toolbar-toggle-btn { max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Flexible gap pushes content RIGHT of it toward the right edge while keeping
    the Columns control flush LEFT. Used between Columns and the rest of the
    toolbar so the layout reads as "primary action on the left, everything else
