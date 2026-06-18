@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.7',
+    date: '2026-06-14',
+    notes: [
+      'Schedule-drift fixes and a deploy fix so everyone is on the same build.',
+      '',
+      'BEHIND / AHEAD:',
+      '   ▸ A not-started (0%) task now shows BEHIND once its start date has passed — by how far it has slipped — instead of staying silent until you bump it off 0%.',
+      '   ▸ A 0% task still in the future shows nothing (it just hasn\'t started — never reads "ahead").',
+      '   ▸ The grid drift chip now reads in weeks (e.g. "+0.5w"), matching the Gantt — never days.',
+      '',
+      'BEHIND THE SCENES:',
+      '   ▸ Fixed a deploy issue where a stale cached frontend could shadow the current build — everyone now reliably gets the latest version after an update.',
+    ],
+  },
+  {
     version: '9.6',
     date: '2026-06-14',
     notes: [
