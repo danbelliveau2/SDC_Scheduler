@@ -105,4 +105,38 @@ if (typeof api !== 'undefined') {
   }
 })();
 
-// 2026-06-11: end-to-end marker — this line was committed and pushed by the in-process repo auto-sync running as SYSTEM.
+// ── 5. Auto-reload when Dan pushes a new version ─────────────────────────────
+// server.js emits 'build:id' (current .update-sha SHA) on every socket connect
+// and reconnect. First receive stores the SHA; any later receive with a
+// different SHA means the server restarted after a Dan update → reload the page
+// so every client automatically gets the new frontend without any manual step.
+// Fallback: also polls /api/build-id every 30 s in case the socket never fires.
+(function autoReloadOnUpdate() {
+  let _loadedSha = null;
+
+  function onBuildId(sha) {
+    if (!sha || sha === 'unknown') return;
+    if (!_loadedSha) { _loadedSha = sha; return; }
+    if (sha !== _loadedSha) window.location.reload();
+  }
+
+  function wireSocket() {
+    if (window._sdcSocket) { window._sdcSocket.on('build:id', onBuildId); return; }
+    setTimeout(wireSocket, 500);
+  }
+
+  async function pollBuildId() {
+    try {
+      const r = await fetch('/api/build-id', { cache: 'no-store' });
+      if (r.ok) onBuildId((await r.json()).sha);
+    } catch (_) {}
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      wireSocket(); pollBuildId(); setInterval(pollBuildId, 30000);
+    });
+  } else {
+    wireSocket(); pollBuildId(); setInterval(pollBuildId, 30000);
+  }
+})();

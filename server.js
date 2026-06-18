@@ -51,6 +51,13 @@ const io = new SocketIO(server, { cors: { origin: '*' } });
 // future "who's editing" pills.
 const _presence = new Map();
 io.on('connection', (socket) => {
+  // Tell the client which build is running. realtime-ui.js exposes window._sdcSocket;
+  // app-local.js listens for this event and reloads if the SHA changed since page load.
+  try {
+    const sha = fs.readFileSync(path.join(__dirname, '.update-sha'), 'utf8').trim();
+    socket.emit('build:id', sha);
+  } catch (_) {}
+
   socket.on('presence:join', ({ project, user }) => {
     if (!project || !user) return;
     if (!_presence.has(project)) _presence.set(project, new Map());
@@ -101,6 +108,29 @@ app.get('/auth-ui.js', (req, res) => {
   const content = fs.readFileSync(src, 'utf8').replace(/minlength="6"/g, 'minlength="1"');
   res.type('application/javascript').send(content);
 });
+// Serve index.html with app-local.js injected so our local additions (conflict
+// detection, auto-reload on Dan update, etc.) always load even after Dan
+// overwrites index.html. server.js is never overwritten by the auto-updater.
+app.get('/', (req, res) => {
+  const src = fs.existsSync(path.join(__dirname, 'public', 'index.html'))
+    ? path.join(__dirname, 'public', 'index.html')
+    : path.join(__dirname, 'custom-public', 'index.html');
+  let html = fs.readFileSync(src, 'utf8');
+  if (!html.includes('app-local.js')) {
+    html = html.replace('</body>', '  <script src="/app-local.js"></script>\n</body>');
+  }
+  res.set('Cache-Control', 'no-store').type('text/html').send(html);
+});
+
+// Build ID endpoint — returns the current .update-sha so clients can detect
+// when the server has been updated and auto-reload to pick up Dan's latest.
+app.get('/api/build-id', (req, res) => {
+  try {
+    const sha = fs.readFileSync(path.join(__dirname, '.update-sha'), 'utf8').trim();
+    res.json({ sha });
+  } catch (_) { res.json({ sha: 'unknown' }); }
+});
+
 // public/ is CANONICAL (auto-updater writes the latest frontend here) and is
 // served FIRST so it always wins. custom-public/ is served only as a fallback
 // for files that have no public/ twin (e.g. app-local.js) — a stale copy in
