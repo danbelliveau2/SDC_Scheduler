@@ -91,18 +91,22 @@ app.use((req, res, next) => {
   }
   next();
 });
-// Serve auth-ui.js with minlength patched to 1 (file ACL is read-only)
+// Serve auth-ui.js with minlength patched to 1. public/ is the canonical,
+// auto-updated source, so prefer it; only fall back to custom-public/ if the
+// file isn't in public/ (legacy/ACL-locked environments).
 app.get('/auth-ui.js', (req, res) => {
-  const src = fs.existsSync(path.join(__dirname, 'custom-public', 'auth-ui.js'))
-    ? path.join(__dirname, 'custom-public', 'auth-ui.js')
-    : path.join(__dirname, 'public', 'auth-ui.js');
+  const src = fs.existsSync(path.join(__dirname, 'public', 'auth-ui.js'))
+    ? path.join(__dirname, 'public', 'auth-ui.js')
+    : path.join(__dirname, 'custom-public', 'auth-ui.js');
   const content = fs.readFileSync(src, 'utf8').replace(/minlength="6"/g, 'minlength="1"');
   res.type('application/javascript').send(content);
 });
-// custom-public/ overlays public/ — auto-updater writes to public/ (ACL-locked for us),
-// so Dan's latest frontend updates land in custom-public/ instead.
-app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, lastModified: true }));
+// public/ is CANONICAL (auto-updater writes the latest frontend here) and is
+// served FIRST so it always wins. custom-public/ is served only as a fallback
+// for files that have no public/ twin (e.g. app-local.js) — a stale copy in
+// custom-public/ can no longer shadow the current public/ build.
 app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true }));
+app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, lastModified: true }));
 
 // ─── Phase 3 (Auth): public auth routes — defined BEFORE the global
 // requireAuth middleware so they don't need a token. /api/auth/me is also
@@ -538,6 +542,28 @@ app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
   const [[t]] = await pool.query('SELECT anchor_key, assignee FROM tasks WHERE id = ?', [id]);
   if (t && t.anchor_key && t.anchor_key !== 'backlog') {
     return res.status(400).json({ error: 'Anchor milestones cannot be deleted.' });
+  }
+  // Sever references to this task BEFORE deleting it, so nobody is left holding a
+  // dangling link. Task predecessors store bare task-ids ("123FS"); financial
+  // triggers store "#<taskId>". We drop only the segment that points at THIS id —
+  // everything else is untouched, so other rows don't move or re-date.
+  const stripRef = (predStr, marker) => {
+    if (!predStr) return predStr;
+    const kept = String(predStr).split(',').map(s => s.trim()).filter(Boolean).filter(seg => {
+      const m = seg.match(marker ? /^#(\d+)/ : /^(\d+)/);
+      return !(m && Number(m[1]) === id);
+    });
+    return kept.join(', ');
+  };
+  const [taskRefs] = await pool.query('SELECT id, predecessors FROM tasks WHERE predecessors LIKE ?', [`%${id}%`]);
+  for (const r of taskRefs) {
+    const np = stripRef(r.predecessors, false);
+    if (np !== r.predecessors) await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [np || null, r.id]);
+  }
+  const [finRefs] = await pool.query('SELECT id, predecessors FROM project_financials WHERE predecessors LIKE ?', [`%#${id}%`]);
+  for (const r of finRefs) {
+    const np = stripRef(r.predecessors, true);
+    if (np !== r.predecessors) await pool.query('UPDATE project_financials SET predecessors = ? WHERE id = ?', [np || null, r.id]);
   }
   await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
   if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
