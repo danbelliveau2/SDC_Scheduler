@@ -13,22 +13,8 @@ require('dotenv').config();
 const jwt = require('jsonwebtoken');
 
 const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
-const DEV_SECRET   = 'sdc-dev-secret-change-in-production';
-const JWT_SECRET   = process.env.JWT_SECRET || DEV_SECRET;
-// Sessions last 30 days by default (was 7d — short expiry caused frequent
-// "session expired" surprises). Override with JWT_EXPIRES in .env.
-const JWT_EXPIRES  = process.env.JWT_EXPIRES || '30d';
-
-// Fail loudly if auth is on but the signing secret is missing or left at the
-// shipped dev default. A weak/shared secret means tokens are forgeable, and a
-// secret that silently changes between restarts logs *everyone* out at once.
-if (AUTH_ENABLED && (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEV_SECRET)) {
-  throw new Error(
-    '[auth] AUTH_ENABLED=true but JWT_SECRET is missing or set to the dev default. ' +
-    'Set a strong, stable JWT_SECRET in .env before enabling auth (otherwise tokens are ' +
-    'forgeable and every restart can invalidate sessions).'
-  );
-}
+const JWT_SECRET   = process.env.JWT_SECRET || 'sdc-dev-secret-change-in-production';
+const JWT_EXPIRES  = '7d';
 
 // Role hierarchy: higher index = more permissions
 const ROLE_LEVELS = { viewer: 0, editor: 1, admin: 2 };
