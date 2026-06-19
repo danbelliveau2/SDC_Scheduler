@@ -29,6 +29,8 @@ const bcrypt = require('bcryptjs');
 const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
+const ops = require('./ops'); // backups, health/status, crash logging
+const agent = require('./agent'); // local-Ollama read-only assistant
 // emailService is optional — when nodemailer isn't installed or SMTP_HOST is
 // empty, it returns a no-op stub so the comment POST handler doesn't crash.
 let emailSvc;
@@ -73,7 +75,9 @@ io.on('connection', (socket) => {
 });
 
 // ── Gzip all responses (cuts JSON payload ~70%) ────────────────────────────
-app.use(compression());
+// Exclude SSE endpoints — compression buffers chunks waiting for a flush size,
+// which silently kills server-sent events (text deltas never reach the client).
+app.use(compression({ filter: (req, res) => /\/(ask-stream|sse)\b/.test(req.path) ? false : compression.filter(req, res) }));
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -116,11 +120,17 @@ app.post('/api/auth/login', async (req, res) => {
   const email    = (req.body.email    || '').toString().trim().toLowerCase();
   const password = (req.body.password || '').toString();
   if (!email || !password) return res.status(400).json({ error: 'email and password required' });
-  const [rows] = await pool.query('SELECT * FROM users WHERE email = ? AND active = 1', [email]);
+  // Look up by email only (don't fold `active` into the match) so a deactivated
+  // user gets a clear, actionable message instead of a misleading "invalid
+  // email or password". Match is whitespace/case-insensitive on the input side;
+  // stored emails are normalized on write + by the boot migration.
+  const [rows] = await pool.query('SELECT * FROM users WHERE LOWER(TRIM(email)) = ?', [email]);
   const user = rows[0] || null;
-  if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
-  if (!bcrypt.compareSync(password, user.password_hash)) {
+  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
     return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+  if (!user.active) {
+    return res.status(403).json({ error: 'This account is disabled. Ask an admin to re-enable it (Setup → Users).', code: 'ACCOUNT_DISABLED' });
   }
   await pool.query('UPDATE users SET last_login = ? WHERE id = ?', [new Date().toISOString().slice(0, 19).replace('T', ' '), user.id]);
   const token = signToken(user);
@@ -141,13 +151,13 @@ app.put('/api/auth/password', requireAuth, async (req, res) => {
   if (!current_password || !new_password)
     return res.status(400).json({ error: 'current_password and new_password are required' });
   if (String(new_password).length < 1)
-    return res.status(400).json({ error: 'new password cannot be empty' });
+    return res.status(400).json({ error: 'New password cannot be empty.' });
   const [urows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.authUser.id]);
   const user = urows[0] || null;
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (!bcrypt.compareSync(current_password, user.password_hash))
+  if (!(await bcrypt.compare(current_password, user.password_hash)))
     return res.status(401).json({ error: 'Current password is incorrect' });
-  const hash = bcrypt.hashSync(String(new_password), 12);
+  const hash = await bcrypt.hash(String(new_password), 12);
   await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, user.id]);
   sync('task_comments');
   res.json({ ok: true, message: 'Password updated successfully' });
@@ -158,9 +168,9 @@ app.post('/api/auth/register', async (req, res) => {
   const name     = (req.body.name     || '').toString().trim();
   const password = (req.body.password || '').toString();
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
-  if (password.length < 1)           return res.status(400).json({ error: 'password is required' });
+  if (password.length < 1)           return res.status(400).json({ error: 'Password is required.' });
   try {
-    const hash = bcrypt.hashSync(password, 12);
+    const hash = await bcrypt.hash(password, 12);
     const [r] = await pool.query(
       `INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'editor')`,
       [email, name, hash]
@@ -566,6 +576,10 @@ app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
     if (np !== r.predecessors) await pool.query('UPDATE project_financials SET predecessors = ? WHERE id = ?', [np || null, r.id]);
   }
   await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
+  // The live DB has no FK cascade, so clean up the task's comments here or they
+  // orphan (point at a gone task_id). History is intentionally kept — it's the
+  // audit trail, and the delete itself is logged just below.
+  await pool.query('DELETE FROM task_comments WHERE task_id = ?', [id]);
   if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
   if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee);
   await cascadeSchedule();
@@ -778,6 +792,222 @@ app.delete('/api/vendor-pos/:id', requireRole('editor'), async (req, res) => {
   await pool.query('DELETE FROM vendor_pos WHERE id = ?', [Number(req.params.id)]);
   res.json({ ok: true });
   io.emit('vendor_pos:updated');
+});
+
+// ── Total ETO bridge (read-only ERP integration, optional) ───────────────────
+// etoDb.js connects to the Total ETO SQL Server when ETO_* env vars are set.
+// Join key: projects.job_number === ETO ProjectID.
+const etoDb = require('./etoDb');
+
+app.get('/api/eto/status', async (_req, res) => {
+  if (!etoDb.CONFIGURED) return res.json({ configured: false, connected: false });
+  try {
+    await etoDb.ping();
+    res.json({ configured: true, connected: true });
+  } catch (e) {
+    res.json({ configured: true, connected: false, error: e.message });
+  }
+});
+
+// Validate a job number against ETO — returns the official project name.
+app.get('/api/eto/project/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  try {
+    const info = await etoDb.getProjectInfo(job);
+    if (!info) return res.status(404).json({ error: `No ETO project ${job}` });
+    res.json(info);
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Est-vs-actual hours / labor / materials / margin from ETO costing views.
+app.get('/api/eto/costing/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  try {
+    const costing = await etoDb.getProjectCosting(job);
+    if (!costing) return res.status(404).json({ error: `No ETO costing for project ${job}` });
+    res.json(costing);
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Procurement readiness — the full BOM walk per spec with received / ordered /
+// no-PO rollups. Heavy on the ERP (correlated subqueries per part), so results
+// are cached in memory for 5 minutes; ?refresh=1 busts the cache.
+const _readinessCache = new Map(); // job → { at, data }
+app.get('/api/eto/readiness/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _readinessCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  try {
+    const data = await etoDb.getReadiness(job);
+    if (!data) return res.status(404).json({ error: `No ETO specs found for job ${job}` });
+    _readinessCache.set(job, { at: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error('[eto] readiness failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Vendor Status for one job — POs grouped by supplier with received progress
+// (Build Readiness "Vendor Status" view). Cached 5 min; ?refresh=1 busts it.
+const _vendorStatusCache = new Map();
+app.get('/api/eto/vendors/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _vendorStatusCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  try {
+    const data = await etoDb.getVendorStatus(job);
+    _vendorStatusCache.set(job, { at: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error('[eto] vendor status failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Part-cost financial summary for one job (estimated / purchased / received /
+// paid / left-to-pay / ETC). Mirrors ETO's "Part Cost" report. Cached 5 min.
+const _partCostCache = new Map();
+// Merge a PM-entered materials estimate (job_estimates) onto the ETO base cost.
+// When set, it replaces `estimated` and recomputes the derived figures. Applied
+// fresh per request (cheap lookup) so the ETO cache stays pure.
+async function applyEstimateOverride(base, job) {
+  const out = { ...base, estimateSource: 'eto', etoEstimate: base.estimated };
+  try {
+    const [[ovr]] = await pool.query('SELECT materials_estimate FROM job_estimates WHERE job = ?', [String(job)]);
+    if (ovr && ovr.materials_estimate != null) {
+      const est = Number(ovr.materials_estimate);
+      out.estimated = est;
+      out.estimateSource = 'user';
+      out.etc = Math.max(0, est - out.purchased);
+      out.projection = out.purchased + out.etc;
+      out.pctOfEstimate = est ? Math.round((out.purchased / est) * 100) : null;
+    }
+  } catch (_) { /* table may not exist yet on a fresh DB — fall back to ETO */ }
+  return out;
+}
+
+app.get('/api/eto/partcost/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _partCostCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...(await applyEstimateOverride(cached.data, job)), cached: true });
+  }
+  try {
+    const data = await etoDb.getPartCost(job);
+    _partCostCache.set(job, { at: Date.now(), data });
+    res.json(await applyEstimateOverride(data, job));
+  } catch (e) {
+    console.error('[eto] part cost failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Set / clear the PM materials-estimate override for a job. Body { estimate }:
+// a non-negative number to set, or null/'' to revert to the ETO estimate.
+app.put('/api/eto/partcost/:job/estimate', requireRole('editor'), async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const raw = req.body ? req.body.estimate : undefined;
+  if (raw === null || raw === '' || raw === undefined) {
+    await pool.query('DELETE FROM job_estimates WHERE job = ?', [String(job)]);
+    return res.json({ ok: true, cleared: true });
+  }
+  const n = Number(raw);
+  if (!isFinite(n) || n < 0) return res.status(400).json({ error: 'estimate must be a non-negative number' });
+  await pool.query(
+    `INSERT INTO job_estimates (job, materials_estimate, updated_by) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE materials_estimate = VALUES(materials_estimate), updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP`,
+    [String(job), n, (req.authUser && req.authUser.name) || req.user || null]);
+  res.json({ ok: true, estimate: n });
+});
+
+// ── Assistant (local Ollama, read-only) ──────────────────────────────────────
+app.get('/api/agent/status', async (_req, res) => {
+  try { res.json(await agent.status()); }
+  catch (e) { res.status(503).json({ reachable: false, error: e.message }); }
+});
+app.post('/api/agent/ask', requireRole('viewer'), async (req, res) => {
+  const question = (req.body && req.body.question || '').toString();
+  const context = req.body && req.body.context ? String(req.body.context) : '';
+  const history = (req.body && Array.isArray(req.body.history)) ? req.body.history : [];
+  if (!question.trim()) return res.status(400).json({ error: 'question required' });
+  try { res.json(await agent.ask({ pool, etoDb, question, context, history })); }
+  catch (e) { console.error('[agent] ask failed:', e.message); res.status(503).json({ error: e.message }); }
+});
+
+
+// Streaming variant — Server-Sent Events. Forwards text deltas + tool events
+// so the UI renders the answer as it's generated. Same read-only guarantees.
+app.post('/api/agent/ask-stream', requireRole('viewer'), async (req, res) => {
+  const question = (req.body && req.body.question || '').toString();
+  const context = req.body && req.body.context ? String(req.body.context) : '';
+  const history = (req.body && Array.isArray(req.body.history)) ? req.body.history : [];
+  if (!question.trim()) return res.status(400).json({ error: 'question required' });
+  // Write directly to the raw socket — Express's res.write goes through several
+  // middleware layers (compression, etag, etc.) that buffer on Windows/Node 25
+  // and silently break SSE. Raw socket writes flush immediately.
+  const sock = res.socket || (req.socket || (req.connection));
+  sock.setNoDelay && sock.setNoDelay(true);
+  sock.write(
+    'HTTP/1.1 200 OK\r\n' +
+    'Content-Type: text/event-stream\r\n' +
+    'Cache-Control: no-cache, no-transform\r\n' +
+    'X-Accel-Buffering: no\r\n' +
+    'Connection: keep-alive\r\n' +
+    '\r\n'
+  );
+  const send = (obj) => { try { sock.write(`data: ${JSON.stringify(obj)}\n\n`); } catch (_) {} };
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+  try {
+    await agent.askStream({ pool, etoDb, question, context, history, onEvent: (ev) => { if (!aborted) send(ev); } });
+  } catch (e) {
+    send({ type: 'error', error: e.message });
+  } finally {
+    try { sock.write('data: {"type":"close"}\n\n'); } catch (_) {}
+    try { sock.end(); } catch (_) {}
+  }
+});
+
+// Pull PO data from ETO into vendor_pos. Default scope covers linked projects;
+// body {scope:'all'} also pulls every open PO across the whole ERP.
+app.post('/api/eto/sync-vendor-pos', requireRole('editor'), async (req, res) => {
+  const scope = req.body && req.body.scope === 'all' ? 'all' : 'linked';
+  try {
+    const result = await etoDb.syncVendorPOs(pool, scope);
+    ops.recordEtoSync(result);
+    res.json({ ok: true, ...result });
+    if (result.created || result.updated) io.emit('vendor_pos:updated');
+  } catch (e) {
+    console.error('[eto] vendor PO sync failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Live line items for one PO — the expandable parts view in the tracker.
+app.get('/api/eto/po/:job/:po/lines', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  const po = parseInt(req.params.po, 10);
+  if (!Number.isInteger(job) || !Number.isInteger(po)) return res.status(400).json({ error: 'job and po must be numbers' });
+  try {
+    res.json(await etoDb.getPoLines(job, po));
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
 });
 
 app.post('/api/tasks/reorder', requireRole('editor'), async (req, res) => {
@@ -2408,7 +2638,7 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
       const to = userRow ? userRow.email : null;
       if (to && emailSvc && emailSvc.sendMentionEmail) {
         emailSvc.sendMentionEmail({
-          db, to, taskId, taskName: task.name, project: task.project,
+          pool, to, taskId, taskName: task.name, project: task.project,
           commentBody: body, authorName,
         }).catch(() => {});
       }
@@ -2587,8 +2817,13 @@ app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
   if (Object.keys(updates).length === 0) return res.json(existing);
 
   if (updates.name && updates.name !== existing.name) {
+    // Rows are linked to a project by NAME, so a rename has to follow through
+    // every name-keyed table or they orphan. (vendor_pos/shop_parts are keyed
+    // by job number, not name, so a rename correctly leaves them alone.)
     await pool.query('UPDATE tasks SET project = ? WHERE project = ?', [updates.name, existing.name]);
     await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
+    await pool.query('UPDATE task_history SET project = ? WHERE project = ?', [updates.name, existing.name]);
+    await pool.query('UPDATE task_comments SET project = ? WHERE project = ?', [updates.name, existing.name]);
   }
 
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
@@ -2852,11 +3087,11 @@ app.post('/api/users', requireRole('admin'), async (req, res) => {
   const { email, name, password, role = 'editor', avatar_color = '#1574c4' } = req.body || {};
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
   if (!['viewer', 'editor', 'admin'].includes(role)) return res.status(400).json({ error: 'invalid role' });
-  if (String(password).length < 1) return res.status(400).json({ error: 'password is required' });
+  if (String(password).length < 1) return res.status(400).json({ error: 'Password is required.' });
   try {
     const [r] = await pool.query(
       'INSERT INTO users (email,name,password_hash,role,active,avatar_color) VALUES (?,?,?,?,1,?)',
-      [email.toLowerCase().trim(), name.trim(), bcrypt.hashSync(password, 12), role, avatar_color]
+      [email.toLowerCase().trim(), name.trim(), await bcrypt.hash(password, 12), role, avatar_color]
     );
     io.emit('users:updated');
     const [[newUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?', [r.insertId]);
@@ -2875,9 +3110,11 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const upd = {};
   for (const k of allowed) {
     if (req.body[k] === undefined) continue;
-    upd[k] = (k === 'active') ? (req.body[k] ? 1 : 0) : req.body[k];
+    if (k === 'active') upd[k] = req.body[k] ? 1 : 0;
+    else if (k === 'email') upd[k] = String(req.body[k]).trim().toLowerCase(); // keep normalized so login matches
+    else upd[k] = req.body[k];
   }
-  if (req.body.password) upd.password_hash = bcrypt.hashSync(req.body.password, 12);
+  if (req.body.password) upd.password_hash = await bcrypt.hash(String(req.body.password), 12);
   if (!Object.keys(upd).length) return res.json(u);
   const setClause = Object.keys(upd).map(k => `${k}=?`).join(',');
   await pool.query(`UPDATE users SET ${setClause} WHERE id=?`, [...Object.values(upd), id]);
@@ -2886,14 +3123,73 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   res.json(updUser);
 });
 
+// Hard-delete a user account. Guarded: you can't delete yourself, and you can't
+// remove the last admin (that would lock everyone out of user management).
+// History/comments attribute by name string (no FK), so removing the row is safe.
+// To temporarily lock someone instead, use the active=0 toggle (PUT).
 app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
-  await pool.query('UPDATE users SET active=0 WHERE id=?', [Number(req.params.id)]);
+  const id = Number(req.params.id);
+  const [[u]] = await pool.query('SELECT id, role FROM users WHERE id=?', [id]);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  if (req.authUser && Number(req.authUser.id) === id) {
+    return res.status(400).json({ error: "You can't delete your own account." });
+  }
+  if (u.role === 'admin') {
+    const [[{ n }]] = await pool.query("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND id<>?", [id]);
+    if (n === 0) return res.status(400).json({ error: "Can't delete the last admin account." });
+  }
+  await pool.query('DELETE FROM users WHERE id=?', [id]);
   io.emit('users:updated');
-  res.json({ ok: true });
+  res.json({ ok: true, deleted: id });
 });
 
+// Admin "unlock this person" — set a new password (or generate a temp one) and
+// re-activate the account in a single call. This is the forgot-password path:
+// an admin resets it here and reads the temp password to the user.
+app.post('/api/users/:id/reset-password', requireRole('admin'), async (req, res) => {
+  const id = Number(req.params.id);
+  const [[u]] = await pool.query('SELECT id,email,name FROM users WHERE id=?', [id]);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  let pw = (req.body && req.body.new_password ? String(req.body.new_password) : '').trim();
+  let generated = false;
+  if (!pw) { pw = _genTempPassword(); generated = true; }
+  if (pw.length < 1) return res.status(400).json({ error: 'New password cannot be empty.' });
+  const hash = await bcrypt.hash(pw, 12);
+  await pool.query('UPDATE users SET password_hash=?, active=1 WHERE id=?', [hash, id]);
+  io.emit('users:updated');
+  // Only echo the password back when WE generated it, so the admin can relay it.
+  res.json({ ok: true, email: u.email, name: u.name, reactivated: true, ...(generated ? { tempPassword: pw } : {}) });
+});
+
+// Readable temp password: 3 short words + 2 digits (no ambiguous chars).
+function _genTempPassword() {
+  const words = ['blue', 'lime', 'gear', 'bolt', 'fast', 'spark', 'steel', 'motor', 'shaft', 'cam', 'weld', 'panel'];
+  const pick = () => words[Math.floor(Math.random() * words.length)];
+  return `${pick()}-${pick()}-${pick()}-${Math.floor(10 + Math.random() * 89)}`;
+}
+
 // Health check — used by Electron shell to detect server readiness
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'scheduler' }));
+// Liveness probe (public, no auth). Light by design — pings the DB and reports
+// uptime, but no filesystem paths. Full detail is on /api/status (auth'd).
+app.get('/health', async (_req, res) => {
+  const s = await ops.getStatus(pool);
+  res.json({ ok: s.ok, service: 'scheduler', uptimeSeconds: s.uptimeSeconds, db: { ok: s.db.ok } });
+});
+
+// Full reliability snapshot for the in-app Status panel.
+app.get('/api/status', requireAuth, async (_req, res) => {
+  res.json(await ops.getStatus(pool));
+});
+
+// On-demand DB backup (admin). The nightly cron does this automatically.
+app.post('/api/backup', requireRole('admin'), async (_req, res) => {
+  try {
+    const r = await ops.runBackup();
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // Global error handler — catches unhandled promise rejections from async routes
 // (Express 4 does not auto-catch async throws without this)
@@ -2922,10 +3218,31 @@ async function startServer({ port } = {}) {
   // Wrapped in typeof check so a missing cronJobs.js doesn't crash boot.
   try {
     const cron = require('./cronJobs');
-    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc });
+    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops });
   } catch (_) { /* cronJobs.js is optional */ }
+  // Register + ETO-link any orphan task-tab schedules (e.g. "1160_…" that never
+  // got a projects row). Runs async so it never delays boot; refreshes clients
+  // if it linked anything. Optional + self-guarding.
+  try {
+    const { backfillProjects } = require('./backfillProjects');
+    backfillProjects(pool, etoDb)
+      .then(r => { if (r && (r.registered || r.linked)) { try { notifyClients('projects_changed'); } catch (_) {} } })
+      .catch(e => console.warn('[backfill] failed:', e.message));
+  } catch (_) { /* backfillProjects.js is optional */ }
   return server;
 }
+
+// Crash safety net — a stray throw/rejection anywhere shouldn't vanish silently.
+// We log a full trail (PM2 keeps the file) so post-mortem isn't guesswork. An
+// uncaughtException leaves the process in an undefined state, so we exit and let
+// PM2 restart cleanly; a lone unhandledRejection is logged but not fatal.
+process.on('uncaughtException', (err) => {
+  console.error('[scheduler] UNCAUGHT EXCEPTION — exiting for clean PM2 restart:', err && err.stack || err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[scheduler] UNHANDLED REJECTION:', reason && reason.stack || reason);
+});
 
 if (require.main === module) {
   startServer().then(_server => {

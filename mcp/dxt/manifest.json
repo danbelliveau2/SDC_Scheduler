@@ -1,0 +1,39 @@
+{
+  "dxt_version": "0.1",
+  "name": "sdc-scheduler-db",
+  "display_name": "SDC Scheduler Database (read-only)",
+  "version": "1.0.0",
+  "description": "Read-only access to the SDC Scheduler MySQL database — browse tables, inspect schema, and run safe SELECT queries. Writes and DDL are rejected; every query runs in a read-only transaction.",
+  "long_description": "Exposes the SDC Scheduler backend database to Claude as read-only MCP tools. List tables, describe a table's columns, and run a single read-only SQL query (SELECT/WITH/EXPLAIN/SHOW/DESCRIBE). Results are row-capped and queries execute inside a READ ONLY transaction, so Claude cannot mutate or delete data. Configure your MySQL connection on install.",
+  "author": { "name": "SDC Automation" },
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.mjs"],
+      "env": {
+        "MYSQL_HOST": "${user_config.mysql_host}",
+        "MYSQL_PORT": "${user_config.mysql_port}",
+        "MYSQL_USER": "${user_config.mysql_user}",
+        "MYSQL_PASSWORD": "${user_config.mysql_password}",
+        "MYSQL_DATABASE": "${user_config.mysql_database}"
+      }
+    }
+  },
+  "user_config": {
+    "mysql_host": { "type": "string", "title": "MySQL host", "description": "Hostname or IP of the MySQL server", "default": "localhost", "required": true },
+    "mysql_port": { "type": "number", "title": "MySQL port", "description": "MySQL server port (usually 3306)", "default": 3306, "required": true },
+    "mysql_user": { "type": "string", "title": "MySQL user", "description": "A user with read (SELECT) access", "required": true },
+    "mysql_password": { "type": "string", "title": "MySQL password", "description": "Password for the MySQL user (leave blank if none)", "sensitive": true, "required": false },
+    "mysql_database": { "type": "string", "title": "Database name", "description": "The scheduler database to query", "default": "sdc_scheduler", "required": true }
+  },
+  "tools": [
+    { "name": "list_tables", "description": "List all tables with approximate row counts." },
+    { "name": "describe_table", "description": "Show a table's columns (name, type, nullability, key, default)." },
+    { "name": "run_select", "description": "Run a single read-only SQL query and return rows as JSON." }
+  ],
+  "keywords": ["sdc", "scheduler", "mysql", "database", "read-only"],
+  "license": "UNLICENSED"
+}

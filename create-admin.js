@@ -15,7 +15,7 @@ const bcrypt = require('bcryptjs');
 const { pool } = require('./mysqlDb');
 
 async function main() {
-  const email    = process.argv[2] || 'akamuju@sdcautomation.com';
+  const email    = (process.argv[2] || 'akamuju@sdcautomation.com').trim().toLowerCase();
   const password = process.argv[3] || 'sdc_secure_password';
   const role     = process.argv[4] || 'admin';
 

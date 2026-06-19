@@ -1,10 +1,17 @@
 # Node
 node_modules/
 
+# Built DXT extension artifacts (rebuild with `npx @anthropic-ai/dxt pack` — see mcp/README.md)
+*.dxt
+
 # SQLite database files — runtime data, schema is in db.js
 scheduler.db
 scheduler.db-shm
 scheduler.db-wal
+
+# Database backup dumps — runtime data (full DB contents), never source
+backups/
+*.sql
 
 # Local IDE / tooling
 .claude/

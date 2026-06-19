@@ -44,6 +44,12 @@ async function init() {
     await pool.query(`ALTER TABLE tasks ADD INDEX ${idx} (${col})`).catch(() => {});
   }
 
+  // Repair: tables created before this schema text had version DEFAULT 0.
+  // A version-0 row trips the optimistic-lock check on its FIRST edit (clients
+  // send `version || 1`), so every new task showed a bogus 409 conflict.
+  await pool.query(`ALTER TABLE tasks MODIFY COLUMN version INT DEFAULT 1`).catch(() => {});
+  await pool.query(`UPDATE tasks SET version = 1 WHERE version = 0 OR version IS NULL`).catch(() => {});
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (
       \`key\`      VARCHAR(255) PRIMARY KEY,
@@ -128,6 +134,10 @@ async function init() {
   `);
   await pool.query(`ALTER TABLE task_comments ADD INDEX idx_comments_task_id (task_id)`).catch(() => {});
   await pool.query(`ALTER TABLE task_comments ADD INDEX idx_comments_project (project)`).catch(() => {});
+  // Clean up comments orphaned by past task deletes (the live DB has no FK
+  // cascade, and the delete path historically didn't remove them). Idempotent —
+  // a no-op once clean. The delete handler now keeps this from recurring.
+  await pool.query(`DELETE FROM task_comments WHERE task_id NOT IN (SELECT id FROM tasks)`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS notification_log (
@@ -154,6 +164,29 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE users ADD INDEX idx_users_email (email)`).catch(() => {});
+  // Normalize any legacy emails stored with stray case/whitespace so they match
+  // the trim+lowercase login lookup. Per-row + guarded so a (rare) collision
+  // can't abort boot. Idempotent — only touches rows that aren't already clean.
+  try {
+    const [dirty] = await pool.query('SELECT id, email FROM users WHERE email <> LOWER(TRIM(email))');
+    for (const r of dirty) {
+      try { await pool.query('UPDATE users SET email = ? WHERE id = ?', [String(r.email).trim().toLowerCase(), r.id]); }
+      catch (e) { console.warn(`[db] could not normalize email for user ${r.id}: ${e.message}`); }
+    }
+    if (dirty.length) console.log(`[db] normalized ${dirty.length} user email(s) to trim+lowercase`);
+  } catch (_) { /* users table may be mid-migration on a fresh DB */ }
+
+  // Per-job materials-estimate override (PM-entered). ETO is read-only and its
+  // EstTotalMaterials is often unset, so PMs can enter the real estimate here;
+  // the Procurement Cost tab uses it for the "vs estimate" + ETC figures.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS job_estimates (
+      job                VARCHAR(255) PRIMARY KEY,
+      materials_estimate DECIMAL(14,2),
+      updated_by         VARCHAR(255),
+      updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 
   // v9.0: "Parts in Shop" — PM-facing list of parts physically at the SDC shop.
   // NOTE: `rank` is a reserved word in MySQL 8 — must be backticked everywhere.
@@ -210,6 +243,24 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE vendor_pos ADD INDEX idx_vendor_pos_vendor (vendor)`).catch(() => {});
+  // ETO integration: rows pulled from Total ETO are flagged so the sync can
+  // refresh status fields without clobbering PM-entered rows.
+  await pool.query(`ALTER TABLE vendor_pos ADD COLUMN eto_synced TINYINT(1) DEFAULT 0`).catch(() => {});
+  // Pre-revision ETA — when a buyer revises dates in ETO, eta carries the new
+  // promise and eta_original keeps the initial one so rows can show the slip.
+  await pool.query(`ALTER TABLE vendor_pos ADD COLUMN eta_original VARCHAR(32)`).catch(() => {});
+  // Clean up duplicate (po, job) rows left by syncs that overlapped before the
+  // sync serializer existed. Conservatively deletes only the higher-id copy and
+  // only when it carries NO PM-entered data — so manual edits are never lost; a
+  // dupe where both copies have PM data is left for a human to reconcile.
+  await pool.query(`
+    DELETE v1 FROM vendor_pos v1
+    JOIN vendor_pos v2 ON v1.po = v2.po AND v1.job = v2.job AND v1.id > v2.id
+    WHERE v1.eto_synced = 1 AND v2.eto_synced = 1
+      AND v1.po IS NOT NULL AND v1.job IS NOT NULL
+      AND (v1.pm IS NULL OR v1.pm = '') AND (v1.comments IS NULL OR v1.comments = '')
+      AND (v1.tracking IS NULL OR v1.tracking = '') AND (v1.ship_date IS NULL OR v1.ship_date = '')
+  `).catch(() => {});
 }
 
 const DEFAULT_SETTINGS = {

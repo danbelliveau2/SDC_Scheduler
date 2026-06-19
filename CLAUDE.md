@@ -132,6 +132,18 @@ const startMs = new Date(g.gantt_start).getTime();  // handles both Date and str
 
 This bug masquerades as "elements not rendering" because empty `textContent` produces invisible text. Took a day of investigation. Never again.
 
+### Procurement vendor status — metric mismatch bug
+
+In `_procPartsCardView()` (~line 8919), vendor-level status aggregation (lines 8926–8944) groups PARTS from the readiness BOM, calculating vendor % as `received parts / total parts`. The backend vendor API (`etoDb.getVendorStatus()`) counts PO LINES instead: `received lines / total lines`. These are different metrics.
+
+**The bug:** When backend data overrode vendor-level totals (lines 8952–8953), the yellow/partial badge showed even when all displayed parts were green/received — because a single PO line with partial qty (2/3) counted as a whole "line not received," inflating the unmet count.
+
+**The fix:** Keep vendor-level metrics parts-based (what's displayed in the parts list). Backend data updates only PO-level rows (lines 8966–8967) for accuracy. Never override vendor.total or vendor.received with backend counts — they measure different granularities.
+
+**Rule:** When aggregating progress at multiple levels (vendor / PO / part), all levels must use the same metric (either all line-based or all parts-based) or display visibly breaks. If backend and frontend calculate differently, DON'T merge them — one becomes the source of truth; the other is read-only.
+
+This rule cost a half-day of "all parts show received but vendor shows partial" debugging. Never again.
+
 ---
 
 ## When in doubt

@@ -1,4 +1,4 @@
-const api = {
+﻿const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
   create: (data) => {
     window._lastLocalEdit = Date.now();
@@ -74,6 +74,18 @@ const api = {
     create: (data) => { window._lastLocalEdit = Date.now(); return fetch('/api/vendor-pos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
     update: (id, data) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }).then(r => r.json()); },
     remove: (id) => { window._lastLocalEdit = Date.now(); return fetch(`/api/vendor-pos/${id}`, { method: 'DELETE' }).then(r => r.json()); },
+  },
+  // Total ETO bridge — read-only pulls from the ERP (optional, server-gated).
+  eto: {
+    status: () => fetch('/api/eto/status').then(r => r.json()),
+    syncVendorPOs: (scope) => { window._lastLocalEdit = Date.now(); return fetch('/api/eto/sync-vendor-pos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ scope: scope || 'linked' }) }).then(r => r.json()); },
+    poLines: (job, po) => fetch(`/api/eto/po/${encodeURIComponent(job)}/${encodeURIComponent(po)}/lines`).then(r => { if (!r.ok) throw new Error(`lines fetch failed (${r.status})`); return r.json(); }),
+    vendors: (job) => fetch(`/api/eto/vendors/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`vendors fetch failed (${r.status})`); return r.json(); }),
+    partcost: (job) => fetch(`/api/eto/partcost/${encodeURIComponent(job)}`).then(r => { if (!r.ok) throw new Error(`part cost fetch failed (${r.status})`); return r.json(); }),
+  },
+  agent: {
+    status: () => fetch('/api/agent/status').then(r => r.json()),
+    ask: (question, context, history) => fetch('/api/agent/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question, context, history: history || [] }) }).then(async r => { const b = await r.json().catch(() => ({})); if (!r.ok) throw new Error(b.error || `request failed (${r.status})`); return b; }),
   },
   // Baseline snapshot — captures the current start/end dates on every task in a
   // project so subsequent edits can be compared against the original plan.
@@ -863,6 +875,138 @@ function showAlertDialog(opts = {}) {
     setTimeout(() => overlay.querySelector('[data-action="ok"]')?.focus(), 0);
   });
 }
+
+// ── SDC Assistant (Claude, read-only) ───────────────────────────────────────
+// Floating "Ask" button + chat panel. Streams from /api/agent/ask-stream,
+// remembers history across turns, renders markdown, and shows tool chips.
+let _agentOpen = false, _agentStatus = null, _agentBusy = false;
+const _agentMsgs = [];      // visible chat log: {role:'user'|'assistant'|'error', text, tools?, usage?}
+let _agentHistory = [];     // Claude-format prior turns (sent back next request)
+function _initAgentUI() {
+  if (document.getElementById('sdc-agent-fab')) return;
+  const fab = document.createElement('button');
+  fab.id = 'sdc-agent-fab'; fab.type = 'button';
+  fab.title = 'Ask the SDC assistant (read-only)';
+  fab.innerHTML = '<span class="agent-fab-icon">✦</span> Ask';
+  fab.addEventListener('click', _toggleAgentPanel);
+  document.body.appendChild(fab);
+}
+function _toggleAgentPanel() {
+  _agentOpen = !_agentOpen;
+  if (_agentOpen && !_agentStatus) {
+    api.agent.status().then(s => { _agentStatus = s; if (_agentOpen) _renderAgentPanel(); }).catch(() => { _agentStatus = { reachable: false }; if (_agentOpen) _renderAgentPanel(); });
+  }
+  _renderAgentPanel();
+}
+function _agentContext() {
+  const p = state.filters && state.filters.project;
+  if (!p) return '';
+  const job = state.projectsIndex && state.projectsIndex[p] && state.projectsIndex[p].job_number;
+  return `The user is currently viewing the schedule "${p}"${job ? ` (ETO job ${job})` : ''}.`;
+}
+// Suggested starter prompts. Tailor a couple to the current project when open.
+function _agentStarters() {
+  const p = state.filters && state.filters.project;
+  const idx = p && state.projectsIndex && state.projectsIndex[p];
+  const job = idx && idx.job_number;
+  const base = ['How many tasks are overdue across all projects?', 'Which suppliers have past-due POs?'];
+  if (job) return [`How is job ${job} doing?`, `Which parts on ${job} have no PO?`, `What is the materials cost so far on ${job}?`];
+  if (p) return [`Tell me about "${p}"`, ...base];
+  return ['How is job 1129 doing?', ...base];
+}
+// Minimal, safe Markdown → HTML. Supports headings, bold/italic, inline code,
+// fenced code, lists, tables, links — all from escaped text, so it's XSS-safe.
+function _agentMd(src) {
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let s = esc(src || '');
+  // fenced code blocks
+  s = s.replace(/```([\s\S]*?)```/g, (_, c) => `<pre><code>${c.replace(/^\n/, '')}</code></pre>`);
+  // headings
+  s = s.replace(/^(#{1,3})\s+(.+)$/gm, (_, h, t) => `<h${h.length}>${t}</h${h.length}>`);
+  // markdown tables: a block of lines starting and ending with |
+  s = s.replace(/(^\|.+\|\n\|[-:\s|]+\|\n(?:^\|.+\|\n?)+)/gm, (block) => {
+    const lines = block.trim().split('\n');
+    const cells = (ln) => ln.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+    const head = cells(lines[0]);
+    const rows = lines.slice(2).map(cells);
+    return `<table class="agent-md-tbl"><thead><tr>${head.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  });
+  // lists (group consecutive bullet lines)
+  s = s.replace(/(?:^[-*]\s+.+\n?)+/gm, (block) => `<ul>${block.trim().split('\n').map(ln => `<li>${ln.replace(/^[-*]\s+/, '')}</li>`).join('')}</ul>`);
+  s = s.replace(/(?:^\d+\.\s+.+\n?)+/gm, (block) => `<ol>${block.trim().split('\n').map(ln => `<li>${ln.replace(/^\d+\.\s+/, '')}</li>`).join('')}</ol>`);
+  // inline: bold, italic, code, links
+  s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, (_, c) => `<strong>${c}</strong>`);
+  s = s.replace(/(^|\W)\*([^*\n]+)\*(\W|$)/g, (_, a, c, b) => `${a}<em>${c}</em>${b}`);
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+  // paragraphs from blank-line separators (skip blocks already wrapped)
+  s = s.split(/\n{2,}/).map(p => /^<(h\d|ul|ol|pre|table)/i.test(p.trim()) ? p : `<p>${p.replace(/\n/g, '<br>')}</p>`).join('\n');
+  return s;
+}
+function _agentToolsHtml(tools) {
+  if (!tools || !tools.length) return '';
+  return `<div class="agent-tools">${tools.map(t => `<span class="agent-tool" title="${escapeHtml(JSON.stringify(t.args || {}))}">${t.ok === false ? '✗' : '✓'} ${escapeHtml(t.name)}</span>`).join('')}</div>`;
+}
+function _agentUsageHtml(u) {
+  if (!u) return '';
+  const cached = u.cache_read_input_tokens || 0;
+  const inTok = u.input_tokens || 0;
+  const out = u.output_tokens || 0;
+  return `<div class="agent-usage" title="Tokens used (cached input + new input → output)">${inTok}+${out} tok${cached ? ` · ${cached} cached` : ''}</div>`;
+}
+function _renderAgentPanel() {
+  let panel = document.getElementById('sdc-agent-panel');
+  if (!_agentOpen) { if (panel) panel.remove(); return; }
+  if (!panel) { panel = document.createElement('div'); panel.id = 'sdc-agent-panel'; document.body.appendChild(panel); }
+  const s = _agentStatus;
+  const setupHint = s && s.setup ? escapeHtml(s.setup)
+    : s && !s.reachable ? 'The assistant isn’t configured. Set <code>ANTHROPIC_API_KEY</code> in the server <code>.env</code> and restart.'
+    : '';
+  const msgsHtml = _agentMsgs.map(m => {
+    if (m.role === 'user') return `<div class="agent-msg agent-user">${escapeHtml(m.text)}</div>`;
+    if (m.role === 'error') return `<div class="agent-msg agent-err">⚠ ${escapeHtml(m.text)}</div>`;
+    const body = m.text ? _agentMd(m.text) : '';
+    return `<div class="agent-msg agent-bot">${body}${_agentToolsHtml(m.tools)}${_agentUsageHtml(m.usage)}</div>`;
+  }).join('');
+  const startersHtml = (!_agentMsgs.length) ? `<div class="agent-empty"><span class="agent-empty-icon">✦</span><div>Ask about schedules, parts, POs, or cost.</div></div>` : '';
+  const modelChip = s && s.model ? `<span class="agent-model-chip">${escapeHtml(s.model)}</span>` : '';
+  panel.innerHTML = `
+    <div class="agent-head">
+      <span class="agent-title">✦ SDC Assistant</span>
+      <div class="agent-head-meta"><span class="agent-ro-badge">read-only</span>${modelChip}</div>
+      ${_agentMsgs.length ? `<button class="agent-clear" data-act="clear" type="button" title="Clear the conversation">Clear</button>` : ''}
+      <button class="agent-close" data-act="close" type="button" title="Close">✕</button>
+    </div>
+    ${setupHint ? `<div class="agent-setup">${setupHint}</div>` : ''}
+    <div class="agent-body" id="agent-body">${startersHtml}${msgsHtml}${_agentBusy ? '<div class="agent-msg agent-bot agent-thinking">Thinking…</div>' : ''}</div>
+    <form class="agent-form" id="agent-form">
+      <input type="text" id="agent-input" placeholder="Ask a question…" autocomplete="off" ${_agentBusy ? 'disabled' : ''}/>
+      <button type="submit" class="btn-primary" ${_agentBusy ? 'disabled' : ''}>Send</button>
+    </form>`;
+  panel.querySelector('[data-act="close"]').onclick = () => { _agentOpen = false; _renderAgentPanel(); };
+  const clr = panel.querySelector('[data-act="clear"]'); if (clr) clr.onclick = () => { _agentMsgs.length = 0; _agentHistory = []; _renderAgentPanel(); };
+  panel.querySelectorAll('[data-starter]').forEach(b => b.onclick = () => { const q = b.dataset.starter; const inp = panel.querySelector('#agent-input'); if (inp) inp.value = q; _agentSend(); });
+  panel.querySelector('#agent-form').onsubmit = (e) => { e.preventDefault(); _agentSend(); };
+  const body = panel.querySelector('#agent-body'); if (body) body.scrollTop = body.scrollHeight;
+  const inp = panel.querySelector('#agent-input'); if (inp && !_agentBusy) inp.focus();
+}
+async function _agentSend() {
+  const inp = document.getElementById('agent-input');
+  const q = inp ? inp.value.trim() : '';
+  if (!q || _agentBusy) return;
+  _agentMsgs.push({ role: 'user', text: q });
+  _agentBusy = true; _renderAgentPanel();
+  try {
+    const r = await api.agent.ask(q, _agentContext(), _agentHistory);
+    if (Array.isArray(r.history)) _agentHistory = r.history;
+    _agentMsgs.push({ role: 'assistant', text: r.answer || '(no answer)', tools: r.tools, usage: r.usage });
+  } catch (e) {
+    _agentMsgs.push({ role: 'error', text: e.message });
+  } finally {
+    _agentBusy = false; _renderAgentPanel();
+  }
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _initAgentUI); else _initAgentUI();
 
 // In-app text prompt (replaces the browser-native prompt()). Returns a Promise
 // resolving to the trimmed string, or null on cancel. opts.validate(value) may
@@ -2833,7 +2977,7 @@ function injectPhaseStyles() {
   const phaseRules = PHASES.map(p =>
     `.gantt .bar-wrapper.phase-${p.key} .bar { fill: ${p.color}; stroke: ${p.text}; stroke-width: 1; }
      .gantt .bar-wrapper.phase-${p.key} .bar-progress { fill: ${p.text}; opacity: 0.4; }
-     .gantt .bar-wrapper.phase-${p.key} .bar-label { fill: ${p.text}; font-weight: 600; }`
+     .gantt .bar-wrapper.phase-${p.key} .bar-label { fill: ${p.text}; font-weight: var(--fw-semibold); }`
   ).join('\n');
 
   // Hierarchy-based bar colors — listed AFTER phase rules so they win on equal specificity.
@@ -2841,7 +2985,7 @@ function injectPhaseStyles() {
   const hierarchyRules = Object.entries(HIERARCHY_BAR_COLORS).map(([key, c]) =>
     `.gantt .bar-wrapper.bar-color-${key} .bar { fill: ${c.fill}; stroke: ${c.text}; stroke-width: 1; }
      .gantt .bar-wrapper.bar-color-${key} .bar-progress { fill: ${c.text}; opacity: 0.4; }
-     .gantt .bar-wrapper.bar-color-${key} .bar-label { fill: ${c.text}; font-weight: 600; }`
+     .gantt .bar-wrapper.bar-color-${key} .bar-label { fill: ${c.text}; font-weight: var(--fw-semibold); }`
   ).join('\n');
 
   // Over-allocated overrides — listed before critical so the critical-path outline
@@ -2850,7 +2994,7 @@ function injectPhaseStyles() {
   const overAlloc = `
     .gantt .bar-wrapper.over-allocated .bar { fill: #fee2e2; stroke: #dc2626; stroke-width: 2; }
     .gantt .bar-wrapper.over-allocated .bar-progress { fill: #dc2626; opacity: 0.45; }
-    .gantt .bar-wrapper.over-allocated .bar-label { fill: #b91c1c; font-weight: 800; }
+    .gantt .bar-wrapper.over-allocated .bar-label { fill: #b91c1c; font-weight: var(--fw-extrabold); }
   `;
 
   // Critical path — bars and milestone diamonds on the binding chain from Receipt
@@ -3341,7 +3485,7 @@ function compressGanttToWorkDays() {
         text.setAttribute('class', 'lower-text');
         text.setAttribute('x', String(mondayX));
         text.setAttribute('y', String(lowerY));
-        text.style.fontFamily = 'sans-serif';
+        text.style.fontFamily = "'Montserrat', sans-serif";
         text.style.fontSize = '12px';
         text.style.fontWeight = '500';
         text.setAttribute('text-anchor', 'middle');
@@ -3394,7 +3538,7 @@ function compressGanttToWorkDays() {
       const cx = (m.startX + m.endX) / 2;
       text.setAttribute('x', String(cx));
       text.setAttribute('y', String(upperY));
-      text.style.fontFamily = 'sans-serif';
+      text.style.fontFamily = "'Montserrat', sans-serif";
       text.style.fontSize = fontSize;
       text.style.fontWeight = '600';
       text.setAttribute('text-anchor', 'middle');
@@ -3537,7 +3681,7 @@ function drawWeekdayLetters() {
         text.setAttribute('stroke', 'rgba(255,255,255,0.9)');
         text.setAttribute('stroke-width', '2');
         text.setAttribute('stroke-linejoin', 'round');
-        text.style.fontFamily = 'sans-serif';
+        text.style.fontFamily = "'Montserrat', sans-serif";
         text.style.fontSize = '9px';
         text.style.fontWeight = '700';
         text.style.pointerEvents = 'none';
@@ -4607,7 +4751,7 @@ function drawPenaltyClauseLine() {
     text.setAttribute('text-anchor', 'middle');
     text.setAttribute('dominant-baseline', 'central');
     text.setAttribute('fill', '#b91c1c');
-    text.style.fontFamily = 'sans-serif';
+    text.style.fontFamily = "'Montserrat', sans-serif";
     text.style.fontSize = '11px';
     text.style.fontWeight = '700';
     text.textContent = labelText;
@@ -5375,7 +5519,7 @@ function clipBarLabels() {
     //  - barH=14 → 12px
     //  - barH≥14 → 12px (capped to match grid font)
     // IMPORTANT: set via style.fontSize (inline style), NOT setAttribute. The
-    // frappe-gantt CDN CSS rule `.gantt .bar-label { font-size: 12px }` has
+    // frappe-gantt CDN CSS rule `.gantt .bar-label { font-size: var(--fs-md) }` has
     // higher CSS specificity than a presentation attribute, so attribute-based
     // font-size gets ignored. Inline style wins.
     const fontSize = Math.max(8, Math.min(12, barH - 2));
@@ -6188,10 +6332,9 @@ function loadProjectTabs() {
   if (Array.isArray(saved) && saved.length) {
     state.openProjects = saved.includes('') ? saved : ['', ...saved];
   } else {
-    // First-time seed: show All + every project that already has tasks. After this we
-    // never auto-modify; the user explicitly opens/closes from the picker.
-    const existing = uniqueValues('project');
-    state.openProjects = ['', ...existing];
+    // First-time seed: just the "All projects" tab. User picks which schedules
+    // to open from the Projects page — we never auto-open everything.
+    state.openProjects = [''];
   }
   const savedActive = localStorage.getItem('sdcActiveProject');
   state.filters.project = (savedActive != null && state.openProjects.includes(savedActive))
@@ -6369,24 +6512,24 @@ function openPromoteModal(sourceProject) {
         <button class="modal-close" type="button">×</button>
       </div>
       <div class="modal-body">
-        <p style="margin:0 0 12px;font-size:13px;color:#334155;">
+        <p style="margin:0 0 12px;font-size:var(--fs-base);color:#334155;">
           Stamps a fresh schedule from <code>SDC_StandardProject_Template</code>
           and copies <strong>${escapeHtml(sourceProject)}</strong>'s saved
           quote across — hours per bucket, People # (incl. fractional
           values like 1.25), and any manual Quoted-hours overrides.
         </p>
-        <p style="margin:0 0 16px;font-size:12px;color:#64748b;">
+        <p style="margin:0 0 16px;font-size:var(--fs-md);color:#64748b;">
           People-math: a sales value of <em>1.25 ce_engineering</em>
           becomes 1 CE row @ 85% + 1 helper row @ 25% on the detailed
           schedule. Durations recompute so total hours per discipline
           match the sales quote, then cascadeSchedule fills in dates.
         </p>
-        <label style="display:block;font-size:12px;font-weight:600;color:#334155;margin-bottom:6px;">
+        <label style="display:block;font-size:var(--fs-md);font-weight:var(--fw-semibold);color:#334155;margin-bottom:6px;">
           New project name
         </label>
         <input type="text" id="promote-name-input" value="${escapeHtml(suggestedName)}"
-               style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:4px;font-size:14px;font-family:inherit;" />
-        <p class="promote-error" id="promote-error" style="background:#fee2e2;color:#991b1b;padding:8px 10px;border-radius:4px;font-size:13px;margin:10px 0 0;display:none;"></p>
+               style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:4px;font-size:var(--fs-lg);font-family:inherit;" />
+        <p class="promote-error" id="promote-error" style="background:#fee2e2;color:#991b1b;padding:8px 10px;border-radius:4px;font-size:var(--fs-base);margin:10px 0 0;display:none;"></p>
       </div>
       <div class="modal-foot">
         <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
@@ -7032,8 +7175,8 @@ function renderDashboard() {
     return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="pdash-donut-svg">
       <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
       ${arcs}
-      <text x="${cx}" y="${cy - 4}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.20}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${centerPct}%</text>
-      <text x="${cx}" y="${cy + size * 0.12}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.08}" fill="#64748b" style="font-family:sans-serif">done</text>
+      <text x="${cx}" y="${cy - 4}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.20}" font-weight="700" fill="#1f2937" style="font-family:'Montserrat',sans-serif">${centerPct}%</text>
+      <text x="${cx}" y="${cy + size * 0.12}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.08}" fill="#64748b" style="font-family:'Montserrat',sans-serif">done</text>
     </svg>`;
   }
 
@@ -7687,7 +7830,7 @@ function _shopDonut(pct, size = 76) {
   return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="sp-donut">
     <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="${sw}"/>
     ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${len} ${gap}" transform="rotate(-90 ${cx} ${cy})" stroke-linecap="round"/>` : ''}
-    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.24}" font-weight="800" fill="#1f2937" style="font-family:sans-serif">${pct == null ? '—' : pct + '%'}</text>
+    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.24}" font-weight="800" fill="#1f2937" style="font-family:'Montserrat',sans-serif">${pct == null ? '—' : pct + '%'}</text>
   </svg>`;
 }
 // Set a part's priority (1/2/3) from the click popup.
@@ -8084,7 +8227,7 @@ let _vpoState = null;
 let _vpoAddOpen = false;
 function _vpoStateGet() {
   if (_vpoState) return _vpoState;
-  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', dashRange: 7 };
+  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', fJob: 'all', dashRange: 7 };
   try { s = Object.assign(s, JSON.parse(localStorage.getItem('sdcVendorPoState') || '{}')); } catch (_) {}
   if (s.view !== 'cards') s.view = 'list';
   _vpoState = s; return s;
@@ -8112,9 +8255,1324 @@ function _vpoStatusOf(r) {
   if (e != null) { if (e < Date.now()) return 'late'; if (e - Date.now() <= 7 * 86400000) return 'soon'; }
   return 'open';
 }
+// Total ETO availability — checked once; ETO UI (sync button, banner chip,
+// quote actuals) only renders when the server actually has ETO_* configured,
+// so every page stays clean otherwise.
+let _etoAvailable = false;
+let _etoChecked = false;
+function _etoCheckOnce() {
+  if (_etoChecked) return;
+  _etoChecked = true;
+  api.eto.status().then(s => {
+    if (s && s.configured) {
+      _etoAvailable = true;
+      try { renderVendorPOsPage(); } catch (_) {}
+      try { renderProjectTabs(); } catch (_) {}
+    }
+  }).catch(() => {});
+}
+
+// ── Total ETO project-link chip (schedule banner) ───────────────────────────
+// A project links to the ERP through its job number (=== ETO ProjectID).
+// The chip shows the link state and opens an in-app prompt to set it.
+const _etoNameCache = {}; // job → official ETO name, or null when not found
+
+// SDC names projects "<job#>_<customer>…" (e.g. "1158_Panduit, …"), so the
+// leading digits are almost always the Total ETO ProjectID. Pull them out as a
+// suggestion — never auto-linked, only offered + validated on click.
+function _etoJobFromName(name) {
+  // Leading 3+ digits. No \b after — SDC names are "1158_…" and "_" is a word
+  // char, so \b wouldn't match there; just grab the leading digit run.
+  const m = String(name || '').match(/^\s*(\d{3,})/);
+  return m ? m[1] : '';
+}
+
+function _etoBannerChipHtml(project) {
+  if (!_etoAvailable) return '';
+  const job = (state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number) || '';
+  if (!job) {
+    const guess = _etoJobFromName(project);
+    if (guess) {
+      return `<button type="button" id="eto-link-chip" class="eto-chip eto-chip-unlinked" data-eto-guess="${escapeHtml(guess)}" title="Looks like Total ETO job ${escapeHtml(guess)} (from the project name). Click to verify against the ERP and link.">🔗 Link ETO #${escapeHtml(guess)}</button>`;
+    }
+    return `<button type="button" id="eto-link-chip" class="eto-chip eto-chip-unlinked" title="Link this schedule to a Total ETO job — turns on automatic vendor PO sync and live cost actuals for this project.">🔗 Link ETO job…</button>`;
+  }
+  const known = _etoNameCache[job]; // undefined = not looked up yet
+  const bad = known === null;
+  const title = bad ? `Job ${job} was not found in Total ETO — click to fix the number.`
+    : known ? `Linked to Total ETO job ${job} — ${known}. Vendor POs and cost actuals sync from the ERP. Click to change.`
+    : `Linked to Total ETO job ${job}. Click to change.`;
+  return `<button type="button" id="eto-link-chip" class="eto-chip${bad ? ' eto-chip-bad' : ''}" title="${escapeHtml(title)}">ETO #${escapeHtml(job)}${bad ? ' ✗' : ''}</button>`;
+}
+
+function _wireEtoBannerChip(banner, project) {
+  const chip = banner.querySelector('#eto-link-chip');
+  if (!chip) return;
+  const job = (state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number) || '';
+  // Lazy one-time validation: fetch the official ETO name for the tooltip.
+  if (job && _etoNameCache[job] === undefined) {
+    fetch(`/api/eto/project/${encodeURIComponent(job)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(info => { _etoNameCache[job] = info ? (info.ProjectName || '') : null; try { renderProjectTabs(); } catch (_) {} })
+      .catch(() => {});
+  }
+  const guess = chip.dataset.etoGuess;
+  chip.addEventListener('click', () => guess ? _etoLinkSuggested(project, guess) : _etoLinkJobFlow(project));
+}
+
+// Persist the job-number link. Updates the projects row if it exists, or
+// CREATES it when the project is only a task-tab with no projects-table row yet
+// (POST /api/projects is create-or-return). Returns true on success.
+async function _etoApplyJobLink(project, job, info) {
+  let idx = state.projectsIndex && state.projectsIndex[project];
+  try {
+    if (idx && idx.id) {
+      const r = await fetch(`/api/projects/${idx.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job_number: job }) });
+      if (!r.ok) throw new Error(`save failed (${r.status})`);
+    } else {
+      const r = await fetch('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: project, job_number: job }) });
+      if (!r.ok) throw new Error(`create failed (${r.status})`);
+      const row = await r.json();
+      state.projectsIndex = state.projectsIndex || {};
+      state.projectsIndex[project] = { id: row.id, job_number: job };
+      idx = state.projectsIndex[project];
+    }
+  } catch (e) { showToast(`Could not save the job number: ${e.message}`, { kind: 'error' }); return false; }
+  idx.job_number = job;
+  _etoNameCache[job] = info ? (info.ProjectName || '') : '';
+  showToast(`Linked to ETO job ${job}${info && info.ProjectName ? ' — ' + info.ProjectName : ''}`, { kind: 'success' });
+  try { renderProjectTabs(); } catch (_) {}
+  return true;
+}
+
+// One-click link of a name-derived job number — still validated against ETO.
+// If the guess isn't a real ETO job, fall back to the manual prompt (prefilled)
+// so nothing links silently and a wrong prefix is easy to correct.
+async function _etoLinkSuggested(project, guess) {
+  let info = null;
+  try {
+    const r = await fetch(`/api/eto/project/${encodeURIComponent(guess)}`);
+    if (r.ok) info = await r.json();
+    else if (r.status !== 404) return _etoLinkJobFlow(project, guess); // server error → manual
+  } catch (_) { return _etoLinkJobFlow(project, guess); }
+  if (!info) {
+    showToast(`Job ${guess} (from the name) isn't in Total ETO — enter the correct number.`, { kind: 'error' });
+    return _etoLinkJobFlow(project, guess);
+  }
+  await _etoApplyJobLink(project, guess, info);
+}
+
+async function _etoLinkJobFlow(project, prefill) {
+  const idx = state.projectsIndex && state.projectsIndex[project];
+  const current = (idx && idx.job_number) || '';
+  const val = await showPromptDialog({
+    title: 'Link to Total ETO',
+    message: `Enter the Total ETO job number for "${project}". The vendor PO sync and live cost actuals follow this link.`,
+    placeholder: 'e.g. 1129',
+    value: prefill || current,
+    validate: v => (v === '' || /^\d+$/.test(v)) ? null : 'Job number must be digits only',
+    okLabel: 'Save',
+  });
+  if (val === null || val === current) return; // cancelled or unchanged
+  // Verify against the ERP before saving — typos get caught here, visibly.
+  let info = null;
+  try {
+    const r = await fetch(`/api/eto/project/${encodeURIComponent(val)}`);
+    if (r.ok) info = await r.json();
+    else if (r.status !== 404) { const e = await r.json().catch(() => ({})); showToast(`ETO lookup failed: ${e.error || r.status}`, { kind: 'error' }); return; }
+  } catch (e) { showToast(`ETO lookup failed: ${e.message}`, { kind: 'error' }); return; }
+  if (!info) { showToast(`Job ${val} was not found in Total ETO — check the number.`, { kind: 'error' }); return; }
+  await _etoApplyJobLink(project, val, info);
+}
+
+// ETO actuals strip inside the Quote vs Schedule modal — live est-vs-actual
+// hours, materials, total cost and margin from the ERP costing view.
+async function _loadQuoteEtoActuals(project, overlay) {
+  try {
+    if (!_etoAvailable) return;
+    const job = state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number;
+    if (!job) return;
+    const r = await fetch(`/api/eto/costing/${encodeURIComponent(job)}`);
+    if (!r.ok) return;
+    const c = await r.json();
+    const box = overlay.querySelector('#quote-eto-actuals');
+    if (!box) return;
+    const hrs = v => v == null ? '—' : Math.round(Number(v)).toLocaleString();
+    const usd = v => v == null ? '—' : '$' + Math.round(Number(v)).toLocaleString();
+    const pct = v => v == null ? '—' : Number(v).toFixed(1) + '%';
+    const over = (est, act) => est != null && act != null && Number(act) > Number(est);
+    const cell = (label, estStr, actStr, isOver, tip) => `
+      <div class="eto-stat" title="${escapeHtml(tip)}">
+        <span class="eto-stat-label">${label}</span>
+        <span class="eto-stat-vals"><span class="eto-stat-est">${estStr}</span> est&nbsp;·&nbsp;<span class="eto-stat-act${isOver ? ' is-over' : ''}">${actStr}</span> act</span>
+      </div>`;
+    box.hidden = false;
+    box.innerHTML = `
+      <div class="eto-actuals-head">Total ETO actuals — job ${escapeHtml(String(job))} <span class="eto-actuals-hint">live from the ERP</span></div>
+      <div class="eto-actuals-grid">
+        ${cell('Eng hours', hrs(c.EstEngHrs), hrs(c.ActEngHrs), over(c.EstEngHrs, c.ActEngHrs), 'Engineering hours — estimate vs actual hours booked in Total ETO')}
+        ${cell('Mfg hours', hrs(c.EstMfgHrs), hrs(c.ActMfgHrs), over(c.EstMfgHrs, c.ActMfgHrs), 'Manufacturing hours — estimate vs actual hours booked in Total ETO')}
+        ${cell('Materials', usd(c.EstMaterials), usd(c.ActMaterials), over(c.EstMaterials, c.ActMaterials), 'Material cost — estimate vs actual (purchased + inventory pulls)')}
+        ${cell('Total cost', usd(c.TotalEstimate), usd(c.TotalActualCost), over(c.TotalEstimate, c.TotalActualCost), 'Total project cost — estimate vs actual')}
+        ${cell('Margin', pct(c.BudgetMargin), pct(c.ActualMargin), c.BudgetMargin != null && c.ActualMargin != null && Number(c.ActualMargin) < Number(c.BudgetMargin), 'Margin — budget vs actual. Red when actual margin is below budget.')}
+      </div>`;
+  } catch (_) { /* cosmetic — modal works fine without the strip */ }
+}
+
+// ── Procurement page (build readiness from Total ETO) ───────────────────────
+// Per-assembly received / ordered / no-PO rollups for a linked job's BOM.
+// Ported from the standalone Build Readiness Report app; same math, rendered
+// in the scheduler's own grid style. Read-only — nothing here writes anywhere.
+let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '', search: '', open: {}, partsListMode: 'table', upcomingWeek: 1 };
+try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
+function _procSave() { try { localStorage.setItem('sdcProcState', JSON.stringify({ ..._procState, open: {} })); } catch (_) {} }
+const _procCache = {};   // job → readiness payload
+const _procVendorCache = {};   // job → vendor status payload (used by card view + PO panel)
+let _procLoading = false;
+
+function _procLinkedJobs() {
+  const out = [];
+  const idx = state.projectsIndex || {};
+  for (const name of Object.keys(idx)) {
+    if (idx[name].job_number) out.push({ name, job: idx[name].job_number });
+  }
+  return out.sort((a, b) => Number(a.job) - Number(b.job));
+}
+
+function _procBarColor(pct) { return pct >= 90 ? '#74C415' : pct >= 60 ? '#AACEE8' : '#1574C4'; }
+
+// ── Vendors tab (Build Readiness "Vendor Status" view) ──────────────────────
+// POs grouped by supplier, each with received progress + a status badge; click
+// a PO to expand its line items inline. Lazily fetches /api/eto/vendors/:job.
+function _procRerender() {
+  try { renderScheduleProcurement(); } catch (_) {}
+}
+
+// ── Cost tab (ETO "Part Cost" report card) ──────────────────────────────────
+// Materials-only financial summary: estimated → purchased → received → paid,
+// plus left-to-pay and estimate-to-complete. Lazily fetches /api/eto/partcost.
+const _procCostCache = {}; // job → part-cost payload
+
+// One delegated listener (document-level) for the editable materials-estimate
+// controls, so they work whether the Cost card is on the full page or the drawer.
+function _procWireEstimateEditor() {
+  if (window._procEstWired) return;
+  window._procEstWired = true;
+  document.addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-action="proc-edit-estimate"]');
+    if (edit) { e.preventDefault(); _procEditEstimate(edit.dataset.job); return; }
+    const rev = e.target.closest('[data-action="proc-revert-estimate"]');
+    if (rev) { e.preventDefault(); _procRevertEstimate(rev.dataset.job); return; }
+  });
+}
+async function _procEditEstimate(job) {
+  const c = _procCostCache[job] || {};
+  const v = await showPromptDialog({
+    title: 'Materials estimate to purchase',
+    message: 'Enter the estimated materials cost (USD) for this job. It drives the “Purchased vs estimate” bar and Estimate-to-Complete. (Total ETO has no reliable per-job materials budget, so PMs set it here.)',
+    placeholder: 'e.g. 200000',
+    value: (c.estimateSource === 'user' && c.estimated != null) ? String(Math.round(c.estimated)) : '',
+    validate: x => /^\d{1,12}(\.\d{1,2})?$/.test(x) ? null : 'Enter a dollar amount — numbers only (e.g. 200000).',
+    okLabel: 'Save',
+  });
+  if (v === null) return;
+  await _procSaveEstimate(job, Number(v), 'Materials estimate saved');
+}
+async function _procRevertEstimate(job) {
+  await _procSaveEstimate(job, null, 'Reverted to the Total ETO estimate');
+}
+async function _procSaveEstimate(job, estimate, okMsg) {
+  try {
+    const r = await fetch(`/api/eto/partcost/${encodeURIComponent(job)}/estimate`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estimate }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || ('HTTP ' + r.status));
+    delete _procCostCache[job];
+    _procCostCache[job] = await api.eto.partcost(job);
+    _procRerender();
+    if (typeof showToast === 'function') showToast(okMsg, { kind: 'success' });
+  } catch (e) { if (typeof showToast === 'function') showToast('Could not save estimate: ' + e.message, { kind: 'error' }); }
+}
+
+function _procCostGauge(c) {
+  const usd = v => _procUsd(v);
+  const budget = Number(c.estimated) || 0;
+  const spent = Number(c.purchased) || 0;
+  const projection = Number(c.projection) || 0;
+  const budgetUnset = !budget || (c.estimateSource === 'eto' && budget < spent * 0.25);
+  const pct = budgetUnset ? null : Math.round((spent / budget) * 100);
+  const projPct = budgetUnset ? null : Math.round((projection / budget) * 100);
+  const frac = budgetUnset ? 0 : Math.min(1, spent / budget);
+  const color = pct == null ? '#94a3b8' : pct <= 80 ? '#1574c4' : pct <= 100 ? '#eab308' : '#dc2626';
+
+  // 270° arc — sweep clockwise from 135° (bottom-left) over the top to 405° (=45°, bottom-right).
+  const cx = 130, cy = 130, r = 92, sw = 20;
+  const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+  const arc = (s, e) => { const [x1, y1] = pol(s), [x2, y2] = pol(e); const large = (e - s) > 180 ? 1 : 0; return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`; };
+
+  // Compact dollar formatter for the small callout chips: $600,000 → $600K, $1.2M, etc.
+  const compactUsd = (v) => {
+    const n = Math.round(Number(v) || 0);
+    if (n === 0) return '—';
+    if (Math.abs(n) >= 1000000) return '$' + (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (Math.abs(n) >= 1000) return '$' + Math.round(n / 1000) + 'K';
+    return '$' + n.toLocaleString();
+  };
+
+  const paid = Number(c.paid) || 0;
+  // Position on the 270° arc for a given fraction (0..1 of budget).
+  const arcAt = (f) => pol(135 + 270 * Math.min(1, Math.max(0, f)));
+  const spentFrac = budgetUnset ? null : Math.min(1, spent / budget);
+  const projFrac  = budgetUnset ? null : Math.min(1, projection / budget);
+  const paidFrac  = budgetUnset ? null : Math.min(1, paid / budget);
+
+  // Sizing — area encodes magnitude. sqrt(v/budget) so a value 4× larger
+  // shows up as a 2× radius (8× bigger by eye); reads as "this one is way
+  // bigger" rather than swamping everything. Budget = max; everything scales
+  // relative to it.
+  const sqrtFrac = (v) => (!budget || v <= 0) ? 0 : Math.min(1, Math.sqrt(v / budget));
+  const dotR = (v) => 5 + 9 * sqrtFrac(v);             // 5..14 px
+  const dot = (f, v, fill, stroke, label) => {
+    if (f == null || !(v > 0)) return '';
+    const [x, y] = arcAt(f);
+    return `<g><title>${escapeHtml(label)}: ${usd(v)}</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotR(v).toFixed(1)}" fill="${fill}" stroke="${stroke}" stroke-width="2"/></g>`;
+  };
+  // Callout box style — also scaled by value so the boxes themselves visually
+  // rank Budget > Projected > Purchased > Paid (or however the numbers fall).
+  const coStyle = (v) => {
+    const f = sqrtFrac(v);
+    return `font-size:${(10.5 + 5 * f).toFixed(1)}px;padding:${(1.5 + 3 * f).toFixed(1)}px ${(9 + 9 * f).toFixed(1)}px;`;
+  };
+
+  return `<div class="proc-gauge">
+    <div class="proc-gauge-chart">
+      <svg viewBox="0 0 260 260" class="proc-gauge-svg" role="img" aria-label="Cost gauge">
+        <path d="${arc(135, 405)}" fill="none" stroke="#e8edf3" stroke-width="${sw}" stroke-linecap="round"/>
+        ${!budgetUnset ? `<path d="${arc(135, 135 + 270 * spentFrac)}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>` : ''}
+        ${dot(1, budget, '#cfe2f5', '#1574c4', 'Part Cost Budget')}
+        ${dot(projFrac, projection, '#fff', '#0f172a', 'Projected total')}
+        ${dot(spentFrac, spent, color, color, 'Part Cost Purchased')}
+        ${dot(paidFrac, paid, '#bef264', '#5a9e10', 'Part Cost Paid')}
+      </svg>
+      <div class="proc-gauge-callouts">
+        <div class="proc-gauge-co proc-gauge-co-budget" style="${coStyle(budget)}" title="Part Cost Budget — ${usd(budget)}">${compactUsd(budget)}${budgetUnset && budget ? ' <i>unset</i>' : ''}</div>
+        <div class="proc-gauge-co" style="${coStyle(projection)}" title="Projected Total (Purchased + ETC) — ${usd(projection)}">${compactUsd(projection)}</div>
+        <div class="proc-gauge-co" style="${coStyle(spent)}" title="Part Cost Purchased — ${usd(spent)}">${compactUsd(spent)}</div>
+        <div class="proc-gauge-co proc-gauge-co-paid" style="${coStyle(paid)}" title="Part Cost Paid — ${usd(paid)}">${compactUsd(paid)}</div>
+      </div>
+    </div>
+    <div class="proc-gauge-summary">
+      <div class="proc-gauge-row"><b>Part Cost Budget:</b> ${usd(budget)}${budgetUnset && budget ? ' <span class="proc-gauge-hint">— set via ✎ Edit</span>' : ''}</div>
+      <div class="proc-gauge-row"><b>Part Cost Budget Projection:</b> ${usd(projection)}${projPct != null ? ` <i>(${projPct}%)</i>` : ''}</div>
+    </div>
+  </div>`;
+}
+
+// 3 concentric ring gauges: Estimated (outer) -> Purchased (middle) -> Paid (inner)
+function _procCostWaterfall(c) {
+  const usd = v => _procUsd(v);
+  const estimated = Number(c.estimated) || 0;
+  const purchased = Number(c.purchased) || 0;
+  const paid      = Number(c.paid)      || 0;
+
+  const purRaw  = estimated ? purchased / estimated : 0;
+  const paidRaw = estimated ? paid / estimated : 0;
+  const purOver  = purRaw > 1, paidOver = paidRaw > 1;
+
+  const rings = [
+    { label: 'Estimated', sub: 'Budget',     value: estimated, pct: 1,                    over: false,    color: '#1574C4', tipColor: '#60a5fa', track: '#dbeafe', ro: 100, ri: 80 },
+    { label: 'Purchased', sub: 'Parts Cost', value: purchased, pct: Math.min(1, purRaw),  over: purOver,  color: '#061D39', tipColor: '#93c4e8', track: '#d0d9e6', ro: 72,  ri: 52 },
+    { label: 'Paid',      sub: 'Parts Cost', value: paid,      pct: Math.min(1, paidRaw), over: paidOver, color: '#74C415', tipColor: '#a3e635', track: '#e2f5c0', ro: 44,  ri: 24 },
+  ];
+
+  // large-arc always 0 — semicircle never sweeps > 180°
+  function donutPath(pct, ox, oy, ro, ri) {
+    const full = `M ${ox-ro} ${oy} A ${ro} ${ro} 0 0 1 ${ox+ro} ${oy} L ${ox+ri} ${oy} A ${ri} ${ri} 0 0 0 ${ox-ri} ${oy} Z`;
+    if (pct <= 0) return { track: full, fill: '' };
+    if (pct >= 1) return { track: full, fill: full };
+    const a = (1 - pct) * Math.PI;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const fill = `M ${ox-ro} ${oy} A ${ro} ${ro} 0 0 1 ${(ox+ro*cos).toFixed(1)} ${(oy-ro*sin).toFixed(1)} L ${(ox+ri*cos).toFixed(1)} ${(oy-ri*sin).toFixed(1)} A ${ri} ${ri} 0 0 0 ${ox-ri} ${oy} Z`;
+    return { track: full, fill };
+  }
+
+  const VW = 260, cy = 104, cx = VW / 2;
+  const mainPct = estimated ? Math.round(purRaw * 100) : 0;
+  const mainColor = purOver ? '#dc2626' : (mainPct >= 90 ? '#f59e0b' : '#0f172a');
+
+  const usdShort = v => {
+    if (!v) return '$0';
+    if (v >= 1e6) return '$' + (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    return '$' + Math.round(v / 1000) + 'K';
+  };
+  const arcs = rings.map(r => {
+    const { track, fill } = donutPath(r.pct, cx, cy, r.ro, r.ri);
+    const rawPct   = estimated ? (r.value / estimated) : 0;
+    const pctLabel = estimated ? Math.round(rawPct * 100) + '%' : '—';
+    const fillColor = r.over ? '#dc2626' : r.color;
+    const tipColor  = r.over ? '#fca5a5' : r.tipColor;
+    const da = `data-tl="${r.label}" data-ts="${r.sub}" data-tp="${pctLabel}" data-tv="${usd(r.value)}" data-tc="${tipColor}"`;
+    return `<path d="${track}" fill="${r.track}" ${da} style="cursor:pointer;"/>` +
+           (fill ? `<path d="${fill}" fill="${fillColor}" stroke="white" stroke-width="2.5" ${da} style="cursor:pointer;"/>` : '');
+  }).join('');
+  // Labels at the left ($0) and right (ring value) tips of each arc
+  const tipLabels = rings.map(r => {
+    const rMid = (r.ro + r.ri) / 2;
+    const fillColor = r.over ? '#dc2626' : r.color;
+    const lx = (cx - rMid).toFixed(1);
+    const rx = (cx + rMid).toFixed(1);
+    const ly = cy + 15;
+    return `<text x="${lx}" y="${ly}" text-anchor="middle" font-family="'Montserrat',sans-serif" font-size="8" font-weight="500" fill="#94a3b8">$0</text>` +
+           `<text x="${rx}" y="${ly}" text-anchor="middle" font-family="'Montserrat',sans-serif" font-size="8" font-weight="700" fill="${fillColor}">${usdShort(r.value)}</text>`;
+  }).join('');
+
+  const legendRows = rings.map((r, i) => {
+    const rawPct   = estimated ? (r.value / estimated) : 0;
+    const pctLabel = estimated ? Math.round(rawPct * 100) + '%' : '—';
+    const pctColor = r.over ? '#dc2626' : '#64748b';
+    const barColor = r.over ? '#dc2626' : r.color;
+    const overTag  = r.over ? `<span style="font-size:var(--fs-2xs);background:#fee2e2;color:#dc2626;border-radius:3px;padding:1px 4px;font-weight:var(--fw-bold);margin-left:5px;vertical-align:middle;">OVER</span>` : '';
+    const border   = i < rings.length - 1 ? 'border-bottom:1px solid #f1f5f9;' : '';
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:7px 0;${border}">
+        <div style="width:3px;height:30px;border-radius:2px;background:${barColor};flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:var(--fs-sm);font-weight:var(--fw-bold);color:#1e293b;">${r.label}${overTag}</div>
+          <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.4px;margin-top:1px;">${r.sub}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="font-size:var(--fs-base);font-weight:var(--fw-extrabold);color:#111827;">${usd(r.value)}</div>
+          <div style="font-size:var(--fs-xs);font-weight:var(--fw-semibold);color:${pctColor};margin-top:1px;">${pctLabel}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div style="background:white;border-radius:10px;border:1px solid #e2e8f0;margin-top:16px;overflow:hidden;">
+      <div style="padding:11px 14px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-size:var(--fs-md);font-weight:var(--fw-bold);color:#0f172a;letter-spacing:-0.1px;">Cost Overview</div>
+          <div style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;">${estimated ? usd(estimated) + ' estimated budget' : 'No budget set'}</div>
+        </div>
+        ${estimated ? `<div style="font-size:var(--fs-base);font-weight:var(--fw-extrabold);color:${mainColor};">${mainPct}%<span style="font-size:var(--fs-2xs);font-weight:var(--fw-medium);color:#94a3b8;margin-left:3px;">purchased</span></div>` : ''}
+      </div>
+      <div style="padding:14px 14px 6px;position:relative;">
+        <div id="cg-tip" style="display:none;position:absolute;pointer-events:none;z-index:100;background:#1e293b;color:#fff;border-radius:7px;padding:9px 13px;font-size:var(--fs-md);white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,0.25);">
+          <div id="cg-tip-h" style="font-weight:var(--fw-bold);font-size:var(--fs-base);margin-bottom:1px;"></div>
+          <div id="cg-tip-s" style="color:#94a3b8;font-size:var(--fs-xs);margin-bottom:5px;"></div>
+          <div id="cg-tip-v" style="font-weight:var(--fw-extrabold);font-size:var(--fs-lg);"></div>
+          <div id="cg-tip-p" style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;"></div>
+        </div>
+        <svg viewBox="0 0 ${VW} 122" style="width:100%;height:auto;display:block;"
+          onmousemove="(function(e){const p=e.target.closest('[data-tl]');const t=document.getElementById('cg-tip');if(!p){t.style.display='none';return;}const b=e.currentTarget.getBoundingClientRect();t.style.left=(e.clientX-b.left+12)+'px';t.style.top=(e.clientY-b.top-75)+'px';t.style.display='block';document.getElementById('cg-tip-h').style.color=p.dataset.tc;document.getElementById('cg-tip-h').textContent=p.dataset.tl;document.getElementById('cg-tip-s').textContent=p.dataset.ts;document.getElementById('cg-tip-v').textContent=p.dataset.tv;document.getElementById('cg-tip-p').textContent=p.dataset.tp+' of estimated budget';})(event)"
+          onmouseleave="document.getElementById('cg-tip').style.display='none'">
+          ${arcs}${tipLabels}
+        </svg>
+        <div style="text-align:center;margin-top:2px;padding-bottom:10px;border-bottom:1px solid #f1f5f9;">
+          <div style="font-size:var(--fs-2xl);font-weight:var(--fw-extrabold);color:${mainColor};line-height:1;">${estimated ? mainPct + '%' : '—'}</div>
+          <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-top:3px;">of budget purchased</div>
+        </div>
+      </div>
+      <div style="padding:0 14px 12px;">${legendRows}</div>
+    </div>
+  `;
+}
+
+// Simplified panel for parts without POs
+function _procOpenNoPoPanel(vendorName, job) {
+  const data = _procCache[job];
+  if (!data || !data.partsList) return;
+
+  const noPoParts = data.partsList.filter(p => (p.supplier || 'No Supplier') === vendorName && (!p.poId || p.poId === 'NO_PO'));
+  if (!noPoParts.length) return;
+
+  document.getElementById('proc-po-overlay')?.remove();
+  const fmt = d => d ? fmtDate(d) : '—';
+  const initials = (vendorName || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+
+  const received = noPoParts.filter(p => _procPartStatus(p).key === 'received').length;
+  const total = noPoParts.length;
+  const pct = total > 0 ? Math.round((received / total) * 100) : 0;
+  const barColor = _procBarColor(pct);
+
+  const rows = noPoParts.map(p => {
+    const st = _procPartStatus(p);
+    let cls = 'ppo-line-received';
+    if (st.key !== 'received') {
+      const exp = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : NaN;
+      cls = (!isNaN(exp) && exp < Date.now()) ? 'ppo-line-late' : 'ppo-line-pending';
+    }
+    return `<div class="ppo-line ${cls}">
+      <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(p.pn || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span></span>
+      <span class="num">${p.qty ?? ''}</span>
+      <span>—</span>
+      <span>${fmt(p.requiredDate)}</span>
+      <span>${st.label}</span>
+      <span class="num">—</span>
+    </div>`;
+  }).join('');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'proc-po-overlay';
+  overlay.className = 'proc-po-overlay';
+  overlay.innerHTML = `
+    <div class="proc-po-backdrop" data-action="ppo-close"></div>
+    <aside class="proc-po-panel" role="dialog" aria-label="Parts without PO">
+      <div class="ppo-head">
+        <span class="proc-vavatar">${escapeHtml(initials)}</span>
+        <div class="ppo-head-name"><div class="ppo-vname" title="${escapeHtml(vendorName)}">${escapeHtml(vendorName)}</div><div class="ppo-ponum">Parts without PO</div></div>
+        <button class="ppo-close" data-action="ppo-close" type="button" title="Close">✕</button>
+      </div>
+      <div class="ppo-summary">
+        <div class="ppo-stat"><span class="ppo-sk">TOTAL ITEMS</span><span class="ppo-sv">${total}</span></div>
+        <div class="ppo-stat ppo-prog"><span class="ppo-sk">${received}/${total} received</span><span class="proc-bar"><span class="proc-bar-fill" style="width:${pct}%;background:${barColor}"></span></span><span class="proc-pct" style="color:${barColor}">${pct}%</span></div>
+      </div>
+      <div class="ppo-lines">
+        <div class="ppo-line ppo-lines-head">
+          <span class="ppo-line-part"><span class="ppo-line-pn">Part #</span><span class="ppo-line-desc">Description</span></span>
+          <span class="num">Qty</span>
+          <span>Ordered</span>
+          <span>Due</span>
+          <span>Status</span>
+          <span class="num">Price</span>
+        </div>
+        ${rows}
+      </div>
+    </aside>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Wire close button
+  overlay.querySelectorAll('[data-action="ppo-close"]').forEach(btn => {
+    btn.addEventListener('click', () => overlay.remove());
+  });
+  overlay.querySelector('.proc-po-backdrop')?.addEventListener('click', () => overlay.remove());
+}
+
+// Open full summary panel for all items in a section (delivery or nopo)
+function _procOpenSummaryPanel(job, section, data) {
+  if (!data || !data.partsList) return;
+
+  const fmt = d => d ? fmtDate(d) : '—';
+  const now = Date.now();
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+
+  let title, parts, icon, headerColor;
+
+  if (section === 'nopo') {
+    title = 'Parts Without Purchase Order';
+    parts = data.partsList.filter(p => !p.poId || p.poId === 'NO_PO');
+    icon = '✕';
+    headerColor = '#1574C4';
+  } else if (section === 'delivery') {
+    title = 'Parts on Delivery';
+    parts = data.partsList.filter(p => p.poId && _procPartStatus(p).key !== 'received');
+    icon = '⚠';
+    headerColor = '#f59e0b';
+  } else {
+    return;
+  }
+
+  if (!parts.length) return;
+
+  const rows = parts.map(p => {
+    const st = _procPartStatus(p);
+    let cls = 'ppo-line-received';
+    if (st.key !== 'received') {
+      const exp = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : NaN;
+      cls = (!isNaN(exp) && exp < now) ? 'ppo-line-late' : 'ppo-line-pending';
+    }
+    return `<div class="ppo-line ${cls}">
+      <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(p.pn || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span></span>
+      <span class="num">${p.qty ?? ''}</span>
+      <span>${escapeHtml(p.supplier || '—')}</span>
+      <span>${fmt(p.requiredDate)}</span>
+      <span>${st.label}</span>
+      <span class="num">—</span>
+    </div>`;
+  }).join('');
+
+  document.getElementById('proc-po-overlay')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'proc-po-overlay';
+  overlay.className = 'proc-po-overlay';
+  overlay.innerHTML = `
+    <div class="proc-po-backdrop" data-action="ppo-close"></div>
+    <aside class="proc-po-panel" role="dialog" aria-label="${title}">
+      <div class="ppo-head">
+        <div style="font-size: var(--fs-2xl); margin-right: 8px;">${icon}</div>
+        <div class="ppo-head-name"><div class="ppo-vname">${title}</div><div class="ppo-ponum">${parts.length} items</div></div>
+        <button class="ppo-close" data-action="ppo-close" type="button" title="Close">✕</button>
+      </div>
+      <div class="ppo-lines">
+        <div class="ppo-line ppo-lines-head">
+          <span class="ppo-line-part"><span class="ppo-line-pn">Part #</span><span class="ppo-line-desc">Description</span></span>
+          <span class="num">Qty</span>
+          <span>${section === 'nopo' ? 'Supplier' : 'Supplier'}</span>
+          <span>Due</span>
+          <span>Status</span>
+          <span class="num">Price</span>
+        </div>
+        ${rows}
+      </div>
+    </aside>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Wire close button
+  overlay.querySelectorAll('[data-action="ppo-close"]').forEach(btn => {
+    btn.addEventListener('click', () => overlay.remove());
+  });
+  overlay.querySelector('.proc-po-backdrop')?.addEventListener('click', () => overlay.remove());
+}
+
+// Right-side slide-out panel for one PO (Build Readiness style): header +
+// ordered/due/value summary + line-items table. Data comes from the cached
+// vendor status — no extra fetch. Triggered from the full page or the drawer.
+function _procOpenPoPanel(job, vname, poId) {
+  const vd = _procVendorCache[job];
+  const vendor = vd && vd.vendors && vd.vendors.find(v => v.name === vname);
+  const po = vendor && vendor.pos.find(p => String(p.po) === String(poId));
+  if (!po) return;
+  document.getElementById('proc-po-overlay')?.remove();
+  const fmt = d => d ? fmtDate(d) : '—';
+  const initials = (vname || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+  const badge = { received: ['RECEIVED', 'vstat-ok'], pastdue: ['PAST DUE', 'vstat-bad'], open: ['LATE / EXP', 'vstat-warn'] }[po.status] || ['', ''];
+  const barColor = _procBarColor(po.pct);
+  const ordered = po.lines.map(l => l.ordered).filter(Boolean).sort()[0];
+  const due = po.lines.map(l => l.expected).filter(Boolean).sort().slice(-1)[0];
+
+  // Calculate parts-based metrics (for assembly readiness) from the parts list
+  const data = _procCache[job];
+  const poBOM = data && data.partsList ? data.partsList.filter(p => String(p.poId) === String(poId)) : [];
+  const bomReceived = poBOM.filter(p => _procPartStatus(p).key === 'received').length;
+  const bomTotal = poBOM.length;
+  const bomPct = bomTotal > 0 ? Math.round((bomReceived / bomTotal) * 100) : 0;
+  const bomBarColor = _procBarColor(bomPct);
+  const rows = po.lines.map(l => {
+    // Row tint by status, matching the card-dot legend: received → green,
+    // overdue → red, on order (not yet due) → yellow.
+    let cls = 'ppo-line-received';
+    if (l.status !== 'received') {
+      const exp = l.expected ? Date.parse(l.expected + 'T00:00:00') : NaN;
+      cls = (!isNaN(exp) && exp < Date.now()) ? 'ppo-line-late' : 'ppo-line-pending';
+    }
+    const rcvd = l.status === 'received'
+      ? `<span class="ppo-rcvd-ok">✓ ${fmt(l.receivedDate)}</span>`
+      : `<span class="ppo-rcvd-exp">Exp ${fmt(l.expected)}</span>`;
+    return `<div class="ppo-line ${cls}">
+      <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(l.partNumber || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(l.desc || '')}">${escapeHtml(l.desc || '')}</span></span>
+      <span class="num">${l.qty ?? ''}</span>
+      <span>${fmt(l.ordered)}</span>
+      <span>${fmt(l.expected)}</span>
+      <span>${rcvd}</span>
+      <span class="num">${l.price != null ? '$' + Number(l.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</span>
+    </div>`;
+  }).join('');
+  const overlay = document.createElement('div');
+  overlay.id = 'proc-po-overlay';
+  overlay.className = 'proc-po-overlay';
+  overlay.innerHTML = `
+    <div class="proc-po-backdrop" data-action="ppo-close"></div>
+    <aside class="proc-po-panel" role="dialog" aria-label="PO detail">
+      <div class="ppo-head">
+        <span class="proc-vavatar">${escapeHtml(initials)}</span>
+        <div class="ppo-head-name"><div class="ppo-vname" title="${escapeHtml(vname)}">${escapeHtml(vname)}</div><div class="ppo-ponum">PO #${escapeHtml(String(poId))}</div></div>
+        <span class="proc-vbadge ${badge[1]}">${badge[0]}</span>
+        <button class="ppo-close" data-action="ppo-close" type="button" title="Close">✕</button>
+      </div>
+      <div class="ppo-summary">
+        <div class="ppo-stat"><span class="ppo-sk">ORDERED</span><span class="ppo-sv">${fmt(ordered)}</span></div>
+        <div class="ppo-stat"><span class="ppo-sk">DUE</span><span class="ppo-sv">${fmt(due)}</span></div>
+        <div class="ppo-stat"><span class="ppo-sk">PO VALUE</span><span class="ppo-sv">$${Math.round(po.price).toLocaleString()}</span></div>
+        <div style="font-size: var(--fs-xs); color: #64748b; padding: 8px 0; border-top: 1px solid #e2e8f0; margin-top: 8px;">
+          <div style="margin-bottom: 4px;">PO Lines (Supplier Status)</div>
+        </div>
+        <div class="ppo-stat ppo-prog"><span class="ppo-sk">${po.received}/${po.itemCount} received</span><span class="proc-bar"><span class="proc-bar-fill" style="width:${po.pct}%;background:${barColor}"></span></span><span class="proc-pct" style="color:${barColor}">${po.pct}%</span></div>
+        ${bomTotal > 0 ? `<div style="font-size: var(--fs-xs); color: #64748b; padding: 8px 0; border-top: 1px solid #e2e8f0; margin-top: 8px;">
+          <div style="margin-bottom: 4px;">Parts (Assembly Readiness)</div>
+        </div>
+        <div class="ppo-stat ppo-prog"><span class="ppo-sk">${bomReceived}/${bomTotal} parts</span><span class="proc-bar"><span class="proc-bar-fill" style="width:${bomPct}%;background:${bomBarColor}"></span></span><span class="proc-pct" style="color:${bomBarColor}">${bomPct}%</span></div>` : ''}
+      </div>
+      <div class="ppo-lines">
+        <div class="ppo-line ppo-line-head"><span>PART</span><span class="num">QTY</span><span>ORDERED</span><span>EXPECTED</span><span>RECEIVED</span><span class="num">PRICE</span></div>
+        ${rows}
+      </div>
+    </aside>`;
+  document.body.appendChild(overlay);
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  overlay.querySelectorAll('[data-action="ppo-close"]').forEach(b => b.addEventListener('click', close));
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey);
+  // Force a reflow so the transform transition plays, then flip to the open
+  // state synchronously (rAF can no-op if the tab isn't actively painting).
+  void overlay.offsetWidth;
+  overlay.classList.add('is-open');
+}
+
+
+// Compact money — $843K / $12.4K / $730. Assembly rows are tight on space.
+// Exact whole-dollar amount with thousands separators — $5,200, $90,000, $228.
+// No K/M abbreviation, no decimals.
+function _procUsd(v) {
+  const n = Number(v) || 0;
+  if (n <= 0) return '—';
+  return '$' + Math.round(n).toLocaleString();
+}
+
+// ── Flat Parts List tab ──────────────────────────────────────────────────────
+// Every leaf-part occurrence across all assemblies, one row each, with PO +
+// delivery status. Complements the Assemblies (BOM tree) and Vendors (by-supplier)
+// views — this is the part-centric cut.
+function _procPartStatus(p) {
+  if (p.inStock) return { key: 'received', label: 'IN STOCK', cls: 'ok', sub: 'from inventory' };
+  if (p.status === 'received') return { key: 'received', label: 'RECEIVED', cls: 'ok', sub: '' };
+  if (p.hold) return { key: 'hold', label: 'ON HOLD', cls: 'hold', sub: 'in ETO' };
+  if (p.status === 'noPO') return { key: 'noPO', label: 'NO PO', cls: 'bad', sub: '' };
+  const due = p.expDate || p.requiredDate;
+  if (due) {
+    const diff = Math.ceil((Date.parse(due + 'T00:00:00') - Date.now()) / 86400000);
+    if (isNaN(diff)) return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
+    if (diff < 0) return { key: 'overdue', label: 'OVERDUE', cls: 'bad', sub: `${Math.abs(diff)}d late` };
+    if (diff <= 14) return { key: 'soon', label: 'DUE SOON', cls: 'warn', sub: `in ${diff}d` };
+    return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: `in ${diff}d` };
+  }
+  return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
+}
+
+// Display fallbacks used for both rendering and the filter dropdowns, so the
+// option values line up exactly with what shows in the rows.
+function _procMfr(p) { return p.manufacturer || 'SDC'; }
+
+// Parts List filter bar — Status, Category, Manufacturer, Supplier, Purchase
+// date range. Options come straight from the loaded BOM so they always match
+// what's in the rows. Shared by the full page and the schedule drawer so both
+// filter identically (state lives on _procState). Mirrors the ETO report.
+function _procPartsFilterBar(data) {
+  if (!data || !Array.isArray(data.partsList)) return '';
+  const pstatusOpts = [['all', 'Status: all'], ['received', 'Received'], ['ordered', 'On order'], ['soon', 'Due soon'], ['overdue', 'Overdue'], ['noPO', 'No PO'], ['hold', 'On hold']];
+  const uniqSorted = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  const cats = uniqSorted(data.partsList.map(p => p.category));
+  const mfrs = uniqSorted(data.partsList.map(p => _procMfr(p)));
+  const sups = uniqSorted(data.partsList.map(p => p.supplier));
+  const opt = (cur, v, label) => `<option value="${escapeHtml(String(v))}" ${cur === v ? 'selected' : ''}>${escapeHtml(String(label))}</option>`;
+  const drop = (id, title, cur, values) => `<label class="proc-filt"><span class="proc-filt-lbl">${title}</span>
+    <select id="${id}" class="proc-job-pick">${opt(cur, 'all', 'All')}${values.map(v => opt(cur, v, v)).join('')}</select></label>`;
+  const mode = _procState.pdatemode === 'invoiced' ? 'invoiced' : 'purchase';
+  const dateLabel = mode === 'invoiced' ? 'Invoiced' : 'Purchased';
+  const seg = (val, label) => `<button class="seg-btn${mode === val ? ' is-active' : ''}" data-pdatemode="${val}" type="button">${label}</button>`;
+  const active = _procState.pstatus !== 'all' || _procState.pcat !== 'all' || _procState.pmfr !== 'all' || _procState.psup !== 'all' || _procState.pfrom || _procState.pto || mode !== 'purchase';
+  return `<div class="proc-parts-filters">
+    <div class="proc-view-seg">
+      <button class="proc-view-btn${_procState.partsListMode === 'table' ? ' is-active' : ''}" data-list-mode="table" type="button">≡ List</button>
+      <button class="proc-view-btn${_procState.partsListMode === 'card' ? ' is-active' : ''}" data-list-mode="card" type="button">⊟ Card</button>
+    </div>
+    <div class="proc-filt-divider"></div>
+    <label class="proc-filt"><span class="proc-filt-lbl">Status</span>
+      <select id="proc-pstatus" class="proc-job-pick">${pstatusOpts.map(([v, t]) => `<option value="${v}" ${_procState.pstatus === v ? 'selected' : ''}>${v === 'all' ? 'All' : t}</option>`).join('')}</select></label>
+    ${drop('proc-pcat', 'Category', _procState.pcat, cats)}
+    ${drop('proc-pmfr', 'Manufacturer', _procState.pmfr, mfrs)}
+    ${drop('proc-psup', 'Supplier', _procState.psup, sups)}
+    <label class="proc-filt"><span class="proc-filt-lbl">Date type</span>
+      <div class="seg-control proc-datemode">${seg('purchase', 'Purchase')}${seg('invoiced', 'Invoiced')}</div></label>
+    <label class="proc-filt"><span class="proc-filt-lbl">${dateLabel} from</span><input type="date" id="proc-pfrom" class="proc-date" value="${escapeHtml(_procState.pfrom || '')}"></label>
+    <label class="proc-filt"><span class="proc-filt-lbl">to</span><input type="date" id="proc-pto" class="proc-date" value="${escapeHtml(_procState.pto || '')}"></label>
+    ${active ? `<button class="btn-ghost btn-tight" id="proc-pclear" type="button">Clear</button>` : ''}
+  </div>`;
+}
+
+// Wire the parts filter controls inside `root`, re-rendering via `rerender`.
+function _wirePartsFilters(root, rerender) {
+  const bind = (id, key) => { const el = root.querySelector(id); if (el) el.addEventListener('change', () => { _procState[key] = el.value; _procSave(); rerender(); }); };
+  bind('#proc-pstatus', 'pstatus');
+  bind('#proc-pcat', 'pcat');
+  bind('#proc-pmfr', 'pmfr');
+  bind('#proc-psup', 'psup');
+  bind('#proc-pfrom', 'pfrom');
+  bind('#proc-pto', 'pto');
+  // Date Selector — apply the date range to Purchase date or Invoiced date.
+  root.querySelectorAll('[data-pdatemode]').forEach(b => b.addEventListener('click', () => {
+    _procState.pdatemode = b.dataset.pdatemode; _procSave(); rerender();
+  }));
+  // Parts List view mode toggle (List vs Card)
+  root.querySelectorAll('[data-list-mode]').forEach(b => b.addEventListener('click', () => {
+    _procState.partsListMode = b.dataset.listMode; _procSave(); rerender();
+  }));
+  const pclear = root.querySelector('#proc-pclear');
+  if (pclear) pclear.addEventListener('click', () => { Object.assign(_procState, { pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '' }); _procSave(); rerender(); });
+}
+
+function _procFilteredParts(data) {
+  const q = (_procState.search || '').toLowerCase();
+  const want = _procState.pstatus;
+  const cat = _procState.pcat, mfr = _procState.pmfr, sup = _procState.psup;
+  const from = _procState.pfrom || '', to = _procState.pto || '';
+  return (data.partsList || []).filter(p => {
+    const st = _procPartStatus(p);
+    if (want !== 'all' && st.key !== want) return false;
+    if (cat !== 'all' && (p.category || '') !== cat) return false;
+    if (mfr !== 'all' && _procMfr(p) !== mfr) return false;
+    if (sup !== 'all' && (p.supplier || '') !== sup) return false;
+    const dcol = _procState.pdatemode === 'invoiced' ? p.invoicedDate : p.orderDate;
+    if (from && (!dcol || dcol < from)) return false;
+    if (to && (!dcol || dcol > to)) return false;
+    if (q && ![p.pn, p.desc, p.category, p.manufacturer, p.supplier, p.parentPN, p.parentDesc, p.poId].some(v => String(v || '').toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+
+function _procPartsCardView(rows) {
+  const fmt = d => d ? fmtDate(d) : '—';
+  const vendors = {};
+  const backendVendors = _procVendorCache[_procState.job]?.vendors || [];
+  const hasBackendData = backendVendors.length > 0;
+
+  // Group parts by vendor, then by PO within each vendor
+  rows.forEach(p => {
+    const vendor = p.supplier || 'No Supplier';
+    if (!vendors[vendor]) vendors[vendor] = { name: vendor, pos: {}, total: 0, received: 0 };
+
+    const poId = p.poId || 'NO_PO';
+    if (!vendors[vendor].pos[poId]) {
+      vendors[vendor].pos[poId] = { poId: p.poId, parts: [], received: 0, total: 0, orderDate: null, expDate: null };
+    }
+
+    vendors[vendor].pos[poId].parts.push(p);
+    vendors[vendor].pos[poId].total++;
+    vendors[vendor].total++;
+    if (!vendors[vendor].pos[poId].orderDate && p.orderDate) vendors[vendor].pos[poId].orderDate = p.orderDate;
+    if (!vendors[vendor].pos[poId].expDate && (p.expDate || p.requiredDate)) vendors[vendor].pos[poId].expDate = p.expDate || p.requiredDate;
+
+    if (_procPartStatus(p).key === 'received') {
+      vendors[vendor].pos[poId].received++;
+      vendors[vendor].received++;
+    }
+  });
+
+  // Update PO-level data from backend for accuracy (backend is authoritative for line status)
+  // Note: vendor-level totals stay parts-based, not line-based, to match what's displayed
+  if (hasBackendData) {
+    backendVendors.forEach(backendVendor => {
+      const vendorName = backendVendor.name;
+      if (vendors[vendorName]) {
+        for (const poKey in vendors[vendorName].pos) {
+          if (poKey === 'NO_PO') continue;
+          const cardPo = vendors[vendorName].pos[poKey];
+          // Find matching backend PO by comparing numeric values to handle string/number mismatch
+          const backendPo = backendVendor.pos.find(bp => {
+            const bpNum = parseInt(bp.po) || 0;
+            const cpNum = parseInt(poKey) || 0;
+            return bpNum > 0 && bpNum === cpNum;
+          });
+          if (backendPo) {
+            cardPo.received = backendPo.received;
+            cardPo.total = backendPo.itemCount;
+          }
+        }
+      }
+    });
+  }
+
+  const vendorCards = Object.entries(vendors).map(([vendor, vendorGroup]) => {
+    const vendorPct = vendorGroup.total > 0 ? Math.round((vendorGroup.received / vendorGroup.total) * 100) : 0;
+    const vendorBarColor = vendorPct >= 90 ? '#74c415' : vendorPct >= 60 ? '#befa4f' : '#1574c4';
+    const initials = (vendor || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+
+    // Count non-NO_PO entries
+    const poCount = Object.keys(vendorGroup.pos).filter(k => k !== 'NO_PO').length;
+
+    // Check if any POs have overdue dates (expected date in past)
+    const now = Date.now();
+    const hasOverdue = Object.values(vendorGroup.pos).some(po => {
+      if (po.received >= po.total) return false; // fully received, not overdue
+      return po.expDate && new Date(po.expDate + 'T00:00:00').getTime() < now;
+    });
+
+    let statusBadge, statusLabel;
+    if (hasOverdue) {
+      statusBadge = 'bad';
+      statusLabel = 'PAST DUE';
+    } else if (vendorPct >= 90) {
+      statusBadge = 'ok';
+      statusLabel = 'RECEIVED';
+    } else if (vendorPct >= 60) {
+      statusBadge = 'warn';
+      statusLabel = 'PARTIAL';
+    } else {
+      statusBadge = 'bad';
+      statusLabel = 'PENDING';
+    }
+
+    // Build PO rows with sort key, then sort by completion status (incomplete first)
+    const poRowsWithSort = Object.entries(vendorGroup.pos).map(([poKey, poGroup]) => {
+      const poPct = poGroup.total > 0 ? Math.round((poGroup.received / poGroup.total) * 100) : 0;
+      const poLabel = poGroup.poId ? String(poGroup.poId) : '—';
+      const rcvdText = `${poGroup.received}/${poGroup.total} rcvd`;
+      const dateText = poGroup.expDate ? fmt(poGroup.expDate) : '—';
+      const dotColor = poPct >= 100 ? 'received' : poPct >= 60 ? 'ordered' : 'noPO';
+
+      const isNoPo = poKey === 'NO_PO';
+      return {
+        html: `<div class="proc-vpo${isNoPo ? ' clickable' : ''}" data-vpo="${escapeHtml(vendor)}|${escapeHtml(poLabel)}" data-vpo-id="${poGroup.poId || ''}" ${isNoPo ? `data-nopo-vendor="${escapeHtml(vendor)}"` : ''} title="${isNoPo ? 'View parts without PO' : 'Open PO detail'}">
+        <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(poLabel)}" type="button" title="${isNoPo ? 'Parts without PO number' : 'Click to copy PO number'}">${escapeHtml(poLabel)}</button>
+        <span class="proc-vpo-rcvd">${rcvdText}</span>
+        <span class="proc-vpo-date" title="Expected delivery">${dateText}</span>
+        <span class="proc-dot proc-dot-${dotColor}" title="${poPct >= 100 ? 'All received' : poPct >= 60 ? 'On order' : 'No PO'}"></span>
+        <span class="proc-vpo-go" aria-hidden="true">›</span>
+      </div>`,
+        sortKey: dotColor === 'received' ? 1 : 0  // 0 for incomplete (top), 1 for received (bottom)
+      };
+    });
+    // Sort: incomplete POs (sortKey 0) first, then received POs (sortKey 1)
+    const poRows = poRowsWithSort.sort((a, b) => a.sortKey - b.sortKey).map(r => r.html).join('');
+
+    return `<div class="proc-pcard">
+      <div class="proc-pcard-head">
+        <span class="proc-pavatar">${escapeHtml(initials)}</span>
+        <span class="proc-pname" title="${escapeHtml(vendor)}">${escapeHtml(vendor)}</span>
+        <span class="proc-vbadge ${statusBadge === 'ok' ? 'vstat-ok' : statusBadge === 'warn' ? 'vstat-warn' : 'vstat-bad'}">${statusLabel}</span>
+      </div>
+      <div class="proc-vmeta">${poCount} PO${poCount === 1 ? '' : 's'} · ${vendorGroup.total} item${vendorGroup.total === 1 ? '' : 's'}</div>
+      <div class="proc-pbar-row"><span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, vendorPct)}%;background:${vendorBarColor}"></span></span><span class="proc-pct" style="color:${vendorBarColor}">${vendorPct}%</span></div>
+      <div class="proc-vpos">
+        <div class="proc-vpo proc-vpo-head">
+          <span class="proc-vpo-hpn" title="Purchase order number">PO #</span>
+          <span class="proc-vpo-rcvd" title="Items received / total on this PO">Received</span>
+          <span class="proc-vpo-date" title="Expected delivery date">Date</span>
+          <span class="proc-dot" style="visibility:hidden"></span>
+          <span class="proc-vpo-go" style="visibility:hidden" aria-hidden="true">›</span>
+        </div>
+        ${poRows}
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="proc-pcards">${vendorCards}</div>`;
+}
+
+// Build Readiness-style summary cards for Parts List - EXACT LOGIC MATCH
+function _procPartsSummary(data) {
+  if (!data || !data.partsList) return '';
+
+  const parts = data.partsList || [];
+  const fmt = d => d ? fmtDate(d) : '—';
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const todayMs = now.getTime();
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+
+  // ── DELIVERY SLIP (Build Readiness logic) ──
+  // Parts due within today ±7 days: past-due this week AND arriving this week
+  const slipWindowStart = new Date(now);
+  slipWindowStart.setDate(slipWindowStart.getDate() - 7);
+  const slipWindowEnd = new Date(now);
+  slipWindowEnd.setDate(slipWindowEnd.getDate() + 8); // +7 days, inclusive
+
+  const deliveryParts = parts.filter(p => {
+    if (!p.poId || _procPartStatus(p).key === 'received') return false;
+    const dueDate = p.expDate || p.requiredDate;
+    if (!dueDate) return false;
+    const dueDateMs = Date.parse(dueDate + 'T00:00:00');
+    if (!isFinite(dueDateMs)) return false;
+    // Within 7-day window (7 days ago to end of today)
+    return dueDateMs >= slipWindowStart.getTime() && dueDateMs < slipWindowEnd.getTime();
+  });
+
+  const deliveryCount = deliveryParts.length;
+  const deliveryOldest = deliveryParts.length ? Math.min(...deliveryParts.map(p => {
+    const reqDate = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : Infinity;
+    return isFinite(reqDate) ? reqDate : Infinity;
+  })) : null;
+  // Avg late: only count parts that are actually overdue
+  const lateParts = deliveryParts.filter(p => {
+    const dueDate = p.expDate || p.requiredDate;
+    const dueDateMs = Date.parse(dueDate + 'T00:00:00');
+    return isFinite(dueDateMs) && dueDateMs < todayMs;
+  });
+  const deliveryAvgLate = lateParts.length > 0
+    ? Math.round(lateParts.reduce((sum, p) => {
+        const dueDate = p.expDate || p.requiredDate;
+        const dueDateMs = Date.parse(dueDate + 'T00:00:00');
+        return sum + Math.ceil((todayMs - dueDateMs) / weekMs);
+      }, 0) / lateParts.length)
+    : 0;
+
+  // ── NO PURCHASE ORDER (Build Readiness logic) ──
+  // Filter out: parts on hold, parts with any PO, fully received parts
+  // Deduplicate by part number
+  const noPoParts = (() => {
+    const seen = new Set();
+    return parts.filter(p => {
+      // Skip if has PO
+      if (p.poId && p.poId !== 'NO_PO') return false;
+      // Skip if fully received
+      if (_procPartStatus(p).key === 'received') return false;
+      // Skip if on hold
+      if (p.hold || p.onHold || p.status === 'hold') return false;
+      // Deduplicate by part number
+      if (seen.has(p.pn)) return false;
+      seen.add(p.pn);
+      return true;
+    });
+  })();
+
+  const noPOCount = noPoParts.length;
+  const noPOOldest = noPoParts.length ? Math.min(...noPoParts.map(p => {
+    const reqDate = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : Infinity;
+    return isFinite(reqDate) ? reqDate : Infinity;
+  })) : null;
+  // This week: parts due within next 7 days
+  const weekEnd = new Date(now);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  const noPOThisWeek = noPoParts.filter(p => {
+    const reqDate = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : NaN;
+    return isFinite(reqDate) && reqDate <= weekEnd.getTime();
+  }).length;
+
+  // ── UPCOMING DELIVERIES (Build Readiness logic) ──
+  // Parts due tomorrow through next 8 weeks (or more based on config)
+  const upcomingWindowStart = new Date(now);
+  upcomingWindowStart.setDate(upcomingWindowStart.getDate() + 1);
+  const upcomingWindowEnd = new Date(now);
+  upcomingWindowEnd.setDate(upcomingWindowEnd.getDate() + 57);  // ~8 weeks
+
+  const upcoming = parts.filter(p => {
+    if (_procPartStatus(p).key === 'received') return false;
+    const dueDate = p.expDate || p.requiredDate;
+    if (!dueDate) return false;
+    const dueDateMs = Date.parse(dueDate + 'T00:00:00');
+    if (!isFinite(dueDateMs)) return false;
+    return dueDateMs >= upcomingWindowStart.getTime() && dueDateMs < upcomingWindowEnd.getTime();
+  }).sort((a, b) => {
+    const aDate = a.expDate || a.requiredDate;
+    const bDate = b.expDate || b.requiredDate;
+    return (aDate || '').localeCompare(bDate || '');
+  });
+
+  const deliveryHtml = deliveryParts.length ? `
+    <div class="proc-stbl">
+      <div class="proc-stbl-hrow proc-stbl-grid-slip">
+        ${['Part #','Description','Supplier','Req','Exp','Ordered'].map(t => `<div class="proc-stbl-hcell">${t}</div>`).join('')}
+      </div>
+      ${deliveryParts.map(p => {
+        const expMs = p.expDate ? Date.parse(p.expDate + 'T00:00:00') : NaN;
+        const expOverdue = isFinite(expMs) && expMs <= todayMs;
+        return `<div class="proc-stbl-drow proc-stbl-grid-slip">
+          <div class="proc-stbl-cell"><span class="proc-stbl-pn" data-slip-pn="${escapeHtml(p.pn)}" title="Click to jump to part">${escapeHtml(p.pn)}</span></div>
+          <div class="proc-stbl-cell"><span class="proc-stbl-desc" title="${escapeHtml(p.desc||'')}">${escapeHtml(p.desc||'—')}</span></div>
+          <div class="proc-stbl-cell"><span class="proc-stbl-sup" title="${escapeHtml(p.supplier||'')}">${escapeHtml(p.supplier||'—')}</span></div>
+          <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.requiredDate)}</span></div>
+          <div class="proc-stbl-cell"><span class="proc-stbl-date${expOverdue ? ' proc-stbl-date-late' : ''}">${fmt(p.expDate)}</span></div>
+          <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.orderDate)}</span></div>
+        </div>`;
+      }).join('')}
+    </div>
+  ` : '<div class="proc-stbl-empty">No delivery items this week</div>';
+
+  const noPOHtml = noPoParts.length ? `
+    <div class="proc-stbl">
+      <div class="proc-stbl-hrow proc-stbl-grid-nopo">
+        ${['Part #','Description','Req Date'].map(t => `<div class="proc-stbl-hcell">${t}</div>`).join('')}
+      </div>
+      ${noPoParts.map(p => `<div class="proc-stbl-drow proc-stbl-grid-nopo">
+        <div class="proc-stbl-cell"><span class="proc-stbl-pn" data-slip-pn="${escapeHtml(p.pn)}" title="Click to jump to part">${escapeHtml(p.pn)}</span></div>
+        <div class="proc-stbl-cell"><span class="proc-stbl-desc" title="${escapeHtml(p.desc||'')}">${escapeHtml(p.desc||'—')}</span></div>
+        <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.requiredDate)}</span></div>
+      </div>`).join('')}
+    </div>
+  ` : '<div class="proc-stbl-empty">No parts without PO</div>';
+
+  const upcomingHtml = upcoming.length ? (() => {
+    const allWeekData = Array.from({length: 8}, (_, i) => {
+      const weekNum = i + 1;
+      const wStart = new Date(now); wStart.setDate(wStart.getDate() + (weekNum - 1) * 7 + 1);
+      const wEnd   = new Date(now); wEnd.setDate(wEnd.getDate() + weekNum * 7 + 1);
+      const wParts = upcoming.filter(p => {
+        const ms = Date.parse((p.expDate || p.requiredDate) + 'T00:00:00');
+        return isFinite(ms) && ms >= wStart.getTime() && ms < wEnd.getTime();
+      });
+      return { weekNum, parts: wParts, count: wParts.length };
+    });
+    const firstWeekWithData = allWeekData.find(w => w.count > 0);
+    const selectedWeek = _procState.upcomingWeek || (firstWeekWithData ? firstWeekWithData.weekNum : 1);
+    const selectedParts = (allWeekData.find(w => w.weekNum === selectedWeek) || {}).parts || [];
+    const suppliers = new Set(selectedParts.map(p => p.supplier).filter(Boolean));
+    const nearest = selectedParts.length > 0 ? Math.min(...selectedParts.map(p => Date.parse((p.expDate || p.requiredDate) + 'T00:00:00'))) : null;
+    return `
+      <div class="proc-week-tabs">
+        ${allWeekData.map(w => `<button class="proc-week-btn${w.weekNum === selectedWeek ? ' is-active' : ''}${w.count > 0 ? ' has-parts' : ''}" data-week="${w.weekNum}">${w.weekNum}W${w.count > 0 ? ` <span class="proc-week-btn-count">(${w.count})</span>` : ''}</button>`).join('')}
+      </div>
+      <div class="proc-week-stats">
+        ${[['Parts', selectedParts.length], ['Suppliers', suppliers.size], ['Nearest Exp', nearest ? fmt(new Date(nearest).toISOString().slice(0,10)) : '—']].map(([label, val]) => `<div><div class="proc-week-stat-num">${val}</div><div class="proc-week-stat-lbl">${label}</div></div>`).join('')}
+      </div>
+      <div class="proc-stbl-upcoming">
+        <div class="proc-stbl-hrow proc-stbl-grid-upcoming">
+          ${['PO #','Part #','Description','Supplier','Exp Date','Req Date','Ordered'].map(t => `<div class="proc-stbl-hcell">${t}</div>`).join('')}
+        </div>
+        ${selectedParts.length === 0
+          ? `<div class="proc-stbl-empty" style="text-align:center;padding:20px;">No parts with exp date in week ${selectedWeek}</div>`
+          : selectedParts.map(p => `<div class="proc-stbl-drow proc-stbl-grid-upcoming">
+              <div class="proc-stbl-cell"><span class="proc-stbl-date">${escapeHtml(p.poId||'—')}</span></div>
+              <div class="proc-stbl-cell"><span class="proc-stbl-pn" data-slip-pn="${escapeHtml(p.pn)}" title="Click to jump to part">${escapeHtml(p.pn)}</span></div>
+              <div class="proc-stbl-cell"><span class="proc-stbl-desc" title="${escapeHtml(p.desc||'')}">${escapeHtml(p.desc||'—')}</span></div>
+              <div class="proc-stbl-cell"><span class="proc-stbl-sup" title="${escapeHtml(p.supplier||'')}">${escapeHtml(p.supplier||'—')}</span></div>
+              <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.expDate)}</span></div>
+              <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.requiredDate)}</span></div>
+              <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.orderDate)}</span></div>
+            </div>`).join('')}
+      </div>
+    `;
+  })() : '';
+
+  const statBlock = (num, cls, label) => `
+    <div>
+      <div class="proc-scard-stat-num${cls ? ' ' + cls : ''}">${num}</div>
+      <div class="proc-scard-stat-lbl">${label}</div>
+    </div>`;
+
+  return `
+    <div class="proc-summary-grid">
+      <div class="proc-scard">
+        <div class="proc-scard-title-row">
+          <div class="proc-scard-dot proc-scard-dot-amber"></div>
+          <div class="proc-scard-title">Delivery Slip</div>
+        </div>
+        <div class="proc-scard-stats">
+          ${statBlock(deliveryCount, '', 'Parts')}
+          ${statBlock('+' + deliveryAvgLate + 'd', deliveryAvgLate > 0 ? 'proc-scard-stat-num-warn' : 'proc-scard-stat-num-ok', 'Avg Late')}
+          ${statBlock(deliveryOldest ? fmt(new Date(deliveryOldest).toISOString().slice(0,10)) : '—', '', 'Oldest Req')}
+        </div>
+        ${deliveryHtml}
+      </div>
+      <div class="proc-scard">
+        <div class="proc-scard-title-row">
+          <div class="proc-scard-dot proc-scard-dot-blue"></div>
+          <div class="proc-scard-title">No Purchase Order</div>
+        </div>
+        <div class="proc-scard-stats">
+          ${statBlock(noPOCount, '', 'Parts')}
+          ${statBlock(noPOThisWeek, noPOThisWeek > 0 ? 'proc-scard-stat-num-warn' : '', 'This Week')}
+          ${statBlock(noPOOldest ? fmt(new Date(noPOOldest).toISOString().slice(0,10)) : '—', '', 'Oldest Req')}
+        </div>
+        ${noPOHtml}
+      </div>
+    </div>
+    ${upcomingHtml ? `<div class="proc-upcoming">
+      <div class="proc-upcoming-title">Upcoming Deliveries</div>
+      ${upcomingHtml}
+    </div>` : ''}
+  `;
+}
+
+function _procColResizeStart(e, colIdx) {
+  e.preventDefault();
+  e.stopPropagation();
+  const container = e.target.closest('.proc-plist');
+  if (!container) return;
+  const cell = container.querySelector('.proc-plist-head').children[colIdx];
+  const startW = cell.getBoundingClientRect().width;
+  const startX = e.clientX;
+  const minW = colIdx === 0 ? 30 : 48;
+  e.target.classList.add('resizing');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  function onMove(ev) {
+    container.style.setProperty('--pc' + colIdx, Math.max(minW, startW + (ev.clientX - startX)) + 'px');
+  }
+  function onUp() {
+    e.target.classList.remove('resizing');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _procPartsTable(data) {
+  const rows = _procFilteredParts(data);
+  if (!rows.length) return `<div class="proc-empty">No parts match the current filter or search.</div>`;
+  if (_procState.partsListMode === 'card') {
+    // Preload vendor data so PO clicks work in card view
+    const job = _procState.job;
+    if (job && !_procVendorCache[job]) {
+      api.eto.vendors(job)
+        .then(d => { _procVendorCache[job] = d; })
+        .catch(e => { _procVendorCache[job] = { error: e.message }; });
+    }
+    return _procPartsCardView(rows);
+  }
+  const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+  const fmt = d => d ? fmtDate(d) : '—';
+  const rh = i => `<div class="proc-col-resize" onmousedown="_procColResizeStart(event,${i})"></div>`;
+  const hcols = [
+    `<span class="num">Qty${rh(0)}</span>`,
+    `<span>Part No${rh(1)}</span>`,
+    `<span>Description${rh(2)}</span>`,
+    `<span>Parent Assembly${rh(3)}</span>`,
+    `<span>Category${rh(4)}</span>`,
+    `<span>Mfr${rh(5)}</span>`,
+    `<span>Supplier${rh(6)}</span>`,
+    `<span>PO #${rh(7)}</span>`,
+    `<span title="PO purchase date">Purchased${rh(8)}</span>`,
+    `<span>Exp${rh(9)}</span>`,
+    `<span>Status</span>`,
+  ].join('');
+  return `<div class="proc-plist">
+    <div class="proc-plist-head">${hcols}</div>
+    ${rows.map(p => {
+      const st = _procPartStatus(p);
+      return `<div class="proc-plrow${st.key === 'overdue' ? ' proc-plrow-overdue' : ''}" data-pn="${escapeHtml(p.pn || '')}">
+        <span class="num">${p.qty ?? ''}</span>
+        <span class="proc-plpn" data-copy="${escapeHtml(p.pn || '')}" title="Click to copy part number">${escapeHtml(p.pn || '—')}</span>
+        <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
+        <span class="proc-plsrc" title="${escapeHtml(p.parentDesc || '')}"><span class="proc-plsrc-pn">${escapeHtml(p.parentPN || 'LOOSE')}</span></span>
+        <span class="proc-plcat" title="${escapeHtml(p.category || '')}">${p.category ? escapeHtml(p.category) : '—'}</span>
+        <span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>
+        <span class="proc-psup" title="${escapeHtml(p.supplier || '')}">${p.supplier ? escapeHtml(p.supplier) : '—'}</span>
+        <span class="proc-plpo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
+        <span>${fmt(p.orderDate)}</span>
+        <span>${fmt(p.expDate || p.requiredDate)}</span>
+        <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// Column header for the assemblies grid — same 10-column track as .proc-arow so
+// labels sit over their columns. Explains the otherwise-cryptic cells
+// (6/7 parts, 2 sub-assy, 1 no PO, cost, readiness bar).
+function _procAssemblyHeader() {
+  return `<div class="proc-arow proc-ahead">
+    <span class="proc-caret"></span>
+    <span class="proc-ah">Assembly</span>
+    <span class="proc-ah">Description</span>
+    <span class="proc-ah" title="Parts received / total parts in this assembly (e.g. 6/7 parts)">Rcvd / Total</span>
+    <span class="proc-ah" title="Number of sub-assemblies under this assembly">Sub-assy</span>
+    <span class="proc-ah" title="Parts with no purchase order yet">No PO</span>
+    <span class="proc-ah" title="Parts in this assembly that have a unit price">Priced</span>
+    <span class="proc-aspacer"></span>
+    <span class="proc-ah proc-acost" title="Purchased material cost — qty × latest PO unit price per part">Material&nbsp;$</span>
+    <span class="proc-ah" title="Build readiness — % of parts received">Readiness</span>
+    <span class="proc-ah proc-pct">%</span>
+  </div>`;
+}
+
+function _procPartsColResizeStart(e, colIdx) {
+  e.preventDefault();
+  e.stopPropagation();
+  const container = e.target.closest('.proc-parts');
+  if (!container) return;
+  const cell = container.querySelector('.proc-phead').children[colIdx];
+  const startW = cell.getBoundingClientRect().width;
+  const startX = e.clientX;
+  const minW = colIdx === 0 ? 30 : 48;
+  e.target.classList.add('resizing');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  function onMove(ev) {
+    container.style.setProperty('--ap' + colIdx, Math.max(minW, startW + (ev.clientX - startX)) + 'px');
+  }
+  function onUp() {
+    e.target.classList.remove('resizing');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _procAssemblyRow(node, depth) {
+  const st = node.stats || { total: 0, received: 0, noPO: 0, ordered: 0, pct: 0 };
+  const open = !!_procState.open[node.id];
+  // Each meta fact is its own grid cell so they line up in columns down the page
+  // (parts under parts, sub-assy under sub-assy, no-PO under no-PO).
+  const partsCell = `${st.received}/${st.total} parts`;
+  const subCell   = node.children.length ? `${node.children.length} sub-assy` : '';
+  const noPoCell  = st.noPO ? `<span class="proc-nopo-badge">⚠ ${st.noPO} no&nbsp;PO</span>` : '';
+  const pricedCount = node.parts.filter(p => (Number(p.unitPrice) || 0) > 0).length;
+  const pricedCell  = pricedCount ? `${pricedCount}/${node.parts.length}` : '';
+  let html = `
+    <div class="proc-arow${depth > 0 ? ' proc-arow-nested' : ''}" data-aid="${escapeHtml(String(node.id))}" style="padding-left:${10 + depth * 26}px;--d:${depth}">
+      <span class="proc-caret">${open ? '▾' : '▸'}</span>
+      <button class="proc-pn" data-copy="${escapeHtml(node.pn)}" type="button" title="Click to copy part number">${escapeHtml(node.pn)}</button>
+      <span class="proc-aname" title="${escapeHtml(node.desc || '')}">${escapeHtml(node.desc || '')}</span>
+      <span class="proc-acol proc-acol-parts">${partsCell}</span>
+      <span class="proc-acol proc-acol-sub">${subCell}</span>
+      <span class="proc-acol proc-acol-nopo">${noPoCell}</span>
+      <span class="proc-acol">${pricedCell}</span>
+      <span class="proc-aspacer"></span>
+      <span class="proc-acost" title="Purchased material cost for this assembly — qty × latest PO unit price per part. In-house parts with no PO price count as $0.">${_procUsd(st.cost)}</span>
+      <span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, st.pct)}%;background:${_procBarColor(st.pct)}"></span></span>
+      <span class="proc-pct" style="color:${_procBarColor(st.pct)}">${st.pct}%</span>
+    </div>`;
+  if (open) {
+    for (const child of node.children) html += _procAssemblyRow(child, depth + 1);
+    if (node.parts.length) {
+      const q = (_procState.search || '').toLowerCase();
+      const parts = q
+        ? node.parts.filter(p => [p.pn, p.desc, p.manufacturer].some(v => String(v || '').toLowerCase().includes(q)))
+        : node.parts;
+      const money = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+      html += `<div class="proc-parts" style="margin-left:${36 + depth * 26}px">
+        <div class="proc-phead">${[
+          ['num','Qty',0],['','Part No',1],['','Description',2],['','Mfr',3],['','PO',4],['num','Price',5],['num','Total Price',6]
+        ].map(([cls,lbl,i]) => `<span${cls ? ` class="${cls}"` : ''}>${lbl}<div class="proc-col-resize" onmousedown="_procPartsColResizeStart(event,${i})"></div></span>`).join('')}</div>
+        ${parts.map(p => `
+          <div class="proc-prow proc-prow-${p.status}">
+            <span class="num">${p.qty ?? ''}</span>
+            <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
+            <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
+            <span class="proc-pmfr">${escapeHtml(p.manufacturer || '')}</span>
+            <span class="proc-ppo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : ''}</span>
+            <span class="num">${money(p.unitPrice)}</span>
+            <span class="num">${money((Number(p.qty) || 0) * (Number(p.unitPrice) || 0))}</span>
+          </div>`).join('')}
+      </div>`;
+    }
+  }
+  return html;
+}
+
 async function loadVendorPOs() {
   try { state.vendorPOs = await api.vendorPOs.list(); } catch (_) { state.vendorPOs = []; }
   renderVendorPOsPage();
+}
+
+// Live ETO part lines for one PO — lazy-loaded when a synced row is expanded.
+const _vpoLinesCache = {}; // "job|po" → lines[]
+async function _vpoLoadLines(box) {
+  const job = box.dataset.linesJob, po = box.dataset.linesPo;
+  const key = `${job}|${po}`;
+  if (!_vpoLinesCache[key]) {
+    box.innerHTML = '<div class="vpo-lines-note">Loading parts from Total ETO…</div>';
+    try { _vpoLinesCache[key] = await api.eto.poLines(job, po); }
+    catch (e) { box.innerHTML = `<div class="vpo-lines-note">⚠ Could not load part lines: ${escapeHtml(e.message)}</div>`; delete _vpoLinesCache[key]; return; }
+  }
+  const lines = _vpoLinesCache[key];
+  if (!lines.length) { box.innerHTML = '<div class="vpo-lines-note">No part lines on this PO in ETO.</div>'; return; }
+  const fmt = d => d ? fmtDate(d) : '—';
+  box.innerHTML = `
+    <div class="vpo-lines-title">Parts on this PO <span class="vpo-lines-src">live from Total ETO</span></div>
+    <div class="vpo-lines-head"><span></span><span>Part No</span><span>Description</span><span class="num">Qty</span><span class="num">Rcvd</span><span>Due</span><span class="num">Price</span></div>
+    ${lines.map(l => {
+      const due = l.dateRevised || l.dateRequired;
+      const revised = !!(l.dateRevised && l.dateRequired && l.dateRevised !== l.dateRequired);
+      return `<div class="vpo-line vpo-line-${l.status}">
+        <span class="proc-dot proc-dot-${l.status === 'received' ? 'received' : 'ordered'}" title="${l.status === 'received' ? 'Received' : 'Open'}"></span>
+        <span class="vpo-line-pn">${escapeHtml(l.partNumber || '—')}</span>
+        <span class="vpo-line-desc" title="${escapeHtml(l.desc || '')}">${escapeHtml(l.desc || '')}</span>
+        <span class="num">${l.qty ?? ''}</span>
+        <span class="num">${l.received ?? 0}</span>
+        <span class="${revised ? 'vpo-line-revised' : ''}" title="${revised ? `Buyer revised this date — originally ${fmt(l.dateRequired)}` : ''}">${fmt(due)}${revised ? ' ↻' : ''}</span>
+        <span class="num">${l.price != null ? '$' + Number(l.price).toFixed(2) : '—'}</span>
+      </div>`;
+    }).join('')}`;
 }
 function _vpoRows(all, st) {
   let rows = all.slice();
@@ -8123,6 +9581,7 @@ function _vpoRows(all, st) {
   if (st.fVendor && st.fVendor !== 'all') rows = rows.filter(r => (r.vendor || '') === st.fVendor);
   if (st.fPm && st.fPm !== 'all') rows = rows.filter(r => (r.pm || '') === st.fPm);
   if (st.fStatus && st.fStatus !== 'all') rows = rows.filter(r => _vpoStatusOf(r) === st.fStatus);
+  if (st.fJob && st.fJob !== 'all') rows = rows.filter(r => String(r.job || '') === st.fJob);
   const q = (st.search || '').trim().toLowerCase();
   if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments].some(v => String(v || '').toLowerCase().includes(q)));
   const eta = r => { const m = _vpoEtaMs(r); return m == null ? Infinity : m; };
@@ -8144,6 +9603,7 @@ function renderVendorPOsPage() {
   const openCount = all.filter(r => !r.complete).length;
   const vendors = [...new Set(all.map(r => r.vendor).filter(Boolean))].sort();
   const pms = [...new Set(all.map(r => r.pm).filter(Boolean))].sort();
+  const jobsList = [...new Set(all.map(r => r.job).filter(Boolean))].sort((a, b) => Number(b) - Number(a) || String(a).localeCompare(String(b)));
   const teamNames = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
   const pmList = `<datalist id="vpo-pm-list">${[...new Set([...teamNames, ...pms])].map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
   const vendorList = `<datalist id="vpo-vendor-list">${vendors.map(v => `<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>`;
@@ -8166,19 +9626,27 @@ function renderVendorPOsPage() {
     const s = VPO_STATUS[sName];
     const e = _vpoEtaMs(r);
     const etaStr = e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '';
+    // Buyer revised the date in ETO → show the slip right on the row.
+    const slipped = r.eto_synced && r.eta && r.eta_original && r.eta !== r.eta_original;
+    const slipTip = slipped
+      ? (r.eta > r.eta_original
+          ? `Slipped from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`
+          : `Moved up from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`)
+      : '';
+    const slipMark = slipped ? ` <span class="vpo-slip" title="${escapeHtml(slipTip)}">↻</span>` : '';
     return `<div class="sp-prow vpo-row vpo-st-${sName}" data-id="${r.id}">
       <div class="sp-prow-line">
         <span class="vpo-dot" style="background:${s.color}" title="${s.label}"></span>
-        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}</span>
+        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}${r.eto_synced ? ' <span class="vpo-eto-pill" title="Auto-synced from Total ETO — vendor, dates, price and done status refresh from the ERP every 30 minutes. PM, comments and tracking stay yours.">ETO</span>' : ''}</span>
         <span class="vpo-job">${escapeHtml(r.job || '')}</span>
         ${isList ? `<span class="vpo-vendor">${escapeHtml(r.vendor || '')}</span>` : ''}
-        <span class="vpo-eta">${etaStr}</span>
+        <span class="vpo-eta">${etaStr}${slipMark}</span>
         ${isList ? `<span class="vpo-ship">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : ''}</span>` : ''}
         ${isList ? `<span class="vpo-track" title="${escapeHtml(r.tracking || '')}">${escapeHtml(r.tracking || '')}</span>` : ''}
         <label class="sp-done" title="Partial shipment"><input type="checkbox" data-id="${r.id}" data-field="partial" ${r.partial ? 'checked' : ''}/></label>
         <label class="sp-done" title="Complete"><input type="checkbox" data-id="${r.id}" data-field="complete" ${r.complete ? 'checked' : ''}/></label>
       </div>
-      <div class="sp-card-details" data-details="${r.id}" hidden><div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
+      <div class="sp-card-details" data-details="${r.id}" hidden>${r.eto_synced && r.job && r.po ? `<div class="vpo-lines" data-lines-job="${escapeHtml(r.job)}" data-lines-po="${escapeHtml(r.po)}"></div>` : ''}<div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
     </div>`;
   };
 
@@ -8197,7 +9665,8 @@ function renderVendorPOsPage() {
   }
 
   const sel = (val, opts, attr) => `<select ${attr}>${opts.map(o => `<option value="${escapeHtml(o.v)}"${val === o.v ? ' selected' : ''}>${escapeHtml(o.t)}</option>`).join('')}</select>`;
-  const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('');
+  const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('')
+    + (_etoAvailable ? '<span class="vpo-leg" title="The buyer entered a revised date in Total ETO — the ETA shown is the new promise; hover the ↻ on a row to see the original."><span class="vpo-slip">↻</span> date revised in ETO</span>' : '');
 
   // ── Dashboards ──
   const nowMs = Date.now();
@@ -8280,6 +9749,7 @@ function renderVendorPOsPage() {
       <div class="sp-head-top">
         <h1 class="projects-page-title">Vendor PO Track</h1>
         ${headStat}
+        ${_etoAvailable ? `<button class="btn-secondary sp-add-toggle" data-action="vpo-eto-sync" data-scope="all" type="button" title="Pull the latest PO status from Total ETO — every open PO across the whole ERP, plus a refresh of everything already here. Runs automatically every 30 min; this is the on-demand version.">⟳ Sync from ETO</button>` : ''}
         <button class="btn-primary sp-add-toggle" data-action="vpo-toggle-add" type="button">${_vpoAddOpen ? '✕ Close' : '＋ Add PO'}</button>
       </div>
       <form class="sp-add-bar${_vpoAddOpen ? '' : ' is-hidden'}" data-action="vpo-add-form">
@@ -8305,6 +9775,7 @@ function renderVendorPOsPage() {
         ${sel(st.fStatus, [{ v: 'all', t: 'Status: all' }, { v: 'late', t: 'Late' }, { v: 'shipped', t: 'Shipped' }, { v: 'soon', t: 'Due ≤1 wk' }, { v: 'partial', t: 'Partial' }, { v: 'complete', t: 'Complete' }], 'class="vpo-fsel" data-fk="fStatus"')}
         ${sel(st.fVendor, [{ v: 'all', t: 'Vendor: all' }, ...vendors.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fVendor"')}
         ${sel(st.fPm, [{ v: 'all', t: 'PM: all' }, ...pms.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fPm"')}
+        ${sel(st.fJob, [{ v: 'all', t: 'Job: all' }, ...jobsList.map(v => ({ v, t: `#${v}` }))], 'class="vpo-fsel" data-fk="fJob"')}
         <input type="search" class="vpo-search" placeholder="Search PO / job / vendor / tracking…" value="${escapeHtml(st.search || '')}"/>
       </div>
       <div class="vpo-legend">${legend}</div>
@@ -8314,6 +9785,24 @@ function renderVendorPOsPage() {
     ${pmList}${vendorList}`;
 
   root.querySelector('[data-action="vpo-toggle-add"]').addEventListener('click', () => { _vpoAddOpen = !_vpoAddOpen; renderVendorPOsPage(); if (_vpoAddOpen) { const p = root.querySelector('input[name="po"]'); if (p) p.focus(); } });
+  _etoCheckOnce(); // reveal the ETO sync buttons if the server has ETO configured
+  root.querySelectorAll('[data-action="vpo-eto-sync"]').forEach(etoBtn => etoBtn.addEventListener('click', async () => {
+    const scope = etoBtn.dataset.scope || 'linked';
+    const label = etoBtn.textContent;
+    etoBtn.disabled = true; etoBtn.textContent = '⟳ Syncing…';
+    try {
+      const r = await api.eto.syncVendorPOs(scope);
+      if (r && r.ok) {
+        showToast(`ETO sync done — ${r.pos} PO${r.pos === 1 ? '' : 's'} across ${r.jobs} job${r.jobs === 1 ? '' : 's'} (${r.created} new, ${r.updated} updated)`, { kind: 'success' });
+        await loadVendorPOs();
+        return; // loadVendorPOs re-rendered the page; this button is gone
+      }
+      showToast(`ETO sync failed: ${(r && r.error) || 'unknown error'}`, { kind: 'error' });
+    } catch (e) {
+      showToast(`ETO sync failed: ${e.message}`, { kind: 'error' });
+    }
+    etoBtn.disabled = false; etoBtn.textContent = label;
+  }));
   root.querySelector('[data-action="vpo-add-form"]').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target;
     const data = { po: f.po.value.trim() || null, job: f.job.value.trim() || null, vendor: f.vendor.value.trim() || null, po_date: f.po_date.value || null, lead_time: f.lead_time.value === '' ? null : Number(f.lead_time.value), pm: f.pm.value.trim() || null, comments: f.comments.value.trim() || null, complete: 0, partial: 0 };
@@ -8327,7 +9816,16 @@ function renderVendorPOsPage() {
   if (vdr) vdr.addEventListener('change', () => { st.dashRange = Number(vdr.value); _vpoSave(); renderVendorPOsPage(); });
   const se = root.querySelector('.vpo-search');
   se.addEventListener('input', () => { st.search = se.value; _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
-  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => { const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`); if (d) d.hidden = !d.hidden; }));
+  root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
+    const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
+    if (!d) return;
+    d.hidden = !d.hidden;
+    // Synced rows: pull the PO's actual part lines from ETO on first open.
+    if (!d.hidden) {
+      const box = d.querySelector('.vpo-lines');
+      if (box && !box.dataset.loaded) { box.dataset.loaded = '1'; _vpoLoadLines(box); }
+    }
+  }));
   if (!root.dataset.changeBound) {
     root.dataset.changeBound = '1';
     root.addEventListener('change', async (e) => {
@@ -9224,7 +10722,8 @@ function renderProjectTabs() {
       wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
-      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>${_etoBannerChipHtml(p)}`;
+      _wireEtoBannerChip(banner, p);
     }
   }
 
@@ -10245,41 +11744,47 @@ function showProjectAddPicker() {
 
   pop.innerHTML = `
     ${all.length === 0 ? '<div class="picker-empty">No projects yet.</div>' : ''}
-    ${sectionHtml('Active', byWs.Active, '(★ = template; right-click a tab to move / delete)')}
+    ${sectionHtml('Active', byWs.Active)}
+    ${byWs.Active.length ? '<span class="picker-section-hint">★ = template · right-click a row to move / delete</span>' : ''}
     ${sectionHtml('Sales', byWs.Sales)}
     ${sectionHtml('Closed', byWs.Closed)}
     <div class="picker-divider"></div>
-    <div class="picker-section-title">Or start a new schedule</div>
-    <div class="picker-new-row">
-      <input type="text" class="picker-new-input" placeholder="e.g. Job 2026-015 — Sample Project" />
-      <button class="btn-primary picker-new-btn" type="button">Open</button>
+    <div class="picker-action-group">
+      <div class="picker-section-title">Start a new schedule</div>
+      <div class="picker-new-row">
+        <input type="text" class="picker-new-input" placeholder="e.g. Job 2026-015 — Sample Project" />
+        <button class="btn-primary picker-new-btn" type="button">Open</button>
+      </div>
     </div>
-    <div class="picker-divider"></div>
-    <div class="picker-section-title">Or build from a template ★</div>
-    <div class="picker-new-row picker-template-row">
-      <input type="text" class="picker-template-name" placeholder="New schedule name…" />
-      <select class="picker-template-source">
-        <option value="" disabled selected>Pick a template…</option>
-      </select>
-      <button class="btn-primary picker-template-btn" type="button" disabled>Build</button>
+    <div class="picker-action-group">
+      <div class="picker-section-title">Build from a template ★</div>
+      <div class="picker-new-row picker-template-row">
+        <input type="text" class="picker-template-name" placeholder="New schedule name…" />
+        <select class="picker-template-source">
+          <option value="" disabled selected>No templates yet — mark a project as template ↓</option>
+        </select>
+        <button class="btn-primary picker-template-btn" type="button" disabled>Build</button>
+      </div>
+      <div class="picker-hint">Clones every task, milestone, and predecessor from the template. Real-person assignees are blanked; placeholders carry through.</div>
     </div>
-    <div class="picker-template-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Clones every task, milestone, and predecessor from the template into a fresh project under the name you enter. Real-person assignees are blanked; placeholders carry through.</div>
-    <div class="picker-divider"></div>
-    <div class="picker-section-title">Or build a schedule from an SDC estimate sheet (.xlsx)</div>
-    <div class="picker-new-row picker-estimate-row">
-      <input type="file" class="picker-estimate-file" accept=".xlsx" />
-      <button class="btn-primary picker-estimate-btn" type="button" disabled>Analyze →</button>
+    <div class="picker-action-group">
+      <div class="picker-section-title">Build from an SDC estimate sheet (.xlsx)</div>
+      <div class="picker-new-row picker-estimate-row">
+        <input type="file" class="picker-estimate-file" accept=".xlsx" />
+        <button class="btn-primary picker-estimate-btn" type="button" disabled>Analyze →</button>
+      </div>
+      <div class="picker-hint">Pulls hours from "SUMMARY FOR RELEASE", then asks for a PO date + quoted FAT date.</div>
     </div>
-    <div class="picker-estimate-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Pulls hours from "SUMMARY FOR RELEASE", then asks for a PO date + quoted FAT date to lay out a schedule from the SDC_Template.</div>
-    <div class="picker-divider"></div>
-    <div class="picker-section-title">Or import from Smartsheet (.xlsx)</div>
-    <div class="picker-new-row picker-import-row">
-      <input type="text" class="picker-import-name" placeholder="Project name (auto-fills from file)" />
-      <input type="file" class="picker-import-file" accept=".xlsx" multiple />
-      <button class="btn-primary picker-import-btn" type="button" disabled>Import</button>
-    </div>
-    <div class="picker-import-hint" style="font-size: 11px; color: #6b7280; padding: 4px 2px 0;">Tip: pick multiple .xlsx files at once to bulk-import — each file becomes a project named after its filename.</div>
-    <div class="picker-import-status" id="picker-import-status"></div>`;
+    <div class="picker-action-group">
+      <div class="picker-section-title">Import from Smartsheet (.xlsx)</div>
+      <div class="picker-new-row picker-import-row">
+        <input type="text" class="picker-import-name" placeholder="Project name (auto-fills from file)" />
+        <input type="file" class="picker-import-file" accept=".xlsx" multiple />
+        <button class="btn-primary picker-import-btn" type="button" disabled>Import</button>
+      </div>
+      <div class="picker-hint">Pick multiple .xlsx files at once to bulk-import — each file becomes its own project.</div>
+      <div class="picker-import-status" id="picker-import-status"></div>
+    </div>`;
   document.body.appendChild(pop);
   pop.querySelectorAll('.picker-row').forEach(row => {
     row.addEventListener('click', () => {
@@ -10751,7 +12256,7 @@ function showEstimateFeasibilityModal(parsed) {
         </div>
 
         <h3 style="margin: 16px 0 6px;">Estimate hours — editable</h3>
-        <p class="est-help" style="margin: 0 0 6px; font-size: 12px; color: #6b7280;">
+        <p class="est-help" style="margin: 0 0 6px; font-size: var(--fs-md); color: #6b7280;">
           Mirrors the SUMMARY FOR RELEASE tab. Section 10's <strong>Design + Drawings</strong> cell splits into Design | Drawings (default 50/50). Section 10's <strong>Electrical Build</strong> splits into Panel | Machine (default 25/75). Click any value to edit.
         </p>
         <div class="est-hours-scroll">
@@ -10792,7 +12297,7 @@ function showEstimateFeasibilityModal(parsed) {
         </div>
 
         <h3 style="margin: 16px 0 6px;">Staffing</h3>
-        <p class="est-help" style="margin: 0 0 6px; font-size: 12px; color: #6b7280;">
+        <p class="est-help" style="margin: 0 0 6px; font-size: var(--fs-md); color: #6b7280;">
           Edit people-per-role. Mech 1 Release pinned ${MECH_RELEASE_TO_BUILD_WEEKS} weeks before Build start. Section 40 always staffs 2 controls (lead + secondary). Section 50 teardown + install fixed at 1 week — more hours = more people.
         </p>
         <table class="est-staff-table">
@@ -11026,8 +12531,8 @@ function showEstimateFeasibilityModal(parsed) {
     renderHeadcountTable(cp, deliveryWeeks, eff);
     const m1rText = cp.m1rWeek > 0 ? `week ${cp.m1rWeek.toFixed(1)}` : 'BEFORE PO (infeasible)';
     const summary = cp.feasible
-      ? `<div style="font-size:12px;color:#166534;">✓ Fits ${deliveryWeeks} weeks at ${Math.round(eff*100)}% efficiency. <strong>Mech 1 Release at ${m1rText}</strong> · Build/Wire weeks ${cp.buildStartWeek.toFixed(1)}–${cp.buildEndWeek.toFixed(1)} · Testing weeks ${cp.testStartWeek.toFixed(1)}–${cp.fatWeek}.</div>`
-      : `<div style="font-size:12px;color:#b91c1c;">✗ Doesn't fit ${deliveryWeeks} weeks. Bump headcount or extend delivery.</div>`;
+      ? `<div style="font-size:var(--fs-md);color:#166534;">✓ Fits ${deliveryWeeks} weeks at ${Math.round(eff*100)}% efficiency. <strong>Mech 1 Release at ${m1rText}</strong> · Build/Wire weeks ${cp.buildStartWeek.toFixed(1)}–${cp.buildEndWeek.toFixed(1)} · Testing weeks ${cp.testStartWeek.toFixed(1)}–${cp.fatWeek}.</div>`
+      : `<div style="font-size:var(--fs-md);color:#b91c1c;">✗ Doesn't fit ${deliveryWeeks} weeks. Bump headcount or extend delivery.</div>`;
     document.getElementById('est-summary').innerHTML = summary;
   };
 
@@ -11114,29 +12619,19 @@ function render() {
   renderMachineSubTabs();
   renderMachineCloneBanner();
   renderFilters();
-  // Keep the Baseline buttons' labels (Set/Reset) and disabled state aligned
-  // with the active project after every render — covers project-tab switches
-  // as well as data reloads.
   syncBaselineButtons();
   renderAssigneeFilterBanner();
   renderPersonalBanner();
   if (state.view === 'schedule') {
     renderTable();
     renderGantt();
-    // After tbody is rebuilt, re-paint clone-mode selection state +
-    // custom-pred chips on the source-machine rows.
-    decorateCloneModeRows();
+    try { decorateCloneModeRows(); } catch (_) {}
   } else if (state.view === 'team') {
     renderTeam();
   }
-  // Refresh the footer Financials button AFTER renderTable —
-  // renderTable populates taskIdByLine, which the financial row check
-  // needs to resolve line-number Triggers (e.g. "16" → task at line
-  // 16). The first call from renderProjectTabs above runs BEFORE
-  // taskIdByLine is rebuilt for the new project, so a line-number
-  // Trigger that should resolve fails and the button stays stuck red.
   try { refreshFinancialsButtonState(); } catch (_) {}
   try { renderProjectNotes(); } catch (_) {}
+  try { renderScheduleProcurement(); } catch (_) {}
 }
 
 // ── Project Notes ─────────────────────────────────────────────────────────────
@@ -11501,9 +12996,12 @@ function _notesSplitLockHeight() {
 function layoutNotesPanel() {
   const view  = document.getElementById('view-schedule');
   const split = document.getElementById('schedule-split');
-  const el    = document.getElementById('schedule-notes');
-  if (!view || !split || !el) return;
-  const open = el.style.display !== 'none' && !el.classList.contains('is-collapsed');
+  if (!view || !split) return;
+  // Lock the split (so the whole view becomes one scrolling page) when EITHER
+  // bottom drawer is open — Notes or Procurement. They share this machinery so
+  // opening one while the other is open keeps the lock instead of fighting it.
+  const isOpen = (id) => { const e = document.getElementById(id); return e && e.style.display !== 'none' && !e.classList.contains('is-collapsed'); };
+  const open = isOpen('schedule-notes') || isOpen('schedule-procurement');
   if (open) {
     // Lock only on the open transition; later renders keep the existing lock so
     // we don't reset the user's scroll position mid-interaction.
@@ -11523,6 +13021,272 @@ window.addEventListener('resize', () => {
   const split = document.getElementById('schedule-split');
   if (split) split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
 });
+
+// ── Per-project Procurement drawer ──────────────────────────────────────────
+// Opens DOWN like the Notes drawer, scoped to the active project's ETO job:
+// readiness headline + assemblies-by-spec (reusing the Procurement page's row
+// renderer). Only shows on a real project's schedule when ETO is configured and
+// the project is linked to a job. Deep parts/job-picker live on the full page.
+function renderScheduleProcurement() {
+  const el = document.getElementById('schedule-procurement');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  const idx = project && state.projectsIndex && state.projectsIndex[project];
+  const job = idx && idx.job_number;
+  if (!project || state.view !== 'schedule' || !_etoAvailable || !job) {
+    el.style.display = 'none';
+    el.classList.add('is-collapsed'); // never leave a hidden drawer "open" (would lock the split)
+    layoutNotesPanel();
+    return;
+  }
+  el.style.display = '';
+  const collapsed = el.classList.contains('is-collapsed');
+  const data = _procCache[job];
+  // Bar stat: show readiness only if it's already cached — don't fire the heavy
+  // BOM query just to label a collapsed bar; the job number is free meanwhile.
+  let stat = `ETO #${escapeHtml(String(job))}`;
+  if (data && data.totals) stat = `${data.totals.pct}% ready · <span class="${data.totals.noPO ? 'proc-nopo' : ''}">${data.totals.noPO} no PO</span>`;
+  const bar = `<div class="notes-bar proc-drawer-bar" data-action="toggle-proc-drawer">
+    <span class="notes-bar-title">📦 Procurement</span>
+    <span class="notes-count">${stat}</span>
+    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+  </div>`;
+  if (collapsed) { el.innerHTML = bar; _wireProcDrawer(el, job, project); layoutNotesPanel(); return; }
+
+  if (!data) {
+    el.innerHTML = bar + `<div class="proc-drawer-body"><div class="proc-empty">Loading build readiness from Total ETO…</div></div>`;
+    _wireProcDrawer(el, job, project);
+    layoutNotesPanel();
+    fetch(`/api/eto/readiness/${encodeURIComponent(job)}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`request failed (${r.status})`)))
+      .then(d => { _procCache[job] = d; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); })
+      .catch(e => { _procCache[job] = { error: e.message }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
+    // Also load cost data for the assembly tab waterfall chart (same API as Cost tab)
+    if (!_procCostCache[job]) {
+      api.eto.partcost(job)
+        .then(d => { _procCostCache[job] = d; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); })
+        .catch(e => { _procCostCache[job] = { error: e.message }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
+    }
+    return;
+  }
+
+  let body;
+  if (data.error) body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
+  else {
+    const t = data.totals || { pct: 0, parts: 0, noPO: 0, cost: 0 };
+    const specsArr = data.specs || [];
+    const head = `<div class="proc-drawer-head">
+      <span class="proc-headstat-label">Readiness</span>
+      <span class="proc-bar proc-bar-lg"><span class="proc-bar-fill" style="width:${t.pct}%;background:${_procBarColor(t.pct)}"></span></span>
+      <span class="proc-pct" style="color:${_procBarColor(t.pct)}">${t.pct}%</span>
+      <span class="proc-headstat-sub">${t.parts} parts · <span class="${t.noPO ? 'proc-nopo' : ''}">${t.noPO} no PO</span>${t.cost ? ` · ${_procUsd(t.cost)} materials` : ''}</span>
+    </div>`;
+    const dtab = _procState.drawerTab === 'parts' ? 'parts' : 'assemblies';
+    const tabs = `<div class="proc-tabs proc-drawer-tabs">
+      <button class="proc-tab${dtab === 'assemblies' ? ' is-active' : ''}" data-dtab="assemblies" type="button">Assemblies <span class="proc-tab-n">${specsArr.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
+      <button class="proc-tab${dtab === 'parts' ? ' is-active' : ''}" data-dtab="parts" type="button">Parts List <span class="proc-tab-n">${(data.partsList || []).length}</span></button>
+      ${dtab === 'assemblies' && specsArr.length ? `<span class="proc-drawer-tab-actions">
+        <button class="btn-ghost btn-tight" data-dexpand="1" type="button">⊞ Expand all</button>
+        <button class="btn-ghost btn-tight" data-dcollapse="1" type="button">⊟ Collapse all</button>
+      </span>` : ''}
+    </div>`;
+    let inner;
+    if (!specsArr.length) {
+      inner = `<div class="proc-empty">Total ETO has no BOM for job ${escapeHtml(String(job))} yet.</div>`;
+    } else if (dtab === 'parts') {
+      inner = _procPartsSummary(data) + _procPartsFilterBar(data) + _procPartsTable(data); // same filters as the full page
+    } else {
+      const specs = specsArr.map(spec => {
+        const specCost = spec.assemblies.reduce((s, a) => s + ((a.stats && a.stats.cost) || 0), 0);
+        return `<div class="proc-spec">
+          <div class="proc-spec-head"><span>Section ${escapeHtml(String(spec.specId))} — ${escapeHtml(spec.specName || '')}</span><span class="proc-spec-cost">${_procUsd(specCost)}</span></div>
+          ${spec.assemblies.map(a => _procAssemblyRow(a, 0)).join('')}
+        </div>`;
+      }).join('');
+      const grand = specsArr.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
+
+      // Add waterfall chart and cost summary to drawer assembly tab
+      const costData = _procCostCache[job];
+      const waterfallChartHtml = costData && !costData.error ? _procCostWaterfall(costData) : '';
+      const costSummaryHtml = costData && !costData.error ? (() => {
+        const c = costData;
+        const usd = v => _procUsd(v);
+        return `<div class="proc-cost-card">
+          <div class="proc-cost-card-title">Cost Summary</div>
+          <div class="proc-cost-estimate-row">
+            <div>
+              <div class="proc-cost-estimate-label">Estimated</div>
+              <div class="proc-cost-estimate-sub">${c.estimateSource === 'user' ? 'entered by PM' : 'from Total ETO'}</div>
+            </div>
+            <div class="proc-cost-estimate-val">
+              ${usd(c.estimated || 0)}
+              <button class="proc-cost-edit-btn proc-cost-edit" data-action="proc-edit-estimate" data-job="${escapeHtml(String(c.job))}" type="button" title="Enter the materials estimate for this job">✎ Edit</button>
+            </div>
+          </div>
+          <div class="proc-cost-grid">
+            <span class="proc-cost-key">Purchased</span><span class="proc-cost-val">${usd(c.purchased || 0)}</span>
+            <span class="proc-cost-key">Received</span><span class="proc-cost-val">${usd(c.received || 0)}</span>
+            <span class="proc-cost-key">Paid</span><span class="proc-cost-val proc-cost-val-paid">${usd(c.paid || 0)}</span>
+            <span class="proc-cost-key">Left to Pay</span><span class="proc-cost-val">${usd(c.leftToPay || 0)}</span>
+            <span class="proc-cost-key">ETC</span><span class="proc-cost-val">${usd(c.etc || 0)}</span>
+            <span class="proc-cost-key proc-cost-key-total proc-cost-divider">Projection</span><span class="proc-cost-val proc-cost-val-total proc-cost-divider">${usd(c.projection || 0)}</span>
+          </div>
+        </div>`;
+      })() : '';
+      const waterfallPlaceholder = !costData ? `<div style="padding: 12px; background: white; border-radius: 6px; border: 1px solid #e2e8f0; text-align: center; color: #64748b; font-size: var(--fs-md);">Loading cost...</div>` : '';
+
+      const assemblyContent = _procAssemblyHeader() + specs + `<div class="proc-grand">
+        <span>Grand total — purchased materials across all assemblies</span>
+        <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
+      </div>`;
+
+      // Side-by-side for drawer: assembly list on left (60%), cost summary + waterfall on right (40%)
+      if (waterfallChartHtml || waterfallPlaceholder || costSummaryHtml) {
+        inner = `<div style="display: grid; grid-template-columns: 3fr 2fr; gap: 16px; min-height: 400px;">
+          <div style="overflow-y: auto; border-right: 1px solid #e2e8f0; padding-right: 12px; font-size: var(--fs-sm); overflow-x: hidden;">
+            <div style="transform: scale(0.85); transform-origin: top left; width: calc(100% / 0.85);">
+              ${assemblyContent}
+            </div>
+          </div>
+          <div style="overflow-y: auto; padding-left: 0; font-size: var(--fs-md);">
+            ${costSummaryHtml}
+            ${waterfallChartHtml || waterfallPlaceholder}
+          </div>
+        </div>`;
+      } else {
+        inner = assemblyContent;
+      }
+    }
+    body = head + tabs + inner;
+  }
+  el.innerHTML = bar + `<div class="proc-drawer-body">${body}</div>`;
+  _procWireEstimateEditor(); // Wire estimate edit button for Assembly tab
+  _wireProcDrawer(el, job, project);
+  layoutNotesPanel();
+}
+
+function _wireProcDrawer(el, job, project) {
+  // onclick (not addEventListener) so re-renders never stack duplicate handlers.
+  el.onclick = (e) => {
+    const t = e.target;
+    if (t.closest('[data-action="toggle-proc-drawer"]')) {
+      const willOpen = el.classList.contains('is-collapsed');
+      el.classList.toggle('is-collapsed');
+      renderScheduleProcurement();
+      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
+      return;
+    }
+    const dtab = t.closest('[data-dtab]');
+    if (dtab) { _procState.drawerTab = dtab.dataset.dtab; _procSave(); renderScheduleProcurement(); return; }
+    if (t.closest('[data-dexpand]') || t.closest('[data-dcollapse]')) {
+      const expand = !!t.closest('[data-dexpand]');
+      _procState.open = _procState.open || {};
+      if (expand) {
+        const data = _procCache[job];
+        const ids = [];
+        (function collect(nodes) { (nodes || []).forEach(n => { if (n.isAssembly) { ids.push(n.id); collect(n.children); } }); })(data && data.specs ? data.specs.flatMap(s => s.assemblies) : []);
+        ids.forEach(id => { _procState.open[id] = true; });
+      } else {
+        _procState.open = {};
+      }
+      renderScheduleProcurement();
+      return;
+    }
+    const pnBtn = t.closest('.proc-pn-sm');
+    if (pnBtn && pnBtn.closest('.proc-prow')) {
+      const pn = pnBtn.dataset.copy;
+      if (pn) {
+        _procState.drawerTab = 'parts';
+        _procState.partsListMode = 'table';
+        _procSave();
+        renderScheduleProcurement();
+        setTimeout(() => {
+          const row = el.querySelector(`.proc-plrow[data-pn="${CSS.escape(pn)}"]`);
+          if (row) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.add('proc-plrow-highlight');
+            setTimeout(() => row.classList.remove('proc-plrow-highlight'), 1800);
+          }
+        }, 200);
+        return;
+      }
+    }
+    const slipPn = t.closest('[data-slip-pn]');
+    if (slipPn) {
+      const pn = slipPn.dataset.slipPn;
+      if (pn) {
+        _procState.drawerTab = 'parts';
+        _procState.partsListMode = 'table';
+        _procSave();
+        renderScheduleProcurement();
+        setTimeout(() => {
+          const row = el.querySelector(`.proc-plrow[data-pn="${CSS.escape(pn)}"]`);
+          if (row) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.add('proc-plrow-highlight');
+            setTimeout(() => row.classList.remove('proc-plrow-highlight'), 1800);
+          }
+        }, 200);
+      }
+      return;
+    }
+    const copyBtn = t.closest('[data-copy]');
+    if (copyBtn) { const pn = copyBtn.dataset.copy; if (pn) { try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {} } return; }
+    const poClick = t.closest('[data-poid].clickable');
+    if (poClick) {
+      const poId = poClick.dataset.poid;
+      if (poId) {
+        _procState.drawerTab = 'parts';
+        _procState.partsListMode = 'card';
+        _procSave();
+        renderScheduleProcurement();
+        setTimeout(() => {
+          const poCard = el.querySelector(`[data-vpo-id="${poId}"]`);
+          if (poCard) {
+            const vendorName = poCard.closest('.proc-pcard')?.querySelector('.proc-pname')?.textContent || '';
+            if (vendorName) _procOpenPoPanel(job, vendorName, poId);
+          }
+        }, 200);
+        return;
+      }
+    }
+    const vpo = t.closest('[data-vpo]');
+    if (vpo) {
+      // Check if this is a NO_PO row
+      if (vpo.dataset.nopoVendor) {
+        _procOpenNoPoPanel(vpo.dataset.nopoVendor, job);
+        return;
+      }
+      const k = vpo.dataset.vpo, i = k.indexOf('|');
+      _procOpenPoPanel(job, k.slice(0, i), k.slice(i + 1));
+      return;
+    }
+    const summaryMore = t.closest('.proc-summary-more-link');
+    if (summaryMore) {
+      const section = summaryMore.dataset.section;
+      const data = _procCache[job];
+      if (section === 'nopo') {
+        _procOpenSummaryPanel(job, 'nopo', data);
+      } else if (section === 'delivery') {
+        _procOpenSummaryPanel(job, 'delivery', data);
+      }
+      return;
+    }
+    const weekTab = t.closest('.proc-week-btn');
+    if (weekTab) {
+      const weekNum = parseInt(weekTab.dataset.week);
+      _procState.upcomingWeek = weekNum;
+      _procSave();
+      renderScheduleProcurement();
+      return;
+    }
+    const arow = t.closest('.proc-arow');
+    if (arow) { _procState.open = _procState.open || {}; const id = arow.dataset.aid; _procState.open[id] = !_procState.open[id]; renderScheduleProcurement(); return; }
+  };
+  // Parts filters fire `change`/`click` on fresh elements each render — bind them
+  // separately from the onclick delegation above.
+  _wirePartsFilters(el, renderScheduleProcurement);
+}
 function _wireNotes(el, project) {
   const data = state.projectNotes[project];
   const findSession = id => data.sessions.find(s => s.id === id);
@@ -13303,7 +15067,7 @@ async function openQuoteCompareModal(project, providedQuote) {
           const pickerRow = optionsHtml
             ? `<tr class="quote-row quote-add-resource-row">
                 <td colspan="${colCount}">
-                  <span style="font-size:12px;color:#475569;">+ Add resource to ${escapeHtml(g.label || 'this group')}:</span>
+                  <span style="font-size:var(--fs-md);color:#475569;">+ Add resource to ${escapeHtml(g.label || 'this group')}:</span>
                   <select class="quote-add-resource-select" data-group-key="${escapeHtml(g.key || '')}">
                     <option value="">— pick a task to duplicate —</option>
                     ${optionsHtml}
@@ -13395,20 +15159,20 @@ async function openQuoteCompareModal(project, providedQuote) {
           </label>
         </div>
         ${quote
-          ? `<div style="margin:0 0 12px;font-size:12px;color:#475569;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          ? `<div style="margin:0 0 12px;font-size:var(--fs-md);color:#475569;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span id="quote-estimate-name" style="flex:1 1 auto;min-width:200px;">Comparing the saved estimate hours against the live scheduled hours (duration × allocation × 8 per task).</span>
               <button type="button" class="quote-action-btn" data-action="view-estimate" title="Download the estimate file attached to this project so you can verify it." style="display:none;">⬇ View estimate</button>
               <button type="button" class="quote-action-btn" data-action="update-estimate" title="Re-read the attached estimate file and refresh the Quoted hours from it. Use this after you change the estimate." style="display:none;">↻ Update numbers from estimate</button>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor (billing events tied to anchors, e.g. 30% at PO / 60% at FAT / 10% at Ship). Stays open on top so you can confirm billing while the comparison is still in view.">$ Financial Milestones</button>
-              <label class="btn-ghost" style="cursor:pointer;border:1px solid #cbd5e1;color:#334155;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
+              <label class="btn-ghost" style="cursor:pointer;border:1px solid #cbd5e1;color:#334155;padding:4px 10px;font-size:var(--fs-md);font-weight:var(--fw-semibold);border-radius:4px;background:white;">
                 Replace estimate…
                 <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
               </label>
             </div>`
-          : `<div style="margin:0 0 12px;font-size:12px;color:#b45309;background:#fef3c7;padding:10px 12px;border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          : `<div style="margin:0 0 12px;font-size:var(--fs-md);color:#b45309;background:#fef3c7;padding:10px 12px;border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="flex:1 1 auto;min-width:240px;">No estimate attached to this project. Load the estimate xlsx — it'll be saved on the project so future opens of this modal load it automatically.</span>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor. You can still edit billing milestones even without an estimate attached.">$ Financial Milestones</button>
-              <label class="btn-ghost" style="cursor:pointer;border:1px solid #d97706;color:#b45309;padding:4px 10px;font-size:12px;font-weight:600;border-radius:4px;background:white;">
+              <label class="btn-ghost" style="cursor:pointer;border:1px solid #d97706;color:#b45309;padding:4px 10px;font-size:var(--fs-md);font-weight:var(--fw-semibold);border-radius:4px;background:white;">
                 Attach estimate…
                 <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
               </label>
@@ -13449,6 +15213,7 @@ async function openQuoteCompareModal(project, providedQuote) {
           <tbody>${rowsHtml}</tbody>
           <tfoot>${buildFooterHtml()}</tfoot>
         </table>
+        <div id="quote-eto-actuals" class="quote-eto-actuals" hidden></div>
       </div>
       <div class="modal-foot">
         <span class="quote-pending-hint" id="quote-pending-hint" hidden>Pending changes — click Apply to update the schedule.</span>
@@ -13468,6 +15233,9 @@ async function openQuoteCompareModal(project, providedQuote) {
   overlay.querySelector('[data-action="financials"]').onclick = () => {
     openFinancialsModal(project);
   };
+  // ETO actuals strip — fills in async below the hours table when this
+  // project is linked to a Total ETO job. No link / no ETO → stays hidden.
+  _loadQuoteEtoActuals(project, overlay);
   // Helper — POST the freshly-merged quote and refresh caches/popup.
   // Used by sold delivery, penalty toggle, and penalty weeks inputs.
   const _saveQuoteMerge = async (patch) => {
@@ -16762,7 +18530,7 @@ function deptHealthDonutSvg(tasks, todayMs, size = 92) {
     <title>${c.ontime} on-time · ${c.ahead} ahead · ${c.behind} behind — ${pct}% on track</title>
     <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
     ${arcs}
-    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.22}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}%</text>
+    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.22}" font-weight="700" fill="#1f2937" style="font-family:'Montserrat',sans-serif">${pct}%</text>
   </svg>`;
 }
 
@@ -16806,7 +18574,7 @@ function deptLoadDonutSvg(pct, size = 34) {
     <title>${pct}% allocated</title>
     <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#e5e7eb" stroke-width="${sw}"/>
     ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${len} ${gap}" transform="rotate(-90 ${cx} ${cy})"/>` : ''}
-    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.3}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}</text>
+    <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.3}" font-weight="700" fill="#1f2937" style="font-family:'Montserrat',sans-serif">${pct}</text>
   </svg>`;
 }
 
@@ -16822,8 +18590,8 @@ function deptUtilGaugeSvg(pct, size = 92) {
     <title>Average team load across the window: ${pct}%</title>
     <circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="#e5e7eb" stroke-width="${stroke}"/>
     ${len > 0 ? `<circle cx="${cx}" cy="${cy}" r="${ringR}" fill="none" stroke="${color}" stroke-width="${stroke}" stroke-dasharray="${len} ${gap}" stroke-dashoffset="0" transform="rotate(-90 ${cx} ${cy})" stroke-linecap="round"/>` : ''}
-    <text x="${cx}" y="${cy - 3}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.2}" font-weight="700" fill="#1f2937" style="font-family:sans-serif">${pct}%</text>
-    <text x="${cx}" y="${cy + size * 0.17}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.1}" fill="#64748b" style="font-family:sans-serif">avg load</text>
+    <text x="${cx}" y="${cy - 3}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.2}" font-weight="700" fill="#1f2937" style="font-family:'Montserrat',sans-serif">${pct}%</text>
+    <text x="${cx}" y="${cy + size * 0.17}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.1}" fill="#64748b" style="font-family:'Montserrat',sans-serif">avg load</text>
   </svg>`;
 }
 
@@ -17571,14 +19339,14 @@ function buildResourceDateTicks(minDate, maxDate, pxPerDay, _mode) {
   while (cursor <= maxDate) {
     const x = ((cursor - minDate) / 86400000) * pxPerDay;
     if (showDateNumbers) {
-      parts.push(`<text class="lower-text" x="${x}" y="${lowerY}" text-anchor="middle" fill="#475569" style="font-family:sans-serif;font-size:12px;font-weight:500">${cursor.getDate()}</text>`);
+      parts.push(`<text class="lower-text" x="${x}" y="${lowerY}" text-anchor="middle" fill="#475569" style="font-family:'Montserrat',sans-serif;font-size:var(--fs-md);font-weight:var(--fw-medium)">${cursor.getDate()}</text>`);
     }
     parts.push(`<path class="tick thick" d="M ${x} ${tickTop} v 10000" stroke="#cbd5e1" stroke-width="1"/>`);
     if (showWeekdayLetters) {
       const letters5 = ['M', 'T', 'W', 'Th', 'F'];
       for (let j = 0; j < 5; j++) {
         const xd = x + j * pxPerDay;
-        parts.push(`<text class="sdc-weekday-letter" x="${xd + pxPerDay / 2}" y="${weekLetterY}" text-anchor="middle" fill="#94a3b8" style="font-family:sans-serif;font-size:10px;font-weight:600">${letters5[j]}</text>`);
+        parts.push(`<text class="sdc-weekday-letter" x="${xd + pxPerDay / 2}" y="${weekLetterY}" text-anchor="middle" fill="#94a3b8" style="font-family:'Montserrat',sans-serif;font-size:var(--fs-xs);font-weight:var(--fw-semibold)">${letters5[j]}</text>`);
       }
     }
     const monthName  = cursor.toLocaleString('en-US', { month: 'long' });
@@ -17604,7 +19372,7 @@ function buildResourceDateTicks(minDate, maxDate, pxPerDay, _mode) {
     else                  labelText = '';
     if (!labelText) continue;
     const cx = (m.startX + m.endX) / 2;
-    parts.push(`<text class="upper-text" x="${cx}" y="${upperY}" text-anchor="middle" fill="#0f172a" style="font-family:sans-serif;font-size:${fontSize};font-weight:600">${escapeHtml(labelText)}</text>`);
+    parts.push(`<text class="upper-text" x="${cx}" y="${upperY}" text-anchor="middle" fill="#0f172a" style="font-family:'Montserrat',sans-serif;font-size:${fontSize};font-weight:var(--fw-semibold)">${escapeHtml(labelText)}</text>`);
   }
 
   return `<svg class="gantt resources-axis-svg" width="${tlWidth}" height="${headerH}" viewBox="0 0 ${tlWidth} ${headerH}" preserveAspectRatio="none">${parts.join('')}</svg>`;
@@ -17727,8 +19495,192 @@ function ensureSetupDraft() {
   }
 }
 
+// System Status panel (Setup) — fetches /api/status and renders a glanceable
+// health card. Read-only; the only action is a manual "Back up now" (admin).
+function _fmtAgo(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - Date.parse(iso);
+  if (isNaN(ms)) return iso;
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ago`;
+  if (h > 0) return `${h}h ago`;
+  if (m > 0) return `${m}m ago`;
+  return 'just now';
+}
+function _fmtUptime(sec) {
+  if (sec == null) return '—';
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  return [d ? `${d}d` : '', h ? `${h}h` : '', `${m}m`].filter(Boolean).join(' ');
+}
+async function renderSystemStatus() {
+  const box = document.getElementById('system-status-body');
+  if (!box) return;
+  let s;
+  try { s = await fetch('/api/status').then(r => r.json()); }
+  catch (e) { box.innerHTML = `<div class="sys-stat-row sys-bad">⚠ Could not reach the server: ${escapeHtml(e.message)}</div>`; return; }
+
+  const dot = ok => `<span class="sys-dot ${ok ? 'sys-dot-ok' : 'sys-dot-bad'}"></span>`;
+  const bk = s.lastBackup;
+  const backupLine = !bk ? `${dot(false)} No backup yet this session — runs nightly at 2 AM, or back up now`
+    : bk.ok ? `${dot(true)} Last backup ${_fmtAgo(bk.at)} · ${bk.file} (${Math.round((bk.sizeBytes || 0) / 1024).toLocaleString()} KB)`
+            : `${dot(false)} Last backup FAILED ${_fmtAgo(bk.at)} — ${escapeHtml(bk.error || '')}`;
+  const sync = s.lastEtoSync;
+  const syncLine = sync
+    ? `${dot(true)} ETO sync ${_fmtAgo(sync.at)} · ${sync.pos} POs (${sync.created} new, ${sync.updated} updated)`
+    : `${dot(true)} No ETO sync yet this session — runs every 30 min`;
+
+  box.innerHTML = `
+    <div class="sys-status-grid">
+      <div class="sys-stat-row">${dot(s.ok)} <b>Server</b> — up ${_fmtUptime(s.uptimeSeconds)} · v${escapeHtml(String(s.version))} · Node ${escapeHtml(String(s.node))}</div>
+      <div class="sys-stat-row">${dot(s.db && s.db.ok)} <b>Database</b> — ${s.db && s.db.ok ? `reachable (${s.db.latencyMs}ms)` : `UNREACHABLE: ${escapeHtml((s.db && s.db.error) || '')}`}</div>
+      <div class="sys-stat-row"><b>Backups</b> — ${backupLine}</div>
+      <div class="sys-stat-row"><b>Total ETO</b> — ${syncLine}</div>
+      <div class="sys-stat-foot">
+        <span class="sys-stat-hint">Backups kept ${s.backup ? s.backup.keepDays : 14} days in <code>${escapeHtml(s.backup ? s.backup.dir : 'backups')}</code></span>
+        <span style="flex:1"></span>
+        <button class="btn-secondary btn-tight" id="sys-backup-now" type="button">Back up now</button>
+        <button class="btn-ghost btn-tight" id="sys-status-refresh" type="button">↻ Refresh</button>
+      </div>
+    </div>`;
+  const refresh = box.querySelector('#sys-status-refresh');
+  if (refresh) refresh.addEventListener('click', renderSystemStatus);
+  const backupBtn = box.querySelector('#sys-backup-now');
+  if (backupBtn) backupBtn.addEventListener('click', async () => {
+    backupBtn.disabled = true; backupBtn.textContent = 'Backing up…';
+    try {
+      const r = await fetch('/api/backup', { method: 'POST' }).then(x => x.json());
+      if (r.ok) showToast(`Backup created — ${r.file} (${Math.round((r.sizeBytes || 0) / 1024).toLocaleString()} KB)`, { kind: 'success' });
+      else showToast(`Backup failed: ${r.error || 'unknown error'}`, { kind: 'error' });
+    } catch (e) { showToast(`Backup failed: ${e.message}`, { kind: 'error' }); }
+    renderSystemStatus();
+  });
+}
+
+// Users admin panel (Setup) — admin-only account management so a locked-out
+// teammate can be fixed in-app (reset password / re-enable) instead of via the
+// server CLI. Self-guards: a non-admin gets 403 → the whole card stays hidden.
+async function renderUsersAdmin() {
+  const card = document.getElementById('setup-users-card');
+  const box  = document.getElementById('users-admin-body');
+  if (!card || !box) return;
+  // Client-side guard: when auth is on, only admins ever see this card (the
+  // server also enforces it — this just avoids a needless fetch + any flash).
+  if (window.sdcAuth && window.sdcAuth.authEnabled && window.sdcAuth.user && window.sdcAuth.user.role !== 'admin') {
+    card.hidden = true; return;
+  }
+  let users;
+  try {
+    const r = await fetch('/api/users');
+    if (r.status === 403 || r.status === 401) { card.hidden = true; return; } // not an admin
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    users = await r.json();
+  } catch (e) { card.hidden = false; box.innerHTML = `<div class="sys-stat-row sys-bad">⚠ Could not load users: ${escapeHtml(e.message)}</div>`; return; }
+  card.hidden = false;
+
+  const roleOpts = (cur) => ['viewer', 'editor', 'admin'].map(r => `<option value="${r}" ${r === cur ? 'selected' : ''}>${r}</option>`).join('');
+  const rows = users.map(u => `
+    <tr class="ua-row${u.active ? '' : ' ua-disabled'}" data-uid="${u.id}">
+      <td class="ua-name">${escapeHtml(u.name || '')}</td>
+      <td class="ua-email">${escapeHtml(u.email || '')}</td>
+      <td><select class="ua-role" data-uid="${u.id}" title="Change role">${roleOpts(u.role)}</select></td>
+      <td class="ua-status">${u.active ? '<span class="ua-on">Active</span>' : '<span class="ua-off">Disabled</span>'}</td>
+      <td class="ua-actions">
+        <button class="btn-ghost btn-tight" data-ua-reset="${u.id}" type="button" title="Set a temporary password and re-enable this account">Reset password</button>
+        <button class="btn-ghost btn-tight" data-ua-toggle="${u.id}" data-active="${u.active ? 1 : 0}" type="button" title="${u.active ? 'Temporarily lock this account (keeps the record)' : 'Re-enable this account'}">${u.active ? 'Disable' : 'Enable'}</button>
+        <button class="btn-ghost btn-tight ua-del" data-ua-delete="${u.id}" type="button" title="Permanently remove this account">Delete</button>
+      </td>
+    </tr>`).join('');
+
+  box.innerHTML = `
+    <table class="users-admin-table">
+      <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="ua-add">
+      <button class="btn-secondary btn-tight" id="ua-add-btn" type="button">+ Add user</button>
+      <button class="btn-ghost btn-tight" id="ua-refresh" type="button">↻ Refresh</button>
+    </div>`;
+
+  box.querySelector('#ua-refresh')?.addEventListener('click', renderUsersAdmin);
+
+  // Role change
+  box.querySelectorAll('.ua-role').forEach(sel => sel.addEventListener('change', async () => {
+    const id = sel.dataset.uid;
+    try {
+      const r = await fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role: sel.value }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      showToast(`Role updated to ${sel.value}`, { kind: 'success' });
+    } catch (e) { showToast(`Could not change role: ${e.message}`, { kind: 'error' }); renderUsersAdmin(); }
+  }));
+
+  // Enable / disable
+  box.querySelectorAll('[data-ua-toggle]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.uaToggle;
+    const makeActive = btn.dataset.active === '0';
+    try {
+      const r = await fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: makeActive ? 1 : 0 }) });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      showToast(makeActive ? 'Account enabled' : 'Account disabled', { kind: 'success' });
+      renderUsersAdmin();
+    } catch (e) { showToast(`Could not update: ${e.message}`, { kind: 'error' }); }
+  }));
+
+  // Reset password → generate temp, re-enable, show it for the admin to relay
+  box.querySelectorAll('[data-ua-reset]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.uaReset;
+    const row = box.querySelector(`.ua-row[data-uid="${id}"]`);
+    const who = row ? row.querySelector('.ua-name').textContent : 'this user';
+    const ok = await showConfirmDialog?.({ title: 'Reset password', message: `Generate a temporary password for ${who} and re-enable the account? They'll use it to sign in, then can change it.` });
+    if (showConfirmDialog && !ok) return;
+    try {
+      const r = await fetch(`/api/users/${id}/reset-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      await showAlertDialog?.({ title: 'Temporary password', message: `Give ${body.name || who} this one-time password — they should change it after signing in:\n\n${body.tempPassword}` });
+      renderUsersAdmin();
+    } catch (e) { showToast(`Reset failed: ${e.message}`, { kind: 'error' }); }
+  }));
+
+  // Delete (permanent) — guarded server-side against self / last-admin.
+  box.querySelectorAll('[data-ua-delete]').forEach(btn => btn.addEventListener('click', async () => {
+    const id = btn.dataset.uaDelete;
+    const row = box.querySelector(`.ua-row[data-uid="${id}"]`);
+    const who = row ? `${row.querySelector('.ua-name').textContent} (${row.querySelector('.ua-email').textContent})` : 'this user';
+    const ok = await showConfirmDialog?.({ title: 'Delete user', message: `Permanently delete ${who}? This removes the sign-in account for good. To only lock them out temporarily, use Disable instead.`, okLabel: 'Delete', danger: true });
+    if (showConfirmDialog && !ok) return;
+    try {
+      const r = await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      showToast('User deleted', { kind: 'success' });
+      renderUsersAdmin();
+    } catch (e) { showToast(`Could not delete: ${e.message}`, { kind: 'error' }); }
+  }));
+
+  // Add user
+  box.querySelector('#ua-add-btn')?.addEventListener('click', () => _uaAddUserFlow());
+}
+
+async function _uaAddUserFlow() {
+  const email = await showPromptDialog?.({ title: 'Add user', message: 'Email address', placeholder: 'name@sdcautomation.com', validate: v => /\S+@\S+\.\S+/.test(v) ? null : 'Enter a valid email' });
+  if (!email) return;
+  const name = await showPromptDialog?.({ title: 'Add user', message: `Display name for ${email}`, placeholder: 'Full name' });
+  if (!name) return;
+  const password = await showPromptDialog?.({ title: 'Add user', message: 'Temporary password', validate: v => (v && v.length >= 1) ? null : 'Password is required' });
+  if (!password) return;
+  try {
+    const r = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, name, password, role: 'editor' }) });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    showToast(`Added ${body.email} (editor)`, { kind: 'success' });
+    renderUsersAdmin();
+  } catch (e) { showToast(`Could not add user: ${e.message}`, { kind: 'error' }); }
+}
+
 function renderSetup() {
   ensureSetupDraft();
+  try { renderSystemStatus(); } catch (_) {}
+  try { renderUsersAdmin(); } catch (_) {}
   const d = state.setupDraft;
 
   // (Row-height now lives in the schedule toolbar — used to be a slider here.)
@@ -18583,16 +20535,23 @@ function dedupAnchors(all) {
 async function loadTasks() {
   // Pull the raw list first so ensureAnchorsForProject sees ANY duplicates and skips
   // creation. After backfill we collapse duplicates at the data layer.
-  let raw = await api.list();
+  let raw;
+  try { raw = await api.list(); } catch(e) {
+    const es = document.getElementById('empty-state');
+    if (es) { es.classList.remove('hidden'); es.textContent = 'Could not load tasks: ' + e.message; }
+    return;
+  }
   state.tasks = raw;
   // Backfill anchors for every project that doesn't yet have them. Runs once per page
   // load — subsequent loads see the rows (or a duplicate row) and skip.
-  const projects = uniqueValues('project');
-  let backfilled = false;
-  for (const p of projects) {
-    if (await ensureAnchorsForProject(p)) backfilled = true;
-  }
-  if (backfilled) raw = await api.list();
+  try {
+    const projects = uniqueValues('project');
+    let backfilled = false;
+    for (const p of projects) {
+      if (await ensureAnchorsForProject(p)) backfilled = true;
+    }
+    if (backfilled) raw = await api.list();
+  } catch (_) { /* anchor backfill is non-critical — show tasks even if it fails */ }
   state.tasks = dedupAnchors(raw);
   state.overAllocatedTaskIds = computeOverAllocatedTasks(state.tasks);
   // Hydrate project tabs the first time we get tasks so they include any pre-existing
@@ -18677,7 +20636,12 @@ function setView(view) {
   // had state.view === 'dashboard' saved in localStorage lands on
   // Departments instead so they don't get a blank page.
   if (view === 'dashboard') view = 'team';
+  // The standalone procurement page was removed. Redirect to schedule.
+  if (view === 'procurement') view = 'schedule';
   state.view = view;
+  // Survive reloads: F5 / Ctrl+Shift+R reopens the view you were on instead
+  // of always dumping you back on the schedule.
+  try { localStorage.setItem('sdcActiveView', view); } catch (_) {}
   document.body.dataset.view = view;
   // Update the legacy .tab buttons (if any still exist) and the sidebar
   // icons — both share the data-view attribute, so a single CSS active
@@ -18801,8 +20765,14 @@ function loadLayout() {
   // handle but mostly adds clutter; users can re-enable it from the columns toggle when
   // they need predecessor numbers visible.
   const defaultVisible = COLUMN_DEFS.map(c => c.key).filter(k => k !== 'line');
+  const availW = Math.max(600, window.innerWidth - 90);
+  const defaultGW = Math.round(availW * 0.42);
+  const savedGW = Number(saved.gridWidth) || 0;
+  // Clamp saved value to 70% of current viewport so a layout from a wide monitor
+  // doesn't overflow on a smaller screen, and a missing value gets a sensible default.
+  const gridWidth = savedGW ? Math.max(280, Math.min(Math.round(availW * 0.70), savedGW)) : defaultGW;
   return {
-    gridWidth: saved.gridWidth || 720,
+    gridWidth,
     showGantt: saved.showGantt !== false,
     colWidths: { ...DEFAULT_COL_WIDTHS, ...(saved.colWidths || {}) },
     visibleCols: saved.visibleCols || defaultVisible,
@@ -19274,6 +21244,22 @@ function setupGanttPan() {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }, true);
+}
+
+function setupResizeHandler() {
+  let lastW = window.innerWidth;
+  window.addEventListener('resize', () => {
+    const newW = window.innerWidth;
+    if (Math.abs(newW - lastW) < 5) return;
+    const availW = Math.max(600, newW - 90);
+    const maxGW = Math.round(availW * 0.70);
+    if (state.layout.gridWidth > maxGW) {
+      state.layout.gridWidth = maxGW;
+      applyGridWidth();
+      if (state.gantt) renderGantt();
+    }
+    lastW = newW;
+  });
 }
 
 function setupSplitDivider() {
@@ -19888,8 +21874,11 @@ async function init() {
     if (resp.ok) {
       const projects = await resp.json();
       state.projectWorkspaces = state.projectWorkspaces || {};
+      state.projectsIndex = {};
       for (const p of projects) {
         if (!p || !p.name) continue;
+        // ETO integration + project-link chip need the row id and job number.
+        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '' };
         // Server stores the legacy literal 'default' for projects that
         // never had an explicit workspace set; map that to our canonical
         // DEFAULT_WORKSPACE ('Active'). Anything else must be in the
@@ -19902,6 +21891,7 @@ async function init() {
       try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
     }
   } catch (_) {}
+  _etoCheckOnce(); // resolve ETO availability early so chips/buttons render on first paint
 
   document.getElementById('btn-save-setup').addEventListener('click', saveSetup);
   document.getElementById('btn-reset-setup').addEventListener('click', discardSetup);
@@ -19932,6 +21922,7 @@ async function init() {
   applyScheduleView();
   renderColumnsMenu();
   setupSplitDivider();
+  setupResizeHandler();
   setupRowHeightHandle();
   setupGanttPan();
   // v4.52: Two visible seg-controls on the toolbar row replace the v4.51
@@ -20240,11 +22231,14 @@ async function init() {
   setupRevisionPill();
 
   // Project tab bar
-  // + New tab — opens the Workspaces side panel so the user can pick or build
-  // a schedule. Right-click → legacy picker fallback (the estimate +
-  // Smartsheet flows still live there until they're migrated to the panel).
+  // + New tab — opens the project picker (pick an existing schedule, or build
+  // one from an SDC estimate sheet / Smartsheet import). NOTE: this used to call
+  // openSidebarPanel('workspaces'), but that "workspaces side panel" was never
+  // built — no #app-sidebar-panel markup exists (on main either), so left-click
+  // silently did nothing. The picker is the complete, working flow; point both
+  // left-click and the right-click fallback at it.
   document.getElementById('btn-add-project').addEventListener('click', () => {
-    openSidebarPanel('workspaces');
+    showProjectAddPicker();
   });
   document.getElementById('btn-add-project').addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -20445,12 +22439,28 @@ async function init() {
     }
   });
 
+  // Restore the last-open view after a reload. Schedule is the default so it
+  // needs no restore; the password-gated Departments view is skipped unless
+  // this browser session already unlocked it.
+  try {
+    const savedView = localStorage.getItem('sdcActiveView');
+    if (savedView && savedView !== 'schedule') {
+      if (!document.getElementById(`view-${savedView}`)) {
+        // Saved view no longer exists (e.g. procurement page was removed). Reset.
+        localStorage.removeItem('sdcActiveView');
+      } else if (!(savedView === 'team' && !sessionStorage.getItem('sdcTeamAuth'))) {
+        setView(savedView);
+      }
+    }
+  } catch (_) {}
+
   loadTasks();
   // After team loads, if a personId is persisted from a prior session,
-  // route into personal mode (assignee filter + schedule view + banner).
-  // Team has to be loaded first so the member name can be resolved.
+  // route into personal mode (assignee filter + schedule view + banner) —
+  // but only when the user was last on the schedule; a restored Procurement /
+  // Vendor PO / Shop Parts view should stay where the user left it.
   loadTeam().then(() => {
-    if (_actionsPageState.personId != null) {
+    if (_actionsPageState.personId != null && state.view === 'schedule') {
       routePersonalMode(_actionsPageState.personId);
     }
   });
@@ -20482,11 +22492,11 @@ document.addEventListener('DOMContentLoaded', init);
     barShown = true;
     const bar = document.createElement('div');
     bar.id = 'new-build-bar';
-    bar.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:99999;background:#061d39;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.3);font-size:13px;font-weight:600;display:flex;align-items:center;gap:12px;';
+    bar.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:99999;background:#061d39;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.3);font-size:var(--fs-base);font-weight:var(--fw-semibold);display:flex;align-items:center;gap:12px;';
     bar.innerHTML = '<span>A newer version is available.</span>';
     const btn = document.createElement('button');
     btn.textContent = 'Reload now';
-    btn.style.cssText = 'background:#ffde51;color:#061d39;border:none;border-radius:6px;padding:6px 12px;font-weight:700;cursor:pointer;';
+    btn.style.cssText = 'background:#ffde51;color:#061d39;border:none;border-radius:6px;padding:6px 12px;font-weight:var(--fw-bold);cursor:pointer;';
     btn.onclick = () => location.reload(true);
     bar.appendChild(btn);
     document.body.appendChild(bar);
