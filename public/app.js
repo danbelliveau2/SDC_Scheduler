@@ -13236,19 +13236,31 @@ function _wireProcDrawer(el, job, project) {
     if (poClick) {
       const poId = poClick.dataset.poid;
       if (poId) {
-        _procState.drawerTab = 'parts';
-        _procState.partsListMode = 'card';
-        _procSave();
-        renderScheduleProcurement();
-        setTimeout(() => {
-          const poCard = el.querySelector(`[data-vpo-id="${poId}"]`);
-          if (poCard) {
-            const vendorName = poCard.closest('.proc-pcard')?.querySelector('.proc-pname')?.textContent || '';
-            if (vendorName) _procOpenPoPanel(job, vendorName, poId);
-          }
-        }, 200);
+        const partData = _procCache[job];
+        const part = partData && partData.partsList && partData.partsList.find(p => String(p.poId) === String(poId));
+        const vendorName = part && part.supplier;
+        if (vendorName) {
+          const openPanel = () => _procOpenPoPanel(job, vendorName, poId);
+          if (_procVendorCache[job] && !_procVendorCache[job].error) { openPanel(); }
+          else { api.eto.vendors(job).then(d => { _procVendorCache[job] = d; openPanel(); }).catch(() => showToast('Could not load vendor data', { type: 'error', duration: 3000 })); }
+        }
         return;
       }
+    }
+    const plrow = t.closest('.proc-plrow');
+    if (plrow) {
+      const pn = plrow.dataset.pn;
+      const partData = _procCache[job];
+      const part = partData && partData.partsList && partData.partsList.find(p => p.pn === pn);
+      if (part && part.poId) {
+        const vendorName = part.supplier;
+        if (vendorName) {
+          const openPanel = () => _procOpenPoPanel(job, vendorName, String(part.poId));
+          if (_procVendorCache[job] && !_procVendorCache[job].error) { openPanel(); }
+          else { api.eto.vendors(job).then(d => { _procVendorCache[job] = d; openPanel(); }).catch(() => showToast('Could not load vendor data', { type: 'error', duration: 3000 })); }
+        }
+      }
+      return;
     }
     const vpo = t.closest('[data-vpo]');
     if (vpo) {
