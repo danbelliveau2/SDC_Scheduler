@@ -4,8 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SDC Scheduler</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260616-eto33" />
+  <link rel="stylesheet" href="styles.css?v=20260616-eto37" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-166" />
 </head>
 <body>
@@ -99,15 +102,6 @@
         </svg>
       </span>
       <span class="app-sidebar-label">Vendor POs</span>
-    </button>
-    <button class="app-sidebar-icon" data-view="procurement" type="button" title="Procurement — build readiness per assembly from Total ETO: received / ordered / no-PO rollups for every BOM.">
-      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
-        <!-- Open box / package icon — reads as "parts / procurement". -->
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>
-        </svg>
-      </span>
-      <span class="app-sidebar-label">Procurement</span>
     </button>
     <button class="app-sidebar-icon" data-view="setup" type="button" title="Setup — colors, defaults, estimate rules">
       <span class="app-sidebar-glyph">⚙</span>
@@ -575,11 +569,6 @@
       <div id="vendor-pos-page" class="shop-parts-page vpo-page"></div>
     </section>
 
-    <!-- Procurement — per-assembly build readiness pulled live from Total ETO.
-         Body built by renderProcurementPage() in app.js. -->
-    <section id="view-procurement" class="view">
-      <div id="procurement-page" class="shop-parts-page proc-page"></div>
-    </section>
 
     <section id="view-setup" class="view">
       <div class="setup-pane">
@@ -907,7 +896,7 @@
   <script src="auth-ui.js?v=20260616-eto22"></script>
   <script src="phases.js?v=20260601-166"></script>
   <script src="release-notes.js?v=20260601-166"></script>
-  <script src="app.js?v=20260616-eto36"></script>
+  <script src="app.js?v=20260616-eto39"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
