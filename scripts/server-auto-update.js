@@ -33,8 +33,12 @@ const APP_DIR           = path.join(__dirname, '..');
 const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync', 'sdc-scheduler-updater'];
 const SHA_FILE          = path.join(APP_DIR, '.update-sha');
 
-// Directories to wholesale replace from upstream
-const SAFE_DIRS = ['public', 'scripts'];
+// Directories to wholesale replace from upstream.
+// custom-public/ is included so a stale frontend file left there (e.g. an old
+// app.js from a previous manual deploy) can't permanently shadow the current
+// public/ build — the repo's custom-public/ holds only app-local.js, so each
+// update clears any leftover overrides.
+const SAFE_DIRS = ['public', 'scripts', 'custom-public'];
 
 // Individual files safe to replace
 const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore', 'server.js',
