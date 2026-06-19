@@ -72,6 +72,11 @@
   font-size: 13px;
   margin: 0;
 }
+.sdc-auth-hint {
+  color: #64748b;
+  font-size: 12px;
+  margin: -4px 0 0;
+}
 .sdc-auth-link {
   background: none;
   border: none;
