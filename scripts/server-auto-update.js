@@ -38,12 +38,13 @@ const SHA_FILE          = path.join(APP_DIR, '.update-sha');
 // app.js from a previous manual deploy) can't permanently shadow the current
 // public/ build — the repo's custom-public/ holds only app-local.js, so each
 // update clears any leftover overrides.
-const SAFE_DIRS = ['public', 'scripts', 'custom-public'];
+const SAFE_DIRS = ['public', 'scripts', 'custom-public', 'mcp'];
 
 // Individual files safe to replace
 const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore', 'server.js',
                     'auth.js', 'cronJobs.js', 'emailService.js',
-                    'azureSync.js', 'azureDb.js'];
+                    'azureSync.js', 'azureDb.js',
+                    'etoDb.js', 'agent.js', 'ops.js', 'backfillProjects.js'];
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
