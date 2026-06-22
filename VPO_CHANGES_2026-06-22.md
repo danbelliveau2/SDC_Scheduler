@@ -323,6 +323,48 @@ Also: `_saveScrollPos(state.view)` called at the START of every `setView()` to c
 
 ---
 
+---
+
+---
+
+# SESSION 3 — Performance Fixes + Tab Behavior
+
+## Files Modified
+
+| File | What changed |
+|---|---|
+| `public/app.js` | `computeCriticalPath()` memoization, `applyFilters()` dedup, Gantt drawer deferral, tab clean-start |
+
+---
+
+## 1. Performance Fixes
+
+### 1.1 `computeCriticalPath()` Memoized
+- Added `_criticalPathCache` + `_criticalPathCacheKey` module-level vars
+- Cache key: `project|taskCount|maxTaskId` — auto-invalidates when tasks are added/removed/saved
+- Eliminates 2–3× O(n×m) predecessor graph walk per render pass (was called by `renderTable` + `renderGantt` on every tab switch)
+
+### 1.2 `applyFilters()` Deduplicated in `renderGantt()`
+- Was called twice in the non-`sortByStart` branch: once for `ordered`, once for `visibleIds`
+- Single `const _ganttFiltered = applyFilters(state.tasks)` at top; both branches reuse it
+
+### 1.3 Gantt Drawer Chain Deferred to `requestAnimationFrame`
+- 13 drawer functions moved inside `requestAnimationFrame(() => { ... })`:
+  `drawCustomArrows`, `drawBaselineGhosts`, `drawTodayLine`, `drawMilestoneDiamonds`, `drawMilestoneLabels`, `clipBarLabels`, `drawScheduleStatus`, `drawDoneHashOverlay`, `drawWeekdayLetters`, `drawFinancialOverlay`, `drawPenaltyClauseLine`, `drawBarMeta`, `drawMachineBorders`, `renderProjectStatsPopup`
+- Base chart is now visible immediately on tab switch; decorations layer in one frame later (~16ms)
+- Each drawer wrapped in `try/catch` per CLAUDE.md defensive render chain rule
+
+---
+
+## 2. Tab Behavior Change
+
+### No Auto-Restored Project Tabs on Load
+- `loadProjectTabs()` now always starts clean: `state.openProjects = ['']`, `state.filters.project = ''`
+- Previously restored whichever tabs were open at last session from `sdcOpenProjects` localStorage
+- Users now explicitly open projects they want from the Projects page each session
+
+---
+
 ## Notes
 
 - PM2 runs as SYSTEM on port **4003**. To deploy: update `.update-sha` file and POST to `:4013/trigger`.
