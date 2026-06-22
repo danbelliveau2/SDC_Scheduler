@@ -6345,18 +6345,10 @@ function renderFilters() {
 // is the canonical "All projects" pseudo-tab — always present, can't be closed. Switching
 // tabs sets state.filters.project which the existing applyFilters honors.
 function loadProjectTabs() {
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem('sdcOpenProjects') || 'null'); } catch {}
-  if (Array.isArray(saved) && saved.length) {
-    state.openProjects = saved.includes('') ? saved : ['', ...saved];
-  } else {
-    // First-time seed: just the "All projects" tab. User picks which schedules
-    // to open from the Projects page — we never auto-open everything.
-    state.openProjects = [''];
-  }
-  const savedActive = localStorage.getItem('sdcActiveProject');
-  state.filters.project = (savedActive != null && state.openProjects.includes(savedActive))
-    ? savedActive : '';
+  // Always start with a clean slate — only the "All projects" pseudo-tab.
+  // Users open projects they want from the Projects page; nothing is auto-restored.
+  state.openProjects = [''];
+  state.filters.project = '';
   let savedTemplates = [];
   try { savedTemplates = JSON.parse(localStorage.getItem('sdcTemplateProjects') || '[]'); } catch {}
   state.templateProjects = Array.isArray(savedTemplates) ? savedTemplates : [];
