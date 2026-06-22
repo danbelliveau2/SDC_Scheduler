@@ -3094,14 +3094,16 @@ function renderGantt() {
   // every machine even when the grid is narrowed to one (the visual mess
   // the user saw with M2 selected: M1 bars still painting on the right
   // side of the chart).
+  // Single applyFilters() call — result reused for both ordering paths below.
+  const _ganttFiltered = applyFilters(state.tasks);
   let ordered;
   if (state.scheduleView?.sortByStart) {
-    ordered = [...applyFilters(state.tasks)].sort((a, b) =>
+    ordered = [..._ganttFiltered].sort((a, b) =>
       (a.start_date || '￿').localeCompare(b.start_date || '￿')
       || (a.sort_order || 0) - (b.sort_order || 0));
   } else {
     const canonicalIds = buildCanonicalTaskOrder();
-    const visibleIds = new Set(applyFilters(state.tasks).map(t => t.id));
+    const visibleIds = new Set(_ganttFiltered.map(t => t.id));
     const byId = Object.fromEntries(state.tasks.map(t => [t.id, t]));
     ordered = canonicalIds
       .filter(id => visibleIds.has(id))
@@ -3285,21 +3287,27 @@ function renderGantt() {
   // In Gantt-only mode the grid is hidden (display:none) so its offsets are zero —
   // skip alignment and let frappe-gantt's natural layout drive bar positions.
   if (!state.scheduleView?.ganttOnly) alignGanttToGrid();
-  // Arrows render FIRST (behind everything) — bars and labels cover them visually.
-  drawCustomArrows();
-  drawBaselineGhosts();
-  drawTodayLine();
-  drawMilestoneDiamonds();
-  drawMilestoneLabels();
-  clipBarLabels();
-  drawScheduleStatus();
-  drawDoneHashOverlay();
-  drawWeekdayLetters();
-  drawFinancialOverlay();
-  drawPenaltyClauseLine();
-  drawBarMeta();
-  drawMachineBorders();
-  renderProjectStatsPopup();
+
+  // Defer decorations one frame so the base chart is visible immediately.
+  // All drawers are wrapped in try/catch per CLAUDE.md — the defer means a
+  // late throw won't block the base render but still won't surface to the user.
+  requestAnimationFrame(() => {
+    // Arrows render FIRST (behind everything) — bars and labels cover them visually.
+    try { drawCustomArrows(); } catch (_) {}
+    try { drawBaselineGhosts(); } catch (_) {}
+    try { drawTodayLine(); } catch (_) {}
+    try { drawMilestoneDiamonds(); } catch (_) {}
+    try { drawMilestoneLabels(); } catch (_) {}
+    try { clipBarLabels(); } catch (_) {}
+    try { drawScheduleStatus(); } catch (_) {}
+    try { drawDoneHashOverlay(); } catch (_) {}
+    try { drawWeekdayLetters(); } catch (_) {}
+    try { drawFinancialOverlay(); } catch (_) {}
+    try { drawPenaltyClauseLine(); } catch (_) {}
+    try { drawBarMeta(); } catch (_) {}
+    try { drawMachineBorders(); } catch (_) {}
+    try { renderProjectStatsPopup(); } catch (_) {}
+  });
 }
 
 // ── Work-day Gantt helpers ───────────────────────────────────────────
@@ -4918,11 +4926,19 @@ function drawFinancialOverlay() {
 // predecessor whose date drives this task's start/end (the latest-finishing FS
 // predecessor, the latest-starting SS one, etc.) Slipping any task in the returned
 // set delays FAT. Returns a Set of task ids (including FAT and Receipt of PO).
+// Cache keyed by project + task count + max task id — invalidates automatically when
+// tasks change (save, delete, load). Avoids the O(n×m) graph walk being repeated 2–3×
+// per render pass (renderGantt calls it twice, renderTable once if criticalOnly is on).
+let _criticalPathCache = null;
+let _criticalPathCacheKey = '';
 function computeCriticalPath() {
   const projectFilter = state.filters.project;
   const tasks = projectFilter ? state.tasks.filter(t => t.project === projectFilter) : state.tasks;
+  const cacheKey = `${projectFilter}|${tasks.length}|${tasks.reduce((m, t) => Math.max(m, t.id || 0), 0)}`;
+  if (_criticalPathCache && _criticalPathCacheKey === cacheKey) return _criticalPathCache;
+
   const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
-  if (!fat) return new Set();
+  if (!fat) { _criticalPathCache = new Set(); _criticalPathCacheKey = cacheKey; return _criticalPathCache; }
   // Stringify IDs throughout — bar elements expose IDs via data-id (always string),
   // so storing strings keeps the Set comparable with the lookup site in
   // drawCustomArrows without per-call Number() conversions slipping past.
@@ -4955,6 +4971,8 @@ function computeCriticalPath() {
       visit.push(bound);
     }
   }
+  _criticalPathCache = critical;
+  _criticalPathCacheKey = cacheKey;
   return critical;
 }
 
