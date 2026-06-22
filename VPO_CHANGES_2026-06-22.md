@@ -1,11 +1,14 @@
-# Vendor PO Track — Session Changes (2026-06-22)
+# SDC Scheduler — Session Changes (2026-06-22)
 
 ## Overview
 
-Full overhaul of the Vendor PO Track page (`public/app.js` + `public/styles.css`).  
-Changes fall into three categories: **Visual/UX polish**, **Functional improvements**, and **Bug fixes**.
+This document covers two sessions of work on the SDC Scheduler app on 2026-06-22.  
+**Session 1** was a full overhaul of the Vendor PO Track page.  
+**Session 2** was a full overhaul of the Projects page (UI/UX, search, state persistence).
 
 ---
+
+# SESSION 1 — Vendor PO Track Overhaul
 
 ## Files Modified
 
@@ -151,20 +154,20 @@ Three new fields added to the quick-add form:
 - **PO Price** (text)
 
 ### 2.18 Lazy Detail Field Rendering
-- Detail panel (`sp-card-details`) now renders an empty `sp-fields-lazy` placeholder
-- Fields are only filled when the row is first expanded (lazy fill on toggle)
+- Detail panel renders an empty `sp-fields-lazy` placeholder
+- Fields are only filled when the row is first expanded
 - Avoids rendering 1,300+ inputs upfront for 100 rows per page
 
 ### 2.19 Scroll Into View on Expand
-- When a PO row is expanded, the detail panel smoothly scrolls into view (`scrollIntoView({ behavior: 'smooth', block: 'nearest' })`)
+- When a PO row is expanded, the detail panel smoothly scrolls into view
 
 ### 2.20 Debounced Search
 - Search input uses a 300ms debounce (module-level `_vpoSearchT`)
-- Prevents re-rendering on every keystroke; cursor position restored after re-render
+- Cursor position restored after re-render
 
 ---
 
-## 3. Bug Fixes
+## 3. Bug Fixes (Session 1)
 
 | Bug | Fix |
 |---|---|
@@ -204,7 +207,7 @@ Three new fields added to the quick-add form:
 
 ---
 
-## 5. Pending / Not Implemented
+## 5. Pending / Not Implemented (Session 1)
 
 These two improvements were intentionally deferred — they require a **database schema change** (`vendor_pos` table):
 
@@ -215,8 +218,114 @@ These two improvements were intentionally deferred — they require a **database
 
 ---
 
+---
+
+# SESSION 2 — Projects Page Overhaul + VPO Dashboard + Bug Fixes
+
+## Files Modified
+
+| File | What changed |
+|---|---|
+| `public/app.js` | Projects page rewrite, VPO dashboard cards, column resize, state persistence |
+| `public/styles.css` | Projects page styles, VPO dashboard card styles, resize handle styles |
+
+---
+
+## 1. VPO Dashboard Cards (5 cards)
+
+### 1.1 Uniform Card Height
+- All 5 dashboard cards made equal height using CSS flex (`display: flex; flex-direction: column`)
+- `.vpo-dash-main { grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; }`
+- List containers fixed to `height: 220px; overflow-y: auto` (~10 rows, then scroll)
+
+### 1.2 PO# Clickable Links
+- PO numbers in all 4 dashboard card types (In Transit, Late POs, Completed, Longest Outstanding) are now clickable
+- Click sets search to that PO#, switches to `filter='all'`, scrolls to and highlights the row
+- Highlight: yellow flash animation (`vpo-highlight-flash`) + 2px accent outline for 1.8s
+
+### 1.3 Clear Search Button
+- `✕ Clear` button appears in toolbar when a search/filter is active
+- Resets search and filter back to default state
+
+### 1.4 Excel-Style Column Resize (Drag Handles)
+- Drag handles (`vpo-rhandle`) on each list column header
+- Dragging resizes that column in real-time via dynamic `<style id="vpo-col-style">` injection
+- Widths persist to `localStorage` key `vpoColWidths`
+- Double-click any handle to reset that column to its default width
+- Vendor column uses `minmax(Npx, 1fr)` so it absorbs remaining space — total width never exceeds container
+
+---
+
+## 2. Projects Page — Visual / UX Overhaul
+
+### 2.1 Search Bar
+- Text filter input at top of page, filters all workspace rows in real-time client-side
+- Search state (`state._projectsSearch`) clears when navigating away from the Projects page
+- Cursor positioned at end after each keystroke to prevent character-reversal bug (fixed: `setSelectionRange`)
+
+### 2.2 Stats Row
+- Replaced plain subtitle with a scannable stats row: **N total · N open · N sales**
+- Open count only shown if > 0
+
+### 2.3 Color-Coded Workspace Sections
+- Each workspace gets a 4px colored left border via CSS `--ws-accent` variable:
+  - **Active** → blue `#1574c4`
+  - **Sales** → amber `#d97706`
+  - **Closed** → gray `#94a3b8`
+
+### 2.4 Colored Count Pills
+- Workspace row count pill color matches the workspace accent:
+  - Active → blue bg `#dbeafe`, text `#1d4ed8`
+  - Sales → amber bg `#fef9c3`, text `#92400e`
+  - Closed → gray bg `#f1f5f9`, text `#64748b`
+
+### 2.5 Green Status Dot (Replaces "open" Badge)
+- Old: blue outlined text badge reading "open" — easy to miss
+- New: small dot (`.projects-row-dot`) on the left of each row
+  - Gray dot = not open
+  - Green dot + green glow ring = currently open in a tab
+
+### 2.6 Secondary Metadata Line
+- Each project row now shows a second line of info in muted text
+- Job number extracted from project name prefix (e.g. `1104` → `Job #1104`)
+- Last-opened label shown if project is in `state.recentProjects` (e.g. `opened recently`)
+- Both combined: `Job #1104 · opened recently`
+
+### 2.7 Gold Favorited Star
+- Fixed: favorited star was `#AACEE8` (light blue, hard to see)
+- Now: `#f59e0b` (gold/amber) — clearly distinguishable
+
+---
+
+## 3. Bug Fixes (Session 2)
+
+| Bug | Fix |
+|---|---|
+| VPO column resize handles not visible | Added `rh(i)` handle HTML inside `sHdr()` 3rd param — embedded inside span, not as sibling grid item |
+| Column content overflowing container when dragging | Vendor col uses `minmax(Npx,1fr)` to absorb remaining space |
+| Header text overlap with resize handle (`TRACKING\|M`) | Handle at `right: 0`; header cells get `overflow: hidden; padding-right: 8px; text-overflow: ellipsis` |
+| Projects page blank on hard refresh | `renderProjectsPage()` now merges `Object.keys(state.projectsIndex)` + `uniqueValues('project')`; re-called after `/api/projects` fetch |
+| Projects page not scrollable | Added `#view-projects.active { overflow-y: auto }` |
+| Projects search input reverses characters when typing fast | Added `setSelectionRange(len, len)` after `focus()` on each re-render |
+| Projects page workspaces collapsed after refresh | Root cause: `renderProjectsPage()` ran before `loadProjectTabs()` set `_projectsExpanded`; fixed by re-rendering projects page inside `if (!state._tabsHydrated)` block after `loadProjectTabs()` |
+| `sdcProjectsExpanded = {}` in localStorage overrode Active default | Changed to merge pattern: `{ Active: true, ...saved }` so Active is open unless user explicitly closed it |
+
+---
+
+## 4. State Persistence — Scroll Position (New, Across App)
+
+Added `_setupScrollPersist()` called once on init. Attaches passive scroll listeners to 5 views:
+- `projects`, `favorites`, `recents`, `vendor-pos`, `shop-parts`
+
+On scroll: saves `scrollTop` to `localStorage` key `sdcScroll_{view}` (300ms debounce).  
+On `setView()`: calls `_restoreScrollPos(view)` via `requestAnimationFrame` after render — restores exact position.  
+Also: `_saveScrollPos(state.view)` called at the START of every `setView()` to capture position before leaving.
+
+---
+
 ## Notes
 
 - PM2 runs as SYSTEM on port **4003**. To deploy: update `.update-sha` file and POST to `:4013/trigger`.
 - Never bump rev in `public/release-notes.js` — Dan controls that.
 - Never commit without being explicitly asked.
+- Auto-updater replaces `public/` wholesale from `danbelliveau2/SDC_Scheduler` — Abhi's changes to `app.js` / `styles.css` will be overwritten by the next sync unless the sync is paused.

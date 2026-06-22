@@ -302,6 +302,43 @@ body {
   font-style: italic;
   color: var(--text-muted, #64748b);
 }
+/* Search bar */
+.projects-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1.5px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--surface-alt, #f8fafc);
+  margin-bottom: 14px;
+}
+.projects-search-icon { font-size: 13px; color: var(--text-muted, #94a3b8); line-height: 1; }
+.projects-search-input {
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-base);
+  color: var(--text, #1e293b);
+  outline: none;
+  flex: 1;
+  min-width: 0;
+}
+.projects-search-input::placeholder { color: var(--text-muted, #94a3b8); }
+
+/* Stats row */
+.projects-page-stats {
+  display: flex;
+  gap: 14px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted, #64748b);
+  margin-bottom: 12px;
+}
+.projects-page-stats b { color: var(--sdc-primary, #1574c4); }
+
+/* Workspace accent left border */
+.projects-workspace { border-left: 4px solid var(--ws-accent, var(--border, #e2e8f0)); }
+
 .projects-row {
   display: flex;
   align-items: center;
@@ -322,12 +359,39 @@ body {
   background: var(--row-hover, #eef5fb);
 }
 .projects-row.is-open { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 5%, white); }
-.projects-row-star {
-  color: var(--text-muted, #94a3b8);
-  font-size: var(--fs-lg);
-  width: 14px;
+
+/* Status dot replacing the old badge */
+.projects-row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--border, #e2e8f0);
 }
-.projects-row-name { flex: 1 1 auto; }
+.projects-row-dot.is-open {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px #dcfce7;
+}
+
+/* Row info: name + meta stacked */
+.projects-row-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.projects-row-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projects-row-meta {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-normal, 400);
+  color: var(--text-muted, #94a3b8);
+}
+
 .projects-row-badge {
   font-size: var(--fs-xs);
   font-weight: var(--fw-bold);
@@ -375,7 +439,7 @@ body {
   border-radius: 4px;
 }
 .projects-row-favbtn:hover { color: #ca8a04; background: rgba(0,0,0,0.04); }
-.projects-row-favbtn.is-fav { color: #AACEE8; }
+.projects-row-favbtn.is-fav { color: #f59e0b; }
 
 /* "→ Project" button on each sales project row. Promotes the sales
    schedule to a fresh detailed project stamped from the standard

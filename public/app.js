@@ -6351,7 +6351,9 @@ function loadProjectTabs() {
   // collapsed; user clicks a header to expand.
   let savedExpanded = {};
   try { savedExpanded = JSON.parse(localStorage.getItem('sdcProjectsExpanded') || '{}'); } catch {}
-  state._projectsExpanded = (savedExpanded && typeof savedExpanded === 'object') ? savedExpanded : {};
+  // Active defaults to expanded. Merge saved on top — so explicit { Active: false } from
+  // the user overrides the default, but a blank {} (first load) still shows Active open.
+  state._projectsExpanded = { Active: true, ...((savedExpanded && typeof savedExpanded === 'object') ? savedExpanded : {}) };
   // Favorites + Recents are per-browser localStorage lists of project names.
   let favs = [];
   try { favs = JSON.parse(localStorage.getItem('sdcFavoriteProjects') || '[]'); } catch {}
@@ -10022,6 +10024,7 @@ function renderProjectsPage() {
   const fromTasks = uniqueValues('project');
   const all = [...new Set([...fromIndex, ...fromTasks])].sort();
   const openSet = new Set(state.openProjects);
+  const recentSet = new Map((state.recentProjects || []).map((p, i) => [p, i]));
   const byWs = Object.fromEntries(WORKSPACES.map(ws => [ws, []]));
   for (const p of all) byWs[projectWorkspace(p)].push(p);
   for (const ws of WORKSPACES) {
@@ -10033,55 +10036,72 @@ function renderProjectsPage() {
     });
   }
   const expanded = state._projectsExpanded || (state._projectsExpanded = {});
+  const searchQ = (state._projectsSearch || '').toLowerCase().trim();
 
   const favSet = new Set(state.favoriteProjects || []);
-  // Row is a <div role="button"> — NOT a <button> — so the favorite ★ button
-  // nested inside doesn't create invalid nested-button HTML (which Chrome
-  // renders as block-level, breaking the row onto two lines).
-  const rowHtml = (p, opts = {}) => {
+
+  // Workspace accent colors for visual differentiation
+  const WS_ACCENT = { Active: '#1574c4', Sales: '#d97706', Closed: '#94a3b8' };
+  const WS_COUNT_BG = { Active: '#dbeafe', Sales: '#fef9c3', Closed: '#f1f5f9' };
+  const WS_COUNT_COLOR = { Active: '#1d4ed8', Sales: '#92400e', Closed: '#64748b' };
+
+  // Last-opened label from recentProjects index
+  const recentLabel = (p) => {
+    const idx = recentSet.get(p);
+    if (idx === undefined) return '';
+    if (idx === 0) return 'opened just now';
+    if (idx === 1) return 'opened recently';
+    return `opened recently`;
+  };
+
+  const rowHtml = (p) => {
     const isOpen = openSet.has(p);
     const isFav = favSet.has(p);
     const isTmpl = isTemplateProject(p);
-    const star = isTmpl
-      ? '<span class="projects-row-star" title="Template">★</span>'
-      : '<span class="projects-row-star" style="visibility:hidden">★</span>';
+    const jobMatch = p.match(/^(\d{3,5})/);
+    const jobNum = jobMatch ? jobMatch[1] : null;
+    const meta = [jobNum ? `Job #${jobNum}` : null, recentLabel(p)].filter(Boolean).join(' · ');
+    const dot = `<span class="projects-row-dot${isOpen ? ' is-open' : ''}"></span>`;
     const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? '★' : '☆'}</button>`;
-    // Sales-mode projects (non-templates in the Sales workspace) get an
-    // inline "→ Project" promotion button. Clicking it stamps a fresh
-    // detailed schedule from SDC_StandardProject_Template and carries
-    // the saved quote across so Quote vs Schedule lights up immediately.
     const isSalesProject = !isTmpl && projectWorkspace(p) === 'Sales';
     const promoteBtn = isSalesProject
-      ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project. Stamps SDC_StandardProject_Template tasks, copies the saved quote (hours + people #), and applies the sales people-math (e.g. 1.25 people → 1 @ 85% + 1 @ 25%).">→ Project</button>`
+      ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project.">→ Project</button>`
       : '';
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
-      ${star}<span class="projects-row-name">${escapeHtml(p)}</span>
-      ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
+      ${dot}
+      <div class="projects-row-info">
+        <span class="projects-row-name">${escapeHtml(p)}</span>
+        ${meta ? `<span class="projects-row-meta">${meta}</span>` : ''}
+      </div>
       ${promoteBtn}
       ${favBtn}
     </div>`;
   };
+
   const workspaceSection = (ws) => {
     const projects = byWs[ws];
     const templates = projects.filter(isTemplateProject);
-    const nonTemplates = projects.filter(p => !isTemplateProject(p));
+    let nonTemplates = projects.filter(p => !isTemplateProject(p));
+    if (searchQ) nonTemplates = nonTemplates.filter(p => p.toLowerCase().includes(searchQ));
     const isExpanded = !!expanded[ws];
     const allowsNew = ws !== 'Closed';
-    // Auto-pick the single template in this workspace for the "+ New" button.
-    // Multi-template workspaces still fall back to the legacy picker.
     const wsTmpl = templates.length === 1 ? templates[0] : null;
     const newBtnLabel = wsTmpl ? `＋ New from ${escapeHtml(wsTmpl)}` : '＋ New schedule';
+    const accent = WS_ACCENT[ws] || '#1574c4';
+    const countBg = WS_COUNT_BG[ws] || '#dbeafe';
+    const countColor = WS_COUNT_COLOR[ws] || '#1d4ed8';
+    const displayCount = searchQ ? nonTemplates.length : projects.length;
     return `
-      <div class="projects-workspace${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}">
+      <div class="projects-workspace projects-ws-${ws.toLowerCase()}${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}" style="--ws-accent:${accent}">
         <button class="projects-workspace-head" data-action="toggle" type="button">
           <span class="projects-workspace-caret">▶</span>
           <span class="projects-workspace-name">${escapeHtml(ws)}</span>
-          <span class="projects-workspace-count">${projects.length}</span>
+          <span class="projects-workspace-count" style="background:${countBg};color:${countColor};border-color:${countBg}">${displayCount}</span>
           <span class="projects-workspace-spacer"></span>
           <button class="projects-workspace-newbtn${allowsNew ? '' : ' is-disabled'}" data-action="new" data-workspace="${escapeHtml(ws)}" ${allowsNew ? '' : 'disabled title="Closed workspace — no new schedules allowed."'} type="button">${newBtnLabel}</button>
         </button>
         <div class="projects-workspace-body">
-          ${templates.length > 0 ? `
+          ${!searchQ && templates.length > 0 ? `
             <div class="projects-templates-row">
               <div class="projects-templates-label">Templates</div>
               ${templates.map(rowHtml).join('')}
@@ -10090,18 +10110,39 @@ function renderProjectsPage() {
           ${nonTemplates.length === 0 && templates.length === 0
             ? '<div class="projects-workspace-empty">No schedules in this workspace yet.</div>'
             : nonTemplates.length === 0
-              ? '<div class="projects-workspace-empty">No schedules yet — use the "+ New" button to start one.</div>'
+              ? `<div class="projects-workspace-empty">${searchQ ? 'No matches.' : 'No schedules yet — use the "+ New" button to start one.'}</div>`
               : nonTemplates.map(rowHtml).join('')}
         </div>
       </div>
     `;
   };
 
+  const openCount = all.filter(p => openSet.has(p)).length;
+
   root.innerHTML = `
     <h1 class="projects-page-title">Projects</h1>
-    <div class="projects-page-sub">${all.length} schedule${all.length === 1 ? '' : 's'} across ${WORKSPACES.length} workspaces</div>
+    <div class="projects-page-stats">
+      <span><b>${all.length}</b> total</span>
+      ${openCount ? `<span><b>${openCount}</b> open</span>` : ''}
+      <span><b>${byWs['Sales']?.length || 0}</b> sales</span>
+    </div>
+    <div class="projects-search-wrap">
+      <span class="projects-search-icon">🔍</span>
+      <input class="projects-search-input" type="text" placeholder="Search projects…" value="${escapeHtml(searchQ)}" autocomplete="off" spellcheck="false" />
+    </div>
     ${WORKSPACES.map(workspaceSection).join('')}
   `;
+
+  // Search input — filter rows in real-time without a full re-render
+  const searchInput = root.querySelector('.projects-search-input');
+  if (searchInput) {
+    searchInput.focus();
+    searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    searchInput.addEventListener('input', () => {
+      state._projectsSearch = searchInput.value;
+      renderProjectsPage();
+    });
+  }
 
   // Toggle expand/collapse on the workspace header. The header is itself a
   // button; the inner "+ New schedule" button shouldn't trigger the toggle,
@@ -20736,6 +20777,8 @@ async function loadTasks() {
     loadMachinesSubset(state.filters.project);
     loadMachineColors(state.filters.project);
     state._tabsHydrated = true;
+    // Re-render projects page now that _projectsExpanded is properly loaded.
+    if (state.view === 'projects') renderProjectsPage();
   }
   // Refresh financial milestones for projects whose data we already cached. The
   // overlay renders from state.financials, so this keeps it current with the latest
@@ -20805,6 +20848,23 @@ async function loadTeam() {
 }
 
 // ---------- Wiring ----------
+// Views that are simple scrollable containers — save/restore their scroll position.
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts'];
+let _scrollSaveTimer = null;
+function _saveScrollPos(view) {
+  if (!_SCROLL_VIEWS.includes(view)) return;
+  const el = document.getElementById(`view-${view}`);
+  if (!el) return;
+  try { localStorage.setItem(`sdcScroll_${view}`, el.scrollTop); } catch {}
+}
+function _restoreScrollPos(view) {
+  if (!_SCROLL_VIEWS.includes(view)) return;
+  const el = document.getElementById(`view-${view}`);
+  if (!el) return;
+  const saved = parseInt(localStorage.getItem(`sdcScroll_${view}`)) || 0;
+  if (saved > 0) requestAnimationFrame(() => { el.scrollTop = saved; });
+}
+
 function setView(view) {
   // v7.6: the Dashboard view was merged into Departments. Anyone who
   // had state.view === 'dashboard' saved in localStorage lands on
@@ -20812,6 +20872,10 @@ function setView(view) {
   if (view === 'dashboard') view = 'team';
   // The standalone procurement page was removed. Redirect to schedule.
   if (view === 'procurement') view = 'schedule';
+  // Save scroll position of the view we're leaving before switching.
+  _saveScrollPos(state.view);
+  // Clear projects search when leaving the projects page
+  if (state.view === 'projects' && view !== 'projects') state._projectsSearch = '';
   state.view = view;
   // Survive reloads: F5 / Ctrl+Shift+R reopens the view you were on instead
   // of always dumping you back on the schedule.
@@ -20834,13 +20898,25 @@ function setView(view) {
     state.resources.barHeight = friendlyResRowToPx(4);
     renderTeam();
   }
-  else if (view === 'shop-parts') loadShopParts();
-  else if (view === 'vendor-pos') loadVendorPOs();
-  else if (view === 'projects')  renderProjectsPage();
-  else if (view === 'favorites') renderFavoritesPage();
-  else if (view === 'recents')   renderRecentsPage();
+  else if (view === 'shop-parts') { loadShopParts(); _restoreScrollPos(view); }
+  else if (view === 'vendor-pos') { loadVendorPOs(); _restoreScrollPos(view); }
+  else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
+  else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
+  else if (view === 'recents')   { renderRecentsPage(); _restoreScrollPos(view); }
   else if (view === 'actions')   renderActionsPage();
   else render();
+}
+
+// Throttled scroll listener — attached once after init, saves position as user scrolls.
+function _setupScrollPersist() {
+  _SCROLL_VIEWS.forEach(view => {
+    const el = document.getElementById(`view-${view}`);
+    if (!el) return;
+    el.addEventListener('scroll', () => {
+      clearTimeout(_scrollSaveTimer);
+      _scrollSaveTimer = setTimeout(() => _saveScrollPos(view), 300);
+    }, { passive: true });
+  });
 }
 
 // Sync vertical scroll between grid and gantt so rows always line up.
@@ -22332,6 +22408,7 @@ async function init() {
   });
 
   setupScrollSync();
+  _setupScrollPersist();
 
   // + New Task button creates an empty task in UNASSIGNED and focuses its name cell for
   // inline rename. The user drags it into a section after.
