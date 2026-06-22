@@ -8225,9 +8225,24 @@ const VPO_STATUS = {
 };
 let _vpoState = null;
 let _vpoAddOpen = false;
+let _vpoChangeBound = false;
+let _vpoChangeRoot = null;
+let _vpoSearchT = 0;
+const VPO_PAGE_SIZE = 100;
+// Column resize — 8 resizable cols: po, job, vendor, eta, ship, tracking, pm, price
+const VPO_COL_DEFAULTS = [80, 72, 180, 78, 72, 160, 76, 100];
+function _vpoColWidths() { try { const s = localStorage.getItem('vpo_col_widths'); return s ? JSON.parse(s) : [...VPO_COL_DEFAULTS]; } catch(_) { return [...VPO_COL_DEFAULTS]; } }
+function _vpoSaveColWidths(w) { try { localStorage.setItem('vpo_col_widths', JSON.stringify(w)); } catch(_) {} }
+function _vpoApplyCols(w) {
+  // col 2 (Vendor) stays as minmax so it absorbs remaining space — prevents overflow
+  const tpl = `20px 22px ${w[0]}px ${w[1]}px minmax(${Math.max(60, w[2])}px,1fr) ${w[3]}px ${w[4]}px ${w[5]}px ${w[6]}px ${w[7]}px 32px 32px`;
+  let el = document.getElementById('vpo-col-style');
+  if (!el) { el = document.createElement('style'); el.id = 'vpo-col-style'; document.head.appendChild(el); }
+  el.textContent = `.vpo-page .sp-flat .sp-prow-line, .vpo-page .vpo-head { grid-template-columns: ${tpl} !important; }`;
+}
 function _vpoStateGet() {
   if (_vpoState) return _vpoState;
-  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', fJob: 'all', dashRange: 7 };
+  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', fJob: 'all', dashRange: 7, page: 0, etaRange: 'all', sortKey: 'eta', sortDir: 'asc' };
   try { s = Object.assign(s, JSON.parse(localStorage.getItem('sdcVendorPoState') || '{}')); } catch (_) {}
   if (s.view !== 'cards') s.view = 'list';
   _vpoState = s; return s;
@@ -9574,6 +9589,15 @@ async function _vpoLoadLines(box) {
       </div>`;
     }).join('')}`;
 }
+function _vpoTrackingLink(t) {
+  if (!t) return '';
+  const s = String(t).trim(); if (!s) return '';
+  let url = '';
+  if (/^1Z[0-9A-Z]{16}$/i.test(s)) url = `https://wwwapps.ups.com/tracking/tracking.cgi?tracknum=${encodeURIComponent(s)}`;
+  else if (/^\d{12}$|^\d{15}$/.test(s)) url = `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(s)}`;
+  else if (/^\d{20,22}$/.test(s)) url = `https://tools.usps.com/go/TrackConfirmAction?qtc_tLabels1=${encodeURIComponent(s)}`;
+  return url ? `<a class="vpo-track-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>` : escapeHtml(s);
+}
 function _vpoRows(all, st) {
   let rows = all.slice();
   if (st.filter === 'open') rows = rows.filter(r => !r.complete);
@@ -9582,16 +9606,30 @@ function _vpoRows(all, st) {
   if (st.fPm && st.fPm !== 'all') rows = rows.filter(r => (r.pm || '') === st.fPm);
   if (st.fStatus && st.fStatus !== 'all') rows = rows.filter(r => _vpoStatusOf(r) === st.fStatus);
   if (st.fJob && st.fJob !== 'all') rows = rows.filter(r => String(r.job || '') === st.fJob);
+  if (st.etaRange && st.etaRange !== 'all') { const cut = Date.now() + Number(st.etaRange) * 86400000; rows = rows.filter(r => { const e = _vpoEtaMs(r); return e != null && e <= cut; }); }
   const q = (st.search || '').trim().toLowerCase();
-  if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments].some(v => String(v || '').toLowerCase().includes(q)));
-  const eta = r => { const m = _vpoEtaMs(r); return m == null ? Infinity : m; };
-  rows.sort((a, b) => (a.complete ? 1 : 0) - (b.complete ? 1 : 0) || eta(a) - eta(b) || (a.id - b.id));
+  if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments, r.po_price].some(v => String(v || '').toLowerCase().includes(q)));
+  const cmp = (a, b) => {
+    const dir = st.sortDir === 'desc' ? -1 : 1;
+    if (st.sortKey === 'job') return dir * String(a.job||'').localeCompare(String(b.job||'')) || (a.id - b.id);
+    if (st.sortKey === 'vendor') return dir * String(a.vendor||'').localeCompare(String(b.vendor||'')) || (a.id - b.id);
+    if (st.sortKey === 'pm') return dir * String(a.pm||'').localeCompare(String(b.pm||'')) || (a.id - b.id);
+    if (st.sortKey === 'price') return dir * ((parseFloat(a.po_price)||0) - (parseFloat(b.po_price)||0)) || (a.id - b.id);
+    const ea = _vpoEtaMs(a) ?? Infinity, eb = _vpoEtaMs(b) ?? Infinity; return dir * (ea - eb) || (a.id - b.id);
+  };
+  rows.sort((a, b) => (a.complete ? 1 : 0) - (b.complete ? 1 : 0) || cmp(a, b));
   return rows;
 }
-async function _vpoSetField(id, field, val) {
+async function _vpoSetField(id, field, val, inputEl) {
   const r = (state.vendorPOs || []).find(x => x.id === id); if (!r) return;
-  const upd = await api.vendorPOs.update(id, { [field]: val });
-  if (upd) Object.assign(r, upd); else r[field] = val;
+  if (inputEl) { inputEl.classList.remove('sp-saved','sp-save-err'); inputEl.classList.add('sp-saving'); }
+  try {
+    const upd = await api.vendorPOs.update(id, { [field]: val });
+    if (upd) Object.assign(r, upd); else r[field] = val;
+    if (inputEl) { inputEl.classList.remove('sp-saving'); inputEl.classList.add('sp-saved'); setTimeout(() => { try { inputEl.classList.remove('sp-saved'); } catch(_){} }, 1500); }
+  } catch (_) {
+    if (inputEl) { inputEl.classList.remove('sp-saving'); inputEl.classList.add('sp-save-err'); setTimeout(() => { try { inputEl.classList.remove('sp-save-err'); } catch(_){} }, 2000); }
+  }
 }
 
 function renderVendorPOsPage() {
@@ -9608,6 +9646,11 @@ function renderVendorPOsPage() {
   const pmList = `<datalist id="vpo-pm-list">${[...new Set([...teamNames, ...pms])].map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
   const vendorList = `<datalist id="vpo-vendor-list">${vendors.map(v => `<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>`;
 
+  // Pagination
+  const totalPages = Math.ceil(rows.length / VPO_PAGE_SIZE) || 1;
+  const page = Math.max(0, Math.min(st.page || 0, totalPages - 1));
+  const pageRows = rows.slice(page * VPO_PAGE_SIZE, (page + 1) * VPO_PAGE_SIZE);
+
   const detailInput = (r, c) => {
     const val = r[c.key];
     const a = `data-id="${r.id}" data-field="${c.key}"`;
@@ -9620,53 +9663,59 @@ function renderVendorPOsPage() {
   };
   const detailFields = (r) => VPO_COLS.map(c => detailInput(r, c)).join('');
 
+  const sk = st.sortKey || 'eta', sd = st.sortDir || 'asc', sa = sd === 'asc' ? '▲' : '▼';
+  const sHdr = (k, lbl, h='') => `<span class="vpo-sort-hdr${sk === k ? ' vpo-sort-active' : ''}" data-vpo-sort="${k}">${lbl}${sk === k ? ' ' + sa : ''}${h}</span>`;
+
   const row = (r, mode) => {
     const isList = mode === 'list';
     const sName = _vpoStatusOf(r);
     const s = VPO_STATUS[sName];
     const e = _vpoEtaMs(r);
     const etaStr = e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '';
-    // Buyer revised the date in ETO → show the slip right on the row.
     const slipped = r.eto_synced && r.eta && r.eta_original && r.eta !== r.eta_original;
-    const slipTip = slipped
-      ? (r.eta > r.eta_original
-          ? `Slipped from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`
-          : `Moved up from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`)
-      : '';
+    const slipTip = slipped ? (r.eta > r.eta_original ? `Slipped from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO` : `Moved up from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`) : '';
     const slipMark = slipped ? ` <span class="vpo-slip" title="${escapeHtml(slipTip)}">↻</span>` : '';
+    const priBadge = r.priority ? `<span class="vpo-pri-badge" title="Priority ${r.priority}">${r.priority}</span> ` : '';
+    const priceCell = r.complete ? (r.completed_on ? escapeHtml(_vpoFmtDate(r.completed_on)) : '') : (r.po_price ? escapeHtml(String(r.po_price)) : '');
     return `<div class="sp-prow vpo-row vpo-st-${sName}" data-id="${r.id}">
       <div class="sp-prow-line">
-        <span class="vpo-dot" style="background:${s.color}" title="${s.label}"></span>
-        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}${r.eto_synced ? ' <span class="vpo-eto-pill" title="Auto-synced from Total ETO — vendor, dates, price and done status refresh from the ERP every 30 minutes. PM, comments and tracking stay yours.">ETO</span>' : ''}</span>
-        <span class="vpo-job">${escapeHtml(r.job || '')}</span>
-        ${isList ? `<span class="vpo-vendor">${escapeHtml(r.vendor || '')}</span>` : ''}
+        ${isList ? `<input type="checkbox" class="vpo-bulk-chk" data-id="${r.id}"/>` : '<span></span>'}
+        <span class="vpo-dot vpo-dot-${sName}" title="${s.label}" aria-label="${s.label}">${sName==='complete'?'✓':sName==='late'?'!':sName==='shipped'?'↑':sName==='partial'?'~':sName==='soon'?'▲':''}</span>
+        <span class="vpo-po" data-toggle="${r.id}">${priBadge}${escapeHtml(r.po || '—')}${r.eto_synced ? ' <span class="vpo-eto-pill" title="Auto-synced from Total ETO">ETO</span>' : ''}</span>
+        <span class="vpo-job${isList && r.job ? ' vpo-filter-click' : ''}"${isList && r.job ? ` data-fk="fJob" data-fv="${escapeHtml(String(r.job))}"` : ''}>${escapeHtml(r.job || '')}</span>
+        ${isList ? `<span class="vpo-vendor${r.vendor ? ' vpo-filter-click' : ''}" ${r.vendor ? `data-fk="fVendor" data-fv="${escapeHtml(r.vendor)}"` : ''}>${escapeHtml(r.vendor || '')}</span>` : ''}
         <span class="vpo-eta">${etaStr}${slipMark}</span>
         ${isList ? `<span class="vpo-ship">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : ''}</span>` : ''}
-        ${isList ? `<span class="vpo-track" title="${escapeHtml(r.tracking || '')}">${escapeHtml(r.tracking || '')}</span>` : ''}
+        ${isList ? `<span class="vpo-track">${_vpoTrackingLink(r.tracking)}</span>` : ''}
+        ${isList ? `<span class="vpo-pm${r.pm ? ' vpo-filter-click' : ''}" ${r.pm ? `data-fk="fPm" data-fv="${escapeHtml(r.pm)}"` : ''}>${escapeHtml(r.pm || '')}</span>` : ''}
+        ${isList ? `<span class="vpo-price">${priceCell}</span>` : ''}
         <label class="sp-done" title="Partial shipment"><input type="checkbox" data-id="${r.id}" data-field="partial" ${r.partial ? 'checked' : ''}/></label>
         <label class="sp-done" title="Complete"><input type="checkbox" data-id="${r.id}" data-field="complete" ${r.complete ? 'checked' : ''}/></label>
       </div>
-      <div class="sp-card-details" data-details="${r.id}" hidden>${r.eto_synced && r.job && r.po ? `<div class="vpo-lines" data-lines-job="${escapeHtml(r.job)}" data-lines-po="${escapeHtml(r.po)}"></div>` : ''}<div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
+      <div class="sp-card-details" data-details="${r.id}" hidden>${r.eto_synced && r.job && r.po ? `<div class="vpo-lines" data-lines-job="${escapeHtml(r.job)}" data-lines-po="${escapeHtml(r.po)}"></div>` : ''}<div class="sp-fields sp-fields-lazy" data-lazy-id="${r.id}"></div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
     </div>`;
   };
 
-  const listHead = `<div class="sp-list-head vpo-head"><span></span><span>PO #</span><span>Job</span><span>Vendor</span><span>ETA</span><span>Ship</span><span>Tracking</span><span>Part</span><span>Done</span></div>`;
-  const cardHead = `<div class="sp-prow-line vpo-cardhead"><span></span><span>PO #</span><span>Job</span><span>ETA</span><span>Part</span><span>Done</span></div>`;
+  const rh = (i) => `<span class="vpo-rhandle" data-col="${i}" title="Drag to resize"></span>`;
+  const listHead = `<div class="sp-list-head vpo-head"><span><input type="checkbox" class="vpo-bulk-all" title="Select all"/></span><span></span><span>PO #${rh(0)}</span>${sHdr('job','Job',rh(1))}${sHdr('vendor','Vendor',rh(2))}${sHdr('eta','ETA',rh(3))}<span>Ship${rh(4)}</span><span>Tracking${rh(5)}</span>${sHdr('pm','PM',rh(6))}${sHdr('price','Price',rh(7))}<span>Part</span><span>Done</span></div>`;
+  const cardHead = `<div class="sp-prow-line vpo-cardhead"><span></span><span></span><span>PO #</span><span>Job</span><span>ETA</span><span>Part</span><span>Done</span></div>`;
 
   let mainHtml;
-  if (rows.length === 0) mainHtml = '<p class="sp-empty">No POs to show.</p>';
+  if (pageRows.length === 0) mainHtml = '<p class="sp-empty">No POs to show.</p>';
   else if (st.view === 'cards') {
     const groups = {};
-    rows.forEach(r => { const k = r.vendor && r.vendor.trim() ? r.vendor : 'No vendor'; (groups[k] = groups[k] || []).push(r); });
+    pageRows.forEach(r => { const k = r.vendor && r.vendor.trim() ? r.vendor : 'No vendor'; (groups[k] = groups[k] || []).push(r); });
     mainHtml = `<div class="sp-proj-grid">${Object.keys(groups).sort((a, b) => a.localeCompare(b)).map(vn =>
       `<section class="sp-proj-card"><header class="sp-proj-head"><span class="sp-proj-name">${escapeHtml(vn)}</span><span class="sp-group-count">${groups[vn].length}</span></header><div class="sp-proj-body">${cardHead}${groups[vn].map(r => row(r, 'card')).join('')}</div></section>`).join('')}</div>`;
   } else {
-    mainHtml = `<div class="sp-flat">${listHead}${rows.map(r => row(r, 'list')).join('')}</div>`;
+    mainHtml = `<div class="sp-flat">${listHead}${pageRows.map(r => row(r, 'list')).join('')}</div>`;
   }
 
   const sel = (val, opts, attr) => `<select ${attr}>${opts.map(o => `<option value="${escapeHtml(o.v)}"${val === o.v ? ' selected' : ''}>${escapeHtml(o.t)}</option>`).join('')}</select>`;
   const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('')
     + (_etoAvailable ? '<span class="vpo-leg" title="The buyer entered a revised date in Total ETO — the ETA shown is the new promise; hover the ↻ on a row to see the original."><span class="vpo-slip">↻</span> date revised in ETO</span>' : '');
+
+  const paginationHtml = totalPages > 1 ? `<div class="vpo-pagination"><button class="vpo-page-btn" data-vpo-pg="${page - 1}" ${page === 0 ? 'disabled' : ''}>‹ Prev</button><span class="vpo-page-info">Page ${page + 1} of ${totalPages} &nbsp;(${rows.length} POs)</span><button class="vpo-page-btn" data-vpo-pg="${page + 1}" ${page >= totalPages - 1 ? 'disabled' : ''}>Next ›</button></div>` : '';
 
   // ── Dashboards ──
   const nowMs = Date.now();
@@ -9674,7 +9723,6 @@ function renderVendorPOsPage() {
   const donePOs = all.filter(r => r.complete);
   const dRange = [7, 14, 21, 28, 99999].includes(Number(st.dashRange)) ? Number(st.dashRange) : 7;
   const dCut = dRange >= 99999 ? -Infinity : nowMs - dRange * 86400000;
-  // Best-available completion date: completed_on, else delivery, else ship.
   const compDate = (r) => { for (const d of [r.completed_on, r.delivery_date, r.ship_date]) { const t = d ? Date.parse(d) : NaN; if (!isNaN(t)) return t; } return null; };
   // All-time = every completed PO (even ones with no date on file); a specific
   // range needs a date to place it, so undated completes only show in All time.
@@ -9700,43 +9748,47 @@ function renderVendorPOsPage() {
   const lateWeeks = (days) => Math.round((days / 7) * 2) / 2;
   const etaStrOf = (r) => { const e = _vpoEtaMs(r); return e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '—'; };
   const vRangeOpts = [{ v: 7, t: '1 week' }, { v: 14, t: '2 weeks' }, { v: 21, t: '3 weeks' }, { v: 28, t: '4 weeks' }, { v: 99999, t: 'All time' }];
+  const openVal = openPOs.reduce((s, r) => s + (r.po_price ? parseFloat(r.po_price)||0 : 0), 0);
+  const openValStr = openVal > 0 ? '$' + openVal.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
   const dashHtml = `
     <div class="sp-dash vpo-dash-main">
       <div class="sp-dcard">
         <div class="sp-dcard-head">Open by vendor <span class="sp-dhint">${lateList.length} late</span></div>
         <div class="sp-dproj-head"><span>Vendor</span><span>POs</span><span>Late</span></div>
-        <div class="sp-dproj-list">${vendorRows.length ? vendorRows.map(vn => `<div class="sp-dprow"><span class="sp-dproj">${escapeHtml(vn)}</span><span class="sp-dcount">${byVendor[vn].n}</span><span class="sp-dbehind">${byVendor[vn].late ? `<span class="sp-dlate-pill">${byVendor[vn].late}</span>` : '—'}</span></div>`).join('') : '<div class="sp-dempty">No open POs</div>'}</div>
+        <div class="sp-dproj-list">${vendorRows.length ? vendorRows.map(vn => `<div class="sp-dprow sp-drow-click" data-fk="fVendor" data-fv="${escapeHtml(vn)}"><span class="sp-dproj">${escapeHtml(vn)}</span><span class="sp-dcount">${byVendor[vn].n}</span><span class="sp-dbehind">${byVendor[vn].late ? `<span class="sp-dlate-pill">${byVendor[vn].late}</span>` : '—'}</span></div>`).join('') : '<div class="sp-dempty">No open POs</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">In transit <span class="sp-dhint">${inTransit.length}</span></div>
         <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>ETA</span><span>Ship</span></div>
-        <div class="sp-dlist">${inTransit.length ? inTransit.slice(0, 8).map(r => `<div class="sp-laterow${r.partial ? ' is-partial' : ''}" title="${r.partial ? 'Partial shipment' : ''}"><span class="sp-dpn">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-deta">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : '—'}</span></div>`).join('') : '<div class="sp-dempty">Nothing in transit</div>'}</div>
+        <div class="sp-dlist">${inTransit.length ? inTransit.slice(0, 8).map(r => `<div class="sp-laterow${r.partial ? ' is-partial' : ''}"><span class="sp-dpn vpo-dash-po-link" data-id="${r.id}" data-po="${escapeHtml(r.po||'')}">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-deta">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : '—'}</span></div>`).join('') : '<div class="sp-dempty">Nothing in transit</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">Late POs <span class="sp-dhint">${lateList.length}</span></div>
         <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>ETA</span><span>Late</span></div>
-        <div class="sp-dlist">${lateList.length ? [...lateList].sort((a, b) => b.late - a.late).slice(0, 8).map(x => `<div class="sp-laterow${x.r.partial ? ' is-partial' : ''}" title="${x.r.partial ? 'Partial shipment' : ''}"><span class="sp-dpn">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.vendor || '')}</span><span class="sp-deta">${etaStrOf(x.r)}</span><span class="sp-cvar is-late">${lateWeeks(x.late)}w</span></div>`).join('') : '<div class="sp-dempty">Nothing late 🎉</div>'}</div>
+        <div class="sp-dlist">${lateList.length ? [...lateList].sort((a, b) => b.late - a.late).slice(0, 8).map(x => `<div class="sp-laterow${x.r.partial ? ' is-partial' : ''}"><span class="sp-dpn vpo-dash-po-link" data-id="${x.r.id}" data-po="${escapeHtml(x.r.po||'')}">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.vendor || '')}</span><span class="sp-deta">${etaStrOf(x.r)}</span><span class="sp-cvar is-late">${lateWeeks(x.late)}w</span></div>`).join('') : '<div class="sp-dempty">Nothing late 🎉</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">Completed <select class="vpo-dash-range">${vRangeOpts.map(o => `<option value="${o.v}"${dRange === o.v ? ' selected' : ''}>${o.t}</option>`).join('')}</select> <span class="sp-dhint">${compInRange.length}</span></div>
         <div class="sp-comp-head"><span>PO #</span><span>Job</span><span>Lead</span><span>Took</span></div>
-        <div class="sp-dlist">${compRows.length ? compRows.map(x => `<div class="sp-comprow"><span class="sp-dpn">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.job || '')}</span><span class="sp-deta">${x.r.lead_time != null && x.r.lead_time !== '' ? x.r.lead_time + 'w' : '—'}</span><span class="sp-cvar">${x.took != null ? x.took + 'w' : '—'}</span></div>`).join('') : '<div class="sp-dempty">None completed in range</div>'}</div>
+        <div class="sp-dlist">${compRows.length ? compRows.map(x => `<div class="sp-comprow"><span class="sp-dpn vpo-dash-po-link" data-id="${x.r.id}" data-po="${escapeHtml(x.r.po||'')}">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.job || '')}</span><span class="sp-deta">${x.r.lead_time != null && x.r.lead_time !== '' ? x.r.lead_time + 'w' : '—'}</span><span class="sp-cvar">${x.took != null ? x.took + 'w' : '—'}</span></div>`).join('') : '<div class="sp-dempty">None completed in range</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">Longest outstanding</div>
         <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>Due</span><span>Out</span></div>
-        <div class="sp-dlist">${oldestOpen.length ? oldestOpen.map(r => `<div class="sp-laterow"><span class="sp-dpn">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-cvar">${weeksOut(r)}w</span></div>`).join('') : '<div class="sp-dempty">None open 🎉</div>'}</div>
+        <div class="sp-dlist">${oldestOpen.length ? oldestOpen.map(r => `<div class="sp-laterow"><span class="sp-dpn vpo-dash-po-link" data-id="${r.id}" data-po="${escapeHtml(r.po||'')}">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-cvar">${weeksOut(r)}w</span></div>`).join('') : '<div class="sp-dempty">None open 🎉</div>'}</div>
       </div>
     </div>`;
 
-  // Compact historical strip that lives up top, left of the Add PO button:
-  // on-time delivery donut + avg-lead-by-vendor mini list, combined in one visual.
   const headStat = `
     <div class="vpo-headstat">
       <div class="vpo-hs-ontime">
         <span class="vpo-hs-label">On-time delivery</span>
         ${_shopDonut(onTimePct)}
         <span class="vpo-hs-sub">${compEta.length ? `${onTimeN}/${compEta.length}` : '—'}</span>
+      </div>
+      <div class="vpo-hs-total">
+        <span class="vpo-hs-label">Open PO value</span>
+        <span class="vpo-hs-totalval">${openValStr}</span>
       </div>
       <div class="vpo-hs-lead">
         <span class="vpo-hs-label">Avg lead by vendor</span>
@@ -9749,7 +9801,7 @@ function renderVendorPOsPage() {
       <div class="sp-head-top">
         <h1 class="projects-page-title">Vendor PO Track</h1>
         ${headStat}
-        ${_etoAvailable ? `<button class="btn-secondary sp-add-toggle" data-action="vpo-eto-sync" data-scope="all" type="button" title="Pull the latest PO status from Total ETO — every open PO across the whole ERP, plus a refresh of everything already here. Runs automatically every 30 min; this is the on-demand version.">⟳ Sync from ETO</button>` : ''}
+        ${_etoAvailable ? `<button class="btn-secondary sp-add-toggle" data-action="vpo-eto-sync" data-scope="all" type="button" title="Pull the latest PO status from Total ETO — runs automatically every 30 min; this is the on-demand version.">⟳ Sync from ETO</button>` : ''}
         <button class="btn-primary sp-add-toggle" data-action="vpo-toggle-add" type="button">${_vpoAddOpen ? '✕ Close' : '＋ Add PO'}</button>
       </div>
       <form class="sp-add-bar${_vpoAddOpen ? '' : ' is-hidden'}" data-action="vpo-add-form">
@@ -9758,10 +9810,20 @@ function renderVendorPOsPage() {
         <label class="sp-add-f"><span>Vendor</span><input name="vendor" list="vpo-vendor-list" autocomplete="off"/></label>
         <label class="sp-add-f"><span>PO Date</span><input name="po_date" type="date"/></label>
         <label class="sp-add-f"><span>Lead (wks)</span><input name="lead_time" type="number" min="0" style="width:64px"/></label>
+        <label class="sp-add-f"><span>ETA</span><input name="eta" type="date"/></label>
         <label class="sp-add-f"><span>PM</span><input name="pm" list="vpo-pm-list" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>Tracking</span><input name="tracking" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>PO Price</span><input name="po_price" autocomplete="off"/></label>
         <label class="sp-add-f sp-add-f-grow"><span>Comments</span><input name="comments" autocomplete="off"/></label>
         <button class="btn-primary sp-add-btn" type="submit">Add</button>
       </form>
+      <div class="vpo-bulk-bar" id="vpo-bulk-bar" hidden>
+        <span class="vpo-bulk-count">0 selected</span>
+        <button class="btn-secondary vpo-bulk-complete" type="button">Mark Complete</button>
+        <button class="btn-secondary vpo-bulk-delete" type="button">Delete</button>
+        <button class="vpo-bulk-clear" type="button">Clear</button>
+      </div>
+      <div class="vpo-sticky-controls">
       <div class="shop-parts-toolbar">
         <div class="seg-control sp-view">
           <button class="seg-btn${st.view === 'list' ? ' is-active' : ''}" data-vview="list" type="button">List</button>
@@ -9771,68 +9833,119 @@ function renderVendorPOsPage() {
           <button class="seg-btn${st.filter === 'open' ? ' is-active' : ''}" data-vfilter="open" type="button">Open ${openCount}</button>
           <button class="seg-btn${st.filter === 'complete' ? ' is-active' : ''}" data-vfilter="complete" type="button">Complete</button>
           <button class="seg-btn${st.filter === 'all' ? ' is-active' : ''}" data-vfilter="all" type="button">All</button>
+          <button class="seg-btn${st.fStatus === 'soon' ? ' is-active' : ''}" data-vfilter-status="soon" type="button">Due soon</button>
         </div>
         ${sel(st.fStatus, [{ v: 'all', t: 'Status: all' }, { v: 'late', t: 'Late' }, { v: 'shipped', t: 'Shipped' }, { v: 'soon', t: 'Due ≤1 wk' }, { v: 'partial', t: 'Partial' }, { v: 'complete', t: 'Complete' }], 'class="vpo-fsel" data-fk="fStatus"')}
         ${sel(st.fVendor, [{ v: 'all', t: 'Vendor: all' }, ...vendors.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fVendor"')}
         ${sel(st.fPm, [{ v: 'all', t: 'PM: all' }, ...pms.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fPm"')}
         ${sel(st.fJob, [{ v: 'all', t: 'Job: all' }, ...jobsList.map(v => ({ v, t: `#${v}` }))], 'class="vpo-fsel" data-fk="fJob"')}
+        ${sel(st.etaRange, [{ v: 'all', t: 'ETA: any' }, { v: '7', t: '≤ 1 week' }, { v: '14', t: '≤ 2 weeks' }, { v: '30', t: '≤ 30 days' }], 'class="vpo-fsel" data-fk="etaRange"')}
         <input type="search" class="vpo-search" placeholder="Search PO / job / vendor / tracking…" value="${escapeHtml(st.search || '')}"/>
+        ${st.search ? `<button class="vpo-clear-search" data-action="vpo-clear-search" type="button" title="Clear search and show all">✕ Clear</button>` : ''}
+        <button class="btn-secondary vpo-csv-btn" data-action="vpo-csv" type="button" title="Export to CSV">⬇ CSV</button>
       </div>
       <div class="vpo-legend">${legend}</div>
+      </div>
     </div>
     ${dashHtml}
     ${mainHtml}
+    ${paginationHtml}
     ${pmList}${vendorList}`;
 
+  // ── Event listeners ──
   root.querySelector('[data-action="vpo-toggle-add"]').addEventListener('click', () => { _vpoAddOpen = !_vpoAddOpen; renderVendorPOsPage(); if (_vpoAddOpen) { const p = root.querySelector('input[name="po"]'); if (p) p.focus(); } });
-  _etoCheckOnce(); // reveal the ETO sync buttons if the server has ETO configured
+  // Apply column widths
+  _vpoApplyCols(_vpoColWidths());
+  // Column resize drag
+  root.querySelectorAll('.vpo-rhandle[data-col]').forEach(handle => {
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const colIdx = Number(handle.dataset.col);
+      const startX = e.clientX;
+      const w = _vpoColWidths();
+      const startW = w[colIdx];
+      const onMove = (ev) => {
+        const newW = Math.max(40, startW + ev.clientX - startX);
+        w[colIdx] = newW;
+        _vpoApplyCols(w);
+      };
+      const onUp = () => {
+        _vpoSaveColWidths(w);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    handle.addEventListener('dblclick', () => {
+      const w = _vpoColWidths();
+      w[Number(handle.dataset.col)] = VPO_COL_DEFAULTS[Number(handle.dataset.col)];
+      _vpoSaveColWidths(w); _vpoApplyCols(w);
+    });
+  });
+  _etoCheckOnce();
   root.querySelectorAll('[data-action="vpo-eto-sync"]').forEach(etoBtn => etoBtn.addEventListener('click', async () => {
     const scope = etoBtn.dataset.scope || 'linked';
     const label = etoBtn.textContent;
     etoBtn.disabled = true; etoBtn.textContent = '⟳ Syncing…';
     try {
       const r = await api.eto.syncVendorPOs(scope);
-      if (r && r.ok) {
-        showToast(`ETO sync done — ${r.pos} PO${r.pos === 1 ? '' : 's'} across ${r.jobs} job${r.jobs === 1 ? '' : 's'} (${r.created} new, ${r.updated} updated)`, { kind: 'success' });
-        await loadVendorPOs();
-        return; // loadVendorPOs re-rendered the page; this button is gone
-      }
+      if (r && r.ok) { showToast(`ETO sync done — ${r.pos} PO${r.pos === 1 ? '' : 's'} across ${r.jobs} job${r.jobs === 1 ? '' : 's'} (${r.created} new, ${r.updated} updated)`, { kind: 'success' }); await loadVendorPOs(); return; }
       showToast(`ETO sync failed: ${(r && r.error) || 'unknown error'}`, { kind: 'error' });
-    } catch (e) {
-      showToast(`ETO sync failed: ${e.message}`, { kind: 'error' });
-    }
+    } catch (e) { showToast(`ETO sync failed: ${e.message}`, { kind: 'error' }); }
     etoBtn.disabled = false; etoBtn.textContent = label;
   }));
   root.querySelector('[data-action="vpo-add-form"]').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target;
-    const data = { po: f.po.value.trim() || null, job: f.job.value.trim() || null, vendor: f.vendor.value.trim() || null, po_date: f.po_date.value || null, lead_time: f.lead_time.value === '' ? null : Number(f.lead_time.value), pm: f.pm.value.trim() || null, comments: f.comments.value.trim() || null, complete: 0, partial: 0 };
+    const data = { po: f.po.value.trim()||null, job: f.job.value.trim()||null, vendor: f.vendor.value.trim()||null, po_date: f.po_date.value||null, lead_time: f.lead_time.value===''?null:Number(f.lead_time.value), eta: f.eta.value||null, pm: f.pm.value.trim()||null, tracking: f.tracking.value.trim()||null, po_price: f.po_price.value.trim()||null, comments: f.comments.value.trim()||null, complete: 0, partial: 0 };
     const created = await api.vendorPOs.create(data);
     if (created && created.id) { state.vendorPOs.push(created); f.reset(); _vpoAddOpen = true; renderVendorPOsPage(); }
   });
-  root.querySelectorAll('.sp-view [data-vview]').forEach(b => b.addEventListener('click', () => { st.view = b.dataset.vview; _vpoSave(); renderVendorPOsPage(); }));
-  root.querySelectorAll('.sp-filter [data-vfilter]').forEach(b => b.addEventListener('click', () => { st.filter = b.dataset.vfilter; _vpoSave(); renderVendorPOsPage(); }));
-  root.querySelectorAll('.vpo-fsel').forEach(s => s.addEventListener('change', () => { st[s.dataset.fk] = s.value; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.sp-view [data-vview]').forEach(b => b.addEventListener('click', () => { st.view = b.dataset.vview; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.sp-filter [data-vfilter]').forEach(b => b.addEventListener('click', () => { st.filter = b.dataset.vfilter; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('[data-vfilter-status]').forEach(b => b.addEventListener('click', () => { st.fStatus = st.fStatus === b.dataset.vfilterStatus ? 'all' : b.dataset.vfilterStatus; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.vpo-fsel').forEach(s => s.addEventListener('change', () => { st[s.dataset.fk] = s.value; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
   const vdr = root.querySelector('.vpo-dash-range');
   if (vdr) vdr.addEventListener('change', () => { st.dashRange = Number(vdr.value); _vpoSave(); renderVendorPOsPage(); });
   const se = root.querySelector('.vpo-search');
-  se.addEventListener('input', () => { st.search = se.value; _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
+  se.addEventListener('input', () => {
+    st.search = se.value; st.page = 0;
+    clearTimeout(_vpoSearchT);
+    _vpoSearchT = setTimeout(() => { _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } }, 300);
+  });
+  // Column sort
+  root.querySelectorAll('[data-vpo-sort]').forEach(h => h.addEventListener('click', () => {
+    const k = h.dataset.vpoSort;
+    if (st.sortKey === k) st.sortDir = st.sortDir === 'asc' ? 'desc' : 'asc'; else { st.sortKey = k; st.sortDir = 'asc'; }
+    st.page = 0; _vpoSave(); renderVendorPOsPage();
+  }));
+  // Pagination
+  root.querySelectorAll('[data-vpo-pg]').forEach(b => b.addEventListener('click', () => { st.page = Number(b.dataset.vpoPg); _vpoSave(); renderVendorPOsPage(); }));
+  // Row expand toggle with lazy field fill
   root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
     const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
     if (!d) return;
     d.hidden = !d.hidden;
-    // Synced rows: pull the PO's actual part lines from ETO on first open.
     if (!d.hidden) {
+      const lazy = d.querySelector('.sp-fields-lazy');
+      if (lazy && !lazy.dataset.filled) {
+        lazy.dataset.filled = '1';
+        const r2 = (state.vendorPOs || []).find(x => x.id === Number(lazy.dataset.lazyId));
+        if (r2) lazy.innerHTML = detailFields(r2);
+      }
       const box = d.querySelector('.vpo-lines');
       if (box && !box.dataset.loaded) { box.dataset.loaded = '1'; _vpoLoadLines(box); }
+      setTimeout(() => { try { d.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch(_){} }, 50);
     }
   }));
-  if (!root.dataset.changeBound) {
-    root.dataset.changeBound = '1';
+  // Change handler — module-level guard survives root re-creation
+  if (!_vpoChangeBound || _vpoChangeRoot !== root) {
+    _vpoChangeBound = true; _vpoChangeRoot = root;
     root.addEventListener('change', async (e) => {
       const el = e.target.closest('[data-id][data-field]'); if (!el) return;
       const id = Number(el.dataset.id), field = el.dataset.field;
       let val; if (el.type === 'checkbox') val = el.checked ? 1 : 0; else if (el.type === 'number') val = el.value === '' ? null : Number(el.value); else val = el.value;
-      await _vpoSetField(id, field, val);
+      await _vpoSetField(id, field, val, el.type !== 'checkbox' ? el : null);
       if (['complete', 'partial', 'tracking', 'vendor', 'eta', 'po_date', 'lead_time'].includes(field)) renderVendorPOsPage();
     });
   }
@@ -9841,12 +9954,73 @@ function renderVendorPOsPage() {
     const ok = await showConfirmDialog({ title: 'Delete PO?', message: `Delete PO "${escapeHtml(r?.po || 'this PO')}"?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
     if (!ok) return; await api.vendorPOs.remove(id); state.vendorPOs = state.vendorPOs.filter(x => x.id !== id); renderVendorPOsPage();
   }));
+  // Click-to-filter on job / vendor / pm cells
+  root.querySelectorAll('.vpo-filter-click[data-fk]').forEach(span => span.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const fk = span.dataset.fk, fv = span.dataset.fv || 'all';
+    st[fk] = fv; st.page = 0; _vpoSave(); renderVendorPOsPage();
+  }));
+  // Dashboard vendor click → filter to that vendor, switch to open
+  root.querySelectorAll('.sp-drow-click[data-fk]').forEach(row => row.addEventListener('click', () => {
+    st[row.dataset.fk] = row.dataset.fv; st.filter = 'open'; st.page = 0; _vpoSave(); renderVendorPOsPage();
+  }));
+  // Dashboard PO# click → search for that PO, scroll + highlight in list
+  root.querySelectorAll('.vpo-dash-po-link[data-id]').forEach(span => span.addEventListener('click', () => {
+    const id = Number(span.dataset.id), po = span.dataset.po;
+    st.search = po; st.filter = 'all'; st.fStatus = 'all'; st.page = 0; _vpoSave();
+    renderVendorPOsPage();
+    const target = root.querySelector(`.vpo-row[data-id="${id}"]`);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('vpo-row-highlight');
+      setTimeout(() => target.classList.remove('vpo-row-highlight'), 1800);
+    }
+  }));
+  // Bulk checkboxes
+  const bulkBar = root.querySelector('#vpo-bulk-bar');
+  const updateBulk = () => {
+    const checked = [...root.querySelectorAll('.vpo-bulk-chk:checked')];
+    if (bulkBar) { bulkBar.hidden = checked.length === 0; const cnt = bulkBar.querySelector('.vpo-bulk-count'); if (cnt) cnt.textContent = `${checked.length} selected`; }
+  };
+  root.querySelectorAll('.vpo-bulk-chk').forEach(c => c.addEventListener('change', updateBulk));
+  const allChk = root.querySelector('.vpo-bulk-all');
+  if (allChk) allChk.addEventListener('change', () => { root.querySelectorAll('.vpo-bulk-chk').forEach(c => c.checked = allChk.checked); updateBulk(); });
+  if (bulkBar) {
+    bulkBar.querySelector('.vpo-bulk-clear')?.addEventListener('click', () => { root.querySelectorAll('.vpo-bulk-chk').forEach(c => c.checked = false); if (allChk) allChk.checked = false; updateBulk(); });
+    bulkBar.querySelector('.vpo-bulk-complete')?.addEventListener('click', async () => {
+      const ids = [...root.querySelectorAll('.vpo-bulk-chk:checked')].map(c => Number(c.dataset.id));
+      await Promise.all(ids.map(id => _vpoSetField(id, 'complete', 1)));
+      renderVendorPOsPage();
+    });
+    bulkBar.querySelector('.vpo-bulk-delete')?.addEventListener('click', async () => {
+      const ids = [...root.querySelectorAll('.vpo-bulk-chk:checked')].map(c => Number(c.dataset.id));
+      if (!ids.length) return;
+      const ok = await showConfirmDialog({ title: 'Delete POs?', message: `Delete ${ids.length} selected PO${ids.length === 1 ? '' : 's'}?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
+      if (!ok) return;
+      await Promise.all(ids.map(id => api.vendorPOs.remove(id)));
+      state.vendorPOs = state.vendorPOs.filter(r => !ids.includes(r.id));
+      renderVendorPOsPage();
+    });
+  }
+  // Clear search
+  const clearBtn = root.querySelector('[data-action="vpo-clear-search"]');
+  if (clearBtn) clearBtn.addEventListener('click', () => { st.search = ''; st.filter = 'all'; st.fStatus = 'all'; st.page = 0; _vpoSave(); renderVendorPOsPage(); });
+  // CSV export
+  root.querySelectorAll('[data-action="vpo-csv"]').forEach(btn => btn.addEventListener('click', () => {
+    const headers = ['PO#','Job','Vendor','ETA','Ship Date','Tracking','PM','Price','Status','Partial','Complete'];
+    const csvData = [headers, ...rows.map(r => [r.po||'', r.job||'', r.vendor||'', r.eta||'', r.ship_date||'', r.tracking||'', r.pm||'', r.po_price||'', _vpoStatusOf(r), r.partial?'yes':'no', r.complete?'yes':'no'])];
+    const csv = csvData.map(row => row.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'vendor-pos.csv'; a.click();
+  }));
 }
 
 function renderProjectsPage() {
   const root = document.getElementById('projects-page');
   if (!root) return;
-  const all = uniqueValues('project');
+  // Merge projects from the DB index (loaded eagerly in init) with any in tasks
+  const fromIndex = Object.keys(state.projectsIndex || {});
+  const fromTasks = uniqueValues('project');
+  const all = [...new Set([...fromIndex, ...fromTasks])].sort();
   const openSet = new Set(state.openProjects);
   const byWs = Object.fromEntries(WORKSPACES.map(ws => [ws, []]));
   for (const p of all) byWs[projectWorkspace(p)].push(p);
@@ -21889,6 +22063,7 @@ async function init() {
         state.projectWorkspaces[p.name] = ws;
       }
       try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
+      if (state.view === 'projects') renderProjectsPage();
     }
   } catch (_) {}
   _etoCheckOnce(); // resolve ETO availability early so chips/buttons render on first paint
