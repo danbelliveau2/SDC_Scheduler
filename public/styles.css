@@ -3006,7 +3006,10 @@ main {
 #view-dashboard.active,
 #view-shop-parts.active,
 #view-vendor-pos.active,
-#view-procurement.active {
+#view-procurement.active,
+#view-projects.active,
+#view-favorites.active,
+#view-recents.active {
   overflow-y: auto;
   overflow-x: hidden;
 }
