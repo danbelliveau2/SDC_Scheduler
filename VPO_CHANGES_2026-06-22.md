@@ -418,6 +418,36 @@ Three new ways to zoom in/out on the Schedule and Actions views only:
 
 ---
 
+---
+
+---
+
+# SESSION 5 — Presence Avatar Bug Fix
+
+## Files Modified
+
+| File | What changed |
+|---|---|
+| `public/presence-ui.js` | Fixed self-exclusion type mismatch |
+| `public/auth-ui.css` | Presence strip hidden entirely |
+
+---
+
+## 1. Problem
+
+A floating avatar circle ("A") was appearing on top of content in the bottom panel (Notes bar / Procurement bar). Root causes:
+
+1. **Type mismatch in self-exclusion**: `sdcAuth.user.id` is a number (parsed from localStorage JSON) but the server's `presence:update` event sends `id` as a string. Strict `!==` comparison meant `"1" !== 1` → self was never filtered out.
+2. **Wrong CSS position**: `.sdc-presence-strip` was at `left: 280px; bottom: 12px` — directly overlapping the ETO # text in the procurement bar.
+3. **Genuine other-user avatars**: Even after fixing the position and self-exclusion, other users' avatars (e.g., "A" for a colleague) would still appear in the new position and the feature was not wanted.
+
+## 2. Fix
+
+- **`presence-ui.js`**: Changed self-exclusion to use `String()` comparison to handle type mismatch; if `selfId` is unknown, show nobody (`[]` instead of all).
+- **`auth-ui.css`**: Set `.sdc-presence-strip { display: none !important; }` — hides the presence strip entirely across all views.
+
+---
+
 ## Notes
 
 - PM2 runs as SYSTEM on port **4003**. To deploy: update `.update-sha` file and POST to `:4013/trigger`.

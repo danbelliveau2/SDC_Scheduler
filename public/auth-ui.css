@@ -77,6 +77,27 @@
   font-size: 12px;
   margin: -4px 0 0;
 }
+/* Show/hide password wrapper */
+.sdc-pw-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.sdc-pw-wrap input {
+  flex: 1;
+  padding-right: 36px !important;
+}
+.sdc-pw-toggle {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  color: #64748b;
+  line-height: 1;
+}
 .sdc-auth-link {
   background: none;
   border: none;
@@ -161,17 +182,11 @@
 .sdc-auth-menu button:hover { background: #f1f5f9; }
 .sdc-auth-menu .sdc-auth-signout:hover { background: #fef2f2; color: #dc2626; }
 
-/* Phase 4.1 — "who's editing" presence strip. Sits just to the right of
-   the user pill at the bottom-left; one circle per active collaborator
-   (excluding self). */
+/* Phase 4.1 — "who's editing" presence strip. Lives inside the sidebar rail
+   (width: 90px) just above the AK user pill (bottom: 66px). Centering inside
+   the 90px rail means it can never overlap the content area. */
 .sdc-presence-strip {
-  position: fixed;
-  bottom: 12px;
-  left: 280px; /* clears the user pill */
-  z-index: 4900;
-  display: flex;
-  gap: 4px;
-  align-items: center;
+  display: none !important;
 }
 .sdc-presence-avatar {
   width: 22px;

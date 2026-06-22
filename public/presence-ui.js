@@ -27,9 +27,12 @@
 
   function _renderPills(users) {
     const el = _ensureContainer();
-    // Exclude self so the user doesn't see their own avatar duplicated.
-    const selfId = window.sdcAuth?.user?.id ?? null;
-    const others = (users || []).filter(u => u.id !== selfId);
+    // Exclude self. Use string comparison — server may send id as string while
+    // sdcAuth.user.id is a number (parsed from localStorage JSON).
+    const selfId = window.sdcAuth?.user?.id;
+    const others = selfId != null
+      ? (users || []).filter(u => String(u.id) !== String(selfId))
+      : [];
     if (others.length === 0) { el.innerHTML = ''; el.style.display = 'none'; return; }
     el.style.display = '';
     el.innerHTML = others.map(u => {
