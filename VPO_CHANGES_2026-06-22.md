@@ -367,6 +367,57 @@ Also: `_saveScrollPos(state.view)` called at the START of every `setView()` to c
 
 ---
 
+---
+
+---
+
+# SESSION 4 — UI Polish + Zoom Controls
+
+## Files Modified
+
+| File | What changed |
+|---|---|
+| `public/app.js` | Ctrl+scroll zoom, Ctrl+↑/↓ zoom, Ctrl++/- zoom, hard refresh button wire-up |
+| `public/styles.css` | SDC logo size increase |
+| `public/index.html` | Hard refresh button added to toolbar |
+
+---
+
+## 1. SDC Logo Size
+
+- `.app-sidebar-logo` width increased from `44px` → `62px`
+- Logo is more prominent and easier to spot in the sidebar
+
+---
+
+## 2. Hard Refresh Button (⟳)
+
+- Added `<button id="btn-hard-refresh">` to `.schedule-toolbar` in `index.html`
+- Tooltip: "Hard refresh — clears cache and fully reloads the page (same as Ctrl+Shift+R)."
+- Wired in `app.js`: `window.location.reload(true)`
+- Appears as a round icon button (`toolbar-icon-round`) consistent with the existing toolbar style
+
+---
+
+## 3. Zoom Keyboard + Mouse Shortcuts
+
+Three new ways to zoom in/out on the Schedule and Actions views only:
+
+| Shortcut | Action |
+|---|---|
+| Ctrl + scroll up | Zoom in (+5%) |
+| Ctrl + scroll down | Zoom out (−5%) |
+| Ctrl + ↑ | Zoom in (+5%) |
+| Ctrl + ↓ | Zoom out (−5%) |
+| Ctrl + = or Ctrl + + | Zoom in (+5%) |
+| Ctrl + - or Ctrl + _ | Zoom out (−5%) |
+
+- `passive: false` on the wheel listener so `preventDefault()` blocks the browser's own page-zoom
+- All shortcuts call `setZoom(state.zoomPercent ± 5)` — same clamped range as existing zoom buttons (10–145%)
+- No effect outside Schedule / Actions views
+
+---
+
 ## Notes
 
 - PM2 runs as SYSTEM on port **4003**. To deploy: update `.update-sha` file and POST to `:4013/trigger`.

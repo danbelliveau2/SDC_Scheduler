@@ -22229,6 +22229,12 @@ async function init() {
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       setZoom(state.zoomPercent - 5);
+    } else if (e.key === '=' || e.key === '+') {
+      e.preventDefault();
+      setZoom(state.zoomPercent + 5);
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      setZoom(state.zoomPercent - 5);
     }
   });
 
