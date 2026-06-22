@@ -22208,6 +22208,30 @@ async function init() {
   // v4.51: Zoom dropdown — single toolbar button popover with Time scale /
   // Zoom (1-10) / Row height (10-100). Drives the legacy zoom/row controls.
   setupZoomDropdown();
+
+  // Ctrl+Scroll → zoom in/out on the Gantt. Each wheel tick steps ±5%.
+  // Ctrl+Up / Ctrl+Down arrows → same step. Both are no-ops outside the
+  // schedule view so they don't interfere with other pages.
+  document.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    if (state.view !== 'schedule' && state.view !== 'actions') return;
+    e.preventDefault();
+    const step = e.deltaY < 0 ? 5 : -5;
+    setZoom(state.zoomPercent + step);
+  }, { passive: false });
+
+  document.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey) return;
+    if (state.view !== 'schedule' && state.view !== 'actions') return;
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setZoom(state.zoomPercent + 5);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setZoom(state.zoomPercent - 5);
+    }
+  });
+
   // View pill — four icon-toggles in the toolbar:
   //   ≡   Flatten sub-sections + sort by start date (linked toggle)
   //   $   Show financial milestones overlay
