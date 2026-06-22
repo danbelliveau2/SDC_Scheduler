@@ -2772,11 +2772,11 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-plist {
   margin-top: 12px; border: 1px solid #c8d0da; border-radius: 8px; overflow: hidden; background: white;
   /* default column widths — JavaScript updates these inline on drag */
-  --pc0:44px; --pc1:160px; --pc2:1fr; --pc3:190px; --pc4:132px; --pc5:115px; --pc6:120px; --pc7:64px; --pc8:72px; --pc9:72px; --pc10:108px;
+  --pc0:44px; --pc1:160px; --pc2:1fr; --pc3:190px; --pc4:132px; --pc5:115px; --pc6:120px; --pc7:64px; --pc8:72px; --pc9:72px; --pc10:52px; --pc11:60px; --pc12:108px;
 }
 .proc-plist-head, .proc-plrow {
   display: grid;
-  grid-template-columns: var(--pc0) var(--pc1) var(--pc2) var(--pc3) var(--pc4) var(--pc5) var(--pc6) var(--pc7) var(--pc8) var(--pc9) var(--pc10);
+  grid-template-columns: var(--pc0) var(--pc1) var(--pc2) var(--pc3) var(--pc4) var(--pc5) var(--pc6) var(--pc7) var(--pc8) var(--pc9) var(--pc10) var(--pc11) var(--pc12);
   align-items: center;
   gap: 0;
   padding: 0;
@@ -2818,6 +2818,15 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-plrow:hover { background: #e8f0f8; }
 .proc-plrow-overdue { background: #fef2f2; }
 .proc-plrow-overdue:hover { background: #fee9e9; }
+.proc-lead { font-size: 11px; font-weight: 700; border-radius: 4px; padding: 2px 5px; white-space: nowrap; }
+.proc-lead-ok  { background: #ecfdf5; color: #166534; }
+.proc-lead-warn { background: #fffbeb; color: #92400e; }
+.proc-lead-long { background: #fef2f2; color: #991b1b; }
+.proc-due { font-size: 11px; font-weight: 700; border-radius: 4px; padding: 2px 5px; white-space: nowrap; }
+.proc-due-ahead  { background: #ecfdf5; color: #166534; }
+.proc-due-soon   { background: #fffbeb; color: #92400e; }
+.proc-due-late   { background: #fef2f2; color: #991b1b; }
+.proc-due-rcvd   { background: #f1f5f9; color: #64748b; }
 .proc-plsrc { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
 .proc-plsrc-pn { font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: var(--fw-bold); color: #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .proc-plsrc-desc { font-size: 10.5px; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

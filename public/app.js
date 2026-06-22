@@ -9461,6 +9461,22 @@ function _procPartsTable(data) {
   const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
   const fmt = d => d ? fmtDate(d) : '—';
   const rh = i => `<div class="proc-col-resize" onmousedown="_procColResizeStart(event,${i})"></div>`;
+  const leadChip = (orderDate, expDate) => {
+    if (!orderDate || !expDate) return `<span>—</span>`;
+    const days = Math.round((new Date(expDate) - new Date(orderDate)) / 86400000);
+    if (isNaN(days) || days < 0) return `<span>—</span>`;
+    const cls = days <= 30 ? 'ok' : days <= 60 ? 'warn' : 'long';
+    return `<span class="proc-lead proc-lead-${cls}" title="${days} day lead time (ordered → expected delivery)">${days}d</span>`;
+  };
+  const dueChip = (expDate, isReceived) => {
+    if (isReceived) return `<span class="proc-due proc-due-rcvd" title="Already received">RCVD</span>`;
+    if (!expDate) return `<span>—</span>`;
+    const days = Math.round((new Date(expDate) - Date.now()) / 86400000);
+    if (isNaN(days)) return `<span>—</span>`;
+    if (days > 7)  return `<span class="proc-due proc-due-ahead" title="Due in ${days} days">+${days}d</span>`;
+    if (days >= 0) return `<span class="proc-due proc-due-soon"  title="Due in ${days} days">+${days}d</span>`;
+    return `<span class="proc-due proc-due-late" title="${Math.abs(days)} days overdue">${days}d</span>`;
+  };
   const hcols = [
     `<span class="num">Qty${rh(0)}</span>`,
     `<span>Part No${rh(1)}</span>`,
@@ -9472,6 +9488,8 @@ function _procPartsTable(data) {
     `<span>PO #${rh(7)}</span>`,
     `<span title="PO purchase date">Purchased${rh(8)}</span>`,
     `<span>Exp${rh(9)}</span>`,
+    `<span title="Days between purchase and expected delivery">Lead${rh(10)}</span>`,
+    `<span title="Days until / since expected delivery">Due${rh(11)}</span>`,
     `<span>Status</span>`,
   ].join('');
   return `<div class="proc-plist">
@@ -9489,6 +9507,8 @@ function _procPartsTable(data) {
         <span class="proc-plpo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
         <span>${fmt(p.orderDate)}</span>
         <span>${fmt(p.expDate || p.requiredDate)}</span>
+        ${leadChip(p.orderDate, p.expDate)}
+        ${dueChip(p.expDate, st.key === 'received')}
         <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
       </div>`;
     }).join('')}
