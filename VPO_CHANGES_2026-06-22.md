@@ -358,10 +358,12 @@ Also: `_saveScrollPos(state.view)` called at the START of every `setView()` to c
 
 ## 2. Tab Behavior Change
 
-### No Auto-Restored Project Tabs on Load
-- `loadProjectTabs()` now always starts clean: `state.openProjects = ['']`, `state.filters.project = ''`
-- Previously restored whichever tabs were open at last session from `sdcOpenProjects` localStorage
-- Users now explicitly open projects they want from the Projects page each session
+### Project Tab Persistence — sessionStorage (revised)
+- Open tabs + active project moved from `localStorage` → `sessionStorage`
+- **Survives F5 / Ctrl+R** within the same browser tab — state is fully restored
+- **Clears automatically** when the browser tab is closed or a new session starts — no stale tabs from previous days auto-loading
+- `saveProjectTabs()` writes to `sessionStorage.sdcOpenProjects` + `sessionStorage.sdcActiveProject`
+- `loadProjectTabs()` reads from `sessionStorage` with same fallback logic as before
 
 ---
 
