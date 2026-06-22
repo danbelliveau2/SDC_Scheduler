@@ -32,36 +32,9 @@ async function loadCommentCounts(project) {
 }
 
 function injectCommentBadges() {
-  // Task rows in app.js carry data-id on the <tr>.
-  const rows = document.querySelectorAll('#tasks-tbody tr[data-id]');
-  rows.forEach(tr => {
-    const id = Number(tr.getAttribute('data-id'));
-    if (!id) return;
-    tr.querySelector('.sdc-comment-badge')?.remove();
-    const count = _commentCounts[id] || 0;
-    const badge = document.createElement('span');
-    badge.className = 'sdc-comment-badge' + (count > 0 ? ' has-comments' : '');
-    badge.title = count > 0 ? `${count} comment${count > 1 ? 's' : ''}` : 'Add comment';
-    badge.textContent = count > 0 ? `💬 ${count}` : '💬';
-    badge.addEventListener('click', e => {
-      e.stopPropagation();
-      // Prefer the canonical name from state.tasks[id] — the cell text
-      // includes machine chips, drift chips, badge glyph, alloc % etc.
-      // which would all leak into the panel title otherwise.
-      let taskName = `Task #${id}`;
-      try {
-        const t = (typeof state !== 'undefined' && state.tasks)
-                ? state.tasks.find(x => x.id === id) : null;
-        if (t && t.name) taskName = t.name;
-      } catch (_) {}
-      const project = (typeof state !== 'undefined' && state.filters?.project) || '';
-      openCommentPanel({ id, name: taskName, project });
-    });
-    // Append badge into the name cell so it sits next to the task name.
-    const nameCell = tr.querySelector('td[data-col="name"] .name-cell-main')
-                  || tr.querySelector('td[data-col="name"]');
-    if (nameCell) nameCell.appendChild(badge);
-  });
+  // Badges removed — comments are now opened via right-click context menu.
+  // Remove any stale badges left over from a previous render.
+  document.querySelectorAll('.sdc-comment-badge').forEach(el => el.remove());
 }
 
 // Watch the tasks tbody for re-renders triggered by loadTasks(); re-inject

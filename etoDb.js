@@ -417,16 +417,18 @@ async function getReadiness(projectId) {
   function collectParts(node, specId) {
     for (const p of node.parts) {
       const po = poIndex[p.id] || null;
+      // Attach poId to the part in the tree structure (for Assemblies view)
+      p.poId = po ? po.poId : null;
+      p.supplier = po ? po.supplier : null;
+      p.orderDate = po ? po.orderDate : null;
+      p.invoicedDate = invByItem[p.id] || null;
+      p.expDate = po ? po.expDate : null;
+      // Also add to flat partsList (for Parts List view)
       partsList.push({
         ...p,
         specId,
         parentPN: node.pn === '???' ? 'LOOSE' : node.pn,
         parentDesc: node.desc || '',
-        poId: po ? po.poId : null,
-        supplier: po ? po.supplier : null,
-        orderDate: po ? po.orderDate : null,
-        invoicedDate: invByItem[p.id] || null,
-        expDate: po ? po.expDate : null,
       });
     }
     node.children.forEach(c => collectParts(c, specId));

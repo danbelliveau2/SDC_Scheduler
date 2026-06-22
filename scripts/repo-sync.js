@@ -13,29 +13,40 @@
  */
 
 const { execSync } = require('child_process');
-const fs   = require('fs');
-const path = require('path');
+const path         = require('path');
 
 const REPO_ROOT      = path.join(__dirname, '..', '..');
 const CHECK_INTERVAL = 2 * 60 * 1000;
 
+// Must match the union of SAFE_DIRS + SAFE_FILES in server-auto-update.js.
+// Everything the updater can touch must be tracked here so changes get
+// committed back to the centralized library repo.
 const SYNC_PATHS = [
   'SDC_Scheduler/public',
-  'SDC_Scheduler/auth.js',
-  'SDC_Scheduler/emailService.js',
+  'SDC_Scheduler/scripts',
+  'SDC_Scheduler/custom-public',
+  'SDC_Scheduler/mcp',
+  'SDC_Scheduler/server.js',
   'SDC_Scheduler/db.js',
+  'SDC_Scheduler/auth.js',
+  'SDC_Scheduler/cronJobs.js',
+  'SDC_Scheduler/emailService.js',
+  'SDC_Scheduler/etoDb.js',
+  'SDC_Scheduler/agent.js',
+  'SDC_Scheduler/ops.js',
+  'SDC_Scheduler/backfillProjects.js',
+  'SDC_Scheduler/azureSync.js',
+  'SDC_Scheduler/azureDb.js',
   'SDC_Scheduler/package.json',
-  'SDC_Scheduler/package-lock.json',
   'SDC_Scheduler/ARROW_ROUTING_RULES.md',
   'SDC_Scheduler/.gitignore',
 ];
 
-// PM2 runs as SYSTEM; the repo is owned by a user account.
-// -c safe.directory lets git operate despite the ownership mismatch.
-// Identity + credential flags give SYSTEM a valid author and push target.
-const GIT_FLAGS = `-c safe.directory="${REPO_ROOT.replace(/\\/g, '/')}"`
-  + ' -c user.name="SDC Repo Sync" -c user.email="repo-sync@stevendouglas.local"'
-  + ' -c credential.helper= -c "credential.helper=store --file=C:/ProgramData/SDC_Scheduler/git-credentials"';
+// PM2 runs as SYSTEM on Windows; git needs safe.directory + identity +
+// credential store so operations succeed from the service account context.
+const GIT_FLAGS = `-c safe.directory="${REPO_ROOT.replace(/\\/g, '/')}"` +
+  ' -c user.name="SDC Repo Sync" -c user.email="repo-sync@stevendouglas.local"' +
+  ' -c credential.helper= -c "credential.helper=store --file=C:/ProgramData/SDC_Scheduler/git-credentials"';
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -49,8 +60,8 @@ function git(args) {
 async function syncRepo() {
   log('Checking for uncommitted scheduler changes…');
   try {
-    // Stage the tracked paths
-    git(`add ${SYNC_PATHS.map(s => `"${s}"`).join(' ')}`);
+    // Stage the tracked paths (quote each path for spaces)
+    git(`add ${SYNC_PATHS.map(p => `"${p}"`).join(' ')}`);
 
     // Check if anything is actually staged
     let staged = true;
@@ -63,6 +74,7 @@ async function syncRepo() {
     }
 
     // Read the SHA the updater last synced to
+    const fs = require('fs');
     const shaFile = path.join(__dirname, '..', '.update-sha');
     const danSha  = fs.existsSync(shaFile) ? fs.readFileSync(shaFile, 'utf8').trim().slice(0, 7) : 'unknown';
 

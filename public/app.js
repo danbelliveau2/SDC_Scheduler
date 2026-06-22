@@ -8309,6 +8309,21 @@ function _etoCheckOnce() {
   }).catch(() => {});
 }
 
+// ── Job Hours availability (Power BI) ───────────────────────────────────────
+let _hoursAvailable = false;
+let _hoursChecked = false;
+const _hoursCache = {};
+const _hoursFetching = {};
+// UI filter state — survives re-renders within a session
+const _hoursUI = { mode: 'quoted', billing: 'all' };
+function _hoursCheckOnce() {
+  if (_hoursChecked) return;
+  _hoursChecked = true;
+  fetch('/api/hours/status').then(r => r.json()).then(s => {
+    if (s && s.enabled) { _hoursAvailable = true; try { renderScheduleHours(); } catch (_) {} }
+  }).catch(() => {});
+}
+
 // ── Total ETO project-link chip (schedule banner) ───────────────────────────
 // A project links to the ERP through its job number (=== ETO ProjectID).
 // The chip shows the link state and opens an in-app prompt to set it.
@@ -8483,6 +8498,7 @@ function _procBarColor(pct) { return pct >= 90 ? '#74C415' : pct >= 60 ? '#AACEE
 // a PO to expand its line items inline. Lazily fetches /api/eto/vendors/:job.
 function _procRerender() {
   try { renderScheduleProcurement(); } catch (_) {}
+  try { renderScheduleHours(); } catch (_) {}
 }
 
 // ── Cost tab (ETO "Part Cost" report card) ──────────────────────────────────
@@ -12867,6 +12883,7 @@ function render() {
   try { refreshFinancialsButtonState(); } catch (_) {}
   try { renderProjectNotes(); } catch (_) {}
   try { renderScheduleProcurement(); } catch (_) {}
+  try { _hoursCheckOnce(); renderScheduleHours(); } catch (_) {}
 }
 
 // ── Project Notes ─────────────────────────────────────────────────────────────
@@ -13236,7 +13253,7 @@ function layoutNotesPanel() {
   // bottom drawer is open — Notes or Procurement. They share this machinery so
   // opening one while the other is open keeps the lock instead of fighting it.
   const isOpen = (id) => { const e = document.getElementById(id); return e && e.style.display !== 'none' && !e.classList.contains('is-collapsed'); };
-  const open = isOpen('schedule-notes') || isOpen('schedule-procurement');
+  const open = isOpen('schedule-notes') || isOpen('schedule-procurement') || isOpen('schedule-hours');
   if (open) {
     // Lock only on the open transition; later renders keep the existing lock so
     // we don't reset the user's scroll position mid-interaction.
@@ -13471,19 +13488,31 @@ function _wireProcDrawer(el, job, project) {
     if (poClick) {
       const poId = poClick.dataset.poid;
       if (poId) {
-        _procState.drawerTab = 'parts';
-        _procState.partsListMode = 'card';
-        _procSave();
-        renderScheduleProcurement();
-        setTimeout(() => {
-          const poCard = el.querySelector(`[data-vpo-id="${poId}"]`);
-          if (poCard) {
-            const vendorName = poCard.closest('.proc-pcard')?.querySelector('.proc-pname')?.textContent || '';
-            if (vendorName) _procOpenPoPanel(job, vendorName, poId);
-          }
-        }, 200);
+        const partData = _procCache[job];
+        const part = partData && partData.partsList && partData.partsList.find(p => String(p.poId) === String(poId));
+        const vendorName = part && part.supplier;
+        if (vendorName) {
+          const openPanel = () => _procOpenPoPanel(job, vendorName, poId);
+          if (_procVendorCache[job] && !_procVendorCache[job].error) { openPanel(); }
+          else { api.eto.vendors(job).then(d => { _procVendorCache[job] = d; openPanel(); }).catch(() => showToast('Could not load vendor data', { type: 'error', duration: 3000 })); }
+        }
         return;
       }
+    }
+    const plrow = t.closest('.proc-plrow');
+    if (plrow) {
+      const pn = plrow.dataset.pn;
+      const partData = _procCache[job];
+      const part = partData && partData.partsList && partData.partsList.find(p => p.pn === pn);
+      if (part && part.poId) {
+        const vendorName = part.supplier;
+        if (vendorName) {
+          const openPanel = () => _procOpenPoPanel(job, vendorName, String(part.poId));
+          if (_procVendorCache[job] && !_procVendorCache[job].error) { openPanel(); }
+          else { api.eto.vendors(job).then(d => { _procVendorCache[job] = d; openPanel(); }).catch(() => showToast('Could not load vendor data', { type: 'error', duration: 3000 })); }
+        }
+      }
+      return;
     }
     const vpo = t.closest('[data-vpo]');
     if (vpo) {
@@ -13522,6 +13551,310 @@ function _wireProcDrawer(el, job, project) {
   // separately from the onclick delegation above.
   _wirePartsFilters(el, renderScheduleProcurement);
 }
+// ── Per-project Job Hours drawer ─────────────────────────────────────────────
+// Collapsible panel below Procurement. Shows Quoted / Actual / Diff per
+// function, grouped by billing group, pulled from the Power BI semantic model.
+// Only visible when PBI_USER+PBI_PASS are configured and the project has a job number.
+function renderScheduleHours() {
+  const el = document.getElementById('schedule-hours');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  const idx = project && state.projectsIndex && state.projectsIndex[project];
+  const job = idx && idx.job_number;
+  if (!project || state.view !== 'schedule' || !_hoursAvailable || !job) {
+    el.style.display = 'none';
+    el.classList.add('is-collapsed');
+    layoutNotesPanel();
+    return;
+  }
+  el.style.display = '';
+  const collapsed = el.classList.contains('is-collapsed');
+  const data = _hoursCache[job];
+
+  const jobLabel = (data && data.jobIds && data.jobIds.length > 1)
+    ? `Jobs #${data.jobIds.join(' & #')}`
+    : `Job #${escapeHtml(String(job))}`;
+  let stat = jobLabel;
+  if (data && data.totals && data.fns && data.fns.length) {
+    const q = data.totals.quoted, a = data.totals.actual;
+    const over = a > q;
+    const diff = Math.round(Math.abs(q - a));
+    const diffLabel = diff > 0 ? ` (${over ? '+' : '-'}${diff})` : '';
+    stat = `${Math.round(q)} quoted · <span style="color:${over ? 'var(--danger)' : 'var(--success)'}; font-weight:700">${Math.round(a)} actual${diffLabel}</span>`;
+  }
+  const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
+    <span class="notes-bar-title">⏱ Job Hours</span>
+    <span class="notes-count">${stat}</span>
+    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+  </div>`;
+
+  // Pre-fetch in background even when collapsed so data is ready when user opens
+  if (!data && !_hoursFetching[job]) {
+    _hoursFetching[job] = true;
+    fetch(`/api/hours/${encodeURIComponent(job)}`)
+      .then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || r.status))))
+      .then(d => { _hoursCache[job] = d; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); })
+      .catch(e => { _hoursCache[job] = { error: e.message }; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); });
+  }
+
+  if (collapsed) { el.innerHTML = bar; _wireHoursDrawer(el, job, project); layoutNotesPanel(); return; }
+
+  if (!data) {
+    el.innerHTML = bar + `<div class="hours-drawer-body"><div class="proc-empty">Loading job hours from Power BI…</div></div>`;
+    _wireHoursDrawer(el, job, project);
+    layoutNotesPanel();
+    return;
+  }
+
+  let body;
+  if (data.error) {
+    const isAuthErr = /token expired|token missing|pbi token/i.test(data.error);
+    if (isAuthErr) {
+      body = `<div class="proc-empty proc-error" style="text-align:left;padding:16px 20px;line-height:1.6">
+        <strong>Power BI authentication expired.</strong><br>
+        The refresh token lasts ~90 days. To renew it, run this once in a Command Prompt on the server:<br>
+        <code style="display:block;margin:8px 0;padding:6px 10px;background:#f4f4f4;border-radius:4px;font-size:12px">set PBI_CACHE_PATH=${escapeHtml(data.error.match(/PBI_CACHE_PATH[=\s]+([^\s&]+)/)?.[1] || 'D:\\AI Projects\\Centrailized library\\SDC_Scheduler\\pbi_cache.json')}<br>sdc-powerbi-mcp.exe login</code>
+        Then restart the scheduler server. Contact Abhi if you need help.
+      </div>`;
+    } else {
+      body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
+    }
+  } else {
+    const { fns, bgTotals, totals, jobIds } = data;
+
+    if (!fns.length) {
+      const jobLabel = jobIds && jobIds.length ? jobIds.join(' & ') : job;
+      body = `<div class="proc-empty">No hours data found in Power BI for job ${escapeHtml(jobLabel)}.<br>
+        This job may not have been set up in the Power BI model yet.</div>`;
+    } else {
+
+    const fmt = n => Math.round(n || 0).toLocaleString();
+    const diffCls = d => d < -0.5 ? ' hours-over' : d > 0.5 ? ' hours-under' : '';
+    const diffFmt = d => `${d > 0 ? '+' : ''}${fmt(d)}`;
+    const mode = _hoursUI.mode;          // 'quoted' or 'etc'
+    const bgFilter = _hoursUI.billing;   // 'all' | billing group name
+    const refKey = mode === 'etc' ? 'etc' : 'quoted';
+    const refLabel = mode === 'etc' ? 'ETC' : 'Quoted';
+
+    // Apply billing group filter to functions
+    const visibleFns = bgFilter === 'all' ? fns : fns.filter(r => r.billing === bgFilter);
+
+    // Filter bar — Hours Type + Billing Group chips
+    const BG_CHIPS = ['Engineering', 'Manufacturing', 'Shop', 'PM'];
+    const modeBar = `<div class="hours-filter-bar">
+      <span class="hours-filter-label">Hours Type</span>
+      <button class="hours-chip${mode === 'quoted' ? ' active' : ''}" data-hours-mode="quoted">Quoted</button>
+      <button class="hours-chip${mode === 'etc' ? ' active' : ''}" data-hours-mode="etc">ETC</button>
+      <span class="hours-filter-sep"></span>
+      <span class="hours-filter-label">Billing Group</span>
+      <button class="hours-chip${bgFilter === 'all' ? ' active' : ''}" data-hours-bg="all">All</button>
+      ${BG_CHIPS.filter(bg => bgTotals[bg]).map(bg =>
+        `<button class="hours-chip${bgFilter === bg ? ' active' : ''}" data-hours-bg="${escapeHtml(bg)}">${escapeHtml(bg)}</button>`
+      ).join('')}
+    </div>`;
+
+    // Billing group summary cards
+    const BG_ORDER = ['Engineering', 'Manufacturing', 'Shop', 'PM'];
+    const bgHtml = BG_ORDER.filter(bg => bgTotals[bg] && (bgFilter === 'all' || bgFilter === bg))
+      .map(bg => {
+        const t = bgTotals[bg];
+        const ref = t[refKey];
+        const diff = ref - t.actual;
+        return `<div class="hours-bg-card">
+          <div class="hours-bg-name">${escapeHtml(bg)}</div>
+          <div class="hours-bg-nums">
+            <span class="hours-col-q">${fmt(ref)}</span>
+            <span class="hours-col-a">${fmt(t.actual)}</span>
+            <span class="hours-col-d${diffCls(diff)}">${diffFmt(diff)}</span>
+          </div>
+        </div>`;
+      }).join('');
+
+    // Pivot table — functions as columns, Quoted/Act/Diff as rows
+    // Build ordered section groups (preserves section order and per-section function duplication)
+    const secGroups = [];
+    const secSeen = new Map();
+    for (const r of visibleFns) {
+      if (!secSeen.has(r.section)) { secSeen.set(r.section, []); secGroups.push({ sec: r.section, fns: secSeen.get(r.section) }); }
+      secSeen.get(r.section).push(r);
+    }
+    // All functions in column order
+    const pivotCols = secGroups.flatMap(g => g.fns);
+
+    // Header row 1 — section spans
+    const secSpans = secGroups.map(g =>
+      `<th class="hpt-sec-hdr" colspan="${g.fns.length}">${escapeHtml(g.sec)}</th>`
+    ).join('');
+
+    // Header row 2 — function names
+    const fnHdrs = pivotCols.map(r => `<th class="hpt-fn-hdr">${escapeHtml(r.fn)}</th>`).join('');
+
+    // Data rows
+    const makeRow = (label, valFn, cls) => {
+      const cells = pivotCols.map(r => {
+        const v = valFn(r);
+        return `<td class="hpt-val${cls ? cls(r) : ''}">${fmt(v)}</td>`;
+      }).join('');
+      const total = pivotCols.reduce((a, r) => a + valFn(r), 0);
+      return `<tr><td class="hpt-row-lbl">${label}</td>${cells}<td class="hpt-total">${fmt(total)}</td></tr>`;
+    };
+    const pivotBody = [
+      makeRow(refLabel, r => r[refKey]),
+      makeRow('Actual',  r => r.actual),
+      makeRow('Diff',    r => r[refKey] - r.actual, r => diffCls(r[refKey] - r.actual)),
+    ].join('');
+    const totalRef = pivotCols.reduce((a, r) => a + r[refKey], 0);
+    const totalAct = pivotCols.reduce((a, r) => a + r.actual, 0);
+
+    // SVG bar chart helper
+    function _hoursChart(title, items, W, H) {
+      W = W || 700; H = H || 340;
+      const CQ = '#5b9bd5', CA = '#1f3864';
+      const lbl = v => v >= 1000 ? (v/1000).toFixed(1)+'k' : String(Math.round(v));
+      const n = items.length;
+
+      // Estimate label height at -45° to size padB correctly
+      const labelFontPx = n > 8 ? 9 : 10;
+      const maxLabelLen = Math.max(...items.map(i => i.label.length), 1);
+      const labelHeightPx = Math.ceil(maxLabelLen * labelFontPx * 0.6 * Math.sin(Math.PI/4)) + 8;
+      const legendH = 22;
+      const padL = 46, padR = 14, padT = 36;
+      const padB = labelHeightPx + legendH + 10; // labels + legend + gap
+      const plotH = H - padT - padB;
+      const plotW = W - padL - padR;
+
+      const maxVal = Math.max(...items.flatMap(i => [i.quoted, i.actual]), 1);
+      const yTop = maxVal * 1.18;
+      const baseY = padT + plotH;
+      const yPx = v => baseY - (v / yTop) * plotH;
+
+      const grpW = plotW / n;
+      const bW = Math.min(Math.max(Math.floor(grpW * 0.34), 8), 38);
+      const gap = Math.max(Math.floor(grpW * 0.08), 4);
+
+      // Y gridlines + ticks
+      let gridSvg = '', tickSvg = '';
+      for (let i = 0; i <= 4; i++) {
+        const v = Math.round((yTop / 4) * i);
+        const y = yPx(v);
+        gridSvg += `<line x1="${padL}" y1="${y}" x2="${padL+plotW}" y2="${y}" stroke="#ebebeb" stroke-width="1"/>`;
+        tickSvg += `<text x="${padL-5}" y="${y+4}" text-anchor="end" font-size="10" fill="#bbb">${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}</text>`;
+      }
+
+      // Bars + value labels + x labels
+      let barSvg = '';
+      items.forEach((item, idx) => {
+        const cx = padL + idx * grpW + grpW / 2;
+        const xQ = cx - gap / 2 - bW;
+        const xA = cx + gap / 2;
+        const hQ = item.quoted > 0 ? Math.max((item.quoted / yTop) * plotH, 2) : 0;
+        const hA = item.actual > 0 ? Math.max((item.actual / yTop) * plotH, 2) : 0;
+        const yQ = baseY - hQ, yA = baseY - hA;
+        const diff = item.quoted - item.actual;
+        const tip = `${item.label}&#10;Quoted: ${Math.round(item.quoted).toLocaleString()}&#10;Actual: ${Math.round(item.actual).toLocaleString()}&#10;Diff: ${diff >= 0 ? '+' : ''}${Math.round(diff).toLocaleString()}`;
+
+        if (item.quoted > 0) {
+          barSvg += `<rect x="${xQ}" y="${yQ}" width="${bW}" height="${hQ}" fill="${CQ}" rx="2"><title>${tip}</title></rect>`;
+          barSvg += `<text x="${xQ+bW/2}" y="${yQ-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.quoted)}</text>`;
+        }
+        if (item.actual > 0) {
+          barSvg += `<rect x="${xA}" y="${yA}" width="${bW}" height="${hA}" fill="${CA}" rx="2"><title>${tip}</title></rect>`;
+          barSvg += `<text x="${xA+bW/2}" y="${yA-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.actual)}</text>`;
+        }
+
+        // X-axis label — pivot at (cx, baseY+10), rotate -45°
+        const lx = cx, ly = baseY + 10;
+        barSvg += `<text x="${lx}" y="${ly}" text-anchor="end" font-size="${labelFontPx}" fill="#555" transform="rotate(-45,${lx},${ly})">${escapeHtml(item.label)}</text>`;
+
+        // Invisible hover zone
+        barSvg += `<rect x="${padL+idx*grpW}" y="${padT}" width="${grpW}" height="${plotH+10}" fill="transparent"><title>${tip}</title></rect>`;
+      });
+
+      // Legend — sits below label area, centred
+      const legY = H - 8;
+      const legX = padL + plotW / 2 - 65;
+      const legend = `
+        <rect x="${legX}" y="${legY-11}" width="13" height="10" fill="${CQ}" rx="1"/>
+        <text x="${legX+17}" y="${legY-2}" font-size="11" fill="#555">Quoted</text>
+        <rect x="${legX+75}" y="${legY-11}" width="13" height="10" fill="${CA}" rx="1"/>
+        <text x="${legX+92}" y="${legY-2}" font-size="11" fill="#555">Actual</text>`;
+
+      return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
+        <text x="${W/2}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#333">${escapeHtml(title)}</text>
+        ${gridSvg}${tickSvg}${barSvg}${legend}
+        <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
+        <line x1="${padL}" y1="${baseY}" x2="${padL+plotW}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
+      </svg>`;
+    }
+
+    // Function chart: aggregate by fn name across sections (no duplicate labels)
+    const fnMap = new Map();
+    for (const r of visibleFns) {
+      if (!fnMap.has(r.fn)) fnMap.set(r.fn, { label: r.fn, ref: 0, actual: 0 });
+      const e = fnMap.get(r.fn);
+      e.ref    += r[refKey];
+      e.actual += (r.actual || 0);
+    }
+    const fnItems = [...fnMap.values()].map(e => ({ label: e.label, quoted: e.ref, actual: e.actual }));
+
+    const BG_CHART_ORDER = ['Engineering', 'Manufacturing', 'PM', 'Shop'];
+    const bgItems = BG_CHART_ORDER.filter(bg => bgTotals[bg] && (bgFilter === 'all' || bgFilter === bg))
+      .map(bg => ({ label: bg, quoted: bgTotals[bg][refKey], actual: bgTotals[bg].actual || 0 }));
+
+    const fnChartTitle  = `${refLabel} vs Actual by Function`;
+    const bgChartTitle  = `${refLabel} vs Actual by Billing Group`;
+    const chartsHtml = `<div class="hours-charts-row">
+      <div class="hours-chart-box" style="flex:2">${_hoursChart(fnChartTitle, fnItems, 820, 340)}</div>
+      <div class="hours-chart-box" style="flex:1">${_hoursChart(bgChartTitle, bgItems, 380, 340)}</div>
+    </div>`;
+
+    const totalD = totalRef - totalAct;
+    body = `
+      ${modeBar}
+      <div class="hours-bg-row">${bgHtml}</div>
+      <div class="hpt-wrap">
+        <table class="hpt">
+          <thead>
+            <tr><th class="hpt-corner"></th>${secSpans}<th class="hpt-total-hdr">Total</th></tr>
+            <tr><th class="hpt-corner"></th>${fnHdrs}<th class="hpt-total-hdr"></th></tr>
+          </thead>
+          <tbody>${pivotBody}</tbody>
+        </table>
+      </div>
+      ${chartsHtml}`;
+    } // end if fns.length
+  }
+
+  el.innerHTML = bar + `<div class="hours-drawer-body">${body}</div>`;
+  _wireHoursDrawer(el, job, project);
+  layoutNotesPanel();
+}
+
+function _wireHoursDrawer(el, job, project) {
+  el.onclick = (e) => {
+    if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
+      const willOpen = el.classList.contains('is-collapsed');
+      el.classList.toggle('is-collapsed');
+      if (willOpen && !_hoursCache[job]) renderScheduleHours();
+      else renderScheduleHours();
+      return;
+    }
+    // Hours Type toggle
+    const modeBtn = e.target.closest('[data-hours-mode]');
+    if (modeBtn) {
+      _hoursUI.mode = modeBtn.dataset.hoursMode;
+      renderScheduleHours();
+      return;
+    }
+    // Billing group chip
+    const bgBtn = e.target.closest('[data-hours-bg]');
+    if (bgBtn) {
+      _hoursUI.billing = bgBtn.dataset.hoursBg;
+      renderScheduleHours();
+    }
+  };
+}
+
 function _wireNotes(el, project) {
   const data = state.projectNotes[project];
   const findSession = id => data.sessions.find(s => s.id === id);

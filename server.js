@@ -29,6 +29,10 @@ const bcrypt = require('bcryptjs');
 const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
+const ops = require('./ops'); // backups, health/status, crash logging
+const agent = require('./agent'); // local-Ollama read-only assistant
+let hoursApi;
+try { hoursApi = require('./hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')) }; }
 // emailService is optional — when nodemailer isn't installed or SMTP_HOST is
 // empty, it returns a no-op stub so the comment POST handler doesn't crash.
 let emailSvc;
@@ -51,13 +55,6 @@ const io = new SocketIO(server, { cors: { origin: '*' } });
 // future "who's editing" pills.
 const _presence = new Map();
 io.on('connection', (socket) => {
-  // Tell the client which build is running. realtime-ui.js exposes window._sdcSocket;
-  // app-local.js listens for this event and reloads if the SHA changed since page load.
-  try {
-    const sha = fs.readFileSync(path.join(__dirname, '.update-sha'), 'utf8').trim();
-    socket.emit('build:id', sha);
-  } catch (_) {}
-
   socket.on('presence:join', ({ project, user }) => {
     if (!project || !user) return;
     if (!_presence.has(project)) _presence.set(project, new Map());
@@ -80,7 +77,9 @@ io.on('connection', (socket) => {
 });
 
 // ── Gzip all responses (cuts JSON payload ~70%) ────────────────────────────
-app.use(compression());
+// Exclude SSE endpoints — compression buffers chunks waiting for a flush size,
+// which silently kills server-sent events (text deltas never reach the client).
+app.use(compression({ filter: (req, res) => /\/(ask-stream|sse)\b/.test(req.path) ? false : compression.filter(req, res) }));
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -108,29 +107,6 @@ app.get('/auth-ui.js', (req, res) => {
   const content = fs.readFileSync(src, 'utf8').replace(/minlength="6"/g, 'minlength="1"');
   res.type('application/javascript').send(content);
 });
-// Serve index.html with app-local.js injected so our local additions (conflict
-// detection, auto-reload on Dan update, etc.) always load even after Dan
-// overwrites index.html. server.js is never overwritten by the auto-updater.
-app.get('/', (req, res) => {
-  const src = fs.existsSync(path.join(__dirname, 'public', 'index.html'))
-    ? path.join(__dirname, 'public', 'index.html')
-    : path.join(__dirname, 'custom-public', 'index.html');
-  let html = fs.readFileSync(src, 'utf8');
-  if (!html.includes('app-local.js')) {
-    html = html.replace('</body>', '  <script src="/app-local.js"></script>\n</body>');
-  }
-  res.set('Cache-Control', 'no-store').type('text/html').send(html);
-});
-
-// Build ID endpoint — returns the current .update-sha so clients can detect
-// when the server has been updated and auto-reload to pick up Dan's latest.
-app.get('/api/build-id', (req, res) => {
-  try {
-    const sha = fs.readFileSync(path.join(__dirname, '.update-sha'), 'utf8').trim();
-    res.json({ sha });
-  } catch (_) { res.json({ sha: 'unknown' }); }
-});
-
 // public/ is CANONICAL (auto-updater writes the latest frontend here) and is
 // served FIRST so it always wins. custom-public/ is served only as a fallback
 // for files that have no public/ twin (e.g. app-local.js) — a stale copy in
@@ -142,16 +118,44 @@ app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, last
 // requireAuth middleware so they don't need a token. /api/auth/me is also
 // gated by requireAuth itself so callers with expired/missing tokens get 401.
 // ──────────────────────────────────────────────────────────────────────────
+// ── Login rate limiter (in-memory) ───────────────────────────────────────────
+// Tracks failed attempts per email. After 10 failures within 15 minutes the
+// account is temporarily locked from login. Resets on a successful login.
+// Keys expire automatically (no memory leak) — each entry stores { count, until }.
+const _loginAttempts = new Map();
+const LOGIN_MAX_ATTEMPTS = 10;
+const LOGIN_WINDOW_MS    = 15 * 60 * 1000; // 15 min
+function _loginBlocked(email) {
+  const rec = _loginAttempts.get(email);
+  if (!rec) return false;
+  if (Date.now() > rec.until) { _loginAttempts.delete(email); return false; }
+  return rec.count >= LOGIN_MAX_ATTEMPTS;
+}
+function _loginFail(email) {
+  const rec = _loginAttempts.get(email) || { count: 0, until: Date.now() + LOGIN_WINDOW_MS };
+  rec.count++;
+  rec.until = Date.now() + LOGIN_WINDOW_MS; // reset window on each failure
+  _loginAttempts.set(email, rec);
+}
+function _loginOk(email) { _loginAttempts.delete(email); }
+
 app.post('/api/auth/login', async (req, res) => {
-  const email    = (req.body.email    || '').toString().trim().toLowerCase();
-  const password = (req.body.password || '').toString();
+  const email    = (req.body.email    || '').toString().trim().toLowerCase().slice(0, 254);
+  const password = (req.body.password || '').toString().slice(0, 1024);
   if (!email || !password) return res.status(400).json({ error: 'email and password required' });
-  const [rows] = await pool.query('SELECT * FROM users WHERE email = ? AND active = 1', [email]);
+  if (_loginBlocked(email)) {
+    return res.status(429).json({ error: 'Too many failed attempts. Wait 15 minutes and try again.', code: 'RATE_LIMITED' });
+  }
+  const [rows] = await pool.query('SELECT * FROM users WHERE LOWER(TRIM(email)) = ?', [email]);
   const user = rows[0] || null;
-  if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
-  if (!bcrypt.compareSync(password, user.password_hash)) {
+  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    _loginFail(email);
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
+  if (!user.active) {
+    return res.status(403).json({ error: 'This account is disabled. Ask an admin to re-enable it (Setup → Users).', code: 'ACCOUNT_DISABLED' });
+  }
+  _loginOk(email);
   await pool.query('UPDATE users SET last_login = ? WHERE id = ?', [new Date().toISOString().slice(0, 19).replace('T', ' '), user.id]);
   const token = signToken(user);
   res.json({
@@ -171,41 +175,37 @@ app.put('/api/auth/password', requireAuth, async (req, res) => {
   if (!current_password || !new_password)
     return res.status(400).json({ error: 'current_password and new_password are required' });
   if (String(new_password).length < 1)
-    return res.status(400).json({ error: 'new password cannot be empty' });
+    return res.status(400).json({ error: 'New password cannot be empty.' });
   const [urows] = await pool.query('SELECT * FROM users WHERE id = ?', [req.authUser.id]);
   const user = urows[0] || null;
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (!bcrypt.compareSync(current_password, user.password_hash))
+  if (!(await bcrypt.compare(current_password, user.password_hash)))
     return res.status(401).json({ error: 'Current password is incorrect' });
-  const hash = bcrypt.hashSync(String(new_password), 12);
+  const hash = await bcrypt.hash(String(new_password), 12);
   await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, user.id]);
-  sync('task_comments');
   res.json({ ok: true, message: 'Password updated successfully' });
 });
 
 app.post('/api/auth/register', async (req, res) => {
-  const email    = (req.body.email    || '').toString().trim().toLowerCase();
-  const name     = (req.body.name     || '').toString().trim();
-  const password = (req.body.password || '').toString();
+  const email    = (req.body.email    || '').toString().trim().toLowerCase().slice(0, 254);
+  const name     = (req.body.name     || '').toString().trim().slice(0, 100);
+  const password = (req.body.password || '').toString().slice(0, 1024);
+  const avatar_color = (req.body.avatar_color || _randomAvatarColor()).toString().slice(0, 20);
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
-  if (password.length < 1)           return res.status(400).json({ error: 'password is required' });
+  if (password.length < 1)           return res.status(400).json({ error: 'Password is required.' });
   try {
-    const hash = bcrypt.hashSync(password, 12);
+    const hash = await bcrypt.hash(password, 12);
     const [r] = await pool.query(
-      `INSERT INTO users (email, name, password_hash, role) VALUES (?, ?, ?, 'editor')`,
-      [email, name, hash]
+      `INSERT INTO users (email, name, password_hash, role, avatar_color) VALUES (?, ?, ?, 'editor', ?)`,
+      [email, name, hash, avatar_color]
     );
     const [urows] = await pool.query('SELECT * FROM users WHERE id = ?', [r.insertId]);
     const user = urows[0];
     const token = signToken(user);
     io.emit('users:updated');
-    const roleNote = req.body.role && req.body.role !== 'editor'
-      ? 'Requested role ignored — all self-registered accounts start as editor. Contact an admin to change your role.'
-      : undefined;
     res.status(201).json({
       token,
       user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },
-      ...(roleNote ? { note: roleNote } : {}),
     });
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY' || String(e.message).includes('Duplicate entry') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'That email is already registered. Try signing in.' });
@@ -217,6 +217,29 @@ app.post('/api/auth/register', async (req, res) => {
 // PUBLIC_PATHS in auth.js exempts /api/auth/login + /api/auth/register +
 // /health. When AUTH_ENABLED=false the middleware is a no-op passthrough.
 app.use(requireAuth);
+
+// Active-flag check: JWT tokens can outlive a user's active=0 status (tokens
+// expire after 30 days but an admin may disable an account immediately). This
+// middleware re-checks the DB on every authenticated request so a disabled
+// account is locked out instantly, not after JWT expiry. Uses a 60-second
+// in-memory cache to avoid a DB round-trip on every single API call.
+const _activeCache = new Map(); // userId → { active, expiresAt }
+const ACTIVE_CACHE_TTL_MS = 60_000;
+app.use(async (req, res, next) => {
+  if (!req.authUser || !req.authUser.id || req.authUser.id === 0) return next();
+  const cached = _activeCache.get(req.authUser.id);
+  if (cached && Date.now() < cached.expiresAt) {
+    if (!cached.active) return res.status(403).json({ error: 'Your account has been disabled. Contact an admin.', code: 'ACCOUNT_DISABLED' });
+    return next();
+  }
+  try {
+    const [[u]] = await pool.query('SELECT active FROM users WHERE id = ?', [req.authUser.id]);
+    const active = u ? !!u.active : false;
+    _activeCache.set(req.authUser.id, { active, expiresAt: Date.now() + ACTIVE_CACHE_TTL_MS });
+    if (!active) return res.status(403).json({ error: 'Your account has been disabled. Contact an admin.', code: 'ACCOUNT_DISABLED' });
+  } catch (_) { /* DB error — fail open so a DB hiccup doesn't lock everyone out */ }
+  next();
+});
 
 const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'completed_on', 'machine'];
 
@@ -596,6 +619,10 @@ app.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
     if (np !== r.predecessors) await pool.query('UPDATE project_financials SET predecessors = ? WHERE id = ?', [np || null, r.id]);
   }
   await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
+  // The live DB has no FK cascade, so clean up the task's comments here or they
+  // orphan (point at a gone task_id). History is intentionally kept — it's the
+  // audit trail, and the delete itself is logged just below.
+  await pool.query('DELETE FROM task_comments WHERE task_id = ?', [id]);
   if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
   if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee);
   await cascadeSchedule();
@@ -693,6 +720,350 @@ app.post('/api/team/reorder', requireRole('editor'), async (req, res) => {
   }
   conn.release();
   res.json({ ok: true });
+});
+
+// ── Shop Parts (Parts in Shop) — PM-facing list of parts at the SDC shop ─────
+// NOTE: `rank` is a reserved word in MySQL 8 — backtick every dynamic column.
+const SHOP_PART_FIELDS = ['rank', 'job', 'qty', 'part_no', 'description', 'shop_release', 'new_mod', 'location', 'out_for_finishing', 'priority', 'comments', 'engineer', 'pm', 'added_to_bom', 'part_complete', 'sort_order'];
+const _shopBool = (f) => f === 'added_to_bom' || f === 'part_complete';
+const _bt = (c) => `\`${c}\``; // backtick a column name
+
+app.get('/api/shop-parts', async (req, res) => {
+  const [rows] = await pool.query('SELECT * FROM shop_parts ORDER BY sort_order, `rank`, id');
+  res.json(rows);
+});
+
+app.post('/api/shop-parts', requireRole('editor'), async (req, res) => {
+  const b = req.body || {};
+  const cols = [], vals = [];
+  for (const f of SHOP_PART_FIELDS) {
+    if (f in b) { cols.push(f); vals.push(_shopBool(f) ? (b[f] ? 1 : 0) : b[f]); }
+  }
+  if (!cols.includes('sort_order')) {
+    const [[m]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM shop_parts');
+    cols.push('sort_order'); vals.push(m.m + 1);
+  }
+  const [result] = await pool.query(`INSERT INTO shop_parts (${cols.map(_bt).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, vals);
+  const [[row]] = await pool.query('SELECT * FROM shop_parts WHERE id = ?', [result.insertId]);
+  res.json(row);
+  io.emit('shop_parts:updated');
+});
+
+app.put('/api/shop-parts/:id', requireRole('editor'), async (req, res) => {
+  const id = Number(req.params.id);
+  const [[existing]] = await pool.query('SELECT * FROM shop_parts WHERE id = ?', [id]);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const updates = {};
+  for (const f of SHOP_PART_FIELDS) {
+    if (f in req.body) updates[f] = _shopBool(f) ? (req.body[f] ? 1 : 0) : req.body[f];
+  }
+  if (Object.keys(updates).length === 0) return res.json(existing);
+  // Stamp / clear the completion timestamp when part_complete flips.
+  if ('part_complete' in updates) {
+    if (updates.part_complete && !existing.part_complete) updates.completed_on = new Date().toISOString();
+    else if (!updates.part_complete) updates.completed_on = null;
+  }
+  const setClause = Object.keys(updates).map(k => `${_bt(k)} = ?`).join(', ');
+  await pool.query(`UPDATE shop_parts SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
+  const [[row]] = await pool.query('SELECT * FROM shop_parts WHERE id = ?', [id]);
+  res.json(row);
+  io.emit('shop_parts:updated');
+});
+
+app.delete('/api/shop-parts/:id', requireRole('editor'), async (req, res) => {
+  await pool.query('DELETE FROM shop_parts WHERE id = ?', [Number(req.params.id)]);
+  res.json({ ok: true });
+  io.emit('shop_parts:updated');
+});
+
+app.post('/api/shop-parts/reorder', requireRole('editor'), async (req, res) => {
+  const { order } = req.body;
+  if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
+  const conn = await pool.getConnection();
+  await conn.beginTransaction();
+  try {
+    for (let idx = 0; idx < order.length; idx++) {
+      await conn.query('UPDATE shop_parts SET sort_order = ? WHERE id = ?', [idx, order[idx]]);
+    }
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback(); conn.release(); throw err;
+  }
+  conn.release();
+  res.json({ ok: true });
+});
+
+// ── Vendor POs (Vendor PO Track) — POs sent to outside vendors ──────────────
+const VPO_FIELDS = ['priority', 'po', 'job', 'vendor', 'po_date', 'lead_time', 'eta', 'ship_date', 'delivery_date', 'tracking', 'po_price', 'pm', 'comments', 'partial', 'complete', 'sort_order'];
+const _vpoBool = (f) => f === 'partial' || f === 'complete';
+
+app.get('/api/vendor-pos', async (req, res) => {
+  const [rows] = await pool.query('SELECT * FROM vendor_pos ORDER BY sort_order, priority, id');
+  res.json(rows);
+});
+
+app.post('/api/vendor-pos', requireRole('editor'), async (req, res) => {
+  const b = req.body || {};
+  const cols = [], vals = [];
+  for (const f of VPO_FIELDS) { if (f in b) { cols.push(f); vals.push(_vpoBool(f) ? (b[f] ? 1 : 0) : b[f]); } }
+  if (!cols.includes('sort_order')) { const [[m]] = await pool.query('SELECT COALESCE(MAX(sort_order),0) AS m FROM vendor_pos'); cols.push('sort_order'); vals.push(m.m + 1); }
+  const [result] = await pool.query(`INSERT INTO vendor_pos (${cols.map(_bt).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, vals);
+  const [[row]] = await pool.query('SELECT * FROM vendor_pos WHERE id = ?', [result.insertId]);
+  res.json(row);
+  io.emit('vendor_pos:updated');
+});
+
+app.put('/api/vendor-pos/:id', requireRole('editor'), async (req, res) => {
+  const id = Number(req.params.id);
+  const [[existing]] = await pool.query('SELECT * FROM vendor_pos WHERE id = ?', [id]);
+  if (!existing) return res.status(404).json({ error: 'not found' });
+  const updates = {};
+  for (const f of VPO_FIELDS) { if (f in req.body) updates[f] = _vpoBool(f) ? (req.body[f] ? 1 : 0) : req.body[f]; }
+  if (Object.keys(updates).length === 0) return res.json(existing);
+  if ('complete' in updates) {
+    if (updates.complete && !existing.complete) updates.completed_on = new Date().toISOString();
+    else if (!updates.complete) updates.completed_on = null;
+  }
+  const setClause = Object.keys(updates).map(k => `${_bt(k)} = ?`).join(', ');
+  await pool.query(`UPDATE vendor_pos SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
+  const [[row]] = await pool.query('SELECT * FROM vendor_pos WHERE id = ?', [id]);
+  res.json(row);
+  io.emit('vendor_pos:updated');
+});
+
+app.delete('/api/vendor-pos/:id', requireRole('editor'), async (req, res) => {
+  await pool.query('DELETE FROM vendor_pos WHERE id = ?', [Number(req.params.id)]);
+  res.json({ ok: true });
+  io.emit('vendor_pos:updated');
+});
+
+// ── Total ETO bridge (read-only ERP integration, optional) ───────────────────
+// etoDb.js connects to the Total ETO SQL Server when ETO_* env vars are set.
+// Join key: projects.job_number === ETO ProjectID.
+const etoDb = require('./etoDb');
+
+app.get('/api/eto/status', async (_req, res) => {
+  if (!etoDb.CONFIGURED) return res.json({ configured: false, connected: false });
+  try {
+    await etoDb.ping();
+    res.json({ configured: true, connected: true });
+  } catch (e) {
+    res.json({ configured: true, connected: false, error: e.message });
+  }
+});
+
+// Validate a job number against ETO — returns the official project name.
+app.get('/api/eto/project/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  try {
+    const info = await etoDb.getProjectInfo(job);
+    if (!info) return res.status(404).json({ error: `No ETO project ${job}` });
+    res.json(info);
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Est-vs-actual hours / labor / materials / margin from ETO costing views.
+app.get('/api/eto/costing/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  try {
+    const costing = await etoDb.getProjectCosting(job);
+    if (!costing) return res.status(404).json({ error: `No ETO costing for project ${job}` });
+    res.json(costing);
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Procurement readiness — the full BOM walk per spec with received / ordered /
+// no-PO rollups. Heavy on the ERP (correlated subqueries per part), so results
+// are cached in memory for 5 minutes; ?refresh=1 busts the cache.
+const _readinessCache = new Map(); // job → { at, data }
+app.get('/api/eto/readiness/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _readinessCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  try {
+    const data = await etoDb.getReadiness(job);
+    if (!data) return res.status(404).json({ error: `No ETO specs found for job ${job}` });
+    _readinessCache.set(job, { at: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error('[eto] readiness failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Vendor Status for one job — POs grouped by supplier with received progress
+// (Build Readiness "Vendor Status" view). Cached 5 min; ?refresh=1 busts it.
+const _vendorStatusCache = new Map();
+app.get('/api/eto/vendors/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _vendorStatusCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...cached.data, cached: true });
+  }
+  try {
+    const data = await etoDb.getVendorStatus(job);
+    _vendorStatusCache.set(job, { at: Date.now(), data });
+    res.json(data);
+  } catch (e) {
+    console.error('[eto] vendor status failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Part-cost financial summary for one job (estimated / purchased / received /
+// paid / left-to-pay / ETC). Mirrors ETO's "Part Cost" report. Cached 5 min.
+const _partCostCache = new Map();
+// Merge a PM-entered materials estimate (job_estimates) onto the ETO base cost.
+// When set, it replaces `estimated` and recomputes the derived figures. Applied
+// fresh per request (cheap lookup) so the ETO cache stays pure.
+async function applyEstimateOverride(base, job) {
+  const out = { ...base, estimateSource: 'eto', etoEstimate: base.estimated };
+  try {
+    const [[ovr]] = await pool.query('SELECT materials_estimate FROM job_estimates WHERE job = ?', [String(job)]);
+    if (ovr && ovr.materials_estimate != null) {
+      const est = Number(ovr.materials_estimate);
+      out.estimated = est;
+      out.estimateSource = 'user';
+      out.etc = Math.max(0, est - out.purchased);
+      out.projection = out.purchased + out.etc;
+      out.pctOfEstimate = est ? Math.round((out.purchased / est) * 100) : null;
+    }
+  } catch (_) { /* table may not exist yet on a fresh DB — fall back to ETO */ }
+  return out;
+}
+
+app.get('/api/eto/partcost/:job', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const cached = _partCostCache.get(job);
+  if (cached && !req.query.refresh && Date.now() - cached.at < 5 * 60 * 1000) {
+    return res.json({ ...(await applyEstimateOverride(cached.data, job)), cached: true });
+  }
+  try {
+    const data = await etoDb.getPartCost(job);
+    _partCostCache.set(job, { at: Date.now(), data });
+    res.json(await applyEstimateOverride(data, job));
+  } catch (e) {
+    console.error('[eto] part cost failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Set / clear the PM materials-estimate override for a job. Body { estimate }:
+// a non-negative number to set, or null/'' to revert to the ETO estimate.
+app.put('/api/eto/partcost/:job/estimate', requireRole('editor'), async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  if (!Number.isInteger(job)) return res.status(400).json({ error: 'job must be a number' });
+  const raw = req.body ? req.body.estimate : undefined;
+  if (raw === null || raw === '' || raw === undefined) {
+    await pool.query('DELETE FROM job_estimates WHERE job = ?', [String(job)]);
+    return res.json({ ok: true, cleared: true });
+  }
+  const n = Number(raw);
+  if (!isFinite(n) || n < 0) return res.status(400).json({ error: 'estimate must be a non-negative number' });
+  await pool.query(
+    `INSERT INTO job_estimates (job, materials_estimate, updated_by) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE materials_estimate = VALUES(materials_estimate), updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP`,
+    [String(job), n, (req.authUser && req.authUser.name) || req.user || null]);
+  res.json({ ok: true, estimate: n });
+});
+
+// ── Assistant (local Ollama, read-only) ──────────────────────────────────────
+app.get('/api/agent/status', async (_req, res) => {
+  try { res.json(await agent.status()); }
+  catch (e) { res.status(503).json({ reachable: false, error: e.message }); }
+});
+app.post('/api/agent/ask', requireRole('viewer'), async (req, res) => {
+  const question = (req.body && req.body.question || '').toString();
+  const context = req.body && req.body.context ? String(req.body.context) : '';
+  const history = (req.body && Array.isArray(req.body.history)) ? req.body.history : [];
+  if (!question.trim()) return res.status(400).json({ error: 'question required' });
+  try { res.json(await agent.ask({ pool, etoDb, question, context, history })); }
+  catch (e) { console.error('[agent] ask failed:', e.message); res.status(503).json({ error: e.message }); }
+});
+
+
+// Streaming variant — Server-Sent Events. Forwards text deltas + tool events
+// so the UI renders the answer as it's generated. Same read-only guarantees.
+app.post('/api/agent/ask-stream', requireRole('viewer'), async (req, res) => {
+  const question = (req.body && req.body.question || '').toString();
+  const context = req.body && req.body.context ? String(req.body.context) : '';
+  const history = (req.body && Array.isArray(req.body.history)) ? req.body.history : [];
+  if (!question.trim()) return res.status(400).json({ error: 'question required' });
+  // Write directly to the raw socket — Express's res.write goes through several
+  // middleware layers (compression, etag, etc.) that buffer on Windows/Node 25
+  // and silently break SSE. Raw socket writes flush immediately.
+  const sock = res.socket || (req.socket || (req.connection));
+  sock.setNoDelay && sock.setNoDelay(true);
+  sock.write(
+    'HTTP/1.1 200 OK\r\n' +
+    'Content-Type: text/event-stream\r\n' +
+    'Cache-Control: no-cache, no-transform\r\n' +
+    'X-Accel-Buffering: no\r\n' +
+    'Connection: keep-alive\r\n' +
+    '\r\n'
+  );
+  const send = (obj) => { try { sock.write(`data: ${JSON.stringify(obj)}\n\n`); } catch (_) {} };
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+  try {
+    await agent.askStream({ pool, etoDb, question, context, history, onEvent: (ev) => { if (!aborted) send(ev); } });
+  } catch (e) {
+    send({ type: 'error', error: e.message });
+  } finally {
+    try { sock.write('data: {"type":"close"}\n\n'); } catch (_) {}
+    try { sock.end(); } catch (_) {}
+  }
+});
+
+// Pull PO data from ETO into vendor_pos. Default scope covers linked projects;
+// body {scope:'all'} also pulls every open PO across the whole ERP.
+app.post('/api/eto/sync-vendor-pos', requireRole('editor'), async (req, res) => {
+  const scope = req.body && req.body.scope === 'all' ? 'all' : 'linked';
+  try {
+    const result = await etoDb.syncVendorPOs(pool, scope);
+    ops.recordEtoSync(result);
+    res.json({ ok: true, ...result });
+    if (result.created || result.updated) io.emit('vendor_pos:updated');
+  } catch (e) {
+    console.error('[eto] vendor PO sync failed:', e.message);
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// Live line items for one PO — the expandable parts view in the tracker.
+app.get('/api/eto/po/:job/:po/lines', async (req, res) => {
+  const job = parseInt(req.params.job, 10);
+  const po = parseInt(req.params.po, 10);
+  if (!Number.isInteger(job) || !Number.isInteger(po)) return res.status(400).json({ error: 'job and po must be numbers' });
+  try {
+    res.json(await etoDb.getPoLines(job, po));
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+// ── Job Hours (Power BI semantic model) ─────────────────────────────────────
+app.get('/api/hours/status', async (_req, res) => {
+  if (!hoursApi.ENABLED) return res.json({ enabled: false });
+  const check = await hoursApi.checkStatus().catch(e => ({ ok: false, error: e.message }));
+  res.json({ enabled: true, ...check });
+});
+
+app.get('/api/hours/:job', async (req, res) => {
+  if (!hoursApi.ENABLED) return res.status(503).json({ error: 'Job Hours not configured (set PBI_USER + PBI_PASS)' });
+  try { res.json(await hoursApi.getJobHours(req.params.job)); }
+  catch (e) { res.status(503).json({ error: e.message }); }
 });
 
 app.post('/api/tasks/reorder', requireRole('editor'), async (req, res) => {
@@ -1168,10 +1539,6 @@ function parseEstimateWorkbook(buf) {
     const dataRow = rows[4] || [];
     const colByLabel = (labelRe) => header.findIndex(c => labelRe.test(String(c || '').trim()));
     const val = (col) => col < 0 ? 0 : (Number(dataRow[col]) || 0);
-    // Map each named header column. Multiple "ME & CE" / "MB & EB"
-    // columns appear (Testing, Teardown, Install). Walk them in order.
-    const allMeCe = header.map((c, i) => (/^ME & CE$/i.test(String(c || '').trim()) ? i : -1)).filter(i => i >= 0);
-    const allMbEb = header.map((c, i) => (/^MB & EB$/i.test(String(c || '').trim()) ? i : -1)).filter(i => i >= 0);
     // Section 10 — design + build labor
     section10 = {
       parts:       0,
@@ -1186,29 +1553,29 @@ function parseEstimateWorkbook(buf) {
       mech_build:  val(colByLabel(/^Mechanical Build$/i)),
       elec_build:  val(colByLabel(/^Electrical Build$/i)),
     };
-    // Section 40 — Testing engineering (first ME & CE) + Testing shop
-    // (first MB & EB). Dumps the lump into mech_eng / mech_build —
-    // the variance modal sums those keys for the test_debug bucket so
-    // the totals end up correct without needing per-discipline breakdown.
-    section40 = {
+    // Section 40 (Testing) + Section 50 (Teardown & Install): engineering /
+    // shop lumps. Classify each "ME & CE" / "MB & EB" column by the GROUP
+    // banner in row 2 (forward-filled across merged header cells): Testing →
+    // section 40, Teardown/Install → section 50. WARRANTY — and PM / MFG /
+    // anything else — is intentionally ignored; it isn't scheduled. Eng lump
+    // goes to mech_eng, shop lump to mech_build (the buckets downstream expect).
+    const groupRow = rows[1] || [];
+    const groupAt = [];
+    { let g = ''; for (let i = 0; i < header.length; i++) { const raw = String(groupRow[i] == null ? '' : groupRow[i]).trim(); if (raw) g = raw; groupAt[i] = g; } }
+    const blankSection = () => ({
       parts: 0, mech_eng: 0, ce_design: 0, ce_software: 0, ce_database: 0,
-      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0,
-      mech_build: 0, elec_build: 0,
-    };
-    if (allMeCe[0] >= 0) section40.mech_eng   = val(allMeCe[0]);
-    if (allMbEb[0] >= 0) section40.mech_build = val(allMbEb[0]);
-    // Section 50 — Teardown engineering + shop (2nd ME&CE + MB&EB),
-    // Install engineering + shop (3rd ME&CE + MB&EB). Sum eng-side
-    // into mech_eng, shop-side into mech_build. Same lump approach.
-    section50 = {
-      parts: 0, mech_eng: 0, ce_design: 0, ce_software: 0, ce_database: 0,
-      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0,
-      mech_build: 0, elec_build: 0,
-    };
-    if (allMeCe[1] >= 0) section50.mech_eng   += val(allMeCe[1]); // teardown eng
-    if (allMbEb[1] >= 0) section50.mech_build += val(allMbEb[1]); // teardown shop
-    if (allMeCe[2] >= 0) section50.mech_eng   += val(allMeCe[2]); // install eng
-    if (allMbEb[2] >= 0) section50.mech_build += val(allMbEb[2]); // install shop
+      gen_hmi: 0, gen_robot: 0, gen_vision: 0, gen_device: 0, mech_build: 0, elec_build: 0,
+    });
+    section40 = blankSection();
+    section50 = blankSection();
+    header.forEach((c, i) => {
+      const label = String(c == null ? '' : c).trim();
+      const g = groupAt[i] || '';
+      const tgt = /testing/i.test(g) ? section40 : (/teardown|install/i.test(g) ? section50 : null);
+      if (!tgt) return; // Warranty / Complete Design and Build / etc. → ignored
+      if (/^ME & CE$/i.test(label))      tgt.mech_eng   += val(i);
+      else if (/^MB & EB$/i.test(label)) tgt.mech_build += val(i);
+    });
     // Parts cost — last numeric column with a big value (the "Parts Cost" header
     // sits to the right of the labor columns). Pick the FIRST data-row value
     // that's > 1000 past column 16.
@@ -1334,6 +1701,50 @@ app.post('/api/project/:project/quote', requireRole('editor'), async (req, res) 
 app.delete('/api/project/:project/quote', requireRole('editor'), async (req, res) => {
   await pool.query('DELETE FROM settings WHERE `key` = ?', [`project_quote:${req.params.project}`]);
   res.json({ ok: true });
+});
+
+// Persist the actual estimate .xlsx (base64) WITH the project, separate from the
+// parsed quote numbers, so it survives, can be re-downloaded to verify, and can
+// be re-parsed on demand ("Update numbers from estimate"). Stored in its own
+// settings key so the (frequently-loaded) quote payload stays small.
+app.get('/api/project/:project/estimate-file', async (req, res) => {
+  const key = `project_estimate:${req.params.project}`;
+  const [[row]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [key]);
+  if (!row) return res.json(null);
+  try { res.json(JSON.parse(row.value)); } catch { res.json(null); }
+});
+app.post('/api/project/:project/estimate-file', requireRole('editor'), async (req, res) => {
+  const key = `project_estimate:${req.params.project}`;
+  const value = JSON.stringify({
+    name: (req.body && req.body.name) || 'estimate.xlsx',
+    data: (req.body && req.body.data) || '',
+    uploaded_at: new Date().toISOString(),
+  });
+  await pool.query(
+    'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+    [key, value]
+  );
+  res.json({ ok: true });
+});
+
+// ── Project notes — meeting "sessions" (collapsible, dated) + starred key info.
+// Stored as one JSON blob per project: { sessions: [{ id, title, date,
+// collapsed, items: [{ id, text, starred }] }] }.
+app.get('/api/project/:project/notes', async (req, res) => {
+  const key = `project_notes:${req.params.project}`;
+  const [[row]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [key]);
+  if (!row) return res.json(null);
+  try { res.json(JSON.parse(row.value)); } catch { res.json(null); }
+});
+app.post('/api/project/:project/notes', requireRole('editor'), async (req, res) => {
+  const key = `project_notes:${req.params.project}`;
+  const value = JSON.stringify(req.body || { sessions: [] });
+  await pool.query(
+    'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+    [key, value]
+  );
+  res.json({ ok: true });
+  io.emit('notes:updated', { project: req.params.project });
 });
 
 app.post('/api/estimate/create', requireRole('admin'), async (req, res) => {
@@ -2283,7 +2694,7 @@ app.post('/api/tasks/:id/comments', requireRole('viewer'), async (req, res) => {
       const to = userRow ? userRow.email : null;
       if (to && emailSvc && emailSvc.sendMentionEmail) {
         emailSvc.sendMentionEmail({
-          db, to, taskId, taskName: task.name, project: task.project,
+          pool, to, taskId, taskName: task.name, project: task.project,
           commentBody: body, authorName,
         }).catch(() => {});
       }
@@ -2399,134 +2810,6 @@ app.post('/api/financials/seed', requireRole('editor'), async (req, res) => {
   res.json({ ok: true, seeded: defaults.length });
 });
 
-// ── Shop Parts (Parts in Shop) — PM-facing list of parts at the SDC shop ─────
-const SHOP_PART_FIELDS = ['rank', 'job', 'qty', 'part_no', 'description', 'shop_release', 'new_mod', 'location', 'out_for_finishing', 'priority', 'comments', 'engineer', 'pm', 'added_to_bom', 'part_complete', 'sort_order'];
-const _shopBool = (f) => f === 'added_to_bom' || f === 'part_complete';
-
-app.get('/api/shop-parts', async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM shop_parts ORDER BY sort_order, `rank`, id');
-  res.json(rows);
-});
-
-app.post('/api/shop-parts', requireRole('editor'), async (req, res) => {
-  const b = req.body || {};
-  const cols = [], vals = [];
-  for (const f of SHOP_PART_FIELDS) {
-    if (f in b) { cols.push(f); vals.push(_shopBool(f) ? (b[f] ? 1 : 0) : (b[f] === undefined ? null : b[f])); }
-  }
-  if (!cols.includes('sort_order')) {
-    const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM shop_parts');
-    cols.push('sort_order'); vals.push(maxRow.m + 1);
-  }
-  const [result] = await pool.query(
-    `INSERT INTO shop_parts (${cols.map(c => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
-    vals
-  );
-  const [[row]] = await pool.query('SELECT * FROM shop_parts WHERE id = ?', [result.insertId]);
-  res.json(row);
-  io.emit('shop_parts:updated');
-});
-
-app.put('/api/shop-parts/:id', requireRole('editor'), async (req, res) => {
-  const id = Number(req.params.id);
-  const [[existing]] = await pool.query('SELECT * FROM shop_parts WHERE id = ?', [id]);
-  if (!existing) return res.status(404).json({ error: 'not found' });
-  const updates = {};
-  for (const f of SHOP_PART_FIELDS) {
-    if (f in req.body) updates[f] = _shopBool(f) ? (req.body[f] ? 1 : 0) : (req.body[f] === undefined ? null : req.body[f]);
-  }
-  if (Object.keys(updates).length === 0) return res.json(existing);
-  // Stamp / clear the completion timestamp when part_complete flips.
-  if ('part_complete' in updates) {
-    if (updates.part_complete && !existing.part_complete) updates.completed_on = new Date().toISOString();
-    else if (!updates.part_complete) updates.completed_on = null;
-  }
-  const setClause = Object.keys(updates).map(k => `\`${k}\` = ?`).join(', ');
-  await pool.query(`UPDATE shop_parts SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
-  const [[row]] = await pool.query('SELECT * FROM shop_parts WHERE id = ?', [id]);
-  res.json(row);
-  io.emit('shop_parts:updated');
-});
-
-app.delete('/api/shop-parts/:id', requireRole('editor'), async (req, res) => {
-  await pool.query('DELETE FROM shop_parts WHERE id = ?', [Number(req.params.id)]);
-  res.json({ ok: true });
-  io.emit('shop_parts:updated');
-});
-
-app.post('/api/shop-parts/reorder', requireRole('editor'), async (req, res) => {
-  const { order } = req.body;
-  if (!Array.isArray(order)) return res.status(400).json({ error: 'order must be array of ids' });
-  const conn = await pool.getConnection();
-  await conn.beginTransaction();
-  try {
-    for (let idx = 0; idx < order.length; idx++) {
-      await conn.query('UPDATE shop_parts SET sort_order = ? WHERE id = ?', [idx, order[idx]]);
-    }
-    await conn.commit();
-  } catch (err) {
-    await conn.rollback();
-    conn.release();
-    throw err;
-  }
-  conn.release();
-  res.json({ ok: true });
-});
-
-// ── Vendor POs (Vendor PO Track) — POs sent to outside vendors ──────────────
-const VPO_FIELDS = ['priority', 'po', 'job', 'vendor', 'po_date', 'lead_time', 'eta', 'ship_date', 'delivery_date', 'tracking', 'po_price', 'pm', 'comments', 'partial', 'complete', 'sort_order'];
-const _vpoBool = (f) => f === 'partial' || f === 'complete';
-
-app.get('/api/vendor-pos', async (req, res) => {
-  const [rows] = await pool.query('SELECT * FROM vendor_pos ORDER BY sort_order, priority, id');
-  res.json(rows);
-});
-
-app.post('/api/vendor-pos', requireRole('editor'), async (req, res) => {
-  const b = req.body || {};
-  const cols = [], vals = [];
-  for (const f of VPO_FIELDS) {
-    if (f in b) { cols.push(f); vals.push(_vpoBool(f) ? (b[f] ? 1 : 0) : (b[f] === undefined ? null : b[f])); }
-  }
-  if (!cols.includes('sort_order')) {
-    const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM vendor_pos');
-    cols.push('sort_order'); vals.push(maxRow.m + 1);
-  }
-  const [result] = await pool.query(
-    `INSERT INTO vendor_pos (${cols.map(c => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
-    vals
-  );
-  const [[row]] = await pool.query('SELECT * FROM vendor_pos WHERE id = ?', [result.insertId]);
-  res.json(row);
-  io.emit('vendor_pos:updated');
-});
-
-app.put('/api/vendor-pos/:id', requireRole('editor'), async (req, res) => {
-  const id = Number(req.params.id);
-  const [[existing]] = await pool.query('SELECT * FROM vendor_pos WHERE id = ?', [id]);
-  if (!existing) return res.status(404).json({ error: 'not found' });
-  const updates = {};
-  for (const f of VPO_FIELDS) {
-    if (f in req.body) updates[f] = _vpoBool(f) ? (req.body[f] ? 1 : 0) : (req.body[f] === undefined ? null : req.body[f]);
-  }
-  if (Object.keys(updates).length === 0) return res.json(existing);
-  if ('complete' in updates) {
-    if (updates.complete && !existing.complete) updates.completed_on = new Date().toISOString();
-    else if (!updates.complete) updates.completed_on = null;
-  }
-  const setClause = Object.keys(updates).map(k => `\`${k}\` = ?`).join(', ');
-  await pool.query(`UPDATE vendor_pos SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
-  const [[row]] = await pool.query('SELECT * FROM vendor_pos WHERE id = ?', [id]);
-  res.json(row);
-  io.emit('vendor_pos:updated');
-});
-
-app.delete('/api/vendor-pos/:id', requireRole('editor'), async (req, res) => {
-  await pool.query('DELETE FROM vendor_pos WHERE id = ?', [Number(req.params.id)]);
-  res.json({ ok: true });
-  io.emit('vendor_pos:updated');
-});
-
 // ── Server-Sent Events — real-time push to all open browser tabs ──────────────
 const _sseClients = new Set();
 
@@ -2590,8 +2873,13 @@ app.put('/api/projects/:id', requireRole('editor'), async (req, res) => {
   if (Object.keys(updates).length === 0) return res.json(existing);
 
   if (updates.name && updates.name !== existing.name) {
+    // Rows are linked to a project by NAME, so a rename has to follow through
+    // every name-keyed table or they orphan. (vendor_pos/shop_parts are keyed
+    // by job number, not name, so a rename correctly leaves them alone.)
     await pool.query('UPDATE tasks SET project = ? WHERE project = ?', [updates.name, existing.name]);
     await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
+    await pool.query('UPDATE task_history SET project = ? WHERE project = ?', [updates.name, existing.name]);
+    await pool.query('UPDATE task_comments SET project = ? WHERE project = ?', [updates.name, existing.name]);
   }
 
   const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
@@ -2847,22 +3135,26 @@ app.post('/api/project/:source/promote', requireRole('editor'), async (req, res)
 // list, create, edit, and soft-delete (active=0) users without touching the
 // CLI. Authentication itself still flows through /api/auth/login.
 app.get('/api/users', requireRole('admin'), async (_req, res) => {
-  const [rows] = await pool.query('SELECT id,email,name,role,active,created_at,last_login,avatar_color FROM users ORDER BY name');
+  const [rows] = await pool.query('SELECT id,email,name,role,active,avatar_color,created_at,last_login FROM users ORDER BY name');
   res.json(rows);
 });
 
 app.post('/api/users', requireRole('admin'), async (req, res) => {
-  const { email, name, password, role = 'editor', avatar_color = '#1574c4' } = req.body || {};
+  const email        = (req.body.email        || '').toString().trim().toLowerCase().slice(0, 254);
+  const name         = (req.body.name         || '').toString().trim().slice(0, 100);
+  const password     = (req.body.password     || '').toString().slice(0, 1024);
+  const role         = (req.body.role         || 'editor');
+  const avatar_color = (req.body.avatar_color || _randomAvatarColor()).toString().slice(0, 20);
   if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
   if (!['viewer', 'editor', 'admin'].includes(role)) return res.status(400).json({ error: 'invalid role' });
-  if (String(password).length < 1) return res.status(400).json({ error: 'password is required' });
+  if (String(password).length < 1) return res.status(400).json({ error: 'Password is required.' });
   try {
     const [r] = await pool.query(
       'INSERT INTO users (email,name,password_hash,role,active,avatar_color) VALUES (?,?,?,?,1,?)',
-      [email.toLowerCase().trim(), name.trim(), bcrypt.hashSync(password, 12), role, avatar_color]
+      [email, name, await bcrypt.hash(password, 12), role, avatar_color]
     );
     io.emit('users:updated');
-    const [[newUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?', [r.insertId]);
+    const [[newUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color,created_at,last_login FROM users WHERE id=?', [r.insertId]);
     res.status(201).json(newUser);
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY' || String(e.message).includes('Duplicate entry') || String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'Email already registered.' });
@@ -2878,25 +3170,95 @@ app.put('/api/users/:id', requireRole('admin'), async (req, res) => {
   const upd = {};
   for (const k of allowed) {
     if (req.body[k] === undefined) continue;
-    upd[k] = (k === 'active') ? (req.body[k] ? 1 : 0) : req.body[k];
+    if (k === 'active') upd[k] = req.body[k] ? 1 : 0;
+    else if (k === 'email') upd[k] = String(req.body[k]).trim().toLowerCase().slice(0, 254);
+    else if (k === 'name') upd[k] = String(req.body[k]).trim().slice(0, 100);
+    else upd[k] = req.body[k];
   }
-  if (req.body.password) upd.password_hash = bcrypt.hashSync(req.body.password, 12);
+  if (req.body.password) upd.password_hash = await bcrypt.hash(String(req.body.password).slice(0, 1024), 12);
   if (!Object.keys(upd).length) return res.json(u);
   const setClause = Object.keys(upd).map(k => `${k}=?`).join(',');
   await pool.query(`UPDATE users SET ${setClause} WHERE id=?`, [...Object.values(upd), id]);
+  // Invalidate active cache so a disable/enable takes effect within the next request.
+  _activeCache.delete(id);
   io.emit('users:updated');
-  const [[updUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color FROM users WHERE id=?', [id]);
+  const [[updUser]] = await pool.query('SELECT id,email,name,role,active,avatar_color,created_at,last_login FROM users WHERE id=?', [id]);
   res.json(updUser);
 });
 
+// Hard-delete a user account. Guarded: you can't delete yourself, and you can't
+// remove the last admin (that would lock everyone out of user management).
 app.delete('/api/users/:id', requireRole('admin'), async (req, res) => {
-  await pool.query('UPDATE users SET active=0 WHERE id=?', [Number(req.params.id)]);
+  const id = Number(req.params.id);
+  const [[u]] = await pool.query('SELECT id, role FROM users WHERE id=?', [id]);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  if (req.authUser && Number(req.authUser.id) === id) {
+    return res.status(400).json({ error: "You can't delete your own account." });
+  }
+  if (u.role === 'admin') {
+    const [[{ n }]] = await pool.query("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND id<>?", [id]);
+    if (n === 0) return res.status(400).json({ error: "Can't delete the last admin account." });
+  }
+  await pool.query('DELETE FROM users WHERE id=?', [id]);
+  _activeCache.delete(id);
   io.emit('users:updated');
-  res.json({ ok: true });
+  res.json({ ok: true, deleted: id });
 });
 
+// Admin "unlock this person" — set a new password (or generate a temp one) and
+// re-activate the account in a single call. This is the forgot-password path:
+// an admin resets it here and reads the temp password to the user.
+app.post('/api/users/:id/reset-password', requireRole('admin'), async (req, res) => {
+  const id = Number(req.params.id);
+  const [[u]] = await pool.query('SELECT id,email,name FROM users WHERE id=?', [id]);
+  if (!u) return res.status(404).json({ error: 'User not found' });
+  let pw = (req.body && req.body.new_password ? String(req.body.new_password) : '').trim().slice(0, 1024);
+  let generated = false;
+  if (!pw) { pw = _genTempPassword(); generated = true; }
+  if (pw.length < 1) return res.status(400).json({ error: 'New password cannot be empty.' });
+  const hash = await bcrypt.hash(pw, 12);
+  await pool.query('UPDATE users SET password_hash=?, active=1 WHERE id=?', [hash, id]);
+  _activeCache.delete(id);
+  io.emit('users:updated');
+  // Always echo the password back (admin needs to relay it whether custom or generated).
+  res.json({ ok: true, email: u.email, name: u.name, reactivated: true, tempPassword: pw, generated });
+});
+
+// Readable temp password: 3 short words + 2 digits (no ambiguous chars).
+function _genTempPassword() {
+  const words = ['blue', 'lime', 'gear', 'bolt', 'fast', 'spark', 'steel', 'motor', 'shaft', 'cam', 'weld', 'panel'];
+  const pick = () => words[Math.floor(Math.random() * words.length)];
+  return `${pick()}-${pick()}-${pick()}-${Math.floor(10 + Math.random() * 89)}`;
+}
+
+// Distinct avatar colors for new users — avoids everyone getting the same blue.
+function _randomAvatarColor() {
+  const colors = ['#1574c4','#059669','#d97706','#7c3aed','#db2777','#0891b2','#65a30d','#dc2626','#9333ea','#0d9488'];
+  return colors[Math.floor(Math.random() * colors.length)];
+}
+
 // Health check — used by Electron shell to detect server readiness
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'scheduler' }));
+// Liveness probe (public, no auth). Light by design — pings the DB and reports
+// uptime, but no filesystem paths. Full detail is on /api/status (auth'd).
+app.get('/health', async (_req, res) => {
+  const s = await ops.getStatus(pool);
+  res.json({ ok: s.ok, service: 'scheduler', uptimeSeconds: s.uptimeSeconds, db: { ok: s.db.ok } });
+});
+
+// Full reliability snapshot for the in-app Status panel.
+app.get('/api/status', requireAuth, async (_req, res) => {
+  res.json(await ops.getStatus(pool));
+});
+
+// On-demand DB backup (admin). The nightly cron does this automatically.
+app.post('/api/backup', requireRole('admin'), async (_req, res) => {
+  try {
+    const r = await ops.runBackup();
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // Global error handler — catches unhandled promise rejections from async routes
 // (Express 4 does not auto-catch async throws without this)
@@ -2925,10 +3287,31 @@ async function startServer({ port } = {}) {
   // Wrapped in typeof check so a missing cronJobs.js doesn't crash boot.
   try {
     const cron = require('./cronJobs');
-    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc });
+    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops });
   } catch (_) { /* cronJobs.js is optional */ }
+  // Register + ETO-link any orphan task-tab schedules (e.g. "1160_…" that never
+  // got a projects row). Runs async so it never delays boot; refreshes clients
+  // if it linked anything. Optional + self-guarding.
+  try {
+    const { backfillProjects } = require('./backfillProjects');
+    backfillProjects(pool, etoDb)
+      .then(r => { if (r && (r.registered || r.linked)) { try { notifyClients('projects_changed'); } catch (_) {} } })
+      .catch(e => console.warn('[backfill] failed:', e.message));
+  } catch (_) { /* backfillProjects.js is optional */ }
   return server;
 }
+
+// Crash safety net — a stray throw/rejection anywhere shouldn't vanish silently.
+// We log a full trail (PM2 keeps the file) so post-mortem isn't guesswork. An
+// uncaughtException leaves the process in an undefined state, so we exit and let
+// PM2 restart cleanly; a lone unhandledRejection is logged but not fatal.
+process.on('uncaughtException', (err) => {
+  console.error('[scheduler] UNCAUGHT EXCEPTION — exiting for clean PM2 restart:', err && err.stack || err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[scheduler] UNHANDLED REJECTION:', reason && reason.stack || reason);
+});
 
 if (require.main === module) {
   startServer().then(_server => {

@@ -43,8 +43,13 @@
   --text: #061d39;
   --text-muted: #64748b;
   --row-hover: #eef5fb;
-  --danger: #1574C4;
-  --danger-hover: #0D47A1;
+  --success: #5a9600;           /* green — saved, under-budget, on-time */
+  --success-bg: #f0f9e8;
+  --warning: #d97706;           /* amber — caution states */
+  --warning-bg: #fffbeb;
+  --danger: #dc2626;            /* red — errors, over-budget, delete */
+  --danger-hover: #b91c1c;
+  --danger-bg: #fef2f2;
 
   /* Elevation system — consistent shadows across all floating elements */
   --shadow-xs:      0 1px 2px rgba(6,29,57,0.06);
@@ -147,9 +152,10 @@ body {
   transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 .app-sidebar-icon:hover {
-  background: rgba(255,255,255,0.10);
-  color: rgba(255,255,255,0.92);
+  background: rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.95);
 }
+.app-sidebar-icon:active { background: rgba(255,255,255,0.18); }
 .app-sidebar-icon.is-active {
   background: rgba(255,255,255,0.13);
   color: white;
@@ -226,6 +232,12 @@ body {
   font-size: var(--fs-base);
   color: var(--text-muted, #64748b);
   font-style: italic;
+  padding: 40px 32px;
+  text-align: center;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
 }
 .projects-workspace {
   border: 1px solid var(--border, #e2e8f0);
@@ -1533,12 +1545,12 @@ body.customer-view .customer-view-flatten.is-active {
   color: #5A9600;
 }
 .project-stat-chip.stat-late {
-  background: #E3F0FA;
-  color: #991b1b;
+  background: #fef2f2;
+  color: #b91c1c;
 }
 .project-stat-chip.stat-early {
-  background: #e0e7ff;
-  color: #3730a3;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 .project-stat-chip.stat-neutral {
   background: var(--surface-alt);
@@ -1589,13 +1601,13 @@ body.customer-view .customer-view-flatten.is-active {
   cursor: pointer;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  transition: color 120ms;
+  transition: color 120ms, background 120ms, box-shadow 120ms;
 }
-.seg-btn:hover { color: var(--text); }
+.seg-btn:hover { color: var(--text); background: rgba(255,255,255,0.5); }
 .seg-btn.is-active {
   background: white;
   color: var(--sdc-primary);
-  box-shadow: 0 1px 3px rgba(6,29,57,0.12);
+  box-shadow: 0 1px 3px rgba(6,29,57,0.14);
 }
 
 /* Auto-save status chip */
@@ -1611,21 +1623,21 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .save-indicator.saving {
   opacity: 1;
-  background: #D8E8F5;
-  color: #0D47A1;
-  border: 1px solid #C8DFF5;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
 }
 .save-indicator.saved {
   opacity: 1;
-  background: #F0F9E8;
+  background: #f0f9e8;
   color: #166534;
   border: 1px solid #86efac;
 }
 .save-indicator.save-error {
   opacity: 1;
-  background: #E3F0FA;
-  color: #991b1b;
-  border: 1px solid #BBDEF7;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
 }
 
 /* Toolbar toggle buttons — Flatten / By date. Outlined when off, filled blue when on. */
@@ -1645,12 +1657,14 @@ body.customer-view .customer-view-flatten.is-active {
   transition: background 120ms, color 120ms, border-color 120ms, box-shadow 120ms;
 }
 .toolbar-toggle-btn:hover { background: #eef4fa; color: var(--text); border-color: #94a3b8; }
+.toolbar-toggle-btn:active { transform: translateY(1px); }
 .toolbar-toggle-btn.is-active {
   background: var(--sdc-primary);
   color: white;
   border-color: var(--sdc-primary);
   box-shadow: 0 1px 4px rgba(21,116,196,0.28);
 }
+.toolbar-toggle-btn.is-active:hover { background: var(--sdc-primary-hover); }
 
 /* Two-button segmented pair (e.g. Critical / Only). The buttons share a border
    between them so they read as one linked control. */
@@ -2215,7 +2229,7 @@ body.customer-view .customer-view-flatten.is-active {
 .eto-stat { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px; }
 .eto-stat-label { display: block; font-size: 10.5px; font-weight: var(--fw-bold); color: #64748b; margin-bottom: 2px; }
 .eto-stat-vals { font-size: 12.5px; color: #334155; white-space: nowrap; }
-.eto-stat-act.is-over { color: #1574C4; font-weight: var(--fw-bold); }
+.eto-stat-act.is-over { color: var(--danger, #dc2626); font-weight: var(--fw-bold); }
 
 /* ── Procurement page (build readiness from Total ETO) ─────────────────── */
 .proc-empty {
@@ -2228,7 +2242,7 @@ body.customer-view .customer-view-flatten.is-active {
   font-size: 13.5px;
   text-align: center;
 }
-.proc-error { color: #0D47A1; background: #D8E8F5; border-color: #C8DFF5; }
+.proc-error { color: #b91c1c; background: #fef2f2; border-color: #fca5a5; }
 .proc-job-pick {
   padding: 7px 10px;
   border: 1px solid #cbd5e1;
@@ -3026,6 +3040,7 @@ body.customer-view .customer-view-flatten.is-active {
   box-shadow: 0 1px 2px rgba(0,0,0,0.18);
 }
 .btn-primary:hover { background: #f5d046; border-color: #f5d046; }
+.btn-primary:active, .btn-danger:active { transform: translateY(1px); box-shadow: none; }
 .btn-ghost {
   background: rgba(255,255,255,0.1);
   color: white;
@@ -3415,8 +3430,8 @@ input[type="number"] {
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
-.project-stats-popup .popup-value.stat-late    { color: #991b1b; }
-.project-stats-popup .popup-value.stat-early   { color: #3730a3; }
+.project-stats-popup .popup-value.stat-late    { color: #b91c1c; }
+.project-stats-popup .popup-value.stat-early   { color: #1d4ed8; }
 .project-stats-popup .popup-value.stat-ok      { color: #5A9600; }
 .project-stats-popup .popup-value.stat-neutral { color: var(--text-muted); font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
 /* "Quoted / Scheduled" dual-value rendering — quoted on the left in
@@ -3507,8 +3522,8 @@ input[type="number"] {
   font-weight: var(--fw-bold);
   background: var(--surface-alt, #f1f5f9);
 }
-.project-stats-popup .popup-fat-var.stat-late  { background: #E3F0FA; color: #991b1b; }
-.project-stats-popup .popup-fat-var.stat-early { background: #e0e7ff; color: #3730a3; }
+.project-stats-popup .popup-fat-var.stat-late  { background: #fef2f2; color: #b91c1c; }
+.project-stats-popup .popup-fat-var.stat-early { background: #eff6ff; color: #1d4ed8; }
 .project-stats-popup .popup-fat-var.stat-ok    { background: #F0F9E8; color: #5A9600; }
 
 /* View Options section inside the project stats popup. Three toggle rows
@@ -3857,7 +3872,7 @@ th.col-priority { padding-left: 4px; padding-right: 4px; }
    Schedule grid. The full task can't be done because earlier-priority tasks already fill
    the assignee's day. The browser tooltip on the cell explains why. */
 td[data-col="assignee"].over-allocated {
-  color: var(--danger, #1574C4);
+  color: var(--danger, #dc2626);
   font-weight: var(--fw-extrabold);
 }
 td[data-col="assignee"].over-allocated::before {
@@ -4766,6 +4781,7 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
   width: 280px;
   font-size: var(--fs-base);
   color: var(--text);
+  animation: _popup-in 0.16s cubic-bezier(0.34, 1.2, 0.64, 1);
 }
 .confirm-popup-message {
   margin-bottom: 10px;
@@ -4795,10 +4811,10 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 }
 .confirm-popup-ok:hover { filter: brightness(1.05); }
 .confirm-popup-ok.is-danger {
-  background: #1574C4;
-  border-color: #0D47A1;
+  background: var(--danger, #dc2626);
+  border-color: var(--danger, #dc2626);
 }
-.confirm-popup-ok.is-danger:hover { background: #0D47A1; }
+.confirm-popup-ok.is-danger:hover { background: var(--danger-hover, #b91c1c); border-color: var(--danger-hover, #b91c1c); }
 
 /* Arrow lag pill — small floating label on the Gantt that shows the lag
    duration on an arrow when the predecessor carries one (e.g., "+2 wks" or
@@ -4926,9 +4942,14 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 }
 
 .empty-state {
-  padding: 32px;
+  padding: 40px 32px;
   text-align: center;
   color: var(--text-muted);
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-base);
+  line-height: 1.6;
 }
 .hidden { display: none !important; }
 
@@ -5622,7 +5643,10 @@ body.customer-view .schedule-footer { display: none; }
 .person-dashboard-list .empty-state {
   text-align: center;
   color: var(--text-muted);
-  padding: 30px 10px;
+  padding: 32px 16px;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-md);
 }
 .pd-row {
   display: grid;
@@ -6624,8 +6648,13 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
 .actions-empty-state {
   text-align: center;
   color: var(--text-muted);
-  padding: 30px 12px;
-  margin: 0;
+  padding: 40px 24px;
+  margin: 16px;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-base);
+  line-height: 1.6;
 }
 .actions-row-due.is-completed { color: #15803d; font-weight: var(--fw-bold); }
 /* Filter row — chip toggles + a few selects on the right. */
@@ -7147,6 +7176,10 @@ body[data-view="setup"] .filters,
 body[data-view="setup"] #btn-add { display: none; }
 
 /* ---------- Modal ---------- */
+@keyframes _overlay-in  { from { opacity: 0; }                    to { opacity: 1; } }
+@keyframes _card-in     { from { opacity: 0; transform: scale(0.96) translateY(-6px); } to { opacity: 1; transform: none; } }
+@keyframes _popup-in    { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: none; } }
+
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -7155,6 +7188,11 @@ body[data-view="setup"] #btn-add { display: none; }
   align-items: center;
   justify-content: center;
   z-index: 100;
+  animation: _overlay-in 0.15s ease;
+}
+.modal-overlay .modal-card,
+.modal-overlay > * {
+  animation: _card-in 0.18s cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 
 /* Estimate-sheet feasibility modal — separate class set from the older .modal
@@ -7452,10 +7490,12 @@ body[data-view="setup"] #btn-add { display: none; }
    on the same .modal-card framework as the estimate-sheet modal. */
 .app-dialog-overlay {
   z-index: 200;  /* above other dialogs */
+  animation: _overlay-in 0.15s ease;
 }
 .app-dialog {
   max-width: 460px;
   width: 100%;
+  animation: _card-in 0.18s cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 .app-dialog .modal-head { padding: 14px 20px 10px; }
 .app-dialog .modal-head h2 { font-size: var(--fs-lg); margin: 0; }
@@ -7470,7 +7510,7 @@ body[data-view="setup"] #btn-add { display: none; }
   background: transparent;
   border-top: 0;
 }
-.app-dialog-danger .modal-head h2 { color: #0D47A1; }
+.app-dialog-danger .modal-head h2 { color: var(--danger, #dc2626); }
 .app-dialog-input {
   width: 100%;
   margin-top: 10px;
@@ -8489,7 +8529,7 @@ td.sales-suppressed {
   padding: 0;
   border-radius: 4px;
 }
-.team-member .remove-btn:hover { color: var(--danger); background: #E3F0FA; }
+.team-member .remove-btn:hover { color: var(--danger); background: var(--danger-bg); }
 .team-add-btn {
   margin: 4px 8px 10px;
   padding: 6px 10px;
@@ -9263,6 +9303,12 @@ td.sales-suppressed {
   margin: 24px;
   text-align: center;
   color: var(--text-muted);
+  padding: 40px 32px;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-base);
+  line-height: 1.6;
 }
 .resources-table {
   display: flex;
@@ -10758,17 +10804,7 @@ td.sales-suppressed {
 /* Font smoothing */
 html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
-/* Custom thin scrollbars (Webkit / Blink) */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(6,29,57,0.18); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(6,29,57,0.32); }
-
-/* Global focus ring — replace browser default with brand-blue ring */
-:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(21,116,196,0.22);
-}
+/* Custom thin scrollbars — defined once below in the design-system block */
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
 .btn-primary, .btn-secondary, .btn-ghost, .btn-danger {
@@ -10782,13 +10818,13 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
   background: #f5d046; border-color: #f5d046;
   box-shadow: 0 3px 10px rgba(255,222,81,0.38), 0 1px 3px rgba(0,0,0,0.14);
 }
-.btn-primary:active { filter: brightness(0.96); box-shadow: none; }
+/* .btn-primary:active — defined above at line ~3043 */
 .btn-secondary {
   transition: background 0.13s, border-color 0.13s, box-shadow 0.13s;
 }
 .btn-secondary:hover { border-color: #1265b0; box-shadow: 0 0 0 3px rgba(21,116,196,0.10); }
 .btn-danger { transition: background 0.13s, box-shadow 0.13s; }
-.btn-danger:hover { box-shadow: 0 2px 6px rgba(21,116,196,0.25); }
+.btn-danger:hover { box-shadow: 0 2px 6px rgba(220,38,38,0.30); }
 
 /* ── Confirm popup ──────────────────────────────────────────────────────── */
 .confirm-popup {
@@ -11147,10 +11183,254 @@ textarea:focus:not(.no-norm) {
 ::-webkit-scrollbar-thumb:hover { background: rgba(6,29,57,0.28); }
 
 /* ── Focus ring — single standard across all interactive elements ────────── */
+:focus { outline: none; }
 :focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(21,116,196,0.22);
+  outline: 2px solid rgba(21,116,196,0.7);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(21,116,196,0.12);
 }
 
 /* ── Font smoothing ──────────────────────────────────────────────────────── */
 html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+/* ── Job Hours drawer ──────────────────────────────────────────────────────── */
+.schedule-hours-drawer { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--border-mid); }
+.schedule-hours-drawer.is-collapsed .hours-drawer-body { display: none; }
+.hours-drawer-bar { cursor: pointer; }
+.hours-drawer-body { background: var(--surface); padding: 10px 14px 18px; overflow-x: auto; }
+
+/* Billing group summary cards */
+.hours-bg-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.hours-bg-card {
+  flex: 1 1 140px; background: var(--surface); border: 1px solid var(--border-mid);
+  border-radius: var(--radius-md); padding: 8px 12px; min-width: 120px;
+  transition: box-shadow var(--t-fast), border-color var(--t-fast);
+}
+.hours-bg-card:hover { box-shadow: var(--shadow-sm); border-color: var(--border-strong); }
+.hours-bg-name { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+.hours-bg-nums { display: flex; gap: 8px; font-size: 12px; font-weight: 600; align-items: baseline; }
+
+/* Function table */
+.hours-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.hours-table th { background: var(--surface-alt, var(--bg)); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border-mid); }
+.hours-table th:first-child { text-align: left; }
+.hours-table td { padding: 3px 8px; border-bottom: 1px solid var(--border-light, rgba(0,0,0,.05)); vertical-align: middle; }
+.hours-sec-row td { font-weight: 600; background: var(--surface-alt, var(--bg)); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); padding-top: 6px; }
+.hours-fn-name { padding-left: 18px !important; color: var(--text); }
+.hours-table tfoot td { border-top: 2px solid var(--border-mid); border-bottom: none; padding-top: 6px; }
+
+/* Column alignment */
+.hours-col-q, .hours-col-a, .hours-col-d { text-align: right; white-space: nowrap; }
+.hours-col-q { color: var(--text-muted); }
+.hours-col-a { color: var(--text); }
+.hours-col-d { color: var(--text-muted); }
+.hours-over  { color: var(--danger, #dc2626) !important; }
+.hours-under { color: var(--success, #5a9600) !important; }
+
+/* Filter bar */
+.hours-filter-bar   { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 2px 4px; border-bottom: 1px solid var(--border); }
+.hours-filter-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
+.hours-filter-sep   { width: 1px; height: 18px; background: var(--border-mid); margin: 0 8px; flex-shrink: 0; }
+.hours-chip {
+  font-size: 11px; padding: 3px 11px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border-mid); background: transparent;
+  color: var(--text-muted); cursor: pointer; font-family: inherit; font-weight: 500;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.hours-chip:hover   { background: var(--row-hover); color: var(--text); border-color: var(--border-strong); }
+.hours-chip:active  { transform: translateY(1px); }
+.hours-chip.active  { background: var(--sdc-primary, #1574c4); color: #fff; border-color: var(--sdc-primary, #1574c4); font-weight: 600; }
+
+/* Pivot table */
+.hpt-wrap         { overflow-x: auto; margin-top: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-mid); }
+.hpt              { border-collapse: collapse; font-size: 11px; white-space: nowrap; min-width: 100%; }
+.hpt th, .hpt td  { padding: 5px 10px; text-align: right; border: 1px solid var(--border); }
+.hpt .hpt-corner  { border: none; background: transparent; }
+.hpt-sec-hdr      { background: #f0f4f8; font-size: 10px; font-weight: 700; text-align: center !important; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); border-bottom: 2px solid var(--border-mid); padding: 6px 10px; }
+.hpt-fn-hdr       { background: var(--surface-alt); font-weight: 600; font-size: 10px; text-align: center !important; max-width: 80px; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.hpt-row-lbl      { text-align: left !important; font-weight: 600; font-size: 11px; color: var(--text-muted); background: var(--surface-alt); position: sticky; left: 0; z-index: 1; min-width: 64px; border-right: 2px solid var(--border-mid); }
+.hpt-val          { color: var(--text); min-width: 48px; font-variant-numeric: tabular-nums; }
+.hpt-total        { font-weight: 700; background: var(--surface-alt); border-left: 2px solid var(--border-mid); font-variant-numeric: tabular-nums; }
+.hpt-total-hdr    { font-weight: 700; background: var(--surface-alt); text-align: center !important; border-left: 2px solid var(--border-mid); }
+.hpt .hours-over  { color: var(--danger, #dc2626) !important; font-weight: 600; }
+.hpt .hours-under { color: var(--success, #5a9600) !important; font-weight: 600; }
+
+/* Bar charts */
+.hours-charts-row { display: flex; gap: 12px; margin: 14px 0 4px; }
+.hours-chart-box  { flex: 1 1 0; min-width: 0; background: var(--surface); border: 1px solid var(--border-mid); border-radius: var(--radius-md); padding: 10px 8px 6px; overflow: hidden; box-shadow: var(--shadow-xs); }
+
+/* ==========================================================================
+   Semantic color corrections — override hardcoded blue (#E3F0FA / #0D47A1)
+   for states that are genuinely red-danger, not SDC-brand-blue-info.
+   Machine colors, PO states, and dept-gantt bars are intentionally blue
+   and are NOT overridden here.
+   ========================================================================== */
+
+/* Dropdown / context menu danger items */
+.dropdown-menu .dropdown-item.is-danger         { color: var(--danger); }
+.dropdown-menu .dropdown-item.is-danger:hover   { background: var(--danger-bg); color: var(--danger); }
+.context-menu button.danger:hover               { background: var(--danger-bg); color: var(--danger); }
+
+/* Confirm/alert dialogs — danger variant */
+.confirm-popup-ok.is-danger                     { border-color: var(--danger); }
+.confirm-popup-ok.is-danger:hover               { background: var(--danger); color: #fff; border-color: var(--danger); }
+.app-dialog-danger .modal-head h2               { color: var(--danger); }
+
+/* btn-danger override (the rule at ~line 7974 hardcoded #0D47A1 for hover) */
+.btn-danger:hover                               { background: var(--danger-hover) !important; border-color: var(--danger-hover) !important; }
+.btn-danger:focus                               { outline-color: rgba(220,38,38,0.4); }
+
+/* Overdue task / milestone / date indicators */
+.apl-row.is-overdue .apl-due                   { color: var(--danger); }
+.apl-tag-overdue                                { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.sp-chip.sp-due.is-late                         { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-chip.chip-danger                         { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-mile-slip.is-late                        { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-milestone-slip.is-late                   { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-mile-fin.is-overdue .pdash-mile-label    { color: var(--danger); }
+.pdash-fin-badge.is-overdue .pdash-fin-badge-abbrev { color: var(--danger); }
+
+/* Over-capacity / over-load resource indicators */
+.resources-row.has-overload .resources-name     { color: var(--danger); }
+.est-load-over                                  { background: var(--danger-bg); color: var(--danger); }
+
+/* Quote/schedule variance — over budget */
+.quote-variance.var-over                        { color: var(--danger); background: var(--danger-bg); }
+
+/* Action items overdue */
+.apl-row.is-overdue .apl-due                   { color: var(--danger); }
+
+/* Required-field marker (already uses --danger, but reinforce for override safety) */
+.req                                            { color: var(--danger); }
+
+/* ==========================================================================
+   Transition pass — elements with hover states that lacked smooth animation.
+   Added here in bulk rather than touching each rule individually.
+   ========================================================================== */
+.mcp-close,
+.mcp-reset,
+.mcb-btn,
+.notes-bar,
+.notes-new-session,
+.notes-session-del,
+.notes-comp-ico,
+.notes-comp-add,
+.notes-inf-x,
+.notes-item,
+.notes-act,
+.notes-note-text,
+.notes-edit-done,
+.notes-collapse-all,
+.notes-kv,
+.proc-arow,
+.proc-gauge-co,
+.proc-pn,
+.proc-cost-edit-btn,
+.confirm-popup-cancel,
+.confirm-popup-ok,
+.projects-row-favbtn,
+.projects-workspace-newbtn,
+.dropdown-menu .dropdown-item,
+.dropdown-menu label,
+.spb-clear,
+.sp-del,
+.vpo-del,
+.context-menu button,
+.apg-row,
+.sdc-comment-submit {
+  transition: background var(--t-fast), color var(--t-fast),
+              border-color var(--t-fast), opacity var(--t-fast),
+              box-shadow var(--t-fast), filter var(--t-fast);
+}
+
+/* Table row hover consistency — use --row-hover everywhere */
+.users-admin-table tbody tr:hover,
+.proc-arow:hover,
+.proc-plrow:hover {
+  background: var(--row-hover);
+}
+
+/* Card hover states that were missing */
+.setup-card {
+  transition: box-shadow var(--t-base), border-color var(--t-base);
+}
+.setup-card:hover {
+  box-shadow: var(--shadow-lifted);
+  border-color: var(--border-strong);
+}
+.projects-workspace {
+  transition: box-shadow var(--t-base), border-color var(--t-base);
+}
+.projects-workspace:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+/* Firefox / standards scrollbar — thin, matches webkit style */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(6,29,57,0.20) transparent;
+}
+
+/* Hardcoded color fixes missed in first pass */
+.eto-chip-bad                     { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.apg-diamond.is-overdue           { background: var(--danger-bg) !important; border-color: var(--danger) !important; }
+.vpo-slip                         { color: var(--danger); }
+.quote-diff.diff-far              { color: var(--danger); background: var(--danger-bg); }
+.quote-sched.diff-far             { background: var(--danger-bg); }
+.est-load-over                    { background: var(--danger-bg); color: var(--danger); }
+.est-load-tight                   { background: var(--warning-bg); color: var(--warning); }
+.pdash-tl-person.is-over .pdash-tl-person-reason { color: var(--danger); }
+.sdc-comment-submit:hover         { background: var(--sdc-primary-hover, #1260a8); }
+.notes-inf-x:hover                { color: var(--sdc-primary); }
+
+/* Hardcoded focus border colors → variable */
+.agent-form input:focus           { border-color: var(--sdc-primary) !important; box-shadow: 0 0 0 3px rgba(21,116,196,0.12) !important; }
+.name-pill-input:focus            { border-color: var(--sdc-primary) !important; }
+.est-hours-input:focus            { border-color: var(--sdc-primary) !important; }
+
+/* Scrollbar — canonical definition */
+::-webkit-scrollbar              { width: 6px; height: 6px; }
+::-webkit-scrollbar-track        { background: transparent; }
+::-webkit-scrollbar-thumb        { background: rgba(6,29,57,0.18); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover  { background: rgba(6,29,57,0.32); }
+
+/* ==========================================================================
+   Remaining semantic color fixes — source rules not changed to avoid
+   disturbing specificity chains; cascade overrides live here instead.
+   ========================================================================== */
+
+/* Error text in app dialogs (was blue, should be red) */
+.app-dialog-error                                  { color: var(--danger); }
+
+/* "Bad" system state indicator */
+.sys-bad                                           { color: var(--danger); }
+
+/* Admin delete button — uses danger color since it deletes a user */
+.users-admin-body .btn-ghost.ua-del                { color: var(--danger); border-color: #fca5a5; }
+.users-admin-body .btn-ghost.ua-del:hover          { background: var(--danger-bg); color: var(--danger); }
+
+/* "Behind schedule" drift chip on task name cells */
+.name-drift-chip.behind                            { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+
+/* btn-danger focus ring — should be red, not blue */
+.btn-danger:focus                                  { outline: 2px solid rgba(220,38,38,0.5); outline-offset: 2px; }
+
+/* Notes edit hint — amber bg + blue text was a mismatch */
+.notes-edit-hint                                   { color: var(--warning); }
+
+/* Quote delete button hover — it's a delete action */
+.quote-row-delete:hover                            { background: var(--danger-bg); color: var(--danger); }
+
+/* Over-allocated resource bar — outline and priority chip */
+.res-bar.over-allocated                            { outline-color: var(--danger); }
+.res-bar.over-allocated .res-bar-priority          { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+
+/* Over-loaded resource name + pill */
+.resources-row.has-overload .resources-name        { color: var(--danger); }
+.resources-row.has-overload .resources-name::before{ color: var(--danger); }
+.res-overload-pill                                  { background: var(--danger-bg); color: var(--danger); }
+
+/* load-over segment (> 100% allocated) — red, not blue */
+.res-load-seg.load-over                            { background: var(--danger-bg); border-color: #fca5a5; color: var(--danger); }
+
+/* load-under / load-partial — intentionally left blue (under-utilized info state) */
