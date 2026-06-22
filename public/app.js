@@ -6345,10 +6345,20 @@ function renderFilters() {
 // is the canonical "All projects" pseudo-tab — always present, can't be closed. Switching
 // tabs sets state.filters.project which the existing applyFilters honors.
 function loadProjectTabs() {
-  // Always start with a clean slate — only the "All projects" pseudo-tab.
-  // Users open projects they want from the Projects page; nothing is auto-restored.
-  state.openProjects = [''];
-  state.filters.project = '';
+  // Open tabs + active project use sessionStorage — persists across F5 within the
+  // same browser tab (so refresh doesn't wipe your work), but clears automatically
+  // when the browser tab is closed. This prevents old sessions from auto-loading
+  // a pile of stale tabs on a fresh start.
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem('sdcOpenProjects') || 'null'); } catch {}
+  if (Array.isArray(saved) && saved.length) {
+    state.openProjects = saved.includes('') ? saved : ['', ...saved];
+  } else {
+    state.openProjects = [''];
+  }
+  const savedActive = sessionStorage.getItem('sdcActiveProject');
+  state.filters.project = (savedActive != null && state.openProjects.includes(savedActive))
+    ? savedActive : '';
   let savedTemplates = [];
   try { savedTemplates = JSON.parse(localStorage.getItem('sdcTemplateProjects') || '[]'); } catch {}
   state.templateProjects = Array.isArray(savedTemplates) ? savedTemplates : [];
@@ -6381,8 +6391,8 @@ function loadProjectTabs() {
 }
 
 function saveProjectTabs() {
-  localStorage.setItem('sdcOpenProjects', JSON.stringify(state.openProjects));
-  localStorage.setItem('sdcActiveProject', state.filters.project || '');
+  sessionStorage.setItem('sdcOpenProjects', JSON.stringify(state.openProjects));
+  sessionStorage.setItem('sdcActiveProject', state.filters.project || '');
   localStorage.setItem('sdcTemplateProjects', JSON.stringify(state.templateProjects || []));
   localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces || {}));
   localStorage.setItem('sdcActiveWorkspace', state.activeWorkspace || 'Active');
