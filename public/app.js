@@ -13851,12 +13851,17 @@ function renderScheduleHours() {
           if (max < 1) return '';
           return label.length > max ? label.slice(0, max - 1) + '…' : label;
         };
+        const bandTip = (b, prefix) => {
+          if (b.ref == null) return escapeHtml(b.label);
+          const diff = b.ref - b.actual;
+          return escapeHtml(`${prefix || b.label}\n${b.ref != null ? `Quoted: ${Math.round(b.ref).toLocaleString()}\nActual: ${Math.round(b.actual).toLocaleString()}\nDiff: ${diff >= 0 ? '+' : ''}${Math.round(diff).toLocaleString()}` : ''}`);
+        };
         const sH = 18, sY = baseY + 4;
         let sx = padL;
         for (const b of opts.secBands) {
           const bw = b.count * grpW - 1;
           const txt = fitTxt(b.label, bw);
-          bandsSvg += `<rect x="${sx}" y="${sY}" width="${bw}" height="${sH}" fill="#1e3a5f" rx="2"><title>${escapeHtml(b.label)}</title></rect>`;
+          bandsSvg += `<rect x="${sx}" y="${sY}" width="${bw}" height="${sH}" fill="#1e3a5f" rx="2"><title>${bandTip(b, b.label)}</title></rect>`;
           if (txt) bandsSvg += `<text x="${sx+bw/2}" y="${sY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">${escapeHtml(txt)}</text>`;
           sx += b.count * grpW;
         }
@@ -13865,7 +13870,7 @@ function renderScheduleHours() {
         for (const b of opts.grpBands) {
           const bw = b.count * grpW - 1;
           const txt = fitTxt(b.label, bw);
-          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#2d6a9f" rx="2"><title>${escapeHtml(b.label)}</title></rect>`;
+          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#2d6a9f" rx="2"><title>${bandTip(b, b.label)}</title></rect>`;
           if (txt) bandsSvg += `<text x="${gx+bw/2}" y="${gY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="600" fill="white" style="pointer-events:none">${escapeHtml(txt)}</text>`;
           gx += b.count * grpW;
         }
@@ -13891,16 +13896,25 @@ function renderScheduleHours() {
     // Function chart — use pivotCols order (section→group→fn, matching the pivot table)
     const fnItems = pivotCols.map(r => ({ label: r.fn, quoted: r[refKey], actual: r.actual || 0 }));
 
-    // Band metadata for section/group strips below the x-axis
-    const fnSecBands = secGroups.map(g => ({ label: g.sec, count: g.fns.length }));
+    // Band metadata for section/group strips below the x-axis (include totals for tooltips)
+    const fnSecBands = secGroups.map(g => ({
+      label: g.sec, count: g.fns.length,
+      ref: g.fns.reduce((a, r) => a + r[refKey], 0),
+      actual: g.fns.reduce((a, r) => a + r.actual, 0),
+    }));
     const fnGrpBands = secGroups.flatMap(g => {
-      const grpOrder = [], grpCount = new Map();
+      const grpOrder = [], grpCount = new Map(), grpFns = new Map();
       for (const r of g.fns) {
         const key = r.group || '';
-        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); }
+        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); grpFns.set(key, []); }
         grpCount.set(key, grpCount.get(key) + 1);
+        grpFns.get(key).push(r);
       }
-      return grpOrder.map(grp => ({ label: grp, count: grpCount.get(grp) }));
+      return grpOrder.map(grp => ({
+        label: grp, count: grpCount.get(grp),
+        ref: grpFns.get(grp).reduce((a, r) => a + r[refKey], 0),
+        actual: grpFns.get(grp).reduce((a, r) => a + r.actual, 0),
+      }));
     });
 
     const BG_CHART_ORDER = ['Engineering', 'Manufacturing', 'PM', 'Shop'];
