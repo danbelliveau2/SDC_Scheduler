@@ -43,8 +43,13 @@
   --text: #061d39;
   --text-muted: #64748b;
   --row-hover: #eef5fb;
-  --danger: #1574C4;
-  --danger-hover: #0D47A1;
+  --success: #5a9600;           /* green — saved, under-budget, on-time */
+  --success-bg: #f0f9e8;
+  --warning: #d97706;           /* amber — caution states */
+  --warning-bg: #fffbeb;
+  --danger: #dc2626;            /* red — errors, over-budget, delete */
+  --danger-hover: #b91c1c;
+  --danger-bg: #fef2f2;
 
   /* Elevation system — consistent shadows across all floating elements */
   --shadow-xs:      0 1px 2px rgba(6,29,57,0.06);
@@ -119,12 +124,17 @@ body {
   margin-bottom: 6px;
 }
 .app-sidebar-logo {
-  width: 44px;
+  width: 62px;
   height: auto;
   opacity: 0.95;
 }
 .app-sidebar-spacer {
   flex: 1 1 auto;
+}
+.app-sidebar-sep {
+  margin: 6px 12px;
+  border: none;
+  border-top: 1px solid rgba(255,255,255,0.10);
 }
 .app-sidebar-icon {
   display: flex;
@@ -147,13 +157,15 @@ body {
   transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 .app-sidebar-icon:hover {
-  background: rgba(255,255,255,0.10);
-  color: rgba(255,255,255,0.92);
+  background: rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.95);
 }
+.app-sidebar-icon:active { background: rgba(255,255,255,0.18); }
 .app-sidebar-icon.is-active {
-  background: rgba(255,255,255,0.13);
+  background: rgba(255,255,255,0.10);
   color: white;
-  box-shadow: inset 3px 0 0 var(--sdc-accent, #ffde51);
+  box-shadow: inset 4px 0 0 var(--sdc-accent, #ffde51);
+  border-radius: 0 8px 8px 0;
 }
 .app-sidebar-glyph {
   font-size: var(--fs-2xl);
@@ -185,19 +197,19 @@ body {
   color: white;
 }
 .app-sidebar-label {
-  font-size: var(--fs-xs);
-  line-height: 1.1;
-  white-space: normal;       /* multi-word labels ("Notes & Actions") wrap at the space… */
-  overflow-wrap: normal;     /* …but a single word ("Departments") never breaks mid-word */
-  letter-spacing: 0;         /* claw back width so single words fit on one line */
+  font-size: 9px;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: break-word;
+  letter-spacing: 0;
   text-align: center;
   width: 100%;
 }
 .app-sidebar-revision {
-  margin-bottom: 10px;
-  border-top: 1px solid rgba(255,255,255,0.08);
-  padding-top: 6px;
-  color: rgba(255,255,255,0.45);
+  margin-bottom: 6px;
+  padding-top: 4px;
+  color: rgba(255,255,255,0.40);
+  font-size: 10px;
 }
 
 /* ==========================================================================
@@ -226,6 +238,12 @@ body {
   font-size: var(--fs-base);
   color: var(--text-muted, #64748b);
   font-style: italic;
+  padding: 40px 32px;
+  text-align: center;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
 }
 .projects-workspace {
   border: 1px solid var(--border, #e2e8f0);
@@ -302,6 +320,43 @@ body {
   font-style: italic;
   color: var(--text-muted, #64748b);
 }
+/* Search bar */
+.projects-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1.5px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--surface-alt, #f8fafc);
+  margin-bottom: 14px;
+}
+.projects-search-icon { font-size: 13px; color: var(--text-muted, #94a3b8); line-height: 1; }
+.projects-search-input {
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-base);
+  color: var(--text, #1e293b);
+  outline: none;
+  flex: 1;
+  min-width: 0;
+}
+.projects-search-input::placeholder { color: var(--text-muted, #94a3b8); }
+
+/* Stats row */
+.projects-page-stats {
+  display: flex;
+  gap: 14px;
+  font-size: var(--fs-sm);
+  color: var(--text-muted, #64748b);
+  margin-bottom: 12px;
+}
+.projects-page-stats b { color: var(--sdc-primary, #1574c4); }
+
+/* Workspace accent left border */
+.projects-workspace { border-left: 4px solid var(--ws-accent, var(--border, #e2e8f0)); }
+
 .projects-row {
   display: flex;
   align-items: center;
@@ -322,12 +377,39 @@ body {
   background: var(--row-hover, #eef5fb);
 }
 .projects-row.is-open { background: color-mix(in srgb, var(--sdc-primary, #2563eb) 5%, white); }
-.projects-row-star {
-  color: var(--text-muted, #94a3b8);
-  font-size: var(--fs-lg);
-  width: 14px;
+
+/* Status dot replacing the old badge */
+.projects-row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--border, #e2e8f0);
 }
-.projects-row-name { flex: 1 1 auto; }
+.projects-row-dot.is-open {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px #dcfce7;
+}
+
+/* Row info: name + meta stacked */
+.projects-row-info {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.projects-row-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projects-row-meta {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-normal, 400);
+  color: var(--text-muted, #94a3b8);
+}
+
 .projects-row-badge {
   font-size: var(--fs-xs);
   font-weight: var(--fw-bold);
@@ -375,7 +457,7 @@ body {
   border-radius: 4px;
 }
 .projects-row-favbtn:hover { color: #ca8a04; background: rgba(0,0,0,0.04); }
-.projects-row-favbtn.is-fav { color: #AACEE8; }
+.projects-row-favbtn.is-fav { color: #f59e0b; }
 
 /* "→ Project" button on each sales project row. Promotes the sales
    schedule to a fresh detailed project stamped from the standard
@@ -1469,12 +1551,12 @@ body.customer-view .customer-view-flatten.is-active {
   color: #5A9600;
 }
 .project-stat-chip.stat-late {
-  background: #E3F0FA;
-  color: #991b1b;
+  background: #fef2f2;
+  color: #b91c1c;
 }
 .project-stat-chip.stat-early {
-  background: #e0e7ff;
-  color: #3730a3;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 .project-stat-chip.stat-neutral {
   background: var(--surface-alt);
@@ -1525,13 +1607,13 @@ body.customer-view .customer-view-flatten.is-active {
   cursor: pointer;
   letter-spacing: 0.01em;
   white-space: nowrap;
-  transition: color 120ms;
+  transition: color 120ms, background 120ms, box-shadow 120ms;
 }
-.seg-btn:hover { color: var(--text); }
+.seg-btn:hover { color: var(--text); background: rgba(255,255,255,0.5); }
 .seg-btn.is-active {
   background: white;
   color: var(--sdc-primary);
-  box-shadow: 0 1px 3px rgba(6,29,57,0.12);
+  box-shadow: 0 1px 3px rgba(6,29,57,0.14);
 }
 
 /* Auto-save status chip */
@@ -1547,21 +1629,21 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .save-indicator.saving {
   opacity: 1;
-  background: #D8E8F5;
-  color: #0D47A1;
-  border: 1px solid #C8DFF5;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
 }
 .save-indicator.saved {
   opacity: 1;
-  background: #F0F9E8;
+  background: #f0f9e8;
   color: #166534;
   border: 1px solid #86efac;
 }
 .save-indicator.save-error {
   opacity: 1;
-  background: #E3F0FA;
-  color: #991b1b;
-  border: 1px solid #BBDEF7;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
 }
 
 /* Toolbar toggle buttons — Flatten / By date. Outlined when off, filled blue when on. */
@@ -1581,12 +1663,14 @@ body.customer-view .customer-view-flatten.is-active {
   transition: background 120ms, color 120ms, border-color 120ms, box-shadow 120ms;
 }
 .toolbar-toggle-btn:hover { background: #eef4fa; color: var(--text); border-color: #94a3b8; }
+.toolbar-toggle-btn:active { transform: translateY(1px); }
 .toolbar-toggle-btn.is-active {
   background: var(--sdc-primary);
   color: white;
   border-color: var(--sdc-primary);
   box-shadow: 0 1px 4px rgba(21,116,196,0.28);
 }
+.toolbar-toggle-btn.is-active:hover { background: var(--sdc-primary-hover); }
 
 /* Two-button segmented pair (e.g. Critical / Only). The buttons share a border
    between them so they read as one linked control. */
@@ -2124,16 +2208,16 @@ body.customer-view .customer-view-flatten.is-active {
 /* Vendor PO row pill — marks rows the ETO sync owns */
 .vpo-eto-pill {
   display: inline-block;
-  margin-left: 6px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-extrabold);
-  letter-spacing: 0.4px;
-  background: #e3f0fa;
-  color: var(--sdc-primary);
-  border: 1px solid #aacee8;
-  vertical-align: 1px;
+  margin-left: 5px;
+  padding: 0px 4px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.3px;
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid #cbd5e1;
+  vertical-align: 2px;
 }
 
 /* Quote vs Schedule modal — live actuals strip from the ERP */
@@ -2151,7 +2235,7 @@ body.customer-view .customer-view-flatten.is-active {
 .eto-stat { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px; }
 .eto-stat-label { display: block; font-size: 10.5px; font-weight: var(--fw-bold); color: #64748b; margin-bottom: 2px; }
 .eto-stat-vals { font-size: 12.5px; color: #334155; white-space: nowrap; }
-.eto-stat-act.is-over { color: #1574C4; font-weight: var(--fw-bold); }
+.eto-stat-act.is-over { color: var(--danger, #dc2626); font-weight: var(--fw-bold); }
 
 /* ── Procurement page (build readiness from Total ETO) ─────────────────── */
 .proc-empty {
@@ -2164,7 +2248,7 @@ body.customer-view .customer-view-flatten.is-active {
   font-size: 13.5px;
   text-align: center;
 }
-.proc-error { color: #0D47A1; background: #D8E8F5; border-color: #C8DFF5; }
+.proc-error { color: #b91c1c; background: #fef2f2; border-color: #fca5a5; }
 .proc-job-pick {
   padding: 7px 10px;
   border: 1px solid #cbd5e1;
@@ -2694,11 +2778,11 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-plist {
   margin-top: 12px; border: 1px solid #c8d0da; border-radius: 8px; overflow: hidden; background: white;
   /* default column widths — JavaScript updates these inline on drag */
-  --pc0:44px; --pc1:160px; --pc2:1fr; --pc3:190px; --pc4:132px; --pc5:115px; --pc6:120px; --pc7:64px; --pc8:72px; --pc9:72px; --pc10:108px;
+  --pc0:44px; --pc1:160px; --pc2:1fr; --pc3:190px; --pc4:132px; --pc5:115px; --pc6:120px; --pc7:64px; --pc8:72px; --pc9:72px; --pc10:52px; --pc11:60px; --pc12:108px;
 }
 .proc-plist-head, .proc-plrow {
   display: grid;
-  grid-template-columns: var(--pc0) var(--pc1) var(--pc2) var(--pc3) var(--pc4) var(--pc5) var(--pc6) var(--pc7) var(--pc8) var(--pc9) var(--pc10);
+  grid-template-columns: var(--pc0) var(--pc1) var(--pc2) var(--pc3) var(--pc4) var(--pc5) var(--pc6) var(--pc7) var(--pc8) var(--pc9) var(--pc10) var(--pc11) var(--pc12);
   align-items: center;
   gap: 0;
   padding: 0;
@@ -2740,6 +2824,15 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-plrow:hover { background: #e8f0f8; }
 .proc-plrow-overdue { background: #fef2f2; }
 .proc-plrow-overdue:hover { background: #fee9e9; }
+.proc-lead { font-size: 11px; font-weight: 700; border-radius: 4px; padding: 2px 5px; white-space: nowrap; }
+.proc-lead-ok  { background: #ecfdf5; color: #166534; }
+.proc-lead-warn { background: #fffbeb; color: #92400e; }
+.proc-lead-long { background: #fef2f2; color: #991b1b; }
+.proc-due { font-size: 11px; font-weight: 700; border-radius: 4px; padding: 2px 5px; white-space: nowrap; }
+.proc-due-ahead  { background: #ecfdf5; color: #166534; }
+.proc-due-soon   { background: #fffbeb; color: #92400e; }
+.proc-due-late   { background: #fef2f2; color: #991b1b; }
+.proc-due-rcvd   { background: #f1f5f9; color: #64748b; }
 .proc-plsrc { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
 .proc-plsrc-pn { font-family: var(--font-mono); font-size: var(--fs-2xs); font-weight: var(--fw-bold); color: #000; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .proc-plsrc-desc { font-size: 10.5px; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2962,6 +3055,7 @@ body.customer-view .customer-view-flatten.is-active {
   box-shadow: 0 1px 2px rgba(0,0,0,0.18);
 }
 .btn-primary:hover { background: #f5d046; border-color: #f5d046; }
+.btn-primary:active, .btn-danger:active { transform: translateY(1px); box-shadow: none; }
 .btn-ghost {
   background: rgba(255,255,255,0.1);
   color: white;
@@ -3006,7 +3100,10 @@ main {
 #view-dashboard.active,
 #view-shop-parts.active,
 #view-vendor-pos.active,
-#view-procurement.active {
+#view-procurement.active,
+#view-projects.active,
+#view-favorites.active,
+#view-recents.active {
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -3348,8 +3445,8 @@ input[type="number"] {
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
-.project-stats-popup .popup-value.stat-late    { color: #991b1b; }
-.project-stats-popup .popup-value.stat-early   { color: #3730a3; }
+.project-stats-popup .popup-value.stat-late    { color: #b91c1c; }
+.project-stats-popup .popup-value.stat-early   { color: #1d4ed8; }
 .project-stats-popup .popup-value.stat-ok      { color: #5A9600; }
 .project-stats-popup .popup-value.stat-neutral { color: var(--text-muted); font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
 /* "Quoted / Scheduled" dual-value rendering — quoted on the left in
@@ -3440,8 +3537,8 @@ input[type="number"] {
   font-weight: var(--fw-bold);
   background: var(--surface-alt, #f1f5f9);
 }
-.project-stats-popup .popup-fat-var.stat-late  { background: #E3F0FA; color: #991b1b; }
-.project-stats-popup .popup-fat-var.stat-early { background: #e0e7ff; color: #3730a3; }
+.project-stats-popup .popup-fat-var.stat-late  { background: #fef2f2; color: #b91c1c; }
+.project-stats-popup .popup-fat-var.stat-early { background: #eff6ff; color: #1d4ed8; }
 .project-stats-popup .popup-fat-var.stat-ok    { background: #F0F9E8; color: #5A9600; }
 
 /* View Options section inside the project stats popup. Three toggle rows
@@ -3790,7 +3887,7 @@ th.col-priority { padding-left: 4px; padding-right: 4px; }
    Schedule grid. The full task can't be done because earlier-priority tasks already fill
    the assignee's day. The browser tooltip on the cell explains why. */
 td[data-col="assignee"].over-allocated {
-  color: var(--danger, #1574C4);
+  color: var(--danger, #dc2626);
   font-weight: var(--fw-extrabold);
 }
 td[data-col="assignee"].over-allocated::before {
@@ -4699,6 +4796,7 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
   width: 280px;
   font-size: var(--fs-base);
   color: var(--text);
+  animation: _popup-in 0.16s cubic-bezier(0.34, 1.2, 0.64, 1);
 }
 .confirm-popup-message {
   margin-bottom: 10px;
@@ -4728,10 +4826,10 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 }
 .confirm-popup-ok:hover { filter: brightness(1.05); }
 .confirm-popup-ok.is-danger {
-  background: #1574C4;
-  border-color: #0D47A1;
+  background: var(--danger, #dc2626);
+  border-color: var(--danger, #dc2626);
 }
-.confirm-popup-ok.is-danger:hover { background: #0D47A1; }
+.confirm-popup-ok.is-danger:hover { background: var(--danger-hover, #b91c1c); border-color: var(--danger-hover, #b91c1c); }
 
 /* Arrow lag pill — small floating label on the Gantt that shows the lag
    duration on an arrow when the predecessor carries one (e.g., "+2 wks" or
@@ -4859,9 +4957,14 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 }
 
 .empty-state {
-  padding: 32px;
+  padding: 40px 32px;
   text-align: center;
   color: var(--text-muted);
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-base);
+  line-height: 1.6;
 }
 .hidden { display: none !important; }
 
@@ -5555,7 +5658,10 @@ body.customer-view .schedule-footer { display: none; }
 .person-dashboard-list .empty-state {
   text-align: center;
   color: var(--text-muted);
-  padding: 30px 10px;
+  padding: 32px 16px;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-md);
 }
 .pd-row {
   display: grid;
@@ -6557,8 +6663,13 @@ body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !importa
 .actions-empty-state {
   text-align: center;
   color: var(--text-muted);
-  padding: 30px 12px;
-  margin: 0;
+  padding: 40px 24px;
+  margin: 16px;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-base);
+  line-height: 1.6;
 }
 .actions-row-due.is-completed { color: #15803d; font-weight: var(--fw-bold); }
 /* Filter row — chip toggles + a few selects on the right. */
@@ -7080,6 +7191,10 @@ body[data-view="setup"] .filters,
 body[data-view="setup"] #btn-add { display: none; }
 
 /* ---------- Modal ---------- */
+@keyframes _overlay-in  { from { opacity: 0; }                    to { opacity: 1; } }
+@keyframes _card-in     { from { opacity: 0; transform: scale(0.96) translateY(-6px); } to { opacity: 1; transform: none; } }
+@keyframes _popup-in    { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: none; } }
+
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -7088,6 +7203,11 @@ body[data-view="setup"] #btn-add { display: none; }
   align-items: center;
   justify-content: center;
   z-index: 100;
+  animation: _overlay-in 0.15s ease;
+}
+.modal-overlay .modal-card,
+.modal-overlay > * {
+  animation: _card-in 0.18s cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 
 /* Estimate-sheet feasibility modal — separate class set from the older .modal
@@ -7385,10 +7505,12 @@ body[data-view="setup"] #btn-add { display: none; }
    on the same .modal-card framework as the estimate-sheet modal. */
 .app-dialog-overlay {
   z-index: 200;  /* above other dialogs */
+  animation: _overlay-in 0.15s ease;
 }
 .app-dialog {
   max-width: 460px;
   width: 100%;
+  animation: _card-in 0.18s cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 .app-dialog .modal-head { padding: 14px 20px 10px; }
 .app-dialog .modal-head h2 { font-size: var(--fs-lg); margin: 0; }
@@ -7403,7 +7525,7 @@ body[data-view="setup"] #btn-add { display: none; }
   background: transparent;
   border-top: 0;
 }
-.app-dialog-danger .modal-head h2 { color: #0D47A1; }
+.app-dialog-danger .modal-head h2 { color: var(--danger, #dc2626); }
 .app-dialog-input {
   width: 100%;
   margin-top: 10px;
@@ -8422,7 +8544,7 @@ td.sales-suppressed {
   padding: 0;
   border-radius: 4px;
 }
-.team-member .remove-btn:hover { color: var(--danger); background: #E3F0FA; }
+.team-member .remove-btn:hover { color: var(--danger); background: var(--danger-bg); }
 .team-add-btn {
   margin: 4px 8px 10px;
   padding: 6px 10px;
@@ -8783,15 +8905,16 @@ td.sales-suppressed {
 
 /* ---------- Parts in Shop (card view) ---------- */
 .shop-parts-page { padding: 18px 22px 180px; }
-.shop-parts-head { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; }
+.shop-parts-head { display: flex; flex-direction: column; gap: 10px; margin-bottom: 0; }
+.vpo-sticky-controls { position: sticky; top: 0; z-index: 15; background: #fff; border-bottom: 1px solid var(--border, #e2e8f0); padding: 8px 0 6px; margin: -4px 0 12px; }
 /* Quick-add bar */
 .sp-head-top { display: flex; align-items: center; gap: 12px; }
 .sp-head-top .projects-page-title { margin-right: auto; }
 /* Combined historical strip up top: on-time donut + avg-lead-by-vendor list. */
-.vpo-headstat { display: flex; align-items: stretch; gap: 14px; padding: 6px 12px; background: var(--sdc-blue-light, #aacee8); background: color-mix(in srgb, var(--sdc-primary, #1574c4) 8%, #fff); border: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 22%, #fff); border-radius: 10px; }
-.vpo-hs-ontime { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding-right: 14px; border-right: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 18%, #fff); }
+.vpo-headstat { display: flex; align-items: stretch; gap: 14px; padding: 6px 12px; background: #fff; border: 1px solid var(--border, #e2e8f0); border-radius: 10px; box-shadow: 0 1px 3px rgba(15,23,42,0.04); }
+.vpo-hs-ontime { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding-right: 14px; border-right: 1px solid var(--border, #e2e8f0); }
 .vpo-hs-ontime svg { width: 46px; height: 46px; }
-.vpo-hs-label { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--sdc-dark, #061d39); font-weight: var(--fw-extrabold); }
+.vpo-hs-label { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted, #64748b); font-weight: var(--fw-semibold); }
 .vpo-hs-sub { font-size: var(--fs-xs); font-weight: var(--fw-bold); color: var(--text-muted, #64748b); }
 .vpo-hs-lead { display: flex; flex-direction: column; gap: 2px; min-width: 180px; }
 .vpo-hs-leadlist { max-height: 64px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
@@ -8814,7 +8937,9 @@ td.sales-suppressed {
 .sp-add-pm, .sp-add-eng { width: 110px; }
 .sp-add-notes { width: 100%; }
 .sp-add-btn { align-self: flex-end; }
-.shop-parts-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.shop-parts-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.shop-parts-toolbar .vpo-fsel { font-size: var(--fs-sm); padding: 4px 7px; }
+.shop-parts-toolbar .vpo-search { font-size: var(--fs-sm); padding: 5px 9px; margin-left: auto; }
 .sp-search { padding: 6px 10px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: var(--fs-base); min-width: 200px; margin-left: auto; }
 /* List + project groups */
 .sp-group { margin-bottom: 16px; }
@@ -8855,7 +8980,7 @@ td.sales-suppressed {
 .sp-empty { text-align: center; padding: 28px; color: var(--text-muted, #64748b); font-style: italic; }
 /* Top dashboards — SDC HMI style: clean white cards, lime/blue, big numbers. */
 .sp-dash { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 4px 0 6px; align-items: start; }
-.vpo-dash-main { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.vpo-dash-main { grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; }
 .vpo-dash-sub { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 520px; }
 @media (max-width: 1200px) { .vpo-dash-main { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* Open-by-project: aligned Job / Parts / Behind columns + header. */
@@ -8872,6 +8997,20 @@ td.sales-suppressed {
 .sp-dlist-sm { font-size: var(--fs-sm); }
 .sp-dcard { background: var(--surface, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 12px; padding: 12px 14px; box-shadow: 0 1px 3px rgba(15,23,42,0.05); }
 .sp-dcard-head { font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: 0.04em; font-weight: var(--fw-bold); color: var(--sdc-dark, #061d39); display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.vpo-dash-main .sp-dcard-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; font-weight: var(--fw-semibold); color: var(--text-muted, #64748b); border-left: 3px solid var(--sdc-primary, #1574c4); padding-left: 8px; padding-top: 1px; }
+.vpo-dash-main .sp-dcard { background: #fafbfc; display: flex; flex-direction: column; }
+.vpo-dash-main .sp-dproj-list { height: 220px; overflow-y: auto; max-height: none; }
+.vpo-dash-main .sp-dlist { height: 220px; overflow-y: auto; }
+.vpo-dash-po-link { cursor: pointer; color: var(--sdc-primary, #1574c4); text-decoration: underline; text-underline-offset: 2px; }
+.vpo-dash-po-link:hover { color: var(--sdc-dark, #061d39); }
+.vpo-clear-search { padding: 4px 10px; border: 1px solid var(--sdc-primary, #1574c4); border-radius: 6px; background: #fff; color: var(--sdc-primary, #1574c4); font-size: var(--fs-sm); cursor: pointer; white-space: nowrap; }
+.vpo-clear-search:hover { background: var(--sdc-primary, #1574c4); color: #fff; }
+.vpo-rhandle { position: absolute; right: 0; top: 10%; width: 6px; height: 80%; cursor: col-resize; z-index: 10; display: flex; align-items: center; justify-content: center; }
+.vpo-rhandle::after { content: ''; display: block; width: 2px; height: 100%; background: #d1d5db; border-radius: 1px; transition: background 0.12s; }
+.vpo-rhandle:hover::after, .vpo-rhandle:active::after { background: var(--sdc-primary, #1574c4); }
+.vpo-page .vpo-head > span, .vpo-page .vpo-head > div { position: relative; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 8px; }
+@keyframes vpo-highlight-flash { 0%,100% { background: transparent; } 20% { background: #fff9c4; } }
+.vpo-row-highlight { animation: vpo-highlight-flash 1.8s ease; outline: 2px solid var(--sdc-accent, #ffde51); border-radius: 4px; }
 .sp-dcard-num { text-align: center; }
 .sp-dnum { font-size: var(--fs-display); font-weight: var(--fw-extrabold); color: var(--sdc-primary, #1574c4); line-height: 1.1; }
 .sp-dsub { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
@@ -8930,10 +9069,21 @@ td.sales-suppressed {
 .sp-card-colhead { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-muted, #64748b); font-weight: var(--fw-bold); background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); padding-top: 2px; padding-bottom: 2px; }
 
 /* ── Vendor PO Track ── */
-.vpo-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
-.vpo-leg { display: inline-flex; align-items: center; }
-.vpo-leg i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; margin-right: 5px; }
-.vpo-dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; box-shadow: 0 0 0 1px rgba(15,23,42,0.12); }
+.vpo-legend { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.vpo-leg { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted, #64748b); background: #f8fafc; border: 1px solid var(--border, #e2e8f0); border-radius: 20px; padding: 2px 8px 2px 5px; }
+.vpo-leg i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex-shrink: 0; }
+.vpo-dot { width: 20px; height: 18px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 800; line-height: 1; flex-shrink: 0; }
+.vpo-dot-open    { background: #e5e7eb; color: #9ca3af; }
+.vpo-dot-late    { background: #061d39; color: #fff; }
+.vpo-dot-soon    { background: #fde68a; color: #92400e; }
+.vpo-dot-shipped { background: #d9f99d; color: #365314; }
+.vpo-dot-partial { background: #bfdbfe; color: #1e40af; }
+.vpo-dot-complete{ background: #bbf7d0; color: #14532d; }
+.vpo-row > .sp-prow-line { transition: background 0.12s; border-radius: 0; }
+.vpo-row:hover > .sp-prow-line { background: #f8fafc; }
+.vpo-row.vpo-st-late > .sp-prow-line { border-left: 3px solid #061d39; }
+.vpo-row.vpo-st-soon > .sp-prow-line { border-left: 3px solid #f59e0b; }
+.vpo-row.vpo-st-complete > .sp-prow-line { opacity: 0.72; }
 .vpo-po { font-weight: var(--fw-bold); color: var(--sdc-dark, #061d39); cursor: pointer; }
 .vpo-job, .vpo-vendor, .vpo-track { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vpo-eta, .vpo-ship { font-size: var(--fs-md); color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -8941,8 +9091,8 @@ td.sales-suppressed {
 .vpo-fsel { padding: 5px 8px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: var(--fs-md); background: #fff; }
 .vpo-search { padding: 6px 10px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: var(--fs-base); min-width: 200px; margin-left: auto; }
 .vpo-del { margin-top: 10px; border: 1px solid #BBDEF7; background: #fff; color: #0D47A1; border-radius: 6px; padding: 5px 12px; font-size: var(--fs-md); cursor: pointer; }
-.vpo-page .sp-prow-line { display: grid; grid-template-columns: 16px 64px minmax(0, 1fr) 84px 30px 26px; gap: 6px; align-items: center; padding: 4px 8px; }
-.vpo-page .sp-flat .sp-prow-line, .vpo-page .vpo-head { display: grid; grid-template-columns: 18px 76px 104px 104px 90px 90px minmax(0, 1fr) 36px 36px; gap: 8px; align-items: center; padding: 5px 10px; }
+.vpo-page .sp-prow-line { display: grid; grid-template-columns: 20px 22px 72px 80px 80px 30px 26px; gap: 6px; align-items: center; padding: 4px 8px; }
+.vpo-page .sp-flat .sp-prow-line, .vpo-page .vpo-head { display: grid; grid-template-columns: 20px 22px 80px 72px minmax(80px,1fr) 78px 72px 160px 76px 100px 32px 32px; gap: 6px; align-items: center; padding: 6px 10px; min-height: 36px; }
 .vpo-page .vpo-head, .vpo-page .vpo-cardhead { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.04em; font-weight: var(--fw-bold); color: var(--text-muted, #64748b); background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); }
 /* Completed-in-range list: PO · Job · variance-to-ETA. */
 .sp-comp-head, .sp-comprow { display: grid; grid-template-columns: 52px minmax(0, 1fr) 44px 48px; gap: 8px; align-items: center; }
@@ -8966,6 +9116,42 @@ td.sales-suppressed {
 /* Shipped (has tracking) — tint the whole row lime so it reads "on its way". */
 .vpo-page .vpo-st-shipped { background: color-mix(in srgb, #befa4f 22%, white); }
 .vpo-page .vpo-st-complete { background: color-mix(in srgb, #74c415 12%, white); }
+/* Tracking link */
+.vpo-track-link { color: var(--sdc-primary, #1574c4); text-decoration: none; font-size: var(--fs-sm); }
+.vpo-track-link:hover { text-decoration: underline; }
+/* Save feedback on detail inputs */
+.sp-dinput.sp-saving { border-color: #f59e0b; }
+.sp-dinput.sp-saved  { border-color: #22c55e; }
+.sp-dinput.sp-save-err { border-color: #ef4444; }
+/* Priority badge */
+.vpo-pri-badge { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 3px; background: #fde68a; color: #92400e; font-size: 10px; font-weight: 800; flex-shrink: 0; }
+/* Click-to-filter cells */
+.vpo-filter-click { cursor: pointer; }
+.vpo-filter-click:hover { text-decoration: underline; }
+/* Sortable column headers */
+.vpo-sort-hdr { cursor: pointer; user-select: none; }
+.vpo-sort-hdr:hover { color: var(--sdc-dark, #061d39); }
+.vpo-sort-active { color: var(--sdc-dark, #061d39); }
+/* PM and price columns */
+.vpo-pm { font-size: var(--fs-sm); color: var(--text-muted, #64748b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vpo-price { font-size: var(--fs-sm); color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; }
+/* Bulk action bar */
+.vpo-bulk-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; margin: 4px 0; }
+.vpo-bulk-count { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: #1e40af; margin-right: 4px; }
+.vpo-bulk-clear { background: none; border: none; font-size: var(--fs-sm); color: #64748b; cursor: pointer; padding: 3px 6px; }
+.vpo-bulk-clear:hover { color: var(--sdc-dark, #061d39); }
+/* Dashboard vendor rows — clickable */
+.sp-drow-click { cursor: pointer; }
+.sp-drow-click:hover { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 8%, white); border-radius: 4px; }
+/* Open PO value tile in headStat */
+.vpo-hs-total { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 0 14px; border-right: 1px solid var(--border, #e2e8f0); }
+.vpo-hs-totalval { font-size: 18px; font-weight: var(--fw-extrabold); color: var(--sdc-dark, #061d39); }
+/* Pagination bar */
+.vpo-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 0; }
+.vpo-page-btn { padding: 5px 14px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; background: #fff; cursor: pointer; font-size: var(--fs-sm); }
+.vpo-page-btn:hover:not(:disabled) { background: var(--surface-alt, #f1f5f9); }
+.vpo-page-btn:disabled { opacity: 0.4; cursor: default; }
+.vpo-page-info { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
 /* Compact part row (used in Top 10 + project cards) */
 .sp-prow { border-bottom: 1px solid var(--border, #e2e8f0); }
 .sp-prow:last-child { border-bottom: none; }
@@ -9132,6 +9318,12 @@ td.sales-suppressed {
   margin: 24px;
   text-align: center;
   color: var(--text-muted);
+  padding: 40px 32px;
+  background: var(--surface-alt);
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--fs-base);
+  line-height: 1.6;
 }
 .resources-table {
   display: flex;
@@ -10627,17 +10819,7 @@ td.sales-suppressed {
 /* Font smoothing */
 html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 
-/* Custom thin scrollbars (Webkit / Blink) */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(6,29,57,0.18); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(6,29,57,0.32); }
-
-/* Global focus ring — replace browser default with brand-blue ring */
-:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(21,116,196,0.22);
-}
+/* Custom thin scrollbars — defined once below in the design-system block */
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
 .btn-primary, .btn-secondary, .btn-ghost, .btn-danger {
@@ -10651,13 +10833,13 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
   background: #f5d046; border-color: #f5d046;
   box-shadow: 0 3px 10px rgba(255,222,81,0.38), 0 1px 3px rgba(0,0,0,0.14);
 }
-.btn-primary:active { filter: brightness(0.96); box-shadow: none; }
+/* .btn-primary:active — defined above at line ~3043 */
 .btn-secondary {
   transition: background 0.13s, border-color 0.13s, box-shadow 0.13s;
 }
 .btn-secondary:hover { border-color: #1265b0; box-shadow: 0 0 0 3px rgba(21,116,196,0.10); }
 .btn-danger { transition: background 0.13s, box-shadow 0.13s; }
-.btn-danger:hover { box-shadow: 0 2px 6px rgba(21,116,196,0.25); }
+.btn-danger:hover { box-shadow: 0 2px 6px rgba(220,38,38,0.30); }
 
 /* ── Confirm popup ──────────────────────────────────────────────────────── */
 .confirm-popup {
@@ -11016,10 +11198,254 @@ textarea:focus:not(.no-norm) {
 ::-webkit-scrollbar-thumb:hover { background: rgba(6,29,57,0.28); }
 
 /* ── Focus ring — single standard across all interactive elements ────────── */
+:focus { outline: none; }
 :focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(21,116,196,0.22);
+  outline: 2px solid rgba(21,116,196,0.7);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(21,116,196,0.12);
 }
 
 /* ── Font smoothing ──────────────────────────────────────────────────────── */
 html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+/* ── Job Hours drawer ──────────────────────────────────────────────────────── */
+.schedule-hours-drawer { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--border-mid); }
+.schedule-hours-drawer.is-collapsed .hours-drawer-body { display: none; }
+.hours-drawer-bar { cursor: pointer; }
+.hours-drawer-body { background: var(--surface); padding: 10px 14px 18px; overflow-x: auto; }
+
+/* Billing group summary cards */
+.hours-bg-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.hours-bg-card {
+  flex: 1 1 140px; background: var(--surface); border: 1px solid var(--border-mid);
+  border-radius: var(--radius-md); padding: 8px 12px; min-width: 120px;
+  transition: box-shadow var(--t-fast), border-color var(--t-fast);
+}
+.hours-bg-card:hover { box-shadow: var(--shadow-sm); border-color: var(--border-strong); }
+.hours-bg-name { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+.hours-bg-nums { display: flex; gap: 8px; font-size: 12px; font-weight: 600; align-items: baseline; }
+
+/* Function table */
+.hours-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.hours-table th { background: var(--surface-alt, var(--bg)); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; padding: 4px 8px; text-align: right; border-bottom: 1px solid var(--border-mid); }
+.hours-table th:first-child { text-align: left; }
+.hours-table td { padding: 3px 8px; border-bottom: 1px solid var(--border-light, rgba(0,0,0,.05)); vertical-align: middle; }
+.hours-sec-row td { font-weight: 600; background: var(--surface-alt, var(--bg)); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); padding-top: 6px; }
+.hours-fn-name { padding-left: 18px !important; color: var(--text); }
+.hours-table tfoot td { border-top: 2px solid var(--border-mid); border-bottom: none; padding-top: 6px; }
+
+/* Column alignment */
+.hours-col-q, .hours-col-a, .hours-col-d { text-align: right; white-space: nowrap; }
+.hours-col-q { color: var(--text-muted); }
+.hours-col-a { color: var(--text); }
+.hours-col-d { color: var(--text-muted); }
+.hours-over  { color: var(--danger, #dc2626) !important; }
+.hours-under { color: var(--success, #5a9600) !important; }
+
+/* Filter bar */
+.hours-filter-bar   { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 2px 4px; border-bottom: 1px solid var(--border); }
+.hours-filter-label { font-size: 10px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; margin-right: 2px; }
+.hours-filter-sep   { width: 1px; height: 18px; background: var(--border-mid); margin: 0 8px; flex-shrink: 0; }
+.hours-chip {
+  font-size: 11px; padding: 3px 11px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border-mid); background: transparent;
+  color: var(--text-muted); cursor: pointer; font-family: inherit; font-weight: 500;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.hours-chip:hover   { background: var(--row-hover); color: var(--text); border-color: var(--border-strong); }
+.hours-chip:active  { transform: translateY(1px); }
+.hours-chip.active  { background: var(--sdc-primary, #1574c4); color: #fff; border-color: var(--sdc-primary, #1574c4); font-weight: 600; }
+
+/* Pivot table */
+.hpt-wrap         { overflow-x: auto; margin-top: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-mid); }
+.hpt              { border-collapse: collapse; font-size: 11px; white-space: nowrap; min-width: 100%; }
+.hpt th, .hpt td  { padding: 5px 10px; text-align: right; border: 1px solid var(--border); }
+.hpt .hpt-corner  { border: none; background: transparent; }
+.hpt-sec-hdr      { background: #f0f4f8; font-size: 10px; font-weight: 700; text-align: center !important; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); border-bottom: 2px solid var(--border-mid); padding: 6px 10px; }
+.hpt-fn-hdr       { background: var(--surface-alt); font-weight: 600; font-size: 10px; text-align: center !important; max-width: 80px; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.hpt-row-lbl      { text-align: left !important; font-weight: 600; font-size: 11px; color: var(--text-muted); background: var(--surface-alt); position: sticky; left: 0; z-index: 1; min-width: 64px; border-right: 2px solid var(--border-mid); }
+.hpt-val          { color: var(--text); min-width: 48px; font-variant-numeric: tabular-nums; }
+.hpt-total        { font-weight: 700; background: var(--surface-alt); border-left: 2px solid var(--border-mid); font-variant-numeric: tabular-nums; }
+.hpt-total-hdr    { font-weight: 700; background: var(--surface-alt); text-align: center !important; border-left: 2px solid var(--border-mid); }
+.hpt .hours-over  { color: var(--danger, #dc2626) !important; font-weight: 600; }
+.hpt .hours-under { color: var(--success, #5a9600) !important; font-weight: 600; }
+
+/* Bar charts */
+.hours-charts-row { display: flex; gap: 12px; margin: 14px 0 4px; }
+.hours-chart-box  { flex: 1 1 0; min-width: 0; background: var(--surface); border: 1px solid var(--border-mid); border-radius: var(--radius-md); padding: 10px 8px 6px; overflow: hidden; box-shadow: var(--shadow-xs); }
+
+/* ==========================================================================
+   Semantic color corrections — override hardcoded blue (#E3F0FA / #0D47A1)
+   for states that are genuinely red-danger, not SDC-brand-blue-info.
+   Machine colors, PO states, and dept-gantt bars are intentionally blue
+   and are NOT overridden here.
+   ========================================================================== */
+
+/* Dropdown / context menu danger items */
+.dropdown-menu .dropdown-item.is-danger         { color: var(--danger); }
+.dropdown-menu .dropdown-item.is-danger:hover   { background: var(--danger-bg); color: var(--danger); }
+.context-menu button.danger:hover               { background: var(--danger-bg); color: var(--danger); }
+
+/* Confirm/alert dialogs — danger variant */
+.confirm-popup-ok.is-danger                     { border-color: var(--danger); }
+.confirm-popup-ok.is-danger:hover               { background: var(--danger); color: #fff; border-color: var(--danger); }
+.app-dialog-danger .modal-head h2               { color: var(--danger); }
+
+/* btn-danger override (the rule at ~line 7974 hardcoded #0D47A1 for hover) */
+.btn-danger:hover                               { background: var(--danger-hover) !important; border-color: var(--danger-hover) !important; }
+.btn-danger:focus                               { outline-color: rgba(220,38,38,0.4); }
+
+/* Overdue task / milestone / date indicators */
+.apl-row.is-overdue .apl-due                   { color: var(--danger); }
+.apl-tag-overdue                                { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.sp-chip.sp-due.is-late                         { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-chip.chip-danger                         { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-mile-slip.is-late                        { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-milestone-slip.is-late                   { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.pdash-mile-fin.is-overdue .pdash-mile-label    { color: var(--danger); }
+.pdash-fin-badge.is-overdue .pdash-fin-badge-abbrev { color: var(--danger); }
+
+/* Over-capacity / over-load resource indicators */
+.resources-row.has-overload .resources-name     { color: var(--danger); }
+.est-load-over                                  { background: var(--danger-bg); color: var(--danger); }
+
+/* Quote/schedule variance — over budget */
+.quote-variance.var-over                        { color: var(--danger); background: var(--danger-bg); }
+
+/* Action items overdue */
+.apl-row.is-overdue .apl-due                   { color: var(--danger); }
+
+/* Required-field marker (already uses --danger, but reinforce for override safety) */
+.req                                            { color: var(--danger); }
+
+/* ==========================================================================
+   Transition pass — elements with hover states that lacked smooth animation.
+   Added here in bulk rather than touching each rule individually.
+   ========================================================================== */
+.mcp-close,
+.mcp-reset,
+.mcb-btn,
+.notes-bar,
+.notes-new-session,
+.notes-session-del,
+.notes-comp-ico,
+.notes-comp-add,
+.notes-inf-x,
+.notes-item,
+.notes-act,
+.notes-note-text,
+.notes-edit-done,
+.notes-collapse-all,
+.notes-kv,
+.proc-arow,
+.proc-gauge-co,
+.proc-pn,
+.proc-cost-edit-btn,
+.confirm-popup-cancel,
+.confirm-popup-ok,
+.projects-row-favbtn,
+.projects-workspace-newbtn,
+.dropdown-menu .dropdown-item,
+.dropdown-menu label,
+.spb-clear,
+.sp-del,
+.vpo-del,
+.context-menu button,
+.apg-row,
+.sdc-comment-submit {
+  transition: background var(--t-fast), color var(--t-fast),
+              border-color var(--t-fast), opacity var(--t-fast),
+              box-shadow var(--t-fast), filter var(--t-fast);
+}
+
+/* Table row hover consistency — use --row-hover everywhere */
+.users-admin-table tbody tr:hover,
+.proc-arow:hover,
+.proc-plrow:hover {
+  background: var(--row-hover);
+}
+
+/* Card hover states that were missing */
+.setup-card {
+  transition: box-shadow var(--t-base), border-color var(--t-base);
+}
+.setup-card:hover {
+  box-shadow: var(--shadow-lifted);
+  border-color: var(--border-strong);
+}
+.projects-workspace {
+  transition: box-shadow var(--t-base), border-color var(--t-base);
+}
+.projects-workspace:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+/* Firefox / standards scrollbar — thin, matches webkit style */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(6,29,57,0.20) transparent;
+}
+
+/* Hardcoded color fixes missed in first pass */
+.eto-chip-bad                     { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+.apg-diamond.is-overdue           { background: var(--danger-bg) !important; border-color: var(--danger) !important; }
+.vpo-slip                         { color: var(--danger); }
+.quote-diff.diff-far              { color: var(--danger); background: var(--danger-bg); }
+.quote-sched.diff-far             { background: var(--danger-bg); }
+.est-load-over                    { background: var(--danger-bg); color: var(--danger); }
+.est-load-tight                   { background: var(--warning-bg); color: var(--warning); }
+.pdash-tl-person.is-over .pdash-tl-person-reason { color: var(--danger); }
+.sdc-comment-submit:hover         { background: var(--sdc-primary-hover, #1260a8); }
+.notes-inf-x:hover                { color: var(--sdc-primary); }
+
+/* Hardcoded focus border colors → variable */
+.agent-form input:focus           { border-color: var(--sdc-primary) !important; box-shadow: 0 0 0 3px rgba(21,116,196,0.12) !important; }
+.name-pill-input:focus            { border-color: var(--sdc-primary) !important; }
+.est-hours-input:focus            { border-color: var(--sdc-primary) !important; }
+
+/* Scrollbar — canonical definition */
+::-webkit-scrollbar              { width: 6px; height: 6px; }
+::-webkit-scrollbar-track        { background: transparent; }
+::-webkit-scrollbar-thumb        { background: rgba(6,29,57,0.18); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover  { background: rgba(6,29,57,0.32); }
+
+/* ==========================================================================
+   Remaining semantic color fixes — source rules not changed to avoid
+   disturbing specificity chains; cascade overrides live here instead.
+   ========================================================================== */
+
+/* Error text in app dialogs (was blue, should be red) */
+.app-dialog-error                                  { color: var(--danger); }
+
+/* "Bad" system state indicator */
+.sys-bad                                           { color: var(--danger); }
+
+/* Admin delete button — uses danger color since it deletes a user */
+.users-admin-body .btn-ghost.ua-del                { color: var(--danger); border-color: #fca5a5; }
+.users-admin-body .btn-ghost.ua-del:hover          { background: var(--danger-bg); color: var(--danger); }
+
+/* "Behind schedule" drift chip on task name cells */
+.name-drift-chip.behind                            { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+
+/* btn-danger focus ring — should be red, not blue */
+.btn-danger:focus                                  { outline: 2px solid rgba(220,38,38,0.5); outline-offset: 2px; }
+
+/* Notes edit hint — amber bg + blue text was a mismatch */
+.notes-edit-hint                                   { color: var(--warning); }
+
+/* Quote delete button hover — it's a delete action */
+.quote-row-delete:hover                            { background: var(--danger-bg); color: var(--danger); }
+
+/* Over-allocated resource bar — outline and priority chip */
+.res-bar.over-allocated                            { outline-color: var(--danger); }
+.res-bar.over-allocated .res-bar-priority          { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+
+/* Over-loaded resource name + pill */
+.resources-row.has-overload .resources-name        { color: var(--danger); }
+.resources-row.has-overload .resources-name::before{ color: var(--danger); }
+.res-overload-pill                                  { background: var(--danger-bg); color: var(--danger); }
+
+/* load-over segment (> 100% allocated) — red, not blue */
+.res-load-seg.load-over                            { background: var(--danger-bg); border-color: #fca5a5; color: var(--danger); }
+
+/* load-under / load-partial — intentionally left blue (under-utilized info state) */

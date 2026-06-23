@@ -77,6 +77,27 @@
   font-size: 12px;
   margin: -4px 0 0;
 }
+/* Show/hide password wrapper */
+.sdc-pw-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.sdc-pw-wrap input {
+  flex: 1;
+  padding-right: 36px !important;
+}
+.sdc-pw-toggle {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  color: #64748b;
+  line-height: 1;
+}
 .sdc-auth-link {
   background: none;
   border: none;
@@ -99,25 +120,30 @@
 .sdc-auth-pill {
   position: fixed;
   left: 0;
-  bottom: 66px;            /* just above the Rev pill */
-  width: 90px;             /* sidebar rail width — centers the circle */
+  bottom: 58px;
+  width: 90px;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(255,255,255,0.08);
   z-index: 5000;
 }
 .sdc-auth-avatar {
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
-  border: 2px solid rgba(255,255,255,0.85);
+  border: 2px solid rgba(255,255,255,0.6);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  transition: border-color 140ms ease;
 }
 .sdc-auth-avatar:hover { border-color: var(--sdc-accent, #ffde51); }
 /* Popup — opens to the right of the avatar, over the content area. */
@@ -161,17 +187,11 @@
 .sdc-auth-menu button:hover { background: #f1f5f9; }
 .sdc-auth-menu .sdc-auth-signout:hover { background: #fef2f2; color: #dc2626; }
 
-/* Phase 4.1 — "who's editing" presence strip. Sits just to the right of
-   the user pill at the bottom-left; one circle per active collaborator
-   (excluding self). */
+/* Phase 4.1 — "who's editing" presence strip. Lives inside the sidebar rail
+   (width: 90px) just above the AK user pill (bottom: 66px). Centering inside
+   the 90px rail means it can never overlap the content area. */
 .sdc-presence-strip {
-  position: fixed;
-  bottom: 12px;
-  left: 280px; /* clears the user pill */
-  z-index: 4900;
-  display: flex;
-  gap: 4px;
-  align-items: center;
+  display: none !important;
 }
 .sdc-presence-avatar {
   width: 22px;

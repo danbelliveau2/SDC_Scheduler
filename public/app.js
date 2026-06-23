@@ -1653,6 +1653,7 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
 
 function renderTable() {
   const tbody = document.getElementById('tasks-tbody');
+  if (!tbody) return;
   let filtered = applyFilters(state.tasks);
   // v4.46: Actions mode filter. Default 'schedule' hides action items
   // entirely; 'actions' shows ONLY actions; 'combined' shows both.
@@ -1677,13 +1678,15 @@ function renderTable() {
 
   if (filtered.length === 0) {
     tbody.innerHTML = '';
-    empty.classList.remove('hidden');
-    empty.textContent = state.tasks.length === 0
-      ? 'No tasks yet. Click + New Task to add one.'
-      : 'No tasks match the current filters.';
+    if (empty) {
+      empty.classList.remove('hidden');
+      empty.textContent = state.tasks.length === 0
+        ? 'No tasks yet. Click + New Task to add one.'
+        : 'No tasks match the current filters.';
+    }
     return;
   }
-  empty.classList.add('hidden');
+  if (empty) empty.classList.add('hidden');
 
   // Bucket tasks by hierarchy path. Most anchor milestones render as fixed rows
   // outside the section walk (Receipt of PO above 10, FAT between 40/50, Ship
@@ -2017,6 +2020,7 @@ function attachRowDragHandlers(tbody) {
       const movedId = draggedId;
       draggedId = null;
       clearDropMarkers();
+      try {
 
       // Resolve target section + reorder anchor.
       let phase_group = null, department = null, sub_department = null, anchorId = null, anchorBefore = false;
@@ -2061,6 +2065,7 @@ function attachRowDragHandlers(tbody) {
       }
 
       await loadTasks();
+      } catch (_) { await loadTasks().catch(() => {}); }
     });
   });
 }
@@ -2736,11 +2741,12 @@ async function saveCellEdit(id, col, value, task) {
     case 'notes':      data.notes      = (value || '').trim() || null; break;
   }
   if (Object.keys(data).length > 0) {
-    // Snapshot the task BEFORE the change so the toolbar Undo button can roll
-    // it back. We snapshot just the fields we know we might write, so undo
-    // restores precisely what the edit changed — not unrelated columns.
     pushUndoSnapshot(task, Object.keys(data), `Edit ${col} on "${task.name || 'task'}"`);
-    await api.update(id, data);
+    try {
+      await api.update(id, data);
+    } catch (e) {
+      showAlertDialog({ title: 'Save failed', message: 'Could not save the edit: ' + e.message });
+    }
   }
 }
 
@@ -3075,6 +3081,7 @@ function isTaskInCollapsedGroup(task) {
 
 function renderGantt() {
   const container = document.getElementById('gantt-container');
+  if (!container) return;
   const empty = document.getElementById('gantt-empty');
   // Same task ordering as the grid so rows align side-by-side. Tasks inside a
   // collapsed group are dropped here so the Gantt mirrors the grid's visibility.
@@ -3094,14 +3101,16 @@ function renderGantt() {
   // every machine even when the grid is narrowed to one (the visual mess
   // the user saw with M2 selected: M1 bars still painting on the right
   // side of the chart).
+  // Single applyFilters() call — result reused for both ordering paths below.
+  const _ganttFiltered = applyFilters(state.tasks);
   let ordered;
   if (state.scheduleView?.sortByStart) {
-    ordered = [...applyFilters(state.tasks)].sort((a, b) =>
+    ordered = [..._ganttFiltered].sort((a, b) =>
       (a.start_date || '￿').localeCompare(b.start_date || '￿')
       || (a.sort_order || 0) - (b.sort_order || 0));
   } else {
     const canonicalIds = buildCanonicalTaskOrder();
-    const visibleIds = new Set(applyFilters(state.tasks).map(t => t.id));
+    const visibleIds = new Set(_ganttFiltered.map(t => t.id));
     const byId = Object.fromEntries(state.tasks.map(t => [t.id, t]));
     ordered = canonicalIds
       .filter(id => visibleIds.has(id))
@@ -3285,21 +3294,27 @@ function renderGantt() {
   // In Gantt-only mode the grid is hidden (display:none) so its offsets are zero —
   // skip alignment and let frappe-gantt's natural layout drive bar positions.
   if (!state.scheduleView?.ganttOnly) alignGanttToGrid();
-  // Arrows render FIRST (behind everything) — bars and labels cover them visually.
-  drawCustomArrows();
-  drawBaselineGhosts();
-  drawTodayLine();
-  drawMilestoneDiamonds();
-  drawMilestoneLabels();
-  clipBarLabels();
-  drawScheduleStatus();
-  drawDoneHashOverlay();
-  drawWeekdayLetters();
-  drawFinancialOverlay();
-  drawPenaltyClauseLine();
-  drawBarMeta();
-  drawMachineBorders();
-  renderProjectStatsPopup();
+
+  // Defer decorations one frame so the base chart is visible immediately.
+  // All drawers are wrapped in try/catch per CLAUDE.md — the defer means a
+  // late throw won't block the base render but still won't surface to the user.
+  requestAnimationFrame(() => {
+    // Arrows render FIRST (behind everything) — bars and labels cover them visually.
+    try { drawCustomArrows(); } catch (_) {}
+    try { drawBaselineGhosts(); } catch (_) {}
+    try { drawTodayLine(); } catch (_) {}
+    try { drawMilestoneDiamonds(); } catch (_) {}
+    try { drawMilestoneLabels(); } catch (_) {}
+    try { clipBarLabels(); } catch (_) {}
+    try { drawScheduleStatus(); } catch (_) {}
+    try { drawDoneHashOverlay(); } catch (_) {}
+    try { drawWeekdayLetters(); } catch (_) {}
+    try { drawFinancialOverlay(); } catch (_) {}
+    try { drawPenaltyClauseLine(); } catch (_) {}
+    try { drawBarMeta(); } catch (_) {}
+    try { drawMachineBorders(); } catch (_) {}
+    try { renderProjectStatsPopup(); } catch (_) {}
+  });
 }
 
 // ── Work-day Gantt helpers ───────────────────────────────────────────
@@ -4918,11 +4933,19 @@ function drawFinancialOverlay() {
 // predecessor whose date drives this task's start/end (the latest-finishing FS
 // predecessor, the latest-starting SS one, etc.) Slipping any task in the returned
 // set delays FAT. Returns a Set of task ids (including FAT and Receipt of PO).
+// Cache keyed by project + task count + max task id — invalidates automatically when
+// tasks change (save, delete, load). Avoids the O(n×m) graph walk being repeated 2–3×
+// per render pass (renderGantt calls it twice, renderTable once if criticalOnly is on).
+let _criticalPathCache = null;
+let _criticalPathCacheKey = '';
 function computeCriticalPath() {
   const projectFilter = state.filters.project;
   const tasks = projectFilter ? state.tasks.filter(t => t.project === projectFilter) : state.tasks;
+  const cacheKey = `${projectFilter}|${tasks.length}|${tasks.reduce((m, t) => Math.max(m, t.id || 0), 0)}`;
+  if (_criticalPathCache && _criticalPathCacheKey === cacheKey) return _criticalPathCache;
+
   const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
-  if (!fat) return new Set();
+  if (!fat) { _criticalPathCache = new Set(); _criticalPathCacheKey = cacheKey; return _criticalPathCache; }
   // Stringify IDs throughout — bar elements expose IDs via data-id (always string),
   // so storing strings keeps the Set comparable with the lookup site in
   // drawCustomArrows without per-call Number() conversions slipping past.
@@ -4955,6 +4978,8 @@ function computeCriticalPath() {
       visit.push(bound);
     }
   }
+  _criticalPathCache = critical;
+  _criticalPathCacheKey = cacheKey;
   return critical;
 }
 
@@ -5287,6 +5312,7 @@ function zoomToFitPersonal() {
 
 function zoomToFit() {
   const visiblePanel = document.getElementById('schedule-gantt');
+  if (!visiblePanel) return;
   const target = Math.max(300, visiblePanel.clientWidth - 24);
   const filtered = applyFilters(state.tasks).filter(t => t.start_date && t.end_date);
   if (filtered.length === 0 || target <= 0) return;
@@ -5894,6 +5920,7 @@ function drawCustomArrows() {
   const taskById = Object.fromEntries(state.tasks.map(t => [String(t.id), t]));
   const bars = [...svg.querySelectorAll('.bar-wrapper')].map(w => {
     const rect = w.querySelector('.bar');
+    if (!rect) return null;
     const id = String(w.getAttribute('data-id'));
     const x = +rect.getAttribute('x');
     const y = +rect.getAttribute('y');
@@ -5913,7 +5940,7 @@ function drawCustomArrows() {
     }
     return { id, x, y, w: ww, h: hh, milestone: false };
   });
-  const barById = Object.fromEntries(bars.map(b => [b.id, b]));
+  const barById = Object.fromEntries(bars.filter(Boolean).map(b => [b.id, b]));
 
   const arrowColor = '#334155';
   const headSize = 3; // v4.56: half size (was 6)
@@ -6327,16 +6354,18 @@ function renderFilters() {
 // is the canonical "All projects" pseudo-tab — always present, can't be closed. Switching
 // tabs sets state.filters.project which the existing applyFilters honors.
 function loadProjectTabs() {
+  // Open tabs + active project use sessionStorage — persists across F5 within the
+  // same browser tab (so refresh doesn't wipe your work), but clears automatically
+  // when the browser tab is closed. This prevents old sessions from auto-loading
+  // a pile of stale tabs on a fresh start.
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem('sdcOpenProjects') || 'null'); } catch {}
+  try { saved = JSON.parse(sessionStorage.getItem('sdcOpenProjects') || 'null'); } catch {}
   if (Array.isArray(saved) && saved.length) {
     state.openProjects = saved.includes('') ? saved : ['', ...saved];
   } else {
-    // First-time seed: just the "All projects" tab. User picks which schedules
-    // to open from the Projects page — we never auto-open everything.
     state.openProjects = [''];
   }
-  const savedActive = localStorage.getItem('sdcActiveProject');
+  const savedActive = sessionStorage.getItem('sdcActiveProject');
   state.filters.project = (savedActive != null && state.openProjects.includes(savedActive))
     ? savedActive : '';
   let savedTemplates = [];
@@ -6351,7 +6380,9 @@ function loadProjectTabs() {
   // collapsed; user clicks a header to expand.
   let savedExpanded = {};
   try { savedExpanded = JSON.parse(localStorage.getItem('sdcProjectsExpanded') || '{}'); } catch {}
-  state._projectsExpanded = (savedExpanded && typeof savedExpanded === 'object') ? savedExpanded : {};
+  // Active defaults to expanded. Merge saved on top — so explicit { Active: false } from
+  // the user overrides the default, but a blank {} (first load) still shows Active open.
+  state._projectsExpanded = { Active: true, ...((savedExpanded && typeof savedExpanded === 'object') ? savedExpanded : {}) };
   // Favorites + Recents are per-browser localStorage lists of project names.
   let favs = [];
   try { favs = JSON.parse(localStorage.getItem('sdcFavoriteProjects') || '[]'); } catch {}
@@ -6369,8 +6400,8 @@ function loadProjectTabs() {
 }
 
 function saveProjectTabs() {
-  localStorage.setItem('sdcOpenProjects', JSON.stringify(state.openProjects));
-  localStorage.setItem('sdcActiveProject', state.filters.project || '');
+  sessionStorage.setItem('sdcOpenProjects', JSON.stringify(state.openProjects));
+  sessionStorage.setItem('sdcActiveProject', state.filters.project || '');
   localStorage.setItem('sdcTemplateProjects', JSON.stringify(state.templateProjects || []));
   localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces || {}));
   localStorage.setItem('sdcActiveWorkspace', state.activeWorkspace || 'Active');
@@ -7839,8 +7870,10 @@ async function _shopSetPri(id, val) {
   if (!r) return;
   r.priority = String(val);
   renderShopPartsPage();
-  const upd = await api.shopParts.update(id, { priority: String(val) });
-  if (upd) Object.assign(r, upd);
+  try {
+    const upd = await api.shopParts.update(id, { priority: String(val) });
+    if (upd) Object.assign(r, upd);
+  } catch (_) {}
 }
 // Qty +/- stepper — updates in place without a full re-render (keeps scroll/pos).
 async function _shopBumpQty(id, d) {
@@ -7850,8 +7883,10 @@ async function _shopBumpQty(id, d) {
   r.qty = next;
   const inp = document.querySelector(`.sp-qty-inp[data-id="${id}"]`);
   if (inp) inp.value = next;
-  const upd = await api.shopParts.update(id, { qty: next });
-  if (upd) Object.assign(r, upd);
+  try {
+    const upd = await api.shopParts.update(id, { qty: next });
+    if (upd) Object.assign(r, upd);
+  } catch (_) {}
 }
 function _saveShopState() { try { localStorage.setItem('sdcShopPartsState', JSON.stringify(_shopPartsState)); } catch (_) {} }
 
@@ -7906,8 +7941,10 @@ async function _shopReorder(id, dir, scope) {
   const ao = a.sort_order, bo = b.sort_order;
   a.sort_order = bo; b.sort_order = ao;
   renderShopPartsPage();
-  await api.shopParts.update(a.id, { sort_order: a.sort_order });
-  await api.shopParts.update(b.id, { sort_order: b.sort_order });
+  try {
+    await api.shopParts.update(a.id, { sort_order: a.sort_order });
+    await api.shopParts.update(b.id, { sort_order: b.sort_order });
+  } catch (_) {}
 }
 
 function renderShopPartsPage() {
@@ -8133,8 +8170,12 @@ function renderShopPartsPage() {
       comments: f.comments.value.trim() || null,
       part_complete: 0,
     };
-    const created = await api.shopParts.create(data);
-    if (created && created.id) { state.shopParts.push(created); f.reset(); _shopAddOpen = true; renderShopPartsPage(); const pn = document.querySelector('.sp-add-pn'); if (pn) pn.focus(); }
+    let created;
+    try { created = await api.shopParts.create(data); } catch (e) { showAlertDialog({ title: 'Add failed', message: e.message }); return; }
+    if (created && created.id) {
+      if (!Array.isArray(state.shopParts)) state.shopParts = [];
+      state.shopParts.push(created); f.reset(); _shopAddOpen = true; renderShopPartsPage(); const pn = document.querySelector('.sp-add-pn'); if (pn) pn.focus();
+    }
   });
   // Toggle the collapsible add form
   const addToggle = root.querySelector('[data-action="toggle-add"]');
@@ -8225,9 +8266,24 @@ const VPO_STATUS = {
 };
 let _vpoState = null;
 let _vpoAddOpen = false;
+let _vpoChangeBound = false;
+let _vpoChangeRoot = null;
+let _vpoSearchT = 0;
+const VPO_PAGE_SIZE = 100;
+// Column resize — 8 resizable cols: po, job, vendor, eta, ship, tracking, pm, price
+const VPO_COL_DEFAULTS = [80, 72, 180, 78, 72, 160, 76, 100];
+function _vpoColWidths() { try { const s = localStorage.getItem('vpo_col_widths'); return s ? JSON.parse(s) : [...VPO_COL_DEFAULTS]; } catch(_) { return [...VPO_COL_DEFAULTS]; } }
+function _vpoSaveColWidths(w) { try { localStorage.setItem('vpo_col_widths', JSON.stringify(w)); } catch(_) {} }
+function _vpoApplyCols(w) {
+  // col 2 (Vendor) stays as minmax so it absorbs remaining space — prevents overflow
+  const tpl = `20px 22px ${w[0]}px ${w[1]}px minmax(${Math.max(60, w[2])}px,1fr) ${w[3]}px ${w[4]}px ${w[5]}px ${w[6]}px ${w[7]}px 32px 32px`;
+  let el = document.getElementById('vpo-col-style');
+  if (!el) { el = document.createElement('style'); el.id = 'vpo-col-style'; document.head.appendChild(el); }
+  el.textContent = `.vpo-page .sp-flat .sp-prow-line, .vpo-page .vpo-head { grid-template-columns: ${tpl} !important; }`;
+}
 function _vpoStateGet() {
   if (_vpoState) return _vpoState;
-  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', fJob: 'all', dashRange: 7 };
+  let s = { filter: 'open', search: '', view: 'list', fVendor: 'all', fPm: 'all', fStatus: 'all', fJob: 'all', dashRange: 7, page: 0, etaRange: 'all', sortKey: 'eta', sortDir: 'asc' };
   try { s = Object.assign(s, JSON.parse(localStorage.getItem('sdcVendorPoState') || '{}')); } catch (_) {}
   if (s.view !== 'cards') s.view = 'list';
   _vpoState = s; return s;
@@ -8269,6 +8325,21 @@ function _etoCheckOnce() {
       try { renderVendorPOsPage(); } catch (_) {}
       try { renderProjectTabs(); } catch (_) {}
     }
+  }).catch(() => {});
+}
+
+// ── Job Hours availability (Power BI) ───────────────────────────────────────
+let _hoursAvailable = false;
+let _hoursChecked = false;
+const _hoursCache = {};
+const _hoursFetching = {};
+// UI filter state — survives re-renders within a session
+const _hoursUI = { mode: 'quoted', billing: 'all' };
+function _hoursCheckOnce() {
+  if (_hoursChecked) return;
+  _hoursChecked = true;
+  fetch('/api/hours/status').then(r => r.json()).then(s => {
+    if (s && s.enabled) { _hoursAvailable = true; try { renderScheduleHours(); } catch (_) {} }
   }).catch(() => {});
 }
 
@@ -8446,6 +8517,7 @@ function _procBarColor(pct) { return pct >= 90 ? '#74C415' : pct >= 60 ? '#AACEE
 // a PO to expand its line items inline. Lazily fetches /api/eto/vendors/:job.
 function _procRerender() {
   try { renderScheduleProcurement(); } catch (_) {}
+  try { renderScheduleHours(); } catch (_) {}
 }
 
 // ── Cost tab (ETO "Part Cost" report card) ──────────────────────────────────
@@ -9408,6 +9480,22 @@ function _procPartsTable(data) {
   const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
   const fmt = d => d ? fmtDate(d) : '—';
   const rh = i => `<div class="proc-col-resize" onmousedown="_procColResizeStart(event,${i})"></div>`;
+  const leadChip = (orderDate, expDate) => {
+    if (!orderDate || !expDate) return `<span>—</span>`;
+    const days = Math.round((new Date(expDate) - new Date(orderDate)) / 86400000);
+    if (isNaN(days) || days < 0) return `<span>—</span>`;
+    const cls = days <= 30 ? 'ok' : days <= 60 ? 'warn' : 'long';
+    return `<span class="proc-lead proc-lead-${cls}" title="${days} day lead time (ordered → expected delivery)">${days}d</span>`;
+  };
+  const dueChip = (expDate, isReceived) => {
+    if (isReceived) return `<span class="proc-due proc-due-rcvd" title="Already received">RCVD</span>`;
+    if (!expDate) return `<span>—</span>`;
+    const days = Math.round((new Date(expDate) - Date.now()) / 86400000);
+    if (isNaN(days)) return `<span>—</span>`;
+    if (days > 7)  return `<span class="proc-due proc-due-ahead" title="Due in ${days} days">+${days}d</span>`;
+    if (days >= 0) return `<span class="proc-due proc-due-soon"  title="Due in ${days} days">+${days}d</span>`;
+    return `<span class="proc-due proc-due-late" title="${Math.abs(days)} days overdue">${days}d</span>`;
+  };
   const hcols = [
     `<span class="num">Qty${rh(0)}</span>`,
     `<span>Part No${rh(1)}</span>`,
@@ -9419,6 +9507,8 @@ function _procPartsTable(data) {
     `<span>PO #${rh(7)}</span>`,
     `<span title="PO purchase date">Purchased${rh(8)}</span>`,
     `<span>Exp${rh(9)}</span>`,
+    `<span title="Days between purchase and expected delivery">Lead${rh(10)}</span>`,
+    `<span title="Days until / since expected delivery">Due${rh(11)}</span>`,
     `<span>Status</span>`,
   ].join('');
   return `<div class="proc-plist">
@@ -9436,6 +9526,8 @@ function _procPartsTable(data) {
         <span class="proc-plpo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
         <span>${fmt(p.orderDate)}</span>
         <span>${fmt(p.expDate || p.requiredDate)}</span>
+        ${leadChip(p.orderDate, p.expDate)}
+        ${dueChip(p.expDate, st.key === 'received')}
         <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
       </div>`;
     }).join('')}
@@ -9574,6 +9666,15 @@ async function _vpoLoadLines(box) {
       </div>`;
     }).join('')}`;
 }
+function _vpoTrackingLink(t) {
+  if (!t) return '';
+  const s = String(t).trim(); if (!s) return '';
+  let url = '';
+  if (/^1Z[0-9A-Z]{16}$/i.test(s)) url = `https://wwwapps.ups.com/tracking/tracking.cgi?tracknum=${encodeURIComponent(s)}`;
+  else if (/^\d{12}$|^\d{15}$/.test(s)) url = `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(s)}`;
+  else if (/^\d{20,22}$/.test(s)) url = `https://tools.usps.com/go/TrackConfirmAction?qtc_tLabels1=${encodeURIComponent(s)}`;
+  return url ? `<a class="vpo-track-link" href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(s)}</a>` : escapeHtml(s);
+}
 function _vpoRows(all, st) {
   let rows = all.slice();
   if (st.filter === 'open') rows = rows.filter(r => !r.complete);
@@ -9582,16 +9683,30 @@ function _vpoRows(all, st) {
   if (st.fPm && st.fPm !== 'all') rows = rows.filter(r => (r.pm || '') === st.fPm);
   if (st.fStatus && st.fStatus !== 'all') rows = rows.filter(r => _vpoStatusOf(r) === st.fStatus);
   if (st.fJob && st.fJob !== 'all') rows = rows.filter(r => String(r.job || '') === st.fJob);
+  if (st.etaRange && st.etaRange !== 'all') { const cut = Date.now() + Number(st.etaRange) * 86400000; rows = rows.filter(r => { const e = _vpoEtaMs(r); return e != null && e <= cut; }); }
   const q = (st.search || '').trim().toLowerCase();
-  if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments].some(v => String(v || '').toLowerCase().includes(q)));
-  const eta = r => { const m = _vpoEtaMs(r); return m == null ? Infinity : m; };
-  rows.sort((a, b) => (a.complete ? 1 : 0) - (b.complete ? 1 : 0) || eta(a) - eta(b) || (a.id - b.id));
+  if (q) rows = rows.filter(r => [r.po, r.job, r.vendor, r.pm, r.tracking, r.comments, r.po_price].some(v => String(v || '').toLowerCase().includes(q)));
+  const cmp = (a, b) => {
+    const dir = st.sortDir === 'desc' ? -1 : 1;
+    if (st.sortKey === 'job') return dir * String(a.job||'').localeCompare(String(b.job||'')) || (a.id - b.id);
+    if (st.sortKey === 'vendor') return dir * String(a.vendor||'').localeCompare(String(b.vendor||'')) || (a.id - b.id);
+    if (st.sortKey === 'pm') return dir * String(a.pm||'').localeCompare(String(b.pm||'')) || (a.id - b.id);
+    if (st.sortKey === 'price') return dir * ((parseFloat(a.po_price)||0) - (parseFloat(b.po_price)||0)) || (a.id - b.id);
+    const ea = _vpoEtaMs(a) ?? Infinity, eb = _vpoEtaMs(b) ?? Infinity; return dir * (ea - eb) || (a.id - b.id);
+  };
+  rows.sort((a, b) => (a.complete ? 1 : 0) - (b.complete ? 1 : 0) || cmp(a, b));
   return rows;
 }
-async function _vpoSetField(id, field, val) {
+async function _vpoSetField(id, field, val, inputEl) {
   const r = (state.vendorPOs || []).find(x => x.id === id); if (!r) return;
-  const upd = await api.vendorPOs.update(id, { [field]: val });
-  if (upd) Object.assign(r, upd); else r[field] = val;
+  if (inputEl) { inputEl.classList.remove('sp-saved','sp-save-err'); inputEl.classList.add('sp-saving'); }
+  try {
+    const upd = await api.vendorPOs.update(id, { [field]: val });
+    if (upd) Object.assign(r, upd); else r[field] = val;
+    if (inputEl) { inputEl.classList.remove('sp-saving'); inputEl.classList.add('sp-saved'); setTimeout(() => { try { inputEl.classList.remove('sp-saved'); } catch(_){} }, 1500); }
+  } catch (_) {
+    if (inputEl) { inputEl.classList.remove('sp-saving'); inputEl.classList.add('sp-save-err'); setTimeout(() => { try { inputEl.classList.remove('sp-save-err'); } catch(_){} }, 2000); }
+  }
 }
 
 function renderVendorPOsPage() {
@@ -9608,6 +9723,11 @@ function renderVendorPOsPage() {
   const pmList = `<datalist id="vpo-pm-list">${[...new Set([...teamNames, ...pms])].map(n => `<option value="${escapeHtml(n)}"></option>`).join('')}</datalist>`;
   const vendorList = `<datalist id="vpo-vendor-list">${vendors.map(v => `<option value="${escapeHtml(v)}"></option>`).join('')}</datalist>`;
 
+  // Pagination
+  const totalPages = Math.ceil(rows.length / VPO_PAGE_SIZE) || 1;
+  const page = Math.max(0, Math.min(st.page || 0, totalPages - 1));
+  const pageRows = rows.slice(page * VPO_PAGE_SIZE, (page + 1) * VPO_PAGE_SIZE);
+
   const detailInput = (r, c) => {
     const val = r[c.key];
     const a = `data-id="${r.id}" data-field="${c.key}"`;
@@ -9620,53 +9740,59 @@ function renderVendorPOsPage() {
   };
   const detailFields = (r) => VPO_COLS.map(c => detailInput(r, c)).join('');
 
+  const sk = st.sortKey || 'eta', sd = st.sortDir || 'asc', sa = sd === 'asc' ? '▲' : '▼';
+  const sHdr = (k, lbl, h='') => `<span class="vpo-sort-hdr${sk === k ? ' vpo-sort-active' : ''}" data-vpo-sort="${k}">${lbl}${sk === k ? ' ' + sa : ''}${h}</span>`;
+
   const row = (r, mode) => {
     const isList = mode === 'list';
     const sName = _vpoStatusOf(r);
     const s = VPO_STATUS[sName];
     const e = _vpoEtaMs(r);
     const etaStr = e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '';
-    // Buyer revised the date in ETO → show the slip right on the row.
     const slipped = r.eto_synced && r.eta && r.eta_original && r.eta !== r.eta_original;
-    const slipTip = slipped
-      ? (r.eta > r.eta_original
-          ? `Slipped from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`
-          : `Moved up from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`)
-      : '';
+    const slipTip = slipped ? (r.eta > r.eta_original ? `Slipped from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO` : `Moved up from ${_vpoFmtDate(r.eta_original)} — buyer revised the date in ETO`) : '';
     const slipMark = slipped ? ` <span class="vpo-slip" title="${escapeHtml(slipTip)}">↻</span>` : '';
+    const priBadge = r.priority ? `<span class="vpo-pri-badge" title="Priority ${r.priority}">${r.priority}</span> ` : '';
+    const priceCell = r.complete ? (r.completed_on ? escapeHtml(_vpoFmtDate(r.completed_on)) : '') : (r.po_price ? escapeHtml(String(r.po_price)) : '');
     return `<div class="sp-prow vpo-row vpo-st-${sName}" data-id="${r.id}">
       <div class="sp-prow-line">
-        <span class="vpo-dot" style="background:${s.color}" title="${s.label}"></span>
-        <span class="vpo-po" data-toggle="${r.id}">${escapeHtml(r.po || '—')}${r.eto_synced ? ' <span class="vpo-eto-pill" title="Auto-synced from Total ETO — vendor, dates, price and done status refresh from the ERP every 30 minutes. PM, comments and tracking stay yours.">ETO</span>' : ''}</span>
-        <span class="vpo-job">${escapeHtml(r.job || '')}</span>
-        ${isList ? `<span class="vpo-vendor">${escapeHtml(r.vendor || '')}</span>` : ''}
+        ${isList ? `<input type="checkbox" class="vpo-bulk-chk" data-id="${r.id}"/>` : '<span></span>'}
+        <span class="vpo-dot vpo-dot-${sName}" title="${s.label}" aria-label="${s.label}">${sName==='complete'?'✓':sName==='late'?'!':sName==='shipped'?'↑':sName==='partial'?'~':sName==='soon'?'▲':''}</span>
+        <span class="vpo-po" data-toggle="${r.id}">${priBadge}${escapeHtml(r.po || '—')}${r.eto_synced ? ' <span class="vpo-eto-pill" title="Auto-synced from Total ETO">ETO</span>' : ''}</span>
+        <span class="vpo-job${isList && r.job ? ' vpo-filter-click' : ''}"${isList && r.job ? ` data-fk="fJob" data-fv="${escapeHtml(String(r.job))}"` : ''}>${escapeHtml(r.job || '')}</span>
+        ${isList ? `<span class="vpo-vendor${r.vendor ? ' vpo-filter-click' : ''}" ${r.vendor ? `data-fk="fVendor" data-fv="${escapeHtml(r.vendor)}"` : ''}>${escapeHtml(r.vendor || '')}</span>` : ''}
         <span class="vpo-eta">${etaStr}${slipMark}</span>
         ${isList ? `<span class="vpo-ship">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : ''}</span>` : ''}
-        ${isList ? `<span class="vpo-track" title="${escapeHtml(r.tracking || '')}">${escapeHtml(r.tracking || '')}</span>` : ''}
+        ${isList ? `<span class="vpo-track">${_vpoTrackingLink(r.tracking)}</span>` : ''}
+        ${isList ? `<span class="vpo-pm${r.pm ? ' vpo-filter-click' : ''}" ${r.pm ? `data-fk="fPm" data-fv="${escapeHtml(r.pm)}"` : ''}>${escapeHtml(r.pm || '')}</span>` : ''}
+        ${isList ? `<span class="vpo-price">${priceCell}</span>` : ''}
         <label class="sp-done" title="Partial shipment"><input type="checkbox" data-id="${r.id}" data-field="partial" ${r.partial ? 'checked' : ''}/></label>
         <label class="sp-done" title="Complete"><input type="checkbox" data-id="${r.id}" data-field="complete" ${r.complete ? 'checked' : ''}/></label>
       </div>
-      <div class="sp-card-details" data-details="${r.id}" hidden>${r.eto_synced && r.job && r.po ? `<div class="vpo-lines" data-lines-job="${escapeHtml(r.job)}" data-lines-po="${escapeHtml(r.po)}"></div>` : ''}<div class="sp-fields">${detailFields(r)}</div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
+      <div class="sp-card-details" data-details="${r.id}" hidden>${r.eto_synced && r.job && r.po ? `<div class="vpo-lines" data-lines-job="${escapeHtml(r.job)}" data-lines-po="${escapeHtml(r.po)}"></div>` : ''}<div class="sp-fields sp-fields-lazy" data-lazy-id="${r.id}"></div><button class="vpo-del" data-id="${r.id}" type="button">Delete PO</button></div>
     </div>`;
   };
 
-  const listHead = `<div class="sp-list-head vpo-head"><span></span><span>PO #</span><span>Job</span><span>Vendor</span><span>ETA</span><span>Ship</span><span>Tracking</span><span>Part</span><span>Done</span></div>`;
-  const cardHead = `<div class="sp-prow-line vpo-cardhead"><span></span><span>PO #</span><span>Job</span><span>ETA</span><span>Part</span><span>Done</span></div>`;
+  const rh = (i) => `<span class="vpo-rhandle" data-col="${i}" title="Drag to resize"></span>`;
+  const listHead = `<div class="sp-list-head vpo-head"><span><input type="checkbox" class="vpo-bulk-all" title="Select all"/></span><span></span><span>PO #${rh(0)}</span>${sHdr('job','Job',rh(1))}${sHdr('vendor','Vendor',rh(2))}${sHdr('eta','ETA',rh(3))}<span>Ship${rh(4)}</span><span>Tracking${rh(5)}</span>${sHdr('pm','PM',rh(6))}${sHdr('price','Price',rh(7))}<span>Part</span><span>Done</span></div>`;
+  const cardHead = `<div class="sp-prow-line vpo-cardhead"><span></span><span></span><span>PO #</span><span>Job</span><span>ETA</span><span>Part</span><span>Done</span></div>`;
 
   let mainHtml;
-  if (rows.length === 0) mainHtml = '<p class="sp-empty">No POs to show.</p>';
+  if (pageRows.length === 0) mainHtml = '<p class="sp-empty">No POs to show.</p>';
   else if (st.view === 'cards') {
     const groups = {};
-    rows.forEach(r => { const k = r.vendor && r.vendor.trim() ? r.vendor : 'No vendor'; (groups[k] = groups[k] || []).push(r); });
+    pageRows.forEach(r => { const k = r.vendor && r.vendor.trim() ? r.vendor : 'No vendor'; (groups[k] = groups[k] || []).push(r); });
     mainHtml = `<div class="sp-proj-grid">${Object.keys(groups).sort((a, b) => a.localeCompare(b)).map(vn =>
       `<section class="sp-proj-card"><header class="sp-proj-head"><span class="sp-proj-name">${escapeHtml(vn)}</span><span class="sp-group-count">${groups[vn].length}</span></header><div class="sp-proj-body">${cardHead}${groups[vn].map(r => row(r, 'card')).join('')}</div></section>`).join('')}</div>`;
   } else {
-    mainHtml = `<div class="sp-flat">${listHead}${rows.map(r => row(r, 'list')).join('')}</div>`;
+    mainHtml = `<div class="sp-flat">${listHead}${pageRows.map(r => row(r, 'list')).join('')}</div>`;
   }
 
   const sel = (val, opts, attr) => `<select ${attr}>${opts.map(o => `<option value="${escapeHtml(o.v)}"${val === o.v ? ' selected' : ''}>${escapeHtml(o.t)}</option>`).join('')}</select>`;
   const legend = ['complete', 'shipped', 'partial', 'late', 'soon'].map(k => `<span class="vpo-leg"><i style="background:${VPO_STATUS[k].color}"></i>${VPO_STATUS[k].label}</span>`).join('')
     + (_etoAvailable ? '<span class="vpo-leg" title="The buyer entered a revised date in Total ETO — the ETA shown is the new promise; hover the ↻ on a row to see the original."><span class="vpo-slip">↻</span> date revised in ETO</span>' : '');
+
+  const paginationHtml = totalPages > 1 ? `<div class="vpo-pagination"><button class="vpo-page-btn" data-vpo-pg="${page - 1}" ${page === 0 ? 'disabled' : ''}>‹ Prev</button><span class="vpo-page-info">Page ${page + 1} of ${totalPages} &nbsp;(${rows.length} POs)</span><button class="vpo-page-btn" data-vpo-pg="${page + 1}" ${page >= totalPages - 1 ? 'disabled' : ''}>Next ›</button></div>` : '';
 
   // ── Dashboards ──
   const nowMs = Date.now();
@@ -9674,7 +9800,6 @@ function renderVendorPOsPage() {
   const donePOs = all.filter(r => r.complete);
   const dRange = [7, 14, 21, 28, 99999].includes(Number(st.dashRange)) ? Number(st.dashRange) : 7;
   const dCut = dRange >= 99999 ? -Infinity : nowMs - dRange * 86400000;
-  // Best-available completion date: completed_on, else delivery, else ship.
   const compDate = (r) => { for (const d of [r.completed_on, r.delivery_date, r.ship_date]) { const t = d ? Date.parse(d) : NaN; if (!isNaN(t)) return t; } return null; };
   // All-time = every completed PO (even ones with no date on file); a specific
   // range needs a date to place it, so undated completes only show in All time.
@@ -9700,43 +9825,47 @@ function renderVendorPOsPage() {
   const lateWeeks = (days) => Math.round((days / 7) * 2) / 2;
   const etaStrOf = (r) => { const e = _vpoEtaMs(r); return e != null ? fmtDate(new Date(e).toISOString().slice(0, 10)) : '—'; };
   const vRangeOpts = [{ v: 7, t: '1 week' }, { v: 14, t: '2 weeks' }, { v: 21, t: '3 weeks' }, { v: 28, t: '4 weeks' }, { v: 99999, t: 'All time' }];
+  const openVal = openPOs.reduce((s, r) => s + (r.po_price ? parseFloat(r.po_price)||0 : 0), 0);
+  const openValStr = openVal > 0 ? '$' + openVal.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—';
   const dashHtml = `
     <div class="sp-dash vpo-dash-main">
       <div class="sp-dcard">
         <div class="sp-dcard-head">Open by vendor <span class="sp-dhint">${lateList.length} late</span></div>
         <div class="sp-dproj-head"><span>Vendor</span><span>POs</span><span>Late</span></div>
-        <div class="sp-dproj-list">${vendorRows.length ? vendorRows.map(vn => `<div class="sp-dprow"><span class="sp-dproj">${escapeHtml(vn)}</span><span class="sp-dcount">${byVendor[vn].n}</span><span class="sp-dbehind">${byVendor[vn].late ? `<span class="sp-dlate-pill">${byVendor[vn].late}</span>` : '—'}</span></div>`).join('') : '<div class="sp-dempty">No open POs</div>'}</div>
+        <div class="sp-dproj-list">${vendorRows.length ? vendorRows.map(vn => `<div class="sp-dprow sp-drow-click" data-fk="fVendor" data-fv="${escapeHtml(vn)}"><span class="sp-dproj">${escapeHtml(vn)}</span><span class="sp-dcount">${byVendor[vn].n}</span><span class="sp-dbehind">${byVendor[vn].late ? `<span class="sp-dlate-pill">${byVendor[vn].late}</span>` : '—'}</span></div>`).join('') : '<div class="sp-dempty">No open POs</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">In transit <span class="sp-dhint">${inTransit.length}</span></div>
         <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>ETA</span><span>Ship</span></div>
-        <div class="sp-dlist">${inTransit.length ? inTransit.slice(0, 8).map(r => `<div class="sp-laterow${r.partial ? ' is-partial' : ''}" title="${r.partial ? 'Partial shipment' : ''}"><span class="sp-dpn">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-deta">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : '—'}</span></div>`).join('') : '<div class="sp-dempty">Nothing in transit</div>'}</div>
+        <div class="sp-dlist">${inTransit.length ? inTransit.slice(0, 8).map(r => `<div class="sp-laterow${r.partial ? ' is-partial' : ''}"><span class="sp-dpn vpo-dash-po-link" data-id="${r.id}" data-po="${escapeHtml(r.po||'')}">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-deta">${r.ship_date ? escapeHtml(_vpoFmtDate(r.ship_date)) : '—'}</span></div>`).join('') : '<div class="sp-dempty">Nothing in transit</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">Late POs <span class="sp-dhint">${lateList.length}</span></div>
         <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>ETA</span><span>Late</span></div>
-        <div class="sp-dlist">${lateList.length ? [...lateList].sort((a, b) => b.late - a.late).slice(0, 8).map(x => `<div class="sp-laterow${x.r.partial ? ' is-partial' : ''}" title="${x.r.partial ? 'Partial shipment' : ''}"><span class="sp-dpn">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.vendor || '')}</span><span class="sp-deta">${etaStrOf(x.r)}</span><span class="sp-cvar is-late">${lateWeeks(x.late)}w</span></div>`).join('') : '<div class="sp-dempty">Nothing late 🎉</div>'}</div>
+        <div class="sp-dlist">${lateList.length ? [...lateList].sort((a, b) => b.late - a.late).slice(0, 8).map(x => `<div class="sp-laterow${x.r.partial ? ' is-partial' : ''}"><span class="sp-dpn vpo-dash-po-link" data-id="${x.r.id}" data-po="${escapeHtml(x.r.po||'')}">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.vendor || '')}</span><span class="sp-deta">${etaStrOf(x.r)}</span><span class="sp-cvar is-late">${lateWeeks(x.late)}w</span></div>`).join('') : '<div class="sp-dempty">Nothing late 🎉</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">Completed <select class="vpo-dash-range">${vRangeOpts.map(o => `<option value="${o.v}"${dRange === o.v ? ' selected' : ''}>${o.t}</option>`).join('')}</select> <span class="sp-dhint">${compInRange.length}</span></div>
         <div class="sp-comp-head"><span>PO #</span><span>Job</span><span>Lead</span><span>Took</span></div>
-        <div class="sp-dlist">${compRows.length ? compRows.map(x => `<div class="sp-comprow"><span class="sp-dpn">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.job || '')}</span><span class="sp-deta">${x.r.lead_time != null && x.r.lead_time !== '' ? x.r.lead_time + 'w' : '—'}</span><span class="sp-cvar">${x.took != null ? x.took + 'w' : '—'}</span></div>`).join('') : '<div class="sp-dempty">None completed in range</div>'}</div>
+        <div class="sp-dlist">${compRows.length ? compRows.map(x => `<div class="sp-comprow"><span class="sp-dpn vpo-dash-po-link" data-id="${x.r.id}" data-po="${escapeHtml(x.r.po||'')}">${escapeHtml(x.r.po || '—')}</span><span class="sp-dproj">${escapeHtml(x.r.job || '')}</span><span class="sp-deta">${x.r.lead_time != null && x.r.lead_time !== '' ? x.r.lead_time + 'w' : '—'}</span><span class="sp-cvar">${x.took != null ? x.took + 'w' : '—'}</span></div>`).join('') : '<div class="sp-dempty">None completed in range</div>'}</div>
       </div>
       <div class="sp-dcard">
         <div class="sp-dcard-head">Longest outstanding</div>
         <div class="sp-late-head"><span>PO #</span><span>Vendor</span><span>Due</span><span>Out</span></div>
-        <div class="sp-dlist">${oldestOpen.length ? oldestOpen.map(r => `<div class="sp-laterow"><span class="sp-dpn">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-cvar">${weeksOut(r)}w</span></div>`).join('') : '<div class="sp-dempty">None open 🎉</div>'}</div>
+        <div class="sp-dlist">${oldestOpen.length ? oldestOpen.map(r => `<div class="sp-laterow"><span class="sp-dpn vpo-dash-po-link" data-id="${r.id}" data-po="${escapeHtml(r.po||'')}">${escapeHtml(r.po || '—')}</span><span class="sp-dproj">${escapeHtml(r.vendor || '')}</span><span class="sp-deta">${etaStrOf(r)}</span><span class="sp-cvar">${weeksOut(r)}w</span></div>`).join('') : '<div class="sp-dempty">None open 🎉</div>'}</div>
       </div>
     </div>`;
 
-  // Compact historical strip that lives up top, left of the Add PO button:
-  // on-time delivery donut + avg-lead-by-vendor mini list, combined in one visual.
   const headStat = `
     <div class="vpo-headstat">
       <div class="vpo-hs-ontime">
         <span class="vpo-hs-label">On-time delivery</span>
         ${_shopDonut(onTimePct)}
         <span class="vpo-hs-sub">${compEta.length ? `${onTimeN}/${compEta.length}` : '—'}</span>
+      </div>
+      <div class="vpo-hs-total">
+        <span class="vpo-hs-label">Open PO value</span>
+        <span class="vpo-hs-totalval">${openValStr}</span>
       </div>
       <div class="vpo-hs-lead">
         <span class="vpo-hs-label">Avg lead by vendor</span>
@@ -9749,7 +9878,7 @@ function renderVendorPOsPage() {
       <div class="sp-head-top">
         <h1 class="projects-page-title">Vendor PO Track</h1>
         ${headStat}
-        ${_etoAvailable ? `<button class="btn-secondary sp-add-toggle" data-action="vpo-eto-sync" data-scope="all" type="button" title="Pull the latest PO status from Total ETO — every open PO across the whole ERP, plus a refresh of everything already here. Runs automatically every 30 min; this is the on-demand version.">⟳ Sync from ETO</button>` : ''}
+        ${_etoAvailable ? `<button class="btn-secondary sp-add-toggle" data-action="vpo-eto-sync" data-scope="all" type="button" title="Pull the latest PO status from Total ETO — runs automatically every 30 min; this is the on-demand version.">⟳ Sync from ETO</button>` : ''}
         <button class="btn-primary sp-add-toggle" data-action="vpo-toggle-add" type="button">${_vpoAddOpen ? '✕ Close' : '＋ Add PO'}</button>
       </div>
       <form class="sp-add-bar${_vpoAddOpen ? '' : ' is-hidden'}" data-action="vpo-add-form">
@@ -9758,10 +9887,20 @@ function renderVendorPOsPage() {
         <label class="sp-add-f"><span>Vendor</span><input name="vendor" list="vpo-vendor-list" autocomplete="off"/></label>
         <label class="sp-add-f"><span>PO Date</span><input name="po_date" type="date"/></label>
         <label class="sp-add-f"><span>Lead (wks)</span><input name="lead_time" type="number" min="0" style="width:64px"/></label>
+        <label class="sp-add-f"><span>ETA</span><input name="eta" type="date"/></label>
         <label class="sp-add-f"><span>PM</span><input name="pm" list="vpo-pm-list" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>Tracking</span><input name="tracking" autocomplete="off"/></label>
+        <label class="sp-add-f"><span>PO Price</span><input name="po_price" autocomplete="off"/></label>
         <label class="sp-add-f sp-add-f-grow"><span>Comments</span><input name="comments" autocomplete="off"/></label>
         <button class="btn-primary sp-add-btn" type="submit">Add</button>
       </form>
+      <div class="vpo-bulk-bar" id="vpo-bulk-bar" hidden>
+        <span class="vpo-bulk-count">0 selected</span>
+        <button class="btn-secondary vpo-bulk-complete" type="button">Mark Complete</button>
+        <button class="btn-secondary vpo-bulk-delete" type="button">Delete</button>
+        <button class="vpo-bulk-clear" type="button">Clear</button>
+      </div>
+      <div class="vpo-sticky-controls">
       <div class="shop-parts-toolbar">
         <div class="seg-control sp-view">
           <button class="seg-btn${st.view === 'list' ? ' is-active' : ''}" data-vview="list" type="button">List</button>
@@ -9771,68 +9910,119 @@ function renderVendorPOsPage() {
           <button class="seg-btn${st.filter === 'open' ? ' is-active' : ''}" data-vfilter="open" type="button">Open ${openCount}</button>
           <button class="seg-btn${st.filter === 'complete' ? ' is-active' : ''}" data-vfilter="complete" type="button">Complete</button>
           <button class="seg-btn${st.filter === 'all' ? ' is-active' : ''}" data-vfilter="all" type="button">All</button>
+          <button class="seg-btn${st.fStatus === 'soon' ? ' is-active' : ''}" data-vfilter-status="soon" type="button">Due soon</button>
         </div>
         ${sel(st.fStatus, [{ v: 'all', t: 'Status: all' }, { v: 'late', t: 'Late' }, { v: 'shipped', t: 'Shipped' }, { v: 'soon', t: 'Due ≤1 wk' }, { v: 'partial', t: 'Partial' }, { v: 'complete', t: 'Complete' }], 'class="vpo-fsel" data-fk="fStatus"')}
         ${sel(st.fVendor, [{ v: 'all', t: 'Vendor: all' }, ...vendors.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fVendor"')}
         ${sel(st.fPm, [{ v: 'all', t: 'PM: all' }, ...pms.map(v => ({ v, t: v }))], 'class="vpo-fsel" data-fk="fPm"')}
         ${sel(st.fJob, [{ v: 'all', t: 'Job: all' }, ...jobsList.map(v => ({ v, t: `#${v}` }))], 'class="vpo-fsel" data-fk="fJob"')}
+        ${sel(st.etaRange, [{ v: 'all', t: 'ETA: any' }, { v: '7', t: '≤ 1 week' }, { v: '14', t: '≤ 2 weeks' }, { v: '30', t: '≤ 30 days' }], 'class="vpo-fsel" data-fk="etaRange"')}
         <input type="search" class="vpo-search" placeholder="Search PO / job / vendor / tracking…" value="${escapeHtml(st.search || '')}"/>
+        ${st.search ? `<button class="vpo-clear-search" data-action="vpo-clear-search" type="button" title="Clear search and show all">✕ Clear</button>` : ''}
+        <button class="btn-secondary vpo-csv-btn" data-action="vpo-csv" type="button" title="Export to CSV">⬇ CSV</button>
       </div>
       <div class="vpo-legend">${legend}</div>
+      </div>
     </div>
     ${dashHtml}
     ${mainHtml}
+    ${paginationHtml}
     ${pmList}${vendorList}`;
 
+  // ── Event listeners ──
   root.querySelector('[data-action="vpo-toggle-add"]').addEventListener('click', () => { _vpoAddOpen = !_vpoAddOpen; renderVendorPOsPage(); if (_vpoAddOpen) { const p = root.querySelector('input[name="po"]'); if (p) p.focus(); } });
-  _etoCheckOnce(); // reveal the ETO sync buttons if the server has ETO configured
+  // Apply column widths
+  _vpoApplyCols(_vpoColWidths());
+  // Column resize drag
+  root.querySelectorAll('.vpo-rhandle[data-col]').forEach(handle => {
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const colIdx = Number(handle.dataset.col);
+      const startX = e.clientX;
+      const w = _vpoColWidths();
+      const startW = w[colIdx];
+      const onMove = (ev) => {
+        const newW = Math.max(40, startW + ev.clientX - startX);
+        w[colIdx] = newW;
+        _vpoApplyCols(w);
+      };
+      const onUp = () => {
+        _vpoSaveColWidths(w);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    handle.addEventListener('dblclick', () => {
+      const w = _vpoColWidths();
+      w[Number(handle.dataset.col)] = VPO_COL_DEFAULTS[Number(handle.dataset.col)];
+      _vpoSaveColWidths(w); _vpoApplyCols(w);
+    });
+  });
+  _etoCheckOnce();
   root.querySelectorAll('[data-action="vpo-eto-sync"]').forEach(etoBtn => etoBtn.addEventListener('click', async () => {
     const scope = etoBtn.dataset.scope || 'linked';
     const label = etoBtn.textContent;
     etoBtn.disabled = true; etoBtn.textContent = '⟳ Syncing…';
     try {
       const r = await api.eto.syncVendorPOs(scope);
-      if (r && r.ok) {
-        showToast(`ETO sync done — ${r.pos} PO${r.pos === 1 ? '' : 's'} across ${r.jobs} job${r.jobs === 1 ? '' : 's'} (${r.created} new, ${r.updated} updated)`, { kind: 'success' });
-        await loadVendorPOs();
-        return; // loadVendorPOs re-rendered the page; this button is gone
-      }
+      if (r && r.ok) { showToast(`ETO sync done — ${r.pos} PO${r.pos === 1 ? '' : 's'} across ${r.jobs} job${r.jobs === 1 ? '' : 's'} (${r.created} new, ${r.updated} updated)`, { kind: 'success' }); await loadVendorPOs(); return; }
       showToast(`ETO sync failed: ${(r && r.error) || 'unknown error'}`, { kind: 'error' });
-    } catch (e) {
-      showToast(`ETO sync failed: ${e.message}`, { kind: 'error' });
-    }
+    } catch (e) { showToast(`ETO sync failed: ${e.message}`, { kind: 'error' }); }
     etoBtn.disabled = false; etoBtn.textContent = label;
   }));
   root.querySelector('[data-action="vpo-add-form"]').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target;
-    const data = { po: f.po.value.trim() || null, job: f.job.value.trim() || null, vendor: f.vendor.value.trim() || null, po_date: f.po_date.value || null, lead_time: f.lead_time.value === '' ? null : Number(f.lead_time.value), pm: f.pm.value.trim() || null, comments: f.comments.value.trim() || null, complete: 0, partial: 0 };
+    const data = { po: f.po.value.trim()||null, job: f.job.value.trim()||null, vendor: f.vendor.value.trim()||null, po_date: f.po_date.value||null, lead_time: f.lead_time.value===''?null:Number(f.lead_time.value), eta: f.eta.value||null, pm: f.pm.value.trim()||null, tracking: f.tracking.value.trim()||null, po_price: f.po_price.value.trim()||null, comments: f.comments.value.trim()||null, complete: 0, partial: 0 };
     const created = await api.vendorPOs.create(data);
     if (created && created.id) { state.vendorPOs.push(created); f.reset(); _vpoAddOpen = true; renderVendorPOsPage(); }
   });
-  root.querySelectorAll('.sp-view [data-vview]').forEach(b => b.addEventListener('click', () => { st.view = b.dataset.vview; _vpoSave(); renderVendorPOsPage(); }));
-  root.querySelectorAll('.sp-filter [data-vfilter]').forEach(b => b.addEventListener('click', () => { st.filter = b.dataset.vfilter; _vpoSave(); renderVendorPOsPage(); }));
-  root.querySelectorAll('.vpo-fsel').forEach(s => s.addEventListener('change', () => { st[s.dataset.fk] = s.value; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.sp-view [data-vview]').forEach(b => b.addEventListener('click', () => { st.view = b.dataset.vview; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.sp-filter [data-vfilter]').forEach(b => b.addEventListener('click', () => { st.filter = b.dataset.vfilter; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('[data-vfilter-status]').forEach(b => b.addEventListener('click', () => { st.fStatus = st.fStatus === b.dataset.vfilterStatus ? 'all' : b.dataset.vfilterStatus; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
+  root.querySelectorAll('.vpo-fsel').forEach(s => s.addEventListener('change', () => { st[s.dataset.fk] = s.value; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
   const vdr = root.querySelector('.vpo-dash-range');
   if (vdr) vdr.addEventListener('change', () => { st.dashRange = Number(vdr.value); _vpoSave(); renderVendorPOsPage(); });
   const se = root.querySelector('.vpo-search');
-  se.addEventListener('input', () => { st.search = se.value; _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } });
+  se.addEventListener('input', () => {
+    st.search = se.value; st.page = 0;
+    clearTimeout(_vpoSearchT);
+    _vpoSearchT = setTimeout(() => { _vpoSave(); renderVendorPOsPage(); const s2 = document.querySelector('.vpo-search'); if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); } }, 300);
+  });
+  // Column sort
+  root.querySelectorAll('[data-vpo-sort]').forEach(h => h.addEventListener('click', () => {
+    const k = h.dataset.vpoSort;
+    if (st.sortKey === k) st.sortDir = st.sortDir === 'asc' ? 'desc' : 'asc'; else { st.sortKey = k; st.sortDir = 'asc'; }
+    st.page = 0; _vpoSave(); renderVendorPOsPage();
+  }));
+  // Pagination
+  root.querySelectorAll('[data-vpo-pg]').forEach(b => b.addEventListener('click', () => { st.page = Number(b.dataset.vpoPg); _vpoSave(); renderVendorPOsPage(); }));
+  // Row expand toggle with lazy field fill
   root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
     const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
     if (!d) return;
     d.hidden = !d.hidden;
-    // Synced rows: pull the PO's actual part lines from ETO on first open.
     if (!d.hidden) {
+      const lazy = d.querySelector('.sp-fields-lazy');
+      if (lazy && !lazy.dataset.filled) {
+        lazy.dataset.filled = '1';
+        const r2 = (state.vendorPOs || []).find(x => x.id === Number(lazy.dataset.lazyId));
+        if (r2) lazy.innerHTML = detailFields(r2);
+      }
       const box = d.querySelector('.vpo-lines');
       if (box && !box.dataset.loaded) { box.dataset.loaded = '1'; _vpoLoadLines(box); }
+      setTimeout(() => { try { d.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch(_){} }, 50);
     }
   }));
-  if (!root.dataset.changeBound) {
-    root.dataset.changeBound = '1';
+  // Change handler — module-level guard survives root re-creation
+  if (!_vpoChangeBound || _vpoChangeRoot !== root) {
+    _vpoChangeBound = true; _vpoChangeRoot = root;
     root.addEventListener('change', async (e) => {
       const el = e.target.closest('[data-id][data-field]'); if (!el) return;
       const id = Number(el.dataset.id), field = el.dataset.field;
       let val; if (el.type === 'checkbox') val = el.checked ? 1 : 0; else if (el.type === 'number') val = el.value === '' ? null : Number(el.value); else val = el.value;
-      await _vpoSetField(id, field, val);
+      await _vpoSetField(id, field, val, el.type !== 'checkbox' ? el : null);
       if (['complete', 'partial', 'tracking', 'vendor', 'eta', 'po_date', 'lead_time'].includes(field)) renderVendorPOsPage();
     });
   }
@@ -9841,13 +10031,75 @@ function renderVendorPOsPage() {
     const ok = await showConfirmDialog({ title: 'Delete PO?', message: `Delete PO "${escapeHtml(r?.po || 'this PO')}"?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
     if (!ok) return; await api.vendorPOs.remove(id); state.vendorPOs = state.vendorPOs.filter(x => x.id !== id); renderVendorPOsPage();
   }));
+  // Click-to-filter on job / vendor / pm cells
+  root.querySelectorAll('.vpo-filter-click[data-fk]').forEach(span => span.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const fk = span.dataset.fk, fv = span.dataset.fv || 'all';
+    st[fk] = fv; st.page = 0; _vpoSave(); renderVendorPOsPage();
+  }));
+  // Dashboard vendor click → filter to that vendor, switch to open
+  root.querySelectorAll('.sp-drow-click[data-fk]').forEach(row => row.addEventListener('click', () => {
+    st[row.dataset.fk] = row.dataset.fv; st.filter = 'open'; st.page = 0; _vpoSave(); renderVendorPOsPage();
+  }));
+  // Dashboard PO# click → search for that PO, scroll + highlight in list
+  root.querySelectorAll('.vpo-dash-po-link[data-id]').forEach(span => span.addEventListener('click', () => {
+    const id = Number(span.dataset.id), po = span.dataset.po;
+    st.search = po; st.filter = 'all'; st.fStatus = 'all'; st.page = 0; _vpoSave();
+    renderVendorPOsPage();
+    const target = root.querySelector(`.vpo-row[data-id="${id}"]`);
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('vpo-row-highlight');
+      setTimeout(() => target.classList.remove('vpo-row-highlight'), 1800);
+    }
+  }));
+  // Bulk checkboxes
+  const bulkBar = root.querySelector('#vpo-bulk-bar');
+  const updateBulk = () => {
+    const checked = [...root.querySelectorAll('.vpo-bulk-chk:checked')];
+    if (bulkBar) { bulkBar.hidden = checked.length === 0; const cnt = bulkBar.querySelector('.vpo-bulk-count'); if (cnt) cnt.textContent = `${checked.length} selected`; }
+  };
+  root.querySelectorAll('.vpo-bulk-chk').forEach(c => c.addEventListener('change', updateBulk));
+  const allChk = root.querySelector('.vpo-bulk-all');
+  if (allChk) allChk.addEventListener('change', () => { root.querySelectorAll('.vpo-bulk-chk').forEach(c => c.checked = allChk.checked); updateBulk(); });
+  if (bulkBar) {
+    bulkBar.querySelector('.vpo-bulk-clear')?.addEventListener('click', () => { root.querySelectorAll('.vpo-bulk-chk').forEach(c => c.checked = false); if (allChk) allChk.checked = false; updateBulk(); });
+    bulkBar.querySelector('.vpo-bulk-complete')?.addEventListener('click', async () => {
+      const ids = [...root.querySelectorAll('.vpo-bulk-chk:checked')].map(c => Number(c.dataset.id));
+      await Promise.all(ids.map(id => _vpoSetField(id, 'complete', 1)));
+      renderVendorPOsPage();
+    });
+    bulkBar.querySelector('.vpo-bulk-delete')?.addEventListener('click', async () => {
+      const ids = [...root.querySelectorAll('.vpo-bulk-chk:checked')].map(c => Number(c.dataset.id));
+      if (!ids.length) return;
+      const ok = await showConfirmDialog({ title: 'Delete POs?', message: `Delete ${ids.length} selected PO${ids.length === 1 ? '' : 's'}?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
+      if (!ok) return;
+      await Promise.all(ids.map(id => api.vendorPOs.remove(id)));
+      state.vendorPOs = state.vendorPOs.filter(r => !ids.includes(r.id));
+      renderVendorPOsPage();
+    });
+  }
+  // Clear search
+  const clearBtn = root.querySelector('[data-action="vpo-clear-search"]');
+  if (clearBtn) clearBtn.addEventListener('click', () => { st.search = ''; st.filter = 'all'; st.fStatus = 'all'; st.page = 0; _vpoSave(); renderVendorPOsPage(); });
+  // CSV export
+  root.querySelectorAll('[data-action="vpo-csv"]').forEach(btn => btn.addEventListener('click', () => {
+    const headers = ['PO#','Job','Vendor','ETA','Ship Date','Tracking','PM','Price','Status','Partial','Complete'];
+    const csvData = [headers, ...rows.map(r => [r.po||'', r.job||'', r.vendor||'', r.eta||'', r.ship_date||'', r.tracking||'', r.pm||'', r.po_price||'', _vpoStatusOf(r), r.partial?'yes':'no', r.complete?'yes':'no'])];
+    const csv = csvData.map(row => row.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'vendor-pos.csv'; a.click();
+  }));
 }
 
 function renderProjectsPage() {
   const root = document.getElementById('projects-page');
   if (!root) return;
-  const all = uniqueValues('project');
+  // Merge projects from the DB index (loaded eagerly in init) with any in tasks
+  const fromIndex = Object.keys(state.projectsIndex || {});
+  const fromTasks = uniqueValues('project');
+  const all = [...new Set([...fromIndex, ...fromTasks])].sort();
   const openSet = new Set(state.openProjects);
+  const recentSet = new Map((state.recentProjects || []).map((p, i) => [p, i]));
   const byWs = Object.fromEntries(WORKSPACES.map(ws => [ws, []]));
   for (const p of all) byWs[projectWorkspace(p)].push(p);
   for (const ws of WORKSPACES) {
@@ -9859,55 +10111,72 @@ function renderProjectsPage() {
     });
   }
   const expanded = state._projectsExpanded || (state._projectsExpanded = {});
+  const searchQ = (state._projectsSearch || '').toLowerCase().trim();
 
   const favSet = new Set(state.favoriteProjects || []);
-  // Row is a <div role="button"> — NOT a <button> — so the favorite ★ button
-  // nested inside doesn't create invalid nested-button HTML (which Chrome
-  // renders as block-level, breaking the row onto two lines).
-  const rowHtml = (p, opts = {}) => {
+
+  // Workspace accent colors for visual differentiation
+  const WS_ACCENT = { Active: '#1574c4', Sales: '#d97706', Closed: '#94a3b8' };
+  const WS_COUNT_BG = { Active: '#dbeafe', Sales: '#fef9c3', Closed: '#f1f5f9' };
+  const WS_COUNT_COLOR = { Active: '#1d4ed8', Sales: '#92400e', Closed: '#64748b' };
+
+  // Last-opened label from recentProjects index
+  const recentLabel = (p) => {
+    const idx = recentSet.get(p);
+    if (idx === undefined) return '';
+    if (idx === 0) return 'opened just now';
+    if (idx === 1) return 'opened recently';
+    return `opened recently`;
+  };
+
+  const rowHtml = (p) => {
     const isOpen = openSet.has(p);
     const isFav = favSet.has(p);
     const isTmpl = isTemplateProject(p);
-    const star = isTmpl
-      ? '<span class="projects-row-star" title="Template">★</span>'
-      : '<span class="projects-row-star" style="visibility:hidden">★</span>';
+    const jobMatch = p.match(/^(\d{3,5})/);
+    const jobNum = jobMatch ? jobMatch[1] : null;
+    const meta = [jobNum ? `Job #${jobNum}` : null, recentLabel(p)].filter(Boolean).join(' · ');
+    const dot = `<span class="projects-row-dot${isOpen ? ' is-open' : ''}"></span>`;
     const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? '★' : '☆'}</button>`;
-    // Sales-mode projects (non-templates in the Sales workspace) get an
-    // inline "→ Project" promotion button. Clicking it stamps a fresh
-    // detailed schedule from SDC_StandardProject_Template and carries
-    // the saved quote across so Quote vs Schedule lights up immediately.
     const isSalesProject = !isTmpl && projectWorkspace(p) === 'Sales';
     const promoteBtn = isSalesProject
-      ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project. Stamps SDC_StandardProject_Template tasks, copies the saved quote (hours + people #), and applies the sales people-math (e.g. 1.25 people → 1 @ 85% + 1 @ 25%).">→ Project</button>`
+      ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project.">→ Project</button>`
       : '';
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
-      ${star}<span class="projects-row-name">${escapeHtml(p)}</span>
-      ${isOpen ? '<span class="projects-row-badge">open</span>' : ''}
+      ${dot}
+      <div class="projects-row-info">
+        <span class="projects-row-name">${escapeHtml(p)}</span>
+        ${meta ? `<span class="projects-row-meta">${meta}</span>` : ''}
+      </div>
       ${promoteBtn}
       ${favBtn}
     </div>`;
   };
+
   const workspaceSection = (ws) => {
     const projects = byWs[ws];
     const templates = projects.filter(isTemplateProject);
-    const nonTemplates = projects.filter(p => !isTemplateProject(p));
+    let nonTemplates = projects.filter(p => !isTemplateProject(p));
+    if (searchQ) nonTemplates = nonTemplates.filter(p => p.toLowerCase().includes(searchQ));
     const isExpanded = !!expanded[ws];
     const allowsNew = ws !== 'Closed';
-    // Auto-pick the single template in this workspace for the "+ New" button.
-    // Multi-template workspaces still fall back to the legacy picker.
     const wsTmpl = templates.length === 1 ? templates[0] : null;
     const newBtnLabel = wsTmpl ? `＋ New from ${escapeHtml(wsTmpl)}` : '＋ New schedule';
+    const accent = WS_ACCENT[ws] || '#1574c4';
+    const countBg = WS_COUNT_BG[ws] || '#dbeafe';
+    const countColor = WS_COUNT_COLOR[ws] || '#1d4ed8';
+    const displayCount = searchQ ? nonTemplates.length : projects.length;
     return `
-      <div class="projects-workspace${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}">
+      <div class="projects-workspace projects-ws-${ws.toLowerCase()}${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}" style="--ws-accent:${accent}">
         <button class="projects-workspace-head" data-action="toggle" type="button">
           <span class="projects-workspace-caret">▶</span>
           <span class="projects-workspace-name">${escapeHtml(ws)}</span>
-          <span class="projects-workspace-count">${projects.length}</span>
+          <span class="projects-workspace-count" style="background:${countBg};color:${countColor};border-color:${countBg}">${displayCount}</span>
           <span class="projects-workspace-spacer"></span>
           <button class="projects-workspace-newbtn${allowsNew ? '' : ' is-disabled'}" data-action="new" data-workspace="${escapeHtml(ws)}" ${allowsNew ? '' : 'disabled title="Closed workspace — no new schedules allowed."'} type="button">${newBtnLabel}</button>
         </button>
         <div class="projects-workspace-body">
-          ${templates.length > 0 ? `
+          ${!searchQ && templates.length > 0 ? `
             <div class="projects-templates-row">
               <div class="projects-templates-label">Templates</div>
               ${templates.map(rowHtml).join('')}
@@ -9916,18 +10185,39 @@ function renderProjectsPage() {
           ${nonTemplates.length === 0 && templates.length === 0
             ? '<div class="projects-workspace-empty">No schedules in this workspace yet.</div>'
             : nonTemplates.length === 0
-              ? '<div class="projects-workspace-empty">No schedules yet — use the "+ New" button to start one.</div>'
+              ? `<div class="projects-workspace-empty">${searchQ ? 'No matches.' : 'No schedules yet — use the "+ New" button to start one.'}</div>`
               : nonTemplates.map(rowHtml).join('')}
         </div>
       </div>
     `;
   };
 
+  const openCount = all.filter(p => openSet.has(p)).length;
+
   root.innerHTML = `
     <h1 class="projects-page-title">Projects</h1>
-    <div class="projects-page-sub">${all.length} schedule${all.length === 1 ? '' : 's'} across ${WORKSPACES.length} workspaces</div>
+    <div class="projects-page-stats">
+      <span><b>${all.length}</b> total</span>
+      ${openCount ? `<span><b>${openCount}</b> open</span>` : ''}
+      <span><b>${byWs['Sales']?.length || 0}</b> sales</span>
+    </div>
+    <div class="projects-search-wrap">
+      <span class="projects-search-icon">🔍</span>
+      <input class="projects-search-input" type="text" placeholder="Search projects…" value="${escapeHtml(searchQ)}" autocomplete="off" spellcheck="false" />
+    </div>
     ${WORKSPACES.map(workspaceSection).join('')}
   `;
+
+  // Search input — filter rows in real-time without a full re-render
+  const searchInput = root.querySelector('.projects-search-input');
+  if (searchInput) {
+    searchInput.focus();
+    searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    searchInput.addEventListener('input', () => {
+      state._projectsSearch = searchInput.value;
+      renderProjectsPage();
+    });
+  }
 
   // Toggle expand/collapse on the workspace header. The header is itself a
   // button; the inner "+ New schedule" button shouldn't trigger the toggle,
@@ -11276,7 +11566,7 @@ async function deleteProject(project) {
   // anchor_key first on those rows.
   for (const t of tasks) {
     if (t.anchor_key) {
-      await api.update(t.id, { anchor_key: null });
+      try { await api.update(t.id, { anchor_key: null }); } catch (_) {}
     }
   }
   for (const t of tasks) {
@@ -11328,7 +11618,7 @@ async function doMergeProjects(source, target) {
     + `This re-tags every row's project field; predecessors / dates / IDs are preserved.`);
   if (!ok) return;
   for (const t of sourceTasks) {
-    await api.update(t.id, { project: target });
+    try { await api.update(t.id, { project: target }); } catch (_) {}
   }
   // Switch to the merged-into project so the user sees the result.
   state.filters.project = target;
@@ -11352,7 +11642,7 @@ async function renameProject(oldName) {
   }
   const tasks = state.tasks.filter(t => t.project === oldName);
   for (const t of tasks) {
-    await api.update(t.id, { project: trimmed });
+    try { await api.update(t.id, { project: trimmed }); } catch (_) {}
   }
   // Migrate the open-tabs list, template flag, and workspace assignment so
   // the new name keeps the exact same UI state the old one had.
@@ -11467,7 +11757,7 @@ async function mergeOrphansInto(orphans, projectName, opts = {}) {
   const trimmed = String(projectName || '').trim();
   if (!trimmed || orphans.length === 0) return;
   for (const t of orphans) {
-    await api.update(t.id, { project: trimmed });
+    try { await api.update(t.id, { project: trimmed }); } catch (_) {}
   }
   if (!state.openProjects.includes(trimmed)) state.openProjects.push(trimmed);
   state.filters.project = trimmed;
@@ -11625,21 +11915,25 @@ async function duplicateProject(source, targetName = null) {
       notes: t.notes || null,
       anchor_key: t.anchor_key || null,
     };
-    const created = await api.create(payload);
-    oldToNewId[t.id] = created.id;
+    try {
+      const created = await api.create(payload);
+      if (created && created.id) oldToNewId[t.id] = created.id;
+    } catch (_) {}
   }
   // Second pass: rewrite predecessors with the new IDs.
   for (const t of sourceTasks) {
     if (!t.predecessors) continue;
+    const newId = oldToNewId[t.id];
+    if (!newId) continue;
     const remapped = String(t.predecessors).split(',').map(s => {
       const trimmedRef = s.trim();
       const m = trimmedRef.match(/^(\d+)(.*)$/);
       if (!m) return trimmedRef;
       const oldId = Number(m[1]);
-      const newId = oldToNewId[oldId];
-      return newId != null ? `${newId}${m[2]}` : trimmedRef;
+      const mappedId = oldToNewId[oldId];
+      return mappedId != null ? `${mappedId}${m[2]}` : trimmedRef;
     }).join(', ');
-    if (remapped) await api.update(oldToNewId[t.id], { predecessors: remapped });
+    if (remapped) try { await api.update(newId, { predecessors: remapped }); } catch (_) {}
   }
   // Clone the source's FINANCIAL MILESTONES too, carrying their predecessor
   // links over. Tasks were cloned in the same sort_order, so line-number
@@ -12632,6 +12926,7 @@ function render() {
   try { refreshFinancialsButtonState(); } catch (_) {}
   try { renderProjectNotes(); } catch (_) {}
   try { renderScheduleProcurement(); } catch (_) {}
+  try { _hoursCheckOnce(); renderScheduleHours(); } catch (_) {}
 }
 
 // ── Project Notes ─────────────────────────────────────────────────────────────
@@ -13001,7 +13296,7 @@ function layoutNotesPanel() {
   // bottom drawer is open — Notes or Procurement. They share this machinery so
   // opening one while the other is open keeps the lock instead of fighting it.
   const isOpen = (id) => { const e = document.getElementById(id); return e && e.style.display !== 'none' && !e.classList.contains('is-collapsed'); };
-  const open = isOpen('schedule-notes') || isOpen('schedule-procurement');
+  const open = isOpen('schedule-notes') || isOpen('schedule-procurement') || isOpen('schedule-hours');
   if (open) {
     // Lock only on the open transition; later renders keep the existing lock so
     // we don't reset the user's scroll position mid-interaction.
@@ -13299,6 +13594,310 @@ function _wireProcDrawer(el, job, project) {
   // separately from the onclick delegation above.
   _wirePartsFilters(el, renderScheduleProcurement);
 }
+// ── Per-project Job Hours drawer ─────────────────────────────────────────────
+// Collapsible panel below Procurement. Shows Quoted / Actual / Diff per
+// function, grouped by billing group, pulled from the Power BI semantic model.
+// Only visible when PBI_USER+PBI_PASS are configured and the project has a job number.
+function renderScheduleHours() {
+  const el = document.getElementById('schedule-hours');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  const idx = project && state.projectsIndex && state.projectsIndex[project];
+  const job = idx && idx.job_number;
+  if (!project || state.view !== 'schedule' || !_hoursAvailable || !job) {
+    el.style.display = 'none';
+    el.classList.add('is-collapsed');
+    layoutNotesPanel();
+    return;
+  }
+  el.style.display = '';
+  const collapsed = el.classList.contains('is-collapsed');
+  const data = _hoursCache[job];
+
+  const jobLabel = (data && data.jobIds && data.jobIds.length > 1)
+    ? `Jobs #${data.jobIds.join(' & #')}`
+    : `Job #${escapeHtml(String(job))}`;
+  let stat = jobLabel;
+  if (data && data.totals && data.fns && data.fns.length) {
+    const q = data.totals.quoted, a = data.totals.actual;
+    const over = a > q;
+    const diff = Math.round(Math.abs(q - a));
+    const diffLabel = diff > 0 ? ` (${over ? '+' : '-'}${diff})` : '';
+    stat = `${Math.round(q)} quoted · <span style="color:${over ? 'var(--danger)' : 'var(--success)'}; font-weight:700">${Math.round(a)} actual${diffLabel}</span>`;
+  }
+  const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
+    <span class="notes-bar-title">⏱ Job Hours</span>
+    <span class="notes-count">${stat}</span>
+    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+  </div>`;
+
+  // Pre-fetch in background even when collapsed so data is ready when user opens
+  if (!data && !_hoursFetching[job]) {
+    _hoursFetching[job] = true;
+    fetch(`/api/hours/${encodeURIComponent(job)}`)
+      .then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || r.status))))
+      .then(d => { _hoursCache[job] = d; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); })
+      .catch(e => { _hoursCache[job] = { error: e.message }; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); });
+  }
+
+  if (collapsed) { el.innerHTML = bar; _wireHoursDrawer(el, job, project); layoutNotesPanel(); return; }
+
+  if (!data) {
+    el.innerHTML = bar + `<div class="hours-drawer-body"><div class="proc-empty">Loading job hours from Power BI…</div></div>`;
+    _wireHoursDrawer(el, job, project);
+    layoutNotesPanel();
+    return;
+  }
+
+  let body;
+  if (data.error) {
+    const isAuthErr = /token expired|token missing|pbi token/i.test(data.error);
+    if (isAuthErr) {
+      body = `<div class="proc-empty proc-error" style="text-align:left;padding:16px 20px;line-height:1.6">
+        <strong>Power BI authentication expired.</strong><br>
+        The refresh token lasts ~90 days. To renew it, run this once in a Command Prompt on the server:<br>
+        <code style="display:block;margin:8px 0;padding:6px 10px;background:#f4f4f4;border-radius:4px;font-size:12px">set PBI_CACHE_PATH=${escapeHtml(data.error.match(/PBI_CACHE_PATH[=\s]+([^\s&]+)/)?.[1] || 'D:\\AI Projects\\Centrailized library\\SDC_Scheduler\\pbi_cache.json')}<br>sdc-powerbi-mcp.exe login</code>
+        Then restart the scheduler server. Contact Abhi if you need help.
+      </div>`;
+    } else {
+      body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
+    }
+  } else {
+    const { fns, bgTotals, totals, jobIds } = data;
+
+    if (!fns.length) {
+      const jobLabel = jobIds && jobIds.length ? jobIds.join(' & ') : job;
+      body = `<div class="proc-empty">No hours data found in Power BI for job ${escapeHtml(jobLabel)}.<br>
+        This job may not have been set up in the Power BI model yet.</div>`;
+    } else {
+
+    const fmt = n => Math.round(n || 0).toLocaleString();
+    const diffCls = d => d < -0.5 ? ' hours-over' : d > 0.5 ? ' hours-under' : '';
+    const diffFmt = d => `${d > 0 ? '+' : ''}${fmt(d)}`;
+    const mode = _hoursUI.mode;          // 'quoted' or 'etc'
+    const bgFilter = _hoursUI.billing;   // 'all' | billing group name
+    const refKey = mode === 'etc' ? 'etc' : 'quoted';
+    const refLabel = mode === 'etc' ? 'ETC' : 'Quoted';
+
+    // Apply billing group filter to functions
+    const visibleFns = bgFilter === 'all' ? fns : fns.filter(r => r.billing === bgFilter);
+
+    // Filter bar — Hours Type + Billing Group chips
+    const BG_CHIPS = ['Engineering', 'Manufacturing', 'Shop', 'PM'];
+    const modeBar = `<div class="hours-filter-bar">
+      <span class="hours-filter-label">Hours Type</span>
+      <button class="hours-chip${mode === 'quoted' ? ' active' : ''}" data-hours-mode="quoted">Quoted</button>
+      <button class="hours-chip${mode === 'etc' ? ' active' : ''}" data-hours-mode="etc">ETC</button>
+      <span class="hours-filter-sep"></span>
+      <span class="hours-filter-label">Billing Group</span>
+      <button class="hours-chip${bgFilter === 'all' ? ' active' : ''}" data-hours-bg="all">All</button>
+      ${BG_CHIPS.filter(bg => bgTotals[bg]).map(bg =>
+        `<button class="hours-chip${bgFilter === bg ? ' active' : ''}" data-hours-bg="${escapeHtml(bg)}">${escapeHtml(bg)}</button>`
+      ).join('')}
+    </div>`;
+
+    // Billing group summary cards
+    const BG_ORDER = ['Engineering', 'Manufacturing', 'Shop', 'PM'];
+    const bgHtml = BG_ORDER.filter(bg => bgTotals[bg] && (bgFilter === 'all' || bgFilter === bg))
+      .map(bg => {
+        const t = bgTotals[bg];
+        const ref = t[refKey];
+        const diff = ref - t.actual;
+        return `<div class="hours-bg-card">
+          <div class="hours-bg-name">${escapeHtml(bg)}</div>
+          <div class="hours-bg-nums">
+            <span class="hours-col-q">${fmt(ref)}</span>
+            <span class="hours-col-a">${fmt(t.actual)}</span>
+            <span class="hours-col-d${diffCls(diff)}">${diffFmt(diff)}</span>
+          </div>
+        </div>`;
+      }).join('');
+
+    // Pivot table — functions as columns, Quoted/Act/Diff as rows
+    // Build ordered section groups (preserves section order and per-section function duplication)
+    const secGroups = [];
+    const secSeen = new Map();
+    for (const r of visibleFns) {
+      if (!secSeen.has(r.section)) { secSeen.set(r.section, []); secGroups.push({ sec: r.section, fns: secSeen.get(r.section) }); }
+      secSeen.get(r.section).push(r);
+    }
+    // All functions in column order
+    const pivotCols = secGroups.flatMap(g => g.fns);
+
+    // Header row 1 — section spans
+    const secSpans = secGroups.map(g =>
+      `<th class="hpt-sec-hdr" colspan="${g.fns.length}">${escapeHtml(g.sec)}</th>`
+    ).join('');
+
+    // Header row 2 — function names
+    const fnHdrs = pivotCols.map(r => `<th class="hpt-fn-hdr">${escapeHtml(r.fn)}</th>`).join('');
+
+    // Data rows
+    const makeRow = (label, valFn, cls) => {
+      const cells = pivotCols.map(r => {
+        const v = valFn(r);
+        return `<td class="hpt-val${cls ? cls(r) : ''}">${fmt(v)}</td>`;
+      }).join('');
+      const total = pivotCols.reduce((a, r) => a + valFn(r), 0);
+      return `<tr><td class="hpt-row-lbl">${label}</td>${cells}<td class="hpt-total">${fmt(total)}</td></tr>`;
+    };
+    const pivotBody = [
+      makeRow(refLabel, r => r[refKey]),
+      makeRow('Actual',  r => r.actual),
+      makeRow('Diff',    r => r[refKey] - r.actual, r => diffCls(r[refKey] - r.actual)),
+    ].join('');
+    const totalRef = pivotCols.reduce((a, r) => a + r[refKey], 0);
+    const totalAct = pivotCols.reduce((a, r) => a + r.actual, 0);
+
+    // SVG bar chart helper
+    function _hoursChart(title, items, W, H) {
+      W = W || 700; H = H || 340;
+      const CQ = '#5b9bd5', CA = '#1f3864';
+      const lbl = v => v >= 1000 ? (v/1000).toFixed(1)+'k' : String(Math.round(v));
+      const n = items.length;
+
+      // Estimate label height at -45° to size padB correctly
+      const labelFontPx = n > 8 ? 9 : 10;
+      const maxLabelLen = Math.max(...items.map(i => i.label.length), 1);
+      const labelHeightPx = Math.ceil(maxLabelLen * labelFontPx * 0.6 * Math.sin(Math.PI/4)) + 8;
+      const legendH = 22;
+      const padL = 46, padR = 14, padT = 36;
+      const padB = labelHeightPx + legendH + 10; // labels + legend + gap
+      const plotH = H - padT - padB;
+      const plotW = W - padL - padR;
+
+      const maxVal = Math.max(...items.flatMap(i => [i.quoted, i.actual]), 1);
+      const yTop = maxVal * 1.18;
+      const baseY = padT + plotH;
+      const yPx = v => baseY - (v / yTop) * plotH;
+
+      const grpW = plotW / n;
+      const bW = Math.min(Math.max(Math.floor(grpW * 0.34), 8), 38);
+      const gap = Math.max(Math.floor(grpW * 0.08), 4);
+
+      // Y gridlines + ticks
+      let gridSvg = '', tickSvg = '';
+      for (let i = 0; i <= 4; i++) {
+        const v = Math.round((yTop / 4) * i);
+        const y = yPx(v);
+        gridSvg += `<line x1="${padL}" y1="${y}" x2="${padL+plotW}" y2="${y}" stroke="#ebebeb" stroke-width="1"/>`;
+        tickSvg += `<text x="${padL-5}" y="${y+4}" text-anchor="end" font-size="10" fill="#bbb">${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}</text>`;
+      }
+
+      // Bars + value labels + x labels
+      let barSvg = '';
+      items.forEach((item, idx) => {
+        const cx = padL + idx * grpW + grpW / 2;
+        const xQ = cx - gap / 2 - bW;
+        const xA = cx + gap / 2;
+        const hQ = item.quoted > 0 ? Math.max((item.quoted / yTop) * plotH, 2) : 0;
+        const hA = item.actual > 0 ? Math.max((item.actual / yTop) * plotH, 2) : 0;
+        const yQ = baseY - hQ, yA = baseY - hA;
+        const diff = item.quoted - item.actual;
+        const tip = `${item.label}&#10;Quoted: ${Math.round(item.quoted).toLocaleString()}&#10;Actual: ${Math.round(item.actual).toLocaleString()}&#10;Diff: ${diff >= 0 ? '+' : ''}${Math.round(diff).toLocaleString()}`;
+
+        if (item.quoted > 0) {
+          barSvg += `<rect x="${xQ}" y="${yQ}" width="${bW}" height="${hQ}" fill="${CQ}" rx="2"><title>${tip}</title></rect>`;
+          barSvg += `<text x="${xQ+bW/2}" y="${yQ-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.quoted)}</text>`;
+        }
+        if (item.actual > 0) {
+          barSvg += `<rect x="${xA}" y="${yA}" width="${bW}" height="${hA}" fill="${CA}" rx="2"><title>${tip}</title></rect>`;
+          barSvg += `<text x="${xA+bW/2}" y="${yA-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.actual)}</text>`;
+        }
+
+        // X-axis label — pivot at (cx, baseY+10), rotate -45°
+        const lx = cx, ly = baseY + 10;
+        barSvg += `<text x="${lx}" y="${ly}" text-anchor="end" font-size="${labelFontPx}" fill="#555" transform="rotate(-45,${lx},${ly})">${escapeHtml(item.label)}</text>`;
+
+        // Invisible hover zone
+        barSvg += `<rect x="${padL+idx*grpW}" y="${padT}" width="${grpW}" height="${plotH+10}" fill="transparent"><title>${tip}</title></rect>`;
+      });
+
+      // Legend — sits below label area, centred
+      const legY = H - 8;
+      const legX = padL + plotW / 2 - 65;
+      const legend = `
+        <rect x="${legX}" y="${legY-11}" width="13" height="10" fill="${CQ}" rx="1"/>
+        <text x="${legX+17}" y="${legY-2}" font-size="11" fill="#555">Quoted</text>
+        <rect x="${legX+75}" y="${legY-11}" width="13" height="10" fill="${CA}" rx="1"/>
+        <text x="${legX+92}" y="${legY-2}" font-size="11" fill="#555">Actual</text>`;
+
+      return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
+        <text x="${W/2}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#333">${escapeHtml(title)}</text>
+        ${gridSvg}${tickSvg}${barSvg}${legend}
+        <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
+        <line x1="${padL}" y1="${baseY}" x2="${padL+plotW}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
+      </svg>`;
+    }
+
+    // Function chart: aggregate by fn name across sections (no duplicate labels)
+    const fnMap = new Map();
+    for (const r of visibleFns) {
+      if (!fnMap.has(r.fn)) fnMap.set(r.fn, { label: r.fn, ref: 0, actual: 0 });
+      const e = fnMap.get(r.fn);
+      e.ref    += r[refKey];
+      e.actual += (r.actual || 0);
+    }
+    const fnItems = [...fnMap.values()].map(e => ({ label: e.label, quoted: e.ref, actual: e.actual }));
+
+    const BG_CHART_ORDER = ['Engineering', 'Manufacturing', 'PM', 'Shop'];
+    const bgItems = BG_CHART_ORDER.filter(bg => bgTotals[bg] && (bgFilter === 'all' || bgFilter === bg))
+      .map(bg => ({ label: bg, quoted: bgTotals[bg][refKey], actual: bgTotals[bg].actual || 0 }));
+
+    const fnChartTitle  = `${refLabel} vs Actual by Function`;
+    const bgChartTitle  = `${refLabel} vs Actual by Billing Group`;
+    const chartsHtml = `<div class="hours-charts-row">
+      <div class="hours-chart-box" style="flex:2">${_hoursChart(fnChartTitle, fnItems, 820, 340)}</div>
+      <div class="hours-chart-box" style="flex:1">${_hoursChart(bgChartTitle, bgItems, 380, 340)}</div>
+    </div>`;
+
+    const totalD = totalRef - totalAct;
+    body = `
+      ${modeBar}
+      <div class="hours-bg-row">${bgHtml}</div>
+      <div class="hpt-wrap">
+        <table class="hpt">
+          <thead>
+            <tr><th class="hpt-corner"></th>${secSpans}<th class="hpt-total-hdr">Total</th></tr>
+            <tr><th class="hpt-corner"></th>${fnHdrs}<th class="hpt-total-hdr"></th></tr>
+          </thead>
+          <tbody>${pivotBody}</tbody>
+        </table>
+      </div>
+      ${chartsHtml}`;
+    } // end if fns.length
+  }
+
+  el.innerHTML = bar + `<div class="hours-drawer-body">${body}</div>`;
+  _wireHoursDrawer(el, job, project);
+  layoutNotesPanel();
+}
+
+function _wireHoursDrawer(el, job, project) {
+  el.onclick = (e) => {
+    if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
+      const willOpen = el.classList.contains('is-collapsed');
+      el.classList.toggle('is-collapsed');
+      if (willOpen && !_hoursCache[job]) renderScheduleHours();
+      else renderScheduleHours();
+      return;
+    }
+    // Hours Type toggle
+    const modeBtn = e.target.closest('[data-hours-mode]');
+    if (modeBtn) {
+      _hoursUI.mode = modeBtn.dataset.hoursMode;
+      renderScheduleHours();
+      return;
+    }
+    // Billing group chip
+    const bgBtn = e.target.closest('[data-hours-bg]');
+    if (bgBtn) {
+      _hoursUI.billing = bgBtn.dataset.hoursBg;
+      renderScheduleHours();
+    }
+  };
+}
+
 function _wireNotes(el, project) {
   const data = state.projectNotes[project];
   const findSession = id => data.sessions.find(s => s.id === id);
@@ -13670,6 +14269,7 @@ function newTaskInline() {
     return;
   }
   const btn = document.getElementById('btn-add');
+  if (!btn) return;
   const r = btn.getBoundingClientRect();
   showSectionPicker(r.right - 280, r.bottom + 6, async (g, d, s) => {
     const project = state.filters.project;
@@ -13827,14 +14427,16 @@ async function deleteTaskById(id) {
   // Backlog deletes like any other row.
   const t = state.tasks.find(x => x.id === id);
   if (t && inferredAnchorKey(t)) {
-    await showAlertDialog({
-      title: 'Anchor milestones are protected',
-      message: `"${t.name}" is an anchor milestone and can't be deleted. You can still edit its date, predecessors, and progress like any other task.`,
-    });
+    try {
+      await showAlertDialog({
+        title: 'Anchor milestones are protected',
+        message: `"${t.name}" is an anchor milestone and can't be deleted. You can still edit its date, predecessors, and progress like any other task.`,
+      });
+    } catch (_) {}
     return;
   }
-  await api.remove(id);
-  await loadTasks();
+  try { await api.remove(id); } catch (_) {}
+  try { await loadTasks(); } catch (_) {}
 }
 
 // Right-click on a group header → "Add task here" creates a task directly in that
@@ -14001,12 +14603,11 @@ async function createTaskBelow(taskId) {
     phase_group: t.phase_group || null,
     department: t.department || null,
     sub_department: t.sub_department || null,
-    // Inherit machine tag too — adding a row below an M2 task should put
-    // the new row IN M2, not silently make it shared.
     machine: t.machine || null,
     sort_order: sortOrder,
   };
-  const created = await api.create(payload);
+  let created;
+  try { created = await api.create(payload); } catch (e) { showAlertDialog({ title: 'Add failed', message: e.message }); return; }
   if (!created || created.error) return;
   // Record an undo entry so the topbar Undo can remove an accidental add.
   // kind:'create' → undo deletes this row; redo re-creates it from the payload.
@@ -14015,7 +14616,7 @@ async function createTaskBelow(taskId) {
   state.redoStack = [];
   syncUndoButton();
   syncRedoButton();
-  await loadTasks();
+  try { await loadTasks(); } catch (_) {}
   const newTr = document.querySelector(`tr[data-id="${created.id}"]`);
   if (newTr) {
     newTr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -20574,6 +21175,8 @@ async function loadTasks() {
     loadMachinesSubset(state.filters.project);
     loadMachineColors(state.filters.project);
     state._tabsHydrated = true;
+    // Re-render projects page now that _projectsExpanded is properly loaded.
+    if (state.view === 'projects') renderProjectsPage();
   }
   // Refresh financial milestones for projects whose data we already cached. The
   // overlay renders from state.financials, so this keeps it current with the latest
@@ -20643,6 +21246,23 @@ async function loadTeam() {
 }
 
 // ---------- Wiring ----------
+// Views that are simple scrollable containers — save/restore their scroll position.
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts'];
+let _scrollSaveTimer = null;
+function _saveScrollPos(view) {
+  if (!_SCROLL_VIEWS.includes(view)) return;
+  const el = document.getElementById(`view-${view}`);
+  if (!el) return;
+  try { localStorage.setItem(`sdcScroll_${view}`, el.scrollTop); } catch {}
+}
+function _restoreScrollPos(view) {
+  if (!_SCROLL_VIEWS.includes(view)) return;
+  const el = document.getElementById(`view-${view}`);
+  if (!el) return;
+  const saved = parseInt(localStorage.getItem(`sdcScroll_${view}`)) || 0;
+  if (saved > 0) requestAnimationFrame(() => { el.scrollTop = saved; });
+}
+
 function setView(view) {
   // v7.6: the Dashboard view was merged into Departments. Anyone who
   // had state.view === 'dashboard' saved in localStorage lands on
@@ -20650,6 +21270,10 @@ function setView(view) {
   if (view === 'dashboard') view = 'team';
   // The standalone procurement page was removed. Redirect to schedule.
   if (view === 'procurement') view = 'schedule';
+  // Save scroll position of the view we're leaving before switching.
+  _saveScrollPos(state.view);
+  // Clear projects search when leaving the projects page
+  if (state.view === 'projects' && view !== 'projects') state._projectsSearch = '';
   state.view = view;
   // Survive reloads: F5 / Ctrl+Shift+R reopens the view you were on instead
   // of always dumping you back on the schedule.
@@ -20672,13 +21296,25 @@ function setView(view) {
     state.resources.barHeight = friendlyResRowToPx(4);
     renderTeam();
   }
-  else if (view === 'shop-parts') loadShopParts();
-  else if (view === 'vendor-pos') loadVendorPOs();
-  else if (view === 'projects')  renderProjectsPage();
-  else if (view === 'favorites') renderFavoritesPage();
-  else if (view === 'recents')   renderRecentsPage();
+  else if (view === 'shop-parts') { loadShopParts(); _restoreScrollPos(view); }
+  else if (view === 'vendor-pos') { loadVendorPOs(); _restoreScrollPos(view); }
+  else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
+  else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
+  else if (view === 'recents')   { renderRecentsPage(); _restoreScrollPos(view); }
   else if (view === 'actions')   renderActionsPage();
   else render();
+}
+
+// Throttled scroll listener — attached once after init, saves position as user scrolls.
+function _setupScrollPersist() {
+  _SCROLL_VIEWS.forEach(view => {
+    const el = document.getElementById(`view-${view}`);
+    if (!el) return;
+    el.addEventListener('scroll', () => {
+      clearTimeout(_scrollSaveTimer);
+      _scrollSaveTimer = setTimeout(() => _saveScrollPos(view), 300);
+    }, { passive: true });
+  });
 }
 
 // Sync vertical scroll between grid and gantt so rows always line up.
@@ -21901,6 +22537,7 @@ async function init() {
         state.projectWorkspaces[p.name] = ws;
       }
       try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
+      if (state.view === 'projects') renderProjectsPage();
     }
   } catch (_) {}
   _etoCheckOnce(); // resolve ETO availability early so chips/buttons render on first paint
@@ -21949,6 +22586,36 @@ async function init() {
   // v4.51: Zoom dropdown — single toolbar button popover with Time scale /
   // Zoom (1-10) / Row height (10-100). Drives the legacy zoom/row controls.
   setupZoomDropdown();
+
+  // Ctrl+Scroll → zoom in/out on the Gantt. Each wheel tick steps ±5%.
+  // Ctrl+Up / Ctrl+Down arrows → same step. Both are no-ops outside the
+  // schedule view so they don't interfere with other pages.
+  document.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    if (state.view !== 'schedule' && state.view !== 'actions') return;
+    e.preventDefault();
+    const step = e.deltaY < 0 ? 5 : -5;
+    setZoom(state.zoomPercent + step);
+  }, { passive: false });
+
+  document.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey) return;
+    if (state.view !== 'schedule' && state.view !== 'actions') return;
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setZoom(state.zoomPercent + 5);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setZoom(state.zoomPercent - 5);
+    } else if (e.key === '=' || e.key === '+') {
+      e.preventDefault();
+      setZoom(state.zoomPercent + 5);
+    } else if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      setZoom(state.zoomPercent - 5);
+    }
+  });
+
   // View pill — four icon-toggles in the toolbar:
   //   ≡   Flatten sub-sections + sort by start date (linked toggle)
   //   $   Show financial milestones overlay
@@ -22169,6 +22836,7 @@ async function init() {
   });
 
   setupScrollSync();
+  _setupScrollPersist();
 
   // + New Task button creates an empty task in UNASSIGNED and focuses its name cell for
   // inline rename. The user drags it into a section after.
@@ -22346,6 +23014,13 @@ async function init() {
       }
     });
   }
+  const hardRefreshBtn = document.getElementById('btn-hard-refresh');
+  if (hardRefreshBtn) {
+    hardRefreshBtn.addEventListener('click', () => {
+      window.location.reload(true);
+    });
+  }
+
   // "👤 For Customer" — toggles a clean customer-facing view by adding the
   // body.customer-view class. CSS hides the toolbar / tabs / extra columns;
   // JS forces pane=both and runs zoomToFit so the customer sees grid + Gantt

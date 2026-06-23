@@ -82,7 +82,7 @@
           <line x1="12" y1="19" x2="20" y2="19"/>
         </svg>
       </span>
-      <span class="app-sidebar-label">Notes &amp; Actions</span>
+      <span class="app-sidebar-label">Notes</span>
     </button>
     <button class="app-sidebar-icon" data-view="shop-parts" type="button" title="Parts in Shop — parts at the SDC shop, their priority, finishing status, and who owns them.">
       <span class="app-sidebar-glyph app-sidebar-glyph-svg">
@@ -103,6 +103,7 @@
       </span>
       <span class="app-sidebar-label">Vendor POs</span>
     </button>
+    <div class="app-sidebar-sep"></div>
     <button class="app-sidebar-icon" data-view="setup" type="button" title="Setup — colors, defaults, estimate rules">
       <span class="app-sidebar-glyph">⚙</span>
       <span class="app-sidebar-label">Setup</span>
@@ -185,6 +186,7 @@
           <button id="btn-undo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↺</button>
           <button id="btn-redo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↻</button>
           <button id="btn-refresh" class="toolbar-icon-btn toolbar-icon-round" type="button" title="Refresh task data from the server. Preserves your current view — collapsed sections, scroll position, and filters all stay where they are.">🔄</button>
+          <button id="btn-hard-refresh" class="toolbar-icon-btn toolbar-icon-round" type="button" title="Hard refresh — clears cache and fully reloads the page (same as Ctrl+Shift+R).">⟳</button>
 
           <div class="toolbar-divider"></div>
 
@@ -326,6 +328,7 @@
       <!-- Per-project Procurement drawer — opens DOWN like Notes, scoped to the
            active project's ETO job. Built by renderScheduleProcurement(). -->
       <div id="schedule-procurement" class="schedule-proc-drawer is-collapsed"></div>
+      <div id="schedule-hours" class="schedule-hours-drawer is-collapsed"></div>
     </section>
 
     <!-- v4.61: Action Items — cross-project to-do list. Lists every action
