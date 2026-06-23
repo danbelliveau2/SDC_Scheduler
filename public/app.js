@@ -13724,22 +13724,32 @@ function renderScheduleHours() {
     // All functions in column order
     const pivotCols = secGroups.flatMap(g => g.fns);
 
-    // Header row 1 — section spans
-    const secSpans = secGroups.map(g =>
-      `<th class="hpt-sec-hdr" colspan="${g.fns.length}" title="${escapeHtml(g.sec)}">${escapeHtml(g.sec)}</th>`
-    ).join('');
+    // Header row 1 — section spans (tooltip shows quoted vs actual totals for the section)
+    const secSpans = secGroups.map(g => {
+      const ref = g.fns.reduce((a, r) => a + r[refKey], 0);
+      const act = g.fns.reduce((a, r) => a + r.actual, 0);
+      const diff = ref - act;
+      const tip = `${g.sec}\n${refLabel}: ${fmt(ref)}\nActual: ${fmt(act)}\nDiff: ${diff >= 0 ? '+' : ''}${fmt(diff)}`;
+      return `<th class="hpt-sec-hdr" colspan="${g.fns.length}" title="${escapeHtml(tip)}">${escapeHtml(g.sec)}</th>`;
+    }).join('');
 
-    // Header row 2 — department/group spans within each section (PM, ME, CE, General Engineering, Shop, …)
+    // Header row 2 — department/group spans (tooltip shows quoted vs actual for that group)
     const grpSpans = secGroups.flatMap(g => {
-      const grpOrder = [], grpCount = new Map();
+      const grpOrder = [], grpCount = new Map(), grpFns = new Map();
       for (const r of g.fns) {
         const key = r.group || '';
-        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); }
+        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); grpFns.set(key, []); }
         grpCount.set(key, grpCount.get(key) + 1);
+        grpFns.get(key).push(r);
       }
-      return grpOrder.map(grp =>
-        `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(g.sec)} › ${escapeHtml(grp)}">${escapeHtml(grp)}</th>`
-      );
+      return grpOrder.map(grp => {
+        const rows = grpFns.get(grp);
+        const ref = rows.reduce((a, r) => a + r[refKey], 0);
+        const act = rows.reduce((a, r) => a + r.actual, 0);
+        const diff = ref - act;
+        const tip = `${g.sec} › ${grp}\n${refLabel}: ${fmt(ref)}\nActual: ${fmt(act)}\nDiff: ${diff >= 0 ? '+' : ''}${fmt(diff)}`;
+        return `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(tip)}">${escapeHtml(grp)}</th>`;
+      });
     }).join('');
 
     // Header row 3 — function names (title shows full path on truncated headers)
