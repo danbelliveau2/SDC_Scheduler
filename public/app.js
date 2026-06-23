@@ -8513,7 +8513,7 @@ const PROC_PART_COLS = [
 
 let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '', search: '', open: {}, partsListMode: 'table', upcomingWeek: 1, hiddenPartCols: [] };
 try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
-function _procSave() { try { localStorage.setItem('sdcProcState', JSON.stringify({ ..._procState, open: {} })); } catch (_) {} }
+function _procSave() { try { const { drawerTab: _dt, ...s } = _procState; localStorage.setItem('sdcProcState', JSON.stringify({ ...s, open: {} })); } catch (_) {} }
 const _procCache = {};   // job → readiness payload
 const _procVendorCache = {};   // job → vendor status payload (used by card view + PO panel)
 let _procLoading = false;
