@@ -13762,8 +13762,8 @@ function renderScheduleHours() {
     const totalRef = pivotCols.reduce((a, r) => a + r[refKey], 0);
     const totalAct = pivotCols.reduce((a, r) => a + r.actual, 0);
 
-    // SVG bar chart helper
-    function _hoursChart(title, items, W, H) {
+    // SVG bar chart helper — opts: { secBands, grpBands } for section/group colored strips below x-axis
+    function _hoursChart(title, items, W, H, opts) {
       W = W || 700; H = H || 340;
       const CQ = '#5b9bd5', CA = '#1f3864';
       const lbl = v => v >= 1000 ? (v/1000).toFixed(1)+'k' : String(Math.round(v));
@@ -13775,7 +13775,8 @@ function renderScheduleHours() {
       const labelHeightPx = Math.ceil(maxLabelLen * labelFontPx * 0.6 * Math.sin(Math.PI/4)) + 8;
       const legendH = 22;
       const padL = 46, padR = 14, padT = 36;
-      const padB = labelHeightPx + legendH + 10; // labels + legend + gap
+      const bandStripH = (opts && opts.secBands) ? 44 : 0; // two 18px strips + gaps
+      const padB = labelHeightPx + legendH + 10 + bandStripH; // labels + legend + gap + bands
       const plotH = H - padT - padB;
       const plotW = W - padL - padR;
 
@@ -13818,13 +13819,34 @@ function renderScheduleHours() {
           barSvg += `<text x="${xA+bW/2}" y="${yA-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.actual)}</text>`;
         }
 
-        // X-axis label — pivot at (cx, baseY+10), rotate -45°
-        const lx = cx, ly = baseY + 10;
+        // X-axis label — pivot at (cx, baseY+10+bandStripH), rotate -45°
+        const lx = cx, ly = baseY + 10 + bandStripH;
         barSvg += `<text x="${lx}" y="${ly}" text-anchor="end" font-size="${labelFontPx}" fill="#555" transform="rotate(-45,${lx},${ly})">${escapeHtml(item.label)}</text>`;
 
         // Invisible hover zone
         barSvg += `<rect x="${padL+idx*grpW}" y="${padT}" width="${grpW}" height="${plotH+10}" fill="transparent"><title>${tip}</title></rect>`;
       });
+
+      // Section + group band strips below x-axis baseline
+      let bandsSvg = '';
+      if (opts && opts.secBands) {
+        const sH = 18, sY = baseY + 4;
+        let sx = padL;
+        for (const b of opts.secBands) {
+          const bw = b.count * grpW - 1;
+          bandsSvg += `<rect x="${sx}" y="${sY}" width="${bw}" height="${sH}" fill="#1e3a5f" rx="2"/>`;
+          bandsSvg += `<text x="${sx+bw/2}" y="${sY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="700" fill="white">${escapeHtml(b.label)}</text>`;
+          sx += b.count * grpW;
+        }
+        const gY = sY + sH + 3;
+        let gx = padL;
+        for (const b of opts.grpBands) {
+          const bw = b.count * grpW - 1;
+          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#2d6a9f" rx="2"/>`;
+          bandsSvg += `<text x="${gx+bw/2}" y="${gY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="600" fill="white">${escapeHtml(b.label)}</text>`;
+          gx += b.count * grpW;
+        }
+      }
 
       // Legend — sits below label area, centred
       const legY = H - 8;
@@ -13837,21 +13859,26 @@ function renderScheduleHours() {
 
       return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
         <text x="${W/2}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#333">${escapeHtml(title)}</text>
-        ${gridSvg}${tickSvg}${barSvg}${legend}
+        ${gridSvg}${tickSvg}${barSvg}${bandsSvg}${legend}
         <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
         <line x1="${padL}" y1="${baseY}" x2="${padL+plotW}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
       </svg>`;
     }
 
-    // Function chart: aggregate by fn name across sections (no duplicate labels)
-    const fnMap = new Map();
-    for (const r of visibleFns) {
-      if (!fnMap.has(r.fn)) fnMap.set(r.fn, { label: r.fn, ref: 0, actual: 0 });
-      const e = fnMap.get(r.fn);
-      e.ref    += r[refKey];
-      e.actual += (r.actual || 0);
-    }
-    const fnItems = [...fnMap.values()].map(e => ({ label: e.label, quoted: e.ref, actual: e.actual }));
+    // Function chart — use pivotCols order (section→group→fn, matching the pivot table)
+    const fnItems = pivotCols.map(r => ({ label: r.fn, quoted: r[refKey], actual: r.actual || 0 }));
+
+    // Band metadata for section/group strips below the x-axis
+    const fnSecBands = secGroups.map(g => ({ label: g.sec, count: g.fns.length }));
+    const fnGrpBands = secGroups.flatMap(g => {
+      const grpOrder = [], grpCount = new Map();
+      for (const r of g.fns) {
+        const key = r.group || '';
+        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); }
+        grpCount.set(key, grpCount.get(key) + 1);
+      }
+      return grpOrder.map(grp => ({ label: grp, count: grpCount.get(grp) }));
+    });
 
     const BG_CHART_ORDER = ['Engineering', 'Manufacturing', 'PM', 'Shop'];
     const bgItems = BG_CHART_ORDER.filter(bg => bgTotals[bg] && (bgFilter === 'all' || bgFilter === bg))
@@ -13860,7 +13887,7 @@ function renderScheduleHours() {
     const fnChartTitle  = `${refLabel} vs Actual by Function`;
     const bgChartTitle  = `${refLabel} vs Actual by Billing Group`;
     const chartsHtml = `<div class="hours-charts-row">
-      <div class="hours-chart-box" style="flex:2">${_hoursChart(fnChartTitle, fnItems, 820, 340)}</div>
+      <div class="hours-chart-box" style="flex:2">${_hoursChart(fnChartTitle, fnItems, 820, 380, { secBands: fnSecBands, grpBands: fnGrpBands })}</div>
       <div class="hours-chart-box" style="flex:1">${_hoursChart(bgChartTitle, bgItems, 380, 340)}</div>
     </div>`;
 
