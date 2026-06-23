@@ -1,0 +1,55 @@
+name: Sync from Dan
+
+# Runs every 5 minutes AND on any push to main.
+# When Dan pushes a new commit, this picks it up within 5 min,
+# merges it into the local main, and pushes back — keeping both repos in lockstep.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/5 * * * *'   # every 5 minutes
+  workflow_dispatch:         # allow manual trigger from GitHub UI
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "SDC Sync Bot"
+          git config user.email "sync@sdcautomation.com"
+
+      - name: Add upstream (Dan's repo)
+        run: |
+          git remote add upstream https://github.com/danbelliveau2/SDC_Scheduler.git || true
+          git fetch upstream main
+
+      - name: Check if upstream has new commits
+        id: check
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+          echo "local=$LOCAL"
+          echo "upstream=$UPSTREAM"
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "up_to_date=true" >> $GITHUB_OUTPUT
+          else
+            echo "up_to_date=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream into main
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          git merge upstream/main --no-edit --ff || git merge upstream/main --no-edit
+          git push origin main
+
+      - name: Already up to date
+        if: steps.check.outputs.up_to_date == 'true'
+        run: echo "No new commits from Dan. Nothing to do."

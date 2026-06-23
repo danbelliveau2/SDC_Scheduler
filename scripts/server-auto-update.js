@@ -1,52 +1,32 @@
 'use strict';
 
 /**
- * SDC_Scheduler/scripts/server-auto-update.js
+ * scripts/server-auto-update.js
  *
- * Polls danbelliveau2/SDC_Scheduler for new commits every 5 min.
- * On change: downloads tarball, replaces safe dirs/files, merges new deps,
- * then pm2 restarts sdc-scheduler.
+ * Polls danbelliveau2/SDC_Scheduler (upstream) for new commits every 2 min.
+ * On change: git fetch + git merge --ff-only, then npm install if package.json
+ * changed, then pm2 restart.
  *
- * Preserved (never overwritten):
- *   server.js        — compression middleware, azureSync, /health endpoint
- *   azureDb.js       — Azure SQL connection
- *   azureSync.js     — Azure sync layer
- *   create-admin.js, migrate.js
- *   *.db / sessions.db — live SQLite databases
- *   package.json     — extra deps (compression, mssql) kept; only new upstream deps added
- *   .env
+ * Using git merge instead of tarball overwrite means:
+ *   - Abhi's local commits are NEVER destroyed (merge, not reset)
+ *   - Conflicts stop the auto-update and log a clear error (no silent data loss)
+ *   - Full git history is preserved on both sides
  *
- * Run via PM2:  pm2 start ecosystem.config.js --only sdc-scheduler-updater
+ * Manual trigger: POST http://<host>:4013/trigger
  */
 
-const https            = require('https');
-const http             = require('http');
-const fs               = require('fs');
-const path             = require('path');
-const os               = require('os');
-const { execSync }     = require('child_process');
+const https        = require('https');
+const http         = require('http');
+const fs           = require('fs');
+const path         = require('path');
+const { execSync } = require('child_process');
 
-const GITHUB_REPO       = 'danbelliveau2/SDC_Scheduler';
-const GITHUB_BRANCH     = 'main';
+const UPSTREAM_REPO  = 'danbelliveau2/SDC_Scheduler';
+const UPSTREAM_BRANCH = 'main';
 const CHECK_INTERVAL_MS = 2 * 60 * 1000;
-const APP_DIR           = path.join(__dirname, '..');
-const PM2_APP_NAMES     = ['sdc-scheduler', 'sdc-scheduler-repo-sync', 'sdc-scheduler-updater'];
-const SHA_FILE          = path.join(APP_DIR, '.update-sha');
-
-// Directories to wholesale replace from upstream.
-// custom-public/ is included so a stale frontend file left there (e.g. an old
-// app.js from a previous manual deploy) can't permanently shadow the current
-// public/ build — the repo's custom-public/ holds only app-local.js, so each
-// update clears any leftover overrides.
-const SAFE_DIRS = ['public', 'scripts', 'custom-public', 'mcp'];
-
-// Individual files safe to replace
-const SAFE_FILES = ['db.js', 'ARROW_ROUTING_RULES.md', '.gitignore', 'server.js',
-                    'auth.js', 'cronJobs.js', 'emailService.js',
-                    'azureSync.js', 'azureDb.js',
-                    'etoDb.js', 'agent.js', 'ops.js', 'backfillProjects.js'];
-
-// ─── helpers ─────────────────────────────────────────────────────────────────
+const APP_DIR        = path.join(__dirname, '..');
+const SHA_FILE       = path.join(APP_DIR, '.update-sha');
+const PM2_APP_NAMES  = ['sdc-scheduler'];
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -56,90 +36,50 @@ function log(msg) {
 function getStoredSha() {
   try { return fs.readFileSync(SHA_FILE, 'utf8').trim(); } catch { return null; }
 }
+function storeSha(sha) { fs.writeFileSync(SHA_FILE, sha, 'utf8'); }
 
-function storeSha(sha) {
-  fs.writeFileSync(SHA_FILE, sha, 'utf8');
-}
-
-function fetchJson(url) {
-  return new Promise((resolve, reject) => {
-    const mod = url.startsWith('https') ? https : http;
-    mod.get(url, {
-      headers: {
-        'User-Agent': 'SDC-Tools-Scheduler-Updater/1.0',
-        'Accept':     'application/vnd.github.v3+json',
-      },
-    }, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302)
-        return fetchJson(res.headers.location).then(resolve).catch(reject);
-      let data = '';
-      res.on('data', d => data += d);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(new Error(`JSON parse failed: ${e.message}`)); }
-      });
-    }).on('error', reject);
-  });
-}
-
-function downloadFile(url, dest) {
-  return new Promise((resolve, reject) => {
-    const doGet = (u) => {
-      const mod = u.startsWith('https') ? https : http;
-      mod.get(u, { headers: { 'User-Agent': 'SDC-Tools-Scheduler-Updater/1.0' } }, (res) => {
-        if (res.statusCode === 301 || res.statusCode === 302) return doGet(res.headers.location);
-        const file = fs.createWriteStream(dest);
-        res.pipe(file);
-        file.on('finish', () => file.close(resolve));
-        file.on('error', reject);
-      }).on('error', reject);
-    };
-    doGet(url);
-  });
-}
-
-function run(cmd, cwd) {
+function run(cmd, opts = {}) {
   try {
-    execSync(cmd, { cwd: cwd || APP_DIR, stdio: 'pipe' });
+    const out = execSync(cmd, {
+      cwd: opts.cwd || APP_DIR,
+      stdio: 'pipe',
+      timeout: opts.timeout || 60000,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    return out ? out.toString().trim() : '';
   } catch (e) {
-    const detail = e.stderr ? e.stderr.toString().trim() : (e.stdout ? e.stdout.toString().trim() : '');
+    const detail = [e.stderr, e.stdout].map(b => b && b.toString().trim()).filter(Boolean).join('\n');
     throw new Error(`Command failed: ${cmd}\n${detail}`);
   }
 }
 
-// ─── update flow ─────────────────────────────────────────────────────────────
+function getRemoteSha() {
+  // Use git ls-remote — avoids GitHub API rate limits.
+  const out = run(
+    `git ls-remote https://github.com/${UPSTREAM_REPO}.git refs/heads/${UPSTREAM_BRANCH}`,
+    { timeout: 15000 }
+  );
+  const sha = out.split(/\s+/)[0];
+  if (!sha || sha.length < 10) throw new Error('Could not parse remote SHA');
+  return sha;
+}
 
 async function checkAndUpdate() {
   const storedSha = getStoredSha();
-  log(`Checking for updates… (stored SHA: ${storedSha ? storedSha.slice(0, 7) : 'none'})`);
+  log(`Checking upstream… (last known: ${storedSha ? storedSha.slice(0, 7) : 'none'})`);
 
   let remoteSha;
   try {
-    // Use git ls-remote — avoids GitHub API rate limits and DNS issues.
-    // Falls back to GitHub API if git is unavailable.
-    const lsOut = require('child_process').execSync(
-      `git ls-remote https://github.com/${GITHUB_REPO}.git refs/heads/${GITHUB_BRANCH}`,
-      { timeout: 15000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
-    ).toString().trim();
-    remoteSha = lsOut.split(/\s+/)[0];
-  } catch (gitErr) {
-    try {
-      const data = await fetchJson(
-        `https://api.github.com/repos/${GITHUB_REPO}/commits/${GITHUB_BRANCH}`
-      );
-      remoteSha = data.sha;
-    } catch (e) {
-      log(`Could not read remote SHA: ${e.message}`);
-      return;
-    }
+    remoteSha = getRemoteSha();
+  } catch (e) {
+    log(`Could not read remote SHA: ${e.message}`);
+    return;
   }
 
-  if (!remoteSha) { log('Could not read remote SHA.'); return; }
-  log(`Remote SHA: ${remoteSha.slice(0, 7)}`);
+  log(`Upstream SHA: ${remoteSha.slice(0, 7)}`);
 
-  // First run — store SHA without updating to avoid re-applying manual changes
   if (!storedSha) {
-    log('First run — storing current SHA, no update needed.');
+    log('First run — recording current SHA, no update needed.');
     storeSha(remoteSha);
     return;
   }
@@ -149,61 +89,54 @@ async function checkAndUpdate() {
     return;
   }
 
-  log(`Update available (${storedSha.slice(0, 7)} → ${remoteSha.slice(0, 7)}). Downloading…`);
-
-  const tmpTar = path.join(os.tmpdir(), `sdc-scheduler-${remoteSha.slice(0, 7)}.tar.gz`);
-  const tmpDir = path.join(os.tmpdir(), `sdc-scheduler-extract-${Date.now()}`);
+  log(`Update available (${storedSha.slice(0, 7)} → ${remoteSha.slice(0, 7)}). Merging…`);
 
   try {
-    // 1. Download tarball of latest commit
-    const tarUrl = `https://api.github.com/repos/${GITHUB_REPO}/tarball/${GITHUB_BRANCH}`;
-    await downloadFile(tarUrl, tmpTar);
-    log('Downloaded. Extracting…');
-
-    fs.mkdirSync(tmpDir, { recursive: true });
-    run(`tar -xzf "${tmpTar}" -C "${tmpDir}" --strip-components=1`);
-
-    // 2. Replace safe directories
-    for (const dir of SAFE_DIRS) {
-      const src = path.join(tmpDir, dir);
-      const dst = path.join(APP_DIR, dir);
-      if (!fs.existsSync(src)) continue;
-      if (fs.existsSync(dst)) fs.rmSync(dst, { recursive: true, force: true });
-      fs.cpSync(src, dst, { recursive: true, force: true });
-      log(`  Replaced: ${dir}/`);
+    // Ensure upstream remote is configured (idempotent).
+    try {
+      run('git remote get-url upstream');
+    } catch {
+      run(`git remote add upstream https://github.com/${UPSTREAM_REPO}.git`);
+      log('Registered upstream remote.');
     }
 
-    // 3. Replace safe individual files
-    for (const file of SAFE_FILES) {
-      const src = path.join(tmpDir, file);
-      const dst = path.join(APP_DIR, file);
-      if (!fs.existsSync(src)) continue;
-      fs.copyFileSync(src, dst);
-      log(`  Replaced: ${file}`);
+    // Fetch latest from upstream.
+    run(`git fetch upstream ${UPSTREAM_BRANCH}`);
+    log('Fetched upstream.');
+
+    // Record package.json hash before merge so we know if deps changed.
+    const pkgBefore = (() => {
+      try { return fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8'); } catch { return ''; }
+    })();
+
+    // Merge — fast-forward preferred, fall back to true merge.
+    // --no-edit so it never blocks waiting for a commit message.
+    // If there are conflicts this throws, which we catch below.
+    try {
+      run(`git merge upstream/${UPSTREAM_BRANCH} --no-edit --ff`);
+    } catch {
+      run(`git merge upstream/${UPSTREAM_BRANCH} --no-edit`);
+    }
+    log('Merge complete.');
+
+    // Push merged result back to origin (Dan's repo) so the fork stays in sync.
+    try {
+      run('git push origin main');
+      log('Pushed to origin.');
+    } catch (e) {
+      log(`Push to origin skipped or failed (non-fatal): ${e.message}`);
     }
 
-    // 4. Sync new deps from upstream — only ADD new packages, never remove existing
-    // This preserves local extras: compression, mssql (needed for azureSync)
-    const upstreamPkgPath = path.join(tmpDir, 'package.json');
-    if (fs.existsSync(upstreamPkgPath)) {
-      const upstream = JSON.parse(fs.readFileSync(upstreamPkgPath, 'utf8'));
-      const local    = JSON.parse(fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8'));
-      let depsChanged = false;
-      for (const [pkg, ver] of Object.entries(upstream.dependencies || {})) {
-        if (local.dependencies?.[pkg] !== ver) {
-          local.dependencies = local.dependencies || {};
-          local.dependencies[pkg] = ver;
-          depsChanged = true;
-        }
-      }
-      if (depsChanged) {
-        fs.writeFileSync(path.join(APP_DIR, 'package.json'), JSON.stringify(local, null, 2));
-        log('New dependencies detected — running npm install…');
-        run('npm install');
-      }
+    // If package.json changed, reinstall deps.
+    const pkgAfter = (() => {
+      try { return fs.readFileSync(path.join(APP_DIR, 'package.json'), 'utf8'); } catch { return ''; }
+    })();
+    if (pkgBefore !== pkgAfter) {
+      log('package.json changed — running npm install…');
+      run('npm install');
     }
 
-    // 5. Restart PM2 apps
+    // Restart PM2 processes.
     for (const name of PM2_APP_NAMES) {
       log(`Restarting ${name}…`);
       try { run(`pm2 restart ${name} --update-env`); }
@@ -214,28 +147,26 @@ async function checkAndUpdate() {
     log(`Successfully updated to ${remoteSha.slice(0, 7)}!`);
 
   } catch (e) {
-    log(`Update failed: ${e.message}`);
+    log(`Update FAILED: ${e.message}`);
+    // If merge left conflicts, abort so the working tree stays clean.
+    try { run('git merge --abort'); log('Aborted incomplete merge.'); } catch {}
     if (e.stack) log(e.stack.split('\n').slice(1, 3).join(' '));
-  } finally {
-    try { fs.unlinkSync(tmpTar); }                              catch {}
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
 }
 
-// ─── entry point ─────────────────────────────────────────────────────────────
+// ─── entry ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  log('SDC Scheduler — server auto-updater started');
-  log(`Watching: https://github.com/${GITHUB_REPO}/tree/${GITHUB_BRANCH}  (branch: ${GITHUB_BRANCH})`);
-  log(`Check interval: ${CHECK_INTERVAL_MS / 60000} min`);
+  log('SDC Scheduler — git-based auto-updater started');
+  log(`Watching: https://github.com/${UPSTREAM_REPO}/tree/${UPSTREAM_BRANCH}`);
+  log(`Interval: ${CHECK_INTERVAL_MS / 60000} min`);
   await checkAndUpdate();
-  setInterval(checkAndUpdate, CHECK_INTERVAL_MS);
+  setInterval(() => checkAndUpdate().catch(e => log(`Tick error: ${e.message}`)), CHECK_INTERVAL_MS);
 }
 
 main().catch(e => { log(`Fatal: ${e.message}`); process.exit(1); });
 
 // ─── manual trigger server ────────────────────────────────────────────────────
-// POST http://<host>:4013/trigger  →  runs checkAndUpdate() immediately
 const TRIGGER_PORT = 4013;
 http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/trigger') {
@@ -245,4 +176,4 @@ http.createServer((req, res) => {
   } else {
     res.writeHead(404); res.end();
   }
-}).listen(TRIGGER_PORT, '0.0.0.0', () => log(`Trigger server on port ${TRIGGER_PORT}`));
+}).listen(TRIGGER_PORT, '0.0.0.0', () => log(`Trigger server listening on :${TRIGGER_PORT}`));

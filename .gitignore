@@ -1,6 +1,13 @@
 # Node
 node_modules/
 
+# Runtime cache / generated files
+pbi_cache.json
+.update-sha
+
+# Local reference/scratch material
+abhi-reference/
+
 # Built DXT extension artifacts (rebuild with `npx @anthropic-ai/dxt pack` — see mcp/README.md)
 *.dxt
 
