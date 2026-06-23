@@ -13729,7 +13729,20 @@ function renderScheduleHours() {
       `<th class="hpt-sec-hdr" colspan="${g.fns.length}">${escapeHtml(g.sec)}</th>`
     ).join('');
 
-    // Header row 2 — function names
+    // Header row 2 — department/group spans within each section (PM, ME, CE, General Engineering, Shop, …)
+    const grpSpans = secGroups.flatMap(g => {
+      const grpOrder = [], grpCount = new Map();
+      for (const r of g.fns) {
+        const key = r.group || '';
+        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); }
+        grpCount.set(key, grpCount.get(key) + 1);
+      }
+      return grpOrder.map(grp =>
+        `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}">${escapeHtml(grp)}</th>`
+      );
+    }).join('');
+
+    // Header row 3 — function names
     const fnHdrs = pivotCols.map(r => `<th class="hpt-fn-hdr">${escapeHtml(r.fn)}</th>`).join('');
 
     // Data rows
@@ -13858,8 +13871,9 @@ function renderScheduleHours() {
       <div class="hpt-wrap">
         <table class="hpt">
           <thead>
-            <tr><th class="hpt-corner"></th>${secSpans}<th class="hpt-total-hdr">Total</th></tr>
-            <tr><th class="hpt-corner"></th>${fnHdrs}<th class="hpt-total-hdr"></th></tr>
+            <tr><th class="hpt-corner" rowspan="3"></th>${secSpans}<th class="hpt-total-hdr" rowspan="3">Total</th></tr>
+            <tr>${grpSpans}</tr>
+            <tr>${fnHdrs}</tr>
           </thead>
           <tbody>${pivotBody}</tbody>
         </table>
