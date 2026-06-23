@@ -8651,10 +8651,13 @@ function _procCostWaterfall(c) {
   const paidRaw = estimated ? paid / estimated : 0;
   const purOver  = purRaw > 1, paidOver = paidRaw > 1;
 
+  // Scale all arcs to the largest value so over-budget shows estimated as a small slice
+  const scale = Math.max(estimated, purchased, paid) || 1;
+
   const rings = [
-    { label: 'Estimated', sub: 'Budget',     value: estimated, pct: 1,                    over: false,    color: '#1574C4', tipColor: '#60a5fa', track: '#dbeafe', ro: 100, ri: 80 },
-    { label: 'Purchased', sub: 'Parts Cost', value: purchased, pct: Math.min(1, purRaw),  over: purOver,  color: '#061D39', tipColor: '#93c4e8', track: '#d0d9e6', ro: 72,  ri: 52 },
-    { label: 'Paid',      sub: 'Parts Cost', value: paid,      pct: Math.min(1, paidRaw), over: paidOver, color: '#74C415', tipColor: '#a3e635', track: '#e2f5c0', ro: 44,  ri: 24 },
+    { label: 'Estimated', sub: 'Budget',     value: estimated, pct: estimated / scale, over: false,    color: '#1574C4', tipColor: '#60a5fa', track: '#dbeafe', ro: 100, ri: 80 },
+    { label: 'Purchased', sub: 'Parts Cost', value: purchased, pct: purchased / scale, over: purOver,  color: '#061D39', tipColor: '#93c4e8', track: '#d0d9e6', ro: 72,  ri: 52 },
+    { label: 'Paid',      sub: 'Parts Cost', value: paid,      pct: paid / scale,      over: paidOver, color: '#74C415', tipColor: '#a3e635', track: '#e2f5c0', ro: 44,  ri: 24 },
   ];
 
   // large-arc always 0 — semicircle never sweeps > 180°
@@ -8681,8 +8684,8 @@ function _procCostWaterfall(c) {
     const { track, fill } = donutPath(r.pct, cx, cy, r.ro, r.ri);
     const rawPct   = estimated ? (r.value / estimated) : 0;
     const pctLabel = estimated ? Math.round(rawPct * 100) + '%' : '—';
-    const fillColor = r.over ? '#dc2626' : r.color;
-    const tipColor  = r.over ? '#fca5a5' : r.tipColor;
+    const fillColor = r.color;   // never red — arc size already shows the overrun
+    const tipColor  = r.tipColor;
     const da = `data-tl="${r.label}" data-ts="${r.sub}" data-tp="${pctLabel}" data-tv="${usd(r.value)}" data-tc="${tipColor}"`;
     return `<path d="${track}" fill="${r.track}" ${da} style="cursor:pointer;"/>` +
            (fill ? `<path d="${fill}" fill="${fillColor}" stroke="white" stroke-width="2.5" ${da} style="cursor:pointer;"/>` : '');
@@ -8690,7 +8693,7 @@ function _procCostWaterfall(c) {
   // Labels at the left ($0) and right (ring value) tips of each arc
   const tipLabels = rings.map(r => {
     const rMid = (r.ro + r.ri) / 2;
-    const fillColor = r.over ? '#dc2626' : r.color;
+    const fillColor = r.color;
     const lx = (cx - rMid).toFixed(1);
     const rx = (cx + rMid).toFixed(1);
     const ly = cy + 15;
