@@ -1,0 +1,20 @@
+# Normalize all text files to LF in the repo; checkout with native endings.
+* text=auto eol=lf
+
+# Force these to always LF (server-side scripts, shell)
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sh   text eol=lf
+
+# Binaries — no line-ending mangling
+*.png  binary
+*.ico  binary
+*.svg  binary
+*.exe  binary
+*.db   binary
