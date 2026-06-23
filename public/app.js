@@ -13726,7 +13726,7 @@ function renderScheduleHours() {
 
     // Header row 1 — section spans
     const secSpans = secGroups.map(g =>
-      `<th class="hpt-sec-hdr" colspan="${g.fns.length}">${escapeHtml(g.sec)}</th>`
+      `<th class="hpt-sec-hdr" colspan="${g.fns.length}" title="${escapeHtml(g.sec)}">${escapeHtml(g.sec)}</th>`
     ).join('');
 
     // Header row 2 — department/group spans within each section (PM, ME, CE, General Engineering, Shop, …)
@@ -13738,7 +13738,7 @@ function renderScheduleHours() {
         grpCount.set(key, grpCount.get(key) + 1);
       }
       return grpOrder.map(grp =>
-        `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}">${escapeHtml(grp)}</th>`
+        `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(g.sec)} › ${escapeHtml(grp)}">${escapeHtml(grp)}</th>`
       );
     }).join('');
 
