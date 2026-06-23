@@ -1132,6 +1132,22 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
   align-self: center;
 }
 .project-add-btn:hover { background: rgba(255,255,255,0.22); }
+.project-tab-bar-refresh {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  background: rgba(255,255,255,0.10);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.20);
+  padding: 4px 9px;
+  font-size: 15px;
+  cursor: pointer;
+  border-radius: 6px;
+  font-family: inherit;
+  align-self: center;
+  line-height: 1;
+  transition: background 0.13s;
+}
+.project-tab-bar-refresh:hover { background: rgba(255,255,255,0.22); }
 
 /* The picker that opens when you click the + project button. */
 .project-add-picker {

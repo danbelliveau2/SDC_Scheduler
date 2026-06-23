@@ -23150,10 +23150,10 @@ async function init() {
   }
   const hardRefreshBtn = document.getElementById('btn-hard-refresh');
   if (hardRefreshBtn) {
-    hardRefreshBtn.addEventListener('click', () => {
-      window.location.reload(true);
-    });
+    hardRefreshBtn.addEventListener('click', () => { window.location.reload(true); });
   }
+  // Global hard refresh — always visible in the project tab bar (all views)
+  document.getElementById('btn-global-hard-refresh')?.addEventListener('click', () => { window.location.reload(true); });
 
   // "👤 For Customer" — toggles a clean customer-facing view by adding the
   // body.customer-view class. CSS hides the toolbar / tabs / extra columns;
