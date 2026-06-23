@@ -2782,13 +2782,18 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .proc-plist-head, .proc-plrow {
   display: grid;
-  grid-template-columns: var(--pc0) var(--pc1) var(--pc2) var(--pc3) var(--pc4) var(--pc5) var(--pc6) var(--pc7) var(--pc8) var(--pc9) var(--pc10) var(--pc11) var(--pc12);
+  grid-template-columns: var(--proc-grid-cols, var(--pc0) var(--pc1) var(--pc2) var(--pc3) var(--pc4) var(--pc5) var(--pc6) var(--pc7) var(--pc8) var(--pc9) var(--pc10) var(--pc11) var(--pc12));
   align-items: center;
   gap: 0;
   padding: 0;
   font-size: var(--fs-md);
   color: #000;
 }
+/* Column picker popover */
+.proc-col-pop { position:absolute; top:calc(100% + 4px); left:0; z-index:500; background:#fff; border:1px solid #c8d0da; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.14); padding:10px 12px; min-width:160px; }
+.proc-col-check { display:flex; align-items:center; gap:7px; padding:4px 2px; font-size:var(--fs-sm); color:#1e293b; cursor:pointer; white-space:nowrap; }
+.proc-col-check:hover { color:#1574c4; }
+.proc-col-check input { cursor:pointer; accent-color:#1574c4; }
 .proc-plist-head > *, .proc-plrow > * { padding: 5px 8px; border-right: 1px solid #c8d0da; display: flex; align-items: center; min-width: 0; }
 .proc-plist-head > *:last-child, .proc-plrow > *:last-child { border-right: none; }
 .proc-plist-head > .num, .proc-plrow > .num { justify-content: flex-end; }

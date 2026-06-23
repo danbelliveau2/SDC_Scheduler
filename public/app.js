@@ -8494,7 +8494,24 @@ async function _loadQuoteEtoActuals(project, overlay) {
 // Per-assembly received / ordered / no-PO rollups for a linked job's BOM.
 // Ported from the standalone Build Readiness Report app; same math, rendered
 // in the scheduler's own grid style. Read-only — nothing here writes anywhere.
-let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '', search: '', open: {}, partsListMode: 'table', upcomingWeek: 1 };
+// Parts-list column definitions — key, label, and default CSS-var width
+const PROC_PART_COLS = [
+  { key: 'qty',     label: 'Qty',             w: 'var(--pc0,44px)'  },
+  { key: 'pn',      label: 'Part No',         w: 'var(--pc1,160px)' },
+  { key: 'desc',    label: 'Description',     w: 'var(--pc2,1fr)'   },
+  { key: 'parent',  label: 'Parent Assembly', w: 'var(--pc3,190px)' },
+  { key: 'cat',     label: 'Category',        w: 'var(--pc4,132px)' },
+  { key: 'mfr',     label: 'Mfr',             w: 'var(--pc5,115px)' },
+  { key: 'sup',     label: 'Supplier',        w: 'var(--pc6,120px)' },
+  { key: 'po',      label: 'PO #',            w: 'var(--pc7,64px)'  },
+  { key: 'ordered', label: 'Purchased',       w: 'var(--pc8,72px)'  },
+  { key: 'exp',     label: 'Exp',             w: 'var(--pc9,72px)'  },
+  { key: 'lead',    label: 'Lead',            w: 'var(--pc10,52px)' },
+  { key: 'due',     label: 'Due',             w: 'var(--pc11,60px)' },
+  { key: 'status',  label: 'Status',          w: 'var(--pc12,108px)'},
+];
+
+let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '', search: '', open: {}, partsListMode: 'table', upcomingWeek: 1, hiddenPartCols: [] };
 try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
 function _procSave() { try { localStorage.setItem('sdcProcState', JSON.stringify({ ..._procState, open: {} })); } catch (_) {} }
 const _procCache = {};   // job → readiness payload
@@ -9039,11 +9056,23 @@ function _procPartsFilterBar(data) {
   const dateLabel = mode === 'invoiced' ? 'Invoiced' : 'Purchased';
   const seg = (val, label) => `<button class="seg-btn${mode === val ? ' is-active' : ''}" data-pdatemode="${val}" type="button">${label}</button>`;
   const active = _procState.pstatus !== 'all' || _procState.pcat !== 'all' || _procState.pmfr !== 'all' || _procState.psup !== 'all' || _procState.pfrom || _procState.pto || mode !== 'purchase';
+  const hidden = new Set(_procState.hiddenPartCols || []);
+  const colPopover = `<div class="proc-col-pop-wrap" style="position:relative;display:inline-block;">
+    <button class="proc-view-btn${hidden.size ? ' is-active' : ''}" id="proc-col-btn" type="button" title="Show / hide columns">⊞ Columns${hidden.size ? ` <span style="font-size:10px;background:#1574c4;color:#fff;border-radius:8px;padding:0 5px;margin-left:3px;">${hidden.size}</span>` : ''}</button>
+    <div class="proc-col-pop" id="proc-col-pop" style="display:none;">
+      ${PROC_PART_COLS.map(c => `<label class="proc-col-check"><input type="checkbox" data-col-key="${c.key}"${!hidden.has(c.key) ? ' checked' : ''}> ${c.label}</label>`).join('')}
+      <div style="border-top:1px solid #e2e8f0;margin-top:6px;padding-top:6px;display:flex;gap:6px;">
+        <button class="btn-ghost btn-tight" data-col-all="show" type="button">Show all</button>
+        <button class="btn-ghost btn-tight" data-col-all="reset" type="button">Reset</button>
+      </div>
+    </div>
+  </div>`;
   return `<div class="proc-parts-filters">
     <div class="proc-view-seg">
       <button class="proc-view-btn${_procState.partsListMode === 'table' ? ' is-active' : ''}" data-list-mode="table" type="button">≡ List</button>
       <button class="proc-view-btn${_procState.partsListMode === 'card' ? ' is-active' : ''}" data-list-mode="card" type="button">⊟ Card</button>
     </div>
+    ${_procState.partsListMode === 'table' ? colPopover : ''}
     <div class="proc-filt-divider"></div>
     <label class="proc-filt"><span class="proc-filt-lbl">Status</span>
       <select id="proc-pstatus" class="proc-job-pick">${pstatusOpts.map(([v, t]) => `<option value="${v}" ${_procState.pstatus === v ? 'selected' : ''}>${v === 'all' ? 'All' : t}</option>`).join('')}</select></label>
@@ -9075,6 +9104,25 @@ function _wirePartsFilters(root, rerender) {
   root.querySelectorAll('[data-list-mode]').forEach(b => b.addEventListener('click', () => {
     _procState.partsListMode = b.dataset.listMode; _procSave(); rerender();
   }));
+
+  // Columns popover — toggle visibility
+  const colBtn = root.querySelector('#proc-col-btn');
+  const colPop = root.querySelector('#proc-col-pop');
+  if (colBtn && colPop) {
+    colBtn.addEventListener('click', e => { e.stopPropagation(); colPop.style.display = colPop.style.display === 'none' ? 'block' : 'none'; });
+    colPop.addEventListener('click', e => e.stopPropagation());
+    document.addEventListener('click', () => { if (colPop) colPop.style.display = 'none'; }, { once: false, capture: false });
+    colPop.querySelectorAll('[data-col-key]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const hidden = new Set(_procState.hiddenPartCols || []);
+        cb.checked ? hidden.delete(cb.dataset.colKey) : hidden.add(cb.dataset.colKey);
+        _procState.hiddenPartCols = [...hidden]; _procSave(); rerender();
+      });
+    });
+    colPop.querySelector('[data-col-all="show"]')?.addEventListener('click', () => { _procState.hiddenPartCols = []; _procSave(); rerender(); });
+    colPop.querySelector('[data-col-all="reset"]')?.addEventListener('click', () => { _procState.hiddenPartCols = []; _procSave(); rerender(); });
+  }
+
   const pclear = root.querySelector('#proc-pclear');
   if (pclear) pclear.addEventListener('click', () => { Object.assign(_procState, { pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '' }); _procSave(); rerender(); });
 }
@@ -9499,39 +9547,44 @@ function _procPartsTable(data) {
     if (days >= 0) return `<span class="proc-due proc-due-soon"  title="Due in ${days} days">+${days}d</span>`;
     return `<span class="proc-due proc-due-late" title="${Math.abs(days)} days overdue">${days}d</span>`;
   };
-  const hcols = [
-    `<span class="num">Qty${rh(0)}</span>`,
-    `<span>Part No${rh(1)}</span>`,
-    `<span>Description${rh(2)}</span>`,
-    `<span>Parent Assembly${rh(3)}</span>`,
-    `<span>Category${rh(4)}</span>`,
-    `<span>Mfr${rh(5)}</span>`,
-    `<span>Supplier${rh(6)}</span>`,
-    `<span>PO #${rh(7)}</span>`,
-    `<span title="PO purchase date">Purchased${rh(8)}</span>`,
-    `<span>Exp${rh(9)}</span>`,
-    `<span title="Days between purchase and expected delivery">Lead${rh(10)}</span>`,
-    `<span title="Days until / since expected delivery">Due${rh(11)}</span>`,
-    `<span>Status</span>`,
-  ].join('');
-  return `<div class="proc-plist">
+  const hiddenSet = new Set(_procState.hiddenPartCols || []);
+  const visCols = PROC_PART_COLS.filter(c => !hiddenSet.has(c.key));
+  const gridTpl = visCols.map(c => c.w).join(' ');
+
+  // Header titles per key
+  const colTitle = { ordered: 'PO purchase date', lead: 'Days between purchase and expected delivery', due: 'Days until / since expected delivery' };
+  const hcols = visCols.map((c, i) => {
+    const t = colTitle[c.key] ? ` title="${colTitle[c.key]}"` : '';
+    const cls = c.key === 'qty' ? ' class="num"' : '';
+    return `<span${cls}${t}>${c.label}${rh(i)}</span>`;
+  }).join('');
+
+  // Row cell renderer per column key
+  const cellFor = (key, p, st) => {
+    switch (key) {
+      case 'qty':     return `<span class="num">${p.qty ?? ''}</span>`;
+      case 'pn':      return `<span class="proc-plpn" data-copy="${escapeHtml(p.pn || '')}" title="Click to copy part number">${escapeHtml(p.pn || '—')}</span>`;
+      case 'desc':    return `<span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>`;
+      case 'parent':  return `<span class="proc-plsrc" title="${escapeHtml(p.parentDesc || '')}"><span class="proc-plsrc-pn">${escapeHtml(p.parentPN || 'LOOSE')}</span></span>`;
+      case 'cat':     return `<span class="proc-plcat" title="${escapeHtml(p.category || '')}">${p.category ? escapeHtml(p.category) : '—'}</span>`;
+      case 'mfr':     return `<span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>`;
+      case 'sup':     return `<span class="proc-psup" title="${escapeHtml(p.supplier || '')}">${p.supplier ? escapeHtml(p.supplier) : '—'}</span>`;
+      case 'po':      return `<span class="proc-plpo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>`;
+      case 'ordered': return `<span>${fmt(p.orderDate)}</span>`;
+      case 'exp':     return `<span>${fmt(p.expDate || p.requiredDate)}</span>`;
+      case 'lead':    return leadChip(p.orderDate, p.expDate);
+      case 'due':     return dueChip(p.expDate, st.key === 'received');
+      case 'status':  return `<span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>`;
+      default: return '<span></span>';
+    }
+  };
+
+  return `<div class="proc-plist" style="--proc-grid-cols:${gridTpl}">
     <div class="proc-plist-head">${hcols}</div>
     ${rows.map(p => {
       const st = _procPartStatus(p);
       return `<div class="proc-plrow${st.key === 'overdue' ? ' proc-plrow-overdue' : ''}" data-pn="${escapeHtml(p.pn || '')}">
-        <span class="num">${p.qty ?? ''}</span>
-        <span class="proc-plpn" data-copy="${escapeHtml(p.pn || '')}" title="Click to copy part number">${escapeHtml(p.pn || '—')}</span>
-        <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
-        <span class="proc-plsrc" title="${escapeHtml(p.parentDesc || '')}"><span class="proc-plsrc-pn">${escapeHtml(p.parentPN || 'LOOSE')}</span></span>
-        <span class="proc-plcat" title="${escapeHtml(p.category || '')}">${p.category ? escapeHtml(p.category) : '—'}</span>
-        <span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>
-        <span class="proc-psup" title="${escapeHtml(p.supplier || '')}">${p.supplier ? escapeHtml(p.supplier) : '—'}</span>
-        <span class="proc-plpo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>
-        <span>${fmt(p.orderDate)}</span>
-        <span>${fmt(p.expDate || p.requiredDate)}</span>
-        ${leadChip(p.orderDate, p.expDate)}
-        ${dueChip(p.expDate, st.key === 'received')}
-        <span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>
+        ${visCols.map(c => cellFor(c.key, p, st)).join('')}
       </div>`;
     }).join('')}
   </div>`;
