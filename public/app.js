@@ -13830,20 +13830,29 @@ function renderScheduleHours() {
       // Section + group band strips below x-axis baseline
       let bandsSvg = '';
       if (opts && opts.secBands) {
+        // Truncate label to fit pixel width (approx 5.4px per char at font-size 9)
+        const fitTxt = (label, pxAvail) => {
+          const cw = 5.4, pad = 10;
+          const max = Math.floor((pxAvail - pad) / cw);
+          if (max < 1) return '';
+          return label.length > max ? label.slice(0, max - 1) + '…' : label;
+        };
         const sH = 18, sY = baseY + 4;
         let sx = padL;
         for (const b of opts.secBands) {
           const bw = b.count * grpW - 1;
-          bandsSvg += `<rect x="${sx}" y="${sY}" width="${bw}" height="${sH}" fill="#1e3a5f" rx="2"/>`;
-          bandsSvg += `<text x="${sx+bw/2}" y="${sY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="700" fill="white">${escapeHtml(b.label)}</text>`;
+          const txt = fitTxt(b.label, bw);
+          bandsSvg += `<rect x="${sx}" y="${sY}" width="${bw}" height="${sH}" fill="#1e3a5f" rx="2"><title>${escapeHtml(b.label)}</title></rect>`;
+          if (txt) bandsSvg += `<text x="${sx+bw/2}" y="${sY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">${escapeHtml(txt)}</text>`;
           sx += b.count * grpW;
         }
         const gY = sY + sH + 3;
         let gx = padL;
         for (const b of opts.grpBands) {
           const bw = b.count * grpW - 1;
-          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#2d6a9f" rx="2"/>`;
-          bandsSvg += `<text x="${gx+bw/2}" y="${gY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="600" fill="white">${escapeHtml(b.label)}</text>`;
+          const txt = fitTxt(b.label, bw);
+          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#2d6a9f" rx="2"><title>${escapeHtml(b.label)}</title></rect>`;
+          if (txt) bandsSvg += `<text x="${gx+bw/2}" y="${gY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="600" fill="white" style="pointer-events:none">${escapeHtml(txt)}</text>`;
           gx += b.count * grpW;
         }
       }
