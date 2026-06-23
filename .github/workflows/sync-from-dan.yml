@@ -13,6 +13,8 @@ on:
 
 jobs:
   sync:
+    # Only run in YOUR fork — not in Dan's repo (where the bot has no write access)
+    if: github.repository != 'danbelliveau2/SDC_Scheduler'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
