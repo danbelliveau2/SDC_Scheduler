@@ -13742,14 +13742,18 @@ function renderScheduleHours() {
       );
     }).join('');
 
-    // Header row 3 — function names
-    const fnHdrs = pivotCols.map(r => `<th class="hpt-fn-hdr">${escapeHtml(r.fn)}</th>`).join('');
+    // Header row 3 — function names (title shows full path on truncated headers)
+    const fnHdrs = pivotCols.map(r => {
+      const tip = `${escapeHtml(r.section)} › ${escapeHtml(r.group)} › ${escapeHtml(r.fn)}`;
+      return `<th class="hpt-fn-hdr" title="${tip}">${escapeHtml(r.fn)}</th>`;
+    }).join('');
 
-    // Data rows
+    // Data rows — each cell tooltip: "Section › Group › Function\nLabel: value"
     const makeRow = (label, valFn, cls) => {
       const cells = pivotCols.map(r => {
         const v = valFn(r);
-        return `<td class="hpt-val${cls ? cls(r) : ''}">${fmt(v)}</td>`;
+        const tip = `${r.section} › ${r.group} › ${r.fn}\n${label}: ${fmt(v)}`;
+        return `<td class="hpt-val${cls ? cls(r) : ''}" title="${escapeHtml(tip)}">${fmt(v)}</td>`;
       }).join('');
       const total = pivotCols.reduce((a, r) => a + valFn(r), 0);
       return `<tr><td class="hpt-row-lbl">${label}</td>${cells}<td class="hpt-total">${fmt(total)}</td></tr>`;
