@@ -3413,6 +3413,11 @@ function renderGantt() {
     try { drawBarMeta(); } catch (_) {}
     try { drawMachineBorders(); } catch (_) {}
     try { renderProjectStatsPopup(); } catch (_) {}
+    // Re-run label placement LAST, after every drawer has settled the bar
+    // geometry/styles. clipBarLabels is idempotent, and this guarantees a
+    // label is either fully inside the bar or fully outside it — never
+    // straddling the right edge (which an earlier drawer's nudge could cause).
+    try { clipBarLabels(); } catch (_) {}
   });
 }
 
@@ -5364,7 +5369,12 @@ function setZoom(percent) {
     if (pxPerDay > 0) {
       const dateStr = new Date(centerDateMs).toISOString().slice(0, 10);
       const targetPx = workDayOffset(dateStr, g.gantt_start) * pxPerDay;
-      newScroller.scrollLeft = Math.max(0, targetPx - viewW / 2);
+      const center = Math.max(0, targetPx - viewW / 2);
+      newScroller.scrollLeft = center;
+      // Re-assert next frame: renderGantt defers its decoration pass to a rAF,
+      // and any scroll reset that lands then would otherwise undo the centering
+      // (zoom-in appears to drift "back in time"). Pin it after that settles.
+      requestAnimationFrame(() => { const s = getGanttScroller(); if (s) s.scrollLeft = center; });
     }
   }
   // v4.55: Keep the Zoom dropdown's displayed value in sync with any zoom
@@ -21535,7 +21545,13 @@ function setView(view) {
   else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
   else if (view === 'recents')   { renderRecentsPage(); _restoreScrollPos(view); }
   else if (view === 'actions')   renderActionsPage();
-  else render();
+  else {
+    render();
+    // Opening / switching to a schedule: fit the whole project into the Gantt
+    // viewport (don't leave it scrolled half off-screen). Deferred two frames so
+    // the grid+Gantt layout settles before zoomToFit measures the panel.
+    requestAnimationFrame(() => requestAnimationFrame(() => { try { zoomToFit(); } catch (_) {} }));
+  }
 }
 
 // Throttled scroll listener — attached once after init, saves position as user scrolls.
@@ -21571,11 +21587,11 @@ function setupScrollSync() {
 }
 
 // ---------- Layout (grid width, column widths, gantt visible) ----------
-const DEFAULT_COL_WIDTHS = { line: 36, id: 50, name: 340, project: 160, assignee: 110, start: 90, finish: 90, duration: 80, pred: 110, progress: 110, allocation: 52, priority: 44, completed: 90, notes: 200 };
+const DEFAULT_COL_WIDTHS = { line: 36, id: 50, name: 340, project: 160, assignee: 110, start: 64, finish: 64, duration: 80, pred: 110, progress: 110, allocation: 52, priority: 44, completed: 64, notes: 200 };
 // Per-column hard floors used by the resize handle. Line column is tight enough that
 // you can't drag below "the number is still legible". Allocation only ever holds "100%"
 // in the body and "ALLOC" in the header, so its floor is just-wider-than-the-header.
-const COL_MIN_WIDTHS = { line: 30, name: 80, project: 80, assignee: 60, start: 70, finish: 70, duration: 50, pred: 60, progress: 60, allocation: 44, priority: 36, completed: 70, notes: 100 };
+const COL_MIN_WIDTHS = { line: 30, name: 80, project: 80, assignee: 60, start: 48, finish: 48, duration: 50, pred: 60, progress: 60, allocation: 44, priority: 36, completed: 48, notes: 100 };
 const COLUMN_DEFS = [
   { key: 'line',     label: '#' },
   { key: 'name',     label: 'Task' },
@@ -21602,7 +21618,7 @@ const DEFAULT_HIDDEN_COLS = new Set(['line', 'priority', 'progress', 'allocation
 // Bump LAYOUT_VERSION whenever we change a default column width that existing users have
 // already cached in localStorage. The migration block below resets only the affected
 // column so we don't blow away anything else they've customized.
-const LAYOUT_VERSION = 6;
+const LAYOUT_VERSION = 7;
 
 function loadLayout() {
   let saved = {};
@@ -21639,6 +21655,12 @@ function loadLayout() {
     if (Array.isArray(saved.visibleCols)) {
       saved.visibleCols = saved.visibleCols.filter(k => k !== 'allocation' && k !== 'duration');
     }
+  }
+  // Migration v7: the date columns (Start / Finish / Completed) got a smaller
+  // font + narrower default, so drop any saved widths for them and pick up the
+  // new compact DEFAULT_COL_WIDTHS instead of the old wide 90px.
+  if ((saved.layoutVersion || 1) < 7) {
+    if (saved.colWidths) { delete saved.colWidths.start; delete saved.colWidths.finish; delete saved.colWidths.completed; }
   }
 
   const rh = Number(saved.rowHeight) || ROW_H_DEFAULT;

@@ -1739,8 +1739,12 @@ body.customer-view .customer-view-flatten.is-active {
 
 /* Prominent zoom-to-fit button. */
 .btn-fit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 5px 15px;
   height: 30px;
+  line-height: 1;
   font-size: var(--fs-md);
   font-weight: var(--fw-bold);
   letter-spacing: 0.2px;
@@ -3886,7 +3890,7 @@ tbody tr:hover { background: var(--row-hover); }
 .col-assignee { width: 100px; }
 .col-duration { width: 80px; text-align: right; font-variant-numeric: tabular-nums; }
 .col-progress { width: 110px; }
-.col-date { font-variant-numeric: tabular-nums; width: 88px; }
+.col-date { font-variant-numeric: tabular-nums; width: 64px; font-size: 11px; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
 .col-pred { width: 110px; font-variant-numeric: tabular-nums; }
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
 /* Comments column — free-text. Truncate with ellipsis so a long note doesn't
