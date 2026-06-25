@@ -3394,31 +3394,41 @@ function renderGantt() {
   // skip alignment and let frappe-gantt's natural layout drive bar positions.
   if (!state.scheduleView?.ganttOnly) alignGanttToGrid();
 
-  // Defer decorations one frame so the base chart is visible immediately.
-  // All drawers are wrapped in try/catch per CLAUDE.md — the defer means a
-  // late throw won't block the base render but still won't surface to the user.
-  requestAnimationFrame(() => {
-    // Arrows render FIRST (behind everything) — bars and labels cover them visually.
-    try { drawCustomArrows(); } catch (_) {}
-    try { drawBaselineGhosts(); } catch (_) {}
-    try { drawTodayLine(); } catch (_) {}
-    try { drawMilestoneDiamonds(); } catch (_) {}
-    try { drawMilestoneLabels(); } catch (_) {}
-    try { clipBarLabels(); } catch (_) {}
-    try { drawScheduleStatus(); } catch (_) {}
-    try { drawDoneHashOverlay(); } catch (_) {}
-    try { drawWeekdayLetters(); } catch (_) {}
-    try { drawFinancialOverlay(); } catch (_) {}
-    try { drawPenaltyClauseLine(); } catch (_) {}
-    try { drawBarMeta(); } catch (_) {}
-    try { drawMachineBorders(); } catch (_) {}
-    try { renderProjectStatsPopup(); } catch (_) {}
-    // Re-run label placement LAST, after every drawer has settled the bar
-    // geometry/styles. clipBarLabels is idempotent, and this guarantees a
-    // label is either fully inside the bar or fully outside it — never
-    // straddling the right edge (which an earlier drawer's nudge could cause).
-    try { clipBarLabels(); } catch (_) {}
-  });
+  // Decorations run SYNCHRONOUSLY (this is what worked in 8e7432d before the
+  // Abhi merge). Deferring them a frame made clipBarLabels/drawBarMeta measure
+  // bar geometry one frame late, which broke the meta cascade — meta ended up
+  // inside the bar while the name was pushed outside, and names straddled the
+  // bar edge. The cascade requires clipBarLabels (places the name) to run
+  // immediately before drawBarMeta (reads that placed name), both measuring the
+  // same fresh, synchronous layout. Do NOT wrap these in requestAnimationFrame.
+  // All drawers wrapped in try/catch per CLAUDE.md so a throw can't break zoom.
+  //
+  // Arrows render FIRST (behind everything) — bars and labels cover them visually.
+  try { drawCustomArrows(); } catch (_) {}
+  try { drawBaselineGhosts(); } catch (_) {}
+  try { drawTodayLine(); } catch (_) {}
+  try { drawMilestoneDiamonds(); } catch (_) {}
+  try { drawMilestoneLabels(); } catch (_) {}
+  try { clipBarLabels(); } catch (_) {}
+  try { drawScheduleStatus(); } catch (_) {}
+  try { drawDoneHashOverlay(); } catch (_) {}
+  try { drawWeekdayLetters(); } catch (_) {}
+  try { drawFinancialOverlay(); } catch (_) {}
+  try { drawPenaltyClauseLine(); } catch (_) {}
+  try { drawBarMeta(); } catch (_) {}
+  try { drawMachineBorders(); } catch (_) {}
+  try { renderProjectStatsPopup(); } catch (_) {}
+  // Montserrat loads async and is wider than the fallback — if labels were
+  // measured before it finished loading they get mis-placed. Once fonts are
+  // ready, re-run the SAME order as above (clipBarLabels first so drawBarMeta
+  // can read the name's final position — the meta cascade depends on that
+  // order; running meta after a late clip is what breaks "alloc leaves first").
+  if (document.fonts && document.fonts.status !== 'loaded') {
+    document.fonts.ready.then(() => {
+      try { clipBarLabels(); } catch (_) {}
+      try { drawBarMeta(); } catch (_) {}
+    });
+  }
 }
 
 // ── Work-day Gantt helpers ───────────────────────────────────────────

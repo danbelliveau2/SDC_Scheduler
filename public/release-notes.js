@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.91',
+    date: '2026-06-25',
+    notes: [
+      'Gantt bar labels are placed correctly again.',
+      '',
+      '   ▸ The allocation·duration pill always leaves the bar before the task name does — you\'ll never see the alloc outside while the name is still inside.',
+      '   ▸ A task name is either fully inside its bar or fully outside it — never half-in / half-out straddling the bar edge.',
+    ],
+  },
+  {
     version: '9.9',
     date: '2026-06-16',
     notes: [

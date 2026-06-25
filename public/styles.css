@@ -3723,6 +3723,13 @@ input[type="number"] {
 /* Gantt panel is grabbable for click-and-drag pan; bars get their own cursor. */
 .schedule-gantt { cursor: grab; }
 .schedule-gantt.panning { cursor: grabbing; }
+/* Bar label + alloc·dur meta MUST stay sans-serif. The bar-meta cascade is
+   calibrated against a per-character width table for bold-9px sans-serif, and
+   clipBarLabels measures the name with getBBox — both break if the text renders
+   in Montserrat (wider + async-loading), which made the meta sit inside the bar
+   while the name straddled the edge. Pin the font so measurement == render. */
+#gantt-container .gantt .bar-label,
+#gantt-container .gantt text.sdc-bar-meta { font-family: Arial, Helvetica, sans-serif !important; }
 /* While drag-panning the grid, lock out text selection across the whole panel so
    headers / group rows don't pick up a blue highlight when the drag hits the
    scroll edge. Inputs / textareas re-enable selection naturally so cell editing
