@@ -117,14 +117,15 @@ app.use(async (req, res, next) => {
 // ---------- Schedule auto-computation (FS/SS/FF/SF + lag) ----------
 // All scheduling is done in BUSINESS DAYS (Mon–Fri).
 function parsePredecessorRef(s) {
-  const m = String(s || '').trim().match(/^(\d+)\s*(FS|SS|FF|SF)?\s*([+-]\s*\d+)?\s*([wd])?$/i);
+  // Accepts half-week decimals too, e.g. "5FF -5.5w" (27.5 bd → rounds to 28).
+  const m = String(s || '').trim().match(/^(\d+)\s*(FS|SS|FF|SF)?\s*([+-]\s*\d+(?:\.\d+)?)?\s*([wd])?$/i);
   if (!m) return null;
   const id = Number(m[1]);
   const type = (m[2] || 'FS').toUpperCase();
   let lagDays = 0;
   if (m[3]) {
     const n = Number(m[3].replace(/\s+/g, ''));
-    lagDays = (m[4] || 'd').toLowerCase() === 'w' ? n * 5 : n;
+    lagDays = Math.round((m[4] || 'd').toLowerCase() === 'w' ? n * 5 : n);
   }
   return { id, type, lagDays };
 }

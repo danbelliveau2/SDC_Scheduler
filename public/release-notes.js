@@ -4,6 +4,23 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.8',
+    date: '2026-06-14',
+    notes: [
+      'Faster date editing, smarter predecessor changes, a cleaner default grid, and auto-fit on open.',
+      '',
+      'DATES:',
+      '   ▸ Click a date cell and the calendar opens right there — no month/day highlight, no second click. Pick a day and the schedule updates immediately.',
+      '',
+      'CHANGING A DATE THAT HAS A PREDECESSOR:',
+      '   ▸ A small in-app confirm pops ("this line has a predecessor — change anyway?"). Say yes, pick the date, and the predecessor KEEPS its type (FS/SS/FF/SF) — only its lag/lead shifts (in weeks / half-weeks, never raw days) so the task lands there. Undoable.',
+      '',
+      'GRID + VIEW:',
+      '   ▸ Fresh/first-open default columns are the clean set (#, Task, Assigned To, Start, Finish, Predecessors, Completed, Comments); the rest are one click away in Show/hide columns.',
+      '   ▸ Opening or reloading a schedule auto-runs Zoom to fit.',
+    ],
+  },
+  {
     version: '9.7',
     date: '2026-06-14',
     notes: [

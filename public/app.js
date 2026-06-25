@@ -2461,6 +2461,16 @@ function enterCellEdit(td, taskId, col) {
   if (td.querySelector('input, select')) return;
   const task = state.tasks.find(t => t.id === taskId);
   if (!task) return;
+  // A predecessor-linked task's dates are governed by the link. Clicking a
+  // Start/Finish date pops a small in-app confirm; on yes, the calendar opens
+  // and the predecessor KEEPS its type (FS/SS/FF/SF) — only its lag/lead shifts
+  // (in weeks/half-weeks) so the task lands on the chosen date.
+  if ((col === 'start' || col === 'finish') && task.predecessors && String(task.predecessors).trim()) {
+    const preds = String(task.predecessors).split(',').map(s => s.trim()).filter(Boolean);
+    const single = preds.length === 1 ? parsePredecessor(preds[0]) : null;
+    if (single) { single.lagBd = _predLagBd(preds[0]); _confirmPredChange(td, task, single, col); return; }
+    // Multiple predecessors — ambiguous which lag to shift; fall through to a normal edit.
+  }
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
   // v5.1: when editing the NAME column, swap ONLY the .name-cell-main span
@@ -2488,8 +2498,15 @@ function enterCellEdit(td, taskId, col) {
     td.innerHTML = '';
     td.appendChild(input);
   }
-  input.focus();
-  if (typeof input.select === 'function') input.select();
+  if (input.type === 'date') {
+    // Clicking a date cell opens the calendar in place (no month/day segment
+    // highlight, no second click). Defer a frame so the input is laid out in
+    // the cell before showPicker anchors to it.
+    requestAnimationFrame(() => { try { input.showPicker(); } catch (_) { input.focus(); } });
+  } else {
+    input.focus();
+    if (typeof input.select === 'function') input.select();
+  }
 
   let done = false;
   // v4.25: same click-outside dismissal as enterPillEdit — blur misses
@@ -2535,6 +2552,88 @@ function enterCellEdit(td, taskId, col) {
     }
   });
   input.addEventListener('blur', () => finalize(true));
+  // Commit the moment a value is chosen (date picked, dropdown selected) —
+  // don't wait for a click-off. For text inputs 'change' fires on blur anyway.
+  input.addEventListener('change', () => finalize(true));
+}
+
+// Lag of a predecessor ref in BUSINESS days (server convention: 'w' = 5 bd, so
+// it matches cascadeSchedule). e.g. "4FF-2w" → -10, "4FF-5.5w" → -28 (rounded).
+function _predLagBd(s) {
+  const m = String(s).match(/([+-]\s*\d+(?:\.\d+)?)\s*([wd])?/i);
+  if (!m) return 0;
+  const n = Number(m[1].replace(/\s+/g, ''));
+  return Math.round((m[2] || 'd').toLowerCase() === 'w' ? n * 5 : n);
+}
+// Business-day count to add to fromISO to reach toISO (toISO snapped to a
+// business day). Positive = later, negative = earlier.
+function _bdDelta(fromISO, toISO) {
+  const target = snapToBusinessDay(toISO, 1);
+  if (!fromISO || !target || target === fromISO) return 0;
+  const forward = target > fromISO;
+  const step = forward ? 1 : -1;
+  let cur = fromISO, n = 0;
+  for (let i = 0; i < 8000; i++) {
+    cur = addBusinessDays(cur, step); n += step;
+    if (cur === target) return n;
+    if (forward ? cur > target : cur < target) return n;
+  }
+  return n;
+}
+// Small in-app confirm pill next to the cell: this line has a predecessor.
+function _confirmPredChange(td, task, parsed, col) {
+  document.getElementById('pred-confirm-pop')?.remove();
+  const r = td.getBoundingClientRect();
+  const pop = document.createElement('div');
+  pop.id = 'pred-confirm-pop';
+  pop.className = 'pred-confirm-pop';
+  pop.innerHTML = `
+    <div class="pcp-msg">This line has a <strong>predecessor</strong>. Change the date anyway? The predecessor stays — its lag just shifts to match.</div>
+    <div class="pcp-btns">
+      <button type="button" class="pcp-no">Cancel</button>
+      <button type="button" class="pcp-yes">Yes, change it</button>
+    </div>`;
+  pop.style.left = Math.round(Math.min(r.left, window.innerWidth - 280)) + 'px';
+  pop.style.top  = Math.round(r.bottom + 6) + 'px';
+  document.body.appendChild(pop);
+  const close = () => { pop.remove(); document.removeEventListener('mousedown', onDoc, true); };
+  const onDoc = (e) => { if (!pop.contains(e.target)) close(); };
+  setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0);
+  pop.querySelector('.pcp-no').addEventListener('click', close);
+  pop.querySelector('.pcp-yes').addEventListener('click', () => { close(); _pickDateAdjustPred(td, task, parsed, col); });
+}
+// Open a calendar at the cell; on pick, keep the predecessor type and shift its
+// lag (weeks/half-weeks) so the task lands there. Undoable. Closing without a
+// pick reverts cleanly (no stuck highlight).
+function _pickDateAdjustPred(td, task, parsed, col) {
+  const baseDate = col === 'finish' ? (task.end_date || '') : (task.start_date || '');
+  const inp = document.createElement('input');
+  inp.type = 'date';
+  inp.value = baseDate;
+  inp.className = 'cell-edit-input';
+  inp.style.width = '100%';
+  td.classList.add('editing');
+  td.innerHTML = '';
+  td.appendChild(inp);
+  let done = false;
+  const finish = async (apply) => {
+    if (done) return; done = true;
+    document.removeEventListener('mousedown', onDoc, true);
+    if (apply && inp.value && inp.value !== baseDate) {
+      const newLagBd = parsed.lagBd + _bdDelta(baseDate, inp.value);
+      const weeks = Math.round((newLagBd / 5) * 2) / 2;   // nearest half-week
+      const lagStr = weeks === 0 ? '' : `${weeks > 0 ? '+' : '-'}${Math.abs(weeks)}w`;
+      pushUndoSnapshot(task, ['predecessors'], `Change predecessor on "${task.name || 'task'}"`);
+      try { await api.update(task.id, { predecessors: `${parsed.id}${parsed.type}${lagStr}` }); } catch (e) { console.error(e); }
+    }
+    await loadTasks();
+  };
+  const onDoc = (e) => { if (!inp.contains(e.target)) finish(false); };
+  inp.addEventListener('change', () => finish(true));
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } });
+  inp.addEventListener('blur', () => finish(false));
+  setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0);
+  requestAnimationFrame(() => { try { inp.showPicker(); } catch (_) { inp.focus(); } });
 }
 
 function currentCellValue(task, col) {
@@ -5719,7 +5818,7 @@ function addPillOccluder(parent, textEl, pad = 2) {
 function parsePredecessor(s) {
   // Accepts "5", "5FS", "5FF -2w", "5SS +1d", "5SF -3w" etc.
   // Returns { id, type: 'FS'|'SS'|'FF'|'SF', lagDays: number } or null
-  const m = String(s).trim().match(/^(\d+)\s*(FS|SS|FF|SF)?\s*([+-]\s*\d+)\s*([wd])?$|^(\d+)\s*(FS|SS|FF|SF)?$/i);
+  const m = String(s).trim().match(/^(\d+)\s*(FS|SS|FF|SF)?\s*([+-]\s*\d+(?:\.\d+)?)\s*([wd])?$|^(\d+)\s*(FS|SS|FF|SF)?$/i);
   if (!m) return null;
   const id = Number(m[1] || m[5]);
   const type = (m[2] || m[6] || 'FS').toUpperCase();
@@ -21543,10 +21642,12 @@ function loadLayout() {
   }
 
   const rh = Number(saved.rowHeight) || ROW_H_DEFAULT;
-  // Default visible columns exclude `line` (#) — the row-number column doubles as a drag
-  // handle but mostly adds clutter; users can re-enable it from the columns toggle when
-  // they need predecessor numbers visible.
-  const defaultVisible = COLUMN_DEFS.map(c => c.key).filter(k => k !== 'line');
+  // Default visible columns for a fresh install / first open — the clean layout:
+  // #, Task, Assigned To, Start, Finish, Predecessors, Completed, Comments.
+  // Allocation / Duration / % Complete live as pills inside the Task column;
+  // Priority / Project are off by default (all still toggleable from Show/hide
+  // columns). The old default showed every column, which read as cluttered.
+  const defaultVisible = ['line', 'name', 'assignee', 'start', 'finish', 'pred', 'completed', 'notes'];
   const availW = Math.max(600, window.innerWidth - 90);
   const defaultGW = Math.round(availW * 0.42);
   const savedGW = Number(saved.gridWidth) || 0;
@@ -23275,7 +23376,14 @@ async function init() {
     }
   } catch (_) {}
 
-  loadTasks();
+  loadTasks().then(() => {
+    // On boot / reload, fit the whole project into the Gantt viewport instead
+    // of restoring a stale zoom/scroll (which left it half off-screen). Defer
+    // two frames so the grid+Gantt layout settles before zoomToFit measures.
+    if (state.view === 'schedule') {
+      requestAnimationFrame(() => requestAnimationFrame(() => { try { zoomToFit(); } catch (_) {} }));
+    }
+  });
   // After team loads, if a personId is persisted from a prior session,
   // route into personal mode (assignee filter + schedule view + banner) —
   // but only when the user was last on the schedule; a restored Procurement /
