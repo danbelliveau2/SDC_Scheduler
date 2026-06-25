@@ -17207,6 +17207,14 @@ function applyAnchorColor(anchorColor) {
   root.setProperty('--anchor-text', c.text);
 }
 
+// Grid data-column font size — sets the --grid-data-fs CSS variable that the
+// non-Task / non-Assigned-To columns read (dates, predecessors, duration, %,
+// alloc, etc.). Clamped to a sane range.
+function applyGridDataFont(px) {
+  const n = Math.max(8, Math.min(14, Math.round(Number(px) || 11)));
+  document.documentElement.style.setProperty('--grid-data-fs', n + 'px');
+}
+
 function applyPctColors(pctColors) {
   const norm = normalizePctColors(pctColors);
   const root = document.documentElement.style;
@@ -17243,6 +17251,7 @@ async function loadSettings() {
   if (!state.settings.hierarchy_colors)  state.settings.hierarchy_colors  = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   if (!state.settings.anchor_color)      state.settings.anchor_color      = { ...ANCHOR_COLOR_DEFAULTS };
   if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 12;
+  if (state.settings.grid_data_font_px == null) state.settings.grid_data_font_px = 11;
   // Always normalize — older builds saved { key → { fill, text } } objects;
   // current shape is { key → "#hex" }. normalizePctColors handles both.
   state.settings.pct_colors = normalizePctColors(state.settings.pct_colors);
@@ -17251,6 +17260,7 @@ async function loadSettings() {
   applyHierarchyColors(state.settings.hierarchy_colors);
   applyAnchorColor(state.settings.anchor_color);
   applyPctColors(state.settings.pct_colors);
+  applyGridDataFont(state.settings.grid_data_font_px);
   if (Array.isArray(settings.phases) && settings.phases.length) {
     window.PHASES = settings.phases;
     window.PHASE_BY_KEY = Object.fromEntries(settings.phases.map(p => [p.key, p]));
@@ -20556,6 +20566,21 @@ function renderSetup() {
     }
   }
 
+  // Grid data-column font size (dates, predecessors, duration, %, alloc — every
+  // column except Task and Assigned To). Live-previews as you change it.
+  const gdfInput = document.getElementById('grid-data-font-size');
+  if (gdfInput) {
+    gdfInput.value = (d.grid_data_font_px != null) ? d.grid_data_font_px : 11;
+    if (!gdfInput.dataset.wired) {
+      gdfInput.dataset.wired = '1';
+      gdfInput.addEventListener('input', (e) => {
+        const v = Math.max(8, Math.min(14, Math.round(Number(e.target.value) || 11)));
+        state.setupDraft.grid_data_font_px = v;
+        applyGridDataFont(v); // live preview; saveSetup persists it
+      });
+    }
+  }
+
   // Palette
   const list = document.getElementById('palette-list');
   list.innerHTML = (d.brand_palette || []).map((c, i) => `
@@ -21198,6 +21223,7 @@ async function saveSetup() {
       api.putSetting('default_financial_milestones', state.setupDraft.default_financial_milestones || []),
       api.putSetting('project_milestone_library',    state.setupDraft.project_milestone_library || []),
       api.putSetting('weekday_marker_threshold',     state.setupDraft.weekday_marker_threshold || 8),
+      api.putSetting('grid_data_font_px',            state.setupDraft.grid_data_font_px || 11),
     ]);
     status.textContent = 'Saved. Reloading…';
     setTimeout(() => location.reload(), 250);
@@ -21209,6 +21235,8 @@ async function saveSetup() {
 
 function discardSetup() {
   state.setupDraft = null;
+  // Revert any live-previewed grid font size back to the saved value.
+  applyGridDataFont(state.settings?.grid_data_font_px ?? 11);
   renderSetup();
 }
 

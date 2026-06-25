@@ -3890,8 +3890,13 @@ tbody tr:hover { background: var(--row-hover); }
 .col-assignee { width: 100px; }
 .col-duration { width: 80px; text-align: right; font-variant-numeric: tabular-nums; }
 .col-progress { width: 110px; }
-.col-date { font-variant-numeric: tabular-nums; width: 64px; font-size: 11px; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
-.col-pred { width: 110px; font-variant-numeric: tabular-nums; }
+.col-date { font-variant-numeric: tabular-nums; width: 60px; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
+.col-pred { width: 76px; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
+/* Data-column font size — everything EXCEPT Task (col-name) and Assigned To
+   (col-assignee). Driven by the Setup → "Grid date / data font size" option
+   via the --grid-data-fs CSS variable (default 11px). */
+.col-line, .col-date, .col-duration, .col-pred, .col-progress,
+.col-allocation, .col-priority, .col-notes { font-size: var(--grid-data-fs, 11px); }
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
 /* Comments column — free-text. Truncate with ellipsis so a long note doesn't
    blow the row height; the full content stays accessible via the title tooltip
@@ -4199,7 +4204,7 @@ body.hide-alloc-pre td[data-col="name"] {
   transform: translateY(-50%);
   left: 64px;
   right: 110px;
-  font-weight: var(--fw-semibold);
+  font-weight: var(--fw-regular, 400);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4634,6 +4639,15 @@ tr.group-header.level-2 td,
 tr.group-header.level-3 td {
   height: 18px; line-height: 18px; font-size: 10.5px; padding-left: 32px;
   background: var(--surface, #fff);
+  /* Department / sub-dept names (Mechanical Engineering, Build, Wire, Shop,
+     Teardown, …) were hard to read — make them heavier + dark navy. */
+  font-weight: var(--fw-extrabold, 800);
+  color: var(--sdc-dark, #061d39);
+}
+tr.group-header.level-2 .group-label,
+tr.group-header.level-3 .group-label {
+  font-weight: var(--fw-extrabold, 800);
+  color: var(--sdc-dark, #061d39);
 }
 
 /* Header label styling. Section text reads on the full-row gray bar. */
@@ -4647,14 +4661,14 @@ tr.group-header.level-1 .group-label {
   padding: 0;
   border-radius: 0;
 }
-/* Department / sub-department labels — no fill, no border, semibold (not bold), light
-   slate text so the hierarchy reads through indentation + font size, not boldness. */
+/* Department / sub-department labels — BOLD + dark navy so they're easy to pick
+   out as group dividers (they were hard to read as faint semibold slate). */
 tr.group-header.level-2 .group-label,
 tr.group-header.level-3 .group-label {
   padding: 0;
   background: transparent;
-  color: #64748b;
-  font-weight: var(--fw-semibold);
+  color: var(--sdc-dark, #061d39);
+  font-weight: var(--fw-extrabold, 800);
 }
 tr.group-header .group-caret {
   display: inline-block;

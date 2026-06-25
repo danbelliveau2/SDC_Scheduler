@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.9',
+    date: '2026-06-16',
+    notes: [
+      'Tighter, more readable schedule grid.',
+      '',
+      '   ▸ Department / sub-section headers (Mechanical Engineering, Controls, Build, Wire, Shop, Teardown, …) are now bold + dark navy so they stand out as dividers; task names are normal weight so the headers read first.',
+      '   ▸ Start / Finish / Completed date columns are smaller and narrower by default, so they take less width.',
+      '   ▸ New Setup → "Grid Data Font Size" option sets the font size for every column EXCEPT Task and Assigned To (dates, predecessors, duration, %, alloc) — live-previews as you change it.',
+    ],
+  },
+  {
     version: '9.8',
     date: '2026-06-14',
     notes: [
