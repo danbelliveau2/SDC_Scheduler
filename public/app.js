@@ -14358,7 +14358,7 @@ function renderScheduleProcurement() {
 
       // Side-by-side for drawer: assembly list on left (60%), cost summary + waterfall on right (40%)
       if (waterfallChartHtml || waterfallPlaceholder || costSummaryHtml) {
-        inner = `<div style="display: grid; grid-template-columns: 3fr 2fr; gap: 16px; min-height: 400px;">
+        inner = `<div style="display: grid; grid-template-columns: 3fr 1fr; gap: 16px; min-height: 400px;">
           <div style="overflow-y: auto; border-right: 1px solid #e2e8f0; padding-right: 12px; font-size: var(--fs-sm);">
             ${assemblyContent}
           </div>
