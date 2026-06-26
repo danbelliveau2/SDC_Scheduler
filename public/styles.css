@@ -2635,6 +2635,12 @@ body.customer-view .customer-view-flatten.is-active {
   box-shadow: 0 1px 3px rgba(6,29,57,0.06);
   font-size: var(--fs-sm);
 }
+.proc-cost-card-drawer .proc-cost-grid {
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
+}
 .proc-cost-card-title {
   font-size: var(--fs-xs);
   font-weight: var(--fw-extrabold);
