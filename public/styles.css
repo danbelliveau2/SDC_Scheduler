@@ -2668,7 +2668,7 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-cost-key { color: #64748b; font-weight: var(--fw-medium); }
 .proc-cost-val { font-weight: var(--fw-semibold); text-align: right; white-space: nowrap; }
 .proc-cost-val-paid { color: #74c415; }
-.proc-cost-divider { border-top: 1px solid #e2e8f0; padding-top: 7px; margin-top: 2px; }
+.proc-cost-divider { padding-top: 7px; margin-top: 2px; }
 .proc-cost-key-total { font-weight: var(--fw-bold); color: #0f172a; }
 .proc-cost-val-total { font-weight: var(--fw-bold); color: #0f172a; }
 .proc-cost-edit-btn {
