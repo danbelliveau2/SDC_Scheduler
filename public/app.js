@@ -2369,7 +2369,7 @@ function handleCellClick(e) {
     const task = state.tasks.find(t => t.id === taskId);
     if (!task) return;
     const newProgress = (task.progress || 0) >= 100 ? 0 : 100;
-    api.update(taskId, { progress: newProgress }).then(() => loadTasks());
+    api.update(taskId, { progress: newProgress }).then(() => loadTasks()).catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
     return;
   }
   const td = e.target.closest('td[data-col]');
@@ -2427,7 +2427,7 @@ function enterPillEdit(pill, taskId, col) {
     document.removeEventListener('mousedown', onOutsideMousedown, true);
     if (commit && input.value !== original) {
       try { await saveCellEdit(taskId, col, input.value, task); }
-      catch (err) { console.error(err); }
+      catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
     }
     await loadTasks();
   };
@@ -2584,7 +2584,7 @@ function enterCellEdit(td, taskId, col) {
     document.removeEventListener('mousedown', onOutsideMousedown, true);
     if (commit && input.value !== original) {
       try { await saveCellEdit(taskId, col, input.value, task); }
-      catch (err) { console.error(err); }
+      catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
     }
     await loadTasks();
   };
@@ -3417,10 +3417,10 @@ function renderGantt() {
     on_date_change: (task, start, end) => {
       const startStr = start.toISOString().slice(0, 10);
       const endStr = end.toISOString().slice(0, 10);
-      api.update(Number(task.id), { start_date: startStr, end_date: endStr }).then(() => loadTasks());
+      api.update(Number(task.id), { start_date: startStr, end_date: endStr }).then(() => loadTasks()).catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
     },
     on_progress_change: (task, progress) => {
-      api.update(Number(task.id), { progress: Math.round(progress) }).then(() => loadTasks());
+      api.update(Number(task.id), { progress: Math.round(progress) }).then(() => loadTasks()).catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
     },
   });
   const newScroller = document.querySelector('#gantt-container .gantt-container');
@@ -8405,7 +8405,8 @@ function renderShopPartsPage() {
     if (el.type === 'checkbox') val = el.checked ? 1 : 0;
     else if (el.type === 'number') val = el.value === '' ? null : Number(el.value);
     else val = el.value;
-    const updated = await api.shopParts.update(id, { [field]: val });
+    let updated;
+    try { updated = await api.shopParts.update(id, { [field]: val }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); return; }
     const row = state.shopParts.find(r => r.id === id);
     if (row && updated) Object.assign(row, updated);
     if (field === 'part_complete' || field === 'priority' || field === 'job') renderShopPartsPage();
@@ -8416,7 +8417,7 @@ function renderShopPartsPage() {
     const r = state.shopParts.find(x => x.id === id);
     const ok = await showConfirmDialog({ title: 'Delete part?', message: `Delete "${escapeHtml(r?.part_no || r?.description || 'this part')}"?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
     if (!ok) return;
-    await api.shopParts.remove(id);
+    try { await api.shopParts.remove(id); } catch (err) { showToast(err.message || 'Delete failed', { kind: 'error' }); return; }
     state.shopParts = state.shopParts.filter(x => x.id !== id);
     renderShopPartsPage();
   }));
@@ -9081,7 +9082,7 @@ function _procOpenSummaryPanel(job, section, data) {
         <div class="ppo-line ppo-lines-head">
           <span class="ppo-line-part"><span class="ppo-line-pn">Part #</span><span class="ppo-line-desc">Description</span></span>
           <span class="num">Qty</span>
-          <span>${section === 'nopo' ? 'Supplier' : 'Supplier'}</span>
+          <span>Supplier</span>
           <span>Due</span>
           <span>Status</span>
           <span class="num">Price</span>
@@ -9111,7 +9112,7 @@ function _procOpenPoPanel(job, vname, poId) {
   document.getElementById('proc-po-overlay')?.remove();
   const fmt = d => d ? fmtDate(d) : '—';
   const initials = (vname || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-  const badge = { received: ['RECEIVED', 'vstat-ok'], pastdue: ['PAST DUE', 'vstat-bad'], open: ['LATE / EXP', 'vstat-warn'] }[po.status] || ['', ''];
+  const badge = { received: ['RECEIVED', 'vstat-ok'], late: ['PAST DUE', 'vstat-bad'], open: ['OPEN', 'vstat-warn'] }[po.status] || ['', ''];
   const barColor = _procBarColor(po.pct);
   const ordered = po.lines.map(l => l.ordered).filter(Boolean).sort()[0];
   const due = po.lines.map(l => l.expected).filter(Boolean).sort().slice(-1)[0];
@@ -9291,7 +9292,7 @@ function _wirePartsFilters(root, rerender) {
   if (colBtn && colPop) {
     colBtn.addEventListener('click', e => { e.stopPropagation(); colPop.style.display = colPop.style.display === 'none' ? 'block' : 'none'; });
     colPop.addEventListener('click', e => e.stopPropagation());
-    document.addEventListener('click', () => { if (colPop) colPop.style.display = 'none'; }, { once: false, capture: false });
+    document.addEventListener('click', () => { if (colPop) colPop.style.display = 'none'; }, { once: true, capture: false });
     colPop.querySelectorAll('[data-col-key]').forEach(cb => {
       cb.addEventListener('change', () => {
         const hidden = new Set(_procState.hiddenPartCols || []);
@@ -9717,7 +9718,7 @@ function _procPartsTable(data) {
     if (isNaN(days) || days < 0) return `<span>—</span>`;
     const wks = Math.round(days / 7 * 2) / 2; // nearest 0.5
     const cls = wks <= 4 ? 'ok' : wks <= 8 ? 'warn' : 'long';
-    const label = wks % 1 === 0 ? `${wks}w` : `${wks}w`;
+    const label = `${wks}w`;
     return `<span class="proc-lead proc-lead-${cls}" title="${Math.round(days)} day lead time (ordered → expected delivery)">${label}</span>`;
   };
   const dueChip = (expDate, isReceived) => {
@@ -10250,7 +10251,8 @@ function renderVendorPOsPage() {
   root.querySelector('[data-action="vpo-add-form"]').addEventListener('submit', async (e) => {
     e.preventDefault(); const f = e.target;
     const data = { po: f.po.value.trim()||null, job: f.job.value.trim()||null, vendor: f.vendor.value.trim()||null, po_date: f.po_date.value||null, lead_time: f.lead_time.value===''?null:Number(f.lead_time.value), eta: f.eta.value||null, pm: f.pm.value.trim()||null, tracking: f.tracking.value.trim()||null, po_price: f.po_price.value.trim()||null, comments: f.comments.value.trim()||null, complete: 0, partial: 0 };
-    const created = await api.vendorPOs.create(data);
+    let created;
+    try { created = await api.vendorPOs.create(data); } catch (err) { showToast(err.message || 'Failed to create PO', { kind: 'error' }); return; }
     if (created && created.id) { state.vendorPOs.push(created); f.reset(); _vpoAddOpen = true; renderVendorPOsPage(); }
   });
   root.querySelectorAll('.sp-view [data-vview]').forEach(b => b.addEventListener('click', () => { st.view = b.dataset.vview; st.page = 0; _vpoSave(); renderVendorPOsPage(); }));
@@ -10304,7 +10306,9 @@ function renderVendorPOsPage() {
   root.querySelectorAll('.vpo-del').forEach(btn => btn.addEventListener('click', async () => {
     const id = Number(btn.dataset.id); const r = state.vendorPOs.find(x => x.id === id);
     const ok = await showConfirmDialog({ title: 'Delete PO?', message: `Delete PO "${escapeHtml(r?.po || 'this PO')}"?`, okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
-    if (!ok) return; await api.vendorPOs.remove(id); state.vendorPOs = state.vendorPOs.filter(x => x.id !== id); renderVendorPOsPage();
+    if (!ok) return;
+    try { await api.vendorPOs.remove(id); } catch (err) { showToast(err.message || 'Delete failed', { kind: 'error' }); return; }
+    state.vendorPOs = state.vendorPOs.filter(x => x.id !== id); renderVendorPOsPage();
   }));
   // Click-to-filter on job / vendor / pm cells
   root.querySelectorAll('.vpo-filter-click[data-fk]').forEach(span => span.addEventListener('click', (e) => {
@@ -10600,23 +10604,37 @@ function _jhBarChart(title, groups, seriesLabels, seriesColors, W, H) {
     else sectionMeta.get(sk).end = gi;
     if (!groupMeta.has(gk)) groupMeta.set(gk, { start: gi, end: gi, label: g.label, sec: g.sectionLabel });
     else groupMeta.get(gk).end = gi;
+    const qVal = g.series[0]?.value || 0;
+    const aVal = g.series[1]?.value || 0;
+    const diff = qVal - aVal;
+    let minBarTop = axisY;
     g.series.forEach((s, si) => {
       if (!s.value) return;
       const color = seriesColors[si] || s.color;
       const bh  = Math.max(1, (s.value / maxVal) * chartH);
       const bx  = barsStartX + si * (barW + barPad);
       const by  = axisY - bh;
-      const q = Math.round(g.series[0]?.value||0).toLocaleString();
-      const a = Math.round(g.series[1]?.value||0).toLocaleString();
-      const diff = (g.series[0]?.value||0) - (g.series[1]?.value||0);
+      if (by < minBarTop) minBarTop = by;
+      const q = Math.round(qVal).toLocaleString();
+      const a = Math.round(aVal).toLocaleString();
       const diffStr = (diff>=0?'+':'')+Math.round(diff).toLocaleString();
       const tip = `${g.fn || g.label || ''}\nQuoted: ${q}\nActual: ${a}\nDiff: ${diffStr}`;
       bars += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW}" height="${bh.toFixed(1)}" fill="${color}"><title>${escapeHtml(tip)}</title></rect>`;
       const lv = Math.round(s.value).toLocaleString();
-      bars += `<text x="${(bx+barW/2).toFixed(1)}" y="${(by-4).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="600" style="fill:var(--text,#061d39);font-family:${F}">${lv}</text>`;
+      const lblY = by + Math.min(bh - 4, 18);
+      const lblColor = si === 1 ? 'white' : '#0f172a';
+      bars += `<text x="${(bx+barW/2).toFixed(1)}" y="${lblY.toFixed(1)}" text-anchor="middle" font-size="15" font-weight="700" style="fill:${lblColor};font-family:${F}">${lv}</text>`;
     });
+    if (qVal && aVal) {
+      const diffLabel = (diff >= 0 ? '+' : '') + Math.round(diff).toLocaleString();
+      const diffColor = diff >= 0 ? '#16a34a' : '#dc2626';
+      const actualBh = Math.max(1, (aVal / maxVal) * chartH);
+      const actualBx = barsStartX + 1 * (barW + barPad);
+      const actualBy = axisY - actualBh;
+      bars += `<text x="${(actualBx + barW/2).toFixed(1)}" y="${(actualBy - 5).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" style="fill:${diffColor};font-family:${F}">${diffLabel}</text>`;
+    }
     const fnLabel = g.fn || g.label || '';
-    bars += `<text x="${groupCenter.toFixed(1)}" y="${(axisY + secRowH + grpRowH + fnRowH - 6).toFixed(1)}" text-anchor="middle" font-size="13" style="fill:var(--text-muted,#64748b);font-family:${F}">${escapeHtml(fnLabel)}</text>`;
+    bars += `<text x="${groupCenter.toFixed(1)}" y="${(axisY + secRowH + grpRowH + fnRowH - 6).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" style="fill:var(--text,#061d39);font-family:${F}">${escapeHtml(fnLabel)}</text>`;
   });
   let secBandRects = '', secBandLabels = '';
   if (secRowH) {
@@ -10800,7 +10818,7 @@ async function _loadJhpHours() {
     series: [{ value: isEtc ? bgTotals[bg].etc : bgTotals[bg].quoted }, { value: bgTotals[bg].actual }],
   }));
   const bgChartTitle = isEtc ? 'ETC and Actual by Billing Group' : 'Quoted and Actual by Billing Group';
-  const bgChart = _jhBarChart(bgChartTitle, bgGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 700);
+  const bgChart = _jhBarChart(bgChartTitle, bgGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 600, 900);
 
   // billing group cards
   const BG_CARD_ORDER = ['Engineering', 'Shop', 'Manufacturing'];
@@ -10912,9 +10930,9 @@ async function _loadJhpHours() {
         <tbody>${pivotBody}</tbody>
       </table>
     </div>
-    <div class="jhp-charts-col" style="margin-top:16px;display:flex;flex-direction:column;gap:24px">
-      <div style="width:100%;overflow-x:auto">${fnChart}</div>
-      <div style="width:100%;overflow-x:auto">${bgChart}</div>
+    <div class="jhp-charts-row" style="align-items:flex-start">
+      <div class="jhp-chart-main" style="overflow-x:auto">${fnChart}</div>
+      <div class="jhp-chart-side" style="overflow-x:auto">${bgChart}</div>
     </div>`;
 
   // Wire fn filter events on the slot
@@ -11083,7 +11101,7 @@ function renderProjectsPage() {
     if (idx === undefined) return '';
     if (idx === 0) return 'opened just now';
     if (idx === 1) return 'opened recently';
-    return `opened recently`;
+    return 'opened recently';
   };
 
   const rowHtml = (p) => {
@@ -14531,7 +14549,11 @@ function _wireProcDrawer(el, job, project) {
       const data = _procCache[job];
       const roots = data && data.specs ? data.specs.flatMap(s => s.assemblies) : [];
       setSubtree(roots, id);
+      const bodyEl = el.querySelector('.proc-drawer-body');
+      const scrollTop = bodyEl ? bodyEl.scrollTop : 0;
       renderScheduleProcurement();
+      const bodyElAfter = el.querySelector('.proc-drawer-body');
+      if (bodyElAfter) bodyElAfter.scrollTop = scrollTop;
       return;
     }
   };
@@ -14903,7 +14925,11 @@ function renderScheduleHours() {
       ${modeBar}
       <div class="hours-bg-row">${bgHtml}</div>
       <div class="hours-fn-row" style="display:flex;flex-direction:column;gap:16px">
-        <div class="hpt-fn-wrap">
+        <div class="jhp-charts-row" style="align-items:flex-start">
+          <div class="jhp-chart-main" style="overflow-x:auto">${fnChartSvg}</div>
+          <div class="jhp-chart-side" style="overflow-x:auto">${_jhBarChart(bgChartTitle, bgGroups, [refLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 600, 900)}</div>
+        </div>
+        <div class="hpt-fn-wrap" style="padding-bottom:160px">
           <table class="hpt" style="table-layout:auto;width:100%">
             ${colgroup}
             <thead>
@@ -14914,8 +14940,6 @@ function renderScheduleHours() {
             <tbody>${pivotBody}</tbody>
           </table>
         </div>
-        <div style="padding-bottom:140px">${fnChartSvg}</div>
-        <div style="padding-bottom:140px">${_jhBarChart(bgChartTitle, bgGroups, [refLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 700)}</div>
       </div>`;
     } // end if fns.length
   }
@@ -19565,7 +19589,7 @@ function renderTeam() {
         <span class="cap-stat"><span class="cap-num">${cap.scheduledHrs.toLocaleString()}</span> hrs</span>
         ${cap.weeksAhead != null ? `
           <span class="cap-sep">·</span>
-          <span class="cap-stat"><span class="cap-num">${cap.weeksAhead}</span> wks @ 90%</span>
+          <span class="cap-stat"><span class="cap-num">${cap.weeksAhead ?? '—'}</span> wks @ 90%</span>
         ` : ''}
       </div>`;
     return `

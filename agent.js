@@ -216,6 +216,7 @@ async function ask({ pool, etoDb, question, context, history }) {
   if (!question || !String(question).trim()) throw new Error('Ask a question.');
   const client = _getClient();
   const messages = _buildMessages(history, context, question);
+  try {
 
   const toolLog = [];
   let lastAssistantText = '';
@@ -256,6 +257,10 @@ async function ask({ pool, etoDb, question, context, history }) {
   });
   if (final.usage) cumUsage = _sumUsage(cumUsage, final.usage);
   return { answer: _textOf(final.content) || lastAssistantText || '(no answer — try rephrasing)', tools: toolLog, history: messages, usage: cumUsage };
+  } catch (e) {
+    const msg = e.status ? `API error ${e.status}: ${e.message}` : (e.message || 'Unknown error from Claude');
+    throw new Error(msg);
+  }
 }
 
 // Accumulate usage counters across multiple Claude calls in one /ask request.

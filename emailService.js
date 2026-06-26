@@ -90,7 +90,7 @@ async function sendMentionEmail({ pool, to, taskId, taskName, project, commentBo
     <p><a href="${url}">Open scheduler</a></p>
   `;
   const text = `${safeName(authorName)} mentioned you on "${safeName(taskName)}":\n\n${safeName(commentBody)}\n\n${url}`;
-  const refKey = `mention:${taskId}:${Date.now()}`;
+  const refKey = `mention:${taskId}:${to}`;
   return _sendOnce(pool, { to, subject, html, text, referenceKey: refKey, type: 'mention' });
 }
 
