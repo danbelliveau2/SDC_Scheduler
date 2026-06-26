@@ -2496,6 +2496,7 @@ body.customer-view .customer-view-flatten.is-active {
   padding: 0;
   cursor: copy;
   white-space: nowrap;
+  text-align: left;
 }
 .proc-pn:hover { background: transparent; text-decoration: underline; }
 .proc-pn-sm { font-size: var(--fs-sm); padding: 1px 0; background: transparent; border: none; color: var(--sdc-primary); font-weight: var(--fw-bold); font-family: var(--font-mono); cursor: copy; }
