@@ -11,8 +11,29 @@ const DEFAULT_EXE = path.join(
   'mcp-server\\publish\\win-x64-new\\sdc-powerbi-mcp.exe'
 );
 const EXE = process.env.PBI_MCP_EXE || DEFAULT_EXE;
-const CACHE_TTL = 5 * 60 * 1000;
-const _cache = {};
+const STALE_TTL  = 10 * 60 * 1000;  // serve fresh if < 10 min old
+const DISK_TTL   = 24 * 60 * 60 * 1000; // re-query if disk file > 24 h old
+
+// Persistent disk cache directory — survives server restarts
+const CACHE_DIR = path.join(__dirname, '.pbi-cache');
+if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+function _diskPath(key) { return path.join(CACHE_DIR, key.replace(/[^a-z0-9_-]/gi, '_') + '.json'); }
+
+function _diskRead(key) {
+  try {
+    const p = _diskPath(key);
+    if (!fs.existsSync(p)) return null;
+    const { ts, data } = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return { ts, data };
+  } catch (_) { return null; }
+}
+
+function _diskWrite(key, data) {
+  try { fs.writeFileSync(_diskPath(key), JSON.stringify({ ts: Date.now(), data })); } catch (_) {}
+}
+
+const _memCache = {}; // in-memory: { ts, data }
 
 let _proc = null;
 let _buf = '';
@@ -135,16 +156,43 @@ function _parseJobIds(raw) {
   return String(raw).split(/[&,\/\s]+/).map(s => s.replace(/[^0-9a-zA-Z_-]/g, '')).filter(Boolean);
 }
 
+function _cacheGet(key) {
+  // 1. memory hit (freshest)
+  const mem = _memCache[key];
+  if (mem && Date.now() - mem.ts < STALE_TTL) return { data: mem.data, stale: false };
+  // 2. disk hit
+  const disk = _diskRead(key);
+  if (disk) {
+    _memCache[key] = disk; // promote to memory
+    const stale = Date.now() - disk.ts > STALE_TTL;
+    return { data: disk.data, stale };
+  }
+  return null;
+}
+
+function _cacheSet(key, data) {
+  _memCache[key] = { ts: Date.now(), data };
+  _diskWrite(key, data);
+}
+
 async function getJobHours(jobId) {
   const ids = _parseJobIds(jobId);
   if (!ids.length) throw new Error('No valid job ID provided');
 
-  // Sorted join so "1130&1143" and "1143&1130" share the same cache entry.
-  const key = ids.slice().sort().join('_');
-  const hit = _cache[key];
-  if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.data;
+  const key = 'job_' + ids.slice().sort().join('_');
+  const hit = _cacheGet(key);
+  if (hit && !hit.stale) return hit.data;
+  // stale: serve from cache immediately and refresh in background
+  if (hit && hit.stale) {
+    _fetchJobHours(ids, key).catch(() => {});
+    return hit.data;
+  }
 
-  // Single ID uses =, multiple IDs use IN {…} — PBI dataset covers all jobs.
+  // No cache at all — fetch fresh and wait
+  return _fetchJobHours(ids, key);
+}
+
+async function _fetchJobHours(ids, key) {
   const jobFilter = ids.length === 1
     ? `'Job'[Job Id] = "${ids[0]}"`
     : `'Job'[Job Id] IN {${ids.map(id => `"${id}"`).join(', ')}}`;
@@ -170,7 +218,6 @@ async function getJobHours(jobId) {
   ].join('\n');
 
   const rows = await _runDax(dax);
-
   const fns = rows.map(r => ({
     section: _col(r, 'Section Name')           || '',
     group:   _col(r, 'Section Function Group') || '',
@@ -190,10 +237,41 @@ async function getJobHours(jobId) {
     bgTotals[r.billing].etc   += r.etc;
   }
   const totals = fns.reduce((a, r) => { a.quoted += r.quoted; a.actual += r.actual; a.etc += r.etc; return a; }, { quoted: 0, actual: 0, etc: 0 });
-
   const data = { fns, bgTotals, totals, jobIds: ids };
-  _cache[key] = { ts: Date.now(), data };
+  _cacheSet(key, data);
   return data;
+}
+
+async function getJobsList() {
+  const key = 'jobs_list';
+  const hit = _cacheGet(key);
+  if (hit && !hit.stale) return hit.data;
+  if (hit && hit.stale) {
+    _fetchJobsList(key).catch(() => {});
+    return hit.data;
+  }
+  return _fetchJobsList(key);
+}
+
+async function _fetchJobsList(key) {
+  const dax = [
+    `EVALUATE`,
+    `SUMMARIZECOLUMNS(`,
+    `  'Job'[Job Id],`,
+    `  'Job'[Job Name],`,
+    `  'Job'[Job Status]`,
+    `)`,
+    `ORDER BY 'Job'[Job Status], 'Job'[Job Name]`,
+  ].join('\n');
+
+  const rows = await _runDax(dax);
+  const jobs = rows.map(r => ({
+    id:     _col(r, 'Job Id')     || '',
+    name:   _col(r, 'Job Name')   || '',
+    status: _col(r, 'Job Status') || '',
+  })).filter(j => j.id);
+  _cacheSet(key, jobs);
+  return jobs;
 }
 
 // Returns { ok, error } — used by the status endpoint to proactively catch token expiry.
@@ -209,4 +287,4 @@ async function checkStatus() {
 const ENABLED = fs.existsSync(EXE);
 if (ENABLED) _startProc();
 
-module.exports = { getJobHours, checkStatus, ENABLED };
+module.exports = { getJobHours, getJobsList, checkStatus, ENABLED };

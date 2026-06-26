@@ -103,6 +103,22 @@
       </span>
       <span class="app-sidebar-label">Vendor POs</span>
     </button>
+    <button class="app-sidebar-icon" data-view="job-hours" type="button" title="Job Hours — quoted vs actual hours by function across all jobs">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Job Hours</span>
+    </button>
+    <button class="app-sidebar-icon" id="btn-ask-sidebar" type="button" title="Ask the SDC assistant">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Ask</span>
+    </button>
     <div class="app-sidebar-sep"></div>
     <button class="app-sidebar-icon" data-view="setup" type="button" title="Setup — colors, defaults, estimate rules">
       <span class="app-sidebar-glyph">⚙</span>
@@ -117,9 +133,18 @@
   </aside>
 
   <div class="project-tab-bar" id="project-tab-bar">
-    <div class="project-tabs" id="project-tabs"></div>
-    <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule in a new tab">+ New tab</button>
-    <button id="btn-global-hard-refresh" class="project-tab-bar-refresh" type="button" title="Hard refresh — clears cache and fully reloads the page (same as Ctrl+Shift+R).">⟳</button>
+    <div class="project-tabs-scroll">
+      <div class="project-tabs" id="project-tabs"></div>
+    </div>
+    <div class="project-tab-bar-actions">
+      <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule in a new tab">+ New tab</button>
+      <div class="tab-bar-fontsize" title="App font size">
+        <button class="tab-bar-fontsize-btn" id="btn-font-dec" type="button">A−</button>
+        <input class="tab-bar-fontsize-input" id="input-font-size" type="number" min="8" max="24" step="1" value="13" title="Font size (px)" />
+        <button class="tab-bar-fontsize-btn" id="btn-font-inc" type="button">A+</button>
+      </div>
+      <button id="btn-global-hard-refresh" class="project-tab-bar-refresh" type="button" title="Hard refresh — clears cache and fully reloads the page (same as Ctrl+Shift+R).">⟳</button>
+    </div>
   </div>
 
   <!-- Machine sub-tab strip — only visible when the active project has
@@ -322,14 +347,14 @@
         <button id="btn-toolbar-financials" class="toolbar-toggle-btn" type="button" title="Edit the project's financial milestones (Down Payment, Mid Payment, Final Payment, …). Button turns red when the active project's financials aren't filled out yet.">💲 Financial Milestones</button>
         <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Compare quoted hours from the estimate sheet to what's actually scheduled. Also exposes the financial milestones editor.">⚖ Quote vs Schedule</button>
       </div>
-      <!-- Per-project Notes — meeting sessions (left, collapsible) + starred key
-           info (right). Collapsed to a thin bar by default; filled by
-           renderProjectNotes(). Hidden on the All-projects aggregate view. -->
-      <div id="schedule-notes" class="schedule-notes is-collapsed"></div>
-      <!-- Per-project Procurement drawer — opens DOWN like Notes, scoped to the
-           active project's ETO job. Built by renderScheduleProcurement(). -->
-      <div id="schedule-procurement" class="schedule-proc-drawer is-collapsed"></div>
-      <div id="schedule-hours" class="schedule-hours-drawer is-collapsed"></div>
+      <!-- Bottom drawer stack — fixed overlay at the bottom of the viewport.
+           All three drawers live here so they stack correctly without pushing
+           the schedule content up. -->
+      <div id="schedule-drawer-stack">
+        <div id="schedule-notes" class="schedule-notes is-collapsed"></div>
+        <div id="schedule-procurement" class="schedule-proc-drawer is-collapsed"></div>
+        <div id="schedule-hours" class="schedule-hours-drawer is-collapsed"></div>
+      </div>
     </section>
 
     <!-- v4.61: Action Items — cross-project to-do list. Lists every action
@@ -573,6 +598,10 @@
       <div id="vendor-pos-page" class="shop-parts-page vpo-page"></div>
     </section>
 
+
+    <section id="view-job-hours" class="view">
+      <div id="job-hours-page" class="job-hours-page"></div>
+    </section>
 
     <section id="view-setup" class="view">
       <div class="setup-pane">

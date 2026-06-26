@@ -11,6 +11,12 @@ module.exports = function createRouter(deps) {
     res.json({ enabled: true, ...check });
   });
 
+  router.get('/api/hours/jobs/list', async (_req, res) => {
+    if (!hoursApi.ENABLED) return res.status(503).json({ error: 'Job Hours not configured' });
+    try { res.json(await hoursApi.getJobsList()); }
+    catch (e) { res.status(503).json({ error: e.message }); }
+  });
+
   router.get('/api/hours/:job', async (req, res) => {
     if (!hoursApi.ENABLED) return res.status(503).json({ error: 'Job Hours not configured (set PBI_USER + PBI_PASS)' });
     try { res.json(await hoursApi.getJobHours(req.params.job)); }

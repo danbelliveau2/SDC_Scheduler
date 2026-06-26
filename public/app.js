@@ -883,13 +883,7 @@ let _agentOpen = false, _agentStatus = null, _agentBusy = false;
 const _agentMsgs = [];      // visible chat log: {role:'user'|'assistant'|'error', text, tools?, usage?}
 let _agentHistory = [];     // Claude-format prior turns (sent back next request)
 function _initAgentUI() {
-  if (document.getElementById('sdc-agent-fab')) return;
-  const fab = document.createElement('button');
-  fab.id = 'sdc-agent-fab'; fab.type = 'button';
-  fab.title = 'Ask the SDC assistant (read-only)';
-  fab.innerHTML = '<span class="agent-fab-icon">✦</span> Ask';
-  fab.addEventListener('click', _toggleAgentPanel);
-  document.body.appendChild(fab);
+  document.getElementById('btn-ask-sidebar')?.addEventListener('click', _toggleAgentPanel);
 }
 function _toggleAgentPanel() {
   _agentOpen = !_agentOpen;
@@ -6540,7 +6534,9 @@ function recordRecentProject(name) {
 }
 
 function isTemplateProject(p) {
-  return !!p && Array.isArray(state.templateProjects) && state.templateProjects.includes(p);
+  if (!p) return false;
+  if (Array.isArray(state.templateProjects) && state.templateProjects.includes(p)) return true;
+  return /_template$/i.test(p.trim());
 }
 
 // Fixed list of workspaces for v4.7. Order here is also the display order in
@@ -8443,7 +8439,7 @@ let _hoursChecked = false;
 const _hoursCache = {};
 const _hoursFetching = {};
 // UI filter state — survives re-renders within a session
-const _hoursUI = { mode: 'quoted', billing: 'all' };
+const _hoursUI = { mode: 'quoted', billing: 'all', fnSel: null, fnOpen: false, fnExp: new Set(), fnSearch: '' };
 function _hoursCheckOnce() {
   if (_hoursChecked) return;
   _hoursChecked = true;
@@ -8781,9 +8777,9 @@ function _procCostWaterfall(c) {
   const scale = Math.max(estimated, purchased, paid) || 1;
 
   const rings = [
-    { label: 'Estimated', sub: 'Budget',     value: estimated, pct: estimated / scale, over: false,    color: '#1574C4', tipColor: '#60a5fa', track: '#dbeafe', ro: 100, ri: 80 },
-    { label: 'Purchased', sub: 'Parts Cost', value: purchased, pct: purchased / scale, over: purOver,  color: '#061D39', tipColor: '#93c4e8', track: '#d0d9e6', ro: 72,  ri: 52 },
-    { label: 'Paid',      sub: 'Parts Cost', value: paid,      pct: paid / scale,      over: paidOver, color: '#74C415', tipColor: '#a3e635', track: '#e2f5c0', ro: 44,  ri: 24 },
+    { label: 'Estimated', sub: 'Budget',     value: estimated, pct: estimated / scale, over: false,    color: '#1574C4', tipColor: '#60a5fa', track: '#dbeafe', ro: 68, ri: 54 },
+    { label: 'Purchased', sub: 'Parts Cost', value: purchased, pct: purchased / scale, over: purOver,  color: '#061D39', tipColor: '#93c4e8', track: '#d0d9e6', ro: 49, ri: 35 },
+    { label: 'Paid',      sub: 'Parts Cost', value: paid,      pct: paid / scale,      over: paidOver, color: '#74C415', tipColor: '#a3e635', track: '#e2f5c0', ro: 30, ri: 16 },
   ];
 
   // large-arc always 0 — semicircle never sweeps > 180°
@@ -8797,7 +8793,7 @@ function _procCostWaterfall(c) {
     return { track: full, fill };
   }
 
-  const VW = 260, cy = 104, cx = VW / 2;
+  const VW = 180, cy = 72, cx = VW / 2;
   const mainPct = estimated ? Math.round(purRaw * 100) : 0;
   const mainColor = purOver ? '#dc2626' : (mainPct >= 90 ? '#f59e0b' : '#0f172a');
 
@@ -8817,14 +8813,11 @@ function _procCostWaterfall(c) {
            (fill ? `<path d="${fill}" fill="${fillColor}" stroke="white" stroke-width="2.5" ${da} style="cursor:pointer;"/>` : '');
   }).join('');
   // Labels at the left ($0) and right (ring value) tips of each arc
+  // Labels end at each ring's right outer tip — natural spread, no overlap
   const tipLabels = rings.map(r => {
-    const rMid = (r.ro + r.ri) / 2;
-    const fillColor = r.color;
-    const lx = (cx - rMid).toFixed(1);
-    const rx = (cx + rMid).toFixed(1);
-    const ly = cy + 15;
-    return `<text x="${lx}" y="${ly}" text-anchor="middle" font-family="'Montserrat',sans-serif" font-size="8" font-weight="500" fill="#94a3b8">$0</text>` +
-           `<text x="${rx}" y="${ly}" text-anchor="middle" font-family="'Montserrat',sans-serif" font-size="8" font-weight="700" fill="${fillColor}">${usdShort(r.value)}</text>`;
+    const rx = (cx + r.ro - 2).toFixed(1);
+    const ly = cy + 11;
+    return `<text x="${rx}" y="${ly}" text-anchor="end" font-family="'Montserrat',sans-serif" font-size="6" font-weight="700" fill="${r.color}">${usdShort(r.value)}</text>`;
   }).join('');
 
   const legendRows = rings.map((r, i) => {
@@ -8835,7 +8828,7 @@ function _procCostWaterfall(c) {
     const overTag  = r.over ? `<span style="font-size:var(--fs-2xs);background:#fee2e2;color:#dc2626;border-radius:3px;padding:1px 4px;font-weight:var(--fw-bold);margin-left:5px;vertical-align:middle;">OVER</span>` : '';
     const border   = i < rings.length - 1 ? 'border-bottom:1px solid #f1f5f9;' : '';
     return `
-      <div style="display:flex;align-items:center;gap:10px;padding:7px 0;${border}">
+      <div style="display:flex;align-items:center;gap:6px;padding:3px 0;${border}">
         <div style="width:3px;height:30px;border-radius:2px;background:${barColor};flex-shrink:0;"></div>
         <div style="flex:1;min-width:0;">
           <div style="font-size:var(--fs-sm);font-weight:var(--fw-bold);color:#1e293b;">${r.label}${overTag}</div>
@@ -8849,32 +8842,32 @@ function _procCostWaterfall(c) {
   }).join('');
 
   return `
-    <div style="background:white;border-radius:10px;border:1px solid #e2e8f0;margin-top:16px;overflow:hidden;">
-      <div style="padding:11px 14px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">
+    <div style="background:white;border-radius:8px;border:1px solid #e2e8f0;margin-top:5px;overflow:hidden;">
+      <div style="padding:5px 8px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">
         <div>
           <div style="font-size:var(--fs-md);font-weight:var(--fw-bold);color:#0f172a;letter-spacing:-0.1px;">Cost Overview</div>
           <div style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;">${estimated ? usd(estimated) + ' estimated budget' : 'No budget set'}</div>
         </div>
         ${estimated ? `<div style="font-size:var(--fs-base);font-weight:var(--fw-extrabold);color:${mainColor};">${mainPct}%<span style="font-size:var(--fs-2xs);font-weight:var(--fw-medium);color:#94a3b8;margin-left:3px;">purchased</span></div>` : ''}
       </div>
-      <div style="padding:14px 14px 6px;position:relative;">
+      <div style="padding:5px 8px 2px;position:relative;">
         <div id="cg-tip" style="display:none;position:absolute;pointer-events:none;z-index:100;background:#1e293b;color:#fff;border-radius:7px;padding:9px 13px;font-size:var(--fs-md);white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,0.25);">
           <div id="cg-tip-h" style="font-weight:var(--fw-bold);font-size:var(--fs-base);margin-bottom:1px;"></div>
           <div id="cg-tip-s" style="color:#94a3b8;font-size:var(--fs-xs);margin-bottom:5px;"></div>
           <div id="cg-tip-v" style="font-weight:var(--fw-extrabold);font-size:var(--fs-lg);"></div>
           <div id="cg-tip-p" style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;"></div>
         </div>
-        <svg viewBox="0 0 ${VW} 122" style="width:100%;height:auto;display:block;"
+        <svg viewBox="0 0 ${VW} 104" style="width:100%;height:auto;display:block;"
           onmousemove="(function(e){const p=e.target.closest('[data-tl]');const t=document.getElementById('cg-tip');if(!p){t.style.display='none';return;}const b=e.currentTarget.getBoundingClientRect();t.style.left=(e.clientX-b.left+12)+'px';t.style.top=(e.clientY-b.top-75)+'px';t.style.display='block';document.getElementById('cg-tip-h').style.color=p.dataset.tc;document.getElementById('cg-tip-h').textContent=p.dataset.tl;document.getElementById('cg-tip-s').textContent=p.dataset.ts;document.getElementById('cg-tip-v').textContent=p.dataset.tv;document.getElementById('cg-tip-p').textContent=p.dataset.tp+' of estimated budget';})(event)"
           onmouseleave="document.getElementById('cg-tip').style.display='none'">
           ${arcs}${tipLabels}
         </svg>
-        <div style="text-align:center;margin-top:2px;padding-bottom:10px;border-bottom:1px solid #f1f5f9;">
-          <div style="font-size:var(--fs-2xl);font-weight:var(--fw-extrabold);color:${mainColor};line-height:1;">${estimated ? mainPct + '%' : '—'}</div>
-          <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-top:3px;">of budget purchased</div>
+        <div style="text-align:center;margin-top:1px;padding-bottom:4px;border-bottom:1px solid #f1f5f9;">
+          <div style="font-size:var(--fs-xl);font-weight:var(--fw-extrabold);color:${mainColor};line-height:1;">${estimated ? mainPct + '%' : '—'}</div>
+          <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-top:1px;">of budget purchased</div>
         </div>
       </div>
-      <div style="padding:0 14px 12px;">${legendRows}</div>
+      <div style="padding:0 8px 5px;">${legendRows}</div>
     </div>
   `;
 }
@@ -9642,19 +9635,24 @@ function _procPartsTable(data) {
   const rh = i => `<div class="proc-col-resize" onmousedown="_procColResizeStart(event,${i})"></div>`;
   const leadChip = (orderDate, expDate) => {
     if (!orderDate || !expDate) return `<span>—</span>`;
-    const days = Math.round((new Date(expDate) - new Date(orderDate)) / 86400000);
+    const days = (new Date(expDate) - new Date(orderDate)) / 86400000;
     if (isNaN(days) || days < 0) return `<span>—</span>`;
-    const cls = days <= 30 ? 'ok' : days <= 60 ? 'warn' : 'long';
-    return `<span class="proc-lead proc-lead-${cls}" title="${days} day lead time (ordered → expected delivery)">${days}d</span>`;
+    const wks = Math.round(days / 7 * 2) / 2; // nearest 0.5
+    const cls = wks <= 4 ? 'ok' : wks <= 8 ? 'warn' : 'long';
+    const label = wks % 1 === 0 ? `${wks}w` : `${wks}w`;
+    return `<span class="proc-lead proc-lead-${cls}" title="${Math.round(days)} day lead time (ordered → expected delivery)">${label}</span>`;
   };
   const dueChip = (expDate, isReceived) => {
     if (isReceived) return `<span class="proc-due proc-due-rcvd" title="Already received">RCVD</span>`;
     if (!expDate) return `<span>—</span>`;
-    const days = Math.round((new Date(expDate) - Date.now()) / 86400000);
-    if (isNaN(days)) return `<span>—</span>`;
-    if (days > 7)  return `<span class="proc-due proc-due-ahead" title="Due in ${days} days">+${days}d</span>`;
-    if (days >= 0) return `<span class="proc-due proc-due-soon"  title="Due in ${days} days">+${days}d</span>`;
-    return `<span class="proc-due proc-due-late" title="${Math.abs(days)} days overdue">${days}d</span>`;
+    const rawDays = (new Date(expDate) - Date.now()) / 86400000;
+    if (isNaN(rawDays)) return `<span>—</span>`;
+    const wks = Math.round(rawDays / 7 * 2) / 2;
+    const daysRounded = Math.round(rawDays);
+    if (rawDays > 7)  return `<span class="proc-due proc-due-ahead" title="Due in ${daysRounded} days">+${wks}w</span>`;
+    if (rawDays >= 0) return `<span class="proc-due proc-due-soon"  title="Due in ${daysRounded} days">+${wks}w</span>`;
+    const overWks = Math.round(Math.abs(rawDays) / 7 * 2) / 2;
+    return `<span class="proc-due proc-due-late" title="${Math.abs(daysRounded)} days overdue">-${overWks}w</span>`;
   };
   const hiddenSet = new Set(_procState.hiddenPartCols || []);
   const visCols = PROC_PART_COLS.filter(c => !hiddenSet.has(c.key));
@@ -9718,6 +9716,42 @@ function _procAssemblyHeader() {
   </div>`;
 }
 
+function _drawerResizeStart(e, bodyClass) {
+  e.preventDefault();
+  e.stopPropagation();
+  const body = e.target.closest('.' + bodyClass);
+  if (!body) return;
+  const startY = e.clientY;
+  const startH = body.getBoundingClientRect().height;
+  const minH = 120, maxH = window.innerHeight * 0.85;
+  document.body.style.cursor = 'ns-resize';
+  document.body.style.userSelect = 'none';
+  e.target.classList.add('resizing');
+  function onMove(ev) {
+    const h = Math.min(maxH, Math.max(minH, startH - (ev.clientY - startY)));
+    body.style.maxHeight = h + 'px';
+    try { localStorage.setItem('drawerH_' + bodyClass, h); } catch (_) {}
+  }
+  function onUp() {
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    e.target.classList.remove('resizing');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function _drawerRestoreHeight(bodyClass) {
+  try {
+    const h = localStorage.getItem('drawerH_' + bodyClass);
+    if (h) document.querySelectorAll('.' + bodyClass).forEach(el => el.style.maxHeight = h + 'px');
+  } catch (_) {}
+}
+
+const DRAWER_HANDLE = cls => `<div class="drawer-resize-handle" onmousedown="_drawerResizeStart(event,'${cls}')"></div>`;
+
 function _procPartsColResizeStart(e, colIdx) {
   e.preventDefault();
   e.stopPropagation();
@@ -9755,8 +9789,8 @@ function _procAssemblyRow(node, depth) {
   const pricedCount = node.parts.filter(p => (Number(p.unitPrice) || 0) > 0).length;
   const pricedCell  = pricedCount ? `${pricedCount}/${node.parts.length}` : '';
   let html = `
-    <div class="proc-arow${depth > 0 ? ' proc-arow-nested' : ''}" data-aid="${escapeHtml(String(node.id))}" style="padding-left:${10 + depth * 26}px;--d:${depth}">
-      <span class="proc-caret">${open ? '▾' : '▸'}</span>
+    <div class="proc-arow${depth > 0 ? ' proc-arow-nested' : ''}${open ? ' proc-arow-open' : ''}" data-aid="${escapeHtml(String(node.id))}" style="padding-left:${10 + depth * 26}px;--d:${depth}">
+      <span class="proc-caret${node.children.length === 0 ? ' proc-caret-leaf' : ''}">${open ? '▾' : '▸'}</span>
       <button class="proc-pn" data-copy="${escapeHtml(node.pn)}" type="button" title="Click to copy part number">${escapeHtml(node.pn)}</button>
       <span class="proc-aname" title="${escapeHtml(node.desc || '')}">${escapeHtml(node.desc || '')}</span>
       <span class="proc-acol proc-acol-parts">${partsCell}</span>
@@ -9776,17 +9810,15 @@ function _procAssemblyRow(node, depth) {
         ? node.parts.filter(p => [p.pn, p.desc, p.manufacturer].some(v => String(v || '').toLowerCase().includes(q)))
         : node.parts;
       const money = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-      html += `<div class="proc-parts" style="margin-left:${36 + depth * 26}px">
-        <div class="proc-phead">${[
-          ['num','Qty',0],['','Part No',1],['','Description',2],['','Mfr',3],['','PO',4],['num','Price',5],['num','Total Price',6]
-        ].map(([cls,lbl,i]) => `<span${cls ? ` class="${cls}"` : ''}>${lbl}<div class="proc-col-resize" onmousedown="_procPartsColResizeStart(event,${i})"></div></span>`).join('')}</div>
+      const _partAccent = ['#1574C4','#0ea5e9','#38bdf8','#7dd3fc'][Math.min(depth, 3)];
+      html += `<div class="proc-parts" style="margin-left:${10 + depth * 26}px;--proc-parts-accent:${_partAccent}">
         ${parts.map(p => `
           <div class="proc-prow proc-prow-${p.status}">
-            <span class="num">${p.qty ?? ''}</span>
             <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
             <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
             <span class="proc-pmfr">${escapeHtml(p.manufacturer || '')}</span>
             <span class="proc-ppo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : ''}</span>
+            <span class="num">${p.qty ?? ''}</span>
             <span class="num">${money(p.unitPrice)}</span>
             <span class="num">${money((Number(p.qty) || 0) * (Number(p.unitPrice) || 0))}</span>
           </div>`).join('')}
@@ -10256,6 +10288,688 @@ function renderVendorPOsPage() {
   }));
 }
 
+// ─── Job Hours Page ───────────────────────────────────────────────────────────
+const _jhPageState = { jobIds: [], search: '', pbiJobs: null, hoursType: 'quoted', dropdownOpen: false, fnFilter: null, fnDropOpen: false };
+
+function renderJobHoursPage() {
+  const root = document.getElementById('job-hours-page');
+  if (!root) return;
+
+  // ── Build job list from local DB merged with PBI status ───────────────────
+  const localJobs = Object.entries(state.projectsIndex || {})
+    .map(([name, info]) => ({ id: String(info.job_number || '').trim(), name, status: '' }))
+    .filter(j => j.id);
+
+  const pbiMap = new Map((_jhPageState.pbiJobs || []).map(j => [j.id, j]));
+  const allJobs = localJobs.map(j => {
+    const p = pbiMap.get(j.id);
+    return p ? { ...j, name: p.name || j.name, status: p.status || '' } : j;
+  });
+  if (_jhPageState.pbiJobs) {
+    const localIds = new Set(localJobs.map(j => j.id));
+    for (const p of _jhPageState.pbiJobs) {
+      if (!localIds.has(p.id)) allJobs.push(p);
+    }
+  }
+  allJobs.sort((a, b) => a.name.localeCompare(b.name));
+
+  // Auto-select first job on first load
+  if (!_jhPageState.jobIds.length && allJobs.length) {
+    _jhPageState.jobIds = [allJobs[0].id];
+  }
+
+  const selIds = new Set(_jhPageState.jobIds);
+  const q      = _jhPageState.search.toLowerCase();
+
+  // Button label
+  const selCount = selIds.size;
+  const selLabel = selCount === 0 ? 'Select job…'
+    : selCount === 1 ? (() => { const j = allJobs.find(x => x.id === [...selIds][0]); return j ? `${j.id} — ${j.name}` : [...selIds][0]; })()
+    : `${selCount} jobs selected`;
+
+  const dropOpen = _jhPageState.dropdownOpen;
+
+  // Build grouped list with checkboxes
+  const statuses = ['Active', 'Complete', ''];
+  const grouped  = statuses.map(s => ({
+    label: s || '(Blank)',
+    jobs: allJobs.filter(j => j.status === s && (!q || j.name.toLowerCase().includes(q) || j.id.includes(q))),
+  })).filter(g => g.jobs.length);
+
+  const dropHtml = grouped.map(g => `
+    <div class="jhp-dd-group">
+      <div class="jhp-dd-group-label">${escapeHtml(g.label)}</div>
+      ${g.jobs.map(j => {
+        const checked = selIds.has(j.id);
+        return `<label class="jhp-dd-item${checked ? ' is-active' : ''}" data-jhp-id="${escapeHtml(j.id)}">
+          <span class="jhp-dd-cb${checked ? ' checked' : ''}"></span>
+          <span class="jhp-dd-job-id">${escapeHtml(j.id)}</span>
+          <span class="jhp-dd-job-name">${escapeHtml(j.name)}</span>
+        </label>`;
+      }).join('')}
+    </div>`).join('');
+
+  root.innerHTML = `
+    <div class="jhp-page">
+      <div class="jhp-top-filters">
+        <div class="jhp-filter-block">
+          <div class="jhp-filter-block-title">Job Status, Job</div>
+          <div class="jhp-dd-wrap${dropOpen ? ' is-open' : ''}">
+            <button class="jhp-dd-btn" id="jhp-dd-toggle">
+              <span class="jhp-dd-btn-label">${escapeHtml(selLabel)}</span>
+              <span class="jhp-dd-caret">${dropOpen ? '▲' : '▼'}</span>
+            </button>
+            ${dropOpen ? `
+            <div class="jhp-dd-panel">
+              <div class="jhp-dd-search-wrap">
+                <span class="jhp-dd-search-icon">🔍</span>
+                <input class="jhp-dd-search" placeholder="Search" value="${escapeHtml(_jhPageState.search)}" autofocus>
+              </div>
+              ${selCount > 0 ? `<div class="jhp-dd-sel-bar"><span>${selCount} selected</span><button class="jhp-dd-clear">Clear all</button></div>` : ''}
+              <div class="jhp-dd-list">${dropHtml || '<div class="jhp-dd-empty">No jobs found</div>'}</div>
+            </div>` : ''}
+          </div>
+        </div>
+        <div class="jhp-filter-block">
+          <div class="jhp-filter-block-title">Hours Type</div>
+          <div class="jhp-ht-radios">
+            <label class="jhp-ht-radio"><input type="radio" name="jht" value="quoted"${_jhPageState.hoursType==='quoted'?' checked':''}> Quoted</label>
+            <label class="jhp-ht-radio"><input type="radio" name="jht" value="etc"${_jhPageState.hoursType==='etc'?' checked':''}> ETC</label>
+          </div>
+        </div>
+        <div id="jhp-fn-filter-slot"></div>
+        ${selCount > 0 ? `<div class="jhp-filter-active-job">
+          <span class="jhp-active-job-name">${escapeHtml(selCount === 1 ? (allJobs.find(j => j.id === [...selIds][0])?.name || '') : `${selCount} jobs`)}</span>
+          <span class="jhp-active-job-id">${[...selIds].map(id => `#${escapeHtml(id)}`).join(', ')}</span>
+        </div>` : ''}
+      </div>
+      <div id="jhp-hours-content" class="jhp-hours-content">
+        ${selCount ? `<div class="proc-empty">Loading hours…</div>` : `<div class="proc-empty">Select a job to view hours.</div>`}
+      </div>
+    </div>`;
+
+  // Toggle dropdown
+  root.querySelector('#jhp-dd-toggle').addEventListener('click', e => {
+    e.stopPropagation();
+    _jhPageState.dropdownOpen = !_jhPageState.dropdownOpen;
+    renderJobHoursPage();
+  });
+
+  // Close dropdown on outside click
+  if (dropOpen) {
+    const close = e => {
+      if (!root.querySelector('.jhp-dd-panel')?.contains(e.target) &&
+          !root.querySelector('#jhp-dd-toggle')?.contains(e.target)) {
+        _jhPageState.dropdownOpen = false;
+        renderJobHoursPage();
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }
+
+  // Checkbox toggle — keep dropdown open, reload hours
+  root.querySelectorAll('[data-jhp-id]').forEach(el => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = el.dataset.jhpId;
+      const cur = new Set(_jhPageState.jobIds);
+      if (cur.has(id)) cur.delete(id); else cur.add(id);
+      _jhPageState.jobIds = [...cur];
+      _jhPageState.fnFilter = null; // reset fn filter when job selection changes
+      renderJobHoursPage();
+    });
+  });
+
+  // Clear all
+  root.querySelector('.jhp-dd-clear')?.addEventListener('click', e => {
+    e.stopPropagation();
+    _jhPageState.jobIds = [];
+    renderJobHoursPage();
+  });
+
+  // Search inside dropdown
+  root.querySelector('.jhp-dd-search')?.addEventListener('input', e => {
+    _jhPageState.search = e.target.value;
+    renderJobHoursPage();
+  });
+
+  // Hours type radios
+  root.querySelectorAll('input[name="jht"]').forEach(r => {
+    r.addEventListener('change', () => { _jhPageState.hoursType = r.value; _loadJhpHours(); });
+  });
+
+  // Load hours for selected jobs
+  if (selCount) _loadJhpHours();
+
+  // Pre-fetch visible jobs in the background
+  allJobs.slice(0, 8).forEach(j => {
+    if (!_hoursCache[j.id] && !_hoursFetching[j.id]) {
+      _hoursFetching[j.id] = true;
+      fetch(`/api/hours/${encodeURIComponent(j.id)}`)
+        .then(r => r.json()).then(d => { _hoursCache[j.id] = d; _hoursFetching[j.id] = false; })
+        .catch(() => { _hoursFetching[j.id] = false; });
+    }
+  });
+
+  // Fetch PBI jobs list in background to enrich status
+  if (!_jhPageState.pbiJobs) {
+    fetch('/api/hours/jobs/list').then(r => r.json()).then(data => {
+      if (!data.error) { _jhPageState.pbiJobs = data; renderJobHoursPage(); }
+    }).catch(() => {});
+  }
+}
+
+function _prefetchJobHours() {
+  const localJobs = Object.entries(state.projectsIndex || {})
+    .map(([name, info]) => ({ id: String(info.job_number || '').trim(), name }))
+    .filter(j => j.id)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  localJobs.slice(0, 8).forEach(j => {
+    if (!_hoursCache[j.id] && !_hoursFetching[j.id]) {
+      _hoursFetching[j.id] = true;
+      fetch(`/api/hours/${encodeURIComponent(j.id)}`)
+        .then(r => r.json()).then(d => { _hoursCache[j.id] = d; _hoursFetching[j.id] = false; })
+        .catch(() => { _hoursFetching[j.id] = false; });
+    }
+  });
+}
+
+function _jhBarChart(title, groups, seriesLabels, seriesColors, W, H) {
+  const F = "Montserrat,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
+  const hasSec   = groups.some(g => g.sectionLabel);
+  const hasGrp   = groups.some(g => g.groupLabel);
+  const fnRowH   = 32;
+  const grpRowH  = hasSec || hasGrp ? 28 : 0;
+  const secRowH  = hasSec ? 30 : 0;
+  const legendH  = 32;
+  const padL = 72, padR = 8, padT = 36;
+  W = Math.max(W, padL + padR + groups.length * 90);
+  const padB = fnRowH + grpRowH + secRowH + legendH + 6;
+  const chartH = H - padT - padB;
+  const axisY  = padT + chartH;
+  const allVals = groups.flatMap(g => g.series.map(s => s.value));
+  const rawMax  = Math.max(...allVals, 1);
+  const mag     = Math.pow(10, Math.floor(Math.log10(rawMax)));
+  const step    = rawMax / mag <= 2 ? mag * 0.5 : rawMax / mag <= 5 ? mag : mag * 2;
+  const maxVal  = Math.ceil(rawMax / step) * step;
+  const ticks = 5;
+  const tickStep = maxVal / ticks;
+  let grid = '';
+  for (let i = 0; i <= ticks; i++) {
+    const v   = tickStep * i;
+    const y   = padT + chartH - (v / maxVal) * chartH;
+    const lbl = Math.round(v).toLocaleString();
+    grid += `<line x1="${padL}" x2="${W-padR}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#e2e8f0" stroke-width="1"/>`;
+    grid += `<text x="${padL-6}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="13" style="fill:var(--text-muted,#64748b);font-family:${F}">${lbl}</text>`;
+  }
+  const groupCount = groups.length;
+  const slotW = (W - padL - padR) / groupCount;
+  const barPad = 1;
+  const seriesCount = seriesLabels.length;
+  const barW = Math.max(4, Math.floor((slotW * 0.85 - barPad * (seriesCount - 1)) / seriesCount));
+  let bars = '';
+  const sectionMeta = new Map();
+  const groupMeta   = new Map();
+  groups.forEach((g, gi) => {
+    const slotX = padL + gi * slotW;
+    const groupCenter = slotX + slotW / 2;
+    const totalBarW = barW * seriesCount + barPad * (seriesCount - 1);
+    const barsStartX = groupCenter - totalBarW / 2;
+    const sk = g.sectionLabel || '';
+    const gk = (g.sectionLabel||'') + '||' + (g.label||'');
+    if (!sectionMeta.has(sk)) sectionMeta.set(sk, { start: gi, end: gi });
+    else sectionMeta.get(sk).end = gi;
+    if (!groupMeta.has(gk)) groupMeta.set(gk, { start: gi, end: gi, label: g.label, sec: g.sectionLabel });
+    else groupMeta.get(gk).end = gi;
+    g.series.forEach((s, si) => {
+      if (!s.value) return;
+      const color = seriesColors[si] || s.color;
+      const bh  = Math.max(1, (s.value / maxVal) * chartH);
+      const bx  = barsStartX + si * (barW + barPad);
+      const by  = axisY - bh;
+      const q = Math.round(g.series[0]?.value||0).toLocaleString();
+      const a = Math.round(g.series[1]?.value||0).toLocaleString();
+      const diff = (g.series[0]?.value||0) - (g.series[1]?.value||0);
+      const diffStr = (diff>=0?'+':'')+Math.round(diff).toLocaleString();
+      const tip = `${g.fn || g.label || ''}\nQuoted: ${q}\nActual: ${a}\nDiff: ${diffStr}`;
+      bars += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW}" height="${bh.toFixed(1)}" fill="${color}"><title>${escapeHtml(tip)}</title></rect>`;
+      const lv = Math.round(s.value).toLocaleString();
+      bars += `<text x="${(bx+barW/2).toFixed(1)}" y="${(by-4).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="600" style="fill:var(--text,#061d39);font-family:${F}">${lv}</text>`;
+    });
+    const fnLabel = g.fn || g.label || '';
+    bars += `<text x="${groupCenter.toFixed(1)}" y="${(axisY + secRowH + grpRowH + fnRowH - 6).toFixed(1)}" text-anchor="middle" font-size="13" style="fill:var(--text-muted,#64748b);font-family:${F}">${escapeHtml(fnLabel)}</text>`;
+  });
+  let secBandRects = '', secBandLabels = '';
+  if (secRowH) {
+    const sy = axisY;
+    sectionMeta.forEach((m, sk) => {
+      if (!sk) return;
+      const x1 = padL + m.start * slotW;
+      const x2 = padL + (m.end + 1) * slotW;
+      const secBandW = x2 - x1;
+      secBandRects  += `<rect x="${x1.toFixed(1)}" y="${sy.toFixed(1)}" width="${secBandW.toFixed(1)}" height="${secRowH}" fill="${seriesColors[1]||'#1e3a5f'}"><title>${escapeHtml(sk)}</title></rect>`;
+      secBandLabels += `<text x="${((x1+x2)/2).toFixed(1)}" y="${(sy+secRowH/2+5).toFixed(1)}" text-anchor="middle" font-size="14" font-weight="700" fill="white" style="font-family:${F}">${escapeHtml(sk)}</text>`;
+      secBandRects += `<line x1="${x2.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${(sy+secRowH).toFixed(1)}" stroke="white" stroke-width="2"/>`;
+    });
+  }
+  const secBands = secBandRects + secBandLabels;
+  let grpBandRects = '', grpBandLabels = '';
+  if (grpRowH) {
+    const gy = axisY + secRowH;
+    groupMeta.forEach((m) => {
+      const x1 = padL + m.start * slotW;
+      const x2 = padL + (m.end + 1) * slotW;
+      const grpBandW = x2 - x1;
+      const grpLabel = m.label || '';
+      grpBandRects  += `<rect x="${x1.toFixed(1)}" y="${gy.toFixed(1)}" width="${grpBandW.toFixed(1)}" height="${grpRowH}" fill="${seriesColors[0]||'#AACEE8'}"><title>${escapeHtml(`${m.sec ? m.sec + ' › ' : ''}${grpLabel}`)}</title></rect>`;
+      grpBandLabels += `<text x="${((x1+x2)/2).toFixed(1)}" y="${(gy+grpRowH/2+5).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a" style="font-family:${F}">${escapeHtml(grpLabel)}</text>`;
+      grpBandRects  += `<line x1="${x2.toFixed(1)}" y1="${gy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${(gy+grpRowH).toFixed(1)}" stroke="white" stroke-width="2"/>`;
+    });
+  }
+  const grpBands = grpBandRects + grpBandLabels;
+  const legendY = axisY + fnRowH + grpRowH + secRowH + 8;
+  const legendTotalW = seriesLabels.reduce((a, sl) => a + 14 + sl.length * 6.5 + 16, 0);
+  let legend = '', lx = (W - legendTotalW) / 2;
+  seriesLabels.forEach((sl, i) => {
+    legend += `<rect x="${lx.toFixed(1)}" y="${legendY}" width="10" height="10" fill="${seriesColors[i]}" rx="1"/>`;
+    legend += `<text x="${(lx+16).toFixed(1)}" y="${legendY+10}" font-size="13" font-weight="600" style="fill:var(--text,#061d39);font-family:${F}">${escapeHtml(sl)}</text>`;
+    lx += 14 + sl.length * 6.5 + 16;
+  });
+  const titleSvg = `<text x="${(W/2).toFixed(1)}" y="22" text-anchor="middle" font-size="16" font-weight="700" style="fill:var(--text,#061d39);font-family:${F}">${escapeHtml(title)}</text>`;
+  return `<div class="jhp-chart-wrap">
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
+      ${titleSvg}${grid}${bars}${grpBands}${secBands}${legend}
+      <line x1="${padL}" x2="${padL}" y1="${padT}" y2="${axisY}" stroke="#cbd5e1" stroke-width="1"/>
+      <line x1="${padL}" x2="${W-padR}" y1="${axisY}" y2="${axisY}" stroke="#cbd5e1" stroke-width="1"/>
+    </svg>
+  </div>`;
+}
+
+async function _loadJhpHours() {
+  const content = document.getElementById('jhp-hours-content');
+  if (!content) return;
+  const job = [..._jhPageState.jobIds].sort().join('&').trim();
+  if (!job) { content.innerHTML = `<div class="proc-empty">Select a job to view hours.</div>`; return; }
+
+  if (!_hoursCache[job]) {
+    // Already being pre-fetched? Wait for it, otherwise fetch now
+    if (_hoursFetching[job]) {
+      content.innerHTML = `<div class="proc-empty">Loading hours from Power BI…</div>`;
+      await new Promise(resolve => {
+        const t = setInterval(() => { if (!_hoursFetching[job]) { clearInterval(t); resolve(); } }, 200);
+      });
+    } else {
+      content.innerHTML = `<div class="proc-empty">Loading hours from Power BI…</div>`;
+      _hoursFetching[job] = true;
+      try {
+        const res = await fetch(`/api/hours/${encodeURIComponent(job)}`);
+        _hoursCache[job] = await res.json();
+      } catch (e) {
+        content.innerHTML = `<div class="proc-empty proc-error">Failed to load hours: ${escapeHtml(String(e))}</div>`;
+        _hoursFetching[job] = false;
+        return;
+      }
+      _hoursFetching[job] = false;
+    }
+  }
+
+  const data = _hoursCache[job];
+  if (!data) return;
+  if (data.error) { content.innerHTML = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`; return; }
+
+  const { bgTotals, totals } = data;
+  // Remap Manufacturing out of "Shop" group into its own standalone group
+  const fns = data.fns.map(r => r.fn === 'Manufacturing' ? { ...r, group: 'Manufacturing' } : r);
+  if (!fns || !fns.length) { content.innerHTML = `<div class="proc-empty">No hours data found for job ${escapeHtml(job)}.</div>`; return; }
+
+  const fmt   = n => Math.round(n || 0).toLocaleString();
+  const dCls  = d => d < -0.5 ? ' hours-over' : d > 0.5 ? ' hours-under' : '';
+  const dFmt  = d => `${d > 0 ? '+' : ''}${fmt(d)}`;
+
+  // ── Function Hierarchy filter ─────────────────────────────────────────────
+  // Build section→groups hierarchy from ALL fns (unfiltered)
+  const fnHier = [];
+  const fnHierMap = new Map();
+  for (const r of fns) {
+    if (!fnHierMap.has(r.section)) { fnHierMap.set(r.section, new Set()); fnHier.push(r.section); }
+    if (r.group) fnHierMap.get(r.section).add(r.group);
+  }
+
+  // Build the full set of "section\x00group" keys
+  const allFnKeys = new Set();
+  for (const sec of fnHier) {
+    const grps = fnHierMap.get(sec);
+    if (grps.size) grps.forEach(g => allFnKeys.add(sec + '\x00' + g));
+    else allFnKeys.add(sec + '\x00');
+  }
+
+  // Active filter — null means all shown
+  const activeFnKeys = _jhPageState.fnFilter || allFnKeys;
+
+  // Apply filter to fns — exclude PM group and Warranty section from pivot/chart
+  const allFns = fns.filter(r => {
+    const key = r.section + '\x00' + (r.group || '');
+    if (/^pm$/i.test(r.group || '')) return false;
+    if (/warranty/i.test(r.section || '')) return false;
+    return activeFnKeys.has(key);
+  });
+  const secGroups = [];
+  const secSeen = new Map();
+  for (const r of allFns) {
+    if (!secSeen.has(r.section)) { secSeen.set(r.section, []); secGroups.push({ sec: r.section, fns: secSeen.get(r.section) }); }
+    secSeen.get(r.section).push(r);
+  }
+  const pivotCols = secGroups.flatMap(g => g.fns);
+
+  const secSpans = secGroups.map(g => `<th class="hpt-sec-hdr" colspan="${g.fns.length}" title="${escapeHtml(g.sec)}">${escapeHtml(g.sec)}</th>`).join('');
+  const grpSpans = secGroups.flatMap(g => {
+    const grpOrder = [], grpCount = new Map();
+    for (const r of g.fns) { const k = r.group || ''; if (!grpCount.has(k)) { grpOrder.push(k); grpCount.set(k, 0); } grpCount.set(k, grpCount.get(k)+1); }
+    const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
+    return grpOrder.map(grp => `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(grp)}">${escapeHtml(_gl(grp))}</th>`);
+  }).join('');
+  const _glFn = s => s === 'Manufacturing' ? 'MFG' : s;
+  const fnHdrs = pivotCols.map(r => `<th class="hpt-fn-hdr" title="${escapeHtml(r.fn)}" style="color:#000!important;font-weight:700"><span style="color:#000!important">${escapeHtml(_glFn(r.fn))}</span></th>`).join('');
+
+  // Pre-compute per-column full data for rich tooltips
+  const colTip = pivotCols.map(r => {
+    const q = r.quoted||0, a = r.actual||0, e = r.etc||0, d = q - a;
+    return escapeHtml(JSON.stringify({ fn: r.fn, group: r.group||'', section: r.section||'', q, a, e, d }));
+  });
+  const makeRow = (label, valFn, cls, rowCls) => {
+    const cells = pivotCols.map((r, i) => { const v = valFn(r); return `<td class="hpt-val${cls ? cls(r) : ''}" data-tip="${colTip[i]}" data-tip-row="${label}">${fmt(v)}</td>`; }).join('');
+    const total = pivotCols.reduce((a, r) => a + valFn(r), 0);
+    const tq = pivotCols.reduce((a,r)=>a+(r.quoted||0),0), ta = pivotCols.reduce((a,r)=>a+(r.actual||0),0);
+    const totTip = escapeHtml(JSON.stringify({ fn:'Total', group:'', section:'All functions', q:tq, a:ta, e:pivotCols.reduce((a,r)=>a+(r.etc||0),0), d:tq-ta }));
+    return `<tr class="${rowCls||''}"><td class="hpt-row-lbl">${label}</td>${cells}<td class="hpt-total" data-tip="${totTip}" data-tip-row="${label}">${fmt(total)}</td></tr>`;
+  };
+  const ht     = _jhPageState.hoursType;
+  const isEtc  = ht === 'etc';
+  const pivotBody = [
+    makeRow('Quoted', r => r.quoted || 0, null, ht === 'quoted' ? ' hpt-row-active' : ''),
+    makeRow('Actual', r => r.actual || 0),
+    makeRow('ETC',    r => r.etc    || 0, null, ht === 'etc'    ? ' hpt-row-active' : ''),
+    makeRow('Diff',   r => (isEtc ? (r.etc||0) : (r.quoted||0)) - (r.actual||0), r => dCls((isEtc ? (r.etc||0) : (r.quoted||0))-(r.actual||0))),
+  ].join('');
+
+  const totalQ = pivotCols.reduce((a,r) => a+(r.quoted||0), 0);
+  const totalA = pivotCols.reduce((a,r) => a+(r.actual||0), 0);
+  const totalE = pivotCols.reduce((a,r) => a+(r.etc||0), 0);
+
+
+
+  // ── Chart 1: driven by hoursType filter ──────────────────────────────────
+  const compVal    = r => isEtc ? (r.etc || 0) : (r.quoted || 0);
+  const compLabel  = isEtc ? 'ETC' : 'Quoted';
+  const chartTitle = isEtc ? 'Estimate to Complete vs Actual' : 'Quoted vs Actual by Function';
+
+  const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
+  const fnGroups = secGroups.flatMap(sg => {
+    return sg.fns.map(r => ({
+      fn: _gl(r.fn),
+      label: _gl(r.group || r.fn),
+      sectionLabel: sg.sec,
+      series: [{ value: compVal(r) }, { value: r.actual || 0 }],
+    }));
+  }).filter(g => g.series[0].value || g.series[1].value);
+  const fnChart = _jhBarChart(chartTitle, fnGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 900);
+
+  // ── Chart 2: Billing Group — driven by hoursType filter ──────────────────
+  const BG_ORDER = ['Engineering', 'Shop', 'Manufacturing'];
+  const bgGroups = BG_ORDER.filter(bg => bgTotals[bg]).map(bg => ({
+    fn: _gl(bg), label: _gl(bg), sectionLabel: null,
+    series: [{ value: isEtc ? bgTotals[bg].etc : bgTotals[bg].quoted }, { value: bgTotals[bg].actual }],
+  }));
+  const bgChartTitle = isEtc ? 'ETC and Actual by Billing Group' : 'Quoted and Actual by Billing Group';
+  const bgChart = _jhBarChart(bgChartTitle, bgGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 700);
+
+  // billing group cards
+  const BG_CARD_ORDER = ['Engineering', 'Shop', 'Manufacturing'];
+  const bgCards = BG_CARD_ORDER.map(bg => {
+    const t = bgTotals[bg] || { quoted: 0, actual: 0, etc: 0 };
+    const diff = t.quoted - t.actual;
+    return `<div class="hours-bg-card" data-tip="${escapeHtml(JSON.stringify({ fn: bg, group: 'Billing Group', section: '', q: t.quoted, a: t.actual, e: t.etc||0, d: diff }))}" data-tip-row="Billing">
+      <div class="hours-bg-name">${bg.toUpperCase()}</div>
+      <div class="hours-bg-nums">
+        <span class="hours-col-q">${fmt(t.quoted)}</span>
+        <span class="hours-col-a">${fmt(t.actual)}</span>
+        <span class="hours-col-d${dCls(diff)}">${dFmt(diff)}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── Function Hierarchy dropdown HTML ────────────────────────────────────
+  const SEC_DISPLAY_LABEL = {
+    'Complete Design and Build': 'Sec-10: Complete Design and Build',
+    'Machine Testing':           'Sec-40: Machine Testing',
+    'Teardown and Install':      'Sec-50: Teardown and Install',
+  };
+  const fnDropOpen = _jhPageState.fnDropOpen;
+  const fnFilterActive = _jhPageState.fnFilter;
+  const fnSelCount = fnFilterActive ? fnFilterActive.size : allFnKeys.size;
+  const fnTotalCount = allFnKeys.size;
+  const fnBtnLabel = !fnFilterActive || fnSelCount === fnTotalCount ? 'All' : 'Multiple selections';
+
+  const fnDropHtml = fnHier.map(sec => {
+    const grps = [...fnHierMap.get(sec)];
+    const secKeys = grps.length
+      ? grps.map(g => sec + '\x00' + g)
+      : [sec + '\x00'];
+    const selCount = secKeys.filter(k => activeFnKeys.has(k)).length;
+    const allSel = selCount === secKeys.length;
+    const noneSel = selCount === 0;
+    const partSel = !allSel && !noneSel;
+    return `<div class="jhp-fn-sec">
+      <label class="jhp-fn-item jhp-fn-sec-row" data-fn-sec="${escapeHtml(sec)}">
+        <span class="jhp-dd-cb${allSel ? ' checked' : partSel ? ' partial' : ''}"></span>
+        <span class="jhp-fn-sec-name">${escapeHtml(SEC_DISPLAY_LABEL[sec] || sec)}</span>
+      </label>
+      ${grps.map(g => {
+        const k = sec + '\x00' + g;
+        const sel = activeFnKeys.has(k);
+        return `<label class="jhp-fn-item jhp-fn-grp-row" data-fn-sec="${escapeHtml(sec)}" data-fn-grp="${escapeHtml(g)}">
+          <span class="jhp-dd-cb${sel ? ' checked' : ''}"></span>
+          <span class="jhp-fn-grp-name">${escapeHtml(g)}</span>
+        </label>`;
+      }).join('')}
+    </div>`;
+  }).join('');
+
+  // Inject Function Hierarchy filter into the top-bar slot
+  const fnSlot = document.getElementById('jhp-fn-filter-slot');
+  if (fnSlot) {
+    fnSlot.innerHTML = `
+      <div class="jhp-filter-block">
+        <div class="jhp-filter-block-title">Function Hierarchy</div>
+        <div class="jhp-dd-wrap${fnDropOpen ? ' is-open' : ''}">
+          <button class="jhp-dd-btn jhp-fn-dd-btn" id="jhp-fn-dd-toggle">
+            <span class="jhp-dd-btn-label">${escapeHtml(fnBtnLabel)}</span>
+            <span class="jhp-dd-caret">${fnDropOpen ? '▲' : '▼'}</span>
+          </button>
+          ${fnDropOpen ? `
+          <div class="jhp-dd-panel jhp-fn-dd-panel">
+            <div class="jhp-dd-search-wrap">
+              <span class="jhp-dd-search-icon">🔍</span>
+              <input class="jhp-fn-search" placeholder="Search" autofocus>
+            </div>
+            <div class="jhp-dd-sel-bar">
+              <label class="jhp-fn-item" data-fn-all>
+                <span class="jhp-dd-cb${!fnFilterActive || fnSelCount===fnTotalCount ? ' checked' : ''}"></span>
+                <span>Select all</span>
+              </label>
+              ${fnFilterActive ? `<button class="jhp-dd-clear" data-fn-clear>Clear</button>` : ''}
+            </div>
+            <div class="jhp-fn-list">${fnDropHtml}</div>
+          </div>` : ''}
+        </div>
+      </div>`;
+  }
+
+  content.innerHTML = `
+    <div class="hours-bg-row" style="margin-bottom:12px">${bgCards}</div>
+    <div class="jhp-summary-bar">
+      <div class="jhp-totals">
+        <span class="jhp-total-label">Total Quoted</span><span class="jhp-total-val">${fmt(totalQ)}</span>
+        <span class="jhp-total-sep">·</span>
+        <span class="jhp-total-label">Actual</span><span class="jhp-total-val">${fmt(totalA)}</span>
+        <span class="jhp-total-sep">·</span>
+        <span class="jhp-total-label">ETC</span><span class="jhp-total-val">${fmt(totalE)}</span>
+        <span class="jhp-total-sep">·</span>
+        <span class="jhp-total-label">Diff</span><span class="jhp-total-val${dCls(totalQ-totalA)}">${dFmt(totalQ-totalA)}</span>
+      </div>
+    </div>
+    <div class="hpt-fn-wrap" style="margin-top:12px;overflow-x:auto">
+      <table class="hpt" style="table-layout:auto;width:100%">
+        <colgroup>
+          <col style="width:80px">
+          ${pivotCols.map(() => `<col>`).join('')}
+          <col style="width:80px">
+        </colgroup>
+        <thead>
+          <tr><th class="hpt-corner" rowspan="3"></th>${secSpans}<th class="hpt-total-hdr" rowspan="3">Total</th></tr>
+          <tr>${grpSpans}</tr>
+          <tr>${fnHdrs}</tr>
+        </thead>
+        <tbody>${pivotBody}</tbody>
+      </table>
+    </div>
+    <div class="jhp-charts-col" style="margin-top:16px;display:flex;flex-direction:column;gap:24px">
+      <div style="width:100%;overflow-x:auto">${fnChart}</div>
+      <div style="width:100%;overflow-x:auto">${bgChart}</div>
+    </div>`;
+
+  // Wire fn filter events on the slot
+  if (fnSlot) {
+    fnSlot.querySelector('#jhp-fn-dd-toggle')?.addEventListener('click', e => {
+      e.stopPropagation();
+      _jhPageState.fnDropOpen = !_jhPageState.fnDropOpen;
+      _loadJhpHours();
+    });
+
+    if (fnDropOpen) {
+      const close = e => {
+        if (!fnSlot.contains(e.target)) {
+          _jhPageState.fnDropOpen = false;
+          _loadJhpHours();
+          document.removeEventListener('click', close);
+        }
+      };
+      document.addEventListener('click', close);
+    }
+
+    fnSlot.querySelector('[data-fn-all]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      _jhPageState.fnFilter = null;
+      _loadJhpHours();
+    });
+
+    fnSlot.querySelector('[data-fn-clear]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      _jhPageState.fnFilter = new Set();
+      _loadJhpHours();
+    });
+
+    fnSlot.querySelector('.jhp-fn-search')?.addEventListener('input', e => {
+      const q = e.target.value.toLowerCase();
+      fnSlot.querySelectorAll('.jhp-fn-sec').forEach(secEl => {
+        const secName = secEl.querySelector('.jhp-fn-sec-name')?.textContent.toLowerCase() || '';
+        let anyVisible = secName.includes(q);
+        secEl.querySelectorAll('.jhp-fn-grp-row').forEach(grpEl => {
+          const grpName = grpEl.querySelector('.jhp-fn-grp-name')?.textContent.toLowerCase() || '';
+          const vis = grpName.includes(q) || secName.includes(q);
+          grpEl.style.display = vis ? '' : 'none';
+          if (vis) anyVisible = true;
+        });
+        secEl.style.display = anyVisible ? '' : 'none';
+      });
+    });
+
+    fnSlot.querySelectorAll('[data-fn-grp]').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        const sec = el.dataset.fnSec, grp = el.dataset.fnGrp;
+        const key = sec + '\x00' + grp;
+        const cur = new Set(_jhPageState.fnFilter || allFnKeys);
+        if (cur.has(key)) cur.delete(key); else cur.add(key);
+        _jhPageState.fnFilter = cur.size === allFnKeys.size ? null : cur;
+        _loadJhpHours();
+      });
+    });
+
+    fnSlot.querySelectorAll('[data-fn-sec]:not([data-fn-grp])').forEach(el => {
+      el.addEventListener('click', e => {
+        e.stopPropagation();
+        const sec = el.dataset.fnSec;
+        const grps = [...fnHierMap.get(sec)];
+        const secKeys = grps.length ? grps.map(g => sec + '\x00' + g) : [sec + '\x00'];
+        const cur = new Set(_jhPageState.fnFilter || allFnKeys);
+        const allSel = secKeys.every(k => cur.has(k));
+        if (allSel) secKeys.forEach(k => cur.delete(k));
+        else secKeys.forEach(k => cur.add(k));
+        _jhPageState.fnFilter = cur.size === allFnKeys.size ? null : cur;
+        _loadJhpHours();
+      });
+    });
+  }
+
+  // ── Rich floating tooltip for pivot cells + billing cards ──────────────────
+  _jhpTipWire(content);
+}
+
+function _jhpTipWire(container) {
+  // Ensure tooltip element exists
+  let tip = document.getElementById('jhp-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'jhp-tip';
+    document.body.appendChild(tip);
+  }
+  const fmt = n => Math.round(n || 0).toLocaleString();
+  const show = (d, row, x, y) => {
+    try {
+      const p = JSON.parse(d);
+      const diff = p.d;
+      const diffCls = diff < -0.5 ? 'jt-over' : diff > 0.5 ? 'jt-under' : 'jt-val';
+      const diffSign = diff > 0 ? '+' : '';
+      const path = [p.section, p.group].filter(Boolean).join(' › ');
+      tip.innerHTML = `
+        <div class="jt-fn">${escapeHtml(p.fn)}</div>
+        ${path ? `<div class="jt-path">${escapeHtml(path)}</div>` : ''}
+        <div class="jt-div"></div>
+        <div class="jt-row"><span class="jt-lbl">Quoted</span><span class="jt-val">${fmt(p.q)}</span></div>
+        <div class="jt-row"><span class="jt-lbl">Actual</span><span class="jt-val">${fmt(p.a)}</span></div>
+        <div class="jt-row"><span class="jt-lbl">ETC</span><span class="jt-val">${fmt(p.e)}</span></div>
+        <div class="jt-div"></div>
+        <div class="jt-row"><span class="jt-lbl">Diff (Q−A)</span><span class="${diffCls}">${diffSign}${fmt(diff)}</span></div>`;
+      tip.style.display = 'block';
+      _jhpTipMove(x, y);
+    } catch (_) {}
+  };
+  container.addEventListener('mouseover', e => {
+    const el = e.target.closest('[data-tip]');
+    if (el) show(el.dataset.tip, el.dataset.tipRow, e.clientX, e.clientY);
+  });
+  container.addEventListener('mousemove', e => {
+    if (tip.style.display === 'block') _jhpTipMove(e.clientX, e.clientY);
+  });
+  container.addEventListener('mouseout', e => {
+    if (!e.target.closest('[data-tip]')) return;
+    if (!e.relatedTarget || !e.relatedTarget.closest('[data-tip]')) tip.style.display = 'none';
+  });
+  // Hide when leaving content area entirely
+  container.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+}
+
+function _jhpTipMove(x, y) {
+  const tip = document.getElementById('jhp-tip');
+  if (!tip) return;
+  const W = tip.offsetWidth || 200, H = tip.offsetHeight || 120;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  tip.style.left = (x + 14 + W > vw ? x - W - 10 : x + 14) + 'px';
+  tip.style.top  = (y + 14 + H > vh ? y - H - 10 : y + 14) + 'px';
+}
+
 function renderProjectsPage() {
   const root = document.getElementById('projects-page');
   if (!root) return;
@@ -10298,22 +11012,18 @@ function renderProjectsPage() {
     const isOpen = openSet.has(p);
     const isFav = favSet.has(p);
     const isTmpl = isTemplateProject(p);
-    const jobMatch = p.match(/^(\d{3,5})/);
-    const jobNum = jobMatch ? jobMatch[1] : null;
-    const meta = [jobNum ? `Job #${jobNum}` : null, recentLabel(p)].filter(Boolean).join(' · ');
-    const dot = `<span class="projects-row-dot${isOpen ? ' is-open' : ''}"></span>`;
     const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? '★' : '☆'}</button>`;
     const isSalesProject = !isTmpl && projectWorkspace(p) === 'Sales';
     const promoteBtn = isSalesProject
       ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project.">→ Project</button>`
       : '';
+    const openBtn = `<button class="projects-row-openbtn${isOpen ? ' is-open' : ''}" data-action="open-project" data-project="${escapeHtml(p)}" type="button">OPEN</button>`;
+    const tmplIcon = isTmpl ? `<span class="projects-row-tmplicon">★</span>` : '';
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
-      ${dot}
-      <div class="projects-row-info">
-        <span class="projects-row-name">${escapeHtml(p)}</span>
-        ${meta ? `<span class="projects-row-meta">${meta}</span>` : ''}
-      </div>
+      ${tmplIcon}
+      <span class="projects-row-name">${escapeHtml(p)}</span>
       ${promoteBtn}
+      ${openBtn}
       ${favBtn}
     </div>`;
   };
@@ -10325,47 +11035,39 @@ function renderProjectsPage() {
     if (searchQ) nonTemplates = nonTemplates.filter(p => p.toLowerCase().includes(searchQ));
     const isExpanded = !!expanded[ws];
     const allowsNew = ws !== 'Closed';
-    const wsTmpl = templates.length === 1 ? templates[0] : null;
-    const newBtnLabel = wsTmpl ? `＋ New from ${escapeHtml(wsTmpl)}` : '＋ New schedule';
-    const accent = WS_ACCENT[ws] || '#1574c4';
-    const countBg = WS_COUNT_BG[ws] || '#dbeafe';
-    const countColor = WS_COUNT_COLOR[ws] || '#1d4ed8';
-    const displayCount = searchQ ? nonTemplates.length : projects.length;
+    const wsTmpl = templates.length === 1 ? templates[0]
+      : templates.find(t => !/duplicate/i.test(t)) || templates[0] || null;
+    const newBtnLabel = wsTmpl ? `+ New from ${escapeHtml(wsTmpl)}` : '+ New schedule';
+    const displayCount = searchQ ? nonTemplates.length : nonTemplates.length;
     return `
-      <div class="projects-workspace projects-ws-${ws.toLowerCase()}${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}" style="--ws-accent:${accent}">
+      <div class="projects-workspace projects-ws-${ws.toLowerCase()}${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}">
         <button class="projects-workspace-head" data-action="toggle" type="button">
           <span class="projects-workspace-caret">▶</span>
           <span class="projects-workspace-name">${escapeHtml(ws)}</span>
-          <span class="projects-workspace-count" style="background:${countBg};color:${countColor};border-color:${countBg}">${displayCount}</span>
-          <span class="projects-workspace-spacer"></span>
-          <button class="projects-workspace-newbtn${allowsNew ? '' : ' is-disabled'}" data-action="new" data-workspace="${escapeHtml(ws)}" ${allowsNew ? '' : 'disabled title="Closed workspace — no new schedules allowed."'} type="button">${newBtnLabel}</button>
+          <span class="projects-workspace-count">${displayCount}</span>
         </button>
         <div class="projects-workspace-body">
+          ${allowsNew ? `<button class="projects-workspace-newbtn" data-action="new" data-workspace="${escapeHtml(ws)}"${wsTmpl ? ` data-template="${escapeHtml(wsTmpl)}"` : ''} type="button">${newBtnLabel}</button>` : ''}
           ${!searchQ && templates.length > 0 ? `
             <div class="projects-templates-row">
               <div class="projects-templates-label">Templates</div>
               ${templates.map(rowHtml).join('')}
             </div>
           ` : ''}
-          ${nonTemplates.length === 0 && templates.length === 0
-            ? '<div class="projects-workspace-empty">No schedules in this workspace yet.</div>'
-            : nonTemplates.length === 0
-              ? `<div class="projects-workspace-empty">${searchQ ? 'No matches.' : 'No schedules yet — use the "+ New" button to start one.'}</div>`
-              : nonTemplates.map(rowHtml).join('')}
+          ${nonTemplates.length === 0
+            ? `<div class="projects-workspace-empty">${searchQ ? 'No matches.' : 'No schedules yet — use the "+ New" button to start one.'}</div>`
+            : nonTemplates.map(rowHtml).join('')}
         </div>
       </div>
     `;
   };
 
-  const openCount = all.filter(p => openSet.has(p)).length;
+  const nonTmplCount = all.filter(p => !isTemplateProject(p)).length;
+  const wsWithProjects = WORKSPACES.filter(ws => byWs[ws].some(p => !isTemplateProject(p))).length;
 
   root.innerHTML = `
     <h1 class="projects-page-title">Projects</h1>
-    <div class="projects-page-stats">
-      <span><b>${all.length}</b> total</span>
-      ${openCount ? `<span><b>${openCount}</b> open</span>` : ''}
-      <span><b>${byWs['Sales']?.length || 0}</b> sales</span>
-    </div>
+    <div class="projects-page-sub">${nonTmplCount} schedule${nonTmplCount !== 1 ? 's' : ''} across ${wsWithProjects} workspace${wsWithProjects !== 1 ? 's' : ''}</div>
     <div class="projects-search-wrap">
       <span class="projects-search-icon">🔍</span>
       <input class="projects-search-input" type="text" placeholder="Search projects…" value="${escapeHtml(searchQ)}" autocomplete="off" spellcheck="false" />
@@ -10410,6 +11112,8 @@ function renderProjectsPage() {
         if (p) openPromoteModal(p);
         return;
       }
+      // OPEN button or anywhere on the row opens the project.
+      if (e.target.closest('[data-action="open-project"]')) e.stopPropagation();
       const p = row.dataset.project;
       if (!p) return;
       if (!state.openProjects.includes(p)) state.openProjects.push(p);
@@ -10437,33 +11141,20 @@ function renderProjectsPage() {
       // directly — no need to fight a dropdown. Other cases (no template,
       // multiple templates) fall back to the legacy picker which still has
       // estimate-sheet + Smartsheet flows.
-      const wsTemplates = (state.templateProjects || []).filter(t =>
-        state.tasks.some(x => x.project === t) && projectWorkspace(t) === ws
-      );
-      if (wsTemplates.length === 1) {
-        const tmpl = wsTemplates[0];
-        const trimmed = await showPromptDialog({
-          title: `New ${ws} schedule`,
-          message: `From template "${tmpl}". Enter the new project name:`,
-          placeholder: 'Project name',
+      const tmplFromBtn = btn.dataset.template || null;
+      if (tmplFromBtn) {
+        const newName = await showPromptDialog({
+          title: `New schedule from ${tmplFromBtn}`,
+          message: 'Enter a name for the new project schedule.',
+          placeholder: 'e.g. Job 2026-045 — My Project',
           okLabel: 'Create',
-          validate: (v) => {
-            if (!v) return 'Enter a project name.';
-            if (state.tasks.some(t => t.project === v)) return `A project named "${v}" already exists.`;
-            return null;
-          },
+          validate: v => state.tasks.some(t => t.project === v) ? `"${v}" already exists. Pick a different name.` : null,
         });
-        if (!trimmed) return;
-        await duplicateProject(tmpl, trimmed);
-        setProjectWorkspace(trimmed, ws);
-        recordRecentProject(trimmed);
-        saveProjectTabs();
-        // Show it in the list immediately — do NOT auto-open the schedule.
-        if (state.view === 'projects') renderProjectsPage();
-        showToast(`Created "${trimmed}" — click it to open.`);
+        if (!newName) return;
+        await duplicateProject(tmplFromBtn, newName);
         return;
       }
-      // 0 or >1 templates → fall back to the legacy picker.
+      // No template on this workspace → fall back to the legacy picker.
       showProjectAddPicker();
     });
   });
@@ -11717,8 +12408,6 @@ function showProjectTabMenu(x, y, project) {
 async function deleteProject(project) {
   if (!project) return;
   const tasks = state.tasks.filter(t => t.project === project);
-  if (tasks.length === 0) return; // nothing to delete; silent
-  // Confirm first — deleting a project wipes all its rows and can't be undone.
   const ok = await showConfirmDialog({
     title: 'Delete project?',
     message: `Permanently delete "${project}" and its ${tasks.length} task${tasks.length === 1 ? '' : 's'}? This can't be undone.`,
@@ -11727,26 +12416,29 @@ async function deleteProject(project) {
     danger: true,
   });
   if (!ok) return;
-  // Bypass the anchor-protection in the regular DELETE handler by clearing
-  // anchor_key first on those rows.
-  for (const t of tasks) {
-    if (t.anchor_key) {
-      try { await api.update(t.id, { anchor_key: null }); } catch (_) {}
+  // Delete via the projects API endpoint — server handles cascading task/financials cleanup.
+  const projRow = state.projectsIndex && state.projectsIndex[project];
+  if (projRow && projRow.id) {
+    try {
+      await fetch(`/api/projects/${projRow.id}`, { method: 'DELETE' });
+    } catch (err) { console.error('delete project row failed', err); }
+  } else {
+    // Fallback: no project row (orphan tasks only) — delete tasks individually.
+    for (const t of tasks) {
+      if (t.anchor_key) { try { await api.update(t.id, { anchor_key: null }); } catch (_) {} }
+    }
+    for (const t of tasks) {
+      try { await api.remove(t.id); } catch (err) { console.error('delete task failed', t.id, err); }
     }
   }
-  for (const t of tasks) {
-    try { await api.remove(t.id); }
-    catch (err) { console.error('delete task failed', t.id, err); }
-  }
+  // Remove from all client state immediately so it disappears without a reload.
   state.openProjects = state.openProjects.filter(q => q !== project);
   if ((state.filters.project || '') === project) state.filters.project = '';
   state.templateProjects = (state.templateProjects || []).filter(q => q !== project);
   if (state.projectWorkspaces) delete state.projectWorkspaces[project];
+  if (state.projectsIndex) delete state.projectsIndex[project];
   saveProjectTabs();
   await loadTasks();
-  // loadTasks → render() doesn't repaint the Projects/Favorites/Recents lists,
-  // so the deleted row would linger until a manual navigation. Refresh explicitly
-  // so it disappears immediately.
   if (state.view === 'projects')  renderProjectsPage();
   if (state.view === 'favorites') renderFavoritesPage();
   if (state.view === 'recents')   renderRecentsPage();
@@ -12153,6 +12845,9 @@ async function duplicateProject(source, targetName = null) {
   // loadTasks runs ensureAnchorsForProject — it'll see the cloned anchors and skip
   // creating duplicates, so the clone keeps the source's anchor dates / predecessors.
   await loadTasks();
+  // loadTasks only re-renders the schedule view. If the user is on the projects page,
+  // re-render it so the new project appears in the list immediately.
+  if (state.view === 'projects') renderProjectsPage();
 }
 
 function showProjectAddPicker() {
@@ -13394,7 +14089,7 @@ function renderProjectNotes() {
       <button class="notes-kv ${_notesKeyView === 'list' ? 'is-on' : ''}" data-keyview="list" type="button">List</button>
     </span>` : '';
   el.innerHTML = bar + `
-    <div class="notes-body">
+    <div class="notes-body">${DRAWER_HANDLE('notes-body')}
       <div class="notes-col notes-sessions">
         <div class="notes-col-head"><span>Meetings</span><span class="notes-col-head-actions">${collapseAllBtn}<button class="notes-new-session" data-action="new-session" type="button">+ New meeting</button></span></div>
         <div class="notes-col-scroll">${sessionsHtml}</div>
@@ -13454,25 +14149,8 @@ function _notesSplitLockHeight() {
   return contentH > 0 ? contentH + 4 : _measureSplitFullHeight();
 }
 function layoutNotesPanel() {
-  const view  = document.getElementById('view-schedule');
-  const split = document.getElementById('schedule-split');
-  if (!view || !split) return;
-  // Lock the split (so the whole view becomes one scrolling page) when EITHER
-  // bottom drawer is open — Notes or Procurement. They share this machinery so
-  // opening one while the other is open keeps the lock instead of fighting it.
-  const isOpen = (id) => { const e = document.getElementById(id); return e && e.style.display !== 'none' && !e.classList.contains('is-collapsed'); };
-  const open = isOpen('schedule-notes') || isOpen('schedule-procurement') || isOpen('schedule-hours');
-  if (open) {
-    // Lock only on the open transition; later renders keep the existing lock so
-    // we don't reset the user's scroll position mid-interaction.
-    if (!view.classList.contains('notes-open')) {
-      split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
-      view.classList.add('notes-open');
-    }
-  } else {
-    view.classList.remove('notes-open');
-    split.style.flex = '';
-  }
+  // Drawers are now fixed overlays (#schedule-drawer-stack) — they no longer
+  // push the schedule content. No split-locking needed.
 }
 // Re-measure on window resize so the locked split keeps the right height.
 window.addEventListener('resize', () => {
@@ -13514,7 +14192,7 @@ function renderScheduleProcurement() {
   if (collapsed) { el.innerHTML = bar; _wireProcDrawer(el, job, project); layoutNotesPanel(); return; }
 
   if (!data) {
-    el.innerHTML = bar + `<div class="proc-drawer-body"><div class="proc-empty">Loading build readiness from Total ETO…</div></div>`;
+    el.innerHTML = bar + `<div class="proc-drawer-body">${DRAWER_HANDLE('proc-drawer-body')}<div class="proc-empty">Loading build readiness from Total ETO…</div></div>`;
     _wireProcDrawer(el, job, project);
     layoutNotesPanel();
     fetch(`/api/eto/readiness/${encodeURIComponent(job)}`)
@@ -13603,10 +14281,8 @@ function renderScheduleProcurement() {
       // Side-by-side for drawer: assembly list on left (60%), cost summary + waterfall on right (40%)
       if (waterfallChartHtml || waterfallPlaceholder || costSummaryHtml) {
         inner = `<div style="display: grid; grid-template-columns: 3fr 2fr; gap: 16px; min-height: 400px;">
-          <div style="overflow-y: auto; border-right: 1px solid #e2e8f0; padding-right: 12px; font-size: var(--fs-sm); overflow-x: hidden;">
-            <div style="transform: scale(0.85); transform-origin: top left; width: calc(100% / 0.85);">
-              ${assemblyContent}
-            </div>
+          <div style="overflow-y: auto; border-right: 1px solid #e2e8f0; padding-right: 12px; font-size: var(--fs-sm);">
+            ${assemblyContent}
           </div>
           <div style="overflow-y: auto; padding-left: 0; font-size: var(--fs-md);">
             ${costSummaryHtml}
@@ -13619,13 +14295,14 @@ function renderScheduleProcurement() {
     }
     body = head + tabs + inner;
   }
-  el.innerHTML = bar + `<div class="proc-drawer-body">${body}</div>`;
+  el.innerHTML = bar + `<div class="proc-drawer-body">${DRAWER_HANDLE('proc-drawer-body')}${body}</div>`;
   _procWireEstimateEditor(); // Wire estimate edit button for Assembly tab
   _wireProcDrawer(el, job, project);
   layoutNotesPanel();
 }
 
 function _wireProcDrawer(el, job, project) {
+  _drawerRestoreHeight('proc-drawer-body');
   // onclick (not addEventListener) so re-renders never stack duplicate handlers.
   el.onclick = (e) => {
     const t = e.target;
@@ -13753,7 +14430,32 @@ function _wireProcDrawer(el, job, project) {
       return;
     }
     const arow = t.closest('.proc-arow');
-    if (arow) { _procState.open = _procState.open || {}; const id = arow.dataset.aid; _procState.open[id] = !_procState.open[id]; renderScheduleProcurement(); return; }
+    if (arow) {
+      _procState.open = _procState.open || {};
+      const id = arow.dataset.aid;
+      const willOpen = !_procState.open[id];
+      // When opening: only open the clicked node (1 level at a time).
+      // When closing: close the node and all its descendants.
+      const setSubtree = (nodes, targetId) => {
+        for (const n of (nodes || [])) {
+          if (String(n.id) === String(targetId)) {
+            _procState.open[n.id] = willOpen;
+            if (!willOpen) {
+              const collapseAll = (subtree) => { for (const c of (subtree || [])) { _procState.open[c.id] = false; collapseAll(c.children); } };
+              collapseAll(n.children);
+            }
+            return true;
+          }
+          if (setSubtree(n.children, targetId)) return true;
+        }
+        return false;
+      };
+      const data = _procCache[job];
+      const roots = data && data.specs ? data.specs.flatMap(s => s.assemblies) : [];
+      setSubtree(roots, id);
+      renderScheduleProcurement();
+      return;
+    }
   };
   // Parts filters fire `change`/`click` on fresh elements each render — bind them
   // separately from the onclick delegation above.
@@ -13808,7 +14510,7 @@ function renderScheduleHours() {
   if (collapsed) { el.innerHTML = bar; _wireHoursDrawer(el, job, project); layoutNotesPanel(); return; }
 
   if (!data) {
-    el.innerHTML = bar + `<div class="hours-drawer-body"><div class="proc-empty">Loading job hours from Power BI…</div></div>`;
+    el.innerHTML = bar + `<div class="hours-drawer-body">${DRAWER_HANDLE('hours-drawer-body')}<div class="proc-empty">Loading job hours from Power BI…</div></div>`;
     _wireHoursDrawer(el, job, project);
     layoutNotesPanel();
     return;
@@ -13828,7 +14530,9 @@ function renderScheduleHours() {
       body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
     }
   } else {
-    const { fns, bgTotals, totals, jobIds } = data;
+    const { bgTotals, totals, jobIds } = data;
+    // Remap Manufacturing out of "Shop" group into its own standalone group
+    const fns = data.fns.map(r => r.fn === 'Manufacturing' ? { ...r, group: 'Manufacturing' } : r);
 
     if (!fns.length) {
       const jobLabel = jobIds && jobIds.length ? jobIds.join(' & ') : job;
@@ -13844,26 +14548,68 @@ function renderScheduleHours() {
     const refKey = mode === 'etc' ? 'etc' : 'quoted';
     const refLabel = mode === 'etc' ? 'ETC' : 'Quoted';
 
-    // Apply billing group filter to functions
-    const visibleFns = bgFilter === 'all' ? fns : fns.filter(r => r.billing === bgFilter);
+    // Always hide PM group and Warranty section; then apply hierarchical function filter
+    const allDisplayFns = fns.filter(r => !/^pm$/i.test(r.group || '') && !/warranty/i.test(r.section || ''));
+    const fnSel   = _hoursUI.fnSel;   // null = all; else Set of 'sec||grp' keys
+    const fnSearch = (_hoursUI.fnSearch || '').toLowerCase().trim();
+    const visibleFns = allDisplayFns.filter(r => {
+      if (fnSel !== null && !fnSel.has(r.section + '||' + (r.group || ''))) return false;
+      return true;
+    });
 
-    // Filter bar — Hours Type + Billing Group chips
-    const BG_CHIPS = ['Engineering', 'Manufacturing', 'Shop', 'PM'];
+    // Build section→groups tree from all displayable fns (for the dropdown)
+    const treeMap = new Map();
+    for (const r of allDisplayFns) {
+      if (!treeMap.has(r.section)) treeMap.set(r.section, new Set());
+      treeMap.get(r.section).add(r.group || '');
+    }
+
+    // Hierarchical filter dropdown
+    const isAllSelected = fnSel === null;
+    const selCount = fnSel ? fnSel.size : 0;
+    const totalGrps = [...treeMap.values()].reduce((a, s) => a + s.size, 0);
+    const filterLabel = isAllSelected ? 'All' : `${selCount} of ${totalGrps} selected`;
+
+    let treeHtml = `<label class="hff-row hff-all"><input type="checkbox" data-hff-all="1" ${isAllSelected ? 'checked' : ''}> Select all</label>`;
+    for (const [sec, grps] of treeMap) {
+      if (fnSearch && ![sec, ...[...grps]].some(s => s.toLowerCase().includes(fnSearch))) continue;
+      const secKey = sec;
+      const expanded = _hoursUI.fnExp.has(secKey);
+      const allGrpKeys = [...grps].map(g => sec + '||' + g);
+      const secChecked = isAllSelected || allGrpKeys.every(k => fnSel && fnSel.has(k));
+      const secIndet  = !secChecked && allGrpKeys.some(k => fnSel && fnSel.has(k));
+      treeHtml += `<div class="hff-sec">
+        <label class="hff-row hff-sec-row">
+          <span class="hff-expander" data-hff-sec="${escapeHtml(sec)}">${expanded ? '▾' : '▸'}</span>
+          <input type="checkbox" data-hff-sec-key="${escapeHtml(sec)}" ${secChecked ? 'checked' : ''} ${secIndet ? 'data-indet="1"' : ''}> ${escapeHtml({'Complete Design and Build':'Sec-10: Complete Design and Build','Machine Testing':'Sec-40: Machine Testing','Teardown and Install':'Sec-50: Teardown and Install'}[sec] || sec)}
+        </label>
+        <div class="hff-grp-list"${!expanded ? ' style="display:none"' : ''}>${[...grps].filter(g => !fnSearch || g.toLowerCase().includes(fnSearch) || sec.toLowerCase().includes(fnSearch)).map(g => {
+          const key = sec + '||' + g;
+          const chk = isAllSelected || (fnSel && fnSel.has(key));
+          const _gl = x => x === 'Manufacturing' ? 'MFG' : x;
+          return `<label class="hff-row hff-grp-row"><input type="checkbox" data-hff-grp-key="${escapeHtml(key)}" ${chk ? 'checked' : ''}> ${escapeHtml(_gl(g))}</label>`;
+        }).join('')}</div>
+      </div>`;
+    }
+
     const modeBar = `<div class="hours-filter-bar">
       <span class="hours-filter-label">Hours Type</span>
       <button class="hours-chip${mode === 'quoted' ? ' active' : ''}" data-hours-mode="quoted">Quoted</button>
       <button class="hours-chip${mode === 'etc' ? ' active' : ''}" data-hours-mode="etc">ETC</button>
       <span class="hours-filter-sep"></span>
-      <span class="hours-filter-label">Billing Group</span>
-      <button class="hours-chip${bgFilter === 'all' ? ' active' : ''}" data-hours-bg="all">All</button>
-      ${BG_CHIPS.filter(bg => bgTotals[bg]).map(bg =>
-        `<button class="hours-chip${bgFilter === bg ? ' active' : ''}" data-hours-bg="${escapeHtml(bg)}">${escapeHtml(bg)}</button>`
-      ).join('')}
+      <span class="hours-filter-label">Function</span>
+      <div class="hff-wrap">
+        <button class="hff-btn${_hoursUI.fnOpen ? ' open' : ''}" data-action="toggle-fn-filter">${escapeHtml(filterLabel)} <span class="hff-arrow">${_hoursUI.fnOpen ? '▲' : '▼'}</span></button>
+        ${_hoursUI.fnOpen ? `<div class="hff-dropdown">
+          <div class="hff-search"><input class="hff-search-input" placeholder="Search…" value="${escapeHtml(_hoursUI.fnSearch || '')}" data-action="hff-search"></div>
+          <div class="hff-tree">${treeHtml}</div>
+        </div>` : ''}
+      </div>
     </div>`;
 
-    // Billing group summary cards
-    const BG_ORDER = ['Engineering', 'Manufacturing', 'Shop', 'PM'];
-    const bgHtml = BG_ORDER.filter(bg => bgTotals[bg] && (bgFilter === 'all' || bgFilter === bg))
+    // Billing group summary cards — use actual keys from data, not a hardcoded list
+    const BG_ORDER = Object.keys(bgTotals);
+    const bgHtml = BG_ORDER.filter(bg => !/^pm$/i.test(bg) && (bgFilter === 'all' || bgFilter === bg))
       .map(bg => {
         const t = bgTotals[bg];
         const ref = t[refKey];
@@ -13913,14 +14659,16 @@ function renderScheduleHours() {
         const act = rows.reduce((a, r) => a + r.actual, 0);
         const diff = ref - act;
         const tip = `${g.sec} › ${grp}\n${refLabel}: ${fmt(ref)}\nActual: ${fmt(act)}\nDiff: ${diff >= 0 ? '+' : ''}${fmt(diff)}`;
-        return `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(tip)}">${escapeHtml(grp)}</th>`;
+        const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
+        return `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(tip)}">${escapeHtml(_gl(grp))}</th>`;
       });
     }).join('');
 
-    // Header row 3 — function names (title shows full path on truncated headers)
+    // Header row 3 — function names (vertical rotation via span; clip-path on th contains it)
+    const _glFn = s => s === 'Manufacturing' ? 'MFG' : s;
     const fnHdrs = pivotCols.map(r => {
       const tip = `${escapeHtml(r.section)} › ${escapeHtml(r.group)} › ${escapeHtml(r.fn)}`;
-      return `<th class="hpt-fn-hdr" title="${tip}">${escapeHtml(r.fn)}</th>`;
+      return `<th class="hpt-fn-hdr" title="${tip}"><span>${escapeHtml(_glFn(r.fn))}</span></th>`;
     }).join('');
 
     // Data rows — each cell tooltip: "Section › Group › Function\nLabel: value"
@@ -13934,28 +14682,29 @@ function renderScheduleHours() {
       return `<tr><td class="hpt-row-lbl">${label}</td>${cells}<td class="hpt-total">${fmt(total)}</td></tr>`;
     };
     const pivotBody = [
-      makeRow(refLabel, r => r[refKey]),
-      makeRow('Actual',  r => r.actual),
-      makeRow('Diff',    r => r[refKey] - r.actual, r => diffCls(r[refKey] - r.actual)),
+      makeRow('Quoted', r => r.quoted || 0),
+      makeRow('Actual', r => r.actual),
+      makeRow('ETC',    r => r.etc || 0),
+      makeRow('Diff',   r => r[refKey] - r.actual, r => diffCls(r[refKey] - r.actual)),
     ].join('');
     const totalRef = pivotCols.reduce((a, r) => a + r[refKey], 0);
     const totalAct = pivotCols.reduce((a, r) => a + r.actual, 0);
 
-    // SVG bar chart helper — opts: { secBands, grpBands } for section/group colored strips below x-axis
+    // SVG bar chart helper — opts: { secBands, grpBands, padL, padR, exactWidth }
     function _hoursChart(title, items, W, H, opts) {
       W = W || 700; H = H || 340;
       const CQ = '#5b9bd5', CA = '#1f3864';
-      const lbl = v => v >= 1000 ? (v/1000).toFixed(1)+'k' : String(Math.round(v));
+      const lbl = v => Math.round(v).toLocaleString();
       const n = items.length;
 
-      // Estimate label height at -45° to size padB correctly
+      // Straight x-axis labels — padB just needs label font height
       const labelFontPx = n > 8 ? 9 : 10;
-      const maxLabelLen = Math.max(...items.map(i => i.label.length), 1);
-      const labelHeightPx = Math.ceil(maxLabelLen * labelFontPx * 0.6 * Math.sin(Math.PI/4)) + 8;
       const legendH = 22;
-      const padL = 46, padR = 14, padT = 36;
-      const bandStripH = (opts && opts.secBands) ? 44 : 0; // two 18px strips + gaps
-      const padB = labelHeightPx + legendH + 10 + bandStripH; // labels + legend + gap + bands
+      const padL = (opts && opts.padL != null) ? opts.padL : 46;
+      const padR = (opts && opts.padR != null) ? opts.padR : 14;
+      const padT = 36;
+      const bandStripH = (opts && opts.secBands) ? 44 : 0;
+      const padB = labelFontPx + 14 + legendH + bandStripH; // label line + gap + legend + bands
       const plotH = H - padT - padB;
       const plotW = W - padL - padR;
 
@@ -13974,7 +14723,7 @@ function renderScheduleHours() {
         const v = Math.round((yTop / 4) * i);
         const y = yPx(v);
         gridSvg += `<line x1="${padL}" y1="${y}" x2="${padL+plotW}" y2="${y}" stroke="#ebebeb" stroke-width="1"/>`;
-        tickSvg += `<text x="${padL-5}" y="${y+4}" text-anchor="end" font-size="10" fill="#bbb">${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}</text>`;
+        tickSvg += `<text x="${padL-5}" y="${y+4}" text-anchor="end" font-size="10" fill="#bbb">${Math.round(v).toLocaleString()}</text>`;
       }
 
       // Bars + value labels + x labels
@@ -13998,9 +14747,9 @@ function renderScheduleHours() {
           barSvg += `<text x="${xA+bW/2}" y="${yA-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.actual)}</text>`;
         }
 
-        // X-axis label — pivot at (cx, baseY+10+bandStripH), rotate -45°
-        const lx = cx, ly = baseY + 10 + bandStripH;
-        barSvg += `<text x="${lx}" y="${ly}" text-anchor="end" font-size="${labelFontPx}" fill="#555" transform="rotate(-45,${lx},${ly})">${escapeHtml(item.label)}</text>`;
+        // X-axis label — straight, centered, full text
+        const ly = baseY + bandStripH + labelFontPx + 4;
+        barSvg += `<text x="${cx}" y="${ly}" text-anchor="middle" font-size="${labelFontPx}" fill="#555">${escapeHtml(item.label)}</text>`;
 
         // Invisible hover zone
         barSvg += `<rect x="${padL+idx*grpW}" y="${padT}" width="${grpW}" height="${plotH+10}" fill="transparent"><title>${tip}</title></rect>`;
@@ -14009,13 +14758,6 @@ function renderScheduleHours() {
       // Section + group band strips below x-axis baseline
       let bandsSvg = '';
       if (opts && opts.secBands) {
-        // Truncate label to fit pixel width (approx 5.4px per char at font-size 9)
-        const fitTxt = (label, pxAvail) => {
-          const cw = 5.4, pad = 10;
-          const max = Math.floor((pxAvail - pad) / cw);
-          if (max < 1) return '';
-          return label.length > max ? label.slice(0, max - 1) + '…' : label;
-        };
         const bandTip = (b, prefix) => {
           if (b.ref == null) return escapeHtml(b.label);
           const diff = b.ref - b.actual;
@@ -14025,18 +14767,16 @@ function renderScheduleHours() {
         let sx = padL;
         for (const b of opts.secBands) {
           const bw = b.count * grpW - 1;
-          const txt = fitTxt(b.label, bw);
           bandsSvg += `<rect x="${sx}" y="${sY}" width="${bw}" height="${sH}" fill="#1e3a5f" rx="2"><title>${bandTip(b, b.label)}</title></rect>`;
-          if (txt) bandsSvg += `<text x="${sx+bw/2}" y="${sY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">${escapeHtml(txt)}</text>`;
+          bandsSvg += `<text x="${sx+bw/2}" y="${sY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">${escapeHtml(b.label)}</text>`;
           sx += b.count * grpW;
         }
         const gY = sY + sH + 3;
         let gx = padL;
         for (const b of opts.grpBands) {
           const bw = b.count * grpW - 1;
-          const txt = fitTxt(b.label, bw);
-          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#2d6a9f" rx="2"><title>${bandTip(b, b.label)}</title></rect>`;
-          if (txt) bandsSvg += `<text x="${gx+bw/2}" y="${gY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="600" fill="white" style="pointer-events:none">${escapeHtml(txt)}</text>`;
+          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#AACEE8" rx="2"><title>${bandTip(b, b.label)}</title></rect>`;
+          bandsSvg += `<text x="${gx+bw/2}" y="${gY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="600" fill="white" style="pointer-events:none">${escapeHtml(b.label)}</text>`;
           gx += b.count * grpW;
         }
       }
@@ -14050,7 +14790,10 @@ function renderScheduleHours() {
         <rect x="${legX+75}" y="${legY-11}" width="13" height="10" fill="${CA}" rx="1"/>
         <text x="${legX+92}" y="${legY-2}" font-size="11" fill="#555">Actual</text>`;
 
-      return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
+      const svgSizeAttr = (opts && opts.exactWidth) ? `width="${W}" height="${H}"`
+        : (opts && opts.fillBox) ? `width="100%" height="100%" preserveAspectRatio="none"`
+        : `width="100%"`;
+      return `<svg viewBox="0 0 ${W} ${H}" ${svgSizeAttr} style="display:block">
         <text x="${W/2}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#333">${escapeHtml(title)}</text>
         ${gridSvg}${tickSvg}${barSvg}${bandsSvg}${legend}
         <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
@@ -14058,65 +14801,56 @@ function renderScheduleHours() {
       </svg>`;
     }
 
-    // Function chart — use pivotCols order (section→group→fn, matching the pivot table)
-    const fnItems = pivotCols.map(r => ({ label: r.fn, quoted: r[refKey], actual: r.actual || 0 }));
+    const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
+    const BG_CHART_ORDER = Object.keys(bgTotals);
+    const bgGroups = BG_CHART_ORDER.filter(bg => !/^pm$/i.test(bg) && (bgFilter === 'all' || bgFilter === bg))
+      .map(bg => ({ fn: _gl(bg), label: _gl(bg), sectionLabel: null, series: [{ value: bgTotals[bg][refKey] || 0 }, { value: bgTotals[bg].actual || 0 }] }));
 
-    // Band metadata for section/group strips below the x-axis (include totals for tooltips)
-    const fnSecBands = secGroups.map(g => ({
-      label: g.sec, count: g.fns.length,
-      ref: g.fns.reduce((a, r) => a + r[refKey], 0),
-      actual: g.fns.reduce((a, r) => a + r.actual, 0),
-    }));
-    const fnGrpBands = secGroups.flatMap(g => {
-      const grpOrder = [], grpCount = new Map(), grpFns = new Map();
-      for (const r of g.fns) {
-        const key = r.group || '';
-        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); grpFns.set(key, []); }
-        grpCount.set(key, grpCount.get(key) + 1);
-        grpFns.get(key).push(r);
-      }
-      return grpOrder.map(grp => ({
-        label: grp, count: grpCount.get(grp),
-        ref: grpFns.get(grp).reduce((a, r) => a + r[refKey], 0),
-        actual: grpFns.get(grp).reduce((a, r) => a + r.actual, 0),
-      }));
-    });
-
-    const BG_CHART_ORDER = ['Engineering', 'Manufacturing', 'PM', 'Shop'];
-    const bgItems = BG_CHART_ORDER.filter(bg => bgTotals[bg] && (bgFilter === 'all' || bgFilter === bg))
-      .map(bg => ({ label: bg, quoted: bgTotals[bg][refKey], actual: bgTotals[bg].actual || 0 }));
+    const colgroup = `<colgroup>
+      <col style="width:80px">
+      ${pivotCols.map(() => `<col>`).join('')}
+      <col style="width:80px">
+    </colgroup>`;
 
     const fnChartTitle  = `${refLabel} vs Actual by Function`;
     const bgChartTitle  = `${refLabel} vs Actual by Billing Group`;
-    const chartsHtml = `<div class="hours-charts-row">
-      <div class="hours-chart-box" style="flex:2">${_hoursChart(fnChartTitle, fnItems, 820, 380, { secBands: fnSecBands, grpBands: fnGrpBands })}</div>
-      <div class="hours-chart-box" style="flex:1">${_hoursChart(bgChartTitle, bgItems, 380, 340)}</div>
-    </div>`;
+    const fnGroups = secGroups.flatMap(sg => sg.fns.map(r => ({
+      fn: _glFn(r.fn), label: _gl(r.group || r.fn), sectionLabel: sg.sec,
+      series: [{ value: r[refKey] || 0 }, { value: r.actual || 0 }],
+    }))).filter(g => g.series[0].value || g.series[1].value);
+    const fnChartSvg = _jhBarChart(fnChartTitle, fnGroups, [refLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 900);
 
     const totalD = totalRef - totalAct;
     body = `
       ${modeBar}
       <div class="hours-bg-row">${bgHtml}</div>
-      <div class="hpt-wrap">
-        <table class="hpt">
-          <thead>
-            <tr><th class="hpt-corner" rowspan="3"></th>${secSpans}<th class="hpt-total-hdr" rowspan="3">Total</th></tr>
-            <tr>${grpSpans}</tr>
-            <tr>${fnHdrs}</tr>
-          </thead>
-          <tbody>${pivotBody}</tbody>
-        </table>
-      </div>
-      ${chartsHtml}`;
+      <div class="hours-fn-row" style="display:flex;flex-direction:column;gap:16px">
+        <div class="hpt-fn-wrap">
+          <table class="hpt" style="table-layout:auto;width:100%">
+            ${colgroup}
+            <thead>
+              <tr><th class="hpt-corner" rowspan="3"></th>${secSpans}<th class="hpt-total-hdr" rowspan="3">Total</th></tr>
+              <tr>${grpSpans}</tr>
+              <tr>${fnHdrs}</tr>
+            </thead>
+            <tbody>${pivotBody}</tbody>
+          </table>
+        </div>
+        <div style="padding-bottom:140px">${fnChartSvg}</div>
+        <div style="padding-bottom:140px">${_jhBarChart(bgChartTitle, bgGroups, [refLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 700)}</div>
+      </div>`;
     } // end if fns.length
   }
 
-  el.innerHTML = bar + `<div class="hours-drawer-body">${body}</div>`;
+  el.innerHTML = bar + `<div class="hours-drawer-body">${DRAWER_HANDLE('hours-drawer-body')}${body}</div>`;
   _wireHoursDrawer(el, job, project);
+  // Apply indeterminate state to section checkboxes (can't be set in HTML)
+  el.querySelectorAll('[data-hff-sec-key][data-indet]').forEach(cb => { cb.indeterminate = true; });
   layoutNotesPanel();
 }
 
 function _wireHoursDrawer(el, job, project) {
+  _drawerRestoreHeight('hours-drawer-body');
   el.onclick = (e) => {
     if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
       const willOpen = el.classList.contains('is-collapsed');
@@ -14125,23 +14859,85 @@ function _wireHoursDrawer(el, job, project) {
       else renderScheduleHours();
       return;
     }
-    // Hours Type toggle
     const modeBtn = e.target.closest('[data-hours-mode]');
-    if (modeBtn) {
-      _hoursUI.mode = modeBtn.dataset.hoursMode;
-      renderScheduleHours();
-      return;
+    if (modeBtn) { _hoursUI.mode = modeBtn.dataset.hoursMode; renderScheduleHours(); return; }
+
+    // Toggle dropdown open/close
+    if (e.target.closest('[data-action="toggle-fn-filter"]')) {
+      _hoursUI.fnOpen = !_hoursUI.fnOpen;
+      renderScheduleHours(); return;
     }
-    // Billing group chip
-    const bgBtn = e.target.closest('[data-hours-bg]');
-    if (bgBtn) {
-      _hoursUI.billing = bgBtn.dataset.hoursBg;
-      renderScheduleHours();
+    // Close dropdown if click outside it
+    if (_hoursUI.fnOpen && !e.target.closest('.hff-wrap')) {
+      _hoursUI.fnOpen = false; renderScheduleHours(); return;
+    }
+
+    // Expand/collapse section
+    const expander = e.target.closest('[data-hff-sec]');
+    if (expander) {
+      const sec = expander.dataset.hffSec;
+      if (_hoursUI.fnExp.has(sec)) _hoursUI.fnExp.delete(sec); else _hoursUI.fnExp.add(sec);
+      renderScheduleHours(); return;
+    }
+
+    // Select all
+    const allChk = e.target.closest('[data-hff-all]');
+    if (allChk) { _hoursUI.fnSel = allChk.checked ? null : new Set(); renderScheduleHours(); return; }
+
+    // Section checkbox
+    const secChk = e.target.closest('[data-hff-sec-key]');
+    if (secChk) {
+      // build full key list for this section from the current tree
+      const secName = secChk.dataset.hffSecKey;
+      const dropdown = el.querySelector('.hff-tree');
+      const grpKeys = [...(dropdown ? dropdown.querySelectorAll(`[data-hff-grp-key]`) : [])]
+        .filter(cb => cb.dataset.hffGrpKey.startsWith(secName + '||'))
+        .map(cb => cb.dataset.hffGrpKey);
+      let sel = _hoursUI.fnSel ? new Set(_hoursUI.fnSel) : null;
+      if (secChk.checked) {
+        if (sel === null) { /* already all selected */ }
+        else { grpKeys.forEach(k => sel.add(k)); }
+      } else {
+        if (sel === null) {
+          // deselect this section — build full set minus these keys
+          const allKeys = [...el.querySelectorAll('[data-hff-grp-key]')].map(c => c.dataset.hffGrpKey);
+          sel = new Set(allKeys.filter(k => !grpKeys.includes(k)));
+        } else { grpKeys.forEach(k => sel.delete(k)); }
+      }
+      if (sel && sel.size === 0) sel = new Set(); // keep empty set (nothing selected)
+      _hoursUI.fnSel = sel;
+      renderScheduleHours(); return;
+    }
+
+    // Group checkbox
+    const grpChk = e.target.closest('[data-hff-grp-key]');
+    if (grpChk) {
+      const key = grpChk.dataset.hffGrpKey;
+      let sel = _hoursUI.fnSel ? new Set(_hoursUI.fnSel) : null;
+      if (grpChk.checked) {
+        if (sel === null) { /* already all */ }
+        else sel.add(key);
+      } else {
+        if (sel === null) {
+          // deselect one — build full set minus this key
+          const allKeys = [...el.querySelectorAll('[data-hff-grp-key]')].map(c => c.dataset.hffGrpKey);
+          sel = new Set(allKeys.filter(k => k !== key));
+        } else sel.delete(key);
+      }
+      _hoursUI.fnSel = sel;
+      renderScheduleHours(); return;
     }
   };
+
+  // Search input (oninput, not onclick)
+  el.addEventListener('input', (e) => {
+    const inp = e.target.closest('[data-action="hff-search"]');
+    if (inp) { _hoursUI.fnSearch = inp.value; renderScheduleHours(); }
+  });
 }
 
 function _wireNotes(el, project) {
+  _drawerRestoreHeight('notes-body');
   const data = state.projectNotes[project];
   const findSession = id => data.sessions.find(s => s.id === id);
   const findItem = id => { for (const s of data.sessions) { const it = (s.items || []).find(x => x.id === id); if (it) return { s, it }; } return null; };
@@ -21541,6 +22337,7 @@ function setView(view) {
   }
   else if (view === 'shop-parts') { loadShopParts(); _restoreScrollPos(view); }
   else if (view === 'vendor-pos') { loadVendorPOs(); _restoreScrollPos(view); }
+  else if (view === 'job-hours')  { renderJobHoursPage(); _restoreScrollPos(view); }
   else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
   else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
   else if (view === 'recents')   { renderRecentsPage(); _restoreScrollPos(view); }
@@ -22780,10 +23577,13 @@ async function init() {
       const projects = await resp.json();
       state.projectWorkspaces = state.projectWorkspaces || {};
       state.projectsIndex = {};
+      const dbTemplates = [];
       for (const p of projects) {
         if (!p || !p.name) continue;
         // ETO integration + project-link chip need the row id and job number.
         state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '' };
+        // Sync is_template from DB so the projects page shows the right button label.
+        if (p.is_template) dbTemplates.push(p.name);
         // Server stores the legacy literal 'default' for projects that
         // never had an explicit workspace set; map that to our canonical
         // DEFAULT_WORKSPACE ('Active'). Anything else must be in the
@@ -22793,8 +23593,15 @@ async function init() {
         if (!WORKSPACES.includes(ws)) continue;
         state.projectWorkspaces[p.name] = ws;
       }
+      // Merge DB templates with any locally-added ones (right-click → mark as template).
+      if (dbTemplates.length) {
+        const local = state.templateProjects || [];
+        state.templateProjects = [...new Set([...dbTemplates, ...local])];
+        try { localStorage.setItem('sdcTemplateProjects', JSON.stringify(state.templateProjects)); } catch (_) {}
+      }
       try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
       if (state.view === 'projects') renderProjectsPage();
+      _prefetchJobHours();
     }
   } catch (_) {}
   _etoCheckOnce(); // resolve ETO availability early so chips/buttons render on first paint
@@ -23277,6 +24084,26 @@ async function init() {
   }
   // Global hard refresh — always visible in the project tab bar (all views)
   document.getElementById('btn-global-hard-refresh')?.addEventListener('click', () => { window.location.reload(true); });
+
+  // Font size control — scales all --fs-* CSS variables proportionally from base 13px
+  const _fontInput = document.getElementById('input-font-size');
+  const _baseFontSizes = { '--fs-2xs': 9, '--fs-xs': 10, '--fs-sm': 11, '--fs-md': 12, '--fs-base': 13, '--fs-lg': 14, '--fs-xl': 16, '--fs-2xl': 20 };
+  const _applyFontSize = (px) => {
+    px = Math.min(24, Math.max(8, Math.round(px)));
+    const scale = px / 13;
+    const root = document.documentElement;
+    for (const [k, base] of Object.entries(_baseFontSizes)) {
+      root.style.setProperty(k, Math.round(base * scale) + 'px');
+    }
+    if (_fontInput) _fontInput.value = px;
+    try { localStorage.setItem('sdcFontSize', px); } catch (_) {}
+  };
+  // Restore saved preference
+  try { const saved = localStorage.getItem('sdcFontSize'); if (saved) _applyFontSize(Number(saved)); } catch (_) {}
+  _fontInput?.addEventListener('change', () => _applyFontSize(Number(_fontInput.value)));
+  _fontInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') _applyFontSize(Number(_fontInput.value)); });
+  document.getElementById('btn-font-dec')?.addEventListener('click', () => _applyFontSize(Number(_fontInput?.value || 13) - 1));
+  document.getElementById('btn-font-inc')?.addEventListener('click', () => _applyFontSize(Number(_fontInput?.value || 13) + 1));
 
   // "👤 For Customer" — toggles a clean customer-facing view by adding the
   // body.customer-view class. CSS hides the toolbar / tabs / extra columns;
