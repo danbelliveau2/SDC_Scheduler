@@ -2425,7 +2425,7 @@ body.customer-view .customer-view-flatten.is-active {
      left (justify-content:start) instead of stretched across a wide screen. */
   /* …descriptive columns…, then a 1fr spacer that pushes cost/bar/pct to the
      right edge while the left columns stay packed and aligned. */
-  grid-template-columns: 1fr 12fr 17fr 5fr 5fr 7fr 3fr 1fr 5fr 6fr 2fr;
+  grid-template-columns: 1fr 8fr 21fr 5fr 5fr 7fr 3fr 1fr 5fr 6fr 2fr;
   align-items: center;
   gap: 6px;
   padding: 5px 12px 5px 10px;
