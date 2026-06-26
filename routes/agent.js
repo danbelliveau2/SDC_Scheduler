@@ -19,6 +19,17 @@ module.exports = function createRouter(deps) {
     catch (e) { console.error('[agent] ask failed:', e.message); res.status(503).json({ error: e.message }); }
   });
 
+  // Vision: read an SDC Project Budget image into structured hours. Powers the
+  // Project Release panel's "auto-fill the budget from the picture" step.
+  router.post('/api/agent/extract-budget', requireRole('editor'), async (req, res) => {
+    const image = req.body && req.body.image;
+    const mediaType = (req.body && req.body.mediaType) || 'image/png';
+    if (!image) return res.status(400).json({ error: 'image required' });
+    if (typeof agent.extractBudgetImage !== 'function') return res.status(501).json({ error: 'budget extraction not available' });
+    try { res.json(await agent.extractBudgetImage({ image, mediaType })); }
+    catch (e) { console.error('[agent] extract-budget failed:', e.message); res.status(503).json({ error: e.message }); }
+  });
+
   // Streaming variant — Server-Sent Events. Forwards text deltas + tool events
   // so the UI renders the answer as it's generated. Same read-only guarantees.
   router.post('/api/agent/ask-stream', requireRole('viewer'), async (req, res) => {

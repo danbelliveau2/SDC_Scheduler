@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '10.0',
+    date: '2026-06-26',
+    notes: [
+      'Project Release — upload the release doc and it sets up the project.',
+      '',
+      'PROJECT RELEASE (replaces the old Quote vs Schedule button):',
+      '   ▸ Upload the SDC Project Release (.docx). It pulls the Receipt of PO date, delivery (weeks), financial milestones, and penalty clause — edit any of them right in the panel.',
+      '   ▸ The financial-milestones grid is now built into this panel (the separate Financial Milestones button is gone) — fill it out in one place.',
+      '   ▸ The project budget shows as an editable grid laid out like the release (ME / CE / General / Shop, Testing, Teardown & Install, Parts Cost) and feeds the Δ "quoted" hours on the schedule. Parts cost shows as accounting currency.',
+      '   ▸ "Accept & apply" sets the PO date (shifting the schedule to it), delivery, and penalty — one click, no extra prompt. "View original" opens the source doc.',
+      '',
+      'NEW SCHEDULE:',
+      '   ▸ "+ New schedule" is a clean dialog: name it, then start from a template, another schedule, or blank — or import from Smartsheet. "+ New tab" just opens an existing schedule.',
+      '   ▸ Building from a template now keeps task-to-task duration links intact (e.g. Test Engineer 2 tied to Test Engineer 1).',
+      '',
+      'QUOTED HOURS:',
+      '   ▸ Every department with quoted hours now shows them on the Δ overlay (Controls, Wire, etc.), and Teardown/Install hours split correctly between teardown and install.',
+    ],
+  },
+  {
     version: '9.92',
     date: '2026-06-26',
     notes: [

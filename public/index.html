@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260616-eto40" />
-  <link rel="stylesheet" href="auth-ui.css?v=20260601-166" />
+  <link rel="stylesheet" href="styles.css?v=20260616-eto60" />
+  <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -246,6 +246,7 @@
             <button id="btn-view-lags"       class="view-bracket-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
             <button id="btn-view-bar-meta"   class="view-bracket-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below.">%</button>
             <button id="btn-view-machine"    class="view-bracket-icon" type="button" title="Highlight which machine each row belongs to — colored pill in the grid + matching border on the Gantt bar. Auto-hides on single-machine projects.">M</button>
+            <button id="btn-view-dept-hours" class="view-bracket-icon" type="button" title="Show QUOTED vs SCHEDULED hours on each department subheader — scheduled (from durations) under DUR, quoted (from the Project Release budget) under %COM, and an over/under-scheduled chip in the Assigned To area.">Δ</button>
           </div>
 
           <div class="toolbar-divider"></div>
@@ -344,8 +345,7 @@
            Financial Milestones gets a peer button so PMs can jump straight
            to the billing editor without going through the Quote modal. -->
       <div class="schedule-footer" id="schedule-footer">
-        <button id="btn-toolbar-financials" class="toolbar-toggle-btn" type="button" title="Edit the project's financial milestones (Down Payment, Mid Payment, Final Payment, …). Button turns red when the active project's financials aren't filled out yet.">💲 Financial Milestones</button>
-        <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Compare quoted hours from the estimate sheet to what's actually scheduled. Also exposes the financial milestones editor.">⚖ Quote vs Schedule</button>
+        <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Upload the SDC Project Release (.docx) — order date, delivery, penalty, the project budget image, AND the editable financial-milestones grid (fill it out right here). Per-dept hours vs quote live on the grid (Δ).">📄 Project Release</button>
       </div>
       <!-- Bottom drawer stack — fixed overlay at the bottom of the viewport.
            All three drawers live here so they stack correctly without pushing
@@ -928,8 +928,8 @@
        from app.js / comments-ui.js. -->
   <script src="auth-ui.js?v=20260616-eto22"></script>
   <script src="phases.js?v=20260601-166"></script>
-  <script src="release-notes.js?v=20260601-167"></script>
-  <script src="app.js?v=20260616-eto44"></script>
+  <script src="release-notes.js?v=20260601-172"></script>
+  <script src="app.js?v=20260616-eto71"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

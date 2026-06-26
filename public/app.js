@@ -1966,13 +1966,13 @@ function renderTable() {
       // section. Procurement (no subs) and the section 40/50 dept-only groups still
       // get headers — those rows hold tasks themselves.
       const skipDeptHeader = group.key === 'design_build' && dept.subs.length > 0;
-      // Dept-level hours roll up the dept's own tasks plus every sub-dept under it.
-      const deptDesc = dept.subs.length > 0
-        ? [...(buckets[dPath] || []), ...dept.subs.flatMap(s => buckets[groupPath(group.key, dept.key, s.key)] || [])]
-        : (buckets[dPath] || []);
+      // A parent dept that renders its own sub-department rows (e.g. INSTALL →
+      // Shop / Engineering) shows NO hours readout itself — the breakdown lives
+      // on the sub rows below. Leaf depts (no subs) carry their own hours.
+      const deptHours = dept.subs.length > 0 ? null : deptHoursFor(buckets[dPath] || []);
       if (!skipDeptHeader) {
         html += headerRowHtml(2, dept.label, dPath, dCollapsed,
-          { 'section-key': group.key, 'dept-key': dept.key }, deptHoursFor(deptDesc));
+          { 'section-key': group.key, 'dept-key': dept.key }, deptHours);
         if (dCollapsed) continue;
       }
       if (dept.subs.length > 0) {
@@ -11233,25 +11233,9 @@ function renderProjectsPage() {
       if (!ws || ws === 'Closed') return;
       state.activeWorkspace = ws;
       saveProjectTabs();
-      // If the workspace has EXACTLY ONE template, prompt for a name and clone
-      // directly — no need to fight a dropdown. Other cases (no template,
-      // multiple templates) fall back to the legacy picker which still has
-      // estimate-sheet + Smartsheet flows.
-      const tmplFromBtn = btn.dataset.template || null;
-      if (tmplFromBtn) {
-        const newName = await showPromptDialog({
-          title: `New schedule from ${tmplFromBtn}`,
-          message: 'Enter a name for the new project schedule.',
-          placeholder: 'e.g. Job 2026-045 — My Project',
-          okLabel: 'Create',
-          validate: v => state.tasks.some(t => t.project === v) ? `"${v}" already exists. Pick a different name.` : null,
-        });
-        if (!newName) return;
-        await duplicateProject(tmplFromBtn, newName);
-        return;
-      }
-      // No template on this workspace → fall back to the legacy picker.
-      showProjectAddPicker();
+      // Clean create dialog: name + start-from (template / another schedule /
+      // blank) + Smartsheet import. Lands the new schedule in this workspace.
+      showCreateScheduleDialog(ws);
     });
   });
   // Star toggle on each row (favorite / unfavorite).
@@ -11517,7 +11501,7 @@ function wireCreatePanelHandlers(bodyEl) {
   bodyEl.querySelectorAll('[data-action="legacy-picker"]').forEach(btn => {
     btn.addEventListener('click', () => {
       closeSidebarPanel();
-      showProjectAddPicker();
+      showCreateScheduleDialog(ws);
     });
   });
 }
@@ -11980,15 +11964,15 @@ function renderProjectTabs() {
       ? 'Pick a project tab first — new tasks attach to the active project.'
       : `Add a new task to ${state.filters.project}`;
   }
-  // ⚖ Quote vs Schedule toolbar button — disabled when there's no active
-  // project tab (no single project to compare). Tooltip explains.
+  // 📄 Project Release toolbar button — disabled when there's no active project
+  // tab (the release is per-project). Tooltip explains.
   const quoteBtn = document.getElementById('btn-toolbar-quote');
   if (quoteBtn) {
     const onAllProjects = !state.filters.project;
     quoteBtn.disabled = onAllProjects;
     quoteBtn.title = onAllProjects
-      ? 'Pick a project tab first — quote vs schedule is per-project.'
-      : `Compare quoted vs scheduled hours for ${state.filters.project}. Also exposes the financial milestones editor.`;
+      ? 'Pick a project tab first — the Project Release is per-project.'
+      : `Project Release for ${state.filters.project} — order date, delivery, milestones, penalty, and the project budget.`;
   }
   // 💲 Financial Milestones — peer button. Turns red (`needs-attention`)
   // when the active project either has no financials yet OR any row is
@@ -12873,20 +12857,31 @@ async function duplicateProject(source, targetName = null) {
       if (created && created.id) oldToNewId[t.id] = created.id;
     } catch (_) {}
   }
-  // Second pass: rewrite predecessors with the new IDs.
+  // Second pass: rewrite predecessors AND duration-links with the new IDs.
+  // Both reference other tasks by their OLD id, so they only resolve after
+  // every clone exists and oldToNewId is fully populated. Duration-links
+  // (e.g. "Test Engineer 2" inheriting "Test Engineer 1"'s duration via the
+  // 🔗 link) were previously dropped entirely on clone — the create payload
+  // never copied duration_link_task_id — so templated links came in broken.
   for (const t of sourceTasks) {
-    if (!t.predecessors) continue;
     const newId = oldToNewId[t.id];
     if (!newId) continue;
-    const remapped = String(t.predecessors).split(',').map(s => {
-      const trimmedRef = s.trim();
-      const m = trimmedRef.match(/^(\d+)(.*)$/);
-      if (!m) return trimmedRef;
-      const oldId = Number(m[1]);
-      const mappedId = oldToNewId[oldId];
-      return mappedId != null ? `${mappedId}${m[2]}` : trimmedRef;
-    }).join(', ');
-    if (remapped) try { await api.update(newId, { predecessors: remapped }); } catch (_) {}
+    const upd = {};
+    if (t.predecessors) {
+      const remapped = String(t.predecessors).split(',').map(s => {
+        const trimmedRef = s.trim();
+        const m = trimmedRef.match(/^(\d+)(.*)$/);
+        if (!m) return trimmedRef;
+        const mappedId = oldToNewId[Number(m[1])];
+        return mappedId != null ? `${mappedId}${m[2]}` : trimmedRef;
+      }).join(', ');
+      if (remapped) upd.predecessors = remapped;
+    }
+    if (t.duration_link_task_id) {
+      const mapped = oldToNewId[t.duration_link_task_id];
+      if (mapped != null) upd.duration_link_task_id = mapped;
+    }
+    if (Object.keys(upd).length) try { await api.update(newId, upd); } catch (_) {}
   }
   // Clone the source's FINANCIAL MILESTONES too, carrying their predecessor
   // links over. Tasks were cloned in the same sort_order, so line-number
@@ -12992,49 +12987,15 @@ function showProjectAddPicker() {
     `<div class="picker-section-title">${escapeHtml(title)}${hint ? ` <span class="picker-section-hint">${escapeHtml(hint)}</span>` : ''}</div>`
     + projects.map(rowHtml).join('');
 
+  // Open-existing picker ONLY. Creating a schedule lives in its own clean
+  // dialog (showCreateScheduleDialog) reached via "＋ New schedule" — this
+  // popup is purely "pick a schedule and open it in a tab."
   pop.innerHTML = `
-    ${all.length === 0 ? '<div class="picker-empty">No projects yet.</div>' : ''}
+    ${all.length === 0 ? '<div class="picker-empty">No schedules yet — create one with “＋ New schedule”.</div>' : ''}
     ${sectionHtml('Active', byWs.Active)}
     ${byWs.Active.length ? '<span class="picker-section-hint">★ = template · right-click a row to move / delete</span>' : ''}
     ${sectionHtml('Sales', byWs.Sales)}
-    ${sectionHtml('Closed', byWs.Closed)}
-    <div class="picker-divider"></div>
-    <div class="picker-action-group">
-      <div class="picker-section-title">Start a new schedule</div>
-      <div class="picker-new-row">
-        <input type="text" class="picker-new-input" placeholder="e.g. Job 2026-015 — Sample Project" />
-        <button class="btn-primary picker-new-btn" type="button">Open</button>
-      </div>
-    </div>
-    <div class="picker-action-group">
-      <div class="picker-section-title">Build from a template ★</div>
-      <div class="picker-new-row picker-template-row">
-        <input type="text" class="picker-template-name" placeholder="New schedule name…" />
-        <select class="picker-template-source">
-          <option value="" disabled selected>No templates yet — mark a project as template ↓</option>
-        </select>
-        <button class="btn-primary picker-template-btn" type="button" disabled>Build</button>
-      </div>
-      <div class="picker-hint">Clones every task, milestone, and predecessor from the template. Real-person assignees are blanked; placeholders carry through.</div>
-    </div>
-    <div class="picker-action-group">
-      <div class="picker-section-title">Build from an SDC estimate sheet (.xlsx)</div>
-      <div class="picker-new-row picker-estimate-row">
-        <input type="file" class="picker-estimate-file" accept=".xlsx" />
-        <button class="btn-primary picker-estimate-btn" type="button" disabled>Analyze →</button>
-      </div>
-      <div class="picker-hint">Pulls hours from "SUMMARY FOR RELEASE", then asks for a PO date + quoted FAT date.</div>
-    </div>
-    <div class="picker-action-group">
-      <div class="picker-section-title">Import from Smartsheet (.xlsx)</div>
-      <div class="picker-new-row picker-import-row">
-        <input type="text" class="picker-import-name" placeholder="Project name (auto-fills from file)" />
-        <input type="file" class="picker-import-file" accept=".xlsx" multiple />
-        <button class="btn-primary picker-import-btn" type="button" disabled>Import</button>
-      </div>
-      <div class="picker-hint">Pick multiple .xlsx files at once to bulk-import — each file becomes its own project.</div>
-      <div class="picker-import-status" id="picker-import-status"></div>
-    </div>`;
+    ${sectionHtml('Closed', byWs.Closed)}`;
   document.body.appendChild(pop);
   pop.querySelectorAll('.picker-row').forEach(row => {
     row.addEventListener('click', () => {
@@ -13067,87 +13028,158 @@ function showProjectAddPicker() {
       deleteProject(p);
     });
   });
-  const input = pop.querySelector('.picker-new-input');
-  const create = async () => {
-    const v = (input.value || '').trim();
-    if (!v) return;
-    if (!state.openProjects.includes(v)) state.openProjects.push(v);
-    state.filters.project = v;
-    saveProjectTabs();
-    pop.remove();
-    // Brand-new project? Seed it with the two anchor milestones.
-    const isNew = !state.tasks.some(t => t.project === v);
-    if (isNew) {
-      await ensureAnchorsForProject(v);
-      await loadTasks();
+
+  setTimeout(() => {
+    const onDoc = (ev) => {
+      if (!pop.contains(ev.target) && ev.target !== btn) {
+        pop.remove();
+        document.removeEventListener('mousedown', onDoc);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+  }, 0);
+}
+
+// Clean "New schedule" dialog. The only two questions: what to call it, and
+// what to start from — a template (★), another existing schedule, or blank.
+// Most of the time it's one of the standard templates, but ANY schedule can be
+// the source (it's just a clone). Smartsheet import lives here too. Estimate-
+// sheet import was removed — that now happens inside an open schedule.
+// `defaultWs` (optional) is the workspace the "+ New schedule" button lives
+// under, so the created schedule lands in that section.
+function showCreateScheduleDialog(defaultWs) {
+  document.getElementById('create-schedule-modal')?.remove();
+  const templates = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t))
+    .sort((a, b) => a.localeCompare(b));
+  const projects = uniqueValues('project').filter(p => !isTemplateProject(p))
+    .sort((a, b) => a.localeCompare(b));
+  const defaultMode = templates.length ? 'template' : (projects.length ? 'project' : 'blank');
+
+  const overlay = document.createElement('div');
+  overlay.id = 'create-schedule-modal';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width: 460px;">
+      <div class="modal-head">
+        <h2 style="margin:0;">New schedule</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <label class="cs-field">Schedule name
+          <input type="text" id="cs-name" placeholder="e.g. 1162_Acme Palletizer" autocomplete="off" />
+        </label>
+
+        <div class="cs-field-label">Start from</div>
+        <div class="cs-seg" id="cs-seg">
+          <button type="button" class="cs-seg-btn${defaultMode === 'template' ? ' is-active' : ''}" data-mode="template">A template</button>
+          <button type="button" class="cs-seg-btn${defaultMode === 'project' ? ' is-active' : ''}" data-mode="project">Another schedule</button>
+          <button type="button" class="cs-seg-btn${defaultMode === 'blank' ? ' is-active' : ''}" data-mode="blank">Blank</button>
+        </div>
+        <select id="cs-source" class="cs-source"></select>
+
+        <button class="btn-primary cs-build" id="cs-build" type="button">Create schedule</button>
+        <div class="cs-hint" id="cs-hint"></div>
+
+        <div class="cs-divider"></div>
+        <div class="cs-field-label">Or import from Smartsheet (.xlsx)</div>
+        <div class="cs-import-row">
+          <input type="text" id="cs-import-name" placeholder="Schedule name (auto-fills from file)" />
+          <input type="file" id="cs-import-file" accept=".xlsx" multiple />
+          <button class="btn-primary" id="cs-import-btn" type="button" disabled>Import</button>
+        </div>
+        <div class="cs-hint">Pick multiple files at once to bulk-import — each becomes its own schedule.</div>
+        <div class="cs-import-status" id="cs-import-status"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector('.modal-close').addEventListener('click', close);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+  const nameEl = overlay.querySelector('#cs-name');
+  const seg = overlay.querySelector('#cs-seg');
+  const sourceEl = overlay.querySelector('#cs-source');
+  const buildBtn = overlay.querySelector('#cs-build');
+  const hintEl = overlay.querySelector('#cs-hint');
+  let mode = defaultMode;
+
+  const fillSource = () => {
+    if (mode === 'blank') { sourceEl.style.display = 'none'; return; }
+    sourceEl.style.display = '';
+    const list = mode === 'template' ? templates : projects;
+    if (list.length === 0) {
+      sourceEl.innerHTML = `<option value="" disabled selected>${mode === 'template' ? 'No templates yet — mark a schedule as a template first (right-click its tab → Mark as template ★).' : 'No other schedules yet.'}</option>`;
     } else {
-      render();
+      sourceEl.innerHTML = `<option value="" disabled selected>${mode === 'template' ? 'Pick a template…' : 'Pick a schedule…'}</option>`
+        + list.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}${isTemplateProject(t) ? ' ★' : ''}</option>`).join('');
     }
   };
-  pop.querySelector('.picker-new-btn').addEventListener('click', create);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } });
-
-  // ---- Build from template ----------------------------------------------
-  // Populate the template dropdown with every project marked as a template
-  // (★ in the project tab right-click menu → "Mark as template"). The user
-  // can have any number of templates — e.g., "SDC_Template" for full project
-  // schedules and "SDC_Sales_Template" for simplified sales schedules.
-  // Clicking Build clones the chosen template into the entered name via the
-  // existing duplicateProject() — same code path as the right-click → Duplicate.
-  const tmplSelect = pop.querySelector('.picker-template-source');
-  const tmplName   = pop.querySelector('.picker-template-name');
-  const tmplBtn    = pop.querySelector('.picker-template-btn');
-  // Note: `templates` is already declared earlier in this function for the
-  // picker grouping. Use a different name here to avoid the redeclaration.
-  const tmplOptions = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t));
-  if (tmplOptions.length === 0) {
-    tmplSelect.innerHTML = '<option value="" disabled selected>No templates yet — mark a project as template first.</option>';
-    tmplSelect.disabled = true;
-    tmplName.disabled   = true;
-  } else {
-    tmplSelect.innerHTML = '<option value="" disabled selected>Pick a template…</option>'
-      + tmplOptions.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
-  }
-  const refreshTmplBtn = () => {
-    tmplBtn.disabled = !tmplName.value.trim() || !tmplSelect.value;
+  const refresh = () => {
+    hintEl.textContent = mode === 'blank'
+      ? 'Starts empty — just the Receipt of PO + FAT spine markers.'
+      : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
+    buildBtn.disabled = !nameEl.value.trim() || (mode !== 'blank' && !sourceEl.value);
   };
-  tmplName.addEventListener('input', refreshTmplBtn);
-  tmplSelect.addEventListener('change', refreshTmplBtn);
-  const buildFromTemplate = async () => {
-    const name = (tmplName.value || '').trim();
-    const src  = tmplSelect.value;
-    if (!name || !src) return;
-    if (state.tasks.some(t => t.project === name)) {
-      alert(`A project named "${name}" already exists. Pick a different name.`);
+  seg.querySelectorAll('.cs-seg-btn').forEach(b => b.addEventListener('click', () => {
+    mode = b.dataset.mode;
+    seg.querySelectorAll('.cs-seg-btn').forEach(x => x.classList.toggle('is-active', x === b));
+    fillSource(); refresh();
+  }));
+  nameEl.addEventListener('input', refresh);
+  sourceEl.addEventListener('change', refresh);
+  fillSource(); refresh();
+  setTimeout(() => nameEl.focus(), 0);
+
+  const openCreated = (name) => {
+    if (defaultWs) setProjectWorkspace(name, defaultWs);
+    if (!state.openProjects.includes(name)) state.openProjects.push(name);
+    state.filters.project = name;
+    state.activeWorkspace = projectWorkspace(name);
+    recordRecentProject(name);
+    saveProjectTabs();
+    setView('schedule');
+  };
+  const build = async () => {
+    const name = nameEl.value.trim();
+    if (!name) return;
+    if (uniqueValues('project').includes(name) || state.tasks.some(t => t.project === name)) {
+      hintEl.textContent = `A schedule named "${name}" already exists — pick a different name.`;
       return;
     }
-    pop.remove();
-    await duplicateProject(src, name);  // remapped predecessors + open tab handled there
+    if (mode === 'blank') {
+      close();
+      if (!state.openProjects.includes(name)) state.openProjects.push(name);
+      state.filters.project = name;
+      saveProjectTabs();
+      await ensureAnchorsForProject(name);
+      await loadTasks();
+      openCreated(name);
+      return;
+    }
+    const src = sourceEl.value;
+    if (!src) return;
+    close();
+    await duplicateProject(src, name);   // creates + loads tasks + opens the tab
+    openCreated(name);
   };
-  tmplBtn.addEventListener('click', buildFromTemplate);
-  tmplName.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !tmplBtn.disabled) { e.preventDefault(); buildFromTemplate(); } });
+  buildBtn.addEventListener('click', build);
+  nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !buildBtn.disabled) { e.preventDefault(); build(); } });
 
-  // ---- Smartsheet (Excel) import ----------------------------------------
-  // The user picks an .xlsx (exported from Smartsheet → File → Export → Excel).
-  // We auto-fill the project name from the file's basename, then POST the file
-  // (base64) to /api/import/smartsheet. The server parses it and creates a new
-  // project with all the tasks + auto-adds new team members.
-  const importNameEl = pop.querySelector('.picker-import-name');
-  const importFileEl = pop.querySelector('.picker-import-file');
-  const importBtnEl  = pop.querySelector('.picker-import-btn');
-  const importStatus = pop.querySelector('#picker-import-status');
-  let pickedFiles = []; // array — supports single or bulk import
-  // Project name derived from a filename: strip ".xlsx" extension.
+  // ---- Smartsheet (Excel) import (same flow as before, just relocated) ----
+  const importNameEl = overlay.querySelector('#cs-import-name');
+  const importFileEl = overlay.querySelector('#cs-import-file');
+  const importBtnEl  = overlay.querySelector('#cs-import-btn');
+  const importStatus = overlay.querySelector('#cs-import-status');
+  let pickedFiles = [];
   const nameFromFile = (f) => f.name.replace(/\.xlsx$/i, '');
   importFileEl.addEventListener('change', () => {
     pickedFiles = Array.from(importFileEl.files || []);
     importBtnEl.disabled = pickedFiles.length === 0;
     if (pickedFiles.length === 1) {
-      // Single file — name input is editable, seeded from filename.
       importNameEl.disabled = false;
       if (!importNameEl.value.trim()) importNameEl.value = nameFromFile(pickedFiles[0]);
     } else if (pickedFiles.length > 1) {
-      // Bulk — name input is ignored, each project is named after its file.
       importNameEl.disabled = true;
       importNameEl.value = `(bulk: ${pickedFiles.length} files — names from filenames)`;
     }
@@ -13156,8 +13188,7 @@ function showProjectAddPicker() {
     const buf = await file.arrayBuffer();
     const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
     const r = await fetch('/api/import/smartsheet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ project: projectName, file: b64 }),
     });
     const result = await r.json();
@@ -13166,20 +13197,17 @@ function showProjectAddPicker() {
   const runImport = async () => {
     if (pickedFiles.length === 0) return;
     importBtnEl.disabled = true;
-
-    // Single-file path keeps the existing one-project-name UX.
     if (pickedFiles.length === 1) {
       const projectName = importNameEl.value.trim();
-      if (!projectName) { importStatus.textContent = 'Enter a project name first.'; importBtnEl.disabled = false; return; }
-      importStatus.textContent = 'Reading file…';
+      if (!projectName) { importStatus.textContent = 'Enter a schedule name first.'; importBtnEl.disabled = false; return; }
+      importStatus.textContent = 'Uploading & parsing…';
       try {
-        importStatus.textContent = 'Uploading & parsing…';
         const { ok, result } = await importOne(pickedFiles[0], projectName);
         if (!ok) { importStatus.textContent = `Import failed: ${result.error || 'unknown error'}`; importBtnEl.disabled = false; return; }
         if (!state.openProjects.includes(result.project)) state.openProjects.push(result.project);
         state.filters.project = result.project;
         saveProjectTabs();
-        pop.remove();
+        close();
         await loadTeam();
         await loadTasks();
         const teamMsg = (result.addedMembers || []).length
@@ -13192,30 +13220,17 @@ function showProjectAddPicker() {
       }
       return;
     }
-
-    // Bulk path — sequential so we don't hammer the server and so errors are easy
-    // to attribute to a single file. Each file gets its own project; failures don't
-    // block the rest. Summary alert at the end lists what worked and what didn't.
-    const successes = [];
-    const failures = [];
-    const newMembers = new Set();
+    const successes = [], failures = [], newMembers = new Set();
     for (let i = 0; i < pickedFiles.length; i++) {
       const f = pickedFiles[i];
       const projectName = nameFromFile(f);
       importStatus.textContent = `Importing ${i + 1}/${pickedFiles.length}: ${projectName}…`;
       try {
         const { ok, result } = await importOne(f, projectName);
-        if (ok) {
-          successes.push({ project: result.project, tasks: result.tasksCreated });
-          (result.addedMembers || []).forEach(m => newMembers.add(m.name));
-        } else {
-          failures.push({ project: projectName, error: result.error || 'unknown error' });
-        }
-      } catch (err) {
-        failures.push({ project: projectName, error: err.message || String(err) });
-      }
+        if (ok) { successes.push({ project: result.project, tasks: result.tasksCreated }); (result.addedMembers || []).forEach(m => newMembers.add(m.name)); }
+        else { failures.push({ project: projectName, error: result.error || 'unknown error' }); }
+      } catch (err) { failures.push({ project: projectName, error: err.message || String(err) }); }
     }
-    // Reload everything and open the last successful import so the user sees something.
     await loadTeam();
     await loadTasks();
     if (successes.length) {
@@ -13224,65 +13239,14 @@ function showProjectAddPicker() {
       state.filters.project = lastProject;
       saveProjectTabs();
     }
-    pop.remove();
-    const lines = [];
-    lines.push(`Imported ${successes.length}/${pickedFiles.length} files.`);
+    close();
+    const lines = [`Imported ${successes.length}/${pickedFiles.length} files.`];
     if (successes.length) lines.push('', 'Created:', ...successes.map(s => `  • ${s.project} (${s.tasks} tasks)`));
-    if (failures.length)  lines.push('', 'Failed:',  ...failures .map(f => `  • ${f.project}: ${f.error}`));
+    if (failures.length)  lines.push('', 'Failed:',  ...failures.map(f => `  • ${f.project}: ${f.error}`));
     if (newMembers.size)  lines.push('', `New team members added: ${[...newMembers].join(', ')}`);
     alert(lines.join('\n'));
   };
   importBtnEl.addEventListener('click', runImport);
-
-  // ---- Estimate sheet → new schedule from SDC_Template ---------------------
-  // Two-step flow: (1) user picks an estimate xlsx and clicks Analyze, which
-  // parses the workbook and opens a feasibility modal showing hours per
-  // discipline + recommended headcount; (2) user enters PO date + FAT date in
-  // that modal and clicks Create, which clones SDC_Template into a fresh
-  // project with anchors shifted to the quoted dates.
-  const estFileEl = pop.querySelector('.picker-estimate-file');
-  const estBtnEl  = pop.querySelector('.picker-estimate-btn');
-  let estPickedFile = null;
-  estFileEl.addEventListener('change', () => {
-    estPickedFile = estFileEl.files?.[0] || null;
-    estBtnEl.disabled = !estPickedFile;
-  });
-  estBtnEl.addEventListener('click', async () => {
-    if (!estPickedFile) return;
-    estBtnEl.disabled = true;
-    try {
-      const buf = await estPickedFile.arrayBuffer();
-      const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-      const r = await fetch('/api/estimate/parse', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file: b64 }),
-      });
-      const result = await r.json();
-      if (!r.ok) {
-        await showAlertDialog({ title: "Couldn't parse estimate", message: result.error || 'Unknown error.' });
-        estBtnEl.disabled = false;
-        return;
-      }
-      pop.remove();
-      showEstimateFeasibilityModal(result);
-    } catch (err) {
-      await showAlertDialog({ title: "Couldn't read file", message: err.message || String(err) });
-      estBtnEl.disabled = false;
-    }
-  });
-
-  setTimeout(() => input.focus(), 0);
-
-  setTimeout(() => {
-    const onDoc = (ev) => {
-      if (!pop.contains(ev.target) && ev.target !== btn) {
-        pop.remove();
-        document.removeEventListener('mousedown', onDoc);
-      }
-    };
-    document.addEventListener('mousedown', onDoc);
-  }, 0);
 }
 
 // ---- Estimate-sheet feasibility modal -------------------------------------
@@ -16273,7 +16237,10 @@ function taskHoursBucket(t) {
   if (pg === 'design_build' && sd === 'build')    return 'build';
   if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
   if (pg === 'teardown_install' && d === 'teardown') return 'teardown';
-  if (pg === 'teardown_install' && d === 'install')  return 'install';
+  // Install splits by discipline so its Shop vs Engineering sub-departments pull
+  // the right slice of the section-50 budget (see deriveQuotedBuckets).
+  if (pg === 'teardown_install' && d === 'install' && sd === 'engineering') return 'install_eng';
+  if (pg === 'teardown_install' && d === 'install')  return 'install_shop';
   return null;
 }
 
@@ -16299,18 +16266,38 @@ function deriveQuotedBuckets(quote) {
                  + safe(s40.hmi) + safe(s40.robot) + safe(s40.vision),
     configure:   0,
     shop_debug:  safe(s40.build) + safe(s40.wire_panel) + safe(s40.wire_machine),
-    teardown:    safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine),
-    install:     safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
-                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision)
-                 + safe(s50.mech),
+    teardown:    0,   // section-50 splits computed below
+    install:     0,
   };
   quoted.configure = Math.round(quoted.test_debug * 0.05);
   quoted.test_debug = quoted.test_debug - quoted.configure;
+  // Section 50: the budget lumps "Teardown & Install" as Shop (MB&EB) + Eng
+  // (ME&CE), but the schedule splits into Teardown·shop / Install·shop /
+  // Install·eng. Per Dan: the SHOP budget splits 50/50 between teardown-shop and
+  // install-shop (teardown has no engineering); the ENG budget is all install-
+  // engineering. The INSTALL dept header rolls those two install pieces up.
+  const s50Shop = safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine);
+  const s50Eng  = safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
+                + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision) + safe(s50.mech);
+  quoted.teardown     = Math.round(s50Shop / 2);
+  quoted.install_shop = s50Shop - quoted.teardown;
+  quoted.install_eng  = s50Eng;
+  quoted.install      = quoted.install_shop + quoted.install_eng;
   const overrides = (quote && quote.quoted_overrides) || {};
   for (const k of Object.keys(overrides)) {
     const v = Number(overrides[k]);
     if (Number.isFinite(v) && v >= 0) quoted[k] = Math.round(v);
   }
+  // Combined-bucket aggregates: a department whose tasks use a COMBINED bucket
+  // (e.g. "CE Upgrades" → ce_engineering, "Electrical Build" → elec_build)
+  // still needs a quoted total. taskHoursBucket can return ce_engineering /
+  // gen_engineering / elec_build / wire_other, which the split keys above don't
+  // cover — so roll them up here. Detailed-bucket projects never hit these
+  // keys (their tasks bucket to the split keys), so there's no double-count.
+  quoted.ce_engineering  = (quoted.ce_design || 0) + (quoted.ce_drawings || 0) + (quoted.ce_software || 0);
+  quoted.gen_engineering = (quoted.gen_hmi || 0) + (quoted.gen_robot || 0) + (quoted.gen_vision || 0);
+  quoted.elec_build      = (quoted.wire_panel || 0) + (quoted.wire_machine || 0);
+  quoted.wire_other      = quoted.elec_build;
   return quoted;
 }
 
@@ -16360,6 +16347,705 @@ function positionDeptHours() {
     const vr = tr.querySelector('.dept-hours-var');
     if (vr) vr.style.left = varLeft + 'px';
   });
+}
+
+// ── Project Release (.docx) parsing + panel ────────────────────────────────
+// The SDC "Project Release" Word doc is the single source for: Receipt of PO
+// (Date of Order), Delivery (weeks), Financial milestones, Penalty clause, and
+// the Project Budget (hours + parts cost — embedded as an image, same layout as
+// our grid). A .docx is a ZIP of XML + media; we unzip it CLIENT-SIDE (no server
+// dependency) to read word/document.xml + the budget image, then store the
+// parsed result on the project's quote object so it shows on every open.
+
+// Inflate a raw-DEFLATE byte range using the browser's DecompressionStream.
+async function _inflateRaw(bytes) {
+  const ds = new DecompressionStream('deflate-raw');
+  const ab = await new Response(new Blob([bytes]).stream().pipeThrough(ds)).arrayBuffer();
+  return new Uint8Array(ab);
+}
+
+// Minimal ZIP reader: parse the central directory, return { names, extract(name) }.
+// Handles STORED (0) and DEFLATE (8) entries — all a .docx ever uses.
+async function _zipOpen(arrayBuffer) {
+  const dv = new DataView(arrayBuffer);
+  const u8 = new Uint8Array(arrayBuffer);
+  const td = new TextDecoder();
+  // Find End Of Central Directory (scan back from the end; comment can be up to 64k).
+  let eocd = -1;
+  const minStart = Math.max(0, u8.length - 22 - 65536);
+  for (let i = u8.length - 22; i >= minStart; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Not a valid .docx file.');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dir = {};
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const compSize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const localOff = dv.getUint32(p + 42, true);
+    const name = td.decode(u8.subarray(p + 46, p + 46 + nameLen));
+    dir[name] = { method, compSize, localOff };
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  const extract = async (name) => {
+    const e = dir[name];
+    if (!e) return null;
+    if (dv.getUint32(e.localOff, true) !== 0x04034b50) return null;
+    const nameLen = dv.getUint16(e.localOff + 26, true);
+    const extraLen = dv.getUint16(e.localOff + 28, true);
+    const start = e.localOff + 30 + nameLen + extraLen;
+    const comp = u8.subarray(start, start + e.compSize);
+    if (e.method === 0) return comp.slice();
+    if (e.method === 8) return _inflateRaw(comp);
+    return null;
+  };
+  return { names: Object.keys(dir), extract };
+}
+
+function _bytesToBase64(bytes) {
+  let bin = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  return btoa(bin);
+}
+
+// Turn word/document.xml into readable text: paragraphs → newlines, table cells
+// → " | ", rows → newlines, strip tags, decode the common XML entities.
+function _docxXmlToText(xml) {
+  let t = xml.replace(/<\/w:p>/g, '\n').replace(/<\/w:tc>/g, ' | ').replace(/<\/w:tr>/g, '\n');
+  t = t.replace(/<[^>]+>/g, '');
+  t = t.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#xA;/g, ' ');
+  return t.split('\n').map(s => s.trim()).filter(Boolean).join('\n');
+}
+
+// Date helpers for the release. The doc writes "June 19, 2026"; the schedule
+// stores ISO (YYYY-MM-DD). Convert between them, plus day math for the shift.
+const _REL_MONTHS = { january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11 };
+function _relDateToISO(s) {
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(s).trim())) return String(s).trim(); // already ISO
+  const m = String(s).match(/([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})/);
+  if (!m) return '';
+  const mo = _REL_MONTHS[m[1].toLowerCase()];
+  if (mo == null) return '';
+  return `${m[3]}-${String(mo + 1).padStart(2, '0')}-${String(Number(m[2])).padStart(2, '0')}`;
+}
+function _isoToNice(iso) {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso || '';
+  const d = new Date(iso + 'T00:00:00Z');
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+function _addDaysISO(iso, n) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function _daysBetweenISO(a, b) {
+  return Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
+}
+
+// Parse the release. Returns the structured fields + a budget-image data URL.
+async function parseProjectRelease(arrayBuffer, fileName) {
+  const zip = await _zipOpen(arrayBuffer);
+  const docBytes = await zip.extract('word/document.xml');
+  if (!docBytes) throw new Error("Couldn't read the document — is this a .docx?");
+  const xml = new TextDecoder().decode(docBytes);
+  const text = _docxXmlToText(xml);
+
+  // Receipt of PO — the "Date of Order" cell.
+  let receipt_of_po = null;
+  let m = text.match(/Date of Order:?\s*\|?\s*([A-Za-z]+ \d{1,2},? \d{4})/i);
+  if (m) receipt_of_po = _relDateToISO(m[1]);
+
+  // Delivery — "(30W)" or "in 30 weeks".
+  let delivery_weeks = null, delivery_date = null;
+  m = text.match(/Delivery:?\s*\|?\s*([A-Za-z]+ \d{1,2},? \d{4})\s*\((\d+)\s*W\)/i);
+  if (m) { delivery_date = m[1].replace(',', ''); delivery_weeks = Number(m[2]); }
+  if (delivery_weeks == null) { m = text.match(/in\s+(\d+)\s*weeks/i); if (m) delivery_weeks = Number(m[1]); }
+
+  // Financial milestones — the "% of Payment" table rows ("30 | Down Payment …").
+  const milestones = [];
+  const tableIdx = text.search(/%\s*of\s*Payment/i);
+  if (tableIdx >= 0) {
+    const tail = text.slice(tableIdx);
+    const re = /^\s*(\d{1,3})\s*\|\s*(.+?)\s*$/gm;
+    let r;
+    while ((r = re.exec(tail)) && milestones.length < 8) {
+      const pct = Number(r[1]);
+      const label = r[2].replace(/\s*\|\s*$/, '').trim();
+      if (pct > 0 && pct <= 100 && label) milestones.push({ pct, label });
+    }
+  }
+  // Fallback: inline "30% Down Payment  40% Payment…" on the cover sheet.
+  if (milestones.length === 0) {
+    const re = /(\d{1,3})\s*%\s*([A-Za-z][^\d\n|]{2,60})/g;
+    let r;
+    while ((r = re.exec(text)) && milestones.length < 8) {
+      milestones.push({ pct: Number(r[1]), label: r[2].trim() });
+    }
+  }
+
+  // Penalty clause — present only if the doc actually mentions one.
+  const penalty = /penalt/i.test(text);
+  let penalty_weeks = null;
+  m = text.match(/penalt[^\n]*?(\d+)\s*weeks/i);
+  if (m) penalty_weeks = Number(m[1]);
+
+  // Budget image — first image referenced in document.xml (logo lives in the
+  // header, so the first in-body image is the Project Budget table; render +
+  // schedule follow). Resolve its relationship id to a media file.
+  let budget_image = null;
+  try {
+    const relsBytes = await zip.extract('word/_rels/document.xml.rels');
+    const rels = relsBytes ? new TextDecoder().decode(relsBytes) : '';
+    const ridToTarget = {};
+    for (const rm of rels.matchAll(/<Relationship\b[^>]*>/g)) {
+      const tag = rm[0];
+      const id = (tag.match(/Id="([^"]+)"/) || [])[1];
+      const tgt = (tag.match(/Target="([^"]+)"/) || [])[1];
+      if (id && tgt) ridToTarget[id] = tgt;
+    }
+    const embed = xml.match(/r:embed="(rId\d+)"/);
+    const rid = embed ? embed[1] : null;
+    let target = rid ? ridToTarget[rid] : null;
+    if (target) {
+      const path = ('word/' + target.replace(/^\/?word\//, '').replace(/^\//, '')).replace(/\\/g, '/');
+      const imgBytes = await zip.extract(path);
+      if (imgBytes) {
+        const ext = (path.split('.').pop() || 'png').toLowerCase();
+        const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : (ext === 'png' ? 'image/png' : 'image/' + ext);
+        budget_image = `data:${mime};base64,` + _bytesToBase64(imgBytes);
+      }
+    }
+  } catch (_) { /* budget image is best-effort */ }
+
+  return {
+    name: fileName || 'Project Release.docx',
+    uploaded_at: new Date().toISOString(),
+    receipt_of_po, delivery_weeks, delivery_date,
+    milestones, penalty, penalty_weeks, budget_image,
+  };
+}
+
+// Persist the parsed release onto the project's quote object (arbitrary JSON,
+// no whitelist server-side) so it loads on every open without re-parsing.
+async function saveProjectRelease(project, release) {
+  let quote = {};
+  try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`); if (r.ok) quote = (await r.json()) || {}; } catch (_) {}
+  quote = quote || {};
+  quote.project_release = release;
+  await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(quote),
+  });
+}
+
+// The Project Release panel — replaces the old Quote vs Schedule modal. Simple:
+// upload the release .docx, then show PO date / delivery / milestones / penalty
+// + the budget image. Display-only (no schedule mutation). The live per-dept
+// hours comparison now lives on the grid (Δ view-pill).
+// Map a milestone label to a schedule anchor for date-syncing. "Down" first so
+// "Down Payment to assign SDC engineering" goes to PO, not FAT.
+function _milestoneAnchor(label) {
+  const s = String(label || '').toLowerCase();
+  if (/down|deposit/.test(s)) return 'receipt_of_po';
+  if (/sat|customer/.test(s)) return 'ship_machine';
+  if (/fat|acceptance/.test(s)) return 'fat';
+  return null;
+}
+
+// Accept → apply the (possibly edited) release to the project: replace the
+// financial milestones, set delivery + penalty on the quote, and move the
+// schedule so Receipt of PO lands on the release date (uniform day shift of
+// every task — preserves the schedule's shape; idempotent on re-Accept).
+async function applyProjectRelease(project, rel) {
+  const poISO = _relDateToISO(rel.receipt_of_po);
+  const anchor = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
+  const curPO = anchor && anchor.start_date ? String(anchor.start_date).slice(0, 10) : null;
+  const delta = (poISO && curPO) ? _daysBetweenISO(curPO, poISO) : 0;
+
+  // No confirm — the user already clicked "Accept & apply". Just do it.
+  // 1) Shift the schedule so Receipt of PO matches the release date.
+  if (delta !== 0) {
+    const tasks = state.tasks.filter(t => t.project === project);
+    for (const t of tasks) {
+      const patch = {};
+      if (t.start_date) patch.start_date = _addDaysISO(String(t.start_date).slice(0, 10), delta);
+      if (t.end_date)   patch.end_date   = _addDaysISO(String(t.end_date).slice(0, 10), delta);
+      if (Object.keys(patch).length) { try { await api.update(t.id, patch); } catch (_) {} }
+    }
+  }
+
+  // Financial milestones are edited live in the embedded grid (seeded from the
+  // release the first time), so Accept doesn't touch them here.
+
+  // 2) Sold delivery + penalty onto the quote (keep the stored release too).
+  try {
+    let quote = {};
+    const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+    if (r.ok) quote = (await r.json()) || {};
+    quote = quote || {};
+    if (rel.delivery_weeks != null) quote.sold_delivery_weeks = rel.delivery_weeks;
+    quote.has_penalty_clause = rel.penalty ? 1 : 0;
+    if (rel.penalty_weeks != null) quote.penalty_clause_weeks = rel.penalty_weeks;
+    rel.accepted_at = new Date().toISOString();
+    quote.project_release = rel;
+    await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(quote),
+    });
+  } catch (_) {}
+
+  // Refresh.
+  try { await loadTasks(); } catch (_) {}
+  try { await loadFinancialsForProject(project); } catch (_) {}
+  try { render(); } catch (_) {}
+  return true;
+}
+
+// Render the editable Financial Milestones grid into ANY container (extracted
+// from openFinancialsModal so it can live inline in the Project Release panel).
+// Same columns + live-save behavior: %, Description, Trigger (predecessor),
+// Date, Sent. Right-click a row to add/delete; "+ Add milestone" appends.
+async function mountFinancialsEditor(container, project) {
+  if (!container || !project) return;
+  const renderGrid = async (opts = {}) => {
+    let rows;
+    try { rows = state.financials[project] || await loadFinancialsForProject(project); }
+    catch (e) { rows = []; }
+    if (state._financialsApiBroken) {
+      container.innerHTML = `<div class="financials-error"><p><strong>Financial milestones aren't available yet.</strong></p><p>The server needs to be restarted to add the financial-milestones table + endpoints.</p></div>`;
+      return;
+    }
+    container.innerHTML = `
+      <div class="financials-table-wrap">
+        <table class="financials-table">
+          <colgroup><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /></colgroup>
+          <thead><tr>
+            <th class="num">%</th>
+            <th>Description</th>
+            <th title="Predecessor — task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag ('FAT +1w'). Blank = set the Date manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
+            <th>Date</th>
+            <th class="paid" title="Check when the invoice has been sent.">Sent</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => {
+              const derived = computeFinancialTriggerDate(r.predecessors, project);
+              const dateValue = derived || r.due_date || '';
+              const dateDisabled = !!derived;
+              return `<tr data-id="${r.id}" title="Right-click to add or delete a milestone">
+                <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
+                <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
+                <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
+                <td><input type="date" data-field="due_date" value="${dateValue}" ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} /></td>
+                <td class="paid"><input type="checkbox" data-field="paid" ${r.paid ? 'checked' : ''} /></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <button type="button" class="btn-ghost btn-tight fin-embed-add">+ Add milestone</button>`;
+    bind(opts);
+  };
+  const bind = (opts = {}) => {
+    container.querySelectorAll('tbody tr[data-id]').forEach(tr => {
+      const id = Number(tr.dataset.id);
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showContextMenu(e.clientX, e.clientY, [
+          { label: '+ Add milestone below', onClick: async () => {
+              await api.financials.create({ project, name: '' });
+              await loadFinancialsForProject(project);
+              await renderGrid({ focusLastNameInput: true });
+              if (state.showFinancials) renderGantt();
+          }},
+          { separator: true },
+          { label: 'Delete this milestone…', danger: true, onClick: async () => {
+              const row = (state.financials[project] || []).find(r => r.id === id);
+              const ok = await showConfirmDialog({ title: 'Delete financial milestone?', message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`, okLabel: 'Delete', danger: true });
+              if (!ok) return;
+              await api.financials.remove(id);
+              await loadFinancialsForProject(project);
+              await renderGrid();
+              if (state.showFinancials) renderGantt();
+          }},
+        ]);
+      });
+      tr.querySelectorAll('input[data-field]').forEach(el => {
+        el.addEventListener('change', async () => {
+          const field = el.dataset.field;
+          let value;
+          if (el.type === 'checkbox') value = el.checked ? 1 : 0;
+          else if (el.type === 'number') value = el.value === '' ? null : Number(el.value);
+          else if (field === 'predecessors') value = finPredParse(el.value) || null;
+          else value = el.value || null;
+          try {
+            await api.financials.update(id, { [field]: value });
+            await loadFinancialsForProject(project);
+            if (field === 'predecessors') await renderGrid();
+            if (state.showFinancials) renderGantt();
+          } catch (err) { console.warn('[financial save]', err); }
+        });
+      });
+    });
+    container.querySelector('.fin-embed-add')?.addEventListener('click', async () => {
+      await api.financials.create({ project, name: '' });
+      await loadFinancialsForProject(project);
+      await renderGrid({ focusLastNameInput: true });
+      if (state.showFinancials) renderGantt();
+    });
+    if (opts.focusLastNameInput) {
+      const last = container.querySelector('tbody tr:last-child input[data-field="name"]');
+      if (last) { last.focus(); last.select(); }
+    }
+  };
+  await renderGrid();
+}
+
+// Seed a project's financial milestones FROM the release's parsed milestones —
+// but only when the project has none yet, so we never clobber edits. Lets the
+// release "fill out" the grid the first time.
+async function _seedFinancialsFromRelease(project, rel) {
+  let existing = [];
+  try { existing = state.financials[project] || await loadFinancialsForProject(project); } catch (_) {}
+  if (existing && existing.length) return;
+  if (!rel || !rel.milestones || !rel.milestones.length) return;
+  for (const m of rel.milestones) {
+    try {
+      await api.financials.create({
+        project, name: m.label || '', percent: m.pct, amount: null,
+        due_date: null, paid: 0, predecessors: null, sync_to_anchor: _milestoneAnchor(m.label),
+      });
+    } catch (_) {}
+  }
+  try { await loadFinancialsForProject(project); } catch (_) {}
+}
+
+// The budget grid's flat categories (matching the release's budget table) ↔ the
+// quote.hours_breakdown structure the Δ overlay reads. The Δ shows quoted PER
+// DEPARTMENT, and these map so each department's total comes out right:
+//   ME→s10.mech · CE Design&Drawings→s10.ce_des · CE Software→s10.ce_sw ·
+//   HMI/Robot/Vision(+Database)→s10.hmi/robot/vision · Mech Build→s10.build ·
+//   Elec Build→s10.wire_panel · Testing Eng→s40.mech · Testing Shop→s40.build ·
+//   T&I Eng→s50.mech · T&I Shop→s50.build. Parts cost is stored separately.
+function _budgetToHoursBreakdown(b) {
+  const n = (v) => (v == null || v === '' || isNaN(Number(v))) ? 0 : Number(v);
+  const blank = () => ({ mech: 0, ce_des: 0, ce_drw: 0, ce_sw: 0, hmi: 0, robot: 0, vision: 0, build: 0, wire_panel: 0, wire_machine: 0 });
+  const s10 = blank(), s40 = blank(), s50 = blank();
+  s10.mech = n(b.me); s10.ce_des = n(b.ce_design_drawings); s10.ce_sw = n(b.ce_software);
+  s10.hmi = n(b.hmi) + n(b.database_device); s10.robot = n(b.robot); s10.vision = n(b.vision);
+  s10.build = n(b.mechanical_build); s10.wire_panel = n(b.electrical_build);
+  s40.mech = n(b.testing_eng); s40.build = n(b.testing_shop);
+  s50.mech = n(b.teardown_install_eng); s50.build = n(b.teardown_install_shop);
+  return { section_10: s10, section_40: s40, section_50: s50 };
+}
+function _hoursBreakdownToBudget(hb) {
+  const s10 = hb?.section_10 || {}, s40 = hb?.section_40 || {}, s50 = hb?.section_50 || {};
+  const g = (o, ...keys) => keys.reduce((sum, k) => sum + (Number(o[k]) || 0), 0);
+  return {
+    me: s10.mech, ce_design_drawings: g(s10, 'ce_des', 'ce_drw'), ce_software: s10.ce_sw,
+    hmi: s10.hmi, robot: s10.robot, vision: s10.vision, database_device: null,
+    mechanical_build: s10.build, electrical_build: g(s10, 'wire_panel', 'wire_machine'),
+    testing_eng: g(s40, 'mech', 'ce_des', 'ce_drw', 'ce_sw', 'hmi', 'robot', 'vision'),
+    testing_shop: g(s40, 'build', 'wire_panel', 'wire_machine'),
+    teardown_install_eng: g(s50, 'mech', 'ce_des', 'ce_drw', 'ce_sw', 'hmi', 'robot', 'vision'),
+    teardown_install_shop: g(s50, 'build', 'wire_panel', 'wire_machine'),
+  };
+}
+
+async function openProjectReleaseModal(project) {
+  if (!project) { await showAlertDialog('Pick a project tab first.'); return; }
+  document.getElementById('project-release-modal')?.remove();
+
+  let release = null, quoteObj = {};
+  try {
+    const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+    if (r.ok) { quoteObj = (await r.json()) || {}; release = quoteObj && quoteObj.project_release ? quoteObj.project_release : null; }
+  } catch (_) {}
+  quoteObj = quoteObj || {};
+
+  const overlay = document.createElement('div');
+  overlay.id = 'project-release-modal';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  const close = () => overlay.remove();
+
+  // Budget grid: seed from a saved budget, else derive from existing quoted hours.
+  const seedBudget = (rel) => (rel && rel.budget && Object.keys(rel.budget).length)
+    ? rel.budget
+    : _hoursBreakdownToBudget(quoteObj.hours_breakdown || {});
+  // Accounting format for the Parts Cost: "$182,160.00".
+  const fmtMoney = (v) => (v == null || v === '') ? '' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // Horizontal grid mirroring the release's budget picture: section/sub-section
+  // header rows, then ONE editable row of cells (compact — keeps the panel short).
+  const budgetGridHtml = (b) => {
+    const inp = (k) => `<input type="number" min="0" step="any" class="pr-bg-input" data-bk="${k}" value="${b && b[k] != null ? b[k] : ''}">`;
+    const money = (k) => `<input type="text" inputmode="decimal" class="pr-bg-input pr-bg-money" data-bk="${k}" value="${fmtMoney(b && b[k])}">`;
+    return `<div class="pr-budget-wrap"><table class="pr-budget-grid">
+      <colgroup>
+        <col style="width:62px"><col style="width:66px"><col style="width:62px">
+        <col style="width:44px"><col style="width:50px"><col style="width:54px"><col style="width:72px">
+        <col style="width:78px"><col style="width:74px">
+        <col style="width:54px"><col style="width:54px"><col style="width:54px"><col style="width:54px">
+        <col style="width:104px">
+      </colgroup>
+      <thead>
+        <tr>
+          <th colspan="9" class="pr-bg-grp">Design and Build</th>
+          <th colspan="2" class="pr-bg-grp">Testing</th>
+          <th colspan="2" class="pr-bg-grp">Teardown &amp; Install</th>
+          <th rowspan="3" class="pr-bg-parts-h">Parts Cost</th>
+        </tr>
+        <tr>
+          <th class="pr-bg-c-me">ME</th>
+          <th colspan="2" class="pr-bg-c-ce">CE</th>
+          <th colspan="4" class="pr-bg-c-gen">General Engineering</th>
+          <th colspan="2" class="pr-bg-c-shop">Shop</th>
+          <th class="pr-bg-c-test">Eng</th><th class="pr-bg-c-test">Shop</th>
+          <th class="pr-bg-c-ti">Eng</th><th class="pr-bg-c-ti">Shop</th>
+        </tr>
+        <tr class="pr-bg-leaf">
+          <th class="pr-bg-c-me">ME General</th>
+          <th class="pr-bg-c-ce">Design &amp; Drawings</th><th class="pr-bg-c-ce">Software</th>
+          <th class="pr-bg-c-gen">HMI</th><th class="pr-bg-c-gen">Robot</th><th class="pr-bg-c-gen">Vision</th><th class="pr-bg-c-gen">Database &amp; Device</th>
+          <th class="pr-bg-c-shop">Mechanical Build</th><th class="pr-bg-c-shop">Electrical Build</th>
+          <th class="pr-bg-c-test">ME &amp; CE</th><th class="pr-bg-c-test">MB &amp; EB</th>
+          <th class="pr-bg-c-ti">ME &amp; CE</th><th class="pr-bg-c-ti">MB &amp; EB</th>
+        </tr>
+      </thead>
+      <tbody><tr>
+        <td>${inp('me')}</td><td>${inp('ce_design_drawings')}</td><td>${inp('ce_software')}</td>
+        <td>${inp('hmi')}</td><td>${inp('robot')}</td><td>${inp('vision')}</td><td>${inp('database_device')}</td>
+        <td>${inp('mechanical_build')}</td><td>${inp('electrical_build')}</td>
+        <td>${inp('testing_eng')}</td><td>${inp('testing_shop')}</td>
+        <td>${inp('teardown_install_eng')}</td><td>${inp('teardown_install_shop')}</td>
+        <td>${money('parts_cost')}</td>
+      </tr></tbody>
+    </table></div>`;
+  };
+
+  const bodyHtml = (rel) => {
+    if (!rel) {
+      return `<div class="pr-empty">
+        <p>No Project Release loaded for <strong>${escapeHtml(project)}</strong> yet.</p>
+        <p class="pr-muted">Upload the SDC Project Release (.docx). We'll pull the order date, delivery, financial milestones, penalty clause, and the project budget (hours + parts cost) image.</p>
+        <button type="button" class="btn-primary pr-upload-btn">⬆ Upload Project Release (.docx)</button>
+        <input type="file" accept=".docx" class="pr-file" style="display:none;">
+        <div class="pr-status"></div>
+      </div>`;
+    }
+    const poISO = _relDateToISO(rel.receipt_of_po);
+    return `
+      <p class="pr-muted pr-edithint">Pulled from the release. Fix anything that didn't parse right — the financial milestones below save as you type. <strong>Accept</strong> applies the PO date, delivery, and penalty to the schedule.</p>
+      <div class="pr-grid">
+        <div class="pr-field"><div class="pr-label">Receipt of PO</div>
+          <input type="date" class="pr-po pr-input" value="${poISO}"></div>
+        <div class="pr-field"><div class="pr-label">Delivery (weeks)</div>
+          <input type="number" class="pr-delivery pr-input" min="0" step="any" value="${rel.delivery_weeks != null ? rel.delivery_weeks : ''}"></div>
+        <div class="pr-field"><div class="pr-label">Penalty clause</div>
+          <label class="pr-penalty-wrap"><input type="checkbox" class="pr-penalty" ${rel.penalty ? 'checked' : ''}> after
+          <input type="number" class="pr-penalty-weeks pr-input pr-input-sm" min="0" step="any" value="${rel.penalty_weeks != null ? rel.penalty_weeks : ''}"> wks</label></div>
+      </div>
+      <div class="pr-field"><div class="pr-label">Financial milestones <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— edit right here; saves live</span></div>
+        <div class="pr-financials" id="pr-financials"><div class="pr-muted">Loading…</div></div>
+      </div>
+      <div class="pr-field"><div class="pr-label">Project budget — quoted hours <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— feeds the Δ "quoted" on the grid; edit any cell</span></div>
+        ${budgetGridHtml(seedBudget(rel))}
+        <div class="pr-budget-status"></div>
+      </div>
+      <div class="pr-foot">
+        <span class="pr-muted pr-filename">📎 ${escapeHtml(rel.name || 'Project Release.docx')}${rel.accepted_at ? ' · accepted' : (rel.uploaded_at ? ' · uploaded ' + escapeHtml(new Date(rel.uploaded_at).toLocaleDateString()) : '')}</span>
+        <button type="button" class="btn-ghost pr-view-btn" title="Open the original Word document">📄 View original</button>
+        <button type="button" class="btn-ghost pr-replace-btn">⬆ Replace…</button>
+        <button type="button" class="btn-primary pr-accept-btn">✓ Accept &amp; apply</button>
+        <input type="file" accept=".docx" class="pr-file" style="display:none;">
+      </div>
+      <div class="pr-status"></div>`;
+  };
+
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width: 940px;">
+      <div class="modal-head">
+        <h2 style="margin:0;">Project Release — ${escapeHtml(project)}</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body" id="pr-body">${bodyHtml(release)}</div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('.modal-close').addEventListener('click', close);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+  // Read the editable fields back into the release object.
+  const readEdits = () => {
+    if (!release) return;
+    const po = overlay.querySelector('.pr-po');
+    const del = overlay.querySelector('.pr-delivery');
+    const pen = overlay.querySelector('.pr-penalty');
+    const penW = overlay.querySelector('.pr-penalty-weeks');
+    if (po) release.receipt_of_po = po.value || null;
+    if (del) release.delivery_weeks = del.value === '' ? null : Number(del.value);
+    if (pen) release.penalty = !!pen.checked;
+    if (penW) release.penalty_weeks = penW.value === '' ? null : Number(penW.value);
+  };
+  const persistEdits = async () => { readEdits(); if (release) { try { await saveProjectRelease(project, release); } catch (_) {} } };
+  // Seed (first time only) + render the live Financial Milestones grid inline.
+  const mountFin = async () => {
+    const c = overlay.querySelector('#pr-financials');
+    if (!c || !release) return;
+    try { await _seedFinancialsFromRelease(project, release); } catch (_) {}
+    try { await mountFinancialsEditor(c, project); } catch (_) {}
+  };
+
+  // Budget grid → quote.hours_breakdown (the Δ "quoted" source). Saving also
+  // invalidates the grid's quote cache so the Δ overlay re-reads immediately.
+  const readBudget = () => {
+    const b = {};
+    overlay.querySelectorAll('.pr-bg-input').forEach(el => {
+      let raw = el.value;
+      if (el.classList.contains('pr-bg-money')) raw = raw.replace(/[$,\s]/g, '');  // strip $ , and spaces
+      b[el.dataset.bk] = raw === '' ? null : Number(raw);
+    });
+    return b;
+  };
+  const saveBudget = async () => {
+    if (!release) return;
+    const budget = readBudget();
+    release.budget = budget;
+    try {
+      let q = {};
+      const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+      if (r.ok) q = (await r.json()) || {};
+      q = q || {};
+      q.hours_breakdown = _budgetToHoursBreakdown(budget);
+      if (budget.parts_cost != null) q.parts_cost = budget.parts_cost;
+      q.project_release = release;
+      quoteObj = q;
+      await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q),
+      });
+      if (state.quoteCache) delete state.quoteCache[project];   // force Δ overlay to re-read
+      try { renderTable(); } catch (_) {}
+    } catch (_) {}
+  };
+  // Best-effort: read the budget numbers off the picture via the Claude-vision
+  // endpoint and fill the grid (blanks stay blank for the user to complete).
+  // Degrades gracefully if the endpoint isn't available (server not restarted /
+  // no API key) — the grid still works manually.
+  const autoFillBudget = async (rel) => {
+    const statusEl = overlay.querySelector('.pr-budget-status');
+    if (!rel || !rel.budget_image) return;
+    const m = String(rel.budget_image).match(/^data:([^;]+);base64,(.*)$/);
+    if (!m) return;
+    if (statusEl) statusEl.textContent = 'Reading the budget from the picture…';
+    try {
+      const r = await fetch('/api/agent/extract-budget', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: m[2], mediaType: m[1] }),
+      });
+      if (!r.ok) {
+        let why = '';
+        try { const e = await r.json(); why = (e && e.error) ? e.error : ''; } catch (_) {}
+        if (statusEl) statusEl.textContent = why ? ('Auto-read unavailable: ' + why + ' — or just type the budget from the picture above.') : 'Auto-read unavailable — type the budget from the picture above.';
+        return;
+      }
+      const data = await r.json();
+      const budget = (data && data.budget && typeof data.budget === 'object') ? data.budget : data;
+      if (!budget || typeof budget !== 'object') { if (statusEl) statusEl.textContent = ''; return; }
+      let filled = 0;
+      overlay.querySelectorAll('.pr-bg-input').forEach(el => {
+        const v = budget[el.dataset.bk];
+        if (v != null && v !== '' && !isNaN(Number(v))) {
+          el.value = el.classList.contains('pr-bg-money') ? fmtMoney(v) : Number(v);
+          filled++;
+        }
+      });
+      if (filled) { await saveBudget(); if (statusEl) statusEl.textContent = 'Filled from the picture — check the numbers and complete any blanks.'; }
+      else if (statusEl) statusEl.textContent = '';
+    } catch (e) {
+      if (statusEl) statusEl.textContent = 'Auto-read unavailable — type the budget from the picture above.';
+    }
+  };
+
+  const wire = () => {
+    const fileEl = overlay.querySelector('.pr-file');
+    const statusEl = overlay.querySelector('.pr-status');
+    overlay.querySelector('.pr-upload-btn')?.addEventListener('click', () => fileEl?.click());
+    overlay.querySelector('.pr-replace-btn')?.addEventListener('click', () => fileEl?.click());
+
+    // Edits (PO date / delivery / penalty): save on change. The financial
+    // milestones grid below saves itself live (see mountFinancialsEditor).
+    overlay.querySelectorAll('.pr-input, .pr-penalty').forEach(el => {
+      el.addEventListener('change', persistEdits);
+    });
+    // Budget grid cells → save to quote.hours_breakdown (feeds the Δ quoted).
+    overlay.querySelectorAll('.pr-bg-input').forEach(el => {
+      el.addEventListener('change', saveBudget);
+    });
+    // Parts Cost: edit as a plain number, display as accounting currency.
+    overlay.querySelectorAll('.pr-bg-money').forEach(el => {
+      el.addEventListener('focus', () => { el.value = el.value.replace(/[^0-9.]/g, ''); el.select(); });
+      el.addEventListener('blur',  () => { el.value = fmtMoney(el.value.replace(/[^0-9.]/g, '') || ''); });
+    });
+
+    // View the original Word doc (stored alongside the release).
+    overlay.querySelector('.pr-view-btn')?.addEventListener('click', async () => {
+      try {
+        const r = await fetch(`/api/project/${encodeURIComponent(project)}/estimate-file`);
+        const est = r.ok ? await r.json() : null;
+        if (!est || !est.data) { if (statusEl) statusEl.textContent = 'No original document is stored — re-upload to attach it.'; return; }
+        const bytes = Uint8Array.from(atob(est.data), c => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a'); a.href = url; a.download = est.name || 'Project Release.docx'; a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      } catch (e) { if (statusEl) statusEl.textContent = 'Could not open the document: ' + (e.message || e); }
+    });
+
+    // Accept & apply.
+    overlay.querySelector('.pr-accept-btn')?.addEventListener('click', async () => {
+      readEdits();
+      await persistEdits();
+      const applied = await applyProjectRelease(project, release);
+      if (applied) { close(); try { if (typeof showToast === 'function') showToast('Project Release applied.'); } catch (_) {} }
+    });
+
+    // Upload / replace.
+    if (fileEl) {
+      fileEl.addEventListener('change', async () => {
+        const file = fileEl.files && fileEl.files[0];
+        if (!file) return;
+        if (statusEl) statusEl.textContent = 'Reading release…';
+        try {
+          const buf = await file.arrayBuffer();
+          const parsed = await parseProjectRelease(buf, file.name);
+          await saveProjectRelease(project, parsed);
+          // Stash the raw .docx so "View original" can open it later.
+          try {
+            const b64 = _bytesToBase64(new Uint8Array(buf));
+            await fetch(`/api/project/${encodeURIComponent(project)}/estimate-file`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, data: b64 }),
+            });
+          } catch (_) {}
+          release = parsed;
+          overlay.querySelector('#pr-body').innerHTML = bodyHtml(release);
+          wire();
+          mountFin();
+          autoFillBudget(release);   // best-effort OCR of the budget picture
+        } catch (err) {
+          if (statusEl) statusEl.textContent = 'Could not read that file: ' + (err.message || err);
+        }
+      });
+    }
+  };
+  wire();
+  mountFin();
+  // Auto-read the budget picture on OPEN too (not just on upload) — but only
+  // when the grid is still empty, so we never clobber numbers already entered.
+  const _seeded = release ? seedBudget(release) : null;
+  const _hasNums = _seeded && Object.keys(_seeded).some(k => k !== 'database_device' && Number(_seeded[k]) > 0);
+  if (release && release.budget_image && !_hasNums) autoFillBudget(release);
 }
 
 // Centered modal popup for the per-project Financial Milestones editor. Same
@@ -16447,6 +17133,13 @@ async function openQuoteCompareModal(project, providedQuote) {
   // teardown, install) including any user Quoted-cell overrides. Derivation
   // lives at module scope (deriveQuotedBuckets) so the grid overlay matches.
   const quoted = deriveQuotedBuckets(quote);
+  // Raw per-bucket / per-task Quoted overrides map. deriveQuotedBuckets already
+  // folds these into the bucket totals, but quotedForTaskRow() also reads the
+  // RAW map directly for per-task ("task_<id>") override lookups — so keep it
+  // in scope here. (Was removed when the quoted derivation moved to module
+  // scope; its absence threw "overrides is not defined" and the modal never
+  // opened.)
+  const overrides = (quote && quote.quoted_overrides) || {};
 
   const isSales = projectWorkspace(project) === 'Sales';
   // SECTIONS define the row breakdown shown in the modal. Each row carries
@@ -16950,18 +17643,14 @@ async function openQuoteCompareModal(project, providedQuote) {
               <button type="button" class="quote-action-btn" data-action="view-estimate" title="Download the estimate file attached to this project so you can verify it." style="display:none;">⬇ View estimate</button>
               <button type="button" class="quote-action-btn" data-action="update-estimate" title="Re-read the attached estimate file and refresh the Quoted hours from it. Use this after you change the estimate." style="display:none;">↻ Update numbers from estimate</button>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor (billing events tied to anchors, e.g. 30% at PO / 60% at FAT / 10% at Ship). Stays open on top so you can confirm billing while the comparison is still in view.">$ Financial Milestones</button>
-              <label class="btn-ghost" style="cursor:pointer;border:1px solid #cbd5e1;color:#334155;padding:4px 10px;font-size:var(--fs-md);font-weight:var(--fw-semibold);border-radius:4px;background:white;">
-                Replace estimate…
-                <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
-              </label>
+              <button type="button" class="quote-action-btn" data-action="pick-estimate" title="Pick a new estimate xlsx to replace the attached one and refresh the Quoted hours.">⬆ Replace estimate…</button>
+              <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
             </div>`
           : `<div style="margin:0 0 12px;font-size:var(--fs-md);color:#b45309;background:#fef3c7;padding:10px 12px;border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="flex:1 1 auto;min-width:240px;">No estimate attached to this project. Load the estimate xlsx — it'll be saved on the project so future opens of this modal load it automatically.</span>
               <button type="button" class="quote-action-btn" data-action="financials" title="Open the per-project Financial Milestones editor. You can still edit billing milestones even without an estimate attached.">$ Financial Milestones</button>
-              <label class="btn-ghost" style="cursor:pointer;border:1px solid #d97706;color:#b45309;padding:4px 10px;font-size:var(--fs-md);font-weight:var(--fw-semibold);border-radius:4px;background:white;">
-                Attach estimate…
-                <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
-              </label>
+              <button type="button" class="quote-action-btn" data-action="pick-estimate" style="border-color:#d97706;color:#b45309;" title="Pick the estimate xlsx to attach to this project.">⬆ Attach estimate…</button>
+              <input type="file" accept=".xlsx" id="quote-compare-file" style="display:none;">
             </div>`}
         <table class="quote-compare-table">
           <!-- Column widths sized so every header fits without truncation,
@@ -17500,6 +18189,12 @@ async function openQuoteCompareModal(project, providedQuote) {
   // Upload / replace: store the raw file on the project (so it STAYS and can be
   // viewed) AND refresh the Quoted numbers from it.
   const fileEl = overlay.querySelector('#quote-compare-file');
+  // Explicit button → input.click() instead of a <label>-wrapped hidden input
+  // (the label approach was opening nothing for some users). A programmatic
+  // click from this handler reliably opens the OS file dialog.
+  overlay.querySelector('[data-action="pick-estimate"]')?.addEventListener('click', () => {
+    fileEl?.click();
+  });
   if (fileEl) {
     fileEl.addEventListener('change', async () => {
       const file = fileEl.files?.[0];
@@ -24201,7 +24896,7 @@ async function init() {
     quoteToolbarBtn.addEventListener('click', () => {
       const p = state.filters.project;
       if (!p) return;
-      openQuoteCompareModal(p);
+      openProjectReleaseModal(p);
     });
   }
   // 💲 Financial Milestones — opens the same per-project editor that the
