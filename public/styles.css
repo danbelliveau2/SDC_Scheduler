@@ -19,8 +19,10 @@
   --fs-3xl:  24px;  /* 3xl: page titles */
   --fs-display: 36px; /* display: large stat numbers */
 
-  /* Weight scale */
-  --fw-normal:    400;
+  /* Weight scale. Base "normal/regular" bumped 400 → 500 so general text reads
+     a touch bolder (less wimpy) while semibold/bold stay where they are. */
+  --fw-normal:    500;
+  --fw-regular:   500;   /* code also references var(--fw-regular, 400) */
   --fw-medium:    500;
   --fw-semibold:  600;
   --fw-bold:      700;
@@ -98,6 +100,7 @@ body {
   display: flex;
   flex-direction: column;
   margin-left: 90px;       /* matches .app-sidebar width */
+  font-weight: var(--fw-normal, 500);   /* base weight — a notch bolder than browser-default 400 */
 }
 
 /* ==========================================================================
@@ -4033,11 +4036,10 @@ tbody tr:hover { background: var(--row-hover); }
 .col-progress { width: 110px; }
 .col-date { font-variant-numeric: tabular-nums; width: 60px; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
 .col-pred { width: 76px; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
-/* Data-column font size — everything EXCEPT Task (col-name) and Assigned To
-   (col-assignee). Driven by the Setup → "Grid date / data font size" option
-   via the --grid-data-fs CSS variable (default 11px). */
-.col-line, .col-date, .col-duration, .col-pred, .col-progress,
-.col-allocation, .col-priority, .col-notes { font-size: var(--grid-data-fs, 11px); }
+/* Per-column font size — set by right-clicking a column header (see
+   applyColFonts / setupColumnFontMenu in app.js). Each column is independent;
+   the override is injected as a <style id="col-font-overrides"> at runtime, so
+   there's no global font rule here. Columns with no override use the defaults. */
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
 /* Comments column — free-text. Truncate with ellipsis so a long note doesn't
    blow the row height; the full content stays accessible via the title tooltip

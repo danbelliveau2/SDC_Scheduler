@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '10.5',
+    date: '2026-06-26',
+    notes: [
+      'Per-column font sizes, Project Release polish, and a cleaner toolbar.',
+      '',
+      'PER-COLUMN FONT SIZE:',
+      '   ▸ Right-click any column header to set that column\'s font size (8–16px) or reset it. Every column is independent — make Start/Finish/Predecessors small and leave Task bigger, however you like. It sticks per browser.',
+      '   ▸ Removed the old app-wide font box from the top bar (it didn\'t touch the grid cells anyway).',
+      '   ▸ General text is a touch bolder (less wimpy); headers stay as bold as before.',
+      '',
+      'PROJECT RELEASE:',
+      '   ▸ Budget shows as an editable grid laid out like the release doc (no words cut off); Parts Cost reads as accounting currency ($182,160.00).',
+      '   ▸ "Accept & apply" just applies it — no extra confirm popup. Dropped the redundant budget picture (use "View original" for the doc).',
+      '   ▸ The Δ "quoted" overlay now fills in for every department, and Teardown/Install hours split correctly (shop 50/50 across teardown + install, engineering all to install).',
+      '',
+      'TOOLBAR:',
+      '   ▸ One hard-refresh ⟳ (in the tab bar) instead of three scattered refresh buttons.',
+    ],
+  },
+  {
     version: '10.0',
     date: '2026-06-26',
     notes: [

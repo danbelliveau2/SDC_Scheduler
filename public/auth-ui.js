@@ -196,13 +196,6 @@ function _renderUserPill() {
   pill.id = 'sdc-auth-pill';
   pill.className = 'sdc-auth-pill';
   pill.innerHTML = `
-    <button type="button" class="sdc-auth-refresh" id="btn-sidebar-hard-refresh" title="Hard refresh — clears cache and fully reloads the page (Ctrl+Shift+R).">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <polyline points="23 4 23 10 17 10"></polyline>
-        <polyline points="1 20 1 14 7 14"></polyline>
-        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-      </svg>
-    </button>
     <button type="button" class="sdc-auth-avatar" style="background:${u.avatar_color || '#1574c4'};" title="${u.name} · ${u.role}">${initials}</button>
     <div class="sdc-auth-menu" hidden>
       <div class="sdc-auth-menu-name">${u.name}</div>
@@ -213,7 +206,6 @@ function _renderUserPill() {
   `;
   const menu = pill.querySelector('.sdc-auth-menu');
   const closeMenu = () => { menu.hidden = true; };
-  pill.querySelector('.sdc-auth-refresh').addEventListener('click', () => window.location.reload(true));
   pill.querySelector('.sdc-auth-avatar').addEventListener('click', (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; });
   pill.querySelector('.sdc-auth-signout').addEventListener('click', () => window.sdcAuth.signOut());
   pill.querySelector('.sdc-auth-changepw').addEventListener('click', () => { closeMenu(); _showChangePasswordModal(); });

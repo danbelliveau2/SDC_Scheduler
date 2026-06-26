@@ -23334,6 +23334,7 @@ function loadLayout() {
     gridWidth,
     showGantt: saved.showGantt !== false,
     colWidths: { ...DEFAULT_COL_WIDTHS, ...(saved.colWidths || {}) },
+    colFonts: { ...(saved.colFonts || {}) },   // per-column font size in px (right-click a header)
     visibleCols: saved.visibleCols || defaultVisible,
     columnOrder: saved.columnOrder || COLUMN_DEFS.map(c => c.key),
     rowHeight: Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, rh)),
@@ -23399,6 +23400,8 @@ function renderHeaders() {
   applyColumnVisibility();
   setupColumnResize();
   setupColumnReorder();
+  setupColumnFontMenu();   // right-click a header → set that column's font size
+  applyColFonts();         // re-assert per-column font overrides
 }
 
 function saveLayout() {
@@ -23554,6 +23557,58 @@ function applyColWidths() {
   // Set total table width = sum of visible col widths so widths render exactly as configured.
   const table = document.getElementById('tasks-table');
   if (table) table.style.width = sum + 'px';
+}
+
+// Per-column font size — each column independent, set by right-clicking its
+// header. Injected as one <style> block so it beats the row-height clamps on
+// cell text. Columns with no override fall back to the app defaults.
+function applyColFonts() {
+  let style = document.getElementById('col-font-overrides');
+  if (!style) { style = document.createElement('style'); style.id = 'col-font-overrides'; document.head.appendChild(style); }
+  const cf = (state.layout && state.layout.colFonts) || {};
+  const rules = Object.entries(cf)
+    .filter(([, px]) => px && Number(px) > 0)
+    .map(([k, px]) => {
+      const n = Math.max(6, Math.min(28, Math.round(Number(px))));
+      // Header + cell + every element inside the cell (covers the Task column's
+      // name / allocation / duration spans), so the whole column changes.
+      return `#tasks-table thead th[data-col="${k}"],\n`
+        + `#tasks-table tbody td[data-col="${k}"],\n`
+        + `#tasks-table tbody td[data-col="${k}"] * { font-size: ${n}px !important; }`;
+    });
+  style.textContent = rules.join('\n');
+}
+
+// Set (or clear, when px is null) one column's font size, persist, re-apply.
+function setColumnFont(colKey, px) {
+  if (!state.layout) return;
+  state.layout.colFonts = state.layout.colFonts || {};
+  if (px == null) delete state.layout.colFonts[colKey];
+  else state.layout.colFonts[colKey] = Math.max(6, Math.min(28, Math.round(Number(px))));
+  saveLayout();
+  applyColFonts();
+}
+
+// Right-click a column header → pick that column's font size (independent of
+// every other column). Bound fresh each time the header row is rendered.
+function setupColumnFontMenu() {
+  document.querySelectorAll('#tasks-table thead th[data-col]').forEach(th => {
+    th.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const k = th.dataset.col;
+      const def = COLUMN_DEFS.find(d => d.key === k);
+      const label = def ? def.label : k;
+      const cur = (state.layout.colFonts || {})[k] || null;
+      const items = [8, 9, 10, 11, 12, 13, 14, 15, 16].map(s => ({
+        label: `${s}px${cur === s ? '   ✓' : ''}`,
+        onClick: () => setColumnFont(k, s),
+      }));
+      items.push({ separator: true });
+      items.push({ label: `Reset “${label}” to default${cur == null ? '   ✓' : ''}`, onClick: () => setColumnFont(k, null) });
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
 }
 
 function applyGridWidth() {
@@ -24934,22 +24989,8 @@ async function init() {
   // filters all live in-memory (not in localStorage that gets re-read on
   // boot). Use this when someone adds an action from elsewhere and you
   // want it to appear on your schedule, without losing your view.
-  const refreshBtn = document.getElementById('btn-refresh');
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', async () => {
-      refreshBtn.disabled = true;
-      const orig = refreshBtn.textContent;
-      refreshBtn.textContent = '…';
-      try {
-        await loadTasks();
-      } finally {
-        refreshBtn.disabled = false;
-        refreshBtn.textContent = orig;
-      }
-    });
-  }
-  // Hard refresh now lives in the sidebar above the user avatar (see
-  // _renderUserPill in auth-ui.js) — global across all views, one button.
+  // Hard refresh — clears cache and fully reloads. Lives in the tab bar (⟳).
+  document.getElementById('btn-global-hard-refresh')?.addEventListener('click', () => window.location.reload(true));
 
   // Font size control — scales all --fs-* CSS variables proportionally from base 13px
   const _fontInput = document.getElementById('input-font-size');
