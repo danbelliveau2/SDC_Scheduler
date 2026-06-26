@@ -4,6 +4,42 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.92',
+    date: '2026-06-26',
+    notes: [
+      'See quoted vs scheduled hours per department, right on the grid.',
+      '',
+      'QUOTED vs SCHEDULED (new Δ button in the view bar):',
+      '   ▸ Turn on Δ and every department / sub-section header shows its hours: SCHEDULED (from the task durations) under the DUR column, QUOTED (from the estimate) under %COM.',
+      '   ▸ To the right (in the Assigned To area) a chip reads "Over scheduled" (red) or "Under scheduled" (green) with the amount — so you can sanity-check staffing without opening Quote vs Schedule. Shows "On quote" when they match.',
+      '   ▸ Hours round to the nearest 5. Quoted shows "—" when a project has no saved estimate. Turn Δ off and it all disappears.',
+      '',
+      'HARD REFRESH MOVED:',
+      '   ▸ The hard-refresh (clear cache + full reload) now lives in the bottom-left, just above your initials — one button, on every page. Removed from the top toolbar / tab bar.',
+    ],
+  },
+  {
+    version: '9.91',
+    date: '2026-06-25',
+    notes: [
+      'Gantt bar labels are placed correctly again.',
+      '',
+      '   ▸ The allocation·duration pill always leaves the bar before the task name does — you\'ll never see the alloc outside while the name is still inside.',
+      '   ▸ A task name is either fully inside its bar or fully outside it — never half-in / half-out straddling the bar edge.',
+    ],
+  },
+  {
+    version: '9.9',
+    date: '2026-06-16',
+    notes: [
+      'Tighter, more readable schedule grid.',
+      '',
+      '   ▸ Department / sub-section headers (Mechanical Engineering, Controls, Build, Wire, Shop, Teardown, …) are now bold + dark navy so they stand out as dividers; task names are normal weight so the headers read first.',
+      '   ▸ Start / Finish / Completed date columns are smaller and narrower by default, so they take less width.',
+      '   ▸ New Setup → "Grid Data Font Size" option sets the font size for every column EXCEPT Task and Assigned To (dates, predecessors, duration, %, alloc) — live-previews as you change it.',
+    ],
+  },
+  {
     version: '9.8',
     date: '2026-06-14',
     notes: [

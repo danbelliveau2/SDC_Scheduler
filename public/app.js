@@ -215,7 +215,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -1622,11 +1622,39 @@ function rowHtml(t, depth = 0) {
   return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
-function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
+function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = null) {
   const cols = state.layout.columnOrder.length;
   const caret = collapsed ? '▸' : '▾';
   const attrs = Object.entries(dataAttrs)
     .map(([k, v]) => ` data-${k}="${escapeHtml(String(v))}"`).join('');
+  // Quoted-vs-scheduled hours overlay (H view-pill). The overlay is positioned
+  // over the Task column by positionDeptHours() so SCHED lands under DUR and
+  // QUOTED under %COM — matching the header sub-labels. Quoted shows "—" when
+  // the project has no saved estimate.
+  let hoursHtml = '';
+  if (hours) {
+    const q = hours.quoted == null ? '—' : `${hours.quoted}h`;
+    // Variance vs the quote (only when there's a quoted figure to compare to).
+    // Over scheduled = scheduled hours exceed quoted (you've planned more labor
+    // than was sold); under = scheduled is below quoted. Sits over the
+    // Assigned To column, positioned by positionDeptHours().
+    let varHtml = '';
+    if (hours.quoted != null) {
+      const diff = hours.sched - hours.quoted;
+      if (diff === 0) {
+        varHtml = `<span class="dept-hours-var is-on">On quote</span>`;
+      } else {
+        const over = diff > 0;
+        varHtml = `<span class="dept-hours-var ${over ? 'is-over' : 'is-under'}">`
+          + `${over ? 'Over scheduled' : 'Under scheduled'} ${Math.abs(diff)}h</span>`;
+      }
+    }
+    hoursHtml =
+      `<span class="dept-hours" aria-hidden="true">` +
+        `<span class="dept-hours-sched" title="Scheduled hours (durations × allocation)">${hours.sched}h</span>` +
+        `<span class="dept-hours-quoted" title="Quoted hours (from the estimate)">${q}</span>` +
+      `</span>` + varHtml;
+  }
   // v4.29: wrap the leading "NN " section number (e.g. "10 DESIGN & BUILD")
   // in its own <span> so customer-view CSS can hide just the number portion.
   // SDC team uses the section numbers internally; customers don't care about
@@ -1637,10 +1665,11 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}) {
     ? `<span class="group-label-num">${escapeHtml(m[1])}</span>${escapeHtml(m[2])}`
     : escapeHtml(labelStr);
   return `
-    <tr class="group-header level-${level} ${collapsed ? 'collapsed' : ''}" data-path="${escapeHtml(path)}"${attrs}>
+    <tr class="group-header level-${level} ${collapsed ? 'collapsed' : ''}${hours ? ' has-dept-hours' : ''}" data-path="${escapeHtml(path)}"${attrs}>
       <td colspan="${cols}">
         <span class="group-caret">${caret}</span>
         <span class="group-label">${labelHtml}</span>
+        ${hoursHtml}
       </td>
     </tr>`;
 }
@@ -1734,6 +1763,39 @@ function renderTable() {
     }
     for (const k in flatBySection) sortBucket(flatBySection[k]);
   }
+
+  // Per-department QUOTED vs SCHEDULED hours overlay (H view-pill). Shows on
+  // each dept / sub-dept subheader so you can sanity-check "do I have the right
+  // amount of work scheduled vs what we quoted" without opening Quote vs
+  // Schedule. Only meaningful for a single active project whose estimate is
+  // loaded — skipped on the All-projects tab. Scheduled = Σ duration×8×alloc
+  // over the dept's tasks (matches the durations shown in the rows — NO people
+  // multiplier); quoted = Σ of the dept's quote buckets.
+  const _svHours = state.scheduleView || {};
+  const hoursProject = _svHours.showDeptHours ? (state.filters.project || '') : '';
+  let quotedMap = null;
+  if (hoursProject) {
+    const q = state.quoteCache ? state.quoteCache[hoursProject] : undefined;
+    if (q === undefined) ensureProjectQuote(hoursProject);   // async — re-renders when it lands
+    else if (q && q.hours_breakdown) quotedMap = deriveQuotedBuckets(q);
+  }
+  const deptHoursFor = (taskList) => {
+    if (!hoursProject || !taskList || !taskList.length) return null;
+    let sched = 0; const bset = new Set();
+    for (const t of taskList) {
+      if (t.is_milestone || t.anchor_key || isBacklogTask(t)) continue;
+      sched += (Number(t.duration_days) || 0) * 8 * ((Number(t.allocation) || 90) / 100);
+      const k = taskHoursBucket(t); if (k) bset.add(k);
+    }
+    let quoted = null;
+    if (quotedMap) { quoted = 0; for (const k of bset) quoted += quotedMap[k] || 0; }
+    if (sched <= 0 && !(quoted > 0)) return null;
+    // Round to the nearest 5 — this is a sanity-check readout, not an invoice;
+    // 259 → 260, 401 → 400. (Variance is then derived from these rounded
+    // values so "Over/Under scheduled" also lands on a multiple of 5.)
+    const r5 = (n) => Math.round(n / 5) * 5;
+    return { sched: r5(sched), quoted: quoted == null ? null : r5(quoted) };
+  };
 
   let html = '';
   // Anchor milestones (Receipt of PO, FAT, Ship Machine) live OUTSIDE the regular
@@ -1904,9 +1966,13 @@ function renderTable() {
       // section. Procurement (no subs) and the section 40/50 dept-only groups still
       // get headers — those rows hold tasks themselves.
       const skipDeptHeader = group.key === 'design_build' && dept.subs.length > 0;
+      // Dept-level hours roll up the dept's own tasks plus every sub-dept under it.
+      const deptDesc = dept.subs.length > 0
+        ? [...(buckets[dPath] || []), ...dept.subs.flatMap(s => buckets[groupPath(group.key, dept.key, s.key)] || [])]
+        : (buckets[dPath] || []);
       if (!skipDeptHeader) {
         html += headerRowHtml(2, dept.label, dPath, dCollapsed,
-          { 'section-key': group.key, 'dept-key': dept.key });
+          { 'section-key': group.key, 'dept-key': dept.key }, deptHoursFor(deptDesc));
         if (dCollapsed) continue;
       }
       if (dept.subs.length > 0) {
@@ -1921,7 +1987,7 @@ function renderTable() {
           if (tasks.length === 0) continue;
           const sCollapsed = collapsedGroups.has(sPath);
           html += headerRowHtml(3, sub.label, sPath, sCollapsed,
-            { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key });
+            { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key }, deptHoursFor(tasks));
           if (sCollapsed) continue;
           for (const t of tasks) html += renderTaskRow(t, 4);
         }
@@ -1963,6 +2029,8 @@ function renderTable() {
   // it via the standard "duration" column flow.
 
   attachRowDragHandlers(tbody);
+  // Align the dept hours overlay (if any) over the Task column.
+  positionDeptHours();
 }
 
 // Drag a task row onto a section header / another task to move it into that section.
@@ -3388,31 +3456,41 @@ function renderGantt() {
   // skip alignment and let frappe-gantt's natural layout drive bar positions.
   if (!state.scheduleView?.ganttOnly) alignGanttToGrid();
 
-  // Defer decorations one frame so the base chart is visible immediately.
-  // All drawers are wrapped in try/catch per CLAUDE.md — the defer means a
-  // late throw won't block the base render but still won't surface to the user.
-  requestAnimationFrame(() => {
-    // Arrows render FIRST (behind everything) — bars and labels cover them visually.
-    try { drawCustomArrows(); } catch (_) {}
-    try { drawBaselineGhosts(); } catch (_) {}
-    try { drawTodayLine(); } catch (_) {}
-    try { drawMilestoneDiamonds(); } catch (_) {}
-    try { drawMilestoneLabels(); } catch (_) {}
-    try { clipBarLabels(); } catch (_) {}
-    try { drawScheduleStatus(); } catch (_) {}
-    try { drawDoneHashOverlay(); } catch (_) {}
-    try { drawWeekdayLetters(); } catch (_) {}
-    try { drawFinancialOverlay(); } catch (_) {}
-    try { drawPenaltyClauseLine(); } catch (_) {}
-    try { drawBarMeta(); } catch (_) {}
-    try { drawMachineBorders(); } catch (_) {}
-    try { renderProjectStatsPopup(); } catch (_) {}
-    // Re-run label placement LAST, after every drawer has settled the bar
-    // geometry/styles. clipBarLabels is idempotent, and this guarantees a
-    // label is either fully inside the bar or fully outside it — never
-    // straddling the right edge (which an earlier drawer's nudge could cause).
-    try { clipBarLabels(); } catch (_) {}
-  });
+  // Decorations run SYNCHRONOUSLY (this is what worked in 8e7432d before the
+  // Abhi merge). Deferring them a frame made clipBarLabels/drawBarMeta measure
+  // bar geometry one frame late, which broke the meta cascade — meta ended up
+  // inside the bar while the name was pushed outside, and names straddled the
+  // bar edge. The cascade requires clipBarLabels (places the name) to run
+  // immediately before drawBarMeta (reads that placed name), both measuring the
+  // same fresh, synchronous layout. Do NOT wrap these in requestAnimationFrame.
+  // All drawers wrapped in try/catch per CLAUDE.md so a throw can't break zoom.
+  //
+  // Arrows render FIRST (behind everything) — bars and labels cover them visually.
+  try { drawCustomArrows(); } catch (_) {}
+  try { drawBaselineGhosts(); } catch (_) {}
+  try { drawTodayLine(); } catch (_) {}
+  try { drawMilestoneDiamonds(); } catch (_) {}
+  try { drawMilestoneLabels(); } catch (_) {}
+  try { clipBarLabels(); } catch (_) {}
+  try { drawScheduleStatus(); } catch (_) {}
+  try { drawDoneHashOverlay(); } catch (_) {}
+  try { drawWeekdayLetters(); } catch (_) {}
+  try { drawFinancialOverlay(); } catch (_) {}
+  try { drawPenaltyClauseLine(); } catch (_) {}
+  try { drawBarMeta(); } catch (_) {}
+  try { drawMachineBorders(); } catch (_) {}
+  try { renderProjectStatsPopup(); } catch (_) {}
+  // Montserrat loads async and is wider than the fallback — if labels were
+  // measured before it finished loading they get mis-placed. Once fonts are
+  // ready, re-run the SAME order as above (clipBarLabels first so drawBarMeta
+  // can read the name's final position — the meta cascade depends on that
+  // order; running meta after a late clip is what breaks "alloc leaves first").
+  if (document.fonts && document.fonts.status !== 'loaded') {
+    document.fonts.ready.then(() => {
+      try { clipBarLabels(); } catch (_) {}
+      try { drawBarMeta(); } catch (_) {}
+    });
+  }
 }
 
 // ── Work-day Gantt helpers ───────────────────────────────────────────
@@ -16129,6 +16207,137 @@ async function loadFinancialsForAllOpenProjects() {
   for (const p of projects) await loadFinancialsForProject(p);
 }
 
+// ── Quote-vs-Schedule hours: shared classification + derivation ─────────
+// Map a task to its hours bucket (mech_eng, ce_design, build, wire_panel,
+// test_debug, …). Pure function of the task — used by BOTH the Quote vs
+// Schedule modal and the per-department hours overlay on the grid, so the
+// two ALWAYS agree on which bucket a task belongs to. (Extracted from
+// openQuoteCompareModal so there's one source of truth.)
+function taskHoursBucket(t) {
+  // Strip a trailing " N", "-N", or "_N" before matching so duplicated
+  // resources (e.g. "Wire Machine 2", "Builder-3", "Mechanical Design 2"
+  // created via "+ Add additional resource") still bucket into their
+  // original category instead of falling through to the generic
+  // sub-department fallback. Match against both raw name and base name.
+  const raw = String(t.name || '').trim();
+  const base = raw.replace(/[\s\-_]\d+\s*$/, '').trim();
+  const test = (re) => re.test(base) || re.test(raw);
+  const pg = t.phase_group, d = t.department, sd = t.sub_department;
+  if (test(/^configure machine/i))                return 'configure';
+  if (test(/^(engineering\s*testing|me\s*(&|and)\s*ce.*test)/i)) return 'test_debug';
+  if (test(/test\/?debug.*(engineer|machine)/i))   return 'test_debug';
+  if (pg === 'machine_testing' && d === 'engineering') return 'test_debug';
+  if (test(/^(shop\s*debug|shop\s*testing)/i))    return 'shop_debug';
+  if (test(/^mb\s*(&|and)\s*eb.*test/i))          return 'shop_debug';
+  if (pg === 'machine_testing' && d === 'shop')   return 'shop_debug';
+  if (test(/^(controls|ce)\s*(engineering|eng)\b/i)) return 'ce_engineering';
+  if (test(/^(controls|ce)[\s\-_]?software/i))    return 'ce_software';
+  if (test(/^(controls|ce)[\s\-_]?design/i))      return 'ce_design';
+  if (test(/^(controls|ce)[\s\-_]?drawings?/i))   return 'ce_drawings';
+  if (test(/^hmi/i))                              return 'gen_hmi';
+  if (test(/^robot/i))                            return 'gen_robot';
+  if (test(/^vision/i))                           return 'gen_vision';
+  if (test(/^(device|general)\s*(programming|engineering)|general machine programming/i)) return 'gen_engineering';
+  if (test(/^electrical\s*build/i))               return 'elec_build';
+  if (test(/wire[\s\-_]?panel|panel[\s\-_]?(build|wir)/i)) return 'wire_panel';
+  if (test(/wire[\s\-_]?machine|machine[\s\-_]?wir/i))    return 'wire_machine';
+  if (test(/^(build|builder)\b/i) && pg === 'design_build')                  return 'build';
+  if (test(/^(mech|mechanical)[\s\-_]?(design|eng)/i) && pg === 'design_build') return 'mech_eng';
+  if (pg === 'design_build' && sd === 'mech')     return 'mech_eng';
+  if (pg === 'design_build' && sd === 'controls') return 'ce_engineering';
+  if (pg === 'design_build' && sd === 'general')  return 'gen_engineering';
+  if (pg === 'design_build' && sd === 'build')    return 'build';
+  if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
+  if (pg === 'teardown_install' && d === 'teardown') return 'teardown';
+  if (pg === 'teardown_install' && d === 'install')  return 'install';
+  return null;
+}
+
+// Derive the per-bucket QUOTED hours from a saved quote's hours_breakdown,
+// applying any user Quoted-cell overrides. Mirrors the modal's derivation so
+// the grid overlay shows the same quoted numbers as Quote vs Schedule.
+function deriveQuotedBuckets(quote) {
+  const safe = (v) => Math.round(v || 0);
+  const hb = quote?.hours_breakdown;
+  const s10 = hb?.section_10 || {}, s40 = hb?.section_40 || {}, s50 = hb?.section_50 || {};
+  const quoted = {
+    mech_eng:    safe(s10.mech),
+    ce_design:   safe(s10.ce_des),
+    ce_drawings: safe(s10.ce_drw),
+    ce_software: safe(s10.ce_sw),
+    gen_hmi:     safe(s10.hmi)    + safe(s40.hmi),
+    gen_robot:   safe(s10.robot)  + safe(s40.robot),
+    gen_vision:  safe(s10.vision) + safe(s40.vision),
+    build:       safe(s10.build),
+    wire_panel:  safe(s10.wire_panel),
+    wire_machine: safe(s10.wire_machine),
+    test_debug:  safe(s40.mech) + safe(s40.ce_des) + safe(s40.ce_drw) + safe(s40.ce_sw)
+                 + safe(s40.hmi) + safe(s40.robot) + safe(s40.vision),
+    configure:   0,
+    shop_debug:  safe(s40.build) + safe(s40.wire_panel) + safe(s40.wire_machine),
+    teardown:    safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine),
+    install:     safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
+                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision)
+                 + safe(s50.mech),
+  };
+  quoted.configure = Math.round(quoted.test_debug * 0.05);
+  quoted.test_debug = quoted.test_debug - quoted.configure;
+  const overrides = (quote && quote.quoted_overrides) || {};
+  for (const k of Object.keys(overrides)) {
+    const v = Number(overrides[k]);
+    if (Number.isFinite(v) && v >= 0) quoted[k] = Math.round(v);
+  }
+  return quoted;
+}
+
+// Lazy per-project quote loader for the grid hours overlay. Caches the result
+// (the quote object, or `false` when the project has no saved estimate) so the
+// synchronous grid render can read it. Re-renders the grid once the fetch
+// lands if the overlay is on and this project is still active.
+async function ensureProjectQuote(project) {
+  if (!project) return;
+  state.quoteCache = state.quoteCache || {};
+  if (project in state.quoteCache) return;           // already loaded (object or false)
+  state._quotesFetching = state._quotesFetching || new Set();
+  if (state._quotesFetching.has(project)) return;
+  state._quotesFetching.add(project);
+  let quote = false;
+  try {
+    const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+    if (r.ok) {
+      const j = await r.json();
+      if (j && (j.hours_breakdown || j.quoted_overrides)) quote = j;
+    }
+  } catch (_) {}
+  state.quoteCache[project] = quote;
+  state._quotesFetching.delete(project);
+  if (state.scheduleView?.showDeptHours && state.filters.project === project) {
+    try { renderTable(); positionDeptHours(); } catch (_) {}
+  }
+}
+
+// Position each department subheader's hours overlay directly over the Task
+// column so "scheduled" lands under DUR (right:60px) and "quoted" under %COM
+// (right:8px) — pixel-matching the header sub-labels. Measured from the live
+// Task <th> so it survives column resize / reorder.
+function positionDeptHours() {
+  const rows = document.querySelectorAll('#tasks-table tr.group-header.has-dept-hours');
+  if (!rows.length) return;
+  const nameTh = document.querySelector('#tasks-table thead th[data-col="name"]');
+  if (!nameTh) return;
+  const left = nameTh.offsetLeft, width = nameTh.offsetWidth;
+  // Over/under-scheduled chip sits over the Assigned To column (falls back to
+  // just right of the Task column if that column is hidden).
+  const asgTh = document.querySelector('#tasks-table thead th[data-col="assignee"]');
+  const varLeft = asgTh ? asgTh.offsetLeft : (left + width);
+  rows.forEach(tr => {
+    const ov = tr.querySelector('.dept-hours');
+    if (ov) { ov.style.left = left + 'px'; ov.style.width = width + 'px'; }
+    const vr = tr.querySelector('.dept-hours-var');
+    if (vr) vr.style.left = varLeft + 'px';
+  });
+}
+
 // Centered modal popup for the per-project Financial Milestones editor. Same
 // editable table the inline panel was hosting, just in a modal so the user gets
 // a focused view instead of pushing the schedule grid down. Adding a new milestone
@@ -16157,71 +16366,10 @@ async function openQuoteCompareModal(project, providedQuote) {
     } catch (_) {}
   }
 
-  // Walk the project's tasks and sum hours per task-bucket.
-  // Bucket map: task name → key (matches the buckets in /api/estimate/create).
-  const TASK_BUCKET = (t) => {
-    // Strip a trailing " N", "-N", or "_N" before matching so duplicated
-    // resources (e.g. "Wire Machine 2", "Builder-3", "Mechanical Design 2"
-    // created via "+ Add additional resource") still bucket into their
-    // original category instead of falling through to the generic
-    // sub-department fallback. Match against both raw name and base name.
-    const raw = String(t.name || '').trim();
-    const base = raw.replace(/[\s\-_]\d+\s*$/, '').trim();
-    // Test either form — covers schedules where the user typed names that
-    // don't match the SDC_Template naming convention (e.g. "CE Design"
-    // instead of "Controls Design", "Machine Wiring" vs "Wire Machine").
-    const test = (re) => re.test(base) || re.test(raw);
-    const pg = t.phase_group, d = t.department, sd = t.sub_department;
-    if (test(/^configure machine/i))                return 'configure';
-    // Engineering Testing — catches "Test/Debug Engineer 1/2", "Test/Debug
-    // Machine", "Engineering Testing", "ME & CE Testing", etc. — anything
-    // that's the testing-engineering phase regardless of how it's named
-    // on the schedule.
-    if (test(/^(engineering\s*testing|me\s*(&|and)\s*ce.*test)/i)) return 'test_debug';
-    if (test(/test\/?debug.*(engineer|machine)/i))   return 'test_debug';
-    if (pg === 'machine_testing' && d === 'engineering') return 'test_debug';
-    // Shop Testing — "Shop Debug" (detailed template), "Shop Testing"
-    // (sales mode), "MB & EB Testing", anything in section_40 shop.
-    if (test(/^(shop\s*debug|shop\s*testing)/i))    return 'shop_debug';
-    if (test(/^mb\s*(&|and)\s*eb.*test/i))          return 'shop_debug';
-    if (pg === 'machine_testing' && d === 'shop')   return 'shop_debug';
-    // Combined "Controls Engineering" — sales-mode single bar; tasks
-    // named just "Controls Engineering" or "Controls Eng" route to a
-    // single bucket. The detailed-mode keys (ce_software/design/drawings)
-    // still take precedence above.
-    if (test(/^(controls|ce)\s*(engineering|eng)\b/i)) return 'ce_engineering';
-    if (test(/^(controls|ce)[\s\-_]?software/i))    return 'ce_software';
-    if (test(/^(controls|ce)[\s\-_]?design/i))      return 'ce_design';
-    if (test(/^(controls|ce)[\s\-_]?drawings?/i))   return 'ce_drawings';
-    if (test(/^hmi/i))                              return 'gen_hmi';
-    if (test(/^robot/i))                            return 'gen_robot';
-    if (test(/^vision/i))                           return 'gen_vision';
-    // Combined "Device Programming" / "General Machine Programming" /
-    // "General Engineering" — sales-mode single bar covering HMI +
-    // Robot + Vision + device work.
-    if (test(/^(device|general)\s*(programming|engineering)|general machine programming/i)) return 'gen_engineering';
-    // Combined "Electrical Build" — sales-mode single bar covering
-    // both panel build and machine wiring.
-    if (test(/^electrical\s*build/i))               return 'elec_build';
-    // Wire panel — both word orders ("Build and Wire Panel", "Wire Panel",
-    // "Panel Build", "Panel Wiring") roll into wire_panel.
-    if (test(/wire[\s\-_]?panel|panel[\s\-_]?(build|wir)/i)) return 'wire_panel';
-    // Wire machine — both orders ("Wire Machine", "Machine Wiring") roll
-    // into wire_machine.
-    if (test(/wire[\s\-_]?machine|machine[\s\-_]?wir/i))    return 'wire_machine';
-    // Build / Mechanical build / Builder / Build Machine
-    if (test(/^(build|builder)\b/i) && pg === 'design_build')                  return 'build';
-    if (test(/^(mech|mechanical)[\s\-_]?(design|eng)/i) && pg === 'design_build') return 'mech_eng';
-    // Sub-department fallbacks for anything that didn't match by name.
-    if (pg === 'design_build' && sd === 'mech')     return 'mech_eng';
-    if (pg === 'design_build' && sd === 'controls') return 'ce_engineering';
-    if (pg === 'design_build' && sd === 'general')  return 'gen_engineering';
-    if (pg === 'design_build' && sd === 'build')    return 'build';
-    if (pg === 'design_build' && sd === 'wire')     return 'wire_other';
-    if (pg === 'teardown_install' && d === 'teardown') return 'teardown';
-    if (pg === 'teardown_install' && d === 'install')  return 'install';
-    return null;
-  };
+  // Walk the project's tasks and sum hours per task-bucket. The classifier
+  // lives at module scope (taskHoursBucket) so the grid's per-department
+  // hours overlay buckets tasks identically — single source of truth.
+  const TASK_BUCKET = taskHoursBucket;
   // Per-bucket: scheduled hours + remaining hours (scheduled × (1 - progress/100)
   // summed per task, so partial-completion across multiple tasks rolls up cleanly).
   // basicScheduled = duration × 8 × alloc, BEFORE the people-count multiplier.
@@ -16270,49 +16418,11 @@ async function openQuoteCompareModal(project, providedQuote) {
     remaining[k] = basicRemaining[k] * ppl;
   }
 
-  // Pull the quoted hours by the same bucket. Quote stores hours_breakdown
-  // per section per task-aligned cell (mech, ce_des, ce_drw, ce_sw, hmi,
-  // robot, vision, build, wire_panel, wire_machine).
-  const safe = (v) => Math.round(v || 0);
-  const hb = quote?.hours_breakdown;
-  const s10 = hb?.section_10 || {}, s40 = hb?.section_40 || {}, s50 = hb?.section_50 || {};
-  const quoted = {
-    // Mechanical Engineering = DESIGN-phase ME only (section 10), matching the
-    // schedule's design_build/mech bucket. Section-50 ME (teardown/install/
-    // warranty engineering, which the horizontal estimate lumps as "ME & CE")
-    // belongs to the install bucket, NOT design — see `install` below.
-    mech_eng:    safe(s10.mech),
-    ce_design:   safe(s10.ce_des),
-    ce_drawings: safe(s10.ce_drw),
-    ce_software: safe(s10.ce_sw),
-    gen_hmi:     safe(s10.hmi)    + safe(s40.hmi),
-    gen_robot:   safe(s10.robot)  + safe(s40.robot),
-    gen_vision:  safe(s10.vision) + safe(s40.vision),
-    build:       safe(s10.build),
-    wire_panel:  safe(s10.wire_panel),
-    wire_machine: safe(s10.wire_machine),
-    // Section 40 testing engineering — Configure (5%) + Test/Debug 1+2 (95%)
-    // split out. We compare totals to the sum of those tasks.
-    test_debug:  safe(s40.mech) + safe(s40.ce_des) + safe(s40.ce_drw) + safe(s40.ce_sw)
-                 + safe(s40.hmi) + safe(s40.robot) + safe(s40.vision),
-    configure:   0, // configure hours are part of the testing bucket (5% slice)
-    shop_debug:  safe(s40.build) + safe(s40.wire_panel) + safe(s40.wire_machine),
-    teardown:    safe(s50.build) + safe(s50.wire_panel) + safe(s50.wire_machine),
-    install:     safe(s50.ce_des) + safe(s50.ce_drw) + safe(s50.ce_sw)
-                 + safe(s50.hmi) + safe(s50.robot) + safe(s50.vision)
-                 + safe(s50.mech), // teardown/install engineering (ME&CE lump)
-  };
-  // Configure Machine = 5% of testing engineering hours.
-  quoted.configure = Math.round(quoted.test_debug * 0.05);
-  quoted.test_debug = quoted.test_debug - quoted.configure;
-  // Per-bucket Quoted overrides — when the user edits a Quoted cell in
-  // the modal we stash the new value in quote.quoted_overrides so it
-  // wins over the auto-derived hours_breakdown sums above.
-  const overrides = (quote && quote.quoted_overrides) || {};
-  for (const k of Object.keys(overrides)) {
-    const v = Number(overrides[k]);
-    if (Number.isFinite(v) && v >= 0) quoted[k] = Math.round(v);
-  }
+  // Pull the quoted hours by the same bucket (mech, ce_des/drw/sw, hmi, robot,
+  // vision, build, wire_panel/machine, test_debug, configure, shop_debug,
+  // teardown, install) including any user Quoted-cell overrides. Derivation
+  // lives at module scope (deriveQuotedBuckets) so the grid overlay matches.
+  const quoted = deriveQuotedBuckets(quote);
 
   const isSales = projectWorkspace(project) === 'Sales';
   // SECTIONS define the row breakdown shown in the modal. Each row carries
@@ -18003,6 +18113,14 @@ function applyAnchorColor(anchorColor) {
   root.setProperty('--anchor-text', c.text);
 }
 
+// Grid data-column font size — sets the --grid-data-fs CSS variable that the
+// non-Task / non-Assigned-To columns read (dates, predecessors, duration, %,
+// alloc, etc.). Clamped to a sane range.
+function applyGridDataFont(px) {
+  const n = Math.max(8, Math.min(14, Math.round(Number(px) || 11)));
+  document.documentElement.style.setProperty('--grid-data-fs', n + 'px');
+}
+
 function applyPctColors(pctColors) {
   const norm = normalizePctColors(pctColors);
   const root = document.documentElement.style;
@@ -18039,6 +18157,7 @@ async function loadSettings() {
   if (!state.settings.hierarchy_colors)  state.settings.hierarchy_colors  = JSON.parse(JSON.stringify(HIERARCHY_COLOR_DEFAULTS));
   if (!state.settings.anchor_color)      state.settings.anchor_color      = { ...ANCHOR_COLOR_DEFAULTS };
   if (state.settings.weekday_marker_threshold == null) state.settings.weekday_marker_threshold = 12;
+  if (state.settings.grid_data_font_px == null) state.settings.grid_data_font_px = 11;
   // Always normalize — older builds saved { key → { fill, text } } objects;
   // current shape is { key → "#hex" }. normalizePctColors handles both.
   state.settings.pct_colors = normalizePctColors(state.settings.pct_colors);
@@ -18047,6 +18166,7 @@ async function loadSettings() {
   applyHierarchyColors(state.settings.hierarchy_colors);
   applyAnchorColor(state.settings.anchor_color);
   applyPctColors(state.settings.pct_colors);
+  applyGridDataFont(state.settings.grid_data_font_px);
   if (Array.isArray(settings.phases) && settings.phases.length) {
     window.PHASES = settings.phases;
     window.PHASE_BY_KEY = Object.fromEntries(settings.phases.map(p => [p.key, p]));
@@ -21352,6 +21472,21 @@ function renderSetup() {
     }
   }
 
+  // Grid data-column font size (dates, predecessors, duration, %, alloc — every
+  // column except Task and Assigned To). Live-previews as you change it.
+  const gdfInput = document.getElementById('grid-data-font-size');
+  if (gdfInput) {
+    gdfInput.value = (d.grid_data_font_px != null) ? d.grid_data_font_px : 11;
+    if (!gdfInput.dataset.wired) {
+      gdfInput.dataset.wired = '1';
+      gdfInput.addEventListener('input', (e) => {
+        const v = Math.max(8, Math.min(14, Math.round(Number(e.target.value) || 11)));
+        state.setupDraft.grid_data_font_px = v;
+        applyGridDataFont(v); // live preview; saveSetup persists it
+      });
+    }
+  }
+
   // Palette
   const list = document.getElementById('palette-list');
   list.innerHTML = (d.brand_palette || []).map((c, i) => `
@@ -21994,6 +22129,7 @@ async function saveSetup() {
       api.putSetting('default_financial_milestones', state.setupDraft.default_financial_milestones || []),
       api.putSetting('project_milestone_library',    state.setupDraft.project_milestone_library || []),
       api.putSetting('weekday_marker_threshold',     state.setupDraft.weekday_marker_threshold || 8),
+      api.putSetting('grid_data_font_px',            state.setupDraft.grid_data_font_px || 11),
     ]);
     status.textContent = 'Saved. Reloading…';
     setTimeout(() => location.reload(), 250);
@@ -22005,6 +22141,8 @@ async function saveSetup() {
 
 function discardSetup() {
   state.setupDraft = null;
+  // Revert any live-previewed grid font size back to the saved value.
+  applyGridDataFont(state.settings?.grid_data_font_px ?? 11);
   renderSetup();
 }
 
@@ -22596,9 +22734,12 @@ function loadScheduleView() {
       // View → Hide completed items. OFF by default — completed tasks stay
       // visible with the lime outline + hash pattern until the user opts in.
       hideCompleted: !!saved.hideCompleted,
+      // H view-pill: per-department quoted-vs-scheduled hours on the grid
+      // subheaders. OFF by default — opt-in readout.
+      showDeptHours: !!saved.showDeptHours,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false };
   }
 }
 function saveScheduleView() {
@@ -22644,6 +22785,7 @@ function syncViewPill() {
   // auto-hide rule in shouldShowMachineVisuals() handles whether the
   // chips/borders actually paint.
   setActive('btn-view-machine', sv.showMachineColors !== false);
+  setActive('btn-view-dept-hours', sv.showDeptHours);
 }
 
 // True when the visible task set spans 2+ distinct machine tags. Drives
@@ -23713,6 +23855,14 @@ async function init() {
         saveScheduleView();
         syncViewPill();
         renderGantt();
+      } else if (key === 'showDeptHours') {
+        // Per-dept quoted-vs-scheduled hours overlay — grid only. Kick the
+        // active project's quote load (cached) so the overlay can show quoted.
+        state.scheduleView.showDeptHours = !state.scheduleView.showDeptHours;
+        saveScheduleView();
+        syncViewPill();
+        if (state.scheduleView.showDeptHours) ensureProjectQuote(state.filters.project);
+        renderTable();
       } else if (key === 'flatten+sort') {
         // Single icon that toggles BOTH flatten AND sortByStart together —
         // flatten without sort almost never makes sense (you flatten because
@@ -23740,6 +23890,7 @@ async function init() {
   wireViewToggle('btn-view-lags',       'showArrowLags');
   wireViewToggle('btn-view-bar-meta',   'showBarMeta');
   wireViewToggle('btn-view-machine',    'showMachineColors');
+  wireViewToggle('btn-view-dept-hours', 'showDeptHours');
   syncViewPill();
 
   // Baseline — dropdown menu. The menu rebuilds on every open so its items
@@ -24078,12 +24229,8 @@ async function init() {
       }
     });
   }
-  const hardRefreshBtn = document.getElementById('btn-hard-refresh');
-  if (hardRefreshBtn) {
-    hardRefreshBtn.addEventListener('click', () => { window.location.reload(true); });
-  }
-  // Global hard refresh — always visible in the project tab bar (all views)
-  document.getElementById('btn-global-hard-refresh')?.addEventListener('click', () => { window.location.reload(true); });
+  // Hard refresh now lives in the sidebar above the user avatar (see
+  // _renderUserPill in auth-ui.js) — global across all views, one button.
 
   // Font size control — scales all --fs-* CSS variables proportionally from base 13px
   const _fontInput = document.getElementById('input-font-size');

@@ -3832,6 +3832,13 @@ input[type="number"] {
 /* Gantt panel is grabbable for click-and-drag pan; bars get their own cursor. */
 .schedule-gantt { cursor: grab; }
 .schedule-gantt.panning { cursor: grabbing; }
+/* Bar label + alloc·dur meta MUST stay sans-serif. The bar-meta cascade is
+   calibrated against a per-character width table for bold-9px sans-serif, and
+   clipBarLabels measures the name with getBBox — both break if the text renders
+   in Montserrat (wider + async-loading), which made the meta sit inside the bar
+   while the name straddled the edge. Pin the font so measurement == render. */
+#gantt-container .gantt .bar-label,
+#gantt-container .gantt text.sdc-bar-meta { font-family: Arial, Helvetica, sans-serif !important; }
 /* While drag-panning the grid, lock out text selection across the whole panel so
    headers / group rows don't pick up a blue highlight when the drag hits the
    scroll edge. Inputs / textareas re-enable selection naturally so cell editing
@@ -4011,8 +4018,13 @@ tbody tr:hover { background: var(--row-hover); }
 .col-assignee { width: 100px; }
 .col-duration { width: 80px; text-align: right; font-variant-numeric: tabular-nums; }
 .col-progress { width: 110px; }
-.col-date { font-variant-numeric: tabular-nums; width: 64px; font-size: 11px; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
-.col-pred { width: 110px; font-variant-numeric: tabular-nums; }
+.col-date { font-variant-numeric: tabular-nums; width: 60px; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
+.col-pred { width: 76px; font-variant-numeric: tabular-nums; letter-spacing: -0.2px; padding-left: 4px; padding-right: 4px; }
+/* Data-column font size — everything EXCEPT Task (col-name) and Assigned To
+   (col-assignee). Driven by the Setup → "Grid date / data font size" option
+   via the --grid-data-fs CSS variable (default 11px). */
+.col-line, .col-date, .col-duration, .col-pred, .col-progress,
+.col-allocation, .col-priority, .col-notes { font-size: var(--grid-data-fs, 11px); }
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
 /* Comments column — free-text. Truncate with ellipsis so a long note doesn't
    blow the row height; the full content stays accessible via the title tooltip
@@ -4081,7 +4093,57 @@ tr.group-header td {
   border-right: none;
   padding: 4px 10px;
   height: 24px;
+  /* Anchor for the dept-hours overlay (H view-pill). Harmless when absent. */
+  position: relative;
 }
+/* Quoted-vs-scheduled hours on a department subheader. The overlay box is
+   sized/positioned over the Task column by positionDeptHours(); the two values
+   then sit at the same x-offsets as the header DUR (right:60px) and %COM
+   (right:8px) sub-labels so they line up under those columns. */
+.dept-hours {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.dept-hours-sched,
+.dept-hours-quoted {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  pointer-events: auto;
+}
+.dept-hours-sched {
+  right: 60px;
+  font-weight: var(--fw-regular, 400);
+  color: var(--sdc-dark, #061d39);
+}
+.dept-hours-quoted {
+  right: 8px;
+  font-weight: var(--fw-regular, 400);
+  color: var(--text-muted);
+}
+/* Over/under-scheduled chip — sits over the Assigned To column. Left edge is
+   set by positionDeptHours(); vertically centered on the subheader row. */
+.dept-hours-var {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  padding-left: 8px;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  text-transform: none;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+.dept-hours-var.is-over  { color: var(--danger, #dc2626); }
+.dept-hours-var.is-under { color: var(--success, #16a34a); }
+.dept-hours-var.is-on    { color: var(--text-muted); }
 tr.group-header .group-caret {
   display: inline-block;
   width: 12px;
@@ -4320,7 +4382,7 @@ body.hide-alloc-pre td[data-col="name"] {
   transform: translateY(-50%);
   left: 64px;
   right: 110px;
-  font-weight: var(--fw-semibold);
+  font-weight: var(--fw-regular, 400);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4755,6 +4817,15 @@ tr.group-header.level-2 td,
 tr.group-header.level-3 td {
   height: 18px; line-height: 18px; font-size: 10.5px; padding-left: 32px;
   background: var(--surface, #fff);
+  /* Department / sub-dept names (Mechanical Engineering, Build, Wire, Shop,
+     Teardown, …) were hard to read — make them heavier + dark navy. */
+  font-weight: var(--fw-extrabold, 800);
+  color: var(--sdc-dark, #061d39);
+}
+tr.group-header.level-2 .group-label,
+tr.group-header.level-3 .group-label {
+  font-weight: var(--fw-extrabold, 800);
+  color: var(--sdc-dark, #061d39);
 }
 
 /* Header label styling. Section text reads on the full-row gray bar. */
@@ -4768,14 +4839,14 @@ tr.group-header.level-1 .group-label {
   padding: 0;
   border-radius: 0;
 }
-/* Department / sub-department labels — no fill, no border, semibold (not bold), light
-   slate text so the hierarchy reads through indentation + font size, not boldness. */
+/* Department / sub-department labels — BOLD + dark navy so they're easy to pick
+   out as group dividers (they were hard to read as faint semibold slate). */
 tr.group-header.level-2 .group-label,
 tr.group-header.level-3 .group-label {
   padding: 0;
   background: transparent;
-  color: #64748b;
-  font-weight: var(--fw-semibold);
+  color: var(--sdc-dark, #061d39);
+  font-weight: var(--fw-extrabold, 800);
 }
 tr.group-header .group-caret {
   display: inline-block;

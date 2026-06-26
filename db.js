@@ -300,6 +300,10 @@ const DEFAULT_SETTINGS = {
     { name: 'Acceptance at SDC (FAT)',      percent: 20, predecessors: 'FAT' },
     { name: 'Acceptance at Customer (SAT)', percent: 10, predecessors: 'Ship' },
   ],
+  // Font size (px) for the grid's data columns — everything EXCEPT the Task and
+  // Assigned To columns (dates, predecessors, duration, %, alloc, etc.). Lets
+  // those columns run narrow without clipping. Task/Assigned-To keep their size.
+  grid_data_font_px: 11,
 };
 
 async function seedDefaults(pool) {
