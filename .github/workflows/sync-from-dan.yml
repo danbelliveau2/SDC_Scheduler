@@ -1,19 +1,19 @@
 name: Sync from Dan
 
-# Runs every 5 minutes AND on any push to main.
-# When Dan pushes a new commit, this picks it up within 5 min,
-# merges it into the local main, and pushes back — keeping both repos in lockstep.
+# Runs every 15 min (reduced from 5 — production poller handles the 2-min refresh,
+# GH Actions is just the GitHub-side mirror). Also runs on push to main and
+# supports manual trigger.
 
 on:
   push:
     branches: [main]
   schedule:
-    - cron: '*/5 * * * *'   # every 5 minutes
-  workflow_dispatch:         # allow manual trigger from GitHub UI
+    - cron: '*/15 * * * *'  # every 15 minutes (fix #5 — reduces quota burn)
+  workflow_dispatch:         # manual trigger from GitHub UI (fix #6 — escape hatch)
 
 jobs:
   sync:
-    # Only run in YOUR fork — not in Dan's repo (where the bot has no write access)
+    # Only run in the fork — not in Dan's repo (fix #2 — by design guard)
     if: github.repository != 'danbelliveau2/SDC_Scheduler'
     runs-on: ubuntu-latest
     steps:
@@ -46,11 +46,19 @@ jobs:
             echo "up_to_date=false" >> $GITHUB_OUTPUT
           fi
 
+      # fix #3 — clean abort + clear error message on conflict
       - name: Merge upstream into main
         if: steps.check.outputs.up_to_date == 'false'
         run: |
-          git merge upstream/main --no-edit --ff || git merge upstream/main --no-edit
-          git push origin main
+          git merge upstream/main --no-edit --ff-only \
+            || git merge upstream/main --no-edit \
+            || { echo "::error::Merge conflict detected — manual resolution required. Run: git fetch upstream main && git merge upstream/main"; git merge --abort 2>/dev/null || true; exit 1; }
+
+      # fix #4 — explicit push failure surfaces as workflow failure, not silent skip
+      - name: Push merged result to origin
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          git push origin main || { echo "::error::Push to origin failed — check branch protection rules or token permissions"; exit 1; }
 
       - name: Already up to date
         if: steps.check.outputs.up_to_date == 'true'
