@@ -5563,7 +5563,7 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 body.customer-view .schedule-footer { display: none; }
 
 /* ── Bottom drawer stack — fixed overlay, doesn't push schedule content ──── */
-#schedule-drawer-stack { flex: 0 0 auto; display: flex; flex-direction: column; }
+#schedule-drawer-stack { flex: 0 0 auto; display: flex; flex-direction: column; position: relative; z-index: 9; }
 
 /* ── Project Notes panel (below the schedule) ──────────────────────────────── */
 .schedule-notes { flex: 0 0 auto; display: flex; flex-direction: column; background: #fff; }
