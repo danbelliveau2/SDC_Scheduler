@@ -14358,13 +14358,13 @@ function renderScheduleProcurement() {
 
       // Side-by-side for drawer: assembly list on left (60%), cost summary + waterfall on right (40%)
       if (waterfallChartHtml || waterfallPlaceholder || costSummaryHtml) {
-        inner = `<div style="display: grid; grid-template-columns: 3fr 1fr; gap: 16px;">
+        inner = `<div style="display: grid; grid-template-columns: 3fr 1fr; gap: 16px; align-items: stretch;">
           <div style="border-right: 1px solid #e2e8f0; padding-right: 12px; font-size: var(--fs-sm);">
             ${assemblyContent}
           </div>
-          <div style="padding-left: 0; font-size: var(--fs-md);">
+          <div style="padding-left: 0; font-size: var(--fs-md); display: flex; flex-direction: column; gap: 4px;">
             ${costSummaryHtml}
-            ${waterfallChartHtml || waterfallPlaceholder}
+            <div style="flex:1;">${waterfallChartHtml || waterfallPlaceholder}</div>
           </div>
         </div>`;
       } else {
