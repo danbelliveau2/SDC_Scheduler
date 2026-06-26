@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '9.92',
+    date: '2026-06-26',
+    notes: [
+      'See quoted vs scheduled hours per department, right on the grid.',
+      '',
+      'QUOTED vs SCHEDULED (new Δ button in the view bar):',
+      '   ▸ Turn on Δ and every department / sub-section header shows its hours: SCHEDULED (from the task durations) under the DUR column, QUOTED (from the estimate) under %COM.',
+      '   ▸ To the right (in the Assigned To area) a chip reads "Over scheduled" (red) or "Under scheduled" (green) with the amount — so you can sanity-check staffing without opening Quote vs Schedule. Shows "On quote" when they match.',
+      '   ▸ Hours round to the nearest 5. Quoted shows "—" when a project has no saved estimate. Turn Δ off and it all disappears.',
+      '',
+      'HARD REFRESH MOVED:',
+      '   ▸ The hard-refresh (clear cache + full reload) now lives in the bottom-left, just above your initials — one button, on every page. Removed from the top toolbar / tab bar.',
+    ],
+  },
+  {
     version: '9.91',
     date: '2026-06-25',
     notes: [

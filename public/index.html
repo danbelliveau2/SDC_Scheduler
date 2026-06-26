@@ -8,8 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260616-eto44" />
-  <link rel="stylesheet" href="auth-ui.css?v=20260601-166" />
+  <link rel="stylesheet" href="styles.css?v=20260616-eto47" />
+  <link rel="stylesheet" href="auth-ui.css?v=20260601-167" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -119,7 +119,6 @@
   <div class="project-tab-bar" id="project-tab-bar">
     <div class="project-tabs" id="project-tabs"></div>
     <button id="btn-add-project" class="project-add-btn" type="button" title="Open another schedule in a new tab">+ New tab</button>
-    <button id="btn-global-hard-refresh" class="project-tab-bar-refresh" type="button" title="Hard refresh — clears cache and fully reloads the page (same as Ctrl+Shift+R).">⟳</button>
   </div>
 
   <!-- Machine sub-tab strip — only visible when the active project has
@@ -187,7 +186,6 @@
           <button id="btn-undo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↺</button>
           <button id="btn-redo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↻</button>
           <button id="btn-refresh" class="toolbar-icon-btn toolbar-icon-round" type="button" title="Refresh task data from the server. Preserves your current view — collapsed sections, scroll position, and filters all stay where they are.">🔄</button>
-          <button id="btn-hard-refresh" class="toolbar-icon-btn toolbar-icon-round" type="button" title="Hard refresh — clears cache and fully reloads the page (same as Ctrl+Shift+R).">⟳</button>
 
           <div class="toolbar-divider"></div>
 
@@ -221,6 +219,7 @@
             <button id="btn-view-lags"       class="view-bracket-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
             <button id="btn-view-bar-meta"   class="view-bracket-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below.">%</button>
             <button id="btn-view-machine"    class="view-bracket-icon" type="button" title="Highlight which machine each row belongs to — colored pill in the grid + matching border on the Gantt bar. Auto-hides on single-machine projects.">M</button>
+            <button id="btn-view-dept-hours" class="view-bracket-icon" type="button" title="Show QUOTED vs SCHEDULED hours on each department subheader — scheduled (from durations) under DUR, quoted (from the estimate) under %COM, and an over/under-scheduled chip in the Assigned To area. Lets you sanity-check hours without opening Quote vs Schedule.">Δ</button>
           </div>
 
           <div class="toolbar-divider"></div>
@@ -909,10 +908,10 @@
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->
-  <script src="auth-ui.js?v=20260616-eto22"></script>
+  <script src="auth-ui.js?v=20260616-eto23"></script>
   <script src="phases.js?v=20260601-166"></script>
-  <script src="release-notes.js?v=20260601-169"></script>
-  <script src="app.js?v=20260616-eto48"></script>
+  <script src="release-notes.js?v=20260601-170"></script>
+  <script src="app.js?v=20260616-eto53"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
