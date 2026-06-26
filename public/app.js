@@ -9892,11 +9892,11 @@ function _procAssemblyRow(node, depth) {
       html += `<div class="proc-parts" style="margin-left:${10 + depth * 26}px;--proc-parts-accent:${_partAccent}">
         ${parts.map(p => `
           <div class="proc-prow proc-prow-${p.status}">
+            <span class="num">${p.qty ?? ''}</span>
             <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
             <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
             <span class="proc-pmfr">${escapeHtml(p.manufacturer || '')}</span>
             <span class="proc-ppo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : ''}</span>
-            <span class="num">${p.qty ?? ''}</span>
             <span class="num">${money(p.unitPrice)}</span>
             <span class="num">${money((Number(p.qty) || 0) * (Number(p.unitPrice) || 0))}</span>
           </div>`).join('')}
