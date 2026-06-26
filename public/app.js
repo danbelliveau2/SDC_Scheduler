@@ -8920,7 +8920,7 @@ function _procCostWaterfall(c) {
   }).join('');
 
   return `
-    <div style="background:white;border-radius:8px;border:1px solid #e2e8f0;margin-top:5px;overflow:hidden;height:100%;box-sizing:border-box;">
+    <div style="background:white;border-radius:8px;border:1px solid #e2e8f0;margin-top:5px;overflow:hidden;height:100%;box-sizing:border-box;display:flex;flex-direction:column;">
       <div style="padding:5px 8px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">
         <div>
           <div style="font-size:var(--fs-md);font-weight:var(--fw-bold);color:#0f172a;letter-spacing:-0.1px;">Cost Overview</div>
@@ -8945,7 +8945,7 @@ function _procCostWaterfall(c) {
           <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-top:1px;">of budget purchased</div>
         </div>
       </div>
-      <div style="padding:0 8px 4px;">${legendRows}</div>
+      <div style="padding:0 8px 4px;margin-top:auto;">${legendRows}</div>
     </div>
   `;
 }
