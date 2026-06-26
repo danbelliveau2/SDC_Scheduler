@@ -8945,7 +8945,7 @@ function _procCostWaterfall(c) {
           <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-top:1px;">of budget purchased</div>
         </div>
       </div>
-      <div style="padding:0 8px 4px;margin-top:auto;">${legendRows}</div>
+      <div style="padding:0 8px 4px;">${legendRows}</div>
     </div>
   `;
 }
