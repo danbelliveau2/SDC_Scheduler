@@ -2514,7 +2514,7 @@ body.customer-view .customer-view-flatten.is-active {
   overflow: hidden;
 }
 .proc-parts {
-  --ap0: 260px; --ap1: 1fr; --ap2: 140px; --ap3: 100px; --ap4: 48px; --ap5: 84px; --ap6: 92px;
+  --ap0: 150px; --ap1: 1fr; --ap2: 90px; --ap3: 72px; --ap4: 36px; --ap5: 76px; --ap6: 76px;
 }
 .proc-phead, .proc-prow {
   display: grid;
