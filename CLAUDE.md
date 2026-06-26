@@ -9,7 +9,7 @@ This repo is maintained by two people with distinct roles. Read this before touc
 | Person | Role | What they own |
 |--------|------|---------------|
 | **Dan** (danbelliveau2) | Core developer | `public/app.js`, `public/styles.css`, `public/index.html`, `public/release-notes.js`, `public/phases.js` |
-| **Abhi** (akamuju) | Deployment + UI/UX + Backend | `server.js`, `db.js`, `mysqlDb.js`, `hoursApi.js`, `etoDb.js`, `agent.js`, `ops.js`, `backfillProjects.js`, `cronJobs.js`, `emailService.js`, `auth.js`, `mcp/`, `custom-public/`, `routes/` |
+| **Abhi** (akamuju) | Deployment + UI/UX + Backend | `server.js`, `db.js`, `lib/` (mysqlDb, hoursApi, etoDb, agent, ops, backfillProjects, cronJobs, emailService, auth), `scripts/`, `mcp/`, `custom-public/`, `routes/` |
 
 ### CRITICAL — Production uses MySQL, NOT SQLite
 
@@ -17,7 +17,7 @@ Dan's local dev uses `node:sqlite`. **Production runs MySQL (`mysql2` pool via `
 
 - **NEVER rewrite `db.js` to use `node:sqlite` or `DatabaseSync`** — production will crash
 - **NEVER rewrite `server.js` to remove MySQL** — all routes depend on `mysqlDb.getPool()`
-- **NEVER remove `mysqlDb.js`** — it is the database connection layer for production
+- **NEVER remove `lib/mysqlDb.js`** — it is the database connection layer for production
 - **NEVER remove or simplify `auth.js` JWT logic** — production has full role-based auth (viewer/editor/admin)
 
 ### File ownership rules for AI agents
@@ -111,7 +111,7 @@ One branch: `main`. Always pull first. Never commit and forget to push — the p
 
 ## Architecture notes (so you don't blow these away)
 
-- **Server**: `server.js` (Express + Socket.io + MySQL). Routes are in `routes/`. FIELDS list includes `completed_on`.
+- **Server**: `server.js` (Express + Socket.io + MySQL). Routes are in `routes/`. Backend helpers (auth, ops, agent, email, cron, ETO, hours) live in `lib/`. FIELDS list includes `completed_on`.
 - **Client**: single-page app under `public/`. `app.js` is the everything-file.
 - **Schema migrations**: `db.js` does `ALTER TABLE tasks ADD COLUMN …` on boot. Don't re-run, just add new lines if needed.
 - **`HIERARCHY`** constant drives every grid/gantt walk. Sections 10 / 40 / 50.

@@ -19,13 +19,13 @@ const compression = require('compression');
 const bcrypt = require('bcryptjs');
 const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
-const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./auth');
-const ops = require('./ops'); // backups, health/status, crash logging
-const agent = require('./agent'); // local-Ollama read-only assistant
+const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./lib/auth');
+const ops = require('./lib/ops'); // backups, health/status, crash logging
+const agent = require('./lib/agent'); // local-Ollama read-only assistant
 let hoursApi;
-try { hoursApi = require('./hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')) }; }
+try { hoursApi = require('./lib/hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')) }; }
 let emailSvc;
-try { emailSvc = require('./emailService'); }
+try { emailSvc = require('./lib/emailService'); }
 catch (_) { emailSvc = { sendMentionEmail: () => {}, sendDigest: () => {} }; }
 
 const app = express();
@@ -248,7 +248,7 @@ async function logHistory(taskId, project, action, changedBy, before, after, cha
 }
 
 // ── ETO DB (needed by eto + agent routes) ─────────────────────────────────
-const etoDb = require('./etoDb');
+const etoDb = require('./lib/etoDb');
 
 // ── Route mounting ─────────────────────────────────────────────────────────
 const routeDeps = { pool, io, requireRole, requireAuth, cascadeSchedule, logHistory, etoDb, ops, agent, hoursApi, emailSvc, bcrypt, _activeCache };
@@ -307,11 +307,11 @@ async function startServer({ port } = {}) {
   });
   server.on('error', err => console.error('[scheduler] Server error:', err.message));
   try {
-    const cron = require('./cronJobs');
+    const cron = require('./lib/cronJobs');
     if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops });
   } catch (_) { /* cronJobs.js is optional */ }
   try {
-    const { backfillProjects } = require('./backfillProjects');
+    const { backfillProjects } = require('./lib/backfillProjects');
     backfillProjects(pool, etoDb)
       .then(r => { if (r && (r.registered || r.linked)) { try { /* notifyClients moved to projects router */ } catch (_) {} } })
       .catch(e => console.warn('[backfill] failed:', e.message));

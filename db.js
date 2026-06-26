@@ -5,7 +5,7 @@
  * Export pool for use in server.js.
  */
 require('dotenv').config();
-const { pool } = require('./mysqlDb');
+const { pool } = require('./lib/mysqlDb');
 
 async function init() {
   await pool.query(`

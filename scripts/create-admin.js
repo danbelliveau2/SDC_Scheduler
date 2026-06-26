@@ -10,9 +10,9 @@
  *   password = sdc_secure_password
  *   role     = admin
  */
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 const bcrypt = require('bcryptjs');
-const { pool } = require('./mysqlDb');
+const { pool } = require('../lib/mysqlDb');
 
 async function main() {
   const email    = (process.argv[2] || 'akamuju@sdcautomation.com').trim().toLowerCase();
