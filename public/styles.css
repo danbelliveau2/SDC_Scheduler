@@ -2660,6 +2660,10 @@ body.customer-view .customer-view-flatten.is-active {
   grid-template-columns: 1fr auto;
   gap: 2px 10px;
   align-items: baseline;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
 }
 .proc-cost-key { color: #64748b; font-weight: var(--fw-medium); }
 .proc-cost-val { font-weight: var(--fw-semibold); text-align: right; white-space: nowrap; }
