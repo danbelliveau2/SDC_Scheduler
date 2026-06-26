@@ -8935,7 +8935,7 @@ function _procCostWaterfall(c) {
           <div id="cg-tip-v" style="font-weight:var(--fw-extrabold);font-size:var(--fs-lg);"></div>
           <div id="cg-tip-p" style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;"></div>
         </div>
-        <svg viewBox="0 0 ${VW} 104" style="width:100%;height:auto;display:block;"
+        <svg viewBox="0 0 ${VW} 104" style="width:100%;max-width:260px;height:auto;display:block;margin:0 auto;"
           onmousemove="(function(e){const p=e.target.closest('[data-tl]');const t=document.getElementById('cg-tip');if(!p){t.style.display='none';return;}const b=e.currentTarget.getBoundingClientRect();t.style.left=(e.clientX-b.left+12)+'px';t.style.top=(e.clientY-b.top-75)+'px';t.style.display='block';document.getElementById('cg-tip-h').style.color=p.dataset.tc;document.getElementById('cg-tip-h').textContent=p.dataset.tl;document.getElementById('cg-tip-s').textContent=p.dataset.ts;document.getElementById('cg-tip-v').textContent=p.dataset.tv;document.getElementById('cg-tip-p').textContent=p.dataset.tp+' of estimated budget';})(event)"
           onmouseleave="document.getElementById('cg-tip').style.display='none'">
           ${arcs}${tipLabels}
