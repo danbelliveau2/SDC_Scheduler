@@ -8906,8 +8906,8 @@ function _procCostWaterfall(c) {
     const overTag  = r.over ? `<span style="font-size:var(--fs-2xs);background:#fee2e2;color:#dc2626;border-radius:3px;padding:1px 4px;font-weight:var(--fw-bold);margin-left:5px;vertical-align:middle;">OVER</span>` : '';
     const border   = i < rings.length - 1 ? 'border-bottom:1px solid #f1f5f9;' : '';
     return `
-      <div style="display:flex;align-items:center;gap:6px;padding:3px 0;${border}">
-        <div style="width:3px;height:30px;border-radius:2px;background:${barColor};flex-shrink:0;"></div>
+      <div style="display:flex;align-items:center;gap:6px;padding:2px 0;${border}">
+        <div style="width:3px;height:24px;border-radius:2px;background:${barColor};flex-shrink:0;"></div>
         <div style="flex:1;min-width:0;">
           <div style="font-size:var(--fs-sm);font-weight:var(--fw-bold);color:#1e293b;">${r.label}${overTag}</div>
           <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.4px;margin-top:1px;">${r.sub}</div>
@@ -8935,17 +8935,17 @@ function _procCostWaterfall(c) {
           <div id="cg-tip-v" style="font-weight:var(--fw-extrabold);font-size:var(--fs-lg);"></div>
           <div id="cg-tip-p" style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;"></div>
         </div>
-        <svg viewBox="0 0 ${VW} 104" style="width:100%;max-width:260px;height:auto;display:block;margin:0 auto;"
+        <svg viewBox="0 0 ${VW} 104" style="width:100%;max-width:200px;height:auto;display:block;margin:0 auto;"
           onmousemove="(function(e){const p=e.target.closest('[data-tl]');const t=document.getElementById('cg-tip');if(!p){t.style.display='none';return;}const b=e.currentTarget.getBoundingClientRect();t.style.left=(e.clientX-b.left+12)+'px';t.style.top=(e.clientY-b.top-75)+'px';t.style.display='block';document.getElementById('cg-tip-h').style.color=p.dataset.tc;document.getElementById('cg-tip-h').textContent=p.dataset.tl;document.getElementById('cg-tip-s').textContent=p.dataset.ts;document.getElementById('cg-tip-v').textContent=p.dataset.tv;document.getElementById('cg-tip-p').textContent=p.dataset.tp+' of estimated budget';})(event)"
           onmouseleave="document.getElementById('cg-tip').style.display='none'">
           ${arcs}${tipLabels}
         </svg>
-        <div style="text-align:center;margin-top:1px;padding-bottom:4px;border-bottom:1px solid #f1f5f9;">
-          <div style="font-size:var(--fs-xl);font-weight:var(--fw-extrabold);color:${mainColor};line-height:1;">${estimated ? mainPct + '%' : '—'}</div>
+        <div style="text-align:center;margin-top:0;padding-bottom:3px;border-bottom:1px solid #f1f5f9;">
+          <div style="font-size:var(--fs-lg);font-weight:var(--fw-extrabold);color:${mainColor};line-height:1;">${estimated ? mainPct + '%' : '—'}</div>
           <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-top:1px;">of budget purchased</div>
         </div>
       </div>
-      <div style="padding:0 8px 5px;">${legendRows}</div>
+      <div style="padding:0 8px 4px;">${legendRows}</div>
     </div>
   `;
 }
