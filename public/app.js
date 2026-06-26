@@ -14446,7 +14446,7 @@ function _wireProcDrawer(el, job, project) {
       return;
     }
     const copyBtn = t.closest('[data-copy]');
-    if (copyBtn) { const pn = copyBtn.dataset.copy; if (pn) { try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {} } return; }
+    if (copyBtn) { const pn = copyBtn.dataset.copy; if (pn) { try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {} } if (copyBtn.closest('.proc-prow')) return; }
     const poClick = t.closest('[data-poid].clickable');
     if (poClick) {
       const poId = poClick.dataset.poid;
