@@ -1,130 +1,128 @@
-# Contributing
+# Contributing to SDC Scheduler
 
-Short version: read `CLAUDE.md`, branch off `main`, keep PRs small, never bump the rev.
+## Who works on this repo
 
----
-
-## Roles & review (two-developer workflow)
-
-| Who | Role | What they do |
-|---|---|---|
-| **Dan** (`@danbelliveau2`) | **Lead / owner** | Owns `main`. Reviews + merges every PR. Pushes rev bumps. Sole person who edits `public/release-notes.js`. Code owner of the whole repo (`.github/CODEOWNERS`). |
-| **Abhi** | **Sub-developer** | Works on `feature/…` and `fix/…` branches and opens PRs into `main`. Does **not** push directly to `main` or merge his own PRs. |
-
-**The loop:**
-1. Abhi branches off `main` → `feature/<short-name>`, keeps it small.
-2. Pushes the branch and opens a PR into `main` (the PR template auto-fills — fill in the verification section).
-3. `CODEOWNERS` auto-requests **Dan's** review. Dan reviews, asks for changes if needed, then merges.
-4. `main` auto-deploys to prod (the server's auto-updater pulls `main` every ~2 min), so only merged-and-reviewed code reaches everyone.
-
-**Locking it down (one-time, Dan does this in GitHub):** Settings → Branches → add a rule for `main`:
-- ✅ Require a pull request before merging → Require approvals (1) → **Require review from Code Owners**.
-- ✅ Add Abhi as a collaborator with **Write** access (not Admin), so the branch rule forces him through PRs while Dan (Admin) can still push directly when needed.
-
-Until that rule is on, the convention above is honored by agreement: **Abhi opens PRs, Dan merges.**
-
-A map of where each kind of change lives is in **"Where things go"** below — start there when you pick up a task.
+| Developer | GitHub | Role |
+|-----------|--------|------|
+| Dan | @danbelliveau2 | Core features, frontend (`app.js`, CSS, HTML) |
+| Abhi | @akamuju | Deployment, UI/UX, backend (server, DB, integrations) |
 
 ---
 
-## Local setup
+## Git workflow — one branch, both push to `main`
 
 ```bash
-git clone https://github.com/danbelliveau2/SDC_Scheduler.git
-cd SDC_Scheduler
-npm install
-cp .env.example .env             # leave AUTH_ENABLED=false for local dev
-node server.js
+# Start of EVERY session — do this first, always
+git pull origin main
+
+# End of session — push your work
+git add -A
+git commit -m "feat: description"
+git push origin main
 ```
 
-Open `http://localhost:3000`. Hot reload? Use `node --watch server.js` (built into Node 22+) — the server restarts on file save. The client doesn't hot-reload; refresh the browser after editing `public/*`.
+The production server pulls from `main` every 2 minutes. Your push goes live automatically.
 
----
-
-## Branches
-
-- `main` — stable. Dan pushes revs here.
-- `feature/<short-name>` — your work. Branch off `main`, keep it small.
-- `fix/<short-name>` — bug fixes.
-
-PR target is always `main`. Don't merge into `main` yourself; open a PR for review.
-
----
-
-## Commit style
-
-One concrete change per commit. Imperative subject ≤ 70 chars, ends without a period:
-
-```
-Add @mention email notifications
-
-Hook emailService.sendMentionEmail into the comment POST handler.
-Looks up the @mentioned user's email from the users table; falls
-back to no-op when SMTP_HOST is empty.
+**If push is rejected** (someone pushed while you were working):
+```bash
+git pull --rebase origin main   # rebase your commits on top of theirs
+git push origin main
 ```
 
-Avoid:
-- `WIP`, `fix stuff`, `update`
-- Reformat-only commits mixed with logic changes — split them
-- Bumping the rev in `public/release-notes.js` (only Dan does that)
+---
+
+## File ownership — who edits what
+
+### Dan owns (frontend)
+
+| File | Notes |
+|------|-------|
+| `public/app.js` | Main SPA — vanilla JS, 20k+ lines |
+| `public/styles.css` | All app CSS |
+| `public/index.html` | Entry point — script load order matters |
+| `public/phases.js` | Phase/dept hierarchy |
+| `public/release-notes.js` | **Dan bumps the rev only — never touch this** |
+| `public/realtime-ui.js` | Socket.io client |
+| `public/auth-ui.js` / `auth-ui.css` | Login UI |
+
+### Abhi owns (backend + deployment)
+
+| File | Notes |
+|------|-------|
+| `server.js` | Express + Socket.io + MySQL — do NOT SQLite-ify |
+| `db.js` | MySQL schema + boot migrations |
+| `mysqlDb.js` | MySQL connection pool — production DB layer |
+| `hoursApi.js` | Power BI DAX bridge |
+| `etoDb.js` | Total ETO MSSQL read-only bridge |
+| `agent.js` | Claude AI tool-using agent |
+| `auth.js` | JWT, roles (viewer/editor/admin), lockout |
+| `ops.js` | DB backup, health, status |
+| `backfillProjects.js` | ETO project auto-registration |
+| `cronJobs.js` | Scheduled jobs (backup, sync, digest) |
+| `emailService.js` | SMTP — mentions, digests, alerts |
+| `routes/` | All 12 route files |
+| `mcp/` | Read-only MCP server (port 4100) |
+| `custom-public/` | Frontend overlay patches |
+| `scripts/` | Auto-updater, deployment scripts |
+| `ecosystem.config.js` | PM2 process definitions |
 
 ---
 
-## The hard rules
+## Critical: MySQL in production, SQLite in Dan's local dev
 
-Lifted from `CLAUDE.md`. These are not suggestions:
+Dan develops locally with `node:sqlite` (zero install).
+Production runs **MySQL 9.7**. All production DB code uses `mysql2/promise` via `mysqlDb.js`.
 
-1. **Never bump the rev** in `public/release-notes.js`.
-2. **Never tell the user to open dev tools.** Use visible UI, in-app toasts, or just fix the thing.
-3. **Never commit secrets.** `.env`, credential files, anything matching `azure-backup-*.json` are gitignored — keep it that way.
-4. **Never claim it works without verifying.** Run the curl / open the page / read the rows in the DB.
-5. **Keep the personal view (Actions tab) aligned with the main Schedule view.** Same patterns, same column headers, same row-by-row Gantt alignment.
+**Dan: never push SQLite imports or `DatabaseSync` into `db.js` or `server.js` — it crashes production.**
 
----
-
-## Where things go
-
-| You want to … | Edit … |
-|---|---|
-| Add an API endpoint | `server.js` next to related routes; guard with `requireRole(…)`; end with `io.emit(…)` + `sync(…)` |
-| Add a grid column | `FIELDS` in `server.js`, `renderHeaders` + cell builders in `public/app.js` |
-| Add a Gantt overlay | New `drawXyz()` in `public/app.js`, wrapped in `try/catch`, called from `renderGantt()` |
-| Add a setting | `DEFAULT_SETTINGS` in `db.js` + editor in `view-setup` of `public/index.html` |
-| Add a phase / discipline | `HIERARCHY` in `public/phases.js` |
-| Add a Socket.io event | Server: `io.emit('your:event', payload)`. Client: `socket.on('your:event', …)` in `public/realtime-ui.js` |
+When Dan adds a new DB column locally, tell Abhi the table + column name.
+Abhi adds an idempotent migration to `db.js`:
+```js
+tryAlter('ALTER TABLE tasks ADD COLUMN my_col VARCHAR(255) DEFAULT NULL');
+```
 
 ---
 
-## Common pitfalls (lessons from past pain)
+## Production server
 
-- **Every drawer in `renderGantt()` must be `try/catch`-wrapped.** A throw inside one drawer skips every drawer after it. Half-day debugging tax.
-- **Don't `wrap.insertBefore(elem, label)` on a frappe-gantt bar-wrapper.** Use `appendChild` and rely on z-order.
-- **SVG `<text>` needs `style.fontFamily = 'sans-serif'` inline.** Otherwise it inherits an invisible font.
-- **`state.gantt.gantt_start` is a Date object.** Don't concatenate strings to it — wrap in `new Date(…)`.
-- **Inputs flicker on save because of Socket.io.** Add `window._lastLocalEdit = Date.now()` before the fetch; the client suppresses self-echoes within 800 ms.
+```
+GitHub (main branch)
+      ↓  auto-pulled every 2 min by sdc-scheduler-updater
+Windows Server — SERVER-APP1
+      ├─ sdc-scheduler         port 4003  (main app)
+      ├─ MySQL 9.7
+      └─ Power BI MCP exe      (job hours DAX bridge)
+```
 
----
-
-## Adding a new phase
-
-If you're porting another feature from Abhi's `feature/smartsheet-architecture` branch (or building something new of similar scope):
-
-1. **Schema first.** Add the `CREATE TABLE IF NOT EXISTS` to `db.js`. Make it additive — never `DROP` or `ALTER` in destructive ways.
-2. **Server route.** Add to `server.js`, guard with `requireRole`, emit a Socket.io invalidate, call `sync(…)` for Azure.
-3. **Client UI.** Create a new file under `public/` (don't bloat `app.js`). Wire it into `index.html` with a `<script>` tag.
-4. **Env flag.** If the feature needs external creds or could damage data, gate it behind an env var that defaults to off. Document in `.env.example`.
-5. **Smoke test.** Add curl commands to your PR description that prove the happy path + at least one error path.
+- App URL on LAN: `http://SERVER-APP1:4003`
+- PM2 logs: `C:\Users\akamuju\.pm2\logs\sdc-scheduler-*.log`
+- Manual deploy trigger: `POST http://localhost:4013/trigger`
 
 ---
 
-## Testing
+## Adding features
 
-There's no test suite yet — additions welcome. For now, every change ships with a hand-curled verification: a `curl` command + expected response in the PR description.
+### New API route
+1. Add to the relevant file in `routes/` (or create a new one)
+2. Mount in `server.js` if it's a new group
+3. Wire up in `public/app.js` via the `api` object
 
-For UI work: list the steps you took in the browser and the visible result. Don't say "tested" without listing what you actually clicked.
+### New frontend feature
+- **Dan**: edit `public/app.js` directly
+- **Abhi**: use `custom-public/app-local.js` for small patches; edit `public/app.js` for major features
+
+### New DB column
+- Dan: add in SQLite schema locally, tell Abhi the column name
+- Abhi: add `tryAlter(...)` migration in `db.js` — runs on next server boot, idempotent
 
 ---
 
-## When in doubt
+## Key gotchas (hard-won — don't repeat these)
 
-Ask once in chat, then move forward. Don't sit on a question for hours.
+1. **Never bump `public/release-notes.js` rev** — Dan's job only
+2. **Every Gantt drawer must be in `try/catch`** — one throw kills all subsequent drawers silently
+3. **`state.gantt.gantt_start` is a `Date` object** — never concatenate strings to it
+4. **SVG additions to `.bar-wrapper`: use `appendChild`, not `insertBefore`** — label is nested, not direct child
+5. **`mysqlDb.js` is never overwritten by the auto-updater** — preserved list
+6. **`.env` is never committed** — MySQL password, API keys, JWT secret live there
+7. **Compression filter excludes SSE routes** — buffering kills server-sent events

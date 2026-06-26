@@ -1,9 +1,35 @@
-# Code ownership — drives automatic PR review requests.
-# Dan (@danbelliveau2) is the lead/owner of the whole repo: every pull request
-# automatically requests his review, and (with branch protection on) needs his
-# approval before it can merge into main.
-#
-# Abhi is the sub-developer: he works on feature/ and fix/ branches and opens
-# PRs that Dan reviews + merges. He does not push straight to main.
+# Code ownership for SDC Scheduler.
+# Both developers push directly to main — no PR required for routine work.
+# For large features, open a PR so the other person can review before merge.
 
-*       @danbelliveau2
+# Dan owns all frontend files
+/public/app.js                @danbelliveau2
+/public/styles.css            @danbelliveau2
+/public/index.html            @danbelliveau2
+/public/phases.js             @danbelliveau2
+/public/release-notes.js      @danbelliveau2
+/public/realtime-ui.js        @danbelliveau2
+/public/auth-ui.js            @danbelliveau2
+/public/auth-ui.css           @danbelliveau2
+
+# Abhi owns all backend and deployment files
+/server.js                    @akamuju
+/db.js                        @akamuju
+/mysqlDb.js                   @akamuju
+/hoursApi.js                  @akamuju
+/etoDb.js                     @akamuju
+/agent.js                     @akamuju
+/auth.js                      @akamuju
+/ops.js                       @akamuju
+/backfillProjects.js          @akamuju
+/cronJobs.js                  @akamuju
+/emailService.js              @akamuju
+/routes/                      @akamuju
+/mcp/                         @akamuju
+/custom-public/               @akamuju
+/scripts/                     @akamuju
+/ecosystem.config.js          @akamuju
+
+# Shared — coordinate before changing
+/package.json                 @danbelliveau2 @akamuju
+/CLAUDE.md                    @danbelliveau2 @akamuju

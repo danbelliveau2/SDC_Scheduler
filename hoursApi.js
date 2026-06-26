@@ -40,6 +40,7 @@ let _buf = '';
 let _ready = false;
 let _pending = new Map();
 let _nextId = 10;
+let _consecErrors = 0;
 
 function _log(...args) { console.log('[hoursApi]', ...args); }
 function _err(...args) { console.error('[hoursApi]', ...args); }
@@ -84,8 +85,17 @@ function _startProc() {
         const { resolve, reject, timer } = _pending.get(msg.id);
         _pending.delete(msg.id);
         clearTimeout(timer);
-        if (msg.error) { _err('DAX error:', msg.error.message); return reject(new Error(msg.error.message)); }
-        if (msg.result?.isError) { _err('DAX isError:', msg.result?.content?.[0]?.text); return reject(new Error(msg.result?.content?.[0]?.text || 'DAX error')); }
+        if (msg.error) {
+          _err('DAX error:', msg.error.message);
+          if (++_consecErrors >= 3) { _err('3 consecutive DAX errors — restarting PBI exe'); _proc?.kill(); }
+          return reject(new Error(msg.error.message));
+        }
+        if (msg.result?.isError) {
+          _err('DAX isError:', msg.result?.content?.[0]?.text);
+          if (++_consecErrors >= 3) { _err('3 consecutive DAX errors — restarting PBI exe'); _proc?.kill(); }
+          return reject(new Error(msg.result?.content?.[0]?.text || 'DAX error'));
+        }
+        _consecErrors = 0;
         const text = msg.result?.content?.[0]?.text || '[]';
         _log('got DAX result, length:', text.length);
         try { resolve(JSON.parse(text)); }

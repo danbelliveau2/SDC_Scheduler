@@ -1,6 +1,45 @@
 # SDC Project Scheduler — Working Rules
 
-**Dan's rules. Read every session before touching code. Don't slip on these.**
+---
+
+## TWO DEVELOPERS — READ THIS FIRST
+
+This repo is maintained by two people with distinct roles. Read this before touching anything.
+
+| Person | Role | What they own |
+|--------|------|---------------|
+| **Dan** (danbelliveau2) | Core developer | `public/app.js`, `public/styles.css`, `public/index.html`, `public/release-notes.js`, `public/phases.js` |
+| **Abhi** (akamuju) | Deployment + UI/UX + Backend | `server.js`, `db.js`, `mysqlDb.js`, `hoursApi.js`, `etoDb.js`, `agent.js`, `ops.js`, `backfillProjects.js`, `cronJobs.js`, `emailService.js`, `auth.js`, `mcp/`, `custom-public/`, `routes/` |
+
+### CRITICAL — Production uses MySQL, NOT SQLite
+
+Dan's local dev uses `node:sqlite`. **Production runs MySQL (`mysql2` pool via `mysqlDb.js`).** These are completely different databases.
+
+- **NEVER rewrite `db.js` to use `node:sqlite` or `DatabaseSync`** — production will crash
+- **NEVER rewrite `server.js` to remove MySQL** — all routes depend on `mysqlDb.getPool()`
+- **NEVER remove `mysqlDb.js`** — it is the database connection layer for production
+- **NEVER remove or simplify `auth.js` JWT logic** — production has full role-based auth (viewer/editor/admin)
+
+### File ownership rules for AI agents
+
+If you are **Dan's Claude Code session** (working on features, frontend):
+- Edit `public/app.js`, `public/styles.css`, `public/index.html` freely
+- Do NOT touch `server.js`, `db.js`, `mysqlDb.js`, `hoursApi.js`, `etoDb.js`, `auth.js`, `ops.js`, `mcp/`
+- Do NOT add SQLite imports anywhere
+
+If you are **Abhi's Claude Code session** (deployment, UI/UX, backend):
+- Edit backend files freely
+- For frontend patches: use `custom-public/app-local.js` when possible
+- For major frontend features: edit `public/app.js` directly but coordinate with Dan
+
+### Git workflow (BOTH developers)
+
+```
+Before starting:  git pull origin main
+After finishing:  git push origin main
+```
+
+One branch: `main`. Always pull first. Never commit and forget to push — the production server auto-pulls from `main` every 2 minutes.
 
 ---
 
@@ -72,7 +111,7 @@
 
 ## Architecture notes (so you don't blow these away)
 
-- **Server**: `server.js` (Express + `node:sqlite`). FIELDS list at line 18 includes `completed_on`.
+- **Server**: `server.js` (Express + Socket.io + MySQL). Routes are in `routes/`. FIELDS list includes `completed_on`.
 - **Client**: single-page app under `public/`. `app.js` is the everything-file.
 - **Schema migrations**: `db.js` does `ALTER TABLE tasks ADD COLUMN …` on boot. Don't re-run, just add new lines if needed.
 - **`HIERARCHY`** constant drives every grid/gantt walk. Sections 10 / 40 / 50.
