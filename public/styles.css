@@ -3118,7 +3118,7 @@ body.customer-view .customer-view-flatten.is-active {
 /* Per-project Procurement drawer (opens down like Notes) */
 .schedule-proc-drawer { flex: 0 0 auto; display: flex; flex-direction: column; }
 .schedule-proc-drawer.is-collapsed .proc-drawer-body { display: none; }
-.proc-drawer-body { background: var(--surface, #fff); padding: 0 14px 24px; overflow-y: auto; max-height: 30vh; }
+.proc-drawer-body { background: var(--surface, #fff); padding: 0 14px 24px; overflow-y: auto; max-height: 65vh; }
 .proc-drawer-head {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 4px; margin-bottom: 4px;
