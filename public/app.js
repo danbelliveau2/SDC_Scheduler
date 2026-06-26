@@ -9112,7 +9112,7 @@ function _procOpenPoPanel(job, vname, poId) {
   document.getElementById('proc-po-overlay')?.remove();
   const fmt = d => d ? fmtDate(d) : '—';
   const initials = (vname || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-  const badge = { received: ['RECEIVED', 'vstat-ok'], late: ['PAST DUE', 'vstat-bad'], open: ['OPEN', 'vstat-warn'] }[po.status] || ['', ''];
+  const badge = { received: ['RECEIVED', 'vstat-ok'], late: ['PAST DUE', 'vstat-bad'], open: ['LATE / EXP', 'vstat-warn'] }[po.status] || ['', ''];
   const barColor = _procBarColor(po.pct);
   const ordered = po.lines.map(l => l.ordered).filter(Boolean).sort()[0];
   const due = po.lines.map(l => l.expected).filter(Boolean).sort().slice(-1)[0];
