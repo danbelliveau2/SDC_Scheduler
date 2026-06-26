@@ -2625,8 +2625,8 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-tab-hint { margin-left: auto; font-size: var(--fs-sm); color: #94a3b8; font-style: italic; }
 .proc-drawer-tab-actions { margin-left: auto; display: inline-flex; gap: 8px; }
 
-/* Cost summary card — replaces inline styles in the assembly drawer */
-.proc-cost-card {
+/* Cost summary card — drawer variant (scoped away from the full Cost tab version) */
+.proc-cost-card-drawer {
   background: white;
   padding: 5px 8px;
   border-radius: 6px;

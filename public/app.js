@@ -14327,7 +14327,7 @@ function renderScheduleProcurement() {
       const costSummaryHtml = costData && !costData.error ? (() => {
         const c = costData;
         const usd = v => _procUsd(v);
-        return `<div class="proc-cost-card">
+        return `<div class="proc-cost-card-drawer">
           <div class="proc-cost-card-title">Cost Summary</div>
           <div class="proc-cost-estimate-row">
             <div>
