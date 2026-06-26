@@ -2425,7 +2425,7 @@ body.customer-view .customer-view-flatten.is-active {
      left (justify-content:start) instead of stretched across a wide screen. */
   /* …descriptive columns…, then a 1fr spacer that pushes cost/bar/pct to the
      right edge while the left columns stay packed and aligned. */
-  grid-template-columns: 1fr 8fr 21fr 5fr 5fr 7fr 3fr 1fr 5fr 6fr 2fr;
+  grid-template-columns: 18px 8fr 21fr 5fr 5fr 7fr 3fr 1fr 5fr 6fr 2fr;
   align-items: center;
   gap: 6px;
   padding: 5px 12px 5px 10px;
@@ -2514,7 +2514,7 @@ body.customer-view .customer-view-flatten.is-active {
   overflow: hidden;
 }
 .proc-parts {
-  --ap0: 150px; --ap1: 1fr; --ap2: 90px; --ap3: 72px; --ap4: 36px; --ap5: 76px; --ap6: 76px;
+  --ap0: 150px; --ap1: 1fr; --ap2: 90px; --ap3: 72px; --ap4: 24px; --ap5: 76px; --ap6: 76px;
 }
 .proc-phead, .proc-prow {
   display: grid;
@@ -2541,7 +2541,7 @@ body.customer-view .customer-view-flatten.is-active {
   border-bottom: 1px solid var(--proc-parts-accent, #1574C4);
 }
 .proc-phead > * { border-right-color: rgba(255,255,255,0.08); }
-.proc-prow { border-bottom: 1px solid #e8edf3; background: #fff; font-weight: var(--fw-semibold); color: #0f172a; padding-left: 20px; }
+.proc-prow { border-bottom: 1px solid #e8edf3; background: #fff; font-weight: var(--fw-semibold); color: #0f172a; padding-left: 0; }
 .proc-prow:last-child { border-bottom: none; }
 .proc-prow .num, .proc-phead .num { text-align: right; }
 .proc-pdesc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #0f172a; font-weight: var(--fw-semibold); }
