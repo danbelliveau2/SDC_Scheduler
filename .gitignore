@@ -3,7 +3,9 @@ node_modules/
 
 # Runtime cache / generated files
 pbi_cache.json
-.update-sha
+.pbi-cache/
+.push-pending
+.update-conflict
 
 # Local reference/scratch material
 abhi-reference/
@@ -48,3 +50,4 @@ scripts/auto-pull.log
 
 # Auto-updater sync state (runtime, not source)
 .update-sha
+
