@@ -8575,6 +8575,22 @@ function _wireEtoBannerChip(banner, project) {
   chip.addEventListener('click', () => guess ? _etoLinkSuggested(project, guess) : _etoLinkJobFlow(project));
 }
 
+function _pbiChipHtml(project) {
+  if (!_hoursAvailable) return '';
+  const idx = state.projectsIndex && state.projectsIndex[project];
+  const job = idx && idx.hours_job_id;
+  if (job) {
+    return `<button type="button" id="pbi-link-chip" class="eto-chip" title="Power BI hours linked to job ${escapeHtml(String(job))}. Click to change.">PBI #${escapeHtml(String(job))}</button>`;
+  }
+  return `<button type="button" id="pbi-link-chip" class="eto-chip eto-chip-unlinked" title="Link a Power BI job ID to show hours data for this project.">🔗 Link PBI job…</button>`;
+}
+
+function _wirePbiChip(banner, project) {
+  const chip = banner.querySelector('#pbi-link-chip');
+  if (!chip) return;
+  chip.addEventListener('click', () => _hoursLinkJobFlow(project));
+}
+
 // Persist the job-number link. Updates the projects row if it exists, or
 // CREATES it when the project is only a task-tab with no projects-table row yet
 // (POST /api/projects is create-or-return). Returns true on success.
@@ -11948,8 +11964,9 @@ function renderProjectTabs() {
       wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
-      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>${_etoBannerChipHtml(p)}`;
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>${_etoBannerChipHtml(p)}${_pbiChipHtml(p)}`;
       _wireEtoBannerChip(banner, p);
+      _wirePbiChip(banner, p);
     }
   }
 
@@ -14556,10 +14573,8 @@ function renderScheduleHours() {
     const diffLabel = diff > 0 ? ` (${over ? '+' : '-'}${diff})` : '';
     stat = `${Math.round(q)} quoted · <span style="color:${over ? 'var(--danger)' : 'var(--success)'}; font-weight:700">${Math.round(a)} actual${diffLabel}</span>`;
   }
-  const hoursLinked = idx && idx.hours_job_id;
-  const hoursChip = `<span id="hours-link-chip" class="eto-chip${hoursLinked ? '' : ' eto-chip-unset'}" title="${hoursLinked ? 'Click to change the Power BI job ID' : 'Click to link a Power BI job ID for hours'}" style="margin-left:6px;cursor:pointer">${hoursLinked ? `PBI #${escapeHtml(String(hoursLinked))}` : '＋ Link PBI job'}</span>`;
   const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
-    <span class="notes-bar-title">⏱ Job Hours${hoursChip}</span>
+    <span class="notes-bar-title">⏱ Job Hours</span>
     <span class="notes-count">${stat}</span>
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
@@ -14946,7 +14961,6 @@ async function _hoursLinkJobFlow(project) {
 function _wireHoursDrawer(el, job, project) {
   _drawerRestoreHeight('hours-drawer-body');
   el.onclick = (e) => {
-    if (e.target.closest('#hours-link-chip')) { e.stopPropagation(); _hoursLinkJobFlow(project); return; }
     if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
       const willOpen = el.classList.contains('is-collapsed');
       el.classList.toggle('is-collapsed');
