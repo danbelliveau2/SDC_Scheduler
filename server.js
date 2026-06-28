@@ -23,7 +23,7 @@ const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./lib/aut
 const ops = require('./lib/ops'); // backups, health/status, crash logging
 const agent = require('./lib/agent'); // local-Ollama read-only assistant
 let hoursApi;
-try { hoursApi = require('./lib/hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')), getJobHoursBatch: () => Promise.resolve({}) }; }
+try { hoursApi = require('./lib/hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')) }; }
 let emailSvc;
 try { emailSvc = require('./lib/emailService'); }
 catch (_) { emailSvc = { sendMentionEmail: () => {}, sendDigest: () => {} }; }
@@ -323,11 +323,13 @@ async function startServer({ port } = {}) {
   // Warm up Power BI hours cache for all active projects 30s after startup.
   // Runs silently in background — errors are ignored so startup is never blocked.
   if (hoursApi.ENABLED) {
-    setTimeout(async () => {  // 5s: fast enough to warm cache before first user request
+    setTimeout(async () => {
       try {
-        // Single batch DAX query for all jobs — much faster than per-job sequential calls
-        const results = await hoursApi.getJobHoursBatch().catch(e => { console.warn('[hoursApi] batch warmup failed:', e.message); return {}; });
-        console.log(`[hoursApi] warmup complete — cached ${Object.keys(results).length} jobs`);
+        const [rows] = await pool.query(`SELECT hours_job_id, job_number FROM projects WHERE status = 'active' AND (hours_job_id IS NOT NULL OR job_number IS NOT NULL)`);
+        const ids = [...new Set(rows.map(r => (r.hours_job_id || r.job_number || '').trim()).filter(Boolean))];
+        console.log(`[hoursApi] warmup starting for ${ids.length} job(s):`, ids.join(', '));
+        for (const id of ids) await hoursApi.getJobHours(id).catch(() => {});
+        console.log('[hoursApi] warmup complete');
       } catch (e) { console.warn('[hoursApi] warmup failed:', e.message); }
     }, 5_000);
   }
