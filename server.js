@@ -23,7 +23,7 @@ const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./lib/aut
 const ops = require('./lib/ops'); // backups, health/status, crash logging
 const agent = require('./lib/agent'); // local-Ollama read-only assistant
 let hoursApi;
-try { hoursApi = require('./lib/hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')) }; }
+try { hoursApi = require('./lib/hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')), getJobHoursBatch: () => Promise.resolve({}) }; }
 let emailSvc;
 try { emailSvc = require('./lib/emailService'); }
 catch (_) { emailSvc = { sendMentionEmail: () => {}, sendDigest: () => {} }; }
@@ -311,7 +311,7 @@ async function startServer({ port } = {}) {
   server.on('error', err => console.error('[scheduler] Server error:', err.message));
   try {
     const cron = require('./lib/cronJobs');
-    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops });
+    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops, hoursApi });
   } catch (_) { /* cronJobs.js is optional */ }
   try {
     const { backfillProjects } = require('./lib/backfillProjects');
@@ -323,19 +323,13 @@ async function startServer({ port } = {}) {
   // Warm up Power BI hours cache for all active projects 30s after startup.
   // Runs silently in background — errors are ignored so startup is never blocked.
   if (hoursApi.ENABLED) {
-    setTimeout(async () => {
+    setTimeout(async () => {  // 5s: fast enough to warm cache before first user request
       try {
-        const [rows] = await pool.query(`SELECT hours_job_id, job_number FROM projects WHERE status = 'active' AND (hours_job_id IS NOT NULL OR job_number IS NOT NULL)`);
-        const seen = new Set();
-        for (const row of rows) {
-          const id = (row.hours_job_id || row.job_number || '').trim();
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
-          hoursApi.getJobHours(id).catch(() => {});
-        }
-        console.log(`[hoursApi] warmup started for ${seen.size} job(s):`, [...seen].join(', '));
+        // Single batch DAX query for all jobs — much faster than per-job sequential calls
+        const results = await hoursApi.getJobHoursBatch().catch(e => { console.warn('[hoursApi] batch warmup failed:', e.message); return {}; });
+        console.log(`[hoursApi] warmup complete — cached ${Object.keys(results).length} jobs`);
       } catch (e) { console.warn('[hoursApi] warmup failed:', e.message); }
-    }, 30_000);
+    }, 5_000);
   }
 
   return server;

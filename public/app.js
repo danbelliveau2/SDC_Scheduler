@@ -8523,7 +8523,13 @@ function _hoursCheckOnce() {
   if (_hoursChecked) return;
   _hoursChecked = true;
   fetch('/api/hours/status').then(r => r.json()).then(s => {
-    if (s && s.enabled) { _hoursAvailable = true; try { renderScheduleHours(); } catch (_) {} try { renderProjectTabs(); } catch (_) {} }
+    if (s && s.enabled) {
+      _hoursAvailable = true;
+      try { renderScheduleHours(); } catch (_) {}
+      try { renderProjectTabs(); } catch (_) {}
+      // Start warming the frontend cache for all local jobs immediately
+      _prefetchJobHours();
+    }
   }).catch(() => {});
 }
 
@@ -10386,7 +10392,7 @@ function renderVendorPOsPage() {
 }
 
 // ─── Job Hours Page ───────────────────────────────────────────────────────────
-const _jhPageState = { jobIds: [], search: '', pbiJobs: null, hoursType: 'quoted', dropdownOpen: false, fnFilter: null, fnDropOpen: false };
+const _jhPageState = { jobIds: [], search: '', pbiJobs: null, hoursType: 'quoted', dropdownOpen: false, fnFilter: null, fnDropOpen: false, _didAutoSelect: false };
 
 function renderJobHoursPage() {
   const root = document.getElementById('job-hours-page');
@@ -10394,7 +10400,7 @@ function renderJobHoursPage() {
 
   // ── Build job list from local DB merged with PBI status ───────────────────
   const localJobs = Object.entries(state.projectsIndex || {})
-    .map(([name, info]) => ({ id: String(info.job_number || '').trim(), name, status: '' }))
+    .map(([name, info]) => ({ id: String(info.hours_job_id || info.job_number || '').trim(), name, status: '' }))
     .filter(j => j.id);
 
   const pbiMap = new Map((_jhPageState.pbiJobs || []).map(j => [j.id, j]));
@@ -10410,21 +10416,26 @@ function renderJobHoursPage() {
   }
   allJobs.sort((a, b) => a.name.localeCompare(b.name));
 
-  // Auto-select first job on first load
-  if (!_jhPageState.jobIds.length && allJobs.length) {
+  // Auto-select first job only on true first load, not after a user clears/removes
+  if (!_jhPageState._didAutoSelect && !_jhPageState.jobIds.length && allJobs.length) {
     _jhPageState.jobIds = [allJobs[0].id];
+    _jhPageState._didAutoSelect = true;
   }
 
   const selIds = new Set(_jhPageState.jobIds);
   const q      = _jhPageState.search.toLowerCase();
 
-  // Button label
   const selCount = selIds.size;
-  const selLabel = selCount === 0 ? 'Select job…'
-    : selCount === 1 ? (() => { const j = allJobs.find(x => x.id === [...selIds][0]); return j ? `${j.id} — ${j.name}` : [...selIds][0]; })()
-    : `${selCount} jobs selected`;
-
   const dropOpen = _jhPageState.dropdownOpen;
+
+  // Build pill chips for selected jobs
+  const pillsHtml = selCount === 0
+    ? `<span class="jhp-dd-placeholder">Select job…</span>`
+    : [...selIds].map(id => {
+        const j = allJobs.find(x => x.id === id);
+        const lbl = j ? `${id} — ${j.name}` : id;
+        return `<span class="jhp-sel-pill"><span class="jhp-sel-pill-lbl">${escapeHtml(lbl)}</span><span class="jhp-sel-pill-x" data-jhp-pill-rm="${escapeHtml(id)}">×</span></span>`;
+      }).join('');
 
   // Build grouped list with checkboxes
   const statuses = ['Active', 'Complete', ''];
@@ -10452,8 +10463,8 @@ function renderJobHoursPage() {
         <div class="jhp-filter-block">
           <div class="jhp-filter-block-title">Job Status, Job</div>
           <div class="jhp-dd-wrap${dropOpen ? ' is-open' : ''}">
-            <button class="jhp-dd-btn" id="jhp-dd-toggle">
-              <span class="jhp-dd-btn-label">${escapeHtml(selLabel)}</span>
+            <button class="jhp-dd-btn${selCount ? ' has-pills' : ''}" id="jhp-dd-toggle">
+              <span class="jhp-dd-pills-wrap">${pillsHtml}</span>
               <span class="jhp-dd-caret">${dropOpen ? '▲' : '▼'}</span>
             </button>
             ${dropOpen ? `
@@ -10525,10 +10536,24 @@ function renderJobHoursPage() {
     renderJobHoursPage();
   });
 
-  // Search inside dropdown
+  // Pill × remove buttons — stop propagation so they don't toggle the dropdown
+  root.querySelectorAll('[data-jhp-pill-rm]').forEach(x => {
+    x.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = x.dataset.jhpPillRm;
+      _jhPageState.jobIds = _jhPageState.jobIds.filter(j => j !== id);
+      _jhPageState.fnFilter = null;
+      renderJobHoursPage();
+    });
+  });
+
+  // Search — re-render but restore focus so typing is uninterrupted
   root.querySelector('.jhp-dd-search')?.addEventListener('input', e => {
+    const pos = e.target.selectionStart;
     _jhPageState.search = e.target.value;
     renderJobHoursPage();
+    const inp = root.querySelector('.jhp-dd-search');
+    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
   });
 
   // Hours type radios
@@ -10539,15 +10564,19 @@ function renderJobHoursPage() {
   // Load hours for selected jobs
   if (selCount) _loadJhpHours();
 
-  // Pre-fetch visible jobs in the background
-  allJobs.slice(0, 8).forEach(j => {
-    if (!_hoursCache[j.id] && !_hoursFetching[j.id]) {
+  // Sequential pre-fetch — keeps at most 1 background query in-flight at a time
+  (async () => {
+    for (const j of allJobs) {
+      if (_hoursCache[j.id] || _hoursFetching[j.id]) continue;
       _hoursFetching[j.id] = true;
-      fetch(`/api/hours/${encodeURIComponent(j.id)}`)
-        .then(r => r.json()).then(d => { _hoursCache[j.id] = d; _hoursFetching[j.id] = false; })
-        .catch(() => { _hoursFetching[j.id] = false; });
+      try {
+        const r = await fetch(`/api/hours/${encodeURIComponent(j.id)}`);
+        const d = await r.json();
+        if (!d?.error) _hoursCache[j.id] = d;
+      } catch (_) {}
+      _hoursFetching[j.id] = false;
     }
-  });
+  })();
 
   // Fetch PBI jobs list in background to enrich status
   if (!_jhPageState.pbiJobs) {
@@ -10557,19 +10586,23 @@ function renderJobHoursPage() {
   }
 }
 
-function _prefetchJobHours() {
+// Sequential prefetch — one job at a time so user-triggered requests
+// queue behind at most 1 background query instead of all of them at once.
+async function _prefetchJobHours() {
   const localJobs = Object.entries(state.projectsIndex || {})
     .map(([name, info]) => ({ id: String(info.hours_job_id || info.job_number || '').trim(), name }))
     .filter(j => j.id)
     .sort((a, b) => a.name.localeCompare(b.name));
-  localJobs.slice(0, 8).forEach(j => {
-    if (!_hoursCache[j.id] && !_hoursFetching[j.id]) {
-      _hoursFetching[j.id] = true;
-      fetch(`/api/hours/${encodeURIComponent(j.id)}`)
-        .then(r => r.json()).then(d => { _hoursCache[j.id] = d; _hoursFetching[j.id] = false; })
-        .catch(() => { _hoursFetching[j.id] = false; });
-    }
-  });
+  for (const j of localJobs) {
+    if (_hoursCache[j.id] || _hoursFetching[j.id]) continue;
+    _hoursFetching[j.id] = true;
+    try {
+      const r = await fetch(`/api/hours/${encodeURIComponent(j.id)}`);
+      const d = await r.json();
+      if (!d?.error) _hoursCache[j.id] = d;
+    } catch (_) {}
+    _hoursFetching[j.id] = false;
+  }
 }
 
 function _jhBarChart(title, groups, seriesLabels, seriesColors, W, H) {
@@ -10705,23 +10738,32 @@ async function _loadJhpHours() {
 
   if (!_hoursCache[job]) {
     // Already being pre-fetched? Wait for it, otherwise fetch now
+    const _loadingMsg = () => `<div class="proc-empty jhp-loading-msg"><span class="jhp-spinner"></span>Querying Power BI… this takes 10–30 s on first load</div>`;
     if (_hoursFetching[job]) {
-      content.innerHTML = `<div class="proc-empty">Loading hours from Power BI…</div>`;
+      content.innerHTML = _loadingMsg();
       await new Promise(resolve => {
         const t = setInterval(() => { if (!_hoursFetching[job]) { clearInterval(t); resolve(); } }, 200);
       });
     } else {
-      content.innerHTML = `<div class="proc-empty">Loading hours from Power BI…</div>`;
+      content.innerHTML = _loadingMsg();
       _hoursFetching[job] = true;
+      let fetchedData;
       try {
         const res = await fetch(`/api/hours/${encodeURIComponent(job)}`);
-        _hoursCache[job] = await res.json();
+        fetchedData = await res.json();
       } catch (e) {
-        content.innerHTML = `<div class="proc-empty proc-error">Failed to load hours: ${escapeHtml(String(e))}</div>`;
         _hoursFetching[job] = false;
+        content.innerHTML = `<div class="proc-empty proc-error">⚠ Failed to load hours: ${escapeHtml(String(e))}<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
+        content.querySelector('.jhp-retry-btn')?.addEventListener('click', () => _loadJhpHours());
         return;
       }
       _hoursFetching[job] = false;
+      if (fetchedData?.error) {
+        content.innerHTML = `<div class="proc-empty proc-error">⚠ ${escapeHtml(fetchedData.error)}<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
+        content.querySelector('.jhp-retry-btn')?.addEventListener('click', () => _loadJhpHours());
+        return;
+      }
+      _hoursCache[job] = fetchedData;
     }
   }
 
@@ -14545,6 +14587,27 @@ function _wireProcDrawer(el, job, project) {
 // Collapsible panel below Procurement. Shows Quoted / Actual / Diff per
 // function, grouped by billing group, pulled from the Power BI semantic model.
 // Only visible when PBI_USER+PBI_PASS are configured and the project has a job number.
+
+async function _loadScheduleHoursDrawer(job, project) {
+  if (!_hoursCache[job]) {
+    if (_hoursFetching[job]) {
+      await new Promise(resolve => {
+        const t = setInterval(() => { if (!_hoursFetching[job]) { clearInterval(t); resolve(); } }, 200);
+      });
+    } else {
+      _hoursFetching[job] = true;
+      try {
+        const res = await fetch(`/api/hours/${encodeURIComponent(job)}`);
+        _hoursCache[job] = await res.json();
+      } catch (e) {
+        _hoursCache[job] = { error: String(e) };
+      }
+      _hoursFetching[job] = false;
+    }
+  }
+  if ((state.filters && state.filters.project) === project) renderScheduleHours();
+}
+
 function renderScheduleHours() {
   const el = document.getElementById('schedule-hours');
   if (!el) return;
@@ -14578,30 +14641,13 @@ function renderScheduleHours() {
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
 
-  // Fetch if not already in flight; if already fetching, attach a watcher so the
-  // drawer re-renders automatically when data arrives (mirrors Job Hours tab pattern).
-  if (!data && !_hoursFetching[job]) {
-    _hoursFetching[job] = true;
-    fetch(`/api/hours/${encodeURIComponent(job)}`)
-      .then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || r.status))))
-      .then(d => { _hoursCache[job] = d; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); })
-      .catch(e => { _hoursCache[job] = { error: e.message }; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); });
-  } else if (!data && _hoursFetching[job]) {
-    // A prefetch is already in flight — poll every 300ms and re-render when done.
-    const t = setInterval(() => {
-      if (!_hoursFetching[job]) {
-        clearInterval(t);
-        if ((state.filters && state.filters.project) === project) renderScheduleHours();
-      }
-    }, 300);
-  }
-
   if (collapsed) { el.innerHTML = bar; _wireHoursDrawer(el, job, project); layoutNotesPanel(); return; }
 
   if (!data) {
     el.innerHTML = bar + `<div class="hours-drawer-body">${DRAWER_HANDLE('hours-drawer-body')}<div class="proc-empty">Loading job hours from Power BI…</div></div>`;
     _wireHoursDrawer(el, job, project);
     layoutNotesPanel();
+    _loadScheduleHoursDrawer(job, project);
     return;
   }
 
@@ -24548,7 +24594,7 @@ async function init() {
       for (const p of projects) {
         if (!p || !p.name) continue;
         // ETO integration + project-link chip need the row id and job number.
-        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '' };
+        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '', hours_job_id: p.hours_job_id || '' };
         // Sync is_template from DB so the projects page shows the right button label.
         if (p.is_template) dbTemplates.push(p.name);
         // Server stores the legacy literal 'default' for projects that
