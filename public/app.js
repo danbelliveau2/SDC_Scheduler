@@ -10559,7 +10559,7 @@ function renderJobHoursPage() {
 
 function _prefetchJobHours() {
   const localJobs = Object.entries(state.projectsIndex || {})
-    .map(([name, info]) => ({ id: String(info.job_number || '').trim(), name }))
+    .map(([name, info]) => ({ id: String(info.hours_job_id || info.job_number || '').trim(), name }))
     .filter(j => j.id)
     .sort((a, b) => a.name.localeCompare(b.name));
   localJobs.slice(0, 8).forEach(j => {
