@@ -368,7 +368,7 @@ module.exports = function createRouter(deps) {
       const [[existing]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
       if (!existing) return res.status(404).json({ error: 'not found' });
 
-      const allowed = ['name', 'status', 'is_template', 'job_number', 'workspace'];
+      const allowed = ['name', 'status', 'is_template', 'job_number', 'hours_job_id', 'workspace'];
       const updates = {};
       for (const k of allowed) {
         if (req.body[k] !== undefined) {

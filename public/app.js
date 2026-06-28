@@ -14534,7 +14534,7 @@ function renderScheduleHours() {
   if (!el) return;
   const project = state.filters && state.filters.project;
   const idx = project && state.projectsIndex && state.projectsIndex[project];
-  const job = idx && idx.job_number;
+  const job = (idx && idx.hours_job_id) || (idx && idx.job_number);
   if (!project || state.view !== 'schedule' || !_hoursAvailable || !job) {
     el.style.display = 'none';
     el.classList.add('is-collapsed');
@@ -14556,8 +14556,10 @@ function renderScheduleHours() {
     const diffLabel = diff > 0 ? ` (${over ? '+' : '-'}${diff})` : '';
     stat = `${Math.round(q)} quoted · <span style="color:${over ? 'var(--danger)' : 'var(--success)'}; font-weight:700">${Math.round(a)} actual${diffLabel}</span>`;
   }
+  const hoursLinked = idx && idx.hours_job_id;
+  const hoursChip = `<span id="hours-link-chip" class="eto-chip${hoursLinked ? '' : ' eto-chip-unset'}" title="${hoursLinked ? 'Click to change the Power BI job ID' : 'Click to link a Power BI job ID for hours'}" style="margin-left:6px;cursor:pointer">${hoursLinked ? `PBI #${escapeHtml(String(hoursLinked))}` : '＋ Link PBI job'}</span>`;
   const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
-    <span class="notes-bar-title">⏱ Job Hours</span>
+    <span class="notes-bar-title">⏱ Job Hours${hoursChip}</span>
     <span class="notes-count">${stat}</span>
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
@@ -14915,9 +14917,36 @@ function renderScheduleHours() {
   layoutNotesPanel();
 }
 
+async function _hoursLinkJobFlow(project) {
+  const idx = state.projectsIndex && state.projectsIndex[project];
+  const current = (idx && idx.hours_job_id) || '';
+  const val = await showPromptDialog({
+    title: 'Link Power BI Job ID',
+    message: `Enter the Power BI job ID for "${project}".\nYou can enter multiple IDs separated by & (e.g. 1129&1143).`,
+    placeholder: 'e.g. 1129 or 1129&1143',
+    value: current,
+    validate: v => (v === '' || /^[\d&, ]+$/.test(v)) ? null : 'Use digits and & for multiple jobs',
+    okLabel: 'Save',
+  });
+  if (val === null || val === current) return;
+  const clean = val.trim();
+  try {
+    if (idx && idx.id) {
+      const r = await fetch(`/api/projects/${idx.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hours_job_id: clean || null }) });
+      if (!r.ok) throw new Error(`save failed (${r.status})`);
+    }
+  } catch (e) { showToast(`Could not save the job ID: ${e.message}`, { kind: 'error' }); return; }
+  if (idx) idx.hours_job_id = clean || null;
+  // Clear cached hours so the drawer re-fetches with the new ID
+  if (clean) delete _hoursCache[clean];
+  showToast(clean ? `Power BI job linked: ${clean}` : 'Power BI job link cleared', { kind: 'success' });
+  try { renderScheduleHours(); } catch (_) {}
+}
+
 function _wireHoursDrawer(el, job, project) {
   _drawerRestoreHeight('hours-drawer-body');
   el.onclick = (e) => {
+    if (e.target.closest('#hours-link-chip')) { e.stopPropagation(); _hoursLinkJobFlow(project); return; }
     if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
       const willOpen = el.classList.contains('is-collapsed');
       el.classList.toggle('is-collapsed');

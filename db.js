@@ -249,6 +249,9 @@ async function init() {
   // Pre-revision ETA — when a buyer revises dates in ETO, eta carries the new
   // promise and eta_original keeps the initial one so rows can show the slip.
   await pool.query(`ALTER TABLE vendor_pos ADD COLUMN eta_original VARCHAR(32)`).catch(() => {});
+  // Separate Power BI job ID — lets a project link a different job number for
+  // hours data than the one used for ETO (e.g. multi-job rollups like "1129&1143").
+  await pool.query(`ALTER TABLE projects ADD COLUMN hours_job_id VARCHAR(255)`).catch(() => {});
   // Clean up duplicate (po, job) rows left by syncs that overlapped before the
   // sync serializer existed. Conservatively deletes only the higher-id copy and
   // only when it carries NO PM-entered data — so manual edits are never lost; a
