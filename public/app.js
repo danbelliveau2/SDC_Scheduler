@@ -8523,7 +8523,7 @@ function _hoursCheckOnce() {
   if (_hoursChecked) return;
   _hoursChecked = true;
   fetch('/api/hours/status').then(r => r.json()).then(s => {
-    if (s && s.enabled) { _hoursAvailable = true; try { renderScheduleHours(); } catch (_) {} }
+    if (s && s.enabled) { _hoursAvailable = true; try { renderScheduleHours(); } catch (_) {} try { renderProjectTabs(); } catch (_) {} }
   }).catch(() => {});
 }
 
@@ -8576,7 +8576,6 @@ function _wireEtoBannerChip(banner, project) {
 }
 
 function _pbiChipHtml(project) {
-  if (!_hoursAvailable) return '';
   const idx = state.projectsIndex && state.projectsIndex[project];
   const job = idx && idx.hours_job_id;
   if (job) {
