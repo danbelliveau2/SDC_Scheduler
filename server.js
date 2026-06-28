@@ -319,6 +319,25 @@ async function startServer({ port } = {}) {
       .then(r => { if (r && (r.registered || r.linked)) { try { /* notifyClients moved to projects router */ } catch (_) {} } })
       .catch(e => console.warn('[backfill] failed:', e.message));
   } catch (_) { /* backfillProjects.js is optional */ }
+
+  // Warm up Power BI hours cache for all active projects 30s after startup.
+  // Runs silently in background — errors are ignored so startup is never blocked.
+  if (hoursApi.ENABLED) {
+    setTimeout(async () => {
+      try {
+        const [rows] = await pool.query(`SELECT hours_job_id, job_number FROM projects WHERE status = 'active' AND (hours_job_id IS NOT NULL OR job_number IS NOT NULL)`);
+        const seen = new Set();
+        for (const row of rows) {
+          const id = (row.hours_job_id || row.job_number || '').trim();
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          hoursApi.getJobHours(id).catch(() => {});
+        }
+        console.log(`[hoursApi] warmup started for ${seen.size} job(s):`, [...seen].join(', '));
+      } catch (e) { console.warn('[hoursApi] warmup failed:', e.message); }
+    }, 30_000);
+  }
+
   return server;
 }
 
