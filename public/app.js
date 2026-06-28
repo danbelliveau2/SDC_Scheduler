@@ -14578,13 +14578,22 @@ function renderScheduleHours() {
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
 
-  // Pre-fetch in background even when collapsed so data is ready when user opens
+  // Fetch if not already in flight; if already fetching, attach a watcher so the
+  // drawer re-renders automatically when data arrives (mirrors Job Hours tab pattern).
   if (!data && !_hoursFetching[job]) {
     _hoursFetching[job] = true;
     fetch(`/api/hours/${encodeURIComponent(job)}`)
       .then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || r.status))))
       .then(d => { _hoursCache[job] = d; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); })
       .catch(e => { _hoursCache[job] = { error: e.message }; _hoursFetching[job] = false; if ((state.filters && state.filters.project) === project) renderScheduleHours(); });
+  } else if (!data && _hoursFetching[job]) {
+    // A prefetch is already in flight — poll every 300ms and re-render when done.
+    const t = setInterval(() => {
+      if (!_hoursFetching[job]) {
+        clearInterval(t);
+        if ((state.filters && state.filters.project) === project) renderScheduleHours();
+      }
+    }, 300);
   }
 
   if (collapsed) { el.innerHTML = bar; _wireHoursDrawer(el, job, project); layoutNotesPanel(); return; }
