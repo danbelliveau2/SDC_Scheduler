@@ -9856,7 +9856,14 @@ function _procAssemblyHeader() {
 function _drawerResizeStart(e, bodyClass) {
   e.preventDefault();
   e.stopPropagation();
-  const body = e.target.closest('.' + bodyClass);
+  // The handle is usually inside the body, but for the Notes drawer it sits at
+  // the panel's top edge (outside the flex body) — so fall back to finding the
+  // body within the enclosing drawer.
+  let body = e.target.closest('.' + bodyClass);
+  if (!body) {
+    const drawer = e.target.closest('#schedule-notes, .schedule-proc-drawer, .schedule-hours-drawer, #schedule-drawer-stack');
+    if (drawer) body = drawer.querySelector('.' + bodyClass);
+  }
   if (!body) return;
   const startY = e.clientY;
   const startH = body.getBoundingClientRect().height;
@@ -14265,8 +14272,8 @@ function renderProjectNotes() {
       <button class="notes-kv ${_notesKeyView === 'cards' ? 'is-on' : ''}" data-keyview="cards" type="button">Cards</button>
       <button class="notes-kv ${_notesKeyView === 'list' ? 'is-on' : ''}" data-keyview="list" type="button">List</button>
     </span>` : '';
-  el.innerHTML = bar + `
-    <div class="notes-body">${DRAWER_HANDLE('notes-body')}
+  el.innerHTML = DRAWER_HANDLE('notes-body') + bar + `
+    <div class="notes-body">
       <div class="notes-col notes-sessions">
         <div class="notes-col-head"><span>Meetings</span><span class="notes-col-head-actions">${collapseAllBtn}<button class="notes-new-session" data-action="new-session" type="button">+ New meeting</button></span></div>
         <div class="notes-col-scroll">${sessionsHtml}</div>

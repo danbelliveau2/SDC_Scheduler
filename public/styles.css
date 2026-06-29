@@ -5583,8 +5583,12 @@ body.customer-view .schedule-footer { display: none; }
 .notes-bar-title { letter-spacing: 0.02em; }
 .notes-count { color: var(--sdc-blue-light, #aacee8); font-weight: var(--fw-bold); font-size: var(--fs-md); }
 .notes-bar-caret { margin-left: auto; opacity: 0.9; font-size: var(--fs-xl); }
-.notes-body { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 0; align-items: stretch; max-height: 30vh; overflow-y: auto; }
-.notes-body > .drawer-resize-handle { flex: 0 0 100%; margin: 0 0 0; }
+.notes-body { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 0; align-items: stretch; max-height: 45vh; overflow-y: auto; }
+/* Resize grip at the very top edge of the Notes panel — drag up to enlarge,
+   down to shrink (saved per browser). Sits above the Notes bar, not inside the
+   flex body, so the drag is reliable. */
+#schedule-notes > .drawer-resize-handle { position: relative; top: 0; margin: 0; height: 12px; flex: 0 0 auto; background: var(--surface-alt, #f1f5f9); border-top: 1px solid var(--border); }
+#schedule-notes > .drawer-resize-handle::after { width: 56px; height: 4px; }
 .notes-col { flex: 1 1 50%; display: flex; flex-direction: column; min-width: 0; }
 .notes-col.notes-key { border-left: 1px solid var(--border, #e2e8f0); background: color-mix(in srgb, var(--sdc-accent, #ffde51) 8%, #fff); }
 .notes-col-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 14px; font-size: var(--fs-sm); font-weight: var(--fw-extrabold); text-transform: uppercase; letter-spacing: 0.04em; color: var(--sdc-dark, #061d39); background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); position: sticky; top: 0; z-index: 2; }
