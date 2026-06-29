@@ -195,7 +195,10 @@ async function submitComment() {
 }
 
 async function deleteComment(commentId) {
-  if (!confirm('Delete this comment?')) return;
+  const ok = (typeof showConfirmDialog === 'function')
+    ? await showConfirmDialog({ title: 'Delete comment?', message: 'Delete this comment?', okLabel: 'Delete', danger: true })
+    : confirm('Delete this comment?');
+  if (!ok) return;
   try {
     await fetch(`/api/comments/${commentId}`, { method: 'DELETE' });
     await loadComments(_currentTask.id);

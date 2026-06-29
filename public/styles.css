@@ -11951,3 +11951,55 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
 .res-load-seg.load-over                            { background: var(--danger-bg); border-color: #fca5a5; color: var(--danger); }
 
 /* load-under / load-partial — intentionally left blue (under-utilized info state) */
+
+/* ──────────────────────────────────────────────────────────────────────────
+   ACCESSIBILITY — keyboard focus + reduced motion (appended last so these win
+   on equal specificity). Keyboard-only users had no visible focus indicator on
+   buttons/tabs/dropdowns/inputs across the app; mouse users are unaffected
+   because :focus-visible only fires for keyboard/programmatic focus.
+   ────────────────────────────────────────────────────────────────────────── */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--sdc-primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+/* Tabs / dropdown items sit flush against neighbors — inset the ring so it
+   reads as a highlight rather than overflowing into adjacent UI. */
+.project-tab:focus-visible,
+.dropdown-item:focus-visible,
+.dropdown-menu button:focus-visible,
+.view-bracket-icon:focus-visible {
+  outline-offset: -2px;
+}
+.filters-check-row:focus-within {
+  outline: 2px solid var(--sdc-primary);
+  outline-offset: -2px;
+}
+/* Sidebar sits on the dark navy rail — use a light ring for contrast. */
+.app-sidebar-icon:focus-visible {
+  outline-color: rgba(255,255,255,0.7);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Empty-state row for the financial-milestones table — was a blank tbody that
+   read as "still loading / broken". */
+.financials-empty td {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 18px 12px;
+  font-style: italic;
+}

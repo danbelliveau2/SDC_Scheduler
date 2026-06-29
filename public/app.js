@@ -2686,7 +2686,7 @@ function _pickDateAdjustPred(td, task, parsed, col) {
       const weeks = Math.round((newLagBd / 5) * 2) / 2;   // nearest half-week
       const lagStr = weeks === 0 ? '' : `${weeks > 0 ? '+' : '-'}${Math.abs(weeks)}w`;
       pushUndoSnapshot(task, ['predecessors'], `Change predecessor on "${task.name || 'task'}"`);
-      try { await api.update(task.id, { predecessors: `${parsed.id}${parsed.type}${lagStr}` }); } catch (e) { console.error(e); }
+      try { await api.update(task.id, { predecessors: `${parsed.id}${parsed.type}${lagStr}` }); } catch (e) { console.error(e); showToast('Could not save the predecessor change.', { kind: 'error' }); }
     }
     await loadTasks();
   };
@@ -2876,7 +2876,9 @@ async function saveCellEdit(id, col, value, task) {
       }
       // No "=" prefix: standard duration parsing + UNLINK any prior link.
       const days = parseDurationInput(trimmed); // business days
-      if (days == null) break;
+      // Non-empty input that doesn't parse used to break silently — leaving the
+      // user thinking they'd set a duration when nothing saved.
+      if (days == null) { if (trimmed) showToast('Could not read that duration. Use e.g. "2w" or "10d".', { kind: 'error' }); break; }
       data.duration_days = days;
       // Clear the link (idempotent — server treats null = "no link").
       data.duration_link_task_id = null;
@@ -2895,9 +2897,29 @@ async function saveCellEdit(id, col, value, task) {
       }
       break;
     }
-    case 'pred':     data.predecessors = predParse((value || '').trim()) || null; break;
-    case 'progress':   data.progress   = Math.max(0, Math.min(100, Number(value) || 0)); break;
-    case 'allocation': data.allocation = Math.max(0, Math.min(100, Number(value) || 0)); break;
+    case 'pred': {
+      const rawPred = (value || '').trim();
+      const parsedPred = predParse(rawPred);
+      // Non-empty input that doesn't parse used to be dropped silently — tell
+      // the user so a typo doesn't look like a successful save.
+      if (rawPred && !parsedPred) showToast('Could not read that predecessor. Use e.g. "5FS" or "8FF -2w".', { kind: 'error' });
+      data.predecessors = parsedPred || null;
+      break;
+    }
+    case 'progress': {
+      const rawN = Number(value);
+      const clamped = Math.max(0, Math.min(100, rawN || 0));
+      if (value !== '' && value != null && (Number.isNaN(rawN) || rawN !== clamped)) showToast(`Progress must be 0–100% — set to ${clamped}%.`, { kind: 'info' });
+      data.progress = clamped;
+      break;
+    }
+    case 'allocation': {
+      const rawN = Number(value);
+      const clamped = Math.max(0, Math.min(100, rawN || 0));
+      if (value !== '' && value != null && (Number.isNaN(rawN) || rawN !== clamped)) showToast(`Allocation must be 0–100% — set to ${clamped}%.`, { kind: 'info' });
+      data.allocation = clamped;
+      break;
+    }
     case 'priority':   data.priority   = Math.max(1, Math.min(99, Number(value) || 1)); break;
     case 'notes':      data.notes      = (value || '').trim() || null; break;
   }
@@ -2954,7 +2976,7 @@ async function performUndo() {
   // Undo an "add row" → delete the created row; redo will re-create it.
   if (entry.kind === 'create') {
     try { await api.remove(entry.taskId); }
-    catch (err) { console.error('undo(create) failed', err); }
+    catch (err) { console.error('undo(create) failed', err); showToast('Undo failed — the row could not be removed.', { kind: 'error' }); }
     state.redoStack.push({ kind: 'create', payload: entry.payload, description: entry.description });
     while (state.redoStack.length > UNDO_STACK_MAX) state.redoStack.shift();
     await loadTasks();
@@ -2980,6 +3002,7 @@ async function performUndo() {
     await loadTasks();
   } catch (err) {
     console.error('undo failed', err);
+    showToast('Undo failed — your change may not have been reverted.', { kind: 'error' });
   }
   syncUndoButton();
   syncRedoButton();
@@ -2996,7 +3019,7 @@ async function performRedo() {
         state.undoStack.push({ kind: 'create', taskId: c.id, payload: entry.payload, description: entry.description });
         while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
       }
-    } catch (err) { console.error('redo(create) failed', err); }
+    } catch (err) { console.error('redo(create) failed', err); showToast('Redo failed — the row could not be re-created.', { kind: 'error' }); }
     await loadTasks();
     syncUndoButton(); syncRedoButton();
     return;
@@ -3018,6 +3041,7 @@ async function performRedo() {
     await loadTasks();
   } catch (err) {
     console.error('redo failed', err);
+    showToast('Redo failed — your change may not have been re-applied.', { kind: 'error' });
   }
   syncUndoButton();
   syncRedoButton();
@@ -10755,19 +10779,21 @@ async function _loadJhpHours() {
     const _loadingMsg = () => `<div class="proc-empty jhp-loading-msg"><span class="jhp-spinner"></span>Querying Power BI… this takes 10–30 s on first load</div>`;
     if (_hoursFetching[job]) {
       content.innerHTML = _loadingMsg();
-      await new Promise(resolve => {
-        const t = setInterval(() => { if (!_hoursFetching[job]) { clearInterval(t); resolve(); } }, 200);
-      });
+      await _awaitHoursFetch(job);
+      if (!_hoursCache[job]) {
+        content.innerHTML = `<div class="proc-empty proc-error">⚠ Timed out waiting for Power BI.<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
+        content.querySelector('.jhp-retry-btn')?.addEventListener('click', () => _loadJhpHours());
+        return;
+      }
     } else {
       content.innerHTML = _loadingMsg();
       _hoursFetching[job] = true;
       let fetchedData;
       try {
-        const res = await fetch(`/api/hours/${encodeURIComponent(job)}`);
-        fetchedData = await res.json();
+        fetchedData = await _fetchJobHoursJson(job);
       } catch (e) {
         _hoursFetching[job] = false;
-        content.innerHTML = `<div class="proc-empty proc-error">⚠ Failed to load hours: ${escapeHtml(String(e))}<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
+        content.innerHTML = `<div class="proc-empty proc-error">⚠ Failed to load hours: ${escapeHtml(ctrlAbortMsg(e))}<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
         content.querySelector('.jhp-retry-btn')?.addEventListener('click', () => _loadJhpHours());
         return;
       }
@@ -11558,7 +11584,7 @@ function wireCreatePanelHandlers(bodyEl) {
       const src  = (sourceEl?.value) || (onlyTemplate || '');
       if (!name || !src) return;
       if (state.tasks.some(t => t.project === name)) {
-        alert(`A project named "${name}" already exists. Pick a different name.`);
+        showToast(`A project named "${name}" already exists. Pick a different name.`, { kind: 'error' });
         return;
       }
       await duplicateProject(src, name);
@@ -11704,7 +11730,7 @@ function renderWorkspacePage() {
       const src  = (sourceEl?.value) || (onlyTemplate || '');
       if (!name || !src) return;
       if (state.tasks.some(t => t.project === name)) {
-        alert(`A project named "${name}" already exists. Pick a different name.`);
+        showToast(`A project named "${name}" already exists. Pick a different name.`, { kind: 'error' });
         return;
       }
       await duplicateProject(src, name);
@@ -11734,7 +11760,7 @@ function renderWorkspacePage() {
       // factored out yet; for v4.9 the user can fall back to the existing
       // "+ New tab" picker for now (which still has the estimate flow wired).
       // Telegraph that in the meantime.
-      alert('Estimate-sheet upload from the workspace page is wired but the analyze flow still lives in the legacy + New tab picker for now — click "+ New tab" → "Build from SDC estimate sheet" to use it. Will wire here in the next iteration.');
+      showAlertDialog('Estimate-sheet upload from the workspace page is wired but the analyze flow still lives in the legacy + New tab picker for now — click "+ New tab" → "Build from SDC estimate sheet" to use it. Will wire here in the next iteration.');
     });
   }
 
@@ -11744,7 +11770,7 @@ function renderWorkspacePage() {
   if (impFile && impBtn) {
     impFile.addEventListener('change', () => { impBtn.disabled = !impFile.files?.length; });
     impBtn.addEventListener('click', () => {
-      alert('Smartsheet import from the workspace page is wired but the parser still lives in the legacy + New tab picker for now — click "+ New tab" → "Import from Smartsheet" to use it. Will wire here in the next iteration.');
+      showAlertDialog('Smartsheet import from the workspace page is wired but the parser still lives in the legacy + New tab picker for now — click "+ New tab" → "Import from Smartsheet" to use it. Will wire here in the next iteration.');
     });
   }
 }
@@ -12178,7 +12204,11 @@ function wireMachineSubTabButtons() {
 async function deleteMachineFromProject(project, machine) {
   if (!project || !machine) return;
   const taskCount = (state.tasks || []).filter(t => t.project === project && t.machine === machine).length;
-  const yes = confirm(`Delete machine "${machine}" from ${project}?\n\nThis removes ${taskCount} task${taskCount === 1 ? '' : 's'} from the schedule. Cannot be undone.`);
+  const yes = await showConfirmDialog({
+    title: 'Delete machine?',
+    message: `Delete machine "${machine}" from ${project}?\n\nThis removes ${taskCount} task${taskCount === 1 ? '' : 's'} from the schedule. Cannot be undone.`,
+    okLabel: 'Delete', danger: true,
+  });
   if (!yes) return;
   try {
     const r = await fetch(`/api/projects/${encodeURIComponent(project)}/machines/${encodeURIComponent(machine)}`, { method: 'DELETE' });
@@ -12604,7 +12634,7 @@ function mergeAnotherProjectInto(target, anchorX, anchorY) {
   if (!target) return;
   const others = uniqueValues('project').filter(p => p !== target);
   if (others.length === 0) {
-    alert('There are no other projects to merge in.');
+    showToast('There are no other projects to merge in.', { kind: 'info' });
     return;
   }
   const items = others.map(p => {
@@ -12621,10 +12651,13 @@ async function doMergeProjects(source, target) {
   if (!source || !target || source === target) return;
   const sourceTasks = state.tasks.filter(t => t.project === source);
   if (sourceTasks.length === 0) return;
-  const ok = confirm(
-    `Move ${sourceTasks.length} task${sourceTasks.length === 1 ? '' : 's'} from "${source}" into "${target}"?\n\n`
-    + `"${source}" will end up empty (you can close its tab afterward).\n`
-    + `This re-tags every row's project field; predecessors / dates / IDs are preserved.`);
+  const ok = await showConfirmDialog({
+    title: 'Merge projects?',
+    message: `Move ${sourceTasks.length} task${sourceTasks.length === 1 ? '' : 's'} from "${source}" into "${target}"?\n\n`
+      + `"${source}" will end up empty (you can close its tab afterward).\n`
+      + `This re-tags every row's project field; predecessors / dates / IDs are preserved.`,
+    okLabel: 'Move', danger: true,
+  });
   if (!ok) return;
   for (const t of sourceTasks) {
     try { await api.update(t.id, { project: target }); } catch (_) {}
@@ -12641,12 +12674,12 @@ async function doMergeProjects(source, target) {
 // turns into the template you keep around.
 async function renameProject(oldName) {
   if (!oldName) return;
-  const newName = prompt(`Rename "${oldName}" to:`, oldName);
+  const newName = await showPromptDialog({ title: 'Rename project', message: `Rename "${oldName}" to:`, value: oldName, okLabel: 'Rename' });
   if (newName == null) return;
   const trimmed = String(newName).trim();
   if (!trimmed || trimmed === oldName) return;
   if (state.tasks.some(t => t.project === trimmed)) {
-    alert(`A project named "${trimmed}" already exists. Pick a different name.`);
+    showToast(`A project named "${trimmed}" already exists. Pick a different name.`, { kind: 'error' });
     return;
   }
   const tasks = state.tasks.filter(t => t.project === oldName);
@@ -12742,7 +12775,7 @@ function convertOrphansToProject() {
     const v = String(input.value || '').trim();
     if (!v) return;
     if (state.tasks.some(t => t.project === v)) {
-      alert(`A project named "${v}" already exists. Pick "Merge into" above instead.`);
+      showToast(`A project named "${v}" already exists. Pick "Merge into" above instead.`, { kind: 'error' });
       return;
     }
     pop.remove();
@@ -12841,7 +12874,7 @@ function saveAllAsOneProject() {
     const v = String(input.value || '').trim();
     if (!v) return;
     if (state.tasks.some(t => t.project === v)) {
-      alert(`A project named "${v}" already exists. Use "Combine everything into ${v}" above.`);
+      showToast(`A project named "${v}" already exists. Use "Combine everything into ${v}" above.`, { kind: 'error' });
       return;
     }
     await doMerge(v, { markTemplate: true });
@@ -12863,12 +12896,12 @@ function saveAllAsOneProject() {
 // Fallback used when the picker can't be opened (button missing). Same effect as
 // "save as new project" path of the picker.
 async function promptCreateNewOrphanProject(orphans) {
-  const name = prompt(`Save ${orphans.length} untagged tasks as a new project named:`, 'SDC_Template');
+  const name = await showPromptDialog({ title: 'New project', message: `Save ${orphans.length} untagged tasks as a new project named:`, value: 'SDC_Template', okLabel: 'Save' });
   if (name == null) return;
   const trimmed = String(name).trim();
   if (!trimmed) return;
   if (state.tasks.some(t => t.project === trimmed)) {
-    alert(`A project named "${trimmed}" already exists.`);
+    showToast(`A project named "${trimmed}" already exists.`, { kind: 'error' });
     return;
   }
   await mergeOrphansInto(orphans, trimmed, { markTemplate: true });
@@ -12885,17 +12918,17 @@ async function promptCreateNewOrphanProject(orphans) {
 // prompt (used by the "Build from template" picker entry, which collects the
 // name in its own input field).
 async function duplicateProject(source, targetName = null) {
-  const newName = targetName != null ? targetName : prompt(`Duplicate "${source}" to a new project named:`, `${source}_copy`);
+  const newName = targetName != null ? targetName : await showPromptDialog({ title: 'Duplicate project', message: `Duplicate "${source}" to a new project named:`, value: `${source}_copy`, okLabel: 'Duplicate' });
   if (newName == null) return;
   const trimmed = String(newName).trim();
   if (!trimmed) return;
   if (state.tasks.some(t => t.project === trimmed)) {
-    alert(`A project named "${trimmed}" already exists. Pick a different name.`);
+    showToast(`A project named "${trimmed}" already exists. Pick a different name.`, { kind: 'error' });
     return;
   }
   const sourceTasks = state.tasks.filter(t => t.project === source);
   if (sourceTasks.length === 0) {
-    alert(`"${source}" has no tasks to duplicate.`);
+    showToast(`"${source}" has no tasks to duplicate.`, { kind: 'error' });
     return;
   }
   // Create copies in original sort_order so the cascade order matches.
@@ -13285,7 +13318,7 @@ function showCreateScheduleDialog(defaultWs) {
         const teamMsg = (result.addedMembers || []).length
           ? ` Added ${result.addedMembers.length} new team member${result.addedMembers.length === 1 ? '' : 's'}: ${result.addedMembers.map(m => m.name).join(', ')}.`
           : '';
-        alert(`Imported ${result.tasksCreated} tasks under "${result.project}".${teamMsg}`);
+        showToast(`Imported ${result.tasksCreated} tasks under "${result.project}".${teamMsg}`, { kind: 'success' });
       } catch (err) {
         importStatus.textContent = `Import failed: ${err.message || err}`;
         importBtnEl.disabled = false;
@@ -13316,7 +13349,7 @@ function showCreateScheduleDialog(defaultWs) {
     if (successes.length) lines.push('', 'Created:', ...successes.map(s => `  • ${s.project} (${s.tasks} tasks)`));
     if (failures.length)  lines.push('', 'Failed:',  ...failures.map(f => `  • ${f.project}: ${f.error}`));
     if (newMembers.size)  lines.push('', `New team members added: ${[...newMembers].join(', ')}`);
-    alert(lines.join('\n'));
+    showAlertDialog({ title: 'Import complete', message: lines.join('\n') });
   };
   importBtnEl.addEventListener('click', runImport);
 }
@@ -14627,24 +14660,53 @@ function _wireProcDrawer(el, job, project) {
 // function, grouped by billing group, pulled from the Power BI semantic model.
 // Only visible when PBI_USER+PBI_PASS are configured and the project has a job number.
 
+// Hard client-side ceiling for a Power BI hours fetch. The server already times
+// out at 30–120s, but if the HTTP connection itself wedges (the known
+// LocalSystem/DPAPI auth hang) the drawer would otherwise spin forever. On
+// timeout the fetch aborts and the caller's catch renders an error + Retry.
+const HOURS_FETCH_TIMEOUT_MS = 75000;
+async function _fetchJobHoursJson(job) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), HOURS_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`/api/hours/${encodeURIComponent(job)}`, { signal: ctrl.signal });
+    return await res.json();
+  } finally { clearTimeout(timer); }
+}
+// Wait for an in-flight prefetch of `job`, but never longer than the fetch
+// ceiling — so a stuck prefetch can't pin the drawer on the spinner forever.
+function _awaitHoursFetch(job) {
+  return new Promise(resolve => {
+    let waited = 0;
+    const t = setInterval(() => {
+      waited += 200;
+      if (!_hoursFetching[job] || waited >= HOURS_FETCH_TIMEOUT_MS) { clearInterval(t); resolve(); }
+    }, 200);
+  });
+}
+
 async function _loadScheduleHoursDrawer(job, project) {
   if (!_hoursCache[job]) {
     if (_hoursFetching[job]) {
-      await new Promise(resolve => {
-        const t = setInterval(() => { if (!_hoursFetching[job]) { clearInterval(t); resolve(); } }, 200);
-      });
+      await _awaitHoursFetch(job);
+      if (!_hoursCache[job]) _hoursCache[job] = { error: 'Timed out waiting for Power BI. Click Retry.' };
     } else {
       _hoursFetching[job] = true;
       try {
-        const res = await fetch(`/api/hours/${encodeURIComponent(job)}`);
-        _hoursCache[job] = await res.json();
+        _hoursCache[job] = await _fetchJobHoursJson(job);
       } catch (e) {
-        _hoursCache[job] = { error: String(e) };
+        _hoursCache[job] = { error: ctrlAbortMsg(e) };
       }
       _hoursFetching[job] = false;
     }
   }
   if ((state.filters && state.filters.project) === project) renderScheduleHours();
+}
+// Friendly message for an aborted/failed hours fetch.
+function ctrlAbortMsg(e) {
+  return (e && e.name === 'AbortError')
+    ? 'Power BI took too long to respond (timed out). Click Retry.'
+    : String(e);
 }
 
 function renderScheduleHours() {
@@ -15518,7 +15580,7 @@ function newTaskInline() {
   // All-projects view has no project context to attach a new task to. Bail with a
   // hint so the user knows to open / pick a real project first.
   if (!state.filters.project) {
-    alert('Pick a specific project tab first — new tasks attach to the active project. "All projects" is an aggregate view.');
+    showToast('Pick a specific project tab first — new tasks attach to the active project. "All projects" is an aggregate view.', { kind: 'info' });
     return;
   }
   const btn = document.getElementById('btn-add');
@@ -15633,7 +15695,7 @@ function placeholderNameForDiscipline(discKey) {
 // can see + triage. User can still edit the assignee inline after creation.
 function newActionInline() {
   if (!state.filters.project) {
-    alert('Pick a specific project tab first — actions attach to the active project. "All projects" is an aggregate view.');
+    showToast('Pick a specific project tab first — actions attach to the active project. "All projects" is an aggregate view.', { kind: 'info' });
     return;
   }
   const btn = document.getElementById('btn-add-action');
@@ -15688,6 +15750,15 @@ async function deleteTaskById(id) {
     } catch (_) {}
     return;
   }
+  // Confirm before deleting — every other destructive action confirms, and a
+  // mis-click here silently dropped a row with no undo. Both callers (the
+  // row-delete button and the right-click menu) are user-initiated.
+  const ok = await showConfirmDialog({
+    title: 'Delete task?',
+    message: `Delete "${(t && t.name) || 'this task'}"? This can't be undone.`,
+    okLabel: 'Delete', danger: true,
+  });
+  if (!ok) return;
   try { await api.remove(id); } catch (_) {}
   try { await loadTasks(); } catch (_) {}
 }
@@ -15799,7 +15870,7 @@ function copyTaskToMachineInline(taskId, x, y, machines) {
         await api.create(payload);
         await loadTasks();
       } catch (err) {
-        alert('Failed to copy: ' + (err.message || err));
+        showToast('Failed to copy: ' + (err.message || err), { kind: 'error' });
       }
     },
   }));
@@ -15832,7 +15903,7 @@ function setTaskMachineInline(taskId, x, y) {
     });
   }
   items.push({ label: 'New machine…', onClick: async () => {
-    const name = (prompt('Machine identifier (e.g. M2)') || '').trim();
+    const name = ((await showPromptDialog({ title: 'New machine', message: 'Machine identifier (e.g. M2)', okLabel: 'Add' })) || '').trim();
     if (!name) return;
     await api.update(taskId, { machine: name });
     await loadTasks();
@@ -16024,6 +16095,13 @@ function showContextMenu(x, y, items) {
     menu.appendChild(btn);
   }
   document.body.appendChild(menu);
+  // Clamp into the viewport so a right-click near the right/bottom edge doesn't
+  // render the menu (or its bottom items) off-screen. Mirrors showConfirmAt.
+  const pad = 8;
+  const w = menu.offsetWidth || 200;
+  const h = menu.offsetHeight || 100;
+  menu.style.left = Math.min(window.innerWidth - w - pad, Math.max(pad, x)) + 'px';
+  menu.style.top  = Math.min(window.innerHeight - h - pad, Math.max(pad, y)) + 'px';
   setTimeout(() => {
     const onDoc = (ev) => {
       if (!menu.contains(ev.target)) {
@@ -16780,7 +16858,9 @@ async function mountFinancialsEditor(container, project) {
             <th class="paid" title="Check when the invoice has been sent.">Sent</th>
           </tr></thead>
           <tbody>
-            ${rows.map(r => {
+            ${rows.length === 0
+              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              : rows.map(r => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
@@ -16839,11 +16919,16 @@ async function mountFinancialsEditor(container, project) {
         });
       });
     });
-    container.querySelector('.fin-embed-add')?.addEventListener('click', async () => {
-      await api.financials.create({ project, name: '' });
-      await loadFinancialsForProject(project);
-      await renderGrid({ focusLastNameInput: true });
-      if (state.showFinancials) renderGantt();
+    container.querySelector('.fin-embed-add')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      if (btn.disabled) return;          // guard against a double-click adding two empty rows
+      btn.disabled = true;
+      try {
+        await api.financials.create({ project, name: '' });
+        await loadFinancialsForProject(project);
+        await renderGrid({ focusLastNameInput: true });
+        if (state.showFinancials) renderGantt();
+      } finally { btn.disabled = false; }
     });
     if (opts.focusLastNameInput) {
       const last = container.querySelector('tbody tr:last-child input[data-field="name"]');
@@ -18044,7 +18129,7 @@ async function openQuoteCompareModal(project, providedQuote) {
         const taskId = Number(btn.dataset.taskId);
         const t = state.tasks.find(x => x.id === taskId);
         if (!t) return;
-        if (!confirm(`Remove "${t.name}" from the schedule?`)) return;
+        if (!(await showConfirmAt(e.clientX, e.clientY, { message: `Remove "${t.name}" from the schedule?`, confirmLabel: 'Remove', danger: true }))) return;
         await api.remove(taskId);
         if (typeof showToast === 'function') showToast(`Removed "${t.name}".`, { kind: 'success' });
         await loadTasks();
@@ -18403,7 +18488,7 @@ async function openQuoteCompareModal(project, providedQuote) {
 
 function openFinancialsModal(project) {
   if (!project) {
-    alert('Pick a project tab first — financial milestones live on a specific project.');
+    showToast('Pick a project tab first — financial milestones live on a specific project.', { kind: 'info' });
     return;
   }
   // Remove any previous instance
@@ -18512,7 +18597,9 @@ function openFinancialsModal(project) {
             </tr>
           </thead>
           <tbody>
-            ${rows.map(r => {
+            ${rows.length === 0
+              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              : rows.map(r => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
@@ -18622,11 +18709,16 @@ function openFinancialsModal(project) {
     // its Name cell. NO browser prompt(), which was the "stupid-ass pop-up at the
     // top of the window" — that's the native JS prompt and there's no way to style
     // or position it. Inline focus is cleaner.
-    modal.querySelector('#financials-add').addEventListener('click', async () => {
-      await api.financials.create({ project, name: '' });
-      await loadFinancialsForProject(project);
-      await render({ focusLastNameInput: true });
-      if (state.showFinancials) renderGantt();
+    modal.querySelector('#financials-add').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      if (btn.disabled) return;          // guard against a double-click adding two empty rows
+      btn.disabled = true;
+      try {
+        await api.financials.create({ project, name: '' });
+        await loadFinancialsForProject(project);
+        await render({ focusLastNameInput: true });
+        if (state.showFinancials) renderGantt();
+      } finally { btn.disabled = false; }
     });
   };
 
@@ -19216,11 +19308,11 @@ function renderActionsPage() {
       const project = projSel.value;
       const fnRaw = qaWhere.value;
       if (!title)    { qaTitle.focus(); return; }
-      if (!project)  { projSel.focus(); alert('Pick a project for this action.'); return; }
-      if (!fnRaw)    { qaWhere.focus(); alert('Pick where this action lives.'); return; }
+      if (!project)  { projSel.focus(); showToast('Pick a project for this action.', { kind: 'info' }); return; }
+      if (!fnRaw)    { qaWhere.focus(); showToast('Pick where this action lives.', { kind: 'info' }); return; }
       let sect;
       try { sect = JSON.parse(fnRaw); } catch { sect = null; }
-      if (!sect)     { qaWhere.focus(); alert('Pick where this action lives.'); return; }
+      if (!sect)     { qaWhere.focus(); showToast('Pick where this action lives.', { kind: 'info' }); return; }
       // Discipline comes from the Function picker (most specific). Fall
       // back to disciplineForSection for older sections that don't carry
       // it (shouldn't happen with the new picker but defensive).
@@ -19243,7 +19335,7 @@ function renderActionsPage() {
           ...(placeholderName ? { assignee: placeholderName } : {}),
         });
       } catch (err) {
-        alert('Failed to create action: ' + (err?.message || err));
+        showToast('Failed to create action: ' + (err?.message || err), { kind: 'error' });
         return;
       }
       // Reset only Task + Due. Project / Section / Function stay because
@@ -19514,7 +19606,7 @@ function renderActionsPage() {
         const id = Number(btn.dataset.id);
         const t = state.tasks.find(x => x.id === id);
         if (!t) return;
-        if (!confirm(`Delete action "${t.name || '(untitled)'}"?`)) return;
+        if (!(await showConfirmAt(e.clientX, e.clientY, { message: `Delete action "${t.name || '(untitled)'}"?`, confirmLabel: 'Delete', danger: true }))) return;
         await api.remove(id);
         await loadTasks();
         renderActionsPage();
@@ -20477,7 +20569,7 @@ function renderTeam() {
 
   // Remove member.
   grid.querySelectorAll('[data-action="remove-member"]').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async (e) => {
       const id = Number(btn.dataset.id);
       const member = state.team.find(m => m.id === id);
       if (!member) return;
@@ -20485,7 +20577,7 @@ function renderTeam() {
       const msg = tasksRef > 0
         ? `Remove ${member.name}? They're still listed as the assignee on ${tasksRef} task(s) — those tasks will keep the name but it will be marked "(not on team)".`
         : `Remove ${member.name}?`;
-      if (!confirm(msg)) return;
+      if (!(await showConfirmAt(e.clientX, e.clientY, { message: msg, confirmLabel: 'Remove', danger: true }))) return;
       await api.team.remove(id);
       await loadTeam();
     });
@@ -22899,13 +22991,13 @@ function bindSetupHandlers() {
     chip.style.color = p.text;
     chip.textContent = p.label;
   };
-  document.getElementById('phases-list').onclick = (e) => {
+  document.getElementById('phases-list').onclick = async (e) => {
     if (e.target.dataset.action === 'remove-phase') {
       const row = e.target.closest('tr[data-i]');
       const i = +row.dataset.i;
       const p = state.setupDraft.phases[i];
       const used = state.tasks.filter(t => t.phase === p.key).length;
-      const ok = used === 0 || confirm(`${used} task(s) currently use the "${p.label}" phase. Remove anyway? Their phase will become blank.`);
+      const ok = used === 0 || await showConfirmAt(e.clientX, e.clientY, { message: `${used} task(s) currently use the "${p.label}" phase. Remove anyway? Their phase will become blank.`, confirmLabel: 'Remove', danger: true });
       if (!ok) return;
       state.setupDraft.phases.splice(i, 1);
       renderSetup();
