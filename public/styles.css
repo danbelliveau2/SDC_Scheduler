@@ -2429,33 +2429,20 @@ body.customer-view .customer-view-flatten.is-active {
 .proc-grand-amt { font-size: var(--fs-xl); font-weight: var(--fw-extrabold); color: var(--sdc-accent, #ffde51); cursor: help; }
 .proc-arow {
   display: grid;
-  /* caret · PN pill · description · cost · bar · pct. Each row is its OWN grid,
-     so content-sized columns wouldn't align row-to-row — use FIXED widths so
-     every row lines up in identical columns (true horizontal symmetry), packed
-     left (justify-content:start) instead of stretched across a wide screen. */
-  /* …descriptive columns…, then a 1fr spacer that pushes cost/bar/pct to the
-     right edge while the left columns stay packed and aligned. */
-  grid-template-columns: 18px 8fr 21fr 5fr 5fr 7fr 3fr 1fr 5fr 6fr 2fr;
+  /* caret · PN · description · Rcvd/Total · No PO · Priced · spacer · cost · bar · pct.
+     Each row is its OWN grid, so FIXED fr widths keep every row lined up in identical
+     columns. The 1fr spacer pushes cost/bar/pct to the right edge while the left
+     columns stay packed. Rows are NOT indented by depth, so the Description column
+     begins at the same position on every row regardless of hierarchy. */
+  grid-template-columns: 18px 8fr 21fr 5fr 7fr 3fr 1fr 5fr 6fr 2fr;
   align-items: center;
   gap: 6px;
   padding: 5px 12px 5px 10px;
   border-bottom: 1px solid #f1f5f9;
   cursor: pointer;
+  position: relative;
 }
 .proc-arow:last-child { border-bottom: none; }
-/* Hierarchy guide-rails: one faint vertical line per ancestor level, drawn in
-   the middle of each indent gutter. Because same-depth rows stack contiguously
-   and every row repaints the rails for all its ancestors, the per-row segments
-   line up into continuous tree lines. --d (set inline = depth) controls how
-   many rails to draw; depth 0 (top-level) draws none. background-color is kept
-   separate from this background-image so striping/hover don't erase the rails. */
-.proc-arow {
-  position: relative;
-  background-image: repeating-linear-gradient(90deg, #cdd8e4 0 1.5px, transparent 1.5px 26px);
-  background-position: 22px 0;
-  background-size: calc(var(--d, 0) * 26px) 100%;
-  background-repeat: no-repeat;
-}
 .proc-arow:hover { background-color: #f4f8fc; }
 /* Column header for the assemblies grid — reuses the .proc-arow track so labels
    sit over their columns. Not a clickable row. */
@@ -2465,21 +2452,8 @@ body.customer-view .customer-view-flatten.is-active {
   font-size: var(--fs-xs); font-weight: var(--fw-bold); letter-spacing: 0.5px; text-transform: uppercase;
   color: rgba(255,255,255,0.75); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* Elbow: a short horizontal tick from the row's own rail into its content, so
-   each nested row visibly "branches" off its parent rail. Only on nested rows
-   (depth >= 1); the rail sits mid-gutter at 26·d − 4px, the elbow runs from
-   there to just under the expand caret. */
-.proc-arow-nested::before {
-  content: "";
-  position: absolute;
-  top: 50%;
-  left: calc(var(--d) * 26px - 4px);
-  width: 14px;
-  height: 0;
-  border-top: 1.5px solid #c0cddb;
-  pointer-events: none;
-}
-/* 1 — Depth-tinted row backgrounds per nesting level */
+/* 1 — Depth-tinted row backgrounds per nesting level (the hierarchy cue now that
+   rows aren't indented and the tree guide-lines are gone) */
 .proc-arow[style*="--d:0"] { background-color: #ffffff; }
 .proc-arow[style*="--d:1"] { background-color: #ddeeff; }
 .proc-arow[style*="--d:2"] { background-color: #c8e3fa; }

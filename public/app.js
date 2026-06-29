@@ -9797,16 +9797,29 @@ function _procPartsTable(data) {
   </div>`;
 }
 
-// Column header for the assemblies grid — same 10-column track as .proc-arow so
+// PM-facing section (spec) label overrides. Total ETO is read-only and its
+// section names don't always match how SDC refers to them, so we remap by
+// SpecID for DISPLAY ONLY. Add an entry here to rename a section; any section
+// not listed falls back to the ETO SDescription. Keyed by String(specId).
+//   30 → "Controls Design" (ETO)        shown as "Control-Related Parts"
+//   40 → "Machine Testing" (ETO)        shown as "Machine Testing-Related Parts"
+const SECTION_LABEL_OVERRIDE = {
+  '30': 'Control-Related Parts',
+  '40': 'Machine Testing-Related Parts',
+};
+function _procSectionLabel(specId, specName) {
+  return SECTION_LABEL_OVERRIDE[String(specId)] || specName || '';
+}
+
+// Column header for the assemblies grid — same column track as .proc-arow so
 // labels sit over their columns. Explains the otherwise-cryptic cells
-// (6/7 parts, 2 sub-assy, 1 no PO, cost, readiness bar).
+// (6/7 parts, 1 no PO, priced, cost, readiness bar).
 function _procAssemblyHeader() {
   return `<div class="proc-arow proc-ahead">
     <span class="proc-caret"></span>
     <span class="proc-ah">Assembly</span>
     <span class="proc-ah">Description</span>
     <span class="proc-ah" title="Parts received / total parts in this assembly (e.g. 6/7 parts)">Rcvd / Total</span>
-    <span class="proc-ah" title="Number of sub-assemblies under this assembly">Sub-assy</span>
     <span class="proc-ah" title="Parts with no purchase order yet">No PO</span>
     <span class="proc-ah" title="Parts in this assembly that have a unit price">Priced</span>
     <span class="proc-aspacer"></span>
@@ -9882,19 +9895,20 @@ function _procAssemblyRow(node, depth) {
   const st = node.stats || { total: 0, received: 0, noPO: 0, ordered: 0, pct: 0 };
   const open = !!_procState.open[node.id];
   // Each meta fact is its own grid cell so they line up in columns down the page
-  // (parts under parts, sub-assy under sub-assy, no-PO under no-PO).
+  // (parts under parts, no-PO under no-PO, priced under priced).
   const partsCell = `${st.received}/${st.total} parts`;
-  const subCell   = node.children.length ? `${node.children.length} sub-assy` : '';
   const noPoCell  = st.noPO ? `<span class="proc-nopo-badge">⚠ ${st.noPO} no&nbsp;PO</span>` : '';
   const pricedCount = node.parts.filter(p => (Number(p.unitPrice) || 0) > 0).length;
   const pricedCell  = pricedCount ? `${pricedCount}/${node.parts.length}` : '';
+  // Depth no longer indents the row — the Description column starts at a fixed
+  // position on every row (consistent alignment). Nesting is conveyed by the
+  // depth-tinted row background (--d) and the expand caret, not by indentation.
   let html = `
-    <div class="proc-arow${depth > 0 ? ' proc-arow-nested' : ''}${open ? ' proc-arow-open' : ''}" data-aid="${escapeHtml(String(node.id))}" style="padding-left:${10 + depth * 26}px;--d:${depth}">
+    <div class="proc-arow${open ? ' proc-arow-open' : ''}" data-aid="${escapeHtml(String(node.id))}" style="--d:${depth}">
       <span class="proc-caret${node.children.length === 0 ? ' proc-caret-leaf' : ''}">${open ? '▾' : '▸'}</span>
       <button class="proc-pn" data-copy="${escapeHtml(node.pn)}" type="button" title="Click to copy part number">${escapeHtml(node.pn)}</button>
       <span class="proc-aname" title="${escapeHtml(node.desc || '')}">${escapeHtml(node.desc || '')}</span>
       <span class="proc-acol proc-acol-parts">${partsCell}</span>
-      <span class="proc-acol proc-acol-sub">${subCell}</span>
       <span class="proc-acol proc-acol-nopo">${noPoCell}</span>
       <span class="proc-acol">${pricedCell}</span>
       <span class="proc-aspacer"></span>
@@ -9911,7 +9925,7 @@ function _procAssemblyRow(node, depth) {
         : node.parts;
       const money = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
       const _partAccent = ['#1574C4','#0ea5e9','#38bdf8','#7dd3fc'][Math.min(depth, 3)];
-      html += `<div class="proc-parts" style="margin-left:${10 + depth * 26}px;--proc-parts-accent:${_partAccent}">
+      html += `<div class="proc-parts" style="margin-left:10px;--proc-parts-accent:${_partAccent}">
         ${parts.map(p => `
           <div class="proc-prow proc-prow-${p.status}">
             <span class="num">${p.qty ?? ''}</span>
@@ -14355,7 +14369,7 @@ function renderScheduleProcurement() {
       const specs = specsArr.map(spec => {
         const specCost = spec.assemblies.reduce((s, a) => s + ((a.stats && a.stats.cost) || 0), 0);
         return `<div class="proc-spec">
-          <div class="proc-spec-head"><span>Section ${escapeHtml(String(spec.specId))} — ${escapeHtml(spec.specName || '')}</span><span class="proc-spec-cost">${_procUsd(specCost)}</span></div>
+          <div class="proc-spec-head"><span>Section ${escapeHtml(String(spec.specId))} — ${escapeHtml(_procSectionLabel(spec.specId, spec.specName))}</span><span class="proc-spec-cost">${_procUsd(specCost)}</span></div>
           ${spec.assemblies.map(a => _procAssemblyRow(a, 0)).join('')}
         </div>`;
       }).join('');
@@ -14392,8 +14406,8 @@ function renderScheduleProcurement() {
       const waterfallPlaceholder = !costData ? `<div style="padding: 12px; background: white; border-radius: 6px; border: 1px solid #e2e8f0; text-align: center; color: #64748b; font-size: var(--fs-md);">Loading cost...</div>` : '';
 
       const assemblyContent = _procAssemblyHeader() + specs + `<div class="proc-grand">
-        <span>Grand total — purchased materials across all assemblies</span>
-        <span class="proc-grand-amt" title="Sum of the assembly cost column (parts shared between assemblies count in each). The headline materials figure counts each unique part once, so it can be slightly lower.">${_procUsd(grand)}</span>
+        <span>BOM materials value — assembly parts at latest PO price</span>
+        <span class="proc-grand-amt" title="Valuation of the readiness BOM: each assembly's parts × latest PO unit price (in-house parts with no PO price count as $0). This is BOM-scoped and is NOT the same as the 'Purchased' figure in the Cost Summary — Purchased is total PO spend on the project (every PO line, including parts not in this BOM and the same part bought on multiple POs), so it is normally higher.">${_procUsd(grand)}</span>
       </div>`;
 
       // Side-by-side for drawer: assembly list on left (60%), cost summary + waterfall on right (40%)
@@ -23280,6 +23294,11 @@ function setView(view) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === view));
   document.querySelectorAll('.app-sidebar-icon[data-view]').forEach(t => t.classList.toggle('is-active', t.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${view}`));
+  // Re-render the project tab strip so the selected-tab (lime border) highlight
+  // recomputes for the new view. isActive requires state.view === 'schedule', so
+  // leaving a schedule for any other page (Projects, Departments, …) correctly
+  // clears the highlight instead of leaving a stale lime border on the last tab.
+  try { renderProjectTabs(); } catch (_) {}
   if (view === 'setup') renderSetup();
   else if (view === 'team') {
     // Land on a consistent default each time the Departments page opens:

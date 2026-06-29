@@ -51,3 +51,4 @@ scripts/auto-pull.log
 # Auto-updater sync state (runtime, not source)
 .update-sha
 
+.env.bak*
