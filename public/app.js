@@ -14146,6 +14146,17 @@ function _notesMeetingHtml(s) {
     ${s.collapsed ? '' : `<div class="notes-session-body">${composer}<div class="notes-list">${items}</div></div>`}
   </div>`;
 }
+// Bottom schedule drawers (Notes / Procurement / Job Hours) default to OPEN for
+// every project so their data — or a clean empty state — is visible without a
+// click. The user's manual collapse/expand is remembered per drawer (localStorage),
+// so once they close one it stays closed as they move between projects.
+function _drawerCollapsed(key) {
+  try { return localStorage.getItem('sdcDrawer_' + key) === '1'; } catch (_) { return false; }
+}
+function _setDrawerCollapsed(key, collapsed) {
+  try { localStorage.setItem('sdcDrawer_' + key, collapsed ? '1' : '0'); } catch (_) {}
+}
+
 function renderProjectNotes() {
   const el = document.getElementById('schedule-notes');
   if (!el) return;
@@ -14161,7 +14172,8 @@ function renderProjectNotes() {
     return;
   }
   const data = state.projectNotes[project];
-  const collapsed = el.classList.contains('is-collapsed');
+  const collapsed = _drawerCollapsed('notes');
+  el.classList.toggle('is-collapsed', collapsed);
   const starred = [];
   data.sessions.forEach(s => (s.items || []).forEach(it => { if (it.starred && (it.text || '').trim()) starred.push({ s, it }); }));
   const bar = `<div class="notes-bar" data-action="toggle-notes">
@@ -14303,14 +14315,26 @@ function renderScheduleProcurement() {
   const project = state.filters && state.filters.project;
   const idx = project && state.projectsIndex && state.projectsIndex[project];
   const job = idx && idx.job_number;
-  if (!project || state.view !== 'schedule' || !_etoAvailable || !job) {
+  // Only hide when the project/view is wrong or ETO isn't configured at all.
+  // A project that simply has no linked job still shows the drawer (empty state).
+  if (!project || state.view !== 'schedule' || !_etoAvailable) {
     el.style.display = 'none';
-    el.classList.add('is-collapsed'); // never leave a hidden drawer "open" (would lock the split)
-    layoutNotesPanel();
     return;
   }
   el.style.display = '';
-  const collapsed = el.classList.contains('is-collapsed');
+  const collapsed = _drawerCollapsed('proc');
+  el.classList.toggle('is-collapsed', collapsed);
+  // No ETO job linked → clean empty state instead of hiding the drawer.
+  if (!job) {
+    const bar = `<div class="notes-bar proc-drawer-bar" data-action="toggle-proc-drawer">
+      <span class="notes-bar-title">📦 Procurement</span>
+      <span class="notes-count">No ETO job linked</span>
+      <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+    </div>`;
+    el.innerHTML = collapsed ? bar : bar + `<div class="proc-drawer-body"><div class="proc-empty">No procurement data — this project isn't linked to a Total ETO job.</div></div>`;
+    _wireProcDrawer(el, null, project);
+    return;
+  }
   const data = _procCache[job];
   // Bar stat: show readiness only if it's already cached — don't fire the heavy
   // BOM query just to label a collapsed bar; the job number is free meanwhile.
@@ -14441,6 +14465,7 @@ function _wireProcDrawer(el, job, project) {
     if (t.closest('[data-action="toggle-proc-drawer"]')) {
       const willOpen = el.classList.contains('is-collapsed');
       el.classList.toggle('is-collapsed');
+      _setDrawerCollapsed('proc', el.classList.contains('is-collapsed'));
       renderScheduleProcurement();
       if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
       return;
@@ -14628,14 +14653,26 @@ function renderScheduleHours() {
   const project = state.filters && state.filters.project;
   const idx = project && state.projectsIndex && state.projectsIndex[project];
   const job = (idx && idx.hours_job_id) || (idx && idx.job_number);
-  if (!project || state.view !== 'schedule' || !_hoursAvailable || !job) {
+  // Only hide when the project/view is wrong or Power BI isn't configured at all.
+  // A project with no linked job still shows the drawer (empty state).
+  if (!project || state.view !== 'schedule' || !_hoursAvailable) {
     el.style.display = 'none';
-    el.classList.add('is-collapsed');
-    layoutNotesPanel();
     return;
   }
   el.style.display = '';
-  const collapsed = el.classList.contains('is-collapsed');
+  const collapsed = _drawerCollapsed('hours');
+  el.classList.toggle('is-collapsed', collapsed);
+  // No job linked for hours → clean empty state instead of hiding the drawer.
+  if (!job) {
+    const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
+      <span class="notes-bar-title">⏱ Job Hours</span>
+      <span class="notes-count">No job linked</span>
+      <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+    </div>`;
+    el.innerHTML = collapsed ? bar : bar + `<div class="hours-drawer-body"><div class="proc-empty">No job hours — this project isn't linked to a Power BI job.</div></div>`;
+    _wireHoursDrawer(el, null, project);
+    return;
+  }
   const data = _hoursCache[job];
 
   const jobLabel = (data && data.jobIds && data.jobIds.length > 1)
@@ -15030,10 +15067,9 @@ function _wireHoursDrawer(el, job, project) {
   _drawerRestoreHeight('hours-drawer-body');
   el.onclick = (e) => {
     if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
-      const willOpen = el.classList.contains('is-collapsed');
       el.classList.toggle('is-collapsed');
-      if (willOpen && !_hoursCache[job]) renderScheduleHours();
-      else renderScheduleHours();
+      _setDrawerCollapsed('hours', el.classList.contains('is-collapsed'));
+      renderScheduleHours();
       return;
     }
     const modeBtn = e.target.closest('[data-hours-mode]');
@@ -15146,6 +15182,7 @@ function _wireNotes(el, project) {
     if (t.closest('[data-action="toggle-notes"]')) {
       const willOpen = el.classList.contains('is-collapsed');
       el.classList.toggle('is-collapsed');
+      _setDrawerCollapsed('notes', el.classList.contains('is-collapsed'));
       renderProjectNotes();
       // On open, bring the notes panel into view (with room below it to scroll).
       if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
