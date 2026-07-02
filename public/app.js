@@ -292,9 +292,9 @@ const state = {
 // friendly scale goes 0–100 (not 10–100), mapping 0=16px → 100=30px in
 // increments of 10 = 1.4px each. The previous "you'd never go smaller
 // than 30 (= 16px in v4.53 friendly)" gets renamed to 0 in the new scale.
-const ROW_H_MIN = 16;
+const ROW_H_MIN = 4;
 const ROW_H_MAX = 120;
-const ROW_H_FRIENDLY_MIN_PX = 16;
+const ROW_H_FRIENDLY_MIN_PX = 4;
 const ROW_H_FRIENDLY_MAX_PX = 30;
 const ROW_H_DEFAULT = 26;
 const BAR_H_MIN = 10;
@@ -1696,6 +1696,9 @@ function renderTable() {
   if (state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath) {
     const crit = computeCriticalPath();
     filtered = filtered.filter(t => crit.has(String(t.id)) || inferredAnchorKey(t));
+  }
+  if (state._exportOnlyIds) {
+    filtered = filtered.filter(t => inferredAnchorKey(t) || state._exportOnlyIds.has(t.id));
   }
   const empty = document.getElementById('empty-state');
 
@@ -3329,7 +3332,8 @@ function renderGantt() {
       if (am === 'schedule') return !t.is_action;
       if (am === 'actions')  return !!t.is_action;
       return true; // combined
-    });
+    })
+    .filter(t => !state._exportOnlyIds || inferredAnchorKey(t) || state._exportOnlyIds.has(t.id));
 
   renderGanttLegend();
 
@@ -24215,6 +24219,162 @@ function syncCustomerViewFlattenBtn() {
   btn.classList.toggle('is-active', !!(sv.flatten && sv.sortByStart));
 }
 
+function showCustomerExportModal() {
+  if (!state.filters.project) {
+    showAlertDialog('Pick a project tab first — export is per-project.');
+    return;
+  }
+  // Build the list of currently visible (non-anchor) tasks — same filtering
+  // that renderTable uses so what you pick is what you see.
+  let visible = applyFilters(state.tasks);
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  if (am === 'schedule') visible = visible.filter(t => !t.is_action || inferredAnchorKey(t));
+  else if (am === 'actions') visible = visible.filter(t => t.is_action || inferredAnchorKey(t));
+  if (state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath) {
+    const crit = computeCriticalPath();
+    visible = visible.filter(t => crit.has(String(t.id)) || inferredAnchorKey(t));
+  }
+  const pickable = visible.filter(t => !inferredAnchorKey(t));
+
+  const checked = new Set(pickable.map(t => t.id));
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-backdrop';
+  modal.innerHTML = `
+    <div class="modal-dialog" style="max-width:480px;max-height:82vh;display:flex;flex-direction:column;gap:0;">
+      <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;">
+        <h3 style="margin:0;">Export for Customer</h3>
+        <button type="button" class="btn-icon" id="cv-exp-close" style="font-size:16px;">✕</button>
+      </div>
+      <div style="padding:8px 16px 0;font-size:12px;color:var(--color-text-muted);">
+        Anchor rows (PO · FAT · Ship) are always included.
+      </div>
+      <div style="padding:6px 16px;display:flex;gap:6px;">
+        <button type="button" class="btn-sm" id="cv-exp-all">All</button>
+        <button type="button" class="btn-sm" id="cv-exp-none">None</button>
+        <span id="cv-exp-count" style="margin-left:auto;font-size:12px;color:var(--color-text-muted);align-self:center;"></span>
+      </div>
+      <div id="cv-exp-list" style="overflow-y:auto;flex:1;padding:0 16px 8px;"></div>
+      <div class="modal-footer" style="border-top:1px solid var(--border);padding:10px 16px;display:flex;flex-direction:column;gap:8px;">
+        <div style="font-size:11px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.06em;">Extra columns</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;"><input type="checkbox" class="cv-col-cb" data-col="progress" checked> % Complete</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;"><input type="checkbox" class="cv-col-cb" data-col="duration"> Duration</label>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;"><input type="checkbox" class="cv-col-cb" data-col="assignee"> Assigned To</label>
+        </div>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;">
+          <input type="checkbox" id="cv-exp-fit" checked>
+          Auto-fit row height to fill screen
+        </label>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button type="button" class="btn-secondary" id="cv-exp-cancel">Cancel</button>
+          <button type="button" class="btn-primary" id="cv-exp-go">Generate Export</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const listEl  = modal.querySelector('#cv-exp-list');
+  const countEl = modal.querySelector('#cv-exp-count');
+  const updateCount = () => { countEl.textContent = checked.size + ' rows'; };
+
+  // Build grouped list
+  let lastSection = null;
+  for (const t of pickable) {
+    const sec = t.phase_group || '';
+    if (sec !== lastSection) {
+      const hdr = document.createElement('div');
+      hdr.style.cssText = 'font-size:10px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.06em;padding:8px 0 3px;';
+      hdr.textContent = HIERARCHY.find(g => g.key === sec)?.label || sec || 'General';
+      listEl.appendChild(hdr);
+      lastSection = sec;
+    }
+    const lbl = document.createElement('label');
+    lbl.style.cssText = 'display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer;padding:2px 0;';
+    lbl.innerHTML = `<input type="checkbox" data-id="${t.id}" ${checked.has(t.id) ? 'checked' : ''}>${escapeHtml(t.name || '(unnamed)')}`;
+    lbl.querySelector('input').addEventListener('change', e => {
+      const id = Number(e.target.dataset.id);
+      e.target.checked ? checked.add(id) : checked.delete(id);
+      updateCount();
+    });
+    listEl.appendChild(lbl);
+  }
+  updateCount();
+
+  modal.querySelector('#cv-exp-all').addEventListener('click', () => {
+    listEl.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; checked.add(Number(cb.dataset.id)); });
+    updateCount();
+  });
+  modal.querySelector('#cv-exp-none').addEventListener('click', () => {
+    listEl.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = false; checked.delete(Number(cb.dataset.id)); });
+    updateCount();
+  });
+
+  const closeModal = () => modal.remove();
+  modal.querySelector('#cv-exp-close').addEventListener('click', closeModal);
+  modal.querySelector('#cv-exp-cancel').addEventListener('click', closeModal);
+  modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+
+  modal.querySelector('#cv-exp-go').addEventListener('click', () => {
+    const fitRows = modal.querySelector('#cv-exp-fit').checked;
+    const selectedIds = new Set([...checked].map(Number));
+    const anchorCount = visible.filter(t => inferredAnchorKey(t)).length;
+    const extraCols = [...modal.querySelectorAll('.cv-col-cb:checked')].map(cb => cb.dataset.col);
+    closeModal();
+    _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols);
+  });
+}
+
+function applyExportColumns(extraCols) {
+  document.getElementById('customer-export-cols')?.remove();
+  if (!extraCols || extraCols.length === 0) return;
+  // The customer-view hide rule uses 3 :not([attr]) selectors → specificity (1,4,2).
+  // Append [data-col][data-col] (two extra attribute selectors) to reach (1,4,2)
+  // so this later-in-document rule wins the !important tie.
+  const boost = '[data-col][data-col]';
+  const selectors = extraCols.flatMap(c => [
+    `body.customer-view #tasks-table col[data-col="${c}"]${boost}`,
+    `body.customer-view #tasks-table tr:not(.group-header) th[data-col="${c}"]${boost}`,
+    `body.customer-view #tasks-table tr:not(.group-header) td[data-col="${c}"]${boost}`,
+  ]);
+  const style = document.createElement('style');
+  style.id = 'customer-export-cols';
+  style.textContent = selectors.join(',\n') + ' { display: table-cell !important; }';
+  document.head.appendChild(style);
+}
+
+function _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols) {
+  state._exportOnlyIds = selectedIds;
+  enterCustomerView();
+  applyExportColumns(extraCols);
+  // Wait for enterCustomerView's two rAFs + setPaneMode render to settle
+  setTimeout(() => {
+    render();
+    if (fitRows) {
+      // Measure after layout settles. schedule-grid is auto-height so we
+      // measure from the table's top position to bottom of viewport instead.
+      setTimeout(() => {
+        const table = document.getElementById('tasks-table');
+        const thead = document.querySelector('#tasks-table thead');
+        const bodyRows = document.querySelectorAll('#tasks-tbody tr');
+        const footer = document.querySelector('.schedule-footer');
+        if (!table || bodyRows.length === 0) return;
+        const tableTop = table.getBoundingClientRect().top;
+        const footerH = footer ? footer.offsetHeight : 0;
+        const theadH  = thead ? thead.offsetHeight : 30;
+        const availH  = window.innerHeight - tableTop - footerH - 4;
+        const target  = Math.max(ROW_H_MIN, Math.floor((availH - theadH) / bodyRows.length));
+        state.layout.rowHeight = target;
+        applyRowHeight();
+        saveLayout();
+        if (state.gantt) renderGantt();
+      }, 60);
+    }
+    setTimeout(() => showToast('Press Ctrl+P to save as PDF — rows are auto-fitted. Click "Exit customer view" when done.', { kind: 'info' }), 350);
+  }, 200);
+}
+
 function enterCustomerView() {
   if (document.body.classList.contains('customer-view')) return;
   // Snapshot what we're about to change so exitCustomerView() can put it
@@ -24224,6 +24384,7 @@ function enterCustomerView() {
   state._cvSavedPane = ganttOnly ? 'gantt' : (showGantt ? 'both' : 'grid');
   state._cvSavedZoom = state.zoomPercent;
   state._cvSavedScroll = getGanttScroller()?.scrollLeft ?? 0;
+  state._cvSavedRowH = state.layout.rowHeight;
 
   // Apply class first so the body width / panel widths reflow to the
   // customer layout BEFORE zoomToFit measures the Gantt panel size.
@@ -24247,17 +24408,27 @@ function enterCustomerView() {
 function exitCustomerView() {
   if (!document.body.classList.contains('customer-view')) return;
   document.body.classList.remove('customer-view');
+  // Clear export filter and any injected column overrides.
+  state._exportOnlyIds = null;
+  document.getElementById('customer-export-cols')?.remove();
   // Restore pane mode (was forced to 'both' on entry).
   if (state._cvSavedPane) {
     setPaneMode(state._cvSavedPane);
     state._cvSavedPane = null;
+  }
+  // Restore row height (set state directly to avoid an extra render pass).
+  if (state._cvSavedRowH != null) {
+    state.layout.rowHeight = state._cvSavedRowH;
+    applyRowHeight();
+    saveLayout();
+    state._cvSavedRowH = null;
   }
   // Restore zoom + scroll. setZoom would re-render, so we set the state
   // directly and call renderGantt once at the end.
   if (state._cvSavedZoom != null) {
     state.zoomPercent = state._cvSavedZoom;
     state._cvSavedZoom = null;
-    if (state.view === 'schedule') renderGantt();
+    if (state.view === 'schedule') render();
     const scroller = getGanttScroller();
     if (scroller && state._cvSavedScroll != null) {
       scroller.scrollLeft = state._cvSavedScroll;
@@ -24504,7 +24675,7 @@ function renderZoomMenu() {
       e.stopPropagation();
       const dir = btn.dataset.row;
       const current = pxToFriendlyRowH(state.layout.rowHeight);
-      const next = dir === 'up' ? Math.min(100, current + 10) : Math.max(10, current - 10);
+      const next = dir === 'up' ? Math.min(100, current + 10) : Math.max(0, current - 10);
       setRowHeight(friendlyRowHToPx(next));
       renderZoomMenu();
     });
@@ -25316,6 +25487,8 @@ async function init() {
       render();
     });
   }
+
+  document.getElementById('btn-customer-export')?.addEventListener('click', showCustomerExportModal);
 
   // Topbar zoom controls: − / mode / + . The mode picker jumps to a representative zoom
   // for that scale (Day=200%, Week=70%, Month=10%) so the user can switch directly.

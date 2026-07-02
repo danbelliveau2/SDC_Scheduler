@@ -4,6 +4,24 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '11.0',
+    date: '2026-07-02',
+    notes: [
+      'Customer export, smaller rows, and export column picker.',
+      '',
+      'CUSTOMER EXPORT (📸 Export... button in toolbar):',
+      '   ▸ Pick which rows to include — checklist grouped by section, All/None toggles.',
+      '   ▸ Choose extra columns: % Complete (on by default), Duration, Assigned To.',
+      '   ▸ "Auto-fit row height" scales rows so every selected row fits on screen without scrolling.',
+      '   ▸ Ctrl+P from the export view saves a clean PDF (landscape, no UI chrome, no "+ Add" buttons).',
+      '   ▸ Removed the old Excel Export / Import buttons (dead weight).',
+      '',
+      'ROW HEIGHT:',
+      '   ▸ Row height can now go much smaller — all the way down to 4px for dense schedules.',
+      '   ▸ The Zoom dropdown row-height stepper now goes to 0 (was capped at 10).',
+    ],
+  },
+  {
     version: '10.5',
     date: '2026-06-26',
     notes: [

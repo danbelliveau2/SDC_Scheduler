@@ -1453,6 +1453,7 @@ body.customer-view .schedule-project-header,
 body.customer-view .row-height-bar,
 body.customer-view .schedule-divider,
 body.customer-view #btn-add,
+body.customer-view #btn-add-action,
 body.customer-view .legend,
 body.customer-view #project-stats-popup {
   display: none !important;
@@ -1596,6 +1597,9 @@ body.customer-view .customer-view-flatten.is-active {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+  .customer-view-exit,
+  .customer-view-flatten,
+  .sdc-toast-container { display: none !important; }
 }
 .schedule-project-meta {
   font-size: var(--fs-md);

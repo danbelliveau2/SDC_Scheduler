@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260616-eto66" />
+  <link rel="stylesheet" href="styles.css?v=20260616-eto78" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
 </head>
 <body>
@@ -255,11 +255,7 @@
           <!-- Auto-save status indicator -->
           <span id="save-indicator" class="save-indicator" title="All changes are saved automatically to the server"></span>
 
-          <!-- Export current project to Excel -->
-          <button id="btn-export" class="toolbar-toggle-btn" type="button" title="Export the current project schedule to Excel (.xlsx)">⬇ Export</button>
-
-          <!-- Import from exported Excel/CSV -->
-          <button id="btn-import" class="toolbar-toggle-btn" type="button" title="Import a schedule from an exported Excel or CSV file">⬆ Import</button>
+          <button id="btn-customer-export" class="toolbar-toggle-btn" type="button" title="Select rows and generate a customer-ready PDF export">📸 Export...</button>
           <input id="import-file-input" type="file" accept=".xlsx,.csv" style="display:none" />
 
           <div class="toolbar-divider"></div>
@@ -922,7 +918,7 @@
   <script src="auth-ui.js?v=20260616-eto23"></script>
   <script src="phases.js?v=20260601-166"></script>
   <script src="release-notes.js?v=20260601-173"></script>
-  <script src="app.js?v=20260616-eto77"></script>
+  <script src="app.js?v=20260616-eto82"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
