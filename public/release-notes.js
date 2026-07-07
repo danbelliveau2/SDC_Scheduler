@@ -4,6 +4,28 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '11.1',
+    date: '2026-07-07',
+    notes: [
+      'Column views, one-click compress, and a cleaner grid.',
+      '',
+      'VIEWS (new dropdown next to Show/hide columns):',
+      '   ▸ ★ Team default pinned at the top — one standard column setup for everybody. Locked in once set.',
+      '   ▸ Shared views — publish a view for the whole team (shows the owner\'s name); ★ on one of your views shares it.',
+      '   ▸ My views — private per-browser views that don\'t clutter anyone else\'s menu.',
+      '   ▸ Clicking a view auto-compresses the columns and zoom-fits the Gantt; the button shows which view you\'re on.',
+      '',
+      'COMPRESS (⇤ button):',
+      '   ▸ One click shrinks every column to its content + a uniform 6px gap, moves the grid/Gantt divider flush to the last column, and zoom-fits the Gantt.',
+      '   ▸ Task descriptions are never cut off — the Task column always fits the longest one.',
+      '',
+      'GRID:',
+      '   ▸ Dragging the divider wider now stretches the last column to fill — no dead strip.',
+      '   ▸ One grid font (right-click any header): headers at N, values 1px smaller. TASK header matches the other headers now.',
+      '   ▸ Task descriptions read slightly bolder. Predecessors column is just "Pred".',
+    ],
+  },
+  {
     version: '11.0',
     date: '2026-07-02',
     notes: [

@@ -22663,7 +22663,7 @@ function makeDemoBars(scenario) {
   const pred = {
     x: predX, y: predY, w: barW, h: barH,
     milestone: !!scenario.predMs,
-    label: 'Predecessor',
+    label: 'Pred',
   };
   const succ = {
     x: succX, y: succY, w: barW, h: barH,
@@ -23511,7 +23511,7 @@ const COLUMN_DEFS = [
   { key: 'start',    label: 'Start' },
   { key: 'finish',   label: 'Finish' },
   { key: 'duration', label: 'Duration' },
-  { key: 'pred',     label: 'Predecessors' },
+  { key: 'pred',     label: 'Pred' },
   { key: 'allocation', label: 'Alloc' },
   { key: 'progress', label: '% Complete' },
   { key: 'completed', label: 'Completed' },
@@ -23590,7 +23590,14 @@ function loadLayout() {
     gridWidth,
     showGantt: saved.showGantt !== false,
     colWidths: { ...DEFAULT_COL_WIDTHS, ...(saved.colWidths || {}) },
-    colFonts: { ...(saved.colFonts || {}) },   // per-column font size in px (right-click a header)
+    colFonts: { ...(saved.colFonts || {}) },   // legacy per-column overrides — no longer applied
+    gridFontPx: Number(saved.gridFontPx) || 12, // one grid font: headers at N, values at N−2
+    savedViews: saved.savedViews || {},        // named column setups (Views ▾ dropdown)
+    activeViewName: saved.activeViewName || null, // which view the button says you're on
+    // Columns this browser has already been introduced to. Seeded with the full
+    // current set so existing users' hidden columns stay hidden; only columns
+    // added in FUTURE versions auto-show (once).
+    seenCols: saved.seenCols || COLUMN_DEFS.map(c => c.key),
     visibleCols: saved.visibleCols || defaultVisible,
     columnOrder: saved.columnOrder || COLUMN_DEFS.map(c => c.key),
     rowHeight: Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, rh)),
@@ -23611,11 +23618,17 @@ function renderHeaders() {
     if (!order.includes(key)) order.splice(i, 0, key);
   }
   state.layout.columnOrder = order;
-  // Auto-show newly introduced columns unless they're in the default-hidden set.
+  // Auto-show newly introduced columns unless they're in the default-hidden set —
+  // but only the FIRST time a column key is ever seen (seenCols). Without that
+  // guard, every re-render resurrected user-hidden columns, which broke saved
+  // views ("I hid columns, applied my view, and they all came back").
+  state.layout.seenCols = state.layout.seenCols || [];
   for (const def of COLUMN_DEFS) {
-    if (state.layout.visibleCols.includes(def.key)) continue;
-    if (DEFAULT_HIDDEN_COLS.has(def.key)) continue;
-    state.layout.visibleCols.push(def.key);
+    if (state.layout.seenCols.includes(def.key)) continue;
+    state.layout.seenCols.push(def.key);
+    if (!state.layout.visibleCols.includes(def.key) && !DEFAULT_HIDDEN_COLS.has(def.key)) {
+      state.layout.visibleCols.push(def.key);
+    }
   }
 
   const colgroup = document.getElementById('tasks-colgroup');
@@ -23802,68 +23815,374 @@ function toggleScheduleView(key) {
   render();
 }
 
+// The set of columns ACTUALLY rendered right now — visibleCols minus the
+// contextual Project column when a single project tab is open (mirrors
+// applyColumnVisibility). Width math must use this, not visibleCols: counting
+// the hidden Project column's 160px made the table wider than its columns,
+// and fixed layout silently redistributed the phantom width across every
+// column (uneven gaps + dead space before the Gantt divider).
+function effectiveVisibleCols() {
+  const visible = new Set(state.layout.visibleCols);
+  if (state.filters.project) visible.delete('project');
+  else visible.add('project');
+  return visible;
+}
+
 function applyColWidths() {
+  const eff = effectiveVisibleCols();
+  const visible = state.layout.columnOrder.filter(k => eff.has(k));
   let sum = 0;
   for (const [name, w] of Object.entries(state.layout.colWidths)) {
     const col = document.querySelector(`#tasks-table colgroup col[data-col="${name}"]`);
     if (col) col.style.width = w + 'px';
-    if (state.layout.columnOrder.includes(name) && state.layout.visibleCols.includes(name)) sum += w;
+    if (visible.includes(name)) sum += w;
   }
   // table-layout: fixed only honors col widths when the table has an explicit width.
-  // Set total table width = sum of visible col widths so widths render exactly as configured.
   const table = document.getElementById('tasks-table');
-  if (table) table.style.width = sum + 'px';
+  const grid = document.getElementById('schedule-grid');
+  // If the pane is wider than the columns (user dragged the divider out), the
+  // LAST visible column absorbs the extra — no dead strip after it. Render-time
+  // only: state.layout.colWidths keeps the compressed width, so shrinking the
+  // pane back or re-compressing behaves normally.
+  const paneW = grid ? grid.clientWidth : 0;
+  const lastKey = visible[visible.length - 1];
+  if (paneW > sum && lastKey) {
+    const lastCol = document.querySelector(`#tasks-table colgroup col[data-col="${lastKey}"]`);
+    if (lastCol) lastCol.style.width = ((state.layout.colWidths[lastKey] || 0) + paneW - sum) + 'px';
+    if (table) table.style.width = paneW + 'px';
+  } else if (table) {
+    table.style.width = sum + 'px';
+  }
 }
 
-// Per-column font size — each column independent, set by right-clicking its
-// header. Injected as one <style> block so it beats the row-height clamps on
-// cell text. Columns with no override fall back to the app defaults.
+// ONE grid font size drives everything: every column header (including the
+// TASK banner — it's a main header like ASSIGNED TO / START / FINISH) renders
+// at gridFontPx, the Task header's ALOC/DESCRIPTION/DUR/%COM sub-labels sit
+// 1px under that, and every value inside the grid renders 1px smaller than
+// the headers. Right-click any column header to change it. Replaces the old
+// per-column font overrides (state.layout.colFonts is ignored now).
+const GRID_FONT_DEFAULT = 12;
 function applyColFonts() {
   let style = document.getElementById('col-font-overrides');
   if (!style) { style = document.createElement('style'); style.id = 'col-font-overrides'; document.head.appendChild(style); }
-  const cf = (state.layout && state.layout.colFonts) || {};
-  const rules = Object.entries(cf)
-    .filter(([, px]) => px && Number(px) > 0)
-    .map(([k, px]) => {
-      const n = Math.max(6, Math.min(28, Math.round(Number(px))));
-      // Header + cell + every element inside the cell (covers the Task column's
-      // name / allocation / duration spans), so the whole column changes.
-      return `#tasks-table thead th[data-col="${k}"],\n`
-        + `#tasks-table tbody td[data-col="${k}"],\n`
-        + `#tasks-table tbody td[data-col="${k}"] * { font-size: ${n}px !important; }`;
-    });
-  style.textContent = rules.join('\n');
+  const n = Math.max(8, Math.min(22, Math.round(Number(state.layout?.gridFontPx) || GRID_FONT_DEFAULT)));
+  style.textContent = `
+#tasks-table thead th,
+#tasks-table thead th .th-label,
+#tasks-table thead th .th-label-task { font-size: ${n}px !important; }
+#tasks-table thead th .th-label-alloc,
+#tasks-table thead th .th-label-desc,
+#tasks-table thead th .th-label-dur,
+#tasks-table thead th .th-label-pct { font-size: ${n - 1}px !important; }
+#tasks-table tbody td, #tasks-table tbody td * { font-size: ${n - 1}px !important; }`;
 }
 
-// Set (or clear, when px is null) one column's font size, persist, re-apply.
-function setColumnFont(colKey, px) {
+function setGridFont(px) {
   if (!state.layout) return;
-  state.layout.colFonts = state.layout.colFonts || {};
-  if (px == null) delete state.layout.colFonts[colKey];
-  else state.layout.colFonts[colKey] = Math.max(6, Math.min(28, Math.round(Number(px))));
+  state.layout.gridFontPx = Math.max(8, Math.min(22, Math.round(Number(px) || GRID_FONT_DEFAULT)));
   saveLayout();
   applyColFonts();
 }
 
-// Right-click a column header → pick that column's font size (independent of
-// every other column). Bound fresh each time the header row is rendered.
+// Right-click any column header → pick the grid font size (headers at N,
+// values at N−2). Bound fresh each time the header row is rendered.
 function setupColumnFontMenu() {
   document.querySelectorAll('#tasks-table thead th[data-col]').forEach(th => {
     th.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      const k = th.dataset.col;
-      const def = COLUMN_DEFS.find(d => d.key === k);
-      const label = def ? def.label : k;
-      const cur = (state.layout.colFonts || {})[k] || null;
-      const items = [8, 9, 10, 11, 12, 13, 14, 15, 16].map(s => ({
-        label: `${s}px${cur === s ? '   ✓' : ''}`,
-        onClick: () => setColumnFont(k, s),
+      const cur = state.layout.gridFontPx || GRID_FONT_DEFAULT;
+      const items = [10, 11, 12, 13, 14, 15, 16].map(s => ({
+        label: `${s}px headers · ${s - 1}px values${cur === s ? '   ✓' : ''}`,
+        onClick: () => setGridFont(s),
       }));
       items.push({ separator: true });
-      items.push({ label: `Reset “${label}” to default${cur == null ? '   ✓' : ''}`, onClick: () => setColumnFont(k, null) });
+      items.push({ label: `Reset to default (${GRID_FONT_DEFAULT}px)${cur === GRID_FONT_DEFAULT ? '   ✓' : ''}`, onClick: () => setGridFont(GRID_FONT_DEFAULT) });
       showContextMenu(e.clientX, e.clientY, items);
     });
+  });
+}
+
+// ⇤ Compress — shrink every visible column to the smallest width that still fits
+// its content, then shrink the grid pane to match so the Gantt gets the freed
+// space. Measurement: squeeze every column to its floor on the REAL table
+// (one reflow, no paint in between), then read each cell's scrollWidth — that's
+// the true rendered need with fonts, pills, and padding all included. The old
+// clone-based approach inherited table-layout:fixed and distributed the pane
+// width EQUALLY across columns — the exact opposite of compressing.
+function compressColumns() {
+  const table = document.getElementById('tasks-table');
+  if (!table) return;
+  const eff = effectiveVisibleCols();
+  const cols = state.layout.columnOrder.filter(k => eff.has(k));
+  const original = { ...state.layout.colWidths };
+  // ONE uniform gap between the end of the longest text and the column edge —
+  // every column gets exactly this much trailing space, no more. (The old
+  // version also enforced COL_MIN_WIDTHS floors, which is why Pred/# looked
+  // way looser than Start/Finish.)
+  const GAP = 6;
+  try {
+    // Pass 1 (writes): squeeze every visible column to near-zero so all real
+    // content overflows — then scrollWidth reads as paddingLeft + text width.
+    for (const k of cols) {
+      const col = table.querySelector(`colgroup col[data-col="${k}"]`);
+      if (col) col.style.width = (k === 'name' ? 220 : 24) + 'px';
+    }
+    table.style.width = '10px'; // fixed layout honors the col widths, not the pane width
+    void table.offsetWidth;     // force the reflow before reading
+    // Pass 2 (reads): max scrollWidth per column + GAP = smallest width that fits.
+    const next = {};
+    for (const k of cols) {
+      if (k === 'name') continue; // absolute-positioned layout — measured below
+      let need = 0;
+      table.querySelectorAll(`thead th[data-col="${k}"], tbody td[data-col="${k}"]`).forEach(cell => {
+        if (cell.colSpan > 1) return; // group-header rows span the table — not column data
+        need = Math.max(need, cell.scrollWidth);
+      });
+      next[k] = Math.max(24, need + GAP);
+    }
+    next.name = Math.max(220, _measureNameColNeed(table));
+    Object.assign(state.layout.colWidths, next);
+  } catch (_) {
+    state.layout.colWidths = original; // measurement failed — leave layout untouched
+  }
+  // Compressing means you've customized away from whatever view was active.
+  state.layout.activeViewName = null;
+  _syncViewsButtonLabel();
+  fitGridPaneToColumns();
+}
+
+// The Task cell's description (.name-cell-main) is absolutely positioned at
+// left:64 / right:110 — the ALOC band on one side, DUR + %COM on the other.
+// So the column must be 64 + longest description + 110 wide for every word to
+// show. Summing child widths (the old approach) ignored those fixed bands and
+// under-measured — that was the "descriptions cut off" bug.
+function _measureNameColNeed(table) {
+  const left = document.body.classList.contains('hide-alloc-pre') ? 8 : 64;
+  let text = 0;
+  table.querySelectorAll('tbody td[data-col="name"] .name-cell-main').forEach(el => {
+    text = Math.max(text, el.scrollWidth); // full content width even when clipped
+  });
+  return text ? left + text + 110 + 6 : 0;
+}
+
+// Snap the grid pane to its columns — the shared tail of Compress and
+// applying a view:
+//   1. Widen the Task column if the current width clips ANY description
+//      (never allowed, no matter what widths a saved view carried).
+//   2. Move the grid/Gantt divider to the edge of the last visible column.
+//   3. Re-fit the Gantt into whatever space it now has.
+function fitGridPaneToColumns() {
+  const table = document.getElementById('tasks-table');
+  if (table) {
+    const need = _measureNameColNeed(table);
+    if (need > (state.layout.colWidths.name || 0)) state.layout.colWidths.name = need;
+  }
+  applyColWidths();
+  const eff = effectiveVisibleCols();
+  const sum = state.layout.columnOrder.filter(k => eff.has(k))
+    .reduce((a, k) => a + (state.layout.colWidths[k] || 0), 0);
+  // Pane width = columns + exactly the pane's own chrome (vertical scrollbar
+  // + borders), measured for real. A fixed allowance either left a dead gap
+  // after the last column (no scrollbar) or shaved the Finish column (wide
+  // scrollbar) depending on the machine.
+  state.layout.gridWidth = Math.max(280, sum);
+  applyGridWidth();
+  const gridEl = document.getElementById('schedule-grid');
+  if (gridEl) {
+    void gridEl.offsetWidth; // reflow so client/offset widths are current
+    const chrome = gridEl.offsetWidth - gridEl.clientWidth;
+    if (chrome > 0) {
+      state.layout.gridWidth += chrome;
+      applyGridWidth();
+    }
+  }
+  saveLayout();
+  // Two rAFs so the CSS reflow settles before zoomToFit measures the panel —
+  // same pattern as enterCustomerView.
+  if (!state.gantt) return;
+  renderGantt();
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      try { zoomToFit(); } catch (_) {}
+    });
+  });
+}
+
+// Views ▾ button shows which saved view you're on; falls back to plain
+// "Views" once you customize away from it (compress, column toggles).
+function _syncViewsButtonLabel() {
+  const btn = document.getElementById('btn-col-views');
+  if (!btn) return;
+  const n = state.layout?.activeViewName;
+  btn.textContent = n ? `View: ${n} ▾` : 'Views ▾';
+}
+
+// ---------- Saved column views (Views ▾) ----------
+// A view = snapshot of which columns are visible, their order, widths, per-
+// column fonts, and the grid pane width. Three tiers:
+//   • Team default — ONE view for everybody, pinned + highlighted at the top.
+//     Stored server-side (settings key 'shared_column_views') so the whole
+//     team sees the schedule the same way out of the box.
+//   • Shared views — named views anyone published, visible to everyone.
+//     Same server-side settings key.
+//   • My views — personal, localStorage only (state.layout.savedViews), so
+//     they never clutter anyone else's menu. A ★ promotes one to shared.
+function _snapshotColumnView() {
+  return {
+    visibleCols: [...state.layout.visibleCols],
+    columnOrder: [...state.layout.columnOrder],
+    colWidths: { ...state.layout.colWidths },
+    gridFontPx: state.layout.gridFontPx,
+    gridWidth: state.layout.gridWidth,
+  };
+}
+
+function _applyColumnViewObj(v, name) {
+  if (!v || !Array.isArray(v.visibleCols)) return;
+  state.layout.visibleCols = [...v.visibleCols];
+  state.layout.columnOrder = [...(v.columnOrder || state.layout.columnOrder)];
+  state.layout.colWidths = { ...DEFAULT_COL_WIDTHS, ...(v.colWidths || {}) };
+  if (v.gridFontPx) state.layout.gridFontPx = v.gridFontPx;
+  saveLayout();
+  renderHeaders();
+  renderTable();
+  applyColFonts();
+  renderColumnsMenu();
+  // A view picks WHICH columns show (+ order + font); widths always come from
+  // a fresh compress against the current data — that also snaps the divider
+  // to the last column and zoom-fits the Gantt. People resize from there.
+  compressColumns();
+  // compressColumns clears the active view name (it normally means "you've
+  // customized away from the view") — restore it, this compress IS the view.
+  state.layout.activeViewName = name || null;
+  saveLayout();
+  _syncViewsButtonLabel();
+}
+
+// Server-side shared views live in the same settings store as section colors
+// etc. — loaded for everyone at boot, written via the generic settings API.
+function _sharedViews() {
+  const sv = state.settings?.shared_column_views;
+  return {
+    default: (sv && sv.default) || null,
+    views: (sv && sv.views) || {},
+  };
+}
+function _saveSharedViews(sv) {
+  state.settings.shared_column_views = sv;
+  api.putSetting('shared_column_views', sv)
+    .catch(() => showToast('Could not save the shared view to the server.', { kind: 'error' }));
+}
+
+function renderColViewsMenu() {
+  const menu = document.getElementById('col-views-menu');
+  if (!menu) return;
+  const shared = _sharedViews();
+  const mine = state.layout.savedViews || {};
+  const me = window.sdcAuth?.user?.name || '';
+
+  const sec = (label) => `<div style="padding:6px 12px 2px;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;">${label}</div>`;
+  const row = (label, attrs, extraBtns = '', style = '') => `
+    <div class="col-view-row" style="display:flex;align-items:center;gap:4px;">
+      <button type="button" class="dropdown-item" ${attrs} style="flex:1;text-align:left;${style}">${label}</button>
+      ${extraBtns}
+    </div>`;
+
+  let html = '';
+  // Team default — pinned at the top, highlighted, there for everybody. Once
+  // set it's locked in: no delete button, and the "set as default" action
+  // below disappears. It is what it is.
+  if (shared.default) {
+    html += row('★ Team default', 'data-apply-default', '',
+      'font-weight:700;background:var(--anchor-fill, #befa4f);color:var(--sdc-dark, #061d39);border-radius:6px;');
+  }
+  const sharedNames = Object.keys(shared.views).sort((a, b) => a.localeCompare(b));
+  if (sharedNames.length) {
+    html += sec('Shared');
+    html += sharedNames.map(n => {
+      const owner = shared.views[n]?.owner;
+      const ownerTag = owner ? ` <span style="color:var(--text-muted);font-size:10px;">· ${escapeHtml(owner)}</span>` : '';
+      return row(`${escapeHtml(n)}${ownerTag}`, `data-shared-view="${escapeHtml(n)}"`,
+        `<button type="button" class="btn-icon" data-del-shared="${escapeHtml(n)}" title="Delete this shared view (affects everyone)" style="flex:0 0 auto;font-size:11px;">✕</button>`);
+    }).join('');
+  }
+  const myNames = Object.keys(mine).sort((a, b) => a.localeCompare(b));
+  html += sec('My views');
+  html += myNames.length
+    ? myNames.map(n => row(escapeHtml(n), `data-my-view="${escapeHtml(n)}"`,
+        `<button type="button" class="btn-icon" data-share="${escapeHtml(n)}" title="Share this view with everyone (moves it to the Shared section)" style="flex:0 0 auto;font-size:11px;">★</button>
+         <button type="button" class="btn-icon" data-del-mine="${escapeHtml(n)}" title="Delete this view" style="flex:0 0 auto;font-size:11px;">✕</button>`)).join('')
+    : '<div style="padding:2px 12px 6px;font-size:12px;color:var(--text-muted);">None yet.</div>';
+  html += `
+    <div class="dropdown-sep"></div>
+    <button type="button" class="dropdown-item" data-save-view style="font-weight:600;">+ New view from current columns…</button>
+    ${shared.default ? '' : '<button type="button" class="dropdown-item" data-set-default>★ Set current as team default</button>'}`;
+  menu.innerHTML = html;
+
+  const close = () => menu.classList.add('hidden');
+  menu.querySelector('[data-apply-default]')?.addEventListener('click', (e) => {
+    e.stopPropagation(); _applyColumnViewObj(_sharedViews().default, 'Team default'); close();
+  });
+  menu.querySelectorAll('[data-shared-view]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation(); _applyColumnViewObj(_sharedViews().views[b.dataset.sharedView], b.dataset.sharedView); close();
+  }));
+  menu.querySelectorAll('[data-del-shared]').forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const n = b.dataset.delShared;
+    const ok = await showConfirmDialog({ title: `Delete shared view “${n}”?`, message: 'This deletes it for EVERYONE.', okLabel: 'Delete' });
+    if (ok) { const sv = _sharedViews(); delete sv.views[n]; _saveSharedViews(sv); renderColViewsMenu(); }
+  }));
+  menu.querySelectorAll('[data-my-view]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation(); _applyColumnViewObj(mine[b.dataset.myView], b.dataset.myView); close();
+  }));
+  menu.querySelectorAll('[data-share]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const n = b.dataset.share;
+    const sv = _sharedViews();
+    sv.views[n] = { ...mine[n], owner: me };
+    delete state.layout.savedViews[n];
+    saveLayout();
+    _saveSharedViews(sv);
+    renderColViewsMenu();
+  }));
+  menu.querySelectorAll('[data-del-mine]').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    delete state.layout.savedViews[b.dataset.delMine];
+    saveLayout();
+    renderColViewsMenu();
+  }));
+  menu.querySelector('[data-save-view]').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    close();
+    const name = await showPromptDialog({
+      title: 'Save column view',
+      message: 'Name this column setup — it saves which columns are visible, their order, widths, and font sizes. It stays private to you until you ★ share it.',
+      placeholder: 'e.g. Compact, Full detail, Customer',
+      okLabel: 'Save',
+      validate: v => v ? null : 'Give the view a name.',
+    });
+    if (name) {
+      state.layout.savedViews = state.layout.savedViews || {};
+      state.layout.savedViews[name] = _snapshotColumnView();
+      saveLayout();
+      renderColViewsMenu();
+    }
+  });
+  menu.querySelector('[data-set-default]')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    close();
+    const ok = await showConfirmDialog({
+      title: 'Set team default?',
+      message: 'Your current column setup becomes the pinned ★ Team default at the top of everyone\'s Views menu — permanently. Once set, it\'s locked in for the team.',
+      okLabel: 'Set as default',
+    });
+    if (ok) {
+      const sv = _sharedViews();
+      sv.default = { ..._snapshotColumnView(), owner: me };
+      _saveSharedViews(sv);
+      renderColViewsMenu();
+    }
   });
 }
 
@@ -23992,6 +24311,9 @@ function renderColumnsMenu() {
         state.layout.visibleCols = state.layout.visibleCols.filter(k => k !== key);
       }
       applyColumnVisibility();
+      // Manually changing columns means you're off whatever view was active.
+      state.layout.activeViewName = null;
+      _syncViewsButtonLabel();
       saveLayout();
     }
   });
@@ -24145,14 +24467,22 @@ function setupSplitDivider() {
     e.preventDefault();
     divider.classList.add('dragging');
     const splitRect = split.getBoundingClientRect();
+    let dividerRaf = false;
     const onMove = (ev) => {
       const w = Math.max(280, Math.min(splitRect.right - 200, ev.clientX - splitRect.left));
       grid.style.width = w + 'px';
       state.layout.gridWidth = Math.round(w);
+      // Keep the last column stretched to the pane edge WHILE dragging —
+      // otherwise a dead strip flashes after the last column until mouseup.
+      if (!dividerRaf) {
+        dividerRaf = true;
+        requestAnimationFrame(() => { applyColWidths(); dividerRaf = false; });
+      }
     };
     const onUp = () => {
       divider.classList.remove('dragging');
       saveLayout();
+      applyColWidths(); // final stretch at the settled width
       // Re-render gantt so its width recalculates
       if (state.gantt) renderGantt();
       document.removeEventListener('mousemove', onMove);
@@ -25246,6 +25576,23 @@ async function init() {
   document.addEventListener('click', (e) => {
     if (!colMenu.contains(e.target) && e.target !== colBtn) colMenu.classList.add('hidden');
   });
+
+  // ⇤ Compress + Views ▾ (saved column setups) — live next to Show/hide columns.
+  document.getElementById('btn-compress-cols')?.addEventListener('click', compressColumns);
+  const viewsBtn = document.getElementById('btn-col-views');
+  const viewsMenu = document.getElementById('col-views-menu');
+  if (viewsBtn && viewsMenu) {
+    renderColViewsMenu();
+    _syncViewsButtonLabel();
+    viewsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      renderColViewsMenu();
+      viewsMenu.classList.toggle('hidden');
+    });
+    document.addEventListener('click', (e) => {
+      if (!viewsMenu.contains(e.target) && e.target !== viewsBtn) viewsMenu.classList.add('hidden');
+    });
+  }
 
   setupScrollSync();
   _setupScrollPersist();

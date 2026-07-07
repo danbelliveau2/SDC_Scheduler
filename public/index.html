@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260616-eto78" />
+  <link rel="stylesheet" href="styles.css?v=20260616-eto88" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
 </head>
 <body>
@@ -200,6 +200,13 @@
           <div class="dropdown">
             <button id="btn-columns" class="toolbar-toggle-btn" type="button" title="Show, hide, or reorder grid columns. Drag rows in the menu to reorder them in the grid.">Show/hide columns ▾</button>
             <div id="columns-menu" class="dropdown-menu hidden"></div>
+          </div>
+
+          <button id="btn-compress-cols" class="toolbar-toggle-btn" type="button" title="Shrink every visible column to the smallest width that still fits its content — frees up room for the Gantt.">⇤ Compress</button>
+
+          <div class="dropdown">
+            <button id="btn-col-views" class="toolbar-toggle-btn" type="button" title="Saved column views — save the current column setup (which columns, widths, fonts) under a name and switch between setups in one click.">Views ▾</button>
+            <div id="col-views-menu" class="dropdown-menu hidden"></div>
           </div>
 
           <div class="toolbar-divider"></div>
@@ -917,8 +924,8 @@
        from app.js / comments-ui.js. -->
   <script src="auth-ui.js?v=20260616-eto23"></script>
   <script src="phases.js?v=20260601-166"></script>
-  <script src="release-notes.js?v=20260601-173"></script>
-  <script src="app.js?v=20260616-eto82"></script>
+  <script src="release-notes.js?v=20260601-174"></script>
+  <script src="app.js?v=20260616-eto91"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

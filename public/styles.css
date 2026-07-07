@@ -4386,6 +4386,9 @@ body.hide-alloc-pre td[data-col="name"] {
   text-overflow: ellipsis;
   font-size: clamp(9px, calc(var(--row-h, 26px) * 0.55), 18px);
   line-height: 1.2;
+  /* One notch bolder than the body's 500 — the description is the row's
+     main content and should read slightly more prominent, not full bold. */
+  font-weight: var(--fw-semibold, 600);
 }
 body.hide-alloc-pre .name-cell-main {
   left: 8px;
@@ -4511,8 +4514,11 @@ th[data-col="name"] .th-label-name {
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Match the other main headers exactly (ASSIGNED TO / START / …): same
+     muted color + semibold weight from the base th rule. The old navy
+     color made TASK look like a different font. */
   font-weight: var(--fw-semibold);
-  color: var(--sdc-dark, #061d39);
+  color: var(--text-muted);
   letter-spacing: 0.05em;
   font-size: var(--fs-sm);
 }
