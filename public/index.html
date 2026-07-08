@@ -10,30 +10,6 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
   <link rel="stylesheet" href="styles.css?v=20260616-eto96" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
-  <!-- Auto-scale the whole app (grid, buttons, sidebar, modals — everything) to the
-       current window/screen size via CSS zoom, so it stays proportionate on laptops
-       vs. large monitors. Clamped 0.8x-1.3x against a 1600x900 reference so it's never
-       illegibly small or oversized. Independent of the Gantt timeline's own manual
-       zoom (pxPerDay) control in app.js — that only changes day-column width. Runs
-       inline before body paint to avoid a flash of unscaled content, and re-applies
-       on resize so it stays live as the window/screen changes. -->
-  <script>
-  (function () {
-    var BASE_W = 1600, BASE_H = 900;
-    var MIN_SCALE = 0.8, MAX_SCALE = 1.3;
-    function applyAutoScale() {
-      var scale = Math.min(window.innerWidth / BASE_W, window.innerHeight / BASE_H);
-      scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale));
-      document.documentElement.style.zoom = scale;
-    }
-    applyAutoScale();
-    var resizeT;
-    window.addEventListener('resize', function () {
-      clearTimeout(resizeT);
-      resizeT = setTimeout(applyAutoScale, 120);
-    });
-  })();
-  </script>
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
