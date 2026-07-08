@@ -14136,8 +14136,26 @@ function syncSalesModeUI() {
   }
 }
 
+// The top toolbar must NEVER cut a button off ("..."). Buttons are nowrap +
+// no-shrink (see styles.css), so when the window is too narrow the bar truly
+// overflows — detect that and zoom the whole bar down until everything fits.
+// Text just gets proportionally smaller; nothing ever clips.
+function fitScheduleToolbar() {
+  const bar = document.querySelector('.schedule-toolbar');
+  if (!bar) return;
+  bar.style.zoom = '';
+  const need = bar.scrollWidth;
+  const have = bar.clientWidth;
+  if (need > have && need > 0) bar.style.zoom = Math.max(0.6, have / need);
+}
+window.addEventListener('resize', () => {
+  clearTimeout(fitScheduleToolbar._t);
+  fitScheduleToolbar._t = setTimeout(fitScheduleToolbar, 120);
+});
+
 function render() {
   try { syncSalesModeUI(); } catch (_) {}
+  try { fitScheduleToolbar(); } catch (_) {}
   renderProjectTabs();
   renderMachineSubTabs();
   renderMachineCloneBanner();

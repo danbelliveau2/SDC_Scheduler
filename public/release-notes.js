@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '11.3',
+    date: '2026-07-08',
+    notes: [
+      'Toolbar always fits — nothing ever cut off.',
+      '',
+      '   ▸ Toolbar buttons never shrink or show "…" — if the window is too narrow, the whole bar scales down proportionally so every label stays fully readable. Re-fits live as you resize.',
+      '   ▸ Customer export button is just "Export" (dropped the camera icon and the dots).',
+      '   ▸ Views: pinned defaults renamed Active Project Default / Sales Default — clean rows with light-blue bars, no stars.',
+    ],
+  },
+  {
     version: '11.2',
     date: '2026-07-08',
     notes: [
