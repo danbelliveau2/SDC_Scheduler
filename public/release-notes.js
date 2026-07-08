@@ -4,6 +4,24 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '11.5',
+    date: '2026-07-08',
+    notes: [
+      'Baseline is now a one-click ◎ pill with consistent drift chips.',
+      '',
+      'BASELINE (new bullseye pill in the center toggle block):',
+      '   ▸ Click toggles the baseline overlay on/off; right-click to set, reset, or turn the baseline off entirely. The old "◎ Baseline ▾" dropdown button is gone.',
+      '   ▸ With the overlay on, EVERY task that moved off the baseline shows a ±w chip (green ahead / red behind) based on its finish variance — bars, milestones, and the PO/FAT/Ship anchors alike. Before, only tasks whose START moved got a chip, which is why some showed nothing.',
+      '   ▸ Anchor chips sit clear of the milestone date labels — no overlap.',
+      '   ▸ The behind-today chip on in-progress work (e.g. −1.5w) is unchanged — that\'s a separate signal from baseline drift.',
+      '',
+      'PROJECTS PAGE:',
+      '   ▸ Template names read in SDC blue (no more ★ prefix) inside a fully framed Templates box.',
+      '   ▸ The create button is just "+ New from template" — it offers that section\'s templates (Active vs Sales).',
+      '   ▸ Tab-bar row labels are a fixed-width column, so Sales-row tabs start at the same spot as the Active row\'s.',
+    ],
+  },
+  {
     version: '11.4',
     date: '2026-07-08',
     notes: [

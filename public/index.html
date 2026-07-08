@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260616-eto102" />
+  <link rel="stylesheet" href="styles.css?v=20260616-eto105" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
 </head>
 <body>
@@ -247,6 +247,7 @@
             <button id="btn-view-bar-meta"   class="view-bracket-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below.">%</button>
             <button id="btn-view-machine"    class="view-bracket-icon" type="button" title="Highlight which machine each row belongs to — colored pill in the grid + matching border on the Gantt bar. Auto-hides on single-machine projects.">M</button>
             <button id="btn-view-dept-hours" class="view-bracket-icon" type="button" title="Show QUOTED vs SCHEDULED hours on each department subheader — scheduled (from durations) under DUR, quoted (from the Project Release budget) under %COM, and an over/under-scheduled chip in the Assigned To area.">Δ</button>
+            <button id="btn-view-baseline" class="view-bracket-icon" type="button" title="Baseline overlay — dashed plan-of-record outlines + ahead/behind chips vs the baseline. Click to toggle; right-click to set, reset, or turn off the baseline."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.8" fill="currentColor"/></svg></button>
           </div>
 
           <div class="toolbar-divider"></div>
@@ -270,12 +271,10 @@
           <!-- Flex gap pushes the right-edge tools to the far right. -->
           <div class="toolbar-flex-gap"></div>
 
-          <div class="dropdown">
-            <button id="btn-baseline-menu" class="toolbar-toggle-btn" type="button" title="Baseline — set, show, hide, or turn off the project baseline snapshot.">◎ Baseline ▾</button>
-            <div id="baseline-menu" class="dropdown-menu hidden"></div>
-          </div>
-
-          <div class="toolbar-divider"></div>
+          <!-- Baseline actions menu — opened by RIGHT-clicking the ◉ pill in the
+               center block (the old "◎ Baseline ▾" dropdown button is gone;
+               left-click on the pill just toggles the overlay). -->
+          <div id="baseline-menu" class="dropdown-menu hidden"></div>
 
           <div class="dropdown">
             <button id="btn-zoom-menu" class="toolbar-toggle-btn" type="button" title="Zoom controls — change the Gantt time scale (Days/Weeks/Months), Gantt zoom (1-10), and grid row height (10-100).">🔍 Zoom ▾</button>
@@ -924,8 +923,8 @@
        from app.js / comments-ui.js. -->
   <script src="auth-ui.js?v=20260616-eto23"></script>
   <script src="phases.js?v=20260601-166"></script>
-  <script src="release-notes.js?v=20260601-177"></script>
-  <script src="app.js?v=20260616-eto102"></script>
+  <script src="release-notes.js?v=20260601-178"></script>
+  <script src="app.js?v=20260616-eto106"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

@@ -4815,21 +4815,29 @@ function drawBaselineGhosts() {
     // bar's label underneath still reads.
     wrap.appendChild(ghost);
 
-    // Drift label — bare "+Nd" / "−Nd" in the task's dark color. No pill, no
-    // "baseline" wording. ALWAYS placed to the LEFT of the bar (anchored to the
-    // bar's left edge) so it never collides with the schedule-status chip on
-    // the right. SKIPPED for milestones (anchors + regular) because the diamond
-    // shape extends well past the bar's bbox — the label would land on top of
-    // the diamond. The ghost shape alone is enough to read the drift on those.
-    const driftMag = Math.abs(startDrift);
-    if (driftMag > 0 && !task.is_milestone) {
-      const isLate = startDrift > 0;
+    // Drift label — bare "+Nw" / "−Nw", ALWAYS placed to the LEFT of the bar
+    // so it never collides with the schedule-status chip on the right.
+    // CONSISTENT for every task with a baseline: the FINISH variance is the
+    // signal (how late/early it now ENDS vs the plan-of-record); when only
+    // the start moved, fall back to start variance. Milestones get the label
+    // too, just offset further left so it clears the diamond shape.
+    const drift = endDrift !== 0 ? endDrift : startDrift;
+    const driftMag = Math.abs(drift);
+    if (driftMag > 0) {
+      const isLate = drift > 0;
       // Weeks + half-weeks, never days (business-days ÷ 5, half-week snap).
       const driftWks = (Math.round((driftMag / 5) * 2) / 2) || 0.5;
       const labelText = `${isLate ? '+' : '−'}${driftWks}w`;
       const text = document.createElementNS(SVG_NS, 'text');
       text.setAttribute('class', 'baseline-drift-label');
-      text.setAttribute('x', barX - 4);
+      // Spine anchors (PO / FAT / Ship…) draw their DATE to the left of the
+      // diamond — the chip must clear both the diamond AND that ~62px date
+      // text. Plain milestones only need to clear the diamond; bars just sit
+      // 4px off their left edge.
+      const msClear = Math.max(10, barH * 0.8);
+      const leftOffset = !task.is_milestone ? 4
+        : (inferredAnchorKey(task) ? msClear + 68 : msClear);
+      text.setAttribute('x', barX - leftOffset);
       text.setAttribute('y', barY + barH / 2 + 3);
       text.setAttribute('text-anchor', 'end');
       text.setAttribute('font-size', '10');
@@ -6730,14 +6738,11 @@ function projectHasBaseline(p) {
 // clicking opens a dropdown with the specific actions (Turn on / Reset / Show
 // or Hide / Turn off).
 function syncBaselineButtons() {
-  const btn = document.getElementById('btn-baseline-menu');
+  const btn = document.getElementById('btn-view-baseline');
   if (!btn) return;
   const project = state.filters.project;
   const has = projectHasBaseline(project);
-  // Compact label keeps the button width consistent regardless of state — the
-  // is-active highlight tells you whether the overlay is currently visible.
-  btn.textContent = '◎ Baseline ▾';
-  btn.classList.toggle('is-active', !!state.showBaseline);
+  btn.classList.toggle('is-active', !!state.showBaseline && has);
   btn.disabled = !project;
   btn.title = !project
     ? 'Open a specific project tab first — baselines are per-project.'
@@ -11242,9 +11247,7 @@ function renderProjectsPage() {
       ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project.">→ Project</button>`
       : '';
     const openBtn = `<button class="projects-row-openbtn${isOpen ? ' is-open' : ''}" data-action="open-project" data-project="${escapeHtml(p)}" type="button">OPEN</button>`;
-    const tmplIcon = isTmpl ? `<span class="projects-row-tmplicon">★</span>` : '';
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
-      ${tmplIcon}
       <span class="projects-row-name">${escapeHtml(p)}</span>
       ${promoteBtn}
       ${openBtn}
@@ -11261,7 +11264,9 @@ function renderProjectsPage() {
     const allowsNew = ws !== 'Closed';
     const wsTmpl = templates.length === 1 ? templates[0]
       : templates.find(t => !/duplicate/i.test(t)) || templates[0] || null;
-    const newBtnLabel = wsTmpl ? `+ New from ${escapeHtml(wsTmpl)}` : '+ New schedule';
+    // Generic label — the dialog itself offers this workspace's templates,
+    // so naming one specific template here was misleading when two exist.
+    const newBtnLabel = wsTmpl ? '+ New from template' : '+ New schedule';
     const displayCount = searchQ ? nonTemplates.length : nonTemplates.length;
     return `
       <div class="projects-workspace projects-ws-${ws.toLowerCase()}${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}">
@@ -13298,7 +13303,11 @@ function showSalesCreateDialog(templateName) {
 
 function showCreateScheduleDialog(defaultWs) {
   document.getElementById('create-schedule-modal')?.remove();
+  // Scope templates to the workspace the button was clicked in — the Active
+  // section's "+ New from template" offers active templates, Sales offers
+  // sales templates. No workspace (e.g. "+ New tab") → all templates.
   const templates = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t))
+    .filter(t => !defaultWs || projectWorkspace(t) === defaultWs)
     .sort((a, b) => a.localeCompare(b));
   const projects = uniqueValues('project').filter(p => !isTemplateProject(p))
     .sort((a, b) => a.localeCompare(b));
@@ -25774,7 +25783,7 @@ async function init() {
   //     looked like a no-op.
   //   - All confirmations use the in-app showConfirmAt() anchored to the click
   //     location, NOT native confirm().
-  const baseMenuBtn = document.getElementById('btn-baseline-menu');
+  const baseMenuBtn = document.getElementById('btn-view-baseline');
   const baseMenu    = document.getElementById('baseline-menu');
   if (baseMenuBtn && baseMenu) {
     syncBaselineButtons();
@@ -25881,19 +25890,31 @@ async function init() {
         baseMenu.appendChild(btn);
       });
     };
+    const openBaselineMenu = () => {
+      renderBaselineMenu();
+      baseMenu.classList.remove('hidden');
+      const r = baseMenuBtn.getBoundingClientRect();
+      baseMenu.style.top  = (r.bottom + 4) + 'px';
+      baseMenu.style.left = Math.max(8, r.left) + 'px';
+    };
+    // ◉ pill: LEFT-click toggles the overlay when a baseline exists; with no
+    // baseline yet it opens the menu (whose only action is "Turn on"). All
+    // other actions (reset / turn off) live on RIGHT-click.
     baseMenuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const willShow = baseMenu.classList.contains('hidden');
-      if (willShow) {
-        renderBaselineMenu();
-        baseMenu.classList.remove('hidden');
-        // Position below the button, left-aligned.
-        const r = baseMenuBtn.getBoundingClientRect();
-        baseMenu.style.top  = (r.bottom + 4) + 'px';
-        baseMenu.style.left = Math.max(8, r.left) + 'px';
-      } else {
-        closeBaselineMenu();
-      }
+      if (!baseMenu.classList.contains('hidden')) { closeBaselineMenu(); return; }
+      const project = state.filters.project;
+      if (!project) return;
+      if (!projectHasBaseline(project)) { openBaselineMenu(); return; }
+      state.showBaseline = !state.showBaseline;
+      saveScheduleView();
+      syncBaselineButtons();
+      renderGantt();
+    });
+    baseMenuBtn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openBaselineMenu();
     });
     // Reparent to body so the dropdown doesn't get clipped by the toolbar's
     // overflow boundaries.
