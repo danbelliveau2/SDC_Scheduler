@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '11.2',
+    date: '2026-07-08',
+    notes: [
+      'Sales schedules, standard views, and Task sub-column toggles.',
+      '',
+      'VIEWS:',
+      '   ▸ Two pinned standards: Active Project Default and Sales Default. Opening a Sales-workspace schedule auto-applies the Sales Default; switching back restores your previous layout exactly.',
+      '   ▸ No more hard-coded column hiding on sales — the Sales Default view is what makes sales look different, and every column can be shown on any schedule.',
+      '   ▸ Applying a view now fully defines the Task sub-columns (Alloc / Description / Duration / % Complete) — no residue from the previous view.',
+      '',
+      'TASK SUB-COLUMNS (Show/hide columns → indented under Task):',
+      '   ▸ Toggle Alloc, Description, Duration, and % Complete independently; all four save into views.',
+      '   ▸ Un-done milestone checkmarks stay invisible until you hover the row — no more mystery empty boxes.',
+      '',
+      'SALES SCHEDULES:',
+      '   ▸ "+ New from SDC_Sales_Template" is a slim dialog: name + copy-from. New sales schedules land in the Sales section (persisted server-side) with Receipt of PO two Mondays out — never in the past.',
+      '   ▸ Footer button reads 📊 Estimate on sales tabs (attach the estimate xlsx → feeds Δ quoted hours). Baseline hidden, no drift chips, view pills off by default.',
+    ],
+  },
+  {
     version: '11.1',
     date: '2026-07-07',
     notes: [

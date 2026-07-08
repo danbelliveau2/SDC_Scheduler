@@ -3741,6 +3741,14 @@ input[type="number"] {
   overflow: auto;
   background: var(--surface);
 }
+/* Sales schedules (body.sales-schedule, set by syncSalesModeUI): no baseline —
+   there's nothing sold to baseline against. The estimate/quote flow covers
+   hours; drift chips and view pills are handled in JS. */
+body.sales-schedule .dropdown:has(#btn-baseline-menu),
+body.sales-schedule #btn-baseline-menu {
+  display: none !important;
+}
+
 .schedule-divider {
   flex: 0 0 4px;
   background: var(--border-strong);
@@ -4561,6 +4569,31 @@ th[data-col="name"] .th-label-name::after {
 .th-label-dash  { display: none; }
 /* When alloc is hidden globally, also hide the ALOC header label. */
 body.hide-alloc-pre .th-label-alloc { display: none; }
+
+/* %COM pill hidden — toggled from Show/hide columns → Task → "% Complete";
+   sales schedules hide it by default. Covers the milestone checkmark too
+   (it's the milestone's % widget). DUR slides into the freed right slot
+   and the description area widens to match. */
+body.hide-pct-pill #tasks-table .name-pct-pill,
+body.hide-pct-pill #tasks-table .name-milestone-check,
+body.hide-pct-pill .th-label-pct { display: none !important; }
+
+/* Task sub-column toggles (Show/hide columns → indented under Task). */
+body.hide-dur-suffix .name-cell-dur,
+body.hide-dur-suffix .th-label-dur { display: none !important; }
+body.hide-desc-text .name-cell-main,
+body.hide-desc-text .th-label-desc { display: none !important; }
+
+/* Un-done milestone checkboxes read as mystery empty boxes scattered down
+   the grid — keep them invisible until the row is hovered (click still
+   works), and always show the lime ✓ once done. */
+#tasks-tbody .name-milestone-check:not(.is-done) { opacity: 0; }
+#tasks-tbody tr:hover .name-milestone-check { opacity: 1; }
+body.hide-pct-pill .name-cell-dur { right: 8px; }
+body.hide-pct-pill .th-label-dur  { right: 8px; }
+body.hide-pct-pill .name-cell-main { right: 62px; }
+body.hide-pct-pill .th-label-desc  { right: 62px; }
+body.hide-pct-pill .th-label-task  { right: 62px; }
 
 /* % complete pill — color reflects SCHEDULE STATUS, not just progress:
      is-zero    = 0%, not started (slate)

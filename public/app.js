@@ -1185,6 +1185,9 @@ function taskScheduleDelta(task) {
   if (!task || task.is_milestone || !task.start_date || !task.end_date) return 0;
   if (inferredAnchorKey(task)) return 0;
   if (isBacklogTask(task)) return 0;
+  // Sales schedules: nothing is sold yet, so there's no commitment to be
+  // ahead of or behind — no drift chips anywhere.
+  if (isSalesProjectTask(task)) return 0;
   const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
   if (actualPct >= 100) return 0;  // Done — no drift chip.
   const totalDays = businessDaysBetween(task.start_date, task.end_date);
@@ -1492,13 +1495,6 @@ function cellHtml(t, key) {
       return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
-      // SALES workspaces blank out the assignee — pre-quote work isn't
-      // staffed yet, and showing "ME Placeholder" or a real name on a sales
-      // schedule risks accidentally communicating who'll own the work
-      // before the deal is signed.
-      if (isSalesProjectTask(t)) {
-        return `<td class="${cls} sales-suppressed" data-col="assignee" title="Sales schedules don't carry Assigned To — staff after the project moves to Active."></td>`;
-      }
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
       // running daily total over 100% somewhere in its span — flag the cell so the user
       // sees in the Schedule view that this person can't actually accomplish all their
@@ -1536,11 +1532,6 @@ function cellHtml(t, key) {
       return `<td class="${cls}" data-col="progress"><span class="progress-bar"><span style="width:${p}%"></span></span> ${p}%</td>`;
     }
     case 'allocation': {
-      // SALES workspaces blank the allocation cell — see meta-row / assignee
-      // notes above. Sales work is pre-quote so allocation isn't meaningful.
-      if (isSalesProjectTask(t)) {
-        return `<td class="${cls} sales-suppressed" data-col="allocation" title="Sales schedules don't carry allocations — set after the project moves to Active."></td>`;
-      }
       // Default to 100 for tasks predating this column. Milestones shouldn't show an
       // allocation since they don't consume time — render a dash so they read as N/A.
       const a = t.is_milestone ? '—' : (t.allocation == null ? 90 : t.allocation);
@@ -6694,6 +6685,35 @@ function setProjectWorkspace(p, workspace) {
   // this; the trade-off is a slightly larger map.
   state.projectWorkspaces[p] = workspace;
   saveProjectTabs();
+  // Persist to the DB too. init() re-reads /api/projects on EVERY boot and
+  // overwrites this map with the server's workspace values — so a local-only
+  // assignment silently reverts on the next reload (how a schedule created
+  // from the sales template escaped to Active).
+  _persistWorkspaceToServer(p, workspace);
+}
+
+async function _persistWorkspaceToServer(p, workspace) {
+  try {
+    let rec = state.projectsIndex?.[p];
+    if (!rec || !rec.id) {
+      // No projects row yet (fresh clone) — POST creates one carrying the
+      // workspace, or returns the existing row (unchanged) if it was there.
+      const r = await fetch('/api/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: p, workspace }),
+      });
+      if (!r.ok) return;
+      const row = await r.json();
+      state.projectsIndex = state.projectsIndex || {};
+      state.projectsIndex[p] = { id: row.id, job_number: row.job_number || '', hours_job_id: row.hours_job_id || '' };
+      if (row.workspace === workspace) return; // fresh INSERT already carries it
+      rec = state.projectsIndex[p];
+    }
+    await fetch(`/api/projects/${rec.id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace }),
+    });
+  } catch (_) { /* offline / viewer role — localStorage still has it for this browser */ }
 }
 
 // Has the given project had a baseline set? "Set" = at least one task carries
@@ -11341,9 +11361,12 @@ function renderProjectsPage() {
       if (!ws || ws === 'Closed') return;
       state.activeWorkspace = ws;
       saveProjectTabs();
-      // Clean create dialog: name + start-from (template / another schedule /
-      // blank) + Smartsheet import. Lands the new schedule in this workspace.
-      showCreateScheduleDialog(ws);
+      // Sales gets its own slim dialog (name + copy-from, defaulting to the
+      // sales template) — the click already declared the intent, so no
+      // template/other/blank picker and no Smartsheet import. Other
+      // workspaces keep the full create dialog.
+      if (ws === 'Sales') showSalesCreateDialog(btn.dataset.template || '');
+      else showCreateScheduleDialog(ws);
     });
   });
   // Star toggle on each row (favorite / unfavorite).
@@ -13163,6 +13186,100 @@ function showProjectAddPicker() {
 // sheet import was removed — that now happens inside an open schedule.
 // `defaultWs` (optional) is the workspace the "+ New schedule" button lives
 // under, so the created schedule lands in that section.
+// Slim create dialog for the Sales section's "+ New from <template>" button.
+// The intent is already declared by the click — no template/other/blank seg,
+// no Smartsheet import. Just a name and (optionally) which sales schedule to
+// copy from, defaulting to the SDC sales template.
+function showSalesCreateDialog(templateName) {
+  const tmpl = (templateName && state.tasks.some(t => t.project === templateName)) ? templateName : null;
+  const salesSchedules = uniqueValues('project')
+    .filter(p => p !== tmpl && projectWorkspace(p) === 'Sales')
+    .sort((a, b) => a.localeCompare(b));
+  if (!tmpl && salesSchedules.length === 0) { showCreateScheduleDialog('Sales'); return; }
+
+  document.getElementById('create-schedule-modal')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'create-schedule-modal';
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width: 420px;">
+      <div class="modal-head">
+        <h2 style="margin:0;">New sales schedule</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <label class="cs-field">Schedule name
+          <input type="text" id="cs-name" placeholder="e.g. Acme Palletizer" autocomplete="off" />
+        </label>
+        <label class="cs-field">Copy from
+          <select id="cs-source" class="cs-source" style="display:block;">
+            ${tmpl ? `<option value="${escapeHtml(tmpl)}" selected>${escapeHtml(tmpl)} ★</option>` : ''}
+            ${salesSchedules.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('')}
+          </select>
+        </label>
+        <button class="btn-primary cs-build" id="cs-build" type="button" disabled>Create schedule</button>
+        <div class="cs-hint" id="cs-hint">Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.</div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelector('.modal-close').addEventListener('click', close);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  const nameEl = overlay.querySelector('#cs-name');
+  const sourceEl = overlay.querySelector('#cs-source');
+  const buildBtn = overlay.querySelector('#cs-build');
+  const hintEl = overlay.querySelector('#cs-hint');
+  const refresh = () => { buildBtn.disabled = !nameEl.value.trim() || !sourceEl.value; };
+  nameEl.addEventListener('input', refresh);
+  sourceEl.addEventListener('change', refresh);
+  refresh();
+  setTimeout(() => nameEl.focus(), 0);
+
+  const build = async () => {
+    const name = nameEl.value.trim();
+    const src = sourceEl.value;
+    if (!name || !src) return;
+    if (uniqueValues('project').includes(name) || state.tasks.some(t => t.project === name)) {
+      hintEl.textContent = `A schedule named "${name}" already exists — pick a different name.`;
+      return;
+    }
+    close();
+    await duplicateProject(src, name);   // creates + loads tasks + opens the tab
+    // A new sales schedule is for a FUTURE project — Receipt of PO defaults to
+    // two Mondays from today (shifting the whole clone with it), never a date
+    // copied from the source that's already in the past. User adjusts from there.
+    try {
+      const now = new Date();
+      const toNextMonday = ((8 - now.getDay()) % 7) || 7; // strictly-future Monday
+      const target = new Date(now);
+      target.setDate(now.getDate() + toNextMonday + 7);
+      const targetISO = target.toISOString().slice(0, 10);
+      const anchor = state.tasks.find(t => t.project === name && inferredAnchorKey(t) === 'receipt_of_po');
+      const cur = anchor && anchor.start_date ? String(anchor.start_date).slice(0, 10) : null;
+      const delta = cur ? _daysBetweenISO(cur, targetISO) : 0;
+      if (delta) {
+        for (const t of state.tasks.filter(x => x.project === name)) {
+          const patch = {};
+          if (t.start_date) patch.start_date = _addDaysISO(String(t.start_date).slice(0, 10), delta);
+          if (t.end_date)   patch.end_date   = _addDaysISO(String(t.end_date).slice(0, 10), delta);
+          if (Object.keys(patch).length) { try { await api.update(t.id, patch); } catch (_) {} }
+        }
+        await loadTasks();
+      }
+    } catch (_) {}
+    setProjectWorkspace(name, 'Sales');
+    if (!state.openProjects.includes(name)) state.openProjects.push(name);
+    state.filters.project = name;
+    state.activeWorkspace = 'Sales';
+    recordRecentProject(name);
+    saveProjectTabs();
+    setView('schedule');
+  };
+  buildBtn.addEventListener('click', build);
+  nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !buildBtn.disabled) { e.preventDefault(); build(); } });
+}
+
 function showCreateScheduleDialog(defaultWs) {
   document.getElementById('create-schedule-modal')?.remove();
   const templates = (state.templateProjects || []).filter(t => state.tasks.some(x => x.project === t))
@@ -13944,7 +14061,83 @@ function showEstimateFeasibilityModal(parsed) {
   };
 }
 
+// Sales schedules present differently: nothing is sold, so the schedule-
+// pressure decorations are noise. Entering a sales tab stashes the current
+// view-pill flags and turns them ALL off (the user can still toggle any back
+// on — Δ quoted-vs-scheduled being the useful one); leaving restores exactly
+// what they had. Also flips the footer Project Release button to Estimate
+// (a sales schedule has no release yet — hours come from the estimate xlsx)
+// and hides Baseline via the body class (see styles.css).
+function syncSalesModeUI() {
+  const sales = isSalesView();
+  document.body.classList.toggle('sales-schedule', sales);
+  const quoteBtn = document.getElementById('btn-toolbar-quote');
+  if (quoteBtn) quoteBtn.textContent = sales ? '📊 Estimate' : '📄 Project Release';
+  const sv = state.scheduleView || {};
+  if (sales && state._salesUIProject !== state.filters.project) {
+    state._salesUIProject = state.filters.project;
+    if (!state._preSalesView) {
+      // NOTE: showInlineAlloc (α) is NOT stashed or forced here — it's a Task
+      // sub-column owned by the views (Active/Sales default carry it).
+      state._preSalesView = {
+        flatten: sv.flatten, sortByStart: sv.sortByStart,
+        showArrowLags: sv.showArrowLags,
+        showBarMeta: sv.showBarMeta, showMachineColors: sv.showMachineColors,
+        showDeptHours: sv.showDeptHours, showFinancials: state.showFinancials,
+      };
+    }
+    Object.assign(sv, {
+      flatten: false, sortByStart: false,
+      showArrowLags: false, showBarMeta: false, showMachineColors: false,
+      showDeptHours: false,
+    });
+    state.showFinancials = false;
+    saveScheduleView();
+    syncViewPill();
+    // Entering sales: stash the current column layout once, then auto-apply
+    // the ★ Sales default view (if the team has set one). Deferred a frame so
+    // this render pass paints the new project first.
+    if (!state._preSalesLayout) {
+      state._preSalesLayout = _snapshotColumnView();
+      state._preSalesLayoutName = state.layout.activeViewName || null;
+    }
+    requestAnimationFrame(() => {
+      try {
+        const sd = _sharedViews().salesDefault;
+        if (sd) _applyColumnViewObj(sd, 'Sales Default');
+        else fitGridPaneToColumns();
+      } catch (_) {}
+    });
+  } else if (!sales && state._preSalesView) {
+    const pre = state._preSalesView;
+    Object.assign(sv, {
+      flatten: pre.flatten, sortByStart: pre.sortByStart,
+      showArrowLags: pre.showArrowLags,
+      showBarMeta: pre.showBarMeta, showMachineColors: pre.showMachineColors,
+      showDeptHours: pre.showDeptHours,
+    });
+    state.showFinancials = pre.showFinancials;
+    state._preSalesView = null;
+    state._salesUIProject = null;
+    saveScheduleView();
+    syncViewPill();
+    // Leaving sales: put the columns back exactly as they were before.
+    requestAnimationFrame(() => {
+      try {
+        if (state._preSalesLayout) {
+          _applyColumnViewObj(state._preSalesLayout, state._preSalesLayoutName);
+          state._preSalesLayout = null;
+          state._preSalesLayoutName = null;
+        } else {
+          fitGridPaneToColumns();
+        }
+      } catch (_) {}
+    });
+  }
+}
+
 function render() {
+  try { syncSalesModeUI(); } catch (_) {}
   renderProjectTabs();
   renderMachineSubTabs();
   renderMachineCloneBanner();
@@ -23594,6 +23787,9 @@ function loadLayout() {
     gridFontPx: Number(saved.gridFontPx) || 12, // one grid font: headers at N, values at N−2
     savedViews: saved.savedViews || {},        // named column setups (Views ▾ dropdown)
     activeViewName: saved.activeViewName || null, // which view the button says you're on
+    showPctPill: saved.showPctPill !== false,     // %COM pill inside the Task column
+    showDescText: saved.showDescText !== false,   // Task sub-column: the name text
+    showDurSuffix: saved.showDurSuffix !== false, // Task sub-column: the bold "10W" duration
     // Columns this browser has already been introduced to. Seeded with the full
     // current set so existing users' hidden columns stay hidden; only columns
     // added in FUTURE versions auto-show (once).
@@ -23815,12 +24011,20 @@ function toggleScheduleView(key) {
   render();
 }
 
+// True when the open schedule tab lives in the Sales workspace — sales
+// schedules hide staffing/progress noise (nothing is sold or staffed yet).
+function isSalesView() {
+  return !!state.filters.project && projectWorkspace(state.filters.project) === 'Sales';
+}
 // The set of columns ACTUALLY rendered right now — visibleCols minus the
-// contextual Project column when a single project tab is open (mirrors
-// applyColumnVisibility). Width math must use this, not visibleCols: counting
-// the hidden Project column's 160px made the table wider than its columns,
-// and fixed layout silently redistributed the phantom width across every
-// column (uneven gaps + dead space before the Gantt divider).
+// contextual Project column when a single project tab is open (single source
+// of truth for BOTH applyColumnVisibility and all width math). Width math
+// must use this, not visibleCols: counting a hidden column's width made the
+// table wider than its columns, and fixed layout silently redistributed the
+// phantom width across every column (uneven gaps + dead space before the
+// Gantt divider). NOTE: sales schedules no longer force-hide any columns —
+// the ★ Sales default view (auto-applied on entering a sales tab) is what
+// makes them look different, and the user can change anything from there.
 function effectiveVisibleCols() {
   const visible = new Set(state.layout.visibleCols);
   if (state.filters.project) visible.delete('project');
@@ -23959,11 +24163,12 @@ function compressColumns() {
 // under-measured — that was the "descriptions cut off" bug.
 function _measureNameColNeed(table) {
   const left = document.body.classList.contains('hide-alloc-pre') ? 8 : 64;
+  const right = document.body.classList.contains('hide-pct-pill') ? 62 : 110; // DUR only vs DUR + %COM
   let text = 0;
   table.querySelectorAll('tbody td[data-col="name"] .name-cell-main').forEach(el => {
     text = Math.max(text, el.scrollWidth); // full content width even when clipped
   });
-  return text ? left + text + 110 + 6 : 0;
+  return text ? left + text + right + 6 : 0;
 }
 
 // Snap the grid pane to its columns — the shared tail of Compress and
@@ -24035,6 +24240,10 @@ function _snapshotColumnView() {
     colWidths: { ...state.layout.colWidths },
     gridFontPx: state.layout.gridFontPx,
     gridWidth: state.layout.gridWidth,
+    pctPill: pctPillVisible(),   // effective %COM-pill state at save time
+    descText: state.layout.showDescText !== false,
+    durSuffix: state.layout.showDurSuffix !== false,
+    allocPre: state.scheduleView?.showInlineAlloc !== false, // α — the alloc prefix sub-column
   };
 }
 
@@ -24044,6 +24253,18 @@ function _applyColumnViewObj(v, name) {
   state.layout.columnOrder = [...(v.columnOrder || state.layout.columnOrder)];
   state.layout.colWidths = { ...DEFAULT_COL_WIDTHS, ...(v.colWidths || {}) };
   if (v.gridFontPx) state.layout.gridFontPx = v.gridFontPx;
+  // A view FULLY defines the Task sub-column state. Views saved before these
+  // flags existed count as "everything shown" — otherwise applying an older
+  // view left another view's hidden pieces in place (e.g. the Sales default's
+  // hidden % pill survived a switch to the Active default on a sales tab).
+  state.layout.showPctPill   = v.pctPill   !== undefined ? !!v.pctPill   : true;
+  state.layout.showDescText  = v.descText  !== undefined ? !!v.descText  : true;
+  state.layout.showDurSuffix = v.durSuffix !== undefined ? !!v.durSuffix : true;
+  if (state.scheduleView) {
+    state.scheduleView.showInlineAlloc = v.allocPre !== undefined ? !!v.allocPre : true;
+    saveScheduleView();
+    applyScheduleView();
+  }
   saveLayout();
   renderHeaders();
   renderTable();
@@ -24065,7 +24286,8 @@ function _applyColumnViewObj(v, name) {
 function _sharedViews() {
   const sv = state.settings?.shared_column_views;
   return {
-    default: (sv && sv.default) || null,
+    default: (sv && sv.default) || null,           // standard view for normal schedules
+    salesDefault: (sv && sv.salesDefault) || null, // standard view for Sales-workspace schedules
     views: (sv && sv.views) || {},
   };
 }
@@ -24093,9 +24315,13 @@ function renderColViewsMenu() {
   // Team default — pinned at the top, highlighted, there for everybody. Once
   // set it's locked in: no delete button, and the "set as default" action
   // below disappears. It is what it is.
+  // Pinned defaults — light-blue bars top + bottom (not a filled pill).
+  const defaultStyle = 'font-weight:700;border-top:2px solid #bfdbfe;border-bottom:2px solid #bfdbfe;';
   if (shared.default) {
-    html += row('★ Team default', 'data-apply-default', '',
-      'font-weight:700;background:var(--anchor-fill, #befa4f);color:var(--sdc-dark, #061d39);border-radius:6px;');
+    html += row('Active Project Default', 'data-apply-default', '', defaultStyle);
+  }
+  if (shared.salesDefault) {
+    html += row('Sales Default', 'data-apply-sales-default', '', defaultStyle);
   }
   const sharedNames = Object.keys(shared.views).sort((a, b) => a.localeCompare(b));
   if (sharedNames.length) {
@@ -24117,12 +24343,16 @@ function renderColViewsMenu() {
   html += `
     <div class="dropdown-sep"></div>
     <button type="button" class="dropdown-item" data-save-view style="font-weight:600;">+ New view from current columns…</button>
-    ${shared.default ? '' : '<button type="button" class="dropdown-item" data-set-default>★ Set current as team default</button>'}`;
+    ${shared.default ? '' : '<button type="button" class="dropdown-item" data-set-default>Set current as Active Project Default</button>'}
+    ${shared.salesDefault ? '' : '<button type="button" class="dropdown-item" data-set-sales-default>Set current as Sales Default</button>'}`;
   menu.innerHTML = html;
 
   const close = () => menu.classList.add('hidden');
   menu.querySelector('[data-apply-default]')?.addEventListener('click', (e) => {
-    e.stopPropagation(); _applyColumnViewObj(_sharedViews().default, 'Team default'); close();
+    e.stopPropagation(); _applyColumnViewObj(_sharedViews().default, 'Active Project Default'); close();
+  });
+  menu.querySelector('[data-apply-sales-default]')?.addEventListener('click', (e) => {
+    e.stopPropagation(); _applyColumnViewObj(_sharedViews().salesDefault, 'Sales Default'); close();
   });
   menu.querySelectorAll('[data-shared-view]').forEach(b => b.addEventListener('click', (e) => {
     e.stopPropagation(); _applyColumnViewObj(_sharedViews().views[b.dataset.sharedView], b.dataset.sharedView); close();
@@ -24173,13 +24403,28 @@ function renderColViewsMenu() {
     e.stopPropagation();
     close();
     const ok = await showConfirmDialog({
-      title: 'Set team default?',
-      message: 'Your current column setup becomes the pinned ★ Team default at the top of everyone\'s Views menu — permanently. Once set, it\'s locked in for the team.',
+      title: 'Set active project default?',
+      message: 'Your current column setup becomes the pinned ★ Active project default at the top of everyone\'s Views menu — permanently. Once set, it\'s locked in for the team.',
       okLabel: 'Set as default',
     });
     if (ok) {
       const sv = _sharedViews();
       sv.default = { ..._snapshotColumnView(), owner: me };
+      _saveSharedViews(sv);
+      renderColViewsMenu();
+    }
+  });
+  menu.querySelector('[data-set-sales-default]')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    close();
+    const ok = await showConfirmDialog({
+      title: 'Set sales default?',
+      message: 'Your current column setup becomes the pinned ★ Sales default — auto-applied whenever anyone opens a Sales-workspace schedule. Locked in once set.',
+      okLabel: 'Set as sales default',
+    });
+    if (ok) {
+      const sv = _sharedViews();
+      sv.salesDefault = { ..._snapshotColumnView(), owner: me };
       _saveSharedViews(sv);
       renderColViewsMenu();
     }
@@ -24249,20 +24494,25 @@ function applyGanttVisibility() {
   });
 }
 
+// The %COM pill inside the Task column ("pctpill") is a pseudo-column: no
+// <col>/<td> of its own, hidden/shown via body.hide-pct-pill (see styles.css).
+// Shown unless layout.showPctPill === false — the Sales default view is what
+// turns it off on sales schedules, not a hard-coded rule.
+function pctPillVisible() {
+  return state.layout.showPctPill !== false;
+}
+
 function applyColumnVisibility() {
-  const visible = new Set(state.layout.visibleCols);
-  // Project column is contextual:
-  //   - On a single-project tab: every row would show the same project name
-  //     in every cell — pure noise. Force-hide.
-  //   - On All Projects view OR in personal mode (which spans many projects):
-  //     show it so the user can see which job each task belongs to.
-  // This overrides whatever's in state.layout.visibleCols.
-  const onSingleProject = !!state.filters.project;
-  if (onSingleProject) visible.delete('project');
-  else if (isPersonalMode() || !state.filters.project) visible.add('project');
+  // effectiveVisibleCols handles the contextual rules — Project hidden on a
+  // single-project tab, Assigned To / % Complete / Allocation hidden on
+  // sales schedules — so visibility and width math can never disagree.
+  const visible = effectiveVisibleCols();
   document.querySelectorAll('#tasks-table [data-col]').forEach(el => {
     el.classList.toggle('col-hidden', !visible.has(el.dataset.col));
   });
+  document.body.classList.toggle('hide-pct-pill', !pctPillVisible());
+  document.body.classList.toggle('hide-desc-text', state.layout.showDescText === false);
+  document.body.classList.toggle('hide-dur-suffix', state.layout.showDurSuffix === false);
 }
 
 // Render the Show/hide columns dropdown. Two responsibilities:
@@ -24277,7 +24527,7 @@ function applyColumnVisibility() {
 function renderColumnsMenu() {
   const menu = document.getElementById('columns-menu');
   if (!menu) return;
-  const visible = new Set(state.layout.visibleCols);
+  const visible = effectiveVisibleCols(); // checkboxes mirror what's rendered (sales rules included)
   // Use columnOrder for the row sequence; any COLUMN_DEFS entry not in
   // columnOrder appears after, so newly-added columns still show up.
   const orderedKeys = [
@@ -24291,7 +24541,7 @@ function renderColumnsMenu() {
     // or in personal mode) — don't expose it as a user-toggleable entry.
     if (def.key === 'project') return '';
     const isName = def.key === 'name';
-    return `
+    const row = `
       <div class="col-menu-row ${isName ? 'is-locked' : ''}" data-col="${def.key}" draggable="${!isName}" title="${isName ? 'Task column is always shown and always first — can\'t reorder or hide.' : 'Drag to reorder. Checkbox toggles visibility.'}">
         <span class="col-menu-drag">⋮⋮</span>
         <label class="col-menu-label">
@@ -24299,18 +24549,61 @@ function renderColumnsMenu() {
           ${escapeHtml(def.label)}
         </label>
       </div>`;
+    if (!isName) return row;
+    // Task's four sub-columns — indented under the Task row. Each is a
+    // pure CSS show/hide (the pieces are always in the DOM).
+    const sv = state.scheduleView || {};
+    const sub = (key, label, checked, title) => `
+      <div class="col-menu-row col-menu-subrow" data-col="${key}" draggable="false" title="${escapeHtml(title)}" style="padding-left:26px;">
+        <span class="col-menu-drag" style="visibility:hidden;">⋮⋮</span>
+        <label class="col-menu-label">
+          <input type="checkbox" data-col="${key}" ${checked ? 'checked' : ''} />
+          ${label}
+        </label>
+      </div>`;
+    return row
+      + sub('name-alloc', 'Alloc',       sv.showInlineAlloc !== false,          'The allocation % prefix before each task name (same as the α view pill).')
+      + sub('name-desc',  'Description', state.layout.showDescText !== false,   'The task name text itself.')
+      + sub('name-dur',   'Duration',    state.layout.showDurSuffix !== false,  'The bold duration (e.g. 10W) on the right side of the Task column.')
+      + sub('pctpill',    '% Complete',  pctPillVisible(),                      'The % complete pill / milestone checkmark. Hidden by default on sales schedules.');
   }).join('');
 
   // Visibility checkboxes — same behavior as before.
   menu.addEventListener('change', (e) => {
     if (e.target.matches('input[type="checkbox"]')) {
       const key = e.target.dataset.col;
+      if (key === 'name-alloc') {
+        // Same flag as the α view pill — one authoritative control.
+        state.scheduleView.showInlineAlloc = e.target.checked;
+        saveScheduleView();
+        applyScheduleView();
+        return;
+      }
+      if (key === 'name-desc' || key === 'name-dur') {
+        if (key === 'name-desc') state.layout.showDescText = e.target.checked;
+        else                     state.layout.showDurSuffix = e.target.checked;
+        applyColumnVisibility();
+        state.layout.activeViewName = null;
+        _syncViewsButtonLabel();
+        saveLayout();
+        return;
+      }
+      if (key === 'pctpill') {
+        // Pseudo-column: no visibleCols entry, just the layout flag.
+        state.layout.showPctPill = e.target.checked;
+        applyColumnVisibility();
+        state.layout.activeViewName = null;
+        _syncViewsButtonLabel();
+        saveLayout();
+        return;
+      }
       if (e.target.checked) {
         if (!state.layout.visibleCols.includes(key)) state.layout.visibleCols.push(key);
       } else {
         state.layout.visibleCols = state.layout.visibleCols.filter(k => k !== key);
       }
       applyColumnVisibility();
+      applyColWidths(); // pane/table width must track the changed column set
       // Manually changing columns means you're off whatever view was active.
       state.layout.activeViewName = null;
       _syncViewsButtonLabel();
@@ -25721,7 +26014,11 @@ async function init() {
     quoteToolbarBtn.addEventListener('click', () => {
       const p = state.filters.project;
       if (!p) return;
-      openProjectReleaseModal(p);
+      // Sales schedules have no Project Release yet — the estimate xlsx is
+      // the source of quoted hours. The Quote modal handles attaching /
+      // replacing the estimate and already renders in sales mode.
+      if (isSalesView()) openQuoteCompareModal(p);
+      else openProjectReleaseModal(p);
     });
   }
   // 💲 Financial Milestones — opens the same per-project editor that the
