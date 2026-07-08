@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '11.4',
+    date: '2026-07-08',
+    notes: [
+      'Sales schedules get their own tab row.',
+      '',
+      '   ▸ Open sales schedules sit in a labeled SALES banner row under the main strip; the top row is labeled ACTIVE PROJECTS. No more telling them apart by dot color.',
+      '   ▸ Tabs now size to their names — full project names read whenever there\'s room; rows only clamp to equal-width + ellipsis when they actually overflow.',
+      '   ▸ Both tab rows are shorter, so the two-row bar takes barely more height than the old single row.',
+    ],
+  },
+  {
     version: '11.3',
     date: '2026-07-08',
     notes: [

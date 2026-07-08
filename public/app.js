@@ -11852,7 +11852,11 @@ function renderProjectTabs() {
     ...visibleList.filter(p => p !== '' && isTemplateProject(p)),
     ...visibleList.filter(p => p !== '' && !isTemplateProject(p)),
   ].filter(p => p !== undefined);
-  wrap.innerHTML = personalTabHtml + templatesFirst.map(p => {
+  // Sales schedules get their OWN ROW under the main tab strip (labeled
+  // "Sales") instead of relying on the little colored dot to tell them apart.
+  const salesTabs = templatesFirst.filter(p => p !== '' && !isTemplateProject(p) && projectWorkspace(p) === 'Sales');
+  const mainTabs  = templatesFirst.filter(p => !salesTabs.includes(p));
+  const tabHtml = (p, inSalesRow) => {
     const isAll = p === '';
     // A tab only reads as "active" when you're ACTUALLY on the Schedule
     // view. If you're on Actions / Team / Setup / etc., no project tab is
@@ -11885,7 +11889,10 @@ function renderProjectTabs() {
     if (!isAll) {
       const ws = projectWorkspace(p).toLowerCase();
       cls.push('workspace-' + ws);
-      wsDot = `<span class="project-tab-dot project-tab-dot-${ws}" title="${escapeHtml(projectWorkspace(p))} workspace"></span>`;
+      // Sales-row tabs skip the dot — the row itself says "Sales".
+      if (!inSalesRow) {
+        wsDot = `<span class="project-tab-dot project-tab-dot-${ws}" title="${escapeHtml(projectWorkspace(p))} workspace"></span>`;
+      }
     }
     // All-projects pseudo-tab is NOT draggable (it's pinned at position 0).
     // Every real project tab is draggable so the user can reorder them.
@@ -11895,7 +11902,16 @@ function renderProjectTabs() {
         ${wsDot}${star}<span class="project-tab-label">${escapeHtml(label)}</span>
         ${close}
       </button>`;
-  }).join('');
+  };
+  // The "Active Projects" row label only shows when the Sales banner exists —
+  // with a single row there's nothing to distinguish it from.
+  const activeLabel = salesTabs.length ? '<span class="project-tabs-row-label">Active Projects</span>' : '';
+  wrap.innerHTML =
+    `<div class="project-tabs-row">${activeLabel}${personalTabHtml + mainTabs.map(p => tabHtml(p, false)).join('')}</div>`
+    + (salesTabs.length
+      ? `<div class="project-tabs-row project-tabs-row-sales"><span class="project-tabs-row-label">Sales</span>${salesTabs.map(p => tabHtml(p, true)).join('')}</div>`
+      : '');
+  fitProjectTabRows();
 
   // Personal-tab × handler — full sign-out: clear personId entirely, drop
   // assignee filter, return to All Projects.
@@ -14148,9 +14164,21 @@ function fitScheduleToolbar() {
   const have = bar.clientWidth;
   if (need > have && need > 0) bar.style.zoom = Math.max(0.6, have / need);
 }
+// Tabs render at natural width so full names read whenever there's room;
+// when a row overflows, .tabs-tight clamps its tabs back to equal width +
+// ellipsis (see styles.css). Checked after each tab render and on resize.
+function fitProjectTabRows() {
+  document.querySelectorAll('#project-tabs .project-tabs-row').forEach(row => {
+    row.classList.remove('tabs-tight');
+    if (row.scrollWidth > row.clientWidth + 1) row.classList.add('tabs-tight');
+  });
+}
 window.addEventListener('resize', () => {
   clearTimeout(fitScheduleToolbar._t);
-  fitScheduleToolbar._t = setTimeout(fitScheduleToolbar, 120);
+  fitScheduleToolbar._t = setTimeout(() => {
+    fitScheduleToolbar();
+    fitProjectTabRows();
+  }, 120);
 });
 
 function render() {

@@ -665,18 +665,43 @@ body {
   overflow-y: hidden;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  padding: 7px 0 0 14px;
+  padding: 4px 0 0 14px;
   /* Fade right edge to hint more tabs exist */
   -webkit-mask-image: linear-gradient(to right, black calc(100% - 40px), transparent 100%);
   mask-image: linear-gradient(to right, black calc(100% - 40px), transparent 100%);
 }
 .project-tabs-scroll::-webkit-scrollbar { display: none; }
+/* Two stacked rows: main tabs (All projects / Active / templates) on top,
+   sales schedules in their own labeled banner row underneath — the row
+   placement replaces the colored workspace dot for sales. */
 .project-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.project-tabs-row {
   display: flex;
   align-items: stretch;
   gap: 4px;
-  flex: 1 1 auto;
   min-width: 0;
+}
+.project-tabs-row-sales {
+  border-top: 1px solid rgba(255, 255, 255, 0.10);
+  margin-top: 3px;
+  padding: 2px 0;
+  align-items: center;
+}
+.project-tabs-row-label {
+  align-self: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #AACEE8;
+  padding-right: 10px;
+  flex-shrink: 0;
 }
 /* Font size + refresh — pinned to the right, never scroll */
 .project-tab-bar-actions {
@@ -1070,7 +1095,7 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
   color: rgba(255,255,255,0.72);
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 8px 13px;
+  padding: 5px 12px;
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   letter-spacing: 0.01em;
@@ -1078,9 +1103,12 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
   border-radius: 7px 7px 0 0;
   font-family: inherit;
   white-space: nowrap;
-  max-width: 180px;
-  min-width: 80px;
-  flex: 0 1 180px;
+  /* Natural width — a tab fits its full name whenever the row has room.
+     When the row overflows, JS adds .tabs-tight and tabs clamp to the old
+     equal-width 180px + ellipsis so everything still fits. */
+  max-width: none;
+  min-width: 0;
+  flex: 0 1 auto;
   transition: background 130ms ease, color 130ms ease;
 }
 .project-tab:hover { background: rgba(255,255,255,0.13); color: white; }
@@ -1144,10 +1172,19 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 .project-tab-label {
   text-overflow: ellipsis;
   overflow: hidden;
-  max-width: 120px;
+  max-width: none;
   min-width: 0;
   flex: 1 1 auto;
   display: block;
+}
+/* Row overflow → equal-width tabs with ellipsis (the pre-11.3 look). */
+.project-tabs-row.tabs-tight .project-tab {
+  flex: 0 1 180px;
+  max-width: 180px;
+  min-width: 80px;
+}
+.project-tabs-row.tabs-tight .project-tab-label {
+  max-width: 120px;
 }
 .project-tab-close {
   display: inline-flex;
