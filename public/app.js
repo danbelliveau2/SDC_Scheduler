@@ -3433,13 +3433,18 @@ function renderGantt() {
       const tr = document.querySelector(`tr[data-id="${task.id}"]`);
       if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     },
-    on_date_change: (task, start, end) => {
-      const startStr = start.toISOString().slice(0, 10);
-      const endStr = end.toISOString().slice(0, 10);
-      api.update(Number(task.id), { start_date: startStr, end_date: endStr }).then(() => loadTasks()).catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
+    // Gantt is READ-ONLY for edits (v11.5): dragging a bar changed dates
+    // without touching predecessors, which silently corrupted the dependency
+    // chain — and made accidental moves too easy. Any drag snaps back on
+    // release with a pointer to the grid. Resize/progress handles are hidden
+    // via CSS (.gantt .handle) so the affordances don't invite it.
+    on_date_change: () => {
+      showToast('Dates are edited in the grid — dragging bars on the chart is off.', { kind: 'info' });
+      renderGantt();
     },
-    on_progress_change: (task, progress) => {
-      api.update(Number(task.id), { progress: Math.round(progress) }).then(() => loadTasks()).catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
+    on_progress_change: () => {
+      showToast('Progress is edited in the grid — dragging on the chart is off.', { kind: 'info' });
+      renderGantt();
     },
   });
   const newScroller = document.querySelector('#gantt-container .gantt-container');
@@ -7067,11 +7072,14 @@ function renderDeptProjectRollup() {
     // at their own dedicated percentages BETWEEN the anchors — no
     // pushing, no shifting.
     const ANCHOR_POS = { receipt_of_po: 10, mech_release_1: 30, machine_power_up: 53, fat: 72, ship_machine: 90 };
-    const FIN_POS    = { PO: 18, MC: 44, FAT: 80, SAT: 96 };
+    // Money sits RIGHT BESIDE the milestone it bills against: PO money next
+    // to PO, FAT money next to FAT, SAT just after Ship. MC has no single
+    // parent milestone — it stays midway between Mech 1 and Power-Up.
+    const FIN_POS    = { PO: 15, MC: 44, FAT: 77, SAT: 96 };
 
     function mileItem(kind, cls, iconHtml, label, dateHtml, slipChip, leftPct, dataAttrs, tipText) {
       return `<div class="pdash-mile-item pdash-mile-${kind} ${cls}" style="left:${leftPct}%" ${dataAttrs}${tipText ? ` title="${escapeHtml(tipText)}"` : ''}>
-        <div class="pdash-mile-icon">${iconHtml}</div>
+        <div class="pdash-mile-icon"><span class="pdash-mile-glyph">${iconHtml}</span></div>
         <div class="pdash-mile-label">${escapeHtml(label)}</div>
         ${dateHtml}
         ${slipChip || ''}
@@ -7105,6 +7113,11 @@ function renderDeptProjectRollup() {
         ANCHOR_POS[a.key] != null ? ANCHOR_POS[a.key] : 50, anchorAttrs, '');
     }).join('');
 
+    // Financial milestones — SAME line as the key milestones, at their fixed
+    // slots between the anchors (PO-money 18 / MC 44 / FAT-money 80 / SAT 96
+    // — identical x on every row). Money reads differently at a glance:
+    // key dates are DIAMONDS (matching the schedule Gantt), money is a
+    // $-in-circle. Label carries the billing % ("40% MC").
     let finItemsHtml = '';
     for (const f of (state.financials[project] || [])) {
       const fAbbrev = _pdashFinAbbrev(f);
@@ -7117,15 +7130,15 @@ function renderDeptProjectRollup() {
       if (fPaid)         fCls = 'is-paid';
       else if (!fd)      fCls = 'is-no-date';
       else if (fOverdue) fCls = 'is-overdue';
+      const fPct = (f.percent != null && Number(f.percent) > 0) ? `${Number(f.percent)}% ` : '';
       const monthStr = fd ? _pdashFinMonth(fd) : '—';
       const fDateFull = fd ? fmtDate(fd) : 'no date';
-      const fPctTip = f.percent ? ` · ${f.percent}%` : '';
       const fStatusTip = fPaid ? ' · paid'
         : (!fd ? ' · no date set'
         : (fOverdue ? ' · past due' : ''));
       const finDateHtml = `<div class="pdash-mile-date">${escapeHtml(monthStr)}</div>`;
-      finItemsHtml += mileItem('fin', fCls, '$', fAbbrev, finDateHtml, '', leftPct, '',
-        (f.name || fAbbrev) + fPctTip + ' · ' + fDateFull + fStatusTip);
+      finItemsHtml += mileItem('fin', fCls, '$', fPct + fAbbrev, finDateHtml, '', leftPct, '',
+        (f.name || fAbbrev) + (fPct ? ' · ' + fPct.trim() : '') + ' · ' + fDateFull + fStatusTip);
     }
     return `
       <div class="pdash-milestone-row">
@@ -7166,33 +7179,81 @@ function renderDeptProjectRollup() {
       return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
         <div class="pdash-empty-block">No financial milestones${filterHint} for the selected projects.</div>`;
     }
-    const showProjectCol = selected.length > 1;
-    const colgroup = showProjectCol
-      ? `<colgroup><col style="width:240px"/><col style="width:60px"/><col style="width:auto"/><col style="width:130px"/><col style="width:130px"/></colgroup>`
-      : `<colgroup><col style="width:60px"/><col style="width:auto"/><col style="width:130px"/><col style="width:130px"/></colgroup>`;
-    const head = showProjectCol
-      ? '<thead><tr><th>Project</th><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>'
-      : '<thead><tr><th class="num">%</th><th>Milestone</th><th>Date</th><th>Status</th></tr></thead>';
-    const body = rows.map(r => {
-      const dueMs = r.due_date ? new Date(r.due_date + 'T00:00:00').getTime() : null;
-      const isPast = dueMs != null && dueMs < todayMs;
-      let chip;
-      if (r.paid) chip = '<span class="pdash-chip chip-success">Paid</span>';
-      else if (isPast) chip = '<span class="pdash-chip chip-danger">Invoice now</span>';
-      else if (dueMs != null && dueMs - todayMs <= 14 * 86400000) chip = '<span class="pdash-chip chip-warn">Due soon</span>';
-      else chip = '<span class="pdash-chip chip-info">Upcoming</span>';
-      const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '—';
-      const projCell = showProjectCol ? `<td title="${escapeHtml(r.project)}">${escapeHtml(r.project)}</td>` : '';
-      return `<tr class="pdash-fin-row" data-project="${escapeHtml(r.project)}">
-        ${projCell}
-        <td class="num">${pctVal}</td>
-        <td title="${escapeHtml(r.name || '')}">${escapeHtml(r.name || '')}</td>
-        <td>${escapeHtml(r.due_date ? fmtDate(r.due_date) : '—')}</td>
-        <td>${chip}</td>
-      </tr>`;
+    // ── Timeline (v11.5, replaces the grid) — reads like the schedule Gantt:
+    //    month header, dashed blue Today line, one row per project, and each
+    //    payment event as a DIAMOND at its date with "% · abbrev" on it.
+    //    Status colors match the old chips: red past-due, amber ≤2wks,
+    //    light blue upcoming, green paid.
+    const NAME_W = 280; // same name column as the Key Milestones strips
+    const dayMs = 86400000;
+    let winStartMs = Math.min(...rows.map(r => Date.parse(r.due_date + 'T00:00:00')), todayMs);
+    let winEndMs   = Math.max(...rows.map(r => Date.parse(r.due_date + 'T00:00:00')), todayMs);
+    winStartMs -= 12 * dayMs;
+    winEndMs   += 12 * dayMs;
+    const span = Math.max(dayMs, winEndMs - winStartMs);
+    const pctOf = (ms) => ((ms - winStartMs) / span) * 100;
+
+    // Month header labels (inside the header track) + faint grid lines that
+    // span the FULL container height, Gantt-style. Lines use the same
+    // name-column-offset calc as the Today line so they align with the track.
+    const NAME_OFF = NAME_W + 12; // name column + grid gap
+    const trackCalc = (frac) => `calc(${NAME_OFF}px + (100% - ${NAME_OFF}px) * ${frac.toFixed(4)})`;
+    let monthTicksHtml = '';
+    let monthLinesHtml = '';
+    {
+      const d = new Date(winStartMs); d.setDate(1); d.setHours(0, 0, 0, 0);
+      if (d.getTime() < winStartMs) d.setMonth(d.getMonth() + 1);
+      while (d.getTime() <= winEndMs) {
+        const frac = (d.getTime() - winStartMs) / span;
+        const lbl = d.toLocaleString('en-US', { month: 'short' }) + " '" + String(d.getFullYear()).slice(2);
+        monthTicksHtml += `<div class="pdash-fintl-month" style="left:${(frac * 100).toFixed(2)}%">${lbl}</div>`;
+        monthLinesHtml += `<div class="pdash-fintl-gridline" style="left:${trackCalc(frac)}"></div>`;
+        d.setMonth(d.getMonth() + 1);
+      }
+    }
+
+    const byProject = {};
+    for (const r of rows) (byProject[r.project] ||= []).push(r);
+    const rowsHtml = Object.keys(byProject).map(p => {
+      const diamonds = byProject[p].map(r => {
+        const dueMs = Date.parse(r.due_date + 'T00:00:00');
+        const isPast = dueMs < todayMs;
+        let cls = 'is-upcoming', status = 'Upcoming';
+        if (r.paid)        { cls = 'is-paid';    status = 'Paid'; }
+        else if (isPast)   { cls = 'is-overdue'; status = 'Invoice now'; }
+        else if (dueMs - todayMs <= 14 * dayMs) { cls = 'is-soon'; status = 'Due soon'; }
+        const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '';
+        const abbrev = _pdashFinAbbrev(r);
+        const lbl = pctVal ? `${pctVal} ${abbrev}` : abbrev;
+        return `<div class="pdash-fintl-ms ${cls}" style="left:${pctOf(dueMs)}%"
+            title="${escapeHtml((r.name || abbrev) + (pctVal ? ' · ' + pctVal : '') + ' · ' + fmtDate(r.due_date) + ' · ' + status)}">
+          <span class="pdash-fintl-lbl">${escapeHtml(lbl)}</span>
+          <span class="pdash-fintl-di"></span>
+          <span class="pdash-fintl-date">${escapeHtml(fmtDate(r.due_date))}</span>
+        </div>`;
+      }).join('');
+      return `<div class="pdash-fintl-row" data-project="${escapeHtml(p)}">
+        <div class="pdash-milestone-project" title="${escapeHtml(p)}">${escapeHtml(p)}</div>
+        <div class="pdash-fintl-track">${diamonds}</div>
+      </div>`;
     }).join('');
+
+    // Dashed blue Today line spanning header + all rows, same look as the Gantt.
+    const todayFrac = (todayMs - winStartMs) / span;
+    const todayHtml = (todayFrac >= 0 && todayFrac <= 1)
+      ? `<div class="pdash-fintl-today" style="left:${trackCalc(todayFrac)};"><span>Today</span></div>`
+      : '';
+
     return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
-            <table class="pdash-fin-table">${colgroup}${head}<tbody>${body}</tbody></table>`;
+      <div class="pdash-fintl">
+        ${monthLinesHtml}
+        ${todayHtml}
+        <div class="pdash-fintl-row pdash-fintl-head">
+          <div class="pdash-milestone-project"></div>
+          <div class="pdash-fintl-track">${monthTicksHtml}</div>
+        </div>
+        ${rowsHtml}
+      </div>`;
   })();
 
   const milestoneStripsHtml = selected.length === 0
@@ -14189,6 +14250,31 @@ window.addEventListener('resize', () => {
     fitProjectTabRows();
   }, 120);
 });
+
+// Wheel-zoom zones must be CLICKED first ("armed") before the wheel zooms.
+// Un-armed, the wheel scrolls the page/panel like anywhere else — so you can
+// scroll straight past a chart without getting trapped zooming it the moment
+// the cursor crosses it. Clicking anywhere OUTSIDE the zone disarms it again.
+// A subtle blue inset outline shows while a zone is armed.
+let _armedWheelZone = null;
+document.addEventListener('mousedown', (e) => {
+  if (_armedWheelZone && !_armedWheelZone.contains(e.target)) {
+    _armedWheelZone.classList.remove('wheel-zoom-armed');
+    _armedWheelZone = null;
+  }
+}, true);
+function wireWheelZoomZone(el, handler) {
+  if (!el) return;
+  el.addEventListener('mousedown', () => {
+    if (_armedWheelZone && _armedWheelZone !== el) _armedWheelZone.classList.remove('wheel-zoom-armed');
+    _armedWheelZone = el;
+    el.classList.add('wheel-zoom-armed');
+  });
+  el.addEventListener('wheel', (e) => {
+    if (_armedWheelZone !== el) return; // not armed — let the page scroll past
+    handler(e);
+  }, { passive: false });
+}
 
 function render() {
   try { syncSalesModeUI(); } catch (_) {}
@@ -22383,7 +22469,7 @@ function setupResourcesPan() {
   //    every wheel tick. ~6% per tick, rAF-throttled.
   let _wPending = 1, _wScheduled = false;
   const WHEEL_FACTOR = 1.06;
-  body.addEventListener('wheel', (e) => {
+  wireWheelZoomZone(body, (e) => {
     e.preventDefault();
     _wPending *= e.deltaY > 0 ? WHEEL_FACTOR : (1 / WHEEL_FACTOR);
     if (_wScheduled) return;
@@ -22412,7 +22498,7 @@ function setupResourcesPan() {
         _wScheduled = false;
       }
     });
-  }, { passive: false });
+  });
 
   body.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
@@ -26244,7 +26330,7 @@ async function init() {
       }
     });
   };
-  document.getElementById('schedule-gantt').addEventListener('wheel', onZoomWheel, { passive: false });
+  wireWheelZoomZone(document.getElementById('schedule-gantt'), onZoomWheel);
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {

@@ -492,7 +492,9 @@ module.exports = function createRouter(deps) {
   });
 
   // ── POST /api/import/smartsheet ───────────────────────────────────────────
-  router.post('/api/import/smartsheet', requireRole('admin'), async (req, res) => {
+  // editor (not admin): PMs import their own Smartsheet schedules — creating
+  // a schedule is normal editor work, same as creating one from a template.
+  router.post('/api/import/smartsheet', requireRole('editor'), async (req, res) => {
     try {
       const projectName = (req.body.project || '').toString().trim();
       const file = req.body.file;

@@ -4,6 +4,28 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '11.6',
+    date: '2026-07-09',
+    notes: [
+      'Departments milestones redesign, financial timeline, and calmer scrolling.',
+      '',
+      'DEPARTMENTS — KEY MILESTONES:',
+      '   ▸ Key dates are DIAMONDS (same shape as the schedule Gantt); financial milestones are $-in-a-circle on the same line — instantly tellable apart.',
+      '   ▸ Money sits beside the milestone it bills against: PO money next to PO, FAT money next to FAT, MC midway between Mech 1 and Power-Up, SAT after Ship — same slots on every row.',
+      '   ▸ Labels carry the billing % ("40% MC"); past-due money is RED (was blue).',
+      '',
+      'DEPARTMENTS — FINANCIAL MILESTONES:',
+      '   ▸ The grid is now a timeline: month header, dashed blue Today line, one compact row per project, each payment event a diamond colored by status (red invoice-now, amber due soon, blue upcoming, green paid).',
+      '',
+      'SCROLLING + EDITING:',
+      '   ▸ Wheel-zoom areas (schedule Gantt, resource timeline) are click-to-arm: scroll right past them; click one to zoom with the wheel (blue outline shows it\'s armed), click away to release.',
+      '   ▸ Gantt bars are read-only — dragging snaps back; dates/progress are edited in the grid so predecessors can\'t silently break.',
+      '',
+      'FIXES:',
+      '   ▸ Smartsheet import no longer requires admin — any editor (PM) can import.',
+    ],
+  },
+  {
     version: '11.5',
     date: '2026-07-08',
     notes: [

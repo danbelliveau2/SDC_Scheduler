@@ -3784,6 +3784,24 @@ input[type="number"] {
   overflow: auto;
   background: var(--surface);
 }
+/* Wheel-zoom zones (schedule Gantt, resources timeline) show a subtle blue
+   inset outline while ARMED (clicked) — that's when the scroll wheel zooms.
+   Un-armed, the wheel scrolls the page right past them. */
+.wheel-zoom-armed {
+  outline: 2px solid rgba(21, 116, 196, 0.35);
+  outline-offset: -2px;
+}
+
+/* Gantt bars are read-only (v11.5) — dates/progress are edited in the grid.
+   Hide frappe-gantt's resize + progress drag handles so the affordances
+   don't invite dragging; a whole-bar drag still snaps back on release via
+   the on_date_change revert in renderGantt(). */
+.gantt .handle,
+.gantt .handle-group .handle {
+  display: none !important;
+  pointer-events: none;
+}
+
 /* Toolbar buttons never shrink or ellipsize — when the window is too narrow
    for all of them, fitScheduleToolbar() zooms the whole bar down instead so
    every label stays fully readable. */
@@ -10817,22 +10835,141 @@ td.sales-suppressed {
 
 /* ── Financial icon variants ($) — square, SDC-green outline as the
    "family" signal; fill encodes status. ── */
+/* Financial milestones = $-in-CIRCLE (v11.5) — instantly distinct from the
+   diamond date milestones on the same line. Status tones match the
+   Financial Milestones timeline below: green paid, light blue upcoming,
+   red past-due, yellow no-date. */
 .pdash-mile-fin .pdash-mile-icon {
-  border-radius: 4px;
-  border: 1.5px solid #74c415;
+  border-radius: 50%;
+  border: 1.5px solid #1574c4;
   width: 20px;
   height: 20px;
 }
-.pdash-mile-fin.is-paid     .pdash-mile-icon { background: #74c415; }
-.pdash-mile-fin.is-no-date  .pdash-mile-icon { background: #ffde51; color: #1f2937; }
-.pdash-mile-fin.is-upcoming .pdash-mile-icon { background: #fff;    color: #2f6a13; }
-.pdash-mile-fin.is-overdue  .pdash-mile-icon { background: #1574C4; border-color: #1574C4; }
-.pdash-mile-fin .pdash-mile-label { color: #2f6a13; }
-.pdash-mile-fin.is-no-date .pdash-mile-label { color: #713f12; }
-.pdash-mile-fin.is-overdue .pdash-mile-label { color: #0D47A1; }
+.pdash-mile-fin.is-paid     .pdash-mile-icon { background: #74c415; border-color: #74c415; color: #fff; }
+.pdash-mile-fin.is-no-date  .pdash-mile-icon { background: #fef9c3; border-color: #d97706; color: #92400e; }
+.pdash-mile-fin.is-upcoming .pdash-mile-icon { background: #dbeafe; border-color: #1574c4; color: #1d4ed8; }
+.pdash-mile-fin.is-overdue  .pdash-mile-icon { background: #fee2e2; border-color: #dc2626; color: #dc2626; }
+.pdash-mile-fin .pdash-mile-label { color: #1d4ed8; }
+.pdash-mile-fin.is-paid    .pdash-mile-label { color: #15803d; }
+.pdash-mile-fin.is-no-date .pdash-mile-label { color: #92400e; }
+.pdash-mile-fin.is-overdue .pdash-mile-label { color: #dc2626; }
 
 .pdash-date-baseline { color: var(--text-muted, #64748b); text-decoration: line-through; }
 .pdash-date-current  { color: var(--text, #1f2937); font-weight: var(--fw-bold); }
+
+/* Key-milestone icons render as DIAMONDS (v11.5) — same shape language as
+   the schedule Gantt's milestone diamonds. The 16px box rotated 45° keeps
+   its center on the 12px spine line; the ✓/! glyph counter-rotates so it
+   stays upright. */
+.pdash-mile-anchor .pdash-mile-icon {
+  width: 16px;
+  height: 16px;
+  margin: 2px;
+  border-radius: 3px;
+  transform: rotate(45deg);
+}
+.pdash-mile-anchor .pdash-mile-glyph {
+  display: block;
+  transform: rotate(-45deg);
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Financial Milestones TIMELINE (v11.5, replaces the grid). Same row
+   skeleton as the Key Milestones strips (280px name + track), dashed
+   blue Today line like the Gantt, diamonds for each payment event. */
+.pdash-fintl { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.pdash-fintl-row {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 12px;
+  align-items: center;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+  padding: 2px 12px;
+  min-height: 32px;
+}
+.pdash-fintl-head {
+  min-height: 22px;
+  background: transparent;
+  border: none;
+  padding: 0 12px;
+}
+.pdash-fintl-track { position: relative; height: 100%; min-height: 28px; }
+.pdash-fintl-head .pdash-fintl-track { min-height: 16px; }
+.pdash-fintl-month {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.pdash-fintl-gridline {
+  position: absolute;
+  top: 24px;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid rgba(100, 116, 139, 0.18);
+  pointer-events: none;
+  z-index: 0;
+}
+.pdash-fintl-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 2px dashed #1574c4;
+  z-index: 2;
+  pointer-events: none;
+}
+.pdash-fintl-today span {
+  position: absolute;
+  top: 0;
+  left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1574c4;
+  white-space: nowrap;
+}
+/* Compact single-line marker: ◇ diamond with "30% PO" beside it — the
+   x-position + month header + hover tooltip carry the exact date. Keeps
+   each row ~32px tall so many projects fit a laptop screen. */
+.pdash-fintl-ms {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  z-index: 1;
+  cursor: default;
+  white-space: nowrap;
+}
+.pdash-fintl-ms .pdash-fintl-di   { order: 0; flex-shrink: 0; }
+.pdash-fintl-ms .pdash-fintl-lbl  { order: 1; }
+.pdash-fintl-ms .pdash-fintl-date { display: none; }
+.pdash-fintl-di {
+  width: 11px;
+  height: 11px;
+  transform: rotate(45deg);
+  border: 2px solid;
+  border-radius: 2px;
+  display: block;
+}
+.pdash-fintl-lbl  { font-size: 10px; font-weight: 700; white-space: nowrap; }
+.pdash-fintl-date { font-size: 9px; color: var(--text-muted, #64748b); white-space: nowrap; }
+.pdash-fintl-ms.is-paid     .pdash-fintl-di  { background: #74c415; border-color: #74c415; }
+.pdash-fintl-ms.is-paid     .pdash-fintl-lbl { color: #15803d; }
+.pdash-fintl-ms.is-overdue  .pdash-fintl-di  { background: #fee2e2; border-color: #dc2626; }
+.pdash-fintl-ms.is-overdue  .pdash-fintl-lbl { color: #dc2626; }
+.pdash-fintl-ms.is-soon     .pdash-fintl-di  { background: #fef3c7; border-color: #d97706; }
+.pdash-fintl-ms.is-soon     .pdash-fintl-lbl { color: #b45309; }
+.pdash-fintl-ms.is-upcoming .pdash-fintl-di  { background: #dbeafe; border-color: #1574c4; }
+.pdash-fintl-ms.is-upcoming .pdash-fintl-lbl { color: #1d4ed8; }
 /* Financial milestones sub-row — sits below the spine track in each
    project's milestone strip. Tiles flow left→right by date and color-
    code by status (paid = dark green, upcoming = gray, past due = red).
