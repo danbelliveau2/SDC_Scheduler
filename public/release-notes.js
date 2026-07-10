@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.7',
+    date: '2026-07-10',
+    notes: [
+      'The manual is here.',
+      '',
+      '   ▸ New 📖 Manual link in the sidebar (under Setup) — the full user guide in its own tab: schedule structure and SDC conventions, editing and predecessors, columns/views/filters, every toggle pill, zoom & fit, the stats box (Simple vs Advanced), baseline in depth, actions, notes, customer export, sales schedules, Project Release, Smartsheet import, multi-machine cloning, ETO linking, and roles.',
+      '   ▸ Send new PMs there first — most "what does this button do?" questions are answered in it.',
+    ],
+  },
+  {
     version: '12.6',
     date: '2026-07-10',
     notes: [

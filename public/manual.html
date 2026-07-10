@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SDC Scheduler — Manual</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
+<style>
+  :root {
+    --sdc-primary: #1574c4;
+    --sdc-dark: #061d39;
+    --sdc-accent: #ffde51;
+    --sdc-lime: #befa4f;
+    --text: #1f2937;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --surface: #f8fafc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 500;
+    color: var(--text);
+    display: flex;
+    background: #fff;
+    line-height: 1.55;
+  }
+  nav {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100vh;
+    overflow-y: auto;
+    width: 250px;
+    flex: 0 0 250px;
+    background: var(--sdc-dark);
+    color: #fff;
+    padding: 18px 0 40px;
+  }
+  nav h1 { font-size: 15px; padding: 0 18px 10px; margin: 0; border-bottom: 1px solid rgba(255,255,255,0.15); }
+  nav a {
+    display: block;
+    color: rgba(255,255,255,0.82);
+    text-decoration: none;
+    font-size: 12.5px;
+    padding: 6px 18px;
+  }
+  nav a:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  nav .sub { padding-left: 32px; font-size: 12px; color: rgba(255,255,255,0.6); }
+  main { flex: 1; max-width: 900px; padding: 28px 48px 120px; }
+  h2 {
+    font-size: 22px;
+    color: var(--sdc-dark);
+    border-bottom: 3px solid var(--sdc-lime);
+    padding-bottom: 6px;
+    margin: 44px 0 14px;
+  }
+  h2:first-of-type { margin-top: 4px; }
+  h3 { font-size: 16px; color: var(--sdc-primary); margin: 26px 0 8px; }
+  p, li { font-size: 14px; }
+  code, .kbd {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 12.5px;
+    font-family: Consolas, monospace;
+  }
+  .pill {
+    display: inline-block;
+    background: var(--sdc-primary);
+    color: #fff;
+    border-radius: 5px;
+    padding: 1px 8px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .chip { display: inline-block; border-radius: 999px; padding: 1px 9px; font-size: 12px; font-weight: 700; }
+  .chip.red   { background: #fee2e2; color: #dc2626; }
+  .chip.green { background: #dcfce7; color: #15803d; }
+  .chip.blue  { background: #dbeafe; color: #1d4ed8; }
+  .chip.lime  { background: var(--sdc-lime); color: var(--sdc-dark); }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; font-size: 13px; text-align: left; vertical-align: top; }
+  th { background: var(--surface); }
+  .tip {
+    background: #fefce8;
+    border-left: 4px solid var(--sdc-accent);
+    padding: 8px 14px;
+    font-size: 13px;
+    margin: 12px 0;
+  }
+  .convention {
+    background: #f0f9ff;
+    border-left: 4px solid var(--sdc-primary);
+    padding: 8px 14px;
+    font-size: 13px;
+    margin: 12px 0;
+  }
+</style>
+</head>
+<body>
+<nav>
+  <h1>SDC Scheduler Manual</h1>
+  <a href="#basics">The basics</a>
+  <a href="#structure">How a schedule is structured</a>
+  <a class="sub" href="#anchors">Key milestones (anchors)</a>
+  <a class="sub" href="#conventions">SDC conventions</a>
+  <a href="#grid">Working in the grid</a>
+  <a class="sub" href="#editing">Editing cells</a>
+  <a class="sub" href="#preds">Predecessors</a>
+  <a class="sub" href="#rightclick">Right-click menu</a>
+  <a class="sub" href="#columns">Setting up columns</a>
+  <a class="sub" href="#views">Views — save &amp; share</a>
+  <a class="sub" href="#filters">Filters</a>
+  <a href="#gantt">The Gantt chart</a>
+  <a class="sub" href="#zoom">Zoom &amp; fit</a>
+  <a class="sub" href="#stats">The stats box (Simple vs Advanced)</a>
+  <a class="sub" href="#chips">Status chips</a>
+  <a class="sub" href="#baseline">Baseline</a>
+  <a href="#actions">Actions (to-dos)</a>
+  <a href="#pills">The toggle pills explained</a>
+  <a href="#export">Export for customer</a>
+  <a href="#sales">Sales schedules</a>
+  <a href="#release">Project Release</a>
+  <a href="#import">Importing from Smartsheet</a>
+  <a href="#machines">Multi-machine projects</a>
+  <a href="#projects">Projects page &amp; workspaces</a>
+  <a href="#departments">Departments tab</a>
+  <a href="#drawers">Notes &amp; Procurement</a>
+  <a href="#eto">Connecting a project to ETO</a>
+  <a href="#roles">Accounts &amp; roles</a>
+</nav>
+<main>
+
+<h2 id="basics">The basics</h2>
+<p>The SDC Scheduler is our in-house project scheduling app. Each <strong>project</strong> (a job, like <code>1160_Y Site Automation</code>) has one schedule: a task grid on the left and a Gantt chart on the right, aligned row-by-row. Everything saves automatically to the server as you edit — there is no Save button. Other people's changes appear live.</p>
+<ul>
+  <li><strong>Tabs across the top</strong> are your open schedules. Active projects sit in the top row; open Sales schedules get their own SALES row underneath. <span class="pill">+ New tab</span> opens an existing schedule; new schedules are created from the Projects page.</li>
+  <li><strong>Grid / Both / Gantt</strong> picks the pane layout. Both is the everyday view.</li>
+  <li><strong>Combined ▾</strong> picks what kinds of rows show: Combined (default), Schedule only, or Actions only. <em>Actions</em> are date-anchored to-dos that live alongside scheduled work (they render italic blue).</li>
+  <li>The <strong>⟳ in the tab bar</strong> is a hard refresh — use it after being told a new rev shipped.</li>
+</ul>
+
+<h2 id="structure">How a schedule is structured</h2>
+<p>Every schedule follows the same skeleton, top to bottom:</p>
+<table>
+  <tr><th>Section</th><th>What lives there</th></tr>
+  <tr><td><strong>05 KICKOFF</strong></td><td>Receipt of PO, Backlog, information gathering — everything before engineering starts. Collapsible like any section.</td></tr>
+  <tr><td><strong>10 DESIGN &amp; BUILD</strong></td><td>Mechanical / Controls / General Engineering, Procurement, Build, Wire. Ends at Machine Power-Up.</td></tr>
+  <tr><td><strong>40 MACHINE TESTING</strong></td><td>Engineering + Shop testing. Ends at FAT.</td></tr>
+  <tr><td><strong>50 TEARDOWN &amp; INSTALL</strong></td><td>Teardown, Ship Machine, Install (Shop then Engineering). Ends at SAT.</td></tr>
+</table>
+<p>Click any section header to collapse or expand it — the Gantt hides those bars too and automatically re-fits to what's visible. <strong>Sections whose tasks are all complete open collapsed automatically</strong>, so an in-flight project always opens focused on the remaining work.</p>
+
+<h3 id="anchors">Key milestones (anchors)</h3>
+<p>Six green-chip milestones form the spine of every project: <span class="chip lime">Receipt of PO</span> <span class="chip lime">Mech 1 Release</span> <span class="chip lime">Machine PowerUp</span> <span class="chip lime">FAT</span> <span class="chip lime">Ship Machine</span> <span class="chip lime">SAT</span>. They are always zero-duration milestones (green diamonds with dates on the Gantt) — if one ever arrives from an import with a duration, the app repairs it automatically. Their names work as predecessor shortcuts: type <code>FAT +1w</code> as a predecessor or financial trigger.</p>
+
+<h3 id="conventions">SDC conventions</h3>
+<div class="convention">
+  <strong>Weeks come in halves.</strong> Durations always read 0.5w, 1w, 1.5w… never 0.6 or 1.4. Nothing nonzero reads below 0.5w — a 1-day task shows as 0.5W. A duration of <code>0</code> makes the row a milestone (diamond, no bar).
+</div>
+<div class="convention">
+  <strong>One work-week = 5 business days.</strong> The Gantt compresses weekends out — bars and dates are Monday–Friday.
+</div>
+
+<h2 id="grid">Working in the grid</h2>
+
+<h3 id="editing">Editing cells</h3>
+<ul>
+  <li><strong>Task name, dates, assignee, comments</strong> — click the cell and type.</li>
+  <li><strong>Duration</strong> — click the bold value at the right side of the Task column (e.g. <code>10W</code>) and type <code>3w</code>, <code>5d</code>, or <code>0</code> (makes it a milestone). Type <code>=</code> then click another row to <em>link</em> durations (🔗 badge) — the linked task always matches its source's duration.</li>
+  <li><strong>Milestones</strong> show no duration, but hover the row and a faint <code>—W</code> appears in the same spot — click it and type <code>2w</code> to turn the milestone back into a task.</li>
+  <li><strong>% complete</strong> — click the small pill in the Task column and type a number. Milestones use a checkbox instead (hover the row to see it) — click to mark done. The server stamps the Completed date automatically at 100%.</li>
+  <li><strong>Allocation</strong> — the percentage before the task name (e.g. <code>85%</code>). It's what the person actually spends on this task; hours = duration × allocation × 8/day.</li>
+</ul>
+
+<h3 id="preds">Predecessors</h3>
+<p>The <strong>Pred</strong> column drives the schedule cascade — change a task's dates and everything downstream moves. Reference other rows by their line number:</p>
+<table>
+  <tr><th>You type</th><th>Meaning</th></tr>
+  <tr><td><code>12</code></td><td>Start after row 12 finishes (FS is the default)</td></tr>
+  <tr><td><code>12SS</code></td><td>Start when row 12 starts</td></tr>
+  <tr><td><code>12FF</code></td><td>Finish when row 12 finishes</td></tr>
+  <tr><td><code>12SF</code></td><td>Finish when row 12 starts</td></tr>
+  <tr><td><code>12FS +2w</code> / <code>12 -3d</code></td><td>Same, with a lag or lead</td></tr>
+  <tr><td><code>FAT +1w</code>, <code>PO</code>, <code>Ship</code>, <code>SAT</code>, <code>Power-Up</code></td><td>Anchor shortcuts — no line number needed</td></tr>
+  <tr><td><code>5, 8FF -1w</code></td><td>Multiple predecessors, comma-separated</td></tr>
+</table>
+
+<h3 id="rightclick">Right-click menu</h3>
+<p>Right-click any row for:</p>
+<ul>
+  <li><strong>＋ Add task below / ＋ Add action below</strong> — the new row lands directly under the clicked one and inherits its section. (This replaced the old buttons at the bottom of the grid.)</li>
+  <li><strong>＋ Add additional resource</strong> — a second person on the same work.</li>
+  <li><strong>Move to section…</strong> — reclassify a row into any section/department, including 05 KICKOFF.</li>
+  <li><strong>Copy to machine</strong> — on multi-machine projects.</li>
+</ul>
+<p>Right-click a <strong>column header</strong> to set the grid font size (headers at N, values 1px smaller).</p>
+
+<h3 id="columns">Setting up your columns</h3>
+<ul>
+  <li><strong>Show/hide columns ▾</strong> — checkboxes for every column; drag the ⋮⋮ handles to reorder. The Task column can't be hidden, but its four <em>sub-columns</em> are indented under it and toggle independently: Alloc, Description, Duration, % Complete.</li>
+  <li><strong>Resize</strong> a column by dragging the edge of its header. <strong>Reorder</strong> by dragging the header itself.</li>
+  <li><strong>Font size</strong> — right-click any column header and pick a size: headers render at that size, all values 1px smaller.</li>
+  <li><strong>⇤ Compress</strong> — one click shrinks every column to exactly its content plus a uniform gap (descriptions never clip), then moves the grid/Gantt divider flush against the last column so the Gantt gets everything you freed. Use it after changing columns.</li>
+  <li><strong>Drag the grid/Gantt divider</strong> anytime — the last column stretches to fill, no dead strip.</li>
+</ul>
+
+<h3 id="views">Views — saving and sharing column setups</h3>
+<p>A <strong>view</strong> is a snapshot of your whole column arrangement: which columns show, their order and widths, the Task sub-columns, and the grid font. The <strong>Views ▾</strong> dropdown holds three tiers:</p>
+<ol>
+  <li><strong>Active Project Default</strong> / <strong>Sales Default</strong> — the pinned team standards, same for everybody, locked once set. Opening a Sales schedule applies the Sales Default automatically; switching back to an Active project restores whatever you had.</li>
+  <li><strong>Shared</strong> — views anyone has published, shown with the owner's name. Visible to the whole team.</li>
+  <li><strong>My views</strong> — private to your browser. Nobody else sees them.</li>
+</ol>
+<p><strong>To make your own:</strong> arrange the columns how you like (hide, reorder, ⇤ Compress), then Views ▾ → <em>+ New view from current columns…</em> and name it. <strong>To share it:</strong> click the ★ next to it — it moves to the Shared section for everyone. Clicking any view applies it, auto-compresses, and zoom-fits; the button label shows which view you're on (and clears when you customize away from it).</p>
+
+<h3 id="filters">Filters</h3>
+<p><strong>Filters ▾</strong> opens the quick-filter popover. These are <em>show only X</em> filters — nothing is filtered until you check something:</p>
+<ul>
+  <li><strong>Overdue / Behind</strong> — only tasks projecting late.</li>
+  <li><strong>Ahead</strong> — only tasks running early.</li>
+  <li><strong>Show completed</strong> — only finished work (for reviews).</li>
+  <li><strong>Only critical</strong> — just the critical-path chain from Receipt of PO.</li>
+  <li><strong>Per-person / per-machine</strong> — narrow to one assignee or machine.</li>
+</ul>
+<p>The yellow dash on the Filters button means a filter is active. <em>Hide completed items</em> is separate — it lives in the View menu and simply hides done rows rather than filtering to a subset. On Sales schedules all filters and pills start off.</p>
+
+<h2 id="gantt">The Gantt chart</h2>
+<p>The chart mirrors the grid row-for-row. <strong>Bars are read-only</strong> — drag one and it snaps back; all edits happen in the grid so predecessors can't silently break. Click a bar to jump the grid to that row.</p>
+
+<h3 id="zoom">Zoom &amp; fit</h3>
+<ul>
+  <li><strong>⛶ (yellow)</strong> — fit the project's visible span to the panel width. Runs automatically when you switch panes, switch projects, or collapse/expand a section.</li>
+  <li><strong>↕ (yellow)</strong> — fit the grid's <em>height</em> to your screen: rows resize so the whole schedule is visible with zero scrolling. Great on laptops.</li>
+  <li><strong>Mouse-wheel zoom</strong> — click the chart first to "arm" it (blue outline appears), then scroll to zoom. Click anywhere else to disarm — so scrolling the page never gets hijacked by the chart.</li>
+  <li><strong>Zoom ▾</strong> — stepper for zoom level (1–10) and row height (0–100).</li>
+</ul>
+
+<h3 id="stats">The stats box (top-right of the Gantt)</h3>
+<p>The floating lime-bordered box summarizes the whole project. It has two modes — the toggle in its top-right corner switches them (your choice sticks):</p>
+<ul>
+  <li><strong>Simple</strong> (default) — just the live schedule numbers: total <strong>Duration</strong> in weeks, labor-weighted <strong>% Complete</strong>, and the scheduled <strong>FAT</strong> date.</li>
+  <li><strong>▸ Advanced</strong> — every row becomes a <strong>Quoted / Scheduled</strong> comparison:
+    <ul>
+      <li><strong>Duration</strong> — sold delivery weeks vs what the schedule currently adds up to.</li>
+      <li><strong>Complete</strong> — where the project <em>should</em> be at today's date vs where it actually is.</li>
+      <li><strong>FAT</strong> — the quoted FAT date vs the scheduled one, with a <span class="chip red">+1W</span>/<span class="chip green">−1W</span> variance chip (red late, green early).</li>
+      <li><strong>Penalty</strong> — appears when the contract has a penalty clause: the date it kicks in (PO + N weeks) and a "past" flag if FAT is scheduled beyond it.</li>
+    </ul>
+  </li>
+</ul>
+<p>The quoted side comes from the Project Release / sold values. On multi-machine projects a scope line says which machine subset the numbers cover.</p>
+
+<h3 id="chips">Status chips</h3>
+<table>
+  <tr><th>Chip</th><th>Meaning</th></tr>
+  <tr><td><span class="chip red">−1.5w</span> next to a bar/name</td><td><strong>Behind today:</strong> at the current % complete, the remaining work projects past the scheduled finish by this much. Only appears on started, incomplete tasks.</td></tr>
+  <tr><td><span class="chip green">+1w</span></td><td>Same math, ahead of schedule.</td></tr>
+  <tr><td>Lime outline + diagonal hash on a bar</td><td>Task is 100% complete.</td></tr>
+  <tr><td><span class="chip blue">±Nw</span> left of a bar (baseline on)</td><td>Ahead/behind vs the <em>baseline</em> — see below.</td></tr>
+</table>
+
+<h3 id="baseline">Baseline (the ◉ target pill)</h3>
+<p>A baseline freezes the <strong>plan of record</strong>: a snapshot of every task's start and finish at the moment you set it. From then on the app can always answer "how far off the original plan are we?" — independent of the day-to-day behind/ahead chips.</p>
+<p><strong>Setting one:</strong> right-click the ◉ target pill (last one in the toggle block) → <em>Turn on baseline</em>. Today's dates become the plan of record. Typical moment: right after Accept &amp; apply on the Project Release, when the schedule reflects what was sold. If no baseline exists yet, a plain left-click offers to set one.</p>
+<p><strong>Viewing it:</strong> left-click ◉ to toggle the overlay (pill lights blue when showing). With it on you see:</p>
+<ul>
+  <li><strong>Dashed ghost outlines</strong> on the Gantt showing where each bar was originally planned — the gap between ghost and bar is the slip, visually.</li>
+  <li>A <strong>±w chip</strong> to the left of every task that moved: <span class="chip green">−1w</span> finishing earlier than planned, <span class="chip red">+2.5w</span> later. Based on the finish date.</li>
+</ul>
+<p><strong>Where else it shows:</strong> the Departments tab's Key Milestones strips show each anchor's baseline date struck through next to the current date, with a slip chip that reads <em>trending ±w</em> (hollow — a forecast, milestone still open) or <em>✓ ±w</em> (solid — final, actual vs baseline). Hover any chip for all three dates: Baseline → Scheduled → Actual. The grid's Start/Finish also show baseline strike-through dates when they differ.</p>
+<p><strong>Maintaining it:</strong> right-click ◉ → <em>Reset baseline</em> overwrites the snapshot with today's dates (a re-plan becomes the new plan of record); <em>Turn off baseline</em> clears it entirely. Baselines are per-project.</p>
+<div class="tip">Baseline chips vs the red/green schedule chips: the <strong>baseline chip</strong> (left of the bar, only when ◉ is on) compares against the frozen plan. The <strong>schedule chip</strong> (right of the bar, always on for started work) projects today's % complete forward. A task can be ahead of one and behind the other.</div>
+
+<h2 id="actions">Actions (to-dos)</h2>
+<p>An <strong>action</strong> is a date-anchored to-do that lives in the schedule without being scheduled work — "call the customer about paint spec," "send drawings for approval." They render <em>italic blue</em>, default to a zero-duration milestone, and turn red when past due and incomplete.</p>
+<ul>
+  <li><strong>Add one:</strong> right-click the row it belongs near → <strong>＋ Add action below</strong>. It inherits that row's section. Give it a date (or a predecessor) and optionally an owner.</li>
+  <li><strong>See them:</strong> the <strong>Combined ▾</strong> toolbar dropdown — Combined shows schedule + actions (default), Actions shows only the to-dos, Schedule hides them.</li>
+  <li><strong>Complete one:</strong> hover the row and click the checkbox in the Task column.</li>
+  <li>The <strong>Notes sidebar page</strong> aggregates actions across all projects, and signed-in users get a personal tab showing just theirs.</li>
+</ul>
+
+<h2 id="pills">The toggle pills explained</h2>
+<p>The block of small square buttons in the toolbar. Blue = on. Each is an independent overlay:</p>
+<table>
+  <tr><th>Pill</th><th>Name</th><th>What it does</th></tr>
+  <tr><td><strong>≡</strong></td><td>Flatten</td><td>Hide sub-section headers and sort each section by start date — the schedule reads chronologically.</td></tr>
+  <tr><td><strong>α</strong></td><td>Allocation prefix</td><td>Show/hide the <code>85% –</code> before task names. Turn off when presenting.</td></tr>
+  <tr><td><strong>$</strong></td><td>Financials</td><td>Overlay financial milestones on the Gantt as $ markers at their dates.</td></tr>
+  <tr><td><strong>↔</strong></td><td>Lag labels</td><td>Show ±N wks on dependency arrows that carry a lag.</td></tr>
+  <tr><td><strong>%</strong></td><td>Bar meta</td><td>Print allocation above and duration below each Gantt bar.</td></tr>
+  <tr><td><strong>M</strong></td><td>Machine colors</td><td>Color-code rows/bars by machine (M1/M2…) on multi-machine projects.</td></tr>
+  <tr><td><strong>Δ</strong></td><td>Quoted vs scheduled</td><td>Show QUOTED vs SCHEDULED hours on each department subheader, fed by the Project Release budget (or the estimate on sales schedules), with an over/under-scheduled chip.</td></tr>
+  <tr><td><strong>◉</strong></td><td>Baseline</td><td>See <a href="#baseline">Baseline</a>.</td></tr>
+</table>
+<p><strong>Filters ▾</strong> (separate popover) holds the quick "show only X" filters — overdue, ahead, critical path — plus per-person and per-machine narrowing. On Sales schedules all pills default off; your settings come back when you return to an Active schedule.</p>
+
+<h2 id="export">Export for customer</h2>
+<p>The <span class="pill">Export</span> button builds a clean customer-ready view:</p>
+<ol>
+  <li>Pick which rows to include (all pre-checked; spine milestones always included).</li>
+  <li>Pick extra columns — % Complete is on by default; Duration and Assigned To optional.</li>
+  <li>Leave "Auto-fit row height" checked and hit <strong>Generate Export</strong>.</li>
+</ol>
+<p>The app enters a stripped-down customer view fitted to one screen — press <span class="kbd">Ctrl+P</span> to save a landscape PDF, then click <strong>✕ Exit customer view</strong> to get everything back exactly as it was.</p>
+
+<h2 id="sales">Sales schedules</h2>
+<p>Sales schedules are pre-quote what-if schedules. They live in the <strong>Sales</strong> workspace (own tab row, own section on the Projects page) and behave slightly differently:</p>
+<ul>
+  <li><strong>Create</strong> from the Projects page → Sales section → <span class="pill">+ New from template</span>. Name it, pick the source (defaults to the SDC sales template), done. New sales schedules land with Receipt of PO two Mondays out — never in the past.</li>
+  <li>The <strong>Sales Default</strong> view applies automatically (typically hides Assigned To / % complete — nothing is staffed yet). No baseline, no drift chips — nothing is committed yet.</li>
+  <li>The footer button reads <strong>📊 Estimate</strong> instead of Project Release: attach the estimate .xlsx and its summary hours feed the Δ quoted-vs-scheduled overlay per section.</li>
+  <li>When the job is won, use <strong>→ Project</strong> on the Projects page to promote it into a detailed Active schedule.</li>
+</ul>
+
+<h2 id="release">Project Release</h2>
+<p>The Project Release is how a won job's contract facts get into the schedule. On Active projects, the footer button is <strong>📄 Project Release</strong>. Workflow:</p>
+<ol>
+  <li><strong>Upload the release</strong> — click the button, pick the SDC Project Release (.docx). The app reads it directly: PO receipt date, delivery weeks, the financial milestone percentages, penalty clause, and the budget/hours table (read automatically, including from the budget picture).</li>
+  <li><strong>Check the fields</strong> — every extracted value is editable in the panel. If the parse got something wrong, just fix it in place.</li>
+  <li><strong>Check the budget grid</strong> — laid out like the release itself (ME / CE Design / CE Software / General / Mech Build / Elec Build / Testing / Teardown &amp; Install / Parts Cost). <strong>These hours are editable</strong> — if a number doesn't match the estimate, type the right one. This grid is what feeds the Δ quoted-vs-scheduled overlay on the schedule, so getting it right makes the per-department comparison meaningful.</li>
+  <li><strong>Financial milestones</strong> — the billing grid (%, Description, Trigger, Date, Sent) is built into the panel. Triggers accept anchor shortcuts (<code>PO</code>, <code>FAT +1w</code>, <code>SAT</code>) or line numbers, so billing dates ride the schedule automatically as it moves. Tick <em>Sent</em> when an invoice goes out — the Departments tab's financial timeline turns that event green.</li>
+  <li><strong>Accept &amp; apply</strong> — one click, no confirmation: sets the PO date (shifting the whole schedule to land on it), the sold delivery weeks, and the penalty clause. This is the moment to <a href="#baseline">set the baseline</a>.</li>
+</ol>
+<p><em>View original</em> re-opens the uploaded document; <em>Replace</em> swaps in a corrected file and re-reads it.</p>
+
+<h2 id="import">Importing from Smartsheet</h2>
+<p>From the Projects page → <span class="pill">+ New from template</span> dialog → "Or import from Smartsheet (.xlsx)". In Smartsheet: <strong>Export → Export to Microsoft Excel</strong>, then pick that file here.</p>
+<ol>
+  <li>A <strong>review grid</strong> opens: ☑ Include | Description | Assigned To | Section.</li>
+  <li>Every task gets a best-guess section from its name and assignee ("Test Engineer" → 40, "Builder 1" → Build, "ME Placeholder" → Mech Eng). Blanks are outlined amber — fill or leave them (blanks land in 05 KICKOFF).</li>
+  <li>Uncheck rows you don't want — predecessors automatically chain <em>through</em> skipped rows to the nearest imported task.</li>
+  <li>Hit <strong>Create schedule</strong>. Predecessors, lags, forward references, baselines, and % complete all carry over; spine milestones import as proper anchors.</li>
+</ol>
+<p>Pick multiple files at once to bulk-import (each becomes its own schedule, no review step).</p>
+
+<h2 id="machines">Multi-machine projects</h2>
+<p>For jobs building the same machine more than once (M1, M2, M3…). Design work is shared; build/wire/test repeats per machine. Step by step:</p>
+<ol>
+  <li>Click <strong>+ Add machine</strong> (machine sub-tab strip). If the project has no machines yet, existing work is auto-tagged M1 first.</li>
+  <li>A yellow <strong>clone banner</strong> appears. Pick the <strong>source machine</strong> from the dropdown (M4 can copy M1 — it doesn't have to be the latest) and name the new machine.</li>
+  <li><strong>Click each row</strong> you want duplicated into the new machine — typically the build/wire/test work, not the shared design rows. The count in the banner tracks your picks.</li>
+  <li><strong>Double-click a selected row</strong> to give its copy a custom predecessor — e.g. M2's Build starts when M1's Build finishes: type the M1 line number.</li>
+  <li>Hit <strong>Complete</strong>. The copies are created, tagged with the new machine, and wired up.</li>
+</ol>
+<ul>
+  <li><strong>Machine sub-tabs</strong> (All / M1 / M2…) filter the whole schedule to one machine; line numbers stay stable across subsets.</li>
+  <li>The <strong>M pill</strong> color-codes rows and Gantt bars by machine (auto-hides on single-machine projects).</li>
+  <li>Missed a row? Right-click it → <strong>Copy to machine</strong>.</li>
+  <li>The stats box shows which machine subset its numbers cover.</li>
+</ul>
+
+<h2 id="projects">Projects page &amp; workspaces</h2>
+<ul>
+  <li>Three workspaces: <strong>Active</strong>, <strong>Sales</strong>, <strong>Closed</strong>. Assignments are saved server-side, so everyone sees the same grouping. Right-click a project row to change workspace, rename, mark as template ★, or delete.</li>
+  <li><strong>Templates</strong> show in blue inside a framed box at the top of their workspace. "+ New from template" clones one — tasks, milestones, predecessors, duration links; real assignees blanked, placeholders kept.</li>
+  <li><strong>Rename</strong> migrates everything (tasks, financials, notes, history) with no leftovers. <strong>Delete</strong> requires admin.</li>
+  <li>★ favorites and Recents have their own sidebar pages for quick access.</li>
+</ul>
+
+<h2 id="departments">Departments tab</h2>
+<ul>
+  <li><strong>Key Milestones</strong> — one strip per selected project: the six spine milestones as diamonds (green ✓ done, red ! overdue), each with dates, baseline strike-throughs, and trending/final slip chips. Financial milestones ride the same line as $-circles next to the milestone they bill against, labeled with their %.</li>
+  <li><strong>Financial Milestones timeline</strong> — schedule-style view of invoiceable events across projects: month header, dashed Today line, one row per project, diamonds colored by status (red = invoice now, amber = due soon, blue = upcoming, green = paid).</li>
+  <li><strong>Team / capacity</strong> — the resource Gantt shows each person's load; the cards below cover behind/unstaffed/overloaded work per discipline. (Wheel zoom here is click-to-arm, same as the schedule chart.)</li>
+</ul>
+
+<h2 id="drawers">Notes &amp; Procurement</h2>
+<h3>Notes</h3>
+<p>The <strong>Notes bar</strong> at the bottom of every schedule opens the per-project notebook. How to use it:</p>
+<ul>
+  <li><strong>Add a meeting</strong> — each dated session collects free-form note lines. Type in the composer and hit Add.</li>
+  <li><strong>⭐ Star a note</strong> to promote it to <strong>Key Information</strong> on the right — the always-visible facts (voltage, contact names, access rules) that shouldn't be buried in meeting history.</li>
+  <li>Notes can carry an <strong>Inform</strong> tag (who needs to know) and a <strong>due date</strong> — the pickers open on a single click.</li>
+  <li><strong>Resize</strong> the panel by dragging its top edge. The bar shows the meeting/key counts even while collapsed.</li>
+</ul>
+<h3>Procurement &amp; Job Hours</h3>
+<ul>
+  <li><strong>Procurement</strong> (bottom bar) — once the project is <a href="#eto">linked to its ETO job</a>: part readiness by vendor, PO lines, received counts, and % ready at a glance. The ⚙ Shop Parts and 🚚 Vendor POs sidebar pages aggregate the same data across every job.</li>
+  <li><strong>Job Hours</strong> (sidebar) — actual charged hours from the ERP against the scheduled hours, per discipline, when the job link is set.</li>
+</ul>
+
+<h2 id="eto">Connecting a project to ETO</h2>
+<p>Next to the project name banner are two link chips:</p>
+<ul>
+  <li><strong>🔗 Link ETO job…</strong> — tie this schedule to its Total ETO job number. This is what lights up the <strong>Procurement drawer</strong> (parts/PO readiness), the <strong>ETO actuals</strong> strip in the quote comparison, and project costing lookups. Click the chip, pick or type the job number, done — the chip then shows <span class="pill">ETO #1162</span>.</li>
+  <li><strong>🔗 Link PBI job…</strong> — tie it to the Power BI hours job so the <strong>Job Hours</strong> page can show actual charged hours vs the schedule.</li>
+</ul>
+<p>Link both when a job goes live — everything downstream (procurement readiness, hours tracking, costing) keys off these two connections. If the Procurement drawer says "No ETO job linked," this is the fix.</p>
+
+<h2 id="roles">Accounts &amp; roles</h2>
+<table>
+  <tr><th>Role</th><th>Can do</th></tr>
+  <tr><td><strong>Viewer</strong></td><td>See everything, change nothing.</td></tr>
+  <tr><td><strong>Editor</strong> (PMs)</td><td>Edit schedules, create/import/rename projects, upload releases and estimates, manage financial milestones.</td></tr>
+  <tr><td><strong>Admin</strong></td><td>Everything, plus deleting projects and managing users (Setup → Users, including password resets).</td></tr>
+</table>
+<p>Your avatar (bottom-left) → change password or sign out. Forgot your password? Any admin can reset it in Setup → Users.</p>
+
+<div class="tip"><strong>Questions or ideas?</strong> Tell Dan — most features in this app exist because a PM asked for them.</div>
+
+</main>
+</body>
+</html>
