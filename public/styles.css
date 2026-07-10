@@ -4961,6 +4961,7 @@ tr.group-header.level-1 td {
   color: #334155;
   font-weight: var(--fw-bold);
 }
+tr.group-header.level-1[data-section-key="kickoff"]          td { background: var(--section-kickoff,         #e2e8f0); }
 tr.group-header.level-1[data-section-key="design_build"]     td { background: var(--section-design-build,    #e2e8f0); }
 tr.group-header.level-1[data-section-key="machine_testing"]  td { background: var(--section-machine-testing, #e2e8f0); }
 tr.group-header.level-1[data-section-key="teardown_install"] td { background: var(--section-teardown-install,#e2e8f0); }

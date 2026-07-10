@@ -1881,17 +1881,14 @@ function renderTable() {
   const fatAnchors    = pickAll('fat');
   const shipAnchors   = pickAll('ship_machine');
   const satAnchors    = pickAll('sat');
-  // Receipt of PO — top of the schedule, above section 10.
-  if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
-  // Every non-anchor task with no phase_group renders above section 10,
-  // ordered by sort_order. This is the "above section 10" zone — the
-  // Backlog row lives here, and so do any rows the user adds below an
-  // anchor via right-click → "+ Add row below."
+  // Every non-anchor task with no phase_group — the legacy "above section 10"
+  // zone (Backlog, right-click additions). These now render INSIDE the
+  // 00 KICKOFF section along with the Receipt of PO anchor (v12.3), so the
+  // whole opening block collapses like any other section.
   const aboveSectionTasks = filtered
     .filter(t => !inferredAnchorKey(t) && !t.phase_group)
     .slice()
     .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
-  for (const t of aboveSectionTasks) html += rowHtml(t, 1);
 
   // Walk the full canonical hierarchy. Every level renders its header even when empty —
   // the skeleton tells the user where to put tasks. Tasks attach at any level: directly
@@ -1903,6 +1900,15 @@ function renderTable() {
     const gCollapsed = collapsedGroups.has(gPath);
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
     if (gCollapsed) continue;
+
+    // 00 KICKOFF opens with the Receipt of PO anchor + every no-section row
+    // (the legacy above-section-10 zone) so the whole opening block collapses
+    // with the section. Tasks explicitly MOVED to kickoff render below these
+    // through the normal bucket walk.
+    if (group.key === 'kickoff') {
+      if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
+      for (const t of aboveSectionTasks) html += rowHtml(t, 2);
+    }
 
     // Flatten mode: drop every dept/sub-dept header, render this section's tasks as
     // one flat list. Ship Machine still sits in section 50 between teardown and
@@ -3272,8 +3278,10 @@ function isTaskInCollapsedGroup(task) {
   if (anchor === 'ship_machine' || anchor === 'sat') {
     return collapsedGroups.has(groupPath('teardown_install'));
   }
-  if (anchor && !task.phase_group) return false;
-  if (!task.phase_group) return false;
+  // Receipt of PO + every no-section row live inside 00 KICKOFF (v12.3) —
+  // they hide when that section collapses, like FAT does with section 40.
+  if (anchor && !task.phase_group) return collapsedGroups.has(groupPath('kickoff'));
+  if (!task.phase_group) return collapsedGroups.has(groupPath('kickoff'));
   const paths = [
     groupPath(task.phase_group),
     task.department    ? groupPath(task.phase_group, task.department) : null,
@@ -3473,10 +3481,14 @@ function renderGantt() {
   });
   const newScroller = document.querySelector('#gantt-container .gantt-container');
   if (newScroller) {
-    if (oldScroller) {
+    if (oldScroller && !fitNow) {
       newScroller.scrollLeft = scrollLeft;
     } else {
-      // First render: skip past the leading phantom-pad so we land on the earliest real task.
+      // First render OR a fit render (pane-mode change / project switch):
+      // land on the earliest real task past the leading phantom-pad. Restoring
+      // the previous scrollLeft here was the bug that left the chart "shifted
+      // off to the side" after Gantt-only → Both — that scroll came from a
+      // different zoom level and panel width, so it pointed at nothing.
       const earliest = filtered.reduce((min, t) =>
         new Date(t.start_date).getTime() < new Date(min.start_date).getTime() ? t : min);
       const wrap = document.querySelector(`#gantt-container .bar-wrapper[data-id="${earliest.id}"]`);
@@ -13408,6 +13420,8 @@ function showImportReviewDialog(items, projectName) {
     document.getElementById('import-review-modal')?.remove();
     const opts = [];
     for (const g of HIERARCHY) {
+      // Department-less sections (00 KICKOFF) are a single group-level bucket.
+      if (!g.departments.length) { opts.push({ pg: g.key, dept: null, sub: null, label: g.label }); continue; }
       for (const d of g.departments) {
         if (d.subs && d.subs.length) {
           for (const s of d.subs) opts.push({ pg: g.key, dept: d.key, sub: s.key, label: `${g.label} · ${d.label} · ${s.label}` });
@@ -19635,6 +19649,7 @@ const SECTION_COLOR_DEFAULTS = {
   // Keys MUST match HIERARCHY[].key — if not, applySectionColors writes an undefined
   // value and the section row goes transparent (which is why section 50 was missing
   // its gray bar).
+  kickoff:          '#e2e8f0',
   design_build:     '#e2e8f0', // slate-200
   machine_testing:  '#e2e8f0',
   teardown_install: '#e2e8f0',
@@ -19683,6 +19698,7 @@ function applyTheme(theme) {
 function applySectionColors(sectionColors) {
   const root = document.documentElement.style;
   const c = { ...SECTION_COLOR_DEFAULTS, ...(sectionColors || {}) };
+  root.setProperty('--section-kickoff',          c.kickoff || SECTION_COLOR_DEFAULTS.kickoff);
   root.setProperty('--section-design-build',     c.design_build);
   root.setProperty('--section-machine-testing',  c.machine_testing);
   root.setProperty('--section-teardown-install', c.teardown_install);
@@ -25888,6 +25904,18 @@ function setPaneMode(mode) {
     requestAnimationFrame(() => renderGantt());
   } else if (mode !== 'grid') {
     renderGantt();
+  }
+  // ALWAYS finish a pane change that shows the Gantt with an explicit
+  // zoom-to-fit against the settled layout (double rAF — same proven pattern
+  // as the ⛶ button and customer view). The _fitOnNextRender flag alone kept
+  // measuring mid-transition panel widths, so Both ↔ Gantt switches came up
+  // at the wrong zoom or shifted sideways.
+  if (mode !== 'grid') {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try { zoomToFit(); } catch (_) {}
+      });
+    });
   }
   // v4.52: keep the pane seg-control's is-active states in sync no matter
   // where setPaneMode was called from (seg-btn click, customer-view exit,

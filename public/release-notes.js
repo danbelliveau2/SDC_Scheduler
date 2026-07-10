@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.4',
+    date: '2026-07-10',
+    notes: [
+      '05 KICKOFF section + reliable zoom-to-fit on view changes.',
+      '',
+      'KICKOFF (new collapsible section at the top of every schedule):',
+      '   ▸ Receipt of PO, Backlog, and every row that used to float above section 10 now live inside 05 KICKOFF — collapse it and the whole opening block tucks away, so zoom-to-fit frames the real work.',
+      '   ▸ Move rows into it via right-click → Move to section; the Smartsheet import section picker offers it too. Build it into templates going forward.',
+      '',
+      'GANTT:',
+      '   ▸ Switching panes (Grid/Both/Gantt) always ends with a true zoom-to-fit against the settled layout — no more shifted or mis-zoomed chart after Both ↔ Gantt.',
+      '   ▸ Fit renders land on the earliest task instead of restoring a stale scroll position from the previous zoom/panel width.',
+    ],
+  },
+  {
     version: '12.3',
     date: '2026-07-10',
     notes: [

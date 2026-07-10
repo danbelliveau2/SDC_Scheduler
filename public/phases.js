@@ -15,6 +15,11 @@ window.PHASE_BY_KEY = Object.fromEntries(window.PHASES.map(p => [p.key, p]));
 // Hierarchy used to group tasks in the grid: PROJECT > phase_group > department > sub_department > task.
 // Sub-departments are optional — a department with `subs: []` puts tasks directly under it.
 window.HIERARCHY = [
+  // Kickoff — everything that happens before Mechanical Engineering starts:
+  // Receipt of PO, Backlog, information-gathering rows, PO-processing, etc.
+  // Collapsible like every other section so a finished kickoff tucks away
+  // and zoom-to-fit frames the real work.
+  { key: 'kickoff', label: '05 KICKOFF', departments: [] },
   {
     key: 'design_build', label: '10 DESIGN & BUILD',
     departments: [
