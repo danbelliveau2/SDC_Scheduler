@@ -5563,7 +5563,12 @@ function zoomToFit() {
   const visiblePanel = document.getElementById('schedule-gantt');
   if (!visiblePanel) return;
   const target = Math.max(300, visiblePanel.clientWidth - 24);
-  const filtered = applyFilters(state.tasks).filter(t => t.start_date && t.end_date);
+  // Fit the VISIBLE span only — tasks inside collapsed sections don't draw
+  // on the chart, so they shouldn't stretch the fit. Collapse 05/10 and the
+  // fit zooms into the remaining open sections.
+  const filtered = applyFilters(state.tasks)
+    .filter(t => t.start_date && t.end_date)
+    .filter(t => !isTaskInCollapsedGroup(t));
   if (filtered.length === 0 || target <= 0) return;
 
   const minStartStr = filtered.reduce((s, t) => t.start_date < s ? t.start_date : s, filtered[0].start_date);

@@ -4,6 +4,15 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.5',
+    date: '2026-07-10',
+    notes: [
+      'Zoom-to-fit respects collapsed sections.',
+      '',
+      '   ▸ ⛶ Zoom to fit (and the automatic fits on pane switches) now frame only the VISIBLE tasks — collapse 05 KICKOFF and 10 DESIGN & BUILD and the chart zooms into the remaining open sections instead of fitting the whole project span.',
+    ],
+  },
+  {
     version: '12.4',
     date: '2026-07-10',
     notes: [
