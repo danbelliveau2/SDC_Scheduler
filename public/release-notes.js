@@ -4,6 +4,32 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.0',
+    date: '2026-07-10',
+    notes: [
+      'SAT anchor, Smartsheet import overhaul, fit-height, and right-click add.',
+      '',
+      'NEW KEY MILESTONE — SAT:',
+      '   ▸ SAT (acceptance at the customer) is a full spine anchor closing section 50, after Install — green chip, dated diamond, predecessor-settable, "SAT" works as a trigger/predecessor alias, and the SAT financial milestone syncs to it. New schedules include it; on existing ones add a row named "SAT".',
+      '',
+      'SMARTSHEET IMPORT:',
+      '   ▸ Import shows a review grid first: ☑ Include | Description | Assigned To | Section. Uncheck rows to leave them out; fix the auto-guessed sections; special placements for top-of-schedule, before Mech Eng, and end-of-project.',
+      '   ▸ Predecessors import correctly now: Smartsheet row numbering auto-detected, forward references kept, and preds chain THROUGH rows you excluded to the nearest imported task.',
+      '   ▸ PO/Mech 1/Power-Up/FAT/Ship/SAT always import as milestones even with a blank duration. Editors (not just admins) can import.',
+      '',
+      'SCHEDULE:',
+      '   ▸ ↕ Fit height (next to ⛶): sizes the rows so the whole grid fits the screen exactly — no scrolling, no wasted space, on any monitor. Both buttons are compact icons now.',
+      '   ▸ + Add task / + Add action buttons are gone — right-click any row for "Add task below" / "Add action below" (frees a row of screen height).',
+      '   ▸ One shared bottom line under grid + Gantt (they could drift apart and let the Gantt scroll on its own).',
+      '   ▸ Durations never read below 0.5w — a 1-day task shows "0.5W", not blank. Milestones have a hover-visible duration slot: click, type "2w", and it\'s a task again.',
+      '   ▸ Arrows leaving a bar whose name sits outside it now exit under the text instead of striking through it.',
+      '',
+      'FIXES:',
+      '   ▸ Renaming a project no longer leaves an empty duplicate — financials/notes/history move with the new name.',
+      '   ▸ Deleting a project without permission now says so instead of pretending it worked.',
+    ],
+  },
+  {
     version: '11.6',
     date: '2026-07-09',
     notes: [

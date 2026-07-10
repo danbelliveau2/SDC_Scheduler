@@ -21,6 +21,8 @@ const SMARTSHEET_ANCHORS = {
   'machine power up': 'machine_power_up',
   'fat':              'fat',
   'ship machine':     'ship_machine',
+  'sat':              'sat',
+  'acceptance at customer (sat)': 'sat',
 };
 
 const SMARTSHEET_SKIP_PATTERNS = [
@@ -48,10 +50,32 @@ const SMARTSHEET_TASK_HINTS = [
   { re: /^teardown( \d+)?$/i,                 phase_group: 'teardown_install', department: 'teardown', sub_department: null },
   { re: /^install at buyer'?s?$/i,            phase_group: 'teardown_install', department: 'install',  sub_department: null },
   { re: /^install( at site)?$/i,              phase_group: 'teardown_install', department: 'install',  sub_department: null },
-  { re: /^sat$/i,                             phase_group: 'teardown_install', department: 'install',  sub_department: null },
   { re: /^send final documentation/i,         phase_group: 'teardown_install', department: 'install',  sub_department: null },
   { re: /^conduct project wrap meeting$/i,    phase_group: 'teardown_install', department: 'install',  sub_department: null },
   { re: /^project wrap-?up$/i,                phase_group: 'teardown_install', department: 'install',  sub_department: null },
+  // Name-based section guesses for schedules without the standard phase
+  // headers (most real Smartsheet exports). Checked top-to-bottom — put the
+  // most specific patterns first. Section 40 (testing) before generic
+  // engineering so "Test Engineer" doesn't land in section 10.
+  { re: /test(ing)?\s*(engineer|eng\b)/i,     phase_group: 'machine_testing',  department: 'engineering', sub_department: null },
+  { re: /test(ing)?\s*shop/i,                 phase_group: 'machine_testing',  department: 'shop',        sub_department: null },
+  { re: /^(configure|debug|commission) machine/i, phase_group: 'machine_testing', department: 'engineering', sub_department: null },
+  { re: /^(order|receive|recieve)\b|long lead/i, phase_group: 'design_build',  department: 'procurement',  sub_department: null },
+  { re: /^builder\b|mechanical (build|assembly)/i, phase_group: 'design_build', department: 'shop',       sub_department: 'build' },
+  { re: /panel|machine wiring|electrical (build|assembly)/i, phase_group: 'design_build', department: 'shop', sub_department: 'wire' },
+  { re: /\bhmi\b|vision|robot programming|device programming/i, phase_group: 'design_build', department: 'engineering', sub_department: 'general' },
+  { re: /^me\b|mech(anical)? (design|concept|eng)|^mechanical design/i, phase_group: 'design_build', department: 'engineering', sub_department: 'mech' },
+  { re: /^ce\b|controls (design|eng|software)|\bplc\b|machine software/i, phase_group: 'design_build', department: 'engineering', sub_department: 'controls' },
+];
+
+// Assignee-based fallback when neither the name nor a phase header decided —
+// "ME Placeholder" is mechanical engineering work wherever it sits, etc.
+const SMARTSHEET_ASSIGNEE_HINTS = [
+  { re: /^me\b|mech/i,          phase_group: 'design_build', department: 'engineering', sub_department: 'mech' },
+  { re: /^ce\b|controls/i,      phase_group: 'design_build', department: 'engineering', sub_department: 'controls' },
+  { re: /test/i,                phase_group: 'machine_testing', department: 'engineering', sub_department: null },
+  { re: /build/i,               phase_group: 'design_build', department: 'shop', sub_department: 'build' },
+  { re: /wire/i,                phase_group: 'design_build', department: 'shop', sub_department: 'wire' },
 ];
 
 function parseSmartsheetDuration(str) {
@@ -567,6 +591,7 @@ module.exports = function createRouter(deps) {
         }
 
         const anchorKey = SMARTSHEET_ANCHORS[lower] || null;
+        const assigneeStr = r[COL.assignee] ? String(r[COL.assignee]).trim() : '';
         let phase_group = null, department = null, sub_department = null;
         const hint = !anchorKey ? SMARTSHEET_TASK_HINTS.find(h => h.re.test(name)) : null;
         if (anchorKey === 'mech_release_1') {
@@ -577,10 +602,24 @@ module.exports = function createRouter(deps) {
           phase_group = hint.phase_group; department = hint.department; sub_department = hint.sub_department;
         } else if (!anchorKey && ctx) {
           phase_group = ctx.phase_group; department = ctx.department; sub_department = ctx.sub_department;
+        } else if (!anchorKey && assigneeStr) {
+          // Last resort: classify by who it's assigned to (ME/CE/Build/Wire/Test
+          // placeholders carry the discipline even when the name doesn't).
+          const ah = SMARTSHEET_ASSIGNEE_HINTS.find(h => h.re.test(assigneeStr));
+          if (ah) { phase_group = ah.phase_group; department = ah.department; sub_department = ah.sub_department; }
         }
 
-        const duration_days = parseSmartsheetDuration(r[COL.duration]);
-        const is_milestone = duration_days === 0 ? 1 : 0;
+        let duration_days = parseSmartsheetDuration(r[COL.duration]);
+        const startISO = parseSmartsheetDate(r[COL.start]);
+        const endISO   = parseSmartsheetDate(r[COL.end]);
+        // Milestone when: it's a spine anchor (PO/Mech 1/Power-Up/FAT/Ship are
+        // ALWAYS milestones — Smartsheet exports often leave their duration
+        // blank, which used to import them as bars), OR duration is exactly 0,
+        // OR duration is blank and the row starts and ends the same day.
+        if (anchorKey) duration_days = 0;
+        const is_milestone = (anchorKey
+          || duration_days === 0
+          || (duration_days == null && startISO && startISO === endISO)) ? 1 : 0;
         const pctToInt = (v) => {
           if (v == null || v === '') return null;
           const cleaned = typeof v === 'string' ? v.replace(/%/g, '').trim() : v;
@@ -617,6 +656,49 @@ module.exports = function createRouter(deps) {
 
       if (items.length === 0) return res.status(400).json({ error: 'no task rows found in sheet' });
 
+      // Preview mode — return the parsed rows + proposed sections WITHOUT
+      // inserting anything. The client shows a review dialog, lets the user
+      // fix/fill sections, then re-posts with `assignments` (below).
+      if (req.body.preview) {
+        return res.json({
+          ok: true,
+          preview: true,
+          items: items.map(t => ({
+            row: t.row, name: t.name, assignee: t.assignee, anchor_key: t.anchor_key,
+            start_date: t.start_date, end_date: t.end_date,
+            duration_days: t.duration_days, is_milestone: t.is_milestone,
+            phase_group: t.phase_group, department: t.department, sub_department: t.sub_department,
+          })),
+        });
+      }
+
+      // Per-row section overrides from the review dialog, keyed by source row.
+      // Anchors keep their hard-coded placement.
+      const assignments = (req.body.assignments && typeof req.body.assignments === 'object') ? req.body.assignments : null;
+      // Predecessors of rows dropped by skip — lets a surviving task's pred
+      // chain "see through" skipped rows to the nearest imported ancestor
+      // (task → skipped filler → real task). Without this, every predecessor
+      // pointing at an unchecked row silently vanished.
+      const skippedPreds = {};
+      if (assignments) {
+        // Rows the user unchecked in the review dialog are dropped entirely
+        // (anchors can't be skipped — the schedule spine needs them).
+        for (let i = items.length - 1; i >= 0; i--) {
+          const a = assignments[String(items[i].row)];
+          if (a && a.skip && !items[i].anchor_key) {
+            skippedPreds[items[i].row] = items[i].predecessors_raw || '';
+            items.splice(i, 1);
+          }
+        }
+        for (const t of items) {
+          const a = assignments[String(t.row)];
+          if (!a || a.skip || t.anchor_key) continue;
+          t.phase_group    = a.phase_group    || null;
+          t.department     = a.department     || null;
+          t.sub_department = a.sub_department || null;
+        }
+      }
+
       const sourceRowToId = {};
       const teamToAdd = new Map();
       let order = 0;
@@ -651,16 +733,51 @@ module.exports = function createRouter(deps) {
       }
       for (const [row, id] of Object.entries(sourceRowToId)) idToSrcRow[id] = Number(row);
 
+      // Smartsheet's Predecessors column references SMARTSHEET row numbers.
+      // The Excel export shifts every task down by the header row (+ any
+      // preamble rows), so those numbers are off from the xlsx rows by a
+      // constant. Score both interpretations against the rows that actually
+      // imported and use whichever resolves more references.
+      const predNums = [];
+      for (const t of items) {
+        for (const part of String(t.predecessors_raw || '').split(',')) {
+          const m = part.trim().match(/^(\d+)/);
+          if (m) predNums.push(Number(m[1]));
+        }
+      }
+      let predOffset = 0, _bestScore = -1;
+      for (const off of [0, headerRowIdx + 1]) {
+        const score = predNums.filter(n => sourceRowToId[n + off] || phaseFirstId[n + off] || skippedPreds[n + off] != null).length;
+        if (score > _bestScore) { _bestScore = score; predOffset = off; }
+      }
+
       const resolveSrcRow = (srcRow, relType, ownRow, ownId) => {
         let candidate = sourceRowToId[srcRow] || null;
+        // Referenced row was skipped in the review dialog → follow ITS first
+        // predecessor (and so on, bounded) until an imported row turns up.
+        let cursor = srcRow, hops = 0;
+        while (!candidate && skippedPreds[cursor] != null && hops++ < 10) {
+          const m = skippedPreds[cursor].match(/(\d+)/);
+          if (!m) break;
+          cursor = Number(m[1]) + predOffset;
+          candidate = sourceRowToId[cursor] || null;
+        }
         if (!candidate) {
           const isFinishEnd = relType === 'FF' || relType === 'SF';
           candidate = (isFinishEnd ? phaseLastId : phaseFirstId)[srcRow] || null;
+          // The phase fallback is fuzzy — only trust it pointing BACKWARD in
+          // the sheet so it can't fabricate a dependency cycle.
+          if (candidate) {
+            const fuzzySrcRow = idToSrcRow[candidate];
+            if (fuzzySrcRow && fuzzySrcRow >= ownRow) return null;
+          }
         }
         if (!candidate) return null;
         if (candidate === ownId) return null;
-        const candidateSrcRow = idToSrcRow[candidate];
-        if (candidateSrcRow && candidateSrcRow >= ownRow) return null;
+        // NOTE: direct row references may point FORWARD in the sheet —
+        // Smartsheet allows that (and blocks cycles itself), so we no longer
+        // refuse them. The old backward-only guard silently dropped every
+        // forward dependency.
         return candidate;
       };
       const remap = (raw, ownRow, ownId) => {
@@ -671,7 +788,7 @@ module.exports = function createRouter(deps) {
           const m = part.match(/^(\d+)\s*(FS|SS|FF|SF)?\s*([+-]\s*[\d.]+\s*[wd]?)?$/i);
           if (!m) continue;
           const type = (m[2] || '').toUpperCase();
-          const newId = resolveSrcRow(Number(m[1]), type, ownRow, ownId);
+          const newId = resolveSrcRow(Number(m[1]) + predOffset, type, ownRow, ownId);
           if (!newId) continue;
           let lag = '';
           if (m[3]) {

@@ -450,6 +450,7 @@ function buildCanonicalTaskOrder() {
   const receiptAnchor = pickOldest('receipt_of_po'); // single shared anchor
   const fatAnchors    = pickAll('fat');
   const shipAnchors   = pickAll('ship_machine');
+  const satAnchors    = pickAll('sat');
 
   const order = [];
   if (receiptAnchor) order.push(receiptAnchor.id);
@@ -511,6 +512,10 @@ function buildCanonicalTaskOrder() {
     }
     if (group.key === 'machine_testing' && fatAnchors.length) {
       for (const f of fatAnchors) order.push(f.id);
+    }
+    // SAT closes section 50, after every install task — mirrors the render walk.
+    if (group.key === 'teardown_install' && satAnchors.length) {
+      for (const s of satAnchors) order.push(s.id);
     }
   }
   return order;
@@ -766,12 +771,10 @@ function durationLabel(task) {
   if (nHalfWeeks >= 1 && Math.ceil(nHalfWeeks * 2.5) === d) {
     return `${nHalfWeeks / 2}w`;
   }
-  // Half-week snap for ANY other day count — Dan's hard rule: week
-  // values only ever read as 0.5, 1, 1.5, 2, ... never 0.6 / 0.8 /
-  // 1.4. Falls back to "0d" / "1d" only when the duration is below
-  // half a work-week (3 days) so we don't lose precision on single-
-  // day rows.
-  if (d <= 2) return `${d}d`;
+  // Half-week snap for ANY other day count — Dan's hard rule: week values
+  // only ever read as 0.5, 1, 1.5, 2, ... never 0.6 / 0.8 / 1.4 — and
+  // NOTHING nonzero reads below 0.5w. A 1-day or 2-day row is "0.5w"
+  // (the old "1d"/"2d" labels confused the week-based math everywhere).
   const halfWeeks = Math.max(1, Math.round((d / 5) * 2));
   return `${halfWeeks / 2}w`;
 }
@@ -1444,7 +1447,9 @@ function cellHtml(t, key) {
         const durDays  = Number(t.duration_days) || 0;
         // Half-week snap — Dan's rule applies EVERYWHERE: weeks values
         // round to the nearest 0.5, never 0.1 or 0.2 increments.
-        const wks = durDays > 0 ? Math.round((durDays / 5) * 2) / 2 : 0;
+        // Nothing nonzero reads below half a week — a 1-day task is "0.5W",
+        // never a blank "—W" (round-to-zero was hiding real durations).
+        const wks = durDays > 0 ? Math.max(0.5, Math.round((durDays / 5) * 2) / 2) : 0;
         const allocText = allocVal != null && allocVal > 0 ? `${allocVal}%` : '—%';
         // v4.43: uppercase W in duration text per user request — "10W" not "10w".
         const wksText   = wks > 0 ? `${wks}W` : '—W';
@@ -1471,6 +1476,12 @@ function cellHtml(t, key) {
           linkBadge = `<span class="name-cell-dur-link" data-link-target-id="${t.duration_link_task_id}">${earlyText}</span> `;
         }
         durEl = `<span class="name-cell-dur" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to edit (e.g. 5d, 2w, or = then click another row to link)">${linkBadge}${wksText}</span>`;
+      } else if (t.is_milestone && !isAnchor) {
+        // Milestones show no duration, but the slot stays CLICKABLE so an
+        // accidental 0-duration can be undone — click it, type "2w", and the
+        // row is a task again. Invisible until the row is hovered (same
+        // trick as the milestone ✓ checkbox).
+        durEl = `<span class="name-cell-dur name-cell-dur-ghost" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to set (e.g. 2w) and turn this milestone back into a task">—W</span>`;
       }
       // v4.39: dropped the .name-cell-row flex wrapper. alloc, dash, and
       // dur are now ABSOLUTE-POSITIONED inside the TD (deterministic offsets
@@ -1866,6 +1877,7 @@ function renderTable() {
   const receiptAnchor = pickOldest('receipt_of_po');
   const fatAnchors    = pickAll('fat');
   const shipAnchors   = pickAll('ship_machine');
+  const satAnchors    = pickAll('sat');
   // Receipt of PO — top of the schedule, above section 10.
   if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
   // Every non-anchor task with no phase_group renders above section 10,
@@ -1917,6 +1929,10 @@ function renderTable() {
       // FAT anchors at the end of section 40 even in flatten mode (collapses with the section).
       if (group.key === 'machine_testing' && fatAnchors.length) {
         for (const f of fatAnchors) html += anchorRowHtml(f);
+      }
+      // SAT closes section 50 — acceptance at the customer, the project's last marker.
+      if (group.key === 'teardown_install' && satAnchors.length) {
+        for (const s of satAnchors) html += anchorRowHtml(s);
       }
       continue;
     }
@@ -1995,6 +2011,11 @@ function renderTable() {
     // tucks them away. Multi-machine: one row per machine.
     if (group.key === 'machine_testing' && fatAnchors.length) {
       for (const f of fatAnchors) html += anchorRowHtml(f);
+    }
+    // SAT anchors close section 50 — acceptance at the customer's plant, after
+    // the Install work. The very last spine marker of the project.
+    if (group.key === 'teardown_install' && satAnchors.length) {
+      for (const s of satAnchors) html += anchorRowHtml(s);
     }
   }
 
@@ -3245,7 +3266,7 @@ function isTaskInCollapsedGroup(task) {
   if (anchor === 'fat') {
     return collapsedGroups.has(groupPath('machine_testing'));
   }
-  if (anchor === 'ship_machine') {
+  if (anchor === 'ship_machine' || anchor === 'sat') {
     return collapsedGroups.has(groupPath('teardown_install'));
   }
   if (anchor && !task.phase_group) return false;
@@ -6030,6 +6051,15 @@ function computeArrowPath(pred, succ, type, opts = {}) {
       if (entryX >= predLeft && entryX <= predRight) {
         exitX = entryX;
         exitY = goingDown ? predBot : predTop;
+      } else if (opts.predLabelOutside) {
+        // The bar's name sits OUTSIDE the bar — a mid-height side exit draws
+        // the arrow straight through that text. Leave through the bottom
+        // (or top) edge near the bar's end instead; the horizontal run then
+        // hugs the row edge, clear of the label.
+        exitX = entryX > predRight
+          ? Math.max(predLeft + 2, predRight - 4)
+          : Math.min(predRight - 2, predLeft + 4);
+        exitY = goingDown ? predBot : predTop;
       } else {
         exitX = entryX > predRight ? predRight : predLeft;
         exitY = pred.y + pred.h / 2;
@@ -6151,7 +6181,15 @@ function drawCustomArrows() {
       const r = diamondRef * 1.20 / 2;
       return { id, x: cx - r, y: cy - r, w: 2 * r, h: 2 * r, milestone: true };
     }
-    return { id, x, y, w: ww, h: hh, milestone: false };
+    // Will this bar's name label sit OUTSIDE the bar? (Same fits-inside test
+    // clipBarLabels applies later.) Arrows leaving such a bar must not
+    // side-exit at mid-height — that draws a line straight through the text.
+    let labelOutside = false;
+    const lbl = w.querySelector('.bar-label');
+    if (lbl) {
+      try { labelOutside = (lbl.getBBox().width + 10) > ww; } catch (_) {}
+    }
+    return { id, x, y, w: ww, h: hh, milestone: false, labelOutside };
   });
   const barById = Object.fromEntries(bars.filter(Boolean).map(b => [b.id, b]));
 
@@ -6200,6 +6238,7 @@ function drawCustomArrows() {
       headSize,
       outgoingIdx: job.outgoingIdx,
       outgoingTotal: job.outgoingTotal,
+      predLabelOutside: !!job.pred.labelOutside,
     });
 
     // Arrow color: deep red and bolder ONLY when BOTH endpoints sit on the
@@ -7048,6 +7087,7 @@ function renderDeptProjectRollup() {
       { key: 'machine_power_up', short: 'Power' },
       { key: 'fat',              short: 'FAT' },
       { key: 'ship_machine',     short: 'Ship' },
+      { key: 'sat',              short: 'SAT' },
     ];
     const items = KEY_ANCHORS.map(a => {
       const t = milestoneTasks.find(m => m.project === project && inferredAnchorKey(m) === a.key);
@@ -7071,11 +7111,11 @@ function renderDeptProjectRollup() {
     // which financial milestones each project has. Financials slot in
     // at their own dedicated percentages BETWEEN the anchors — no
     // pushing, no shifting.
-    const ANCHOR_POS = { receipt_of_po: 10, mech_release_1: 30, machine_power_up: 53, fat: 72, ship_machine: 90 };
+    const ANCHOR_POS = { receipt_of_po: 9, mech_release_1: 26, machine_power_up: 44, fat: 61, ship_machine: 77, sat: 92 };
     // Money sits RIGHT BESIDE the milestone it bills against: PO money next
-    // to PO, FAT money next to FAT, SAT just after Ship. MC has no single
-    // parent milestone — it stays midway between Mech 1 and Power-Up.
-    const FIN_POS    = { PO: 15, MC: 44, FAT: 77, SAT: 96 };
+    // to PO, FAT money next to FAT, SAT money next to the SAT anchor. MC has
+    // no single parent milestone — it stays midway between Mech 1 and Power-Up.
+    const FIN_POS    = { PO: 14, MC: 35, FAT: 66, SAT: 97 };
 
     function mileItem(kind, cls, iconHtml, label, dateHtml, slipChip, leftPct, dataAttrs, tipText) {
       return `<div class="pdash-mile-item pdash-mile-${kind} ${cls}" style="left:${leftPct}%" ${dataAttrs}${tipText ? ` title="${escapeHtml(tipText)}"` : ''}>
@@ -7101,12 +7141,23 @@ function renderDeptProjectRollup() {
           <span class="pdash-date-current">${escapeHtml(dispStr)}</span>
         </div>`;
       }
+      // Slip chip vs baseline — HOLLOW while the milestone is still open
+      // ("trending", forecast off the current schedule date) and SOLID with a
+      // ✓ once complete ("done", actual vs baseline — the final verdict).
+      // Same math either way; the fill tells you forecast vs final. Tooltip
+      // carries all three dates: baseline → scheduled → actual.
       let slipChip = '';
       if (a.slipDays != null && a.slipDays !== 0) {
         const isEarly = a.slipDays < 0;
         const tone = isEarly ? 'is-early' : 'is-late';
         const wks = _pdashDaysToWeeks(a.slipDays);
-        slipChip = `<div class="pdash-mile-slip ${tone}" title="Vs original baseline">${wks}W ${isEarly ? 'early' : 'late'}</div>`;
+        const word = isEarly ? 'early' : 'late';
+        const tipDates = `Baseline ${fmtDate(a.baselineDate)}`
+          + (a.done && a.currentDate && a.currentDate !== a.actualDate ? ` → Scheduled ${fmtDate(a.currentDate)}` : '')
+          + ` → ${a.done ? 'Actual' : 'Scheduled'} ${a.displayDate ? fmtDate(a.displayDate) : '—'}`;
+        slipChip = a.done
+          ? `<div class="pdash-mile-slip is-final ${tone}" title="Final — actual vs baseline. ${escapeHtml(tipDates)}">✓ ${wks}W ${word}</div>`
+          : `<div class="pdash-mile-slip is-trend ${tone}" title="Forecast — current schedule vs baseline; not complete yet. ${escapeHtml(tipDates)}">trending ${wks}W ${word}</div>`;
       }
       const anchorAttrs = `data-project="${escapeHtml(project)}"${a.task ? ` data-task-id="${a.task.id}"` : ''}`;
       return mileItem('anchor', cls, icon, a.short, dateHtml, slipChip,
@@ -7285,7 +7336,7 @@ function renderDeptProjectRollup() {
     <section class="pdash-section">
       <header class="pdash-section-head">
         <h2>🚦 Key Milestones</h2>
-        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship, per project</span>
+        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship → SAT, per project</span>
       </header>
       <div class="pdash-milestones">${milestoneStripsHtml}</div>
     </section>
@@ -7646,12 +7697,23 @@ function renderDashboard() {
         </div>`;
       }
 
+      // Slip chip vs baseline — HOLLOW while the milestone is still open
+      // ("trending", forecast off the current schedule date) and SOLID with a
+      // ✓ once complete ("done", actual vs baseline — the final verdict).
+      // Same math either way; the fill tells you forecast vs final. Tooltip
+      // carries all three dates: baseline → scheduled → actual.
       let slipChip = '';
       if (a.slipDays != null && a.slipDays !== 0) {
         const isEarly = a.slipDays < 0;
         const tone = isEarly ? 'is-early' : 'is-late';
         const wks = _pdashDaysToWeeks(a.slipDays);
-        slipChip = `<div class="pdash-mile-slip ${tone}" title="Vs original baseline">${wks}W ${isEarly ? 'early' : 'late'}</div>`;
+        const word = isEarly ? 'early' : 'late';
+        const tipDates = `Baseline ${fmtDate(a.baselineDate)}`
+          + (a.done && a.currentDate && a.currentDate !== a.actualDate ? ` → Scheduled ${fmtDate(a.currentDate)}` : '')
+          + ` → ${a.done ? 'Actual' : 'Scheduled'} ${a.displayDate ? fmtDate(a.displayDate) : '—'}`;
+        slipChip = a.done
+          ? `<div class="pdash-mile-slip is-final ${tone}" title="Final — actual vs baseline. ${escapeHtml(tipDates)}">✓ ${wks}W ${word}</div>`
+          : `<div class="pdash-mile-slip is-trend ${tone}" title="Forecast — current schedule vs baseline; not complete yet. ${escapeHtml(tipDates)}">trending ${wks}W ${word}</div>`;
       }
 
       const anchorAttrs = `data-project="${escapeHtml(project)}"${a.task ? ` data-task-id="${a.task.id}"` : ''}`;
@@ -8016,7 +8078,7 @@ function renderDashboard() {
     <section class="pdash-section">
       <header class="pdash-section-head">
         <h2>🚦 Key Milestones</h2>
-        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship, per project</span>
+        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship → SAT, per project</span>
       </header>
       <div class="pdash-milestones">${milestoneStripsHtml}</div>
     </section>
@@ -12717,9 +12779,24 @@ async function deleteProject(project) {
   // Delete via the projects API endpoint — server handles cascading task/financials cleanup.
   const projRow = state.projectsIndex && state.projectsIndex[project];
   if (projRow && projRow.id) {
+    // If the server refuses (needs admin role, network down…), STOP — don't
+    // clear it locally and toast "Deleted" while the row survives on the
+    // server and reappears on the next reload (the "delete doesn't actually
+    // delete" bug the PMs hit).
+    let r;
     try {
-      await fetch(`/api/projects/${projRow.id}`, { method: 'DELETE' });
-    } catch (err) { console.error('delete project row failed', err); }
+      r = await fetch(`/api/projects/${projRow.id}`, { method: 'DELETE' });
+    } catch (err) {
+      showToast('Delete failed: ' + (err.message || err), { kind: 'error' });
+      return;
+    }
+    if (!r.ok) {
+      if (r.status !== 403) { // 403 already gets a toast from the auth wrapper
+        const b = await r.json().catch(() => ({}));
+        showToast('Delete failed: ' + (b.error || `server error ${r.status}`), { kind: 'error' });
+      }
+      return;
+    }
   } else {
     // Fallback: no project row (orphan tasks only) — delete tasks individually.
     for (const t of tasks) {
@@ -12798,9 +12875,38 @@ async function renameProject(oldName) {
     showToast(`A project named "${trimmed}" already exists. Pick a different name.`, { kind: 'error' });
     return;
   }
-  const tasks = state.tasks.filter(t => t.project === oldName);
-  for (const t of tasks) {
-    try { await api.update(t.id, { project: trimmed }); } catch (_) {}
+  const rec = state.projectsIndex && state.projectsIndex[oldName];
+  if (rec && rec.id) {
+    // Rename through the projects API — the server migrates EVERYTHING keyed
+    // by name (tasks, financials, history, comments) and renames the project
+    // row itself in one shot. The old client-side way only re-stamped the
+    // tasks, which left an empty duplicate of the old project behind and
+    // stranded its financials/notes under the old name.
+    let r;
+    try {
+      r = await fetch(`/api/projects/${rec.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+    } catch (err) {
+      showToast('Rename failed: ' + (err.message || err), { kind: 'error' });
+      return;
+    }
+    if (!r.ok) {
+      if (r.status !== 403) { // 403 already gets a toast from the auth wrapper
+        const b = await r.json().catch(() => ({}));
+        showToast('Rename failed: ' + (b.error || `server error ${r.status}`), { kind: 'error' });
+      }
+      return;
+    }
+    state.projectsIndex[trimmed] = rec;
+    delete state.projectsIndex[oldName];
+  } else {
+    // No projects row (legacy/orphan data) — fall back to re-stamping tasks.
+    const tasks = state.tasks.filter(t => t.project === oldName);
+    for (const t of tasks) {
+      try { await api.update(t.id, { project: trimmed }); } catch (_) {}
+    }
   }
   // Migrate the open-tabs list, template flag, and workspace assignment so
   // the new name keeps the exact same UI state the old one had.
@@ -13268,6 +13374,133 @@ function showProjectAddPicker() {
 // sheet import was removed — that now happens inside an open schedule.
 // `defaultWs` (optional) is the workspace the "+ New schedule" button lives
 // under, so the created schedule lands in that section.
+// Review dialog for the Smartsheet import: the server's preview parse
+// proposes a section for every task (phase headers, task-name hints, then
+// assignee hints); the user fixes or fills the guesses here BEFORE anything
+// is created. Resolves to { [sourceRow]: {phase_group, department,
+// sub_department} } on Create, or null on Cancel.
+function showImportReviewDialog(items, projectName) {
+  return new Promise(resolve => {
+    document.getElementById('import-review-modal')?.remove();
+    const opts = [];
+    for (const g of HIERARCHY) {
+      for (const d of g.departments) {
+        if (d.subs && d.subs.length) {
+          for (const s of d.subs) opts.push({ pg: g.key, dept: d.key, sub: s.key, label: `${g.label} · ${d.label} · ${s.label}` });
+        } else {
+          opts.push({ pg: g.key, dept: d.key, sub: null, label: `${g.label} · ${d.label}` });
+        }
+      }
+    }
+    const val = (pg, dept, sub) => [pg || '', dept || '', sub || ''].join('|');
+    // Special placements outside the normal buckets: the very top of the
+    // schedule (above section 10 — "All information provided" style rows),
+    // the top of section 10 before Mechanical Engineering, and the end of
+    // the project after Install (final documentation / wrap-up rows).
+    // '~top~' is a client-side sentinel — it means "explicitly no section"
+    // (vs a blank pick, which counts as unplaced).
+    const specialsHtml = (sel) =>
+      `<option value="~top~"${sel === '~top~' ? ' selected' : ''}>Top of schedule (above section 10)</option>`
+      + `<option value="design_build||"${sel === 'design_build||' ? ' selected' : ''}>10 DESIGN &amp; BUILD · top of section (before Mech Eng)</option>`
+      + `<option value="teardown_install|install|engineering"${sel === 'teardown_install|install|engineering' ? ' selected' : ''}>End of project (after Install)</option>`;
+    const optionsHtml = (sel) =>
+      `<option value=""${sel === '' ? ' selected' : ''}>— pick a section —</option>`
+      + specialsHtml(sel === '' ? ' ' : sel)
+      + opts.map(o => {
+          const v = val(o.pg, o.dept, o.sub);
+          return `<option value="${escapeHtml(v)}"${v === sel ? ' selected' : ''}>${escapeHtml(o.label)}</option>`;
+        }).join('');
+    // Bare grid: Include ☑ | Description | Assigned To | Section. Unchecked
+    // rows are left out of the import entirely.
+    const rowsHtml = `
+      <div class="import-review-row import-review-head">
+        <div></div><div>Description</div><div>Assigned To</div><div>Section</div>
+      </div>`
+    + items.map(t => {
+      const inc = t.anchor_key
+        ? '<input type="checkbox" checked disabled title="Spine milestones are always imported" />'
+        : `<input type="checkbox" class="import-review-inc" data-row="${t.row}" checked title="Uncheck to leave this row out of the import" />`;
+      const section = t.anchor_key
+        ? '<span class="import-review-locked">spine milestone — placed automatically</span>'
+        : `<select data-row="${t.row}" class="import-review-sel${t.phase_group ? '' : ' is-blank'}">${optionsHtml(t.phase_group ? val(t.phase_group, t.department, t.sub_department) : '')}</select>`;
+      return `<div class="import-review-row" data-row="${t.row}">
+        <div class="import-review-inccell">${inc}</div>
+        <div class="import-review-name" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>
+        <div class="import-review-who" title="${escapeHtml(t.assignee || '')}">${escapeHtml(t.assignee || '')}</div>
+        <div>${section}</div>
+      </div>`;
+    }).join('');
+
+    const overlay = document.createElement('div');
+    overlay.id = 'import-review-modal';
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card" style="max-width:820px;max-height:84vh;display:flex;flex-direction:column;">
+        <div class="modal-head">
+          <h2 style="margin:0;">Review sections — ${escapeHtml(projectName)}</h2>
+          <button class="modal-close" type="button">×</button>
+        </div>
+        <div class="modal-body" style="overflow-y:auto;flex:1;">
+          <div style="font-size:var(--fs-md);color:var(--text-muted);margin-bottom:10px;">
+            Each task got a best-guess section from its name and Assigned To. Fix anything wrong;
+            tasks left blank land at the top of the schedule (above section 10).
+          </div>
+          ${rowsHtml}
+        </div>
+        <div class="modal-foot" style="align-items:center;">
+          <span id="import-review-count" style="flex:1;font-size:var(--fs-sm);color:var(--text-muted);"></span>
+          <button type="button" class="btn-ghost" data-action="cancel">Cancel</button>
+          <button type="button" class="btn-primary" data-action="go">Create schedule</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const countEl = overlay.querySelector('#import-review-count');
+    const updateCount = () => {
+      const excluded = [...overlay.querySelectorAll('.import-review-inc')].filter(c => !c.checked).length;
+      const sels = [...overlay.querySelectorAll('.import-review-sel')]
+        .filter(s => !s.closest('.import-review-row').classList.contains('is-excluded'));
+      const blank = sels.filter(s => !s.value).length;
+      sels.forEach(s => s.classList.toggle('is-blank', !s.value));
+      countEl.textContent = `${items.length - excluded} of ${items.length} tasks included${blank ? ` · ${blank} without a section` : ''}`;
+    };
+    overlay.addEventListener('change', (e) => {
+      if (e.target.matches('.import-review-inc')) {
+        // Gray + disable the row while excluded so it clearly won't import.
+        const row = e.target.closest('.import-review-row');
+        row.classList.toggle('is-excluded', !e.target.checked);
+        const sel = row.querySelector('.import-review-sel');
+        if (sel) sel.disabled = !e.target.checked;
+      }
+      if (e.target.matches('.import-review-inc, .import-review-sel')) updateCount();
+    });
+    updateCount();
+
+    const done = (result) => { overlay.remove(); resolve(result); };
+    overlay.querySelector('.modal-close').addEventListener('click', () => done(null));
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => done(null));
+    overlay.querySelector('[data-action="go"]').addEventListener('click', () => {
+      const assignments = {};
+      overlay.querySelectorAll('.import-review-sel').forEach(s => {
+        // '~top~' = explicit "top of schedule" — all-null placement, same as
+        // leaving it blank but chosen on purpose.
+        const raw = (s.value === '~top~' || !s.value) ? '||' : s.value;
+        const [pg, dept, sub] = raw.split('|');
+        assignments[s.dataset.row] = {
+          phase_group: pg || null,
+          department: dept || null,
+          sub_department: sub || null,
+        };
+      });
+      // Unchecked Include boxes → skip: the server drops those rows entirely.
+      overlay.querySelectorAll('.import-review-inc').forEach(c => {
+        if (!c.checked) assignments[c.dataset.row] = { skip: true };
+      });
+      done(assignments);
+    });
+  });
+}
+
 // Slim create dialog for the Sales section's "+ New from <template>" button.
 // The intent is already declared by the click — no template/other/blank seg,
 // no Smartsheet import. Just a name and (optionally) which sales schedule to
@@ -13503,12 +13736,12 @@ function showCreateScheduleDialog(defaultWs) {
       importNameEl.value = `(bulk: ${pickedFiles.length} files — names from filenames)`;
     }
   });
-  const importOne = async (file, projectName) => {
+  const importOne = async (file, projectName, extra) => {
     const buf = await file.arrayBuffer();
     const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
     const r = await fetch('/api/import/smartsheet', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project: projectName, file: b64 }),
+      body: JSON.stringify({ project: projectName, file: b64, ...(extra || {}) }),
     });
     const result = await r.json();
     return { ok: r.ok, result, projectName };
@@ -13521,7 +13754,15 @@ function showCreateScheduleDialog(defaultWs) {
       if (!projectName) { importStatus.textContent = 'Enter a schedule name first.'; importBtnEl.disabled = false; return; }
       importStatus.textContent = 'Uploading & parsing…';
       try {
-        const { ok, result } = await importOne(pickedFiles[0], projectName);
+        // Two-step: preview parse → section review dialog → real import with
+        // the user-confirmed section assignments.
+        const prev = await importOne(pickedFiles[0], projectName, { preview: true });
+        if (!prev.ok) { importStatus.textContent = `Import failed: ${prev.result.error || 'unknown error'}`; importBtnEl.disabled = false; return; }
+        importStatus.textContent = '';
+        const assignments = await showImportReviewDialog(prev.result.items || [], projectName);
+        if (!assignments) { importBtnEl.disabled = false; return; } // cancelled — nothing created
+        importStatus.textContent = 'Importing…';
+        const { ok, result } = await importOne(pickedFiles[0], projectName, { assignments });
         if (!ok) { importStatus.textContent = `Import failed: ${result.error || 'unknown error'}`; importBtnEl.disabled = false; return; }
         if (!state.openProjects.includes(result.project)) state.openProjects.push(result.project);
         state.filters.project = result.project;
@@ -16140,7 +16381,8 @@ function handleRowContextMenu(e) {
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
   const items = [
-    { label: '＋ Add row below', onClick: () => createTaskBelow(id) },
+    { label: '＋ Add task below', onClick: () => createTaskBelow(id) },
+    { label: '＋ Add action below', onClick: () => createTaskBelow(id, true) },
   ];
   if (task && !(task.is_milestone || inferredAnchorKey(task))) {
     items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
@@ -16261,13 +16503,13 @@ function setTaskMachineInline(taskId, x, y) {
 // for anchors and rows that live above section 10). sort_order is set
 // to clicked + 0.5 so the new row lands immediately below in the
 // rendered grid. Opens in name-edit mode so the user can type the name.
-async function createTaskBelow(taskId) {
+async function createTaskBelow(taskId, asAction) {
   const t = state.tasks.find(x => x.id === taskId);
   if (!t) return;
   const project = state.filters.project || t.project || null;
   const sortOrder = (Number(t.sort_order) || 0) + 0.5;
   const payload = {
-    name: 'New task',
+    name: asAction ? 'New action' : 'New task',
     project,
     phase_group: t.phase_group || null,
     department: t.department || null,
@@ -16275,6 +16517,13 @@ async function createTaskBelow(taskId) {
     machine: t.machine || null,
     sort_order: sortOrder,
   };
+  if (asAction) {
+    // Same defaults as the old + Add action button: a date-anchored to-do —
+    // 0-duration milestone row flagged is_action.
+    payload.is_action = 1;
+    payload.duration_days = 0;
+    payload.is_milestone = 1;
+  }
   let created;
   try { created = await api.create(payload); } catch (e) { showAlertDialog({ title: 'Add failed', message: e.message }); return; }
   if (!created || created.error) return;
@@ -16709,6 +16958,7 @@ function resolveFinancialTrigger(ref, project) {
     fat: 'fat',
     ship: 'ship_machine',
     'ship machine': 'ship_machine',
+    sat: 'sat',
   };
   const aliasKey = aliases[prefix.toLowerCase()];
   if (aliasKey) {
@@ -17124,7 +17374,9 @@ async function saveProjectRelease(project, release) {
 function _milestoneAnchor(label) {
   const s = String(label || '').toLowerCase();
   if (/down|deposit/.test(s)) return 'receipt_of_po';
-  if (/sat|customer/.test(s)) return 'ship_machine';
+  // SAT is its own spine anchor now (end of section 50). Older projects
+  // without a SAT row simply won't resolve a date — add the SAT anchor row.
+  if (/sat|customer/.test(s)) return 'sat';
   if (/fat|acceptance/.test(s)) return 'fat';
   return null;
 }
@@ -17880,6 +18132,8 @@ async function openQuoteCompareModal(project, providedQuote) {
         // Ship Machine — milestone anchor between teardown and install.
         { k: 'ship_machine', label: 'Ship Machine', milestone: true },
         { k: 'install',      label: 'Install' },
+        // SAT — acceptance at the customer, closes the project.
+        { k: 'sat',          label: 'SAT', milestone: true },
       ],
     },
   ];
@@ -17939,7 +18193,7 @@ async function openQuoteCompareModal(project, providedQuote) {
     if (r.taskId) {
       const t = state.tasks.find(x => x.id === r.taskId);
       const baseDays  = t ? (Number(t.duration_days) || 0) : 0;
-      const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+      const baseWeeks = baseDays > 0 ? Math.max(0.5, Math.round((baseDays / 5) * 2) / 2) : 0;
       const weeks     = pendingWeeks[r.k] !== undefined ? pendingWeeks[r.k] : baseWeeks;
       const baseAlloc = r.baseAllocation || 90;
       const alloc     = pendingAlloc[r.k]  !== undefined ? pendingAlloc[r.k]  : baseAlloc;
@@ -17960,7 +18214,7 @@ async function openQuoteCompareModal(project, providedQuote) {
     const basePpl   = peopleFor(r.k);
     const ppl       = pendingPeople[r.k] !== undefined ? pendingPeople[r.k] : basePpl;
     const baseDays  = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
-    const baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+    const baseWeeks = baseDays > 0 ? Math.max(0.5, Math.round((baseDays / 5) * 2) / 2) : 0;
     const weeks     = pendingWeeks[r.k] !== undefined ? pendingWeeks[r.k] : baseWeeks;
     const baseSched = keys.reduce((sum, k) => sum + (basicScheduled[k] || 0), 0);
     const baseRem   = keys.reduce((sum, k) => sum + (basicRemaining[k] || 0), 0);
@@ -18454,11 +18708,11 @@ async function openQuoteCompareModal(project, providedQuote) {
         if (r && r.taskId) {
           const t = state.tasks.find(x => x.id === r.taskId);
           const baseDays = t ? (Number(t.duration_days) || 0) : 0;
-          baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+          baseWeeks = baseDays > 0 ? Math.max(0.5, Math.round((baseDays / 5) * 2) / 2) : 0;
         } else {
           const keys = r ? (r.keys || [r.k]) : [rowKey];
           const baseDays = keys.reduce((sum, k) => sum + (bucketWorkDays[k] || 0), 0);
-          baseWeeks = baseDays > 0 ? Math.round((baseDays / 5) * 2) / 2 : 0;
+          baseWeeks = baseDays > 0 ? Math.max(0.5, Math.round((baseDays / 5) * 2) / 2) : 0;
         }
         if (newWeeks === baseWeeks) delete pendingWeeks[rowKey];
         else pendingWeeks[rowKey] = newWeeks;
@@ -22165,7 +22419,7 @@ function renderResources() {
       // The low-alloc CSS class on partial-allocation bars still applies,
       // giving them a visual hatch so you can spot part-timers.
       const durWeeks = task.duration_days
-        ? (Math.round((task.duration_days / 5) * 2) / 2)  // half-week steps
+        ? Math.max(0.5, Math.round((task.duration_days / 5) * 2) / 2)  // half-week steps, 0.5w floor
         : Math.round((dur / 7) * 2) / 2;
       const durStr = (!task.is_milestone && durWeeks > 0) ? ` · ${durWeeks}w` : '';
       const allocStr = (alloc != null) ? ` · ${alloc}%` : '';
@@ -22895,6 +23149,7 @@ function renderSetup() {
       { key: 'machine_power_up',  label: 'Machine Power-Up' },
       { key: 'fat',               label: 'FAT' },
       { key: 'ship_machine',      label: 'Ship Machine' },
+      { key: 'sat',               label: 'SAT' },
     ];
     finBody.innerHTML = d.default_financial_milestones.map((f, i) => `
       <tr data-i="${i}">
@@ -23471,6 +23726,9 @@ const ANCHOR_DEFS = [
     phaseGroup: 'design_build', department: 'shop', subDepartment: 'wire' },
   { key: 'fat',              name: 'FAT',              defaultOffsetDays: 60 },
   { key: 'ship_machine',     name: 'Ship Machine',     defaultOffsetDays: 75 },
+  // SAT — acceptance at the customer's plant. Closes section 50 (after the
+  // Install work), the very last spine marker of the project.
+  { key: 'sat',              name: 'SAT',              defaultOffsetDays: 90 },
 ];
 
 function todayISO() {
@@ -23495,6 +23753,7 @@ function inferredAnchorKey(t) {
   if (n === 'machine power-up' || n === 'machine powerup' || n === 'machine power up') return 'machine_power_up';
   if (n === 'fat')                                        return 'fat';
   if (n === 'ship machine')                               return 'ship_machine';
+  if (n === 'sat' || n === 'acceptance at customer (sat)') return 'sat';
   return null;
 }
 
@@ -26043,11 +26302,11 @@ async function init() {
   setupScrollSync();
   _setupScrollPersist();
 
-  // + New Task button creates an empty task in UNASSIGNED and focuses its name cell for
-  // inline rename. The user drags it into a section after.
-  document.getElementById('btn-add').addEventListener('click', newTaskInline);
-  const addActionBtn = document.getElementById('btn-add-action');
-  if (addActionBtn) addActionBtn.addEventListener('click', newActionInline);
+  // v11.6: the + Add task / + Add action buttons were removed from the grid
+  // (right-click a row → "Add task/action below" instead). Guarded wiring
+  // stays in case a button ever comes back.
+  document.getElementById('btn-add')?.addEventListener('click', newTaskInline);
+  document.getElementById('btn-add-action')?.addEventListener('click', newActionInline);
   // Cell-edit handler is attached once here — renderTable rebuilds tbody.innerHTML so the
   // tbody element survives across renders and accumulating listeners is wasteful.
   const tbodyEl = document.getElementById('tasks-tbody');
@@ -26188,6 +26447,107 @@ async function init() {
   // Zoom-to-fit button — zoomToFit reads the visible task span and snaps the Gantt zoom
   // so it all fits in the viewport. Wheel-zoom still works for finer adjustments.
   document.getElementById('btn-zoom-fit').addEventListener('click', zoomToFit);
+
+  // ↕ Fit height — one-shot: recompute the ROW HEIGHT so the whole grid
+  // (every row + the Add task/action buttons under it) ends exactly at the
+  // bottom of the window, above the Notes/Procurement bars. Tiny rows on a
+  // laptop, taller rows on a big monitor — the entire schedule is visible
+  // with no vertical scrolling. The normal zoom / row-height controls keep
+  // working afterwards if the result is too small to read.
+  document.getElementById('btn-zoom-height')?.addEventListener('click', () => {
+    const grid = document.getElementById('schedule-grid');
+    const table = document.getElementById('tasks-table');
+    const addBtn = document.getElementById('btn-add');
+    const bodyRows = document.querySelectorAll('#tasks-tbody tr');
+    if (!grid || !table || bodyRows.length === 0) return;
+    // Reset every scroll position first so measurements are in true
+    // viewport coordinates.
+    grid.scrollTop = 0;
+    window.scrollTo(0, 0);
+    // The hard bottom of usable screen = top of the FIXED Notes/Procurement
+    // bar stack (getBoundingClientRect works on fixed elements — the old
+    // offsetParent visibility check always failed for position:fixed and
+    // aimed at the wrong bottom). The in-flow footer (Project Release row)
+    // sits between the grid and those bars, so its height comes off too.
+    const stack = document.getElementById('schedule-drawer-stack');
+    const stackRect = stack ? stack.getBoundingClientRect() : null;
+    const stackTop = (stackRect && stackRect.height > 0) ? stackRect.top : window.innerHeight;
+    // THE bottom line (per Dan): the TOP of the gray footer bar that holds
+    // the Project Release button. The grid's last line should sit exactly on
+    // it. Fall back to the drawer-bar stack / window when the footer's gone.
+    const footer = document.getElementById('schedule-footer');
+    const footerRect = footer ? footer.getBoundingClientRect() : null;
+    const bottomLineY = (footerRect && footerRect.height > 0)
+      ? footerRect.top
+      : Math.min(stackTop, window.innerHeight);
+    const target = bottomLineY - 4;
+    // Phase 1 — coarse: drive the ADD-BUTTONS row's bottom toward that line.
+    // Section-header rows don't scale with --row-h, so each pass re-measures
+    // the real remaining gap instead of trusting one divide.
+    const contentBottom = () => (addBtn || table).getBoundingClientRect().bottom;
+    for (let i = 0; i < 14; i++) {
+      const gap = target - contentBottom();
+      if (Math.abs(gap) <= 3) break;
+      const step = Math.trunc(gap / bodyRows.length) || (gap > 0 ? 1 : -1);
+      const before = state.layout.rowHeight;
+      setRowHeight(before + step);
+      if (state.layout.rowHeight === before) break; // ROW_H_MIN/MAX clamp
+    }
+    // Phase 2 — the actual requirement is NO SCROLLING. Whatever the
+    // measurements said, check scrollability directly (the grid pane AND the
+    // page) and shrink 1px at a time until nothing scrolls. This is the
+    // guarantee the measurement math kept failing to give.
+    // "No scrolling" must hold for the GANTT pane too — its SVG height comes
+    // from rounded bar metrics, so it can run a few px taller than the grid
+    // and end up scrollable on its own (which breaks row alignment).
+    const ganttPane = document.getElementById('schedule-gantt');
+    if (ganttPane) ganttPane.scrollTop = 0;
+    // ZERO tolerance on the panes — even 1px of overflow shows a scrollbar
+    // and lets the Gantt drift out of row alignment. The page check keeps a
+    // 2px cushion (some browsers report a permanent 1px there).
+    const scrolls = () =>
+      grid.scrollHeight > grid.clientHeight ||
+      (ganttPane && ganttPane.scrollHeight > ganttPane.clientHeight) ||
+      (document.scrollingElement && document.scrollingElement.scrollHeight > window.innerHeight + 2);
+    let guard = 40;
+    while (scrolls() && guard-- > 0) {
+      const before = state.layout.rowHeight;
+      setRowHeight(before - 1);
+      if (state.layout.rowHeight === before) break; // at ROW_H_MIN — can't shrink further
+    }
+    if (scrolls()) {
+      showToast('Too many rows to fit this screen even at minimum row height — collapse some sections and try again.', { kind: 'info' });
+      return;
+    }
+    // Phase 3 — no wasted space either: GROW 1px at a time until scrolling
+    // would appear, then step back one. End state is always "the biggest
+    // rows that still fit with zero scrolling", no matter what the target
+    // math above thought.
+    guard = 60;
+    while (!scrolls() && guard-- > 0) {
+      const before = state.layout.rowHeight;
+      setRowHeight(before + 1);
+      if (state.layout.rowHeight === before) break; // at ROW_H_MAX — screen is bigger than max rows
+    }
+    if (scrolls()) setRowHeight(state.layout.rowHeight - 1);
+    // Micro-pass — the integer steps above stop one whole row-height step
+    // short (adding 1px × every data row would overflow). Fractional pixel
+    // row heights are fine in CSS, so spread the remaining slack across the
+    // rows to land flush, then back off in 0.25px steps if scrolling appears.
+    const applyFractional = (h) => {
+      state.layout.rowHeight = Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, h));
+      applyRowHeight();
+      if (state.gantt) renderGantt();
+    };
+    for (let i = 0; i < 6; i++) {
+      const gap = target - contentBottom();
+      if (gap <= 3) break;
+      applyFractional(state.layout.rowHeight + gap / bodyRows.length);
+    }
+    let microGuard = 12;
+    while (scrolls() && microGuard-- > 0) applyFractional(state.layout.rowHeight - 0.25);
+    saveLayout();
+  });
 
   // Undo button — pops the top entry of state.undoStack and re-applies the
   // BEFORE snapshot via api.update. Disabled when the stack is empty.

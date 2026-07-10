@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260616-eto111" />
+  <link rel="stylesheet" href="styles.css?v=20260616-eto132" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
 </head>
 <body>
@@ -283,7 +283,8 @@
 
           <div class="toolbar-divider"></div>
 
-          <button id="btn-zoom-fit" class="btn-primary btn-fit" type="button" title="Zoom the Gantt to fit the project span in the viewport">⛶ Zoom to fit</button>
+          <button id="btn-zoom-fit" class="btn-primary btn-fit" type="button" title="Zoom to fit — fit the Gantt's WIDTH to the project span">⛶</button>
+          <button id="btn-zoom-height" class="btn-primary btn-fit" type="button" title="Fit height — resize the rows so every task (and the Add buttons) fits the screen with no vertical scrolling. Adjust row height afterwards however you like.">↕</button>
 
           <!-- Hidden legacy controls. The Zoom dropdown drives these under
                the hood so existing handlers (#zoom-mode, #btn-zoom-in/out,
@@ -319,12 +320,10 @@
             <thead><tr id="tasks-thead-row"></tr></thead>
             <tbody id="tasks-tbody"></tbody>
           </table>
-          <button id="btn-add" class="grid-add-task-btn" type="button" title="Add a new task to the active schedule">+ Add task</button>
-          <!-- v4.46: + Add action sits next to + Add task. Creates a row
-               with is_action = 1, duration_days = 0, is_milestone = 1 by
-               default (most actions are date-only milestones). -->
-          <button id="btn-add-action" class="grid-add-task-btn grid-add-action-btn" type="button" title="Add an action item — a date-anchored to-do tied to this project. Lives in the same section/dept hierarchy as scheduled work; defaults to a milestone-style 0-duration row with Assigned To blank.">+ Add action</button>
-          <p id="empty-state" class="empty-state hidden">No tasks yet. Click <strong>+ Add task</strong> to add one.</p>
+          <!-- v11.6: the + Add task / + Add action buttons are gone — right-click
+               any row for "Add task below" / "Add action below" instead. Frees a
+               full button-row of height for the grid. -->
+          <p id="empty-state" class="empty-state hidden">No tasks yet. <strong>Right-click any row</strong> to add a task or action.</p>
         </div>
         <div class="schedule-divider" id="schedule-divider" title="Drag to resize"></div>
         <div id="schedule-gantt" class="schedule-gantt">
@@ -923,8 +922,8 @@
        from app.js / comments-ui.js. -->
   <script src="auth-ui.js?v=20260616-eto23"></script>
   <script src="phases.js?v=20260601-166"></script>
-  <script src="release-notes.js?v=20260601-179"></script>
-  <script src="app.js?v=20260616-eto112"></script>
+  <script src="release-notes.js?v=20260601-180"></script>
+  <script src="app.js?v=20260616-eto134"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

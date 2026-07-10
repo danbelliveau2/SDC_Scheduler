@@ -3784,6 +3784,56 @@ input[type="number"] {
   overflow: auto;
   background: var(--surface);
 }
+/* Smartsheet import — section review dialog. One row per parsed task:
+   name (+ muted assignee) left, section picker right. Blank pickers get an
+   amber outline so the unplaced ones pop. */
+/* Bare grid: ☑ | Description | Assigned To | Section. Plain hairline rows,
+   no pills. Unchecked rows gray out (is-excluded) and won't import. */
+.import-review-row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 150px 300px;
+  gap: 10px;
+  align-items: center;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.import-review-head {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #64748b);
+  border-bottom: 2px solid var(--border-strong, #cbd5e1);
+  padding: 2px 0 4px;
+}
+.import-review-inccell { text-align: center; }
+.import-review-name {
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.import-review-who {
+  font-size: var(--fs-sm);
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.import-review-row.is-excluded .import-review-name,
+.import-review-row.is-excluded .import-review-who,
+.import-review-row.is-excluded select {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+.import-review-sel { width: 100%; font-size: var(--fs-sm); border-radius: 4px; }
+.import-review-sel.is-blank { outline: 2px solid #f59e0b; outline-offset: -1px; }
+.import-review-locked {
+  font-size: var(--fs-xs);
+  color: var(--text-muted, #94a3b8);
+  font-style: italic;
+}
+
 /* Wheel-zoom zones (schedule Gantt, resources timeline) show a subtle blue
    inset outline while ARMED (clicked) — that's when the scroll wheel zooms.
    Un-armed, the wheel scrolls the page right past them. */
@@ -3985,22 +4035,12 @@ body.resizing-col, body.resizing-col * { cursor: col-resize !important; user-sel
    its ::after, so the Gantt's ::after needs an EXTRA margin-top equal to the
    button's height (~49px = 8 + 8 + 17 + 8 + 8 margin/padding/text) so the
    divider lines align across both panels. */
-.schedule-grid::after {
-  content: '';
-  display: block;
-  height: 56px;
-  margin-top: 8px;
-  border-top: 1px solid var(--border-strong);
-  pointer-events: none;
-}
-.schedule-gantt::after {
-  content: '';
-  display: block;
-  height: 56px;
-  /* 8px grid baseline margin + ~49px button = ~57px */
-  margin-top: 57px;
-  border-top: 1px solid var(--border-strong);
-  pointer-events: none;
+/* v11.6: the bottom-of-schedule line is ONE line on the shared split
+   container — not two per-pane ::after lines that each floated at their own
+   pane's content height and could never stay level with each other (that
+   mismatch is also what let the Gantt scroll while the grid didn't). */
+.schedule-split {
+  border-bottom: 1px solid var(--border-strong);
 }
 .schedule-gantt .legend {
   position: absolute;
@@ -4661,6 +4701,12 @@ body.hide-desc-text .th-label-desc { display: none !important; }
    works), and always show the lime ✓ once done. */
 #tasks-tbody .name-milestone-check:not(.is-done) { opacity: 0; }
 #tasks-tbody tr:hover .name-milestone-check { opacity: 1; }
+
+/* Milestone duration ghost — the clickable "—W" in the DUR slot that turns
+   a milestone back into a task. Hidden until hover so milestone rows stay
+   clean; faint on hover so it reads as an affordance, not data. */
+#tasks-tbody .name-cell-dur-ghost { opacity: 0; }
+#tasks-tbody tr:hover .name-cell-dur-ghost { opacity: 0.55; }
 body.hide-pct-pill .name-cell-dur { right: 8px; }
 body.hide-pct-pill .th-label-dur  { right: 8px; }
 body.hide-pct-pill .name-cell-main { right: 62px; }
@@ -10825,6 +10871,14 @@ td.sales-suppressed {
 }
 .pdash-mile-slip.is-early { background: #F0F9E8; color: #2f6a13; border: 1px solid #74c415; }
 .pdash-mile-slip.is-late  { background: #E3F0FA; color: #0D47A1; border: 1px solid #BBDEF7; }
+/* Forecast vs final (v11.6): "trending" (still open) = HOLLOW outline chip;
+   "✓ done" (complete) = SOLID fill. Same early/late tones — the fill is what
+   says forecast vs verdict. Triple-class selectors beat the late-file danger
+   overrides so these hold in both states. */
+.pdash-mile-slip.is-trend.is-early { background: transparent; color: #2f6a13; border-color: #74c415; }
+.pdash-mile-slip.is-trend.is-late  { background: transparent; color: #dc2626; border-color: #fca5a5; }
+.pdash-mile-slip.is-final.is-early { background: #74c415; color: #fff; border-color: #74c415; }
+.pdash-mile-slip.is-final.is-late  { background: #dc2626; color: #fff; border-color: #dc2626; }
 
 /* ── Anchor icon variants (●) ── */
 .pdash-mile-anchor.is-done     .pdash-mile-icon { background: #74c415; border-color: #74c415; }
