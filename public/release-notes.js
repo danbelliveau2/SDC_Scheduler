@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.2',
+    date: '2026-07-10',
+    notes: [
+      'Pick the clone source when adding a machine.',
+      '',
+      '   ▸ The machine-clone banner\'s "cloning from" is now a dropdown of every machine on the project — M4 can copy M1, not just whichever machine came last.',
+      '   ▸ Switching the source clears the row selections, refilters the grid to that machine\'s rows, and keeps the name you typed. Everything else works as before.',
+    ],
+  },
+  {
     version: '12.0',
     date: '2026-07-10',
     notes: [

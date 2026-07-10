@@ -12497,9 +12497,20 @@ function renderMachineCloneBanner() {
   if (!cm) { el.hidden = true; el.innerHTML = ''; return; }
   const includeCount = cm.includeIds.size;
   const predCount    = cm.customPredecessors.size;
+  // Every machine already on the project is a valid clone source — M4 might
+  // copy M1, not just whatever machine happens to be last. Picker defaults
+  // to the source chosen when clone mode opened.
+  const project = state.filters.project;
+  const machines = Array.from(new Set(
+    (state.tasks || []).filter(t => t.project === project && t.machine).map(t => t.machine)
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const sourceOptions = machines
+    .map(m => `<option value="${escapeHtml(m)}"${m === cm.sourceMachine ? ' selected' : ''}>${escapeHtml(m)}</option>`)
+    .join('');
   el.hidden = false;
   el.innerHTML = `
-    <span class="mcb-label">New machine cloning from <strong>${escapeHtml(cm.sourceMachine)}</strong>:</span>
+    <span class="mcb-label">New machine cloning from
+      <select id="mcb-source" title="Which existing machine to copy rows from">${sourceOptions}</select>:</span>
     <label class="mcb-name-wrap">
       Name
       <input type="text" id="mcb-name" value="${escapeHtml(cm.targetName)}" maxlength="20" />
@@ -12511,6 +12522,16 @@ function renderMachineCloneBanner() {
   `;
   el.querySelector('#mcb-name').addEventListener('input', (e) => {
     cm.targetName = e.target.value;
+  });
+  el.querySelector('#mcb-source').addEventListener('change', (e) => {
+    // Switching source: clear row selections (they referenced the old
+    // source's rows) and refilter the grid to the new source machine.
+    cm.sourceMachine = e.target.value;
+    cm.includeIds = new Set();
+    cm.customPredecessors = new Map();
+    state.filters.machinesSubset = [cm.sourceMachine];
+    saveMachinesSubset();
+    render();
   });
   el.querySelector('#mcb-cancel').addEventListener('click', () => exitMachineCloneMode());
   el.querySelector('#mcb-confirm').addEventListener('click', confirmMachineClone);
