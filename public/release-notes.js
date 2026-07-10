@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.6',
+    date: '2026-07-10',
+    notes: [
+      'Completed sections open collapsed; collapse/expand re-fits the chart.',
+      '',
+      '   ▸ Opening a schedule auto-collapses any top-level section (05/10/40/50) whose tasks are ALL complete — including its anchors (FAT for 40, Ship + SAT for 50). Expand it and every sub-section inside is open as normal. A default, not a lock: your expands stick until you switch projects.',
+      '   ▸ Every collapse or expand triggers a zoom-to-fit of what\'s now visible — collapse a finished section and the remaining work fills the panel instantly.',
+    ],
+  },
+  {
     version: '12.5',
     date: '2026-07-10',
     notes: [

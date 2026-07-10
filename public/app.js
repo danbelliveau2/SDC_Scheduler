@@ -333,6 +333,40 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const collapsedGroups = new Set();
 function groupPath(g, d, s) { return [g || '', d || '', s || ''].join('/'); }
 
+// Default collapse state, seeded ONCE each time the active project changes:
+// any TOP-LEVEL section (05/10/40/50) whose tasks are ALL 100% complete
+// starts collapsed — finished work tucks away so the schedule (and zoom-to-
+// fit) opens focused on what's left. Only the section itself collapses:
+// expand it and every department/sub-section inside is open. The user can
+// expand anything after; this never re-forces until the next project switch.
+function seedCollapsedSections() {
+  const projectKey = state.filters.project || '_all_';
+  if (state._collapseSeededFor === projectKey) return;
+  state._collapseSeededFor = projectKey;
+  collapsedGroups.clear();
+  const pool = state.tasks.filter(t => projectKey === '_all_' || t.project === projectKey);
+  const isDone = (t) => getEffectiveProgress(t) >= 100;
+  const tally = {};
+  const add = (path, t) => {
+    const g = (tally[path] ||= { total: 0, done: 0 });
+    g.total++;
+    if (isDone(t)) g.done++;
+  };
+  for (const t of pool) {
+    const ak = inferredAnchorKey(t);
+    // Anchors count toward the section they RENDER in: FAT closes 40,
+    // Ship/SAT close 50, Receipt + no-section rows live in 05 KICKOFF.
+    let g = t.phase_group;
+    if (ak === 'fat') g = 'machine_testing';
+    else if (ak === 'ship_machine' || ak === 'sat') g = 'teardown_install';
+    else if (!g) g = 'kickoff';
+    add(groupPath(g), t);
+  }
+  for (const [path, g] of Object.entries(tally)) {
+    if (g.total > 0 && g.done === g.total) collapsedGroups.add(path);
+  }
+}
+
 // Maps maintained by updateLineNumbersAndPreds. Predecessors are stored by task id but shown
 // as line numbers (1, 2, 3 …) so the user has a stable visual reference that keeps re-numbering
 // as rows move.
@@ -1682,6 +1716,7 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = nu
 function renderTable() {
   const tbody = document.getElementById('tasks-tbody');
   if (!tbody) return;
+  try { seedCollapsedSections(); } catch (_) {}
   let filtered = applyFilters(state.tasks);
   // v4.46: Actions mode filter. Default 'schedule' hides action items
   // entirely; 'actions' shows ONLY actions; 'combined' shows both.
@@ -2045,6 +2080,9 @@ function renderTable() {
       // so its bars hide / re-appear in lockstep with the grid rows.
       renderTable();
       renderGantt();
+      // Every collapse/expand re-fits the chart to what's NOW visible —
+      // collapse a finished section and the remaining work fills the panel.
+      requestAnimationFrame(() => { try { zoomToFit(); } catch (_) {} });
     });
   });
 
