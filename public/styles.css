@@ -4720,7 +4720,7 @@ body.hide-pct-pill .th-label-task  { right: 62px; }
      is-done    = 100% (emerald, white text) */
 .name-edit-pill {
   display: inline-block;
-  padding: 0 6px;
+  padding: 0 4px;
   height: 16px;
   border-radius: 3px;
   font-size: var(--fs-xs);
@@ -4728,7 +4728,9 @@ body.hide-pct-pill .th-label-task  { right: 62px; }
   letter-spacing: 0.01em;
   cursor: pointer;
   user-select: none;
-  min-width: 38px;
+  /* v12.2: 28px (was 38) — just enough for "99%"; the old width left big
+     dead margins on every row on every screen. */
+  min-width: 28px;
   text-align: center;
   line-height: 14px;
   border: 1px solid;
@@ -4767,7 +4769,7 @@ body.hide-pct-pill .th-label-task  { right: 62px; }
   width: 100%;
   text-align: center;
   letter-spacing: 0.01em;
-  padding: 0 4px;
+  padding: 0 2px;
   box-sizing: border-box;
 }
 /* Fill colors per status. Light enough that the black text on top stays
@@ -4799,9 +4801,9 @@ body.hide-pct-pill .th-label-task  { right: 62px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 38px;
+  min-width: 28px; /* matches .name-edit-pill so the slots line up */
   height: 16px;
-  padding: 0 6px;
+  padding: 0 4px;
   box-sizing: border-box;
   border: 1px solid #cbd5e1;
   border-radius: 3px;

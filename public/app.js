@@ -1191,7 +1191,10 @@ function taskScheduleDelta(task) {
   // Sales schedules: nothing is sold yet, so there's no commitment to be
   // ahead of or behind — no drift chips anywhere.
   if (isSalesProjectTask(task)) return 0;
-  const actualPct = Math.max(0, Math.min(100, Number(task.progress) || 0));
+  // Effective progress, not stored progress — Backlog rows auto-derive their
+  // % from the calendar (stored progress stays 0), which made a long-finished
+  // Backlog scream "-40w" while its pill showed a green ✓.
+  const actualPct = getEffectiveProgress(task);
   if (actualPct >= 100) return 0;  // Done — no drift chip.
   const totalDays = businessDaysBetween(task.start_date, task.end_date);
   if (!totalDays || totalDays <= 0) return 0;
@@ -23906,6 +23909,30 @@ function dedupAnchors(all) {
     });
 }
 
+// One-shot data repair, run on every task load: any row that IS an anchor
+// (by anchor_key or name match) must be a zero-duration milestone. Fixes
+// imported/hand-made anchor rows that arrived with a real duration — they
+// were getting the green chip in the grid but drawing as a BAR on the Gantt.
+// Local state is patched immediately so the current render already shows the
+// diamond; the server update follows fire-and-forget.
+const _anchorMsFixed = new Set();
+function normalizeAnchorMilestones() {
+  for (const t of state.tasks) {
+    if (!inferredAnchorKey(t)) continue;
+    if (_anchorMsFixed.has(t.id)) continue;
+    const spans = !!(t.start_date && t.end_date && t.end_date !== t.start_date);
+    const notMilestone = !t.is_milestone;
+    if (!notMilestone && !spans) continue;
+    _anchorMsFixed.add(t.id);
+    const patch = { is_milestone: 1, duration_days: 0 };
+    if (spans && t.start_date) patch.end_date = t.start_date;
+    t.is_milestone = 1;
+    t.duration_days = 0;
+    if (spans && t.start_date) t.end_date = t.start_date;
+    api.update(t.id, patch).catch(() => {});
+  }
+}
+
 async function loadTasks() {
   // Pull the raw list first so ensureAnchorsForProject sees ANY duplicates and skips
   // creation. After backfill we collapse duplicates at the data layer.
@@ -23927,6 +23954,11 @@ async function loadTasks() {
     if (backfilled) raw = await api.list();
   } catch (_) { /* anchor backfill is non-critical — show tasks even if it fails */ }
   state.tasks = dedupAnchors(raw);
+  // Anchors are ALWAYS zero-duration milestones — in every schedule. A row
+  // that matches an anchor by name but carries a duration (e.g. an imported
+  // "SAT" with a 1-week span) gets normalized once so it renders as a
+  // diamond like every other spine marker.
+  try { normalizeAnchorMilestones(); } catch (_) {}
   state.overAllocatedTaskIds = computeOverAllocatedTasks(state.tasks);
   // Hydrate project tabs the first time we get tasks so they include any pre-existing
   // projects the user already had data for. Subsequent loads are a no-op (saved tabs win).

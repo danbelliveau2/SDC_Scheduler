@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.3',
+    date: '2026-07-10',
+    notes: [
+      'Anchors are always milestones, backlog drift fixed, slimmer % pills.',
+      '',
+      '   ▸ Any row that IS a key milestone (PO / Mech 1 / Power-Up / FAT / Ship / SAT) is auto-repaired to a zero-duration milestone on load — an imported SAT with a 1-week span now renders as a diamond, not a bar. Every schedule, always.',
+      '   ▸ Backlog no longer shows a bogus "-40w" drift chip when its calendar window has passed — the chip reads the same auto-derived % the green ✓ pill shows.',
+      '   ▸ % complete pill + milestone checkbox slimmed (38px → 28px) — no more dead margins around "25%".',
+    ],
+  },
+  {
     version: '12.2',
     date: '2026-07-10',
     notes: [
