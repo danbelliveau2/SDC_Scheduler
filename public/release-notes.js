@@ -4,6 +4,28 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '12.8',
+    date: '2026-07-16',
+    notes: [
+      'PM-feedback round: multi-line comments, honest project delete, popup fixes — plus a cleaner Departments overview.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Comments are multi-line now — clicking a Comments cell opens a real text box floating over the cell; Enter starts a new line, click away (or Ctrl+Enter) saves, Escape cancels. The cell wraps and honors your line breaks; hover still shows the full comment.',
+      '   ▸ Priority renumbering moved to the server and is finally airtight: every assignee\'s open tasks are always numbered 1..N per project — no gaps, no duplicates, completed tasks and milestones drop out of the count. Click a priority pill to pick its new slot from a dropdown; everything else renumbers live.',
+      '   ▸ Deleting a project actually deletes it. The app now looks up the project\'s database row by name at delete time (stale caches were leaving zombie rows that resurrected on reload), reports honestly if anything couldn\'t be deleted, and editors — not just admins — can delete projects.',
+      '',
+      'POPUPS:',
+      '   ▸ Export for Customer got its missing background — no more schedule bleeding through a see-through window.',
+      '   ▸ Open popups are always the top layer — the footer "Project Release" button no longer paints over its own panel.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ Key Milestones speak ONE color language, with a legend on top: green = complete/paid, blue = on track, red = behind/past due, hollow dashed = no date. Key milestones wear the dark solid shades, payment $-circles the light tints. Overdue key milestones finally show red (they used to stay blue); the confusing yellow "due soon" state is gone — nothing in the future can be late.',
+      '   ▸ New ± Variance toggle: off (default) is the clean view — just each milestone\'s date and done-state, in compact rows. On reveals the baseline story: strike-through original dates plus "trending / ✓ N W early-late" chips.',
+      '   ▸ Financial Milestones timeline scrolls inside its own box — real ~120px/month scale sideways (no more squished diamonds), capped height with the month header pinned on top and project names pinned on the left, Gantt-style.',
+      '   ▸ Project picker is a compact dropdown with checkboxes, Show all / Hide all beside it, click-off closes it — and Current workload lists EVERYONE in the discipline, matching the roster above.',
+    ],
+  },
+  {
     version: '12.7',
     date: '2026-07-10',
     notes: [

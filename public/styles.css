@@ -4144,16 +4144,51 @@ tbody tr:hover { background: var(--row-hover); }
    the override is injected as a <style id="col-font-overrides"> at runtime, so
    there's no global font rule here. Columns with no override use the defaults. */
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
-/* Comments column — free-text. Truncate with ellipsis so a long note doesn't
-   blow the row height; the full content stays accessible via the title tooltip
-   set in cellHtml. */
+/* Comments column — free-text, MULTI-LINE. pre-wrap honors typed line breaks
+   (Enter in the editor) and wraps long text; the fixed row height clips
+   whatever doesn't fit (raise the row height to see more lines). Full content
+   stays accessible via the title tooltip set in cellHtml. line-height and
+   vertical-align are overridden from the base td rules — the giant
+   row-height line-height would put line 2 off-screen, and middle-align
+   clips top AND bottom when content overflows. */
 .col-notes {
   color: var(--text-muted);
   font-style: italic;
-  white-space: nowrap;
+  white-space: pre-wrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
   max-width: 320px;
+  line-height: 1.3;
+  vertical-align: top;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+/* Comments editor — a textarea OVERLAY floating above the cell so the row
+   itself never changes height (grid ↔ Gantt row alignment stays intact).
+   Enter = new line, click away or Ctrl+Enter = save, Escape = cancel. */
+td.editing[data-col="notes"] {
+  overflow: visible;
+  position: relative;
+}
+.notes-cell-edit {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: calc(100% - 2px);
+  min-width: 220px;
+  min-height: 84px;
+  z-index: 12;
+  background: #fff;
+  color: var(--text, #1f2937);
+  border: 1px solid var(--sdc-primary, #1574c4);
+  border-radius: 5px;
+  box-shadow: 0 6px 18px rgba(2, 20, 43, 0.22);
+  font-family: inherit;
+  font-style: normal;
+  font-size: var(--fs-md, 12px);
+  line-height: 1.35;
+  padding: 5px 7px;
+  resize: vertical;
 }
 th.col-allocation { padding-left: 4px; padding-right: 6px; }
 .col-priority { width: 44px; text-align: center; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 4px; font-weight: var(--fw-semibold); }
@@ -7588,7 +7623,11 @@ body[data-view="setup"] #btn-add { display: none; }
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  /* Above the schedule footer (902) and the floating Ask/FAB buttons
+     (900/901) — an open modal is ALWAYS the top layer; the footer's
+     "Project Release" button used to paint over its own popup. Still
+     below transient popups (pred-confirm 1100, context menus 9000+). */
+  z-index: 950;
   animation: _overlay-in 0.15s ease;
 }
 .modal-overlay .modal-card,
@@ -8040,7 +8079,7 @@ body[data-view="setup"] #btn-add { display: none; }
    and window.alert popups with something that matches the SDC app shell. Built
    on the same .modal-card framework as the estimate-sheet modal. */
 .app-dialog-overlay {
-  z-index: 200;  /* above other dialogs */
+  z-index: 960;  /* above other dialogs (base modal-overlay is 950) */
   animation: _overlay-in 0.15s ease;
 }
 .app-dialog {
@@ -8628,8 +8667,23 @@ body[data-view="setup"] #btn-add { display: none; }
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 300;
+  /* Above the schedule footer (902) / floating buttons (900) — same layer
+     rule as .modal-overlay: an open popup is always the top layer. */
+  z-index: 950;
 }
+/* Generic dialog card inside a .modal-backdrop (Export for Customer, etc.).
+   This class had NO rule — the card rendered TRANSPARENT with the schedule
+   showing straight through it (Xiao's bug #6). Solid surface + shadow. */
+.modal-dialog {
+  background: var(--surface, #fff);
+  border-radius: 12px;
+  width: 100%;
+  box-shadow: 0 24px 60px rgba(6, 29, 57, 0.28), 0 4px 12px rgba(6, 29, 57, 0.12);
+  padding: 14px 0 0;
+  overflow: hidden;
+}
+.modal-dialog .modal-header { padding: 0 16px 8px; }
+.modal-dialog .modal-footer { background: var(--surface-alt, #f8fafc); }
 .financials-modal {
   background: var(--surface, #fff);
   border-radius: 10px;
@@ -10655,8 +10709,11 @@ td.sales-suppressed {
   align-items: stretch;
   margin-bottom: 22px;
 }
+/* Compact dropdown BUTTON — sized to its label, not the page. The project
+   list opens as a floating panel underneath (see .pdash-picker-panel). */
 .pdash-picker {
-  flex: 1 1 320px;
+  flex: 0 0 auto;
+  width: max-content;
   background: var(--surface, #fff);
   border: 1px solid var(--border, #e2e8f0);
   border-radius: 8px;
@@ -10684,29 +10741,69 @@ td.sales-suppressed {
 }
 .pdash-picker[open] .pdash-picker-caret { transform: rotate(180deg); }
 .pdash-picker > summary::-webkit-details-marker { display: none; }
+/* Floating panel — hangs off the button, wide enough for the longest
+   project name, one checkbox per project, Show all / Hide all on top. */
+.pdash-picker-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 460px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  z-index: 30;
+}
 .pdash-picker-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 4px 14px;
-  padding: 10px 14px 4px;
-  border-top: 1px solid var(--border, #e2e8f0);
-  max-height: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px 12px 6px;
+  max-height: 320px;
   overflow-y: auto;
 }
+/* Tight rows — small checkbox, small text, minimal padding. The list is a
+   utility, not content; it shouldn't eat screen. */
 .pdash-picker-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: var(--fs-base);
+  gap: 6px;
+  font-size: 12px;
   color: var(--text, #1f2937);
   cursor: pointer;
-  padding: 4px 0;
+  padding: 1px 0;
+  line-height: 1.35;
+  white-space: nowrap;
 }
-.pdash-picker-item input[type="checkbox"] { margin: 0; }
-.pdash-picker-actions {
-  display: flex;
-  gap: 8px;
-  padding: 8px 14px 12px;
+.pdash-picker-item input[type="checkbox"] {
+  margin: 0;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+/* Show all / Hide all — small pills sitting NEXT TO the dropdown button. */
+.pdash-picker-sidebtn {
+  align-self: center;
+  font-size: 11px;
+  font-weight: var(--fw-bold);
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  background: var(--surface, #fff);
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  font-family: inherit;
+}
+.pdash-picker-sidebtn:hover {
+  border-color: var(--sdc-primary, #1574c4);
+  color: var(--sdc-primary, #1574c4);
+}
+.pdash-picker-sidebtn.is-on {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: #fff;
 }
 .pdash-weeks-control {
   display: inline-flex;
@@ -10769,16 +10866,26 @@ td.sales-suppressed {
   flex-direction: column;
   gap: 4px;
 }
+/* Compact project picker — a slim one-line dropdown; check/uncheck projects
+   inside. Kept intentionally short: the picker row is chrome, the milestone
+   strips below are the content. */
+.pdash-filters { margin: 0 0 6px; }
+.pdash-picker summary {
+  padding: 4px 12px;
+  font-size: var(--fs-sm);
+  line-height: 1.3;
+}
+
 .pdash-milestone-row {
   display: grid;
   grid-template-columns: 280px 1fr;
   align-items: start;
   gap: 12px;
-  padding: 6px 12px;
+  padding: 3px 12px;
   background: var(--surface, #fff);
   border: 1px solid var(--border, #e2e8f0);
   border-radius: 6px;
-  min-height: 48px;
+  min-height: 40px;
 }
 .pdash-milestone-project {
   font-weight: var(--fw-bold);
@@ -10884,10 +10991,15 @@ td.sales-suppressed {
 .pdash-mile-slip.is-final.is-late  { background: #dc2626; color: #fff; border-color: #dc2626; }
 
 /* ── Anchor icon variants (●) ── */
+/* One color language everywhere: GREEN complete · BLUE on track · RED behind
+   schedule · hollow dashed = nothing to show. Key milestones wear the DARK
+   solid shades, payments the LIGHT tints — shade tells you which family,
+   color tells you the status. */
 .pdash-mile-anchor.is-done     .pdash-mile-icon { background: #74c415; border-color: #74c415; }
 .pdash-mile-anchor.is-upcoming .pdash-mile-icon { background: #1574c4; border-color: #1574c4; }
-.pdash-mile-anchor.is-overdue  .pdash-mile-icon { background: #1574C4; border-color: #1574C4; }
-.pdash-mile-anchor.is-missing  .pdash-mile-icon { background: #fff;    border-color: #cbd5e1; color: #cbd5e1; }
+.pdash-mile-anchor.is-overdue  .pdash-mile-icon { background: #fee2e2; border-color: #dc2626; color: #dc2626; }
+.pdash-mile-anchor.is-overdue  .pdash-mile-label { color: #dc2626; }
+.pdash-mile-anchor.is-missing  .pdash-mile-icon { background: #fff;    border-color: #cbd5e1; color: #cbd5e1; border-style: dashed; }
 .pdash-mile-anchor.is-missing  .pdash-mile-label { color: var(--text-muted, #94a3b8); }
 
 /* ── Financial icon variants ($) — square, SDC-green outline as the
@@ -10902,13 +11014,13 @@ td.sales-suppressed {
   width: 20px;
   height: 20px;
 }
-.pdash-mile-fin.is-paid     .pdash-mile-icon { background: #74c415; border-color: #74c415; color: #fff; }
-.pdash-mile-fin.is-no-date  .pdash-mile-icon { background: #fef9c3; border-color: #d97706; color: #92400e; }
+.pdash-mile-fin.is-paid     .pdash-mile-icon { background: #dcfce7; border-color: #16a34a; color: #15803d; }
+.pdash-mile-fin.is-no-date  .pdash-mile-icon { background: #fff; border-color: #94a3b8; border-style: dashed; color: #94a3b8; }
 .pdash-mile-fin.is-upcoming .pdash-mile-icon { background: #dbeafe; border-color: #1574c4; color: #1d4ed8; }
 .pdash-mile-fin.is-overdue  .pdash-mile-icon { background: #fee2e2; border-color: #dc2626; color: #dc2626; }
 .pdash-mile-fin .pdash-mile-label { color: #1d4ed8; }
 .pdash-mile-fin.is-paid    .pdash-mile-label { color: #15803d; }
-.pdash-mile-fin.is-no-date .pdash-mile-label { color: #92400e; }
+.pdash-mile-fin.is-no-date .pdash-mile-label { color: #94a3b8; }
 .pdash-mile-fin.is-overdue .pdash-mile-label { color: #dc2626; }
 
 .pdash-date-baseline { color: var(--text-muted, #64748b); text-decoration: line-through; }
@@ -10932,10 +11044,81 @@ td.sales-suppressed {
   line-height: 1;
 }
 
+/* ── Legend — one line above the strips decoding shape + color. ── */
+.pdash-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0 0 6px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted, #64748b);
+}
+.pdash-legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.pdash-legend-swatch {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: var(--fw-extrabold);
+  line-height: 1;
+  border: 1.5px solid transparent;
+  flex: 0 0 auto;
+}
+.pdash-legend-swatch.is-diamond { border-radius: 3px; transform: rotate(45deg); width: 10px; height: 10px; margin: 0 2px; }
+.pdash-legend-swatch.is-green     { background: #74c415; border-color: #74c415; color: #fff; }
+.pdash-legend-swatch.is-blue      { background: #1574c4; border-color: #1574c4; color: #fff; }
+.pdash-legend-swatch.is-lightblue { background: #dbeafe; border-color: #1574c4; color: #1d4ed8; }
+.pdash-legend-swatch.is-red       { background: #fee2e2; border-color: #dc2626; color: #dc2626; }
+.pdash-legend-swatch.is-hollow    { background: #fff; border: 1.5px dashed #94a3b8; }
+.pdash-legend-div { width: 1px; height: 14px; background: var(--border, #e2e8f0); flex: 0 0 auto; }
+
+/* ── Compact strips (± Variance OFF) — one date line per milestone, no
+   slip chips, so pull the icons/labels/rows in tight. Variance ON goes
+   back to the roomier layout that fits the strike-through pair + chip. ── */
+.pdash-milestones.is-compact { gap: 2px; }
+.pdash-milestones.is-compact .pdash-milestone-row { min-height: 0; padding: 1px 12px; }
+.pdash-milestones.is-compact .pdash-milestone-track { min-height: 42px; }
+.pdash-milestones.is-compact .pdash-milestone-track::before { top: 9px; }
+.pdash-milestones.is-compact .pdash-mile-item { gap: 1px; }
+.pdash-milestones.is-compact .pdash-mile-icon { width: 15px; height: 15px; font-size: 9px; }
+.pdash-milestones.is-compact .pdash-mile-anchor .pdash-mile-icon { width: 11px; height: 11px; margin: 2px; }
+.pdash-milestones.is-compact .pdash-mile-anchor .pdash-mile-glyph { font-size: 8px; }
+.pdash-milestones.is-compact .pdash-mile-label { font-size: 9px; }
+.pdash-milestones.is-compact .pdash-mile-date { font-size: 10px; }
+
 /* Financial Milestones TIMELINE (v11.5, replaces the grid). Same row
    skeleton as the Key Milestones strips (280px name + track), dashed
    blue Today line like the Gantt, diamonds for each payment event. */
+/* Scroll wrapper — the timeline scrolls INSIDE its own box, both ways.
+   Height is capped so the horizontal scrollbar is always on screen (it used
+   to sit below 20+ rows where you could never find it — and #view-team clips
+   overflow-x, so the content just ran off the page edge). Sideways, the
+   timeline keeps a real ~120px/month scale (inline min-width from JS)
+   instead of squishing every diamond together. Month header sticks to the
+   top, project names stick to the left, Gantt-style. */
+.pdash-fintl-scroll {
+  overflow: auto;
+  max-height: 62vh;
+  padding-bottom: 4px;
+}
 .pdash-fintl { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.pdash-fintl-head {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--bg, #f1f5f9);
+}
+.pdash-fintl-row .pdash-milestone-project {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--surface, #fff);
+}
+.pdash-fintl-head .pdash-milestone-project { background: transparent; }
 .pdash-fintl-row {
   display: grid;
   grid-template-columns: 280px 1fr;
@@ -11023,8 +11206,6 @@ td.sales-suppressed {
 .pdash-fintl-ms.is-paid     .pdash-fintl-lbl { color: #15803d; }
 .pdash-fintl-ms.is-overdue  .pdash-fintl-di  { background: #fee2e2; border-color: #dc2626; }
 .pdash-fintl-ms.is-overdue  .pdash-fintl-lbl { color: #dc2626; }
-.pdash-fintl-ms.is-soon     .pdash-fintl-di  { background: #fef3c7; border-color: #d97706; }
-.pdash-fintl-ms.is-soon     .pdash-fintl-lbl { color: #b45309; }
 .pdash-fintl-ms.is-upcoming .pdash-fintl-di  { background: #dbeafe; border-color: #1574c4; }
 .pdash-fintl-ms.is-upcoming .pdash-fintl-lbl { color: #1d4ed8; }
 /* Financial milestones sub-row — sits below the spine track in each

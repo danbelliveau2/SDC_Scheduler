@@ -8,11 +8,23 @@ module.exports = function createRouter(deps) {
   const router = Router();
 
   // ── helpers ──────────────────────────────────────────────────────────────────
-  async function compactPrioritiesForAssignee(assignee) {
+  // Priorities are a dense 1..N queue per assignee PER PROJECT, over OPEN
+  // (progress < 100) non-milestone tasks only. Completed tasks drop out of
+  // the queue (priority cleared) and everyone below shifts up. preferredId
+  // wins ties at equal priority — so setting a task to position 5 lands it
+  // exactly at 5 and displaces the incumbent downward (insert semantics).
+  // The old version numbered EVERY task the assignee had — all projects,
+  // milestones, completed work — which is why bars showed "12, 13" with no
+  // 3 or 6.
+  async function compactPrioritiesForAssignee(assignee, project, preferredId) {
     if (!assignee) return;
     const [rows] = await pool.query(
-      'SELECT id, priority FROM tasks WHERE assignee = ? ORDER BY priority IS NULL, priority ASC, id ASC',
-      [assignee]
+      `SELECT id, priority FROM tasks
+        WHERE assignee = ? AND (project <=> ?)
+          AND COALESCE(is_milestone, 0) = 0
+          AND COALESCE(progress, 0) < 100
+        ORDER BY (priority IS NULL) ASC, priority ASC, (id = ?) DESC, id ASC`,
+      [assignee, project ?? null, preferredId ?? -1]
     );
     for (let i = 0; i < rows.length; i++) {
       const target = i + 1;
@@ -20,7 +32,26 @@ module.exports = function createRouter(deps) {
         await pool.query('UPDATE tasks SET priority = ? WHERE id = ?', [target, rows[i].id]);
       }
     }
+    // Completed / milestone tasks leave the queue entirely.
+    await pool.query(
+      `UPDATE tasks SET priority = NULL
+        WHERE assignee = ? AND (project <=> ?) AND priority IS NOT NULL
+          AND (COALESCE(progress, 0) >= 100 OR COALESCE(is_milestone, 0) = 1)`,
+      [assignee, project ?? null]
+    );
   }
+
+  // One-time heal on every boot: existing data carries years of global,
+  // gap-riddled numbering — sweep every (assignee, project) pair once so
+  // the queues start dense. Idempotent and cheap; fire-and-forget.
+  (async () => {
+    try {
+      const [pairs] = await pool.query(
+        "SELECT DISTINCT assignee, project FROM tasks WHERE assignee IS NOT NULL AND assignee != ''"
+      );
+      for (const p of pairs) await compactPrioritiesForAssignee(p.assignee, p.project);
+    } catch (_) { /* non-critical */ }
+  })();
 
   async function cascadeDurationLinks() {
     function addBusinessDaysISO(dateStr, n) {
@@ -90,7 +121,11 @@ module.exports = function createRouter(deps) {
       if (req.body.priority != null) {
         nextPriority = Math.max(1, Number(req.body.priority) || 1);
       } else if (req.body.assignee) {
-        const [[peekRow]] = await pool.query('SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ?', [req.body.assignee]);
+        // Join the end of this person's queue for THIS project.
+        const [[peekRow]] = await pool.query(
+          'SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ? AND (project <=> ?)',
+          [req.body.assignee, req.body.project || null]
+        );
         nextPriority = (peekRow?.m || 0) + 1;
       }
       const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'machine'];
@@ -118,7 +153,7 @@ module.exports = function createRouter(deps) {
       ];
       const placeholders = cols.map(() => '?').join(', ');
       const [result] = await pool.query(`INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders})`, values);
-      if (req.body.assignee) await compactPrioritiesForAssignee(req.body.assignee);
+      if (req.body.assignee) await compactPrioritiesForAssignee(req.body.assignee, req.body.project || null, req.body.priority != null ? result.insertId : undefined);
       await cascadeSchedule();
       const [[task]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [result.insertId]);
       await logHistory(task.id, task.project, 'create', null, null, task, null);
@@ -171,38 +206,29 @@ module.exports = function createRouter(deps) {
       await pool.query('UPDATE tasks SET version = COALESCE(version,1) + 1 WHERE id = ?', [id]);
 
       const finalAssignee = ('assignee' in updates) ? updates.assignee : existing.assignee;
+      const finalProject  = ('project'  in updates) ? updates.project  : existing.project;
       const assigneeChanged = 'assignee' in updates && updates.assignee !== existing.assignee;
+      const projectChanged  = 'project'  in updates && updates.project  !== existing.project;
       const priorityExplicit = 'priority' in updates;
 
-      let finalPriority = ('priority' in updates) ? updates.priority : existing.priority;
       if (assigneeChanged && !priorityExplicit && finalAssignee) {
-        const [[peekRow]] = await pool.query('SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ?', [finalAssignee]);
-        finalPriority = (peekRow?.m || 0) + 1;
-        await pool.query('UPDATE tasks SET priority = ? WHERE id = ?', [finalPriority, id]);
-      }
-
-      if (priorityExplicit && finalAssignee && finalPriority != null) {
-        const [conflicts] = await pool.query(
-          'SELECT id FROM tasks WHERE assignee = ? AND priority = ? AND id != ?',
-          [finalAssignee, finalPriority, id]
+        // New assignee, no explicit slot → join the END of that person's
+        // queue for THIS project.
+        const [[peekRow]] = await pool.query(
+          'SELECT COALESCE(MAX(priority), 0) AS m FROM tasks WHERE assignee = ? AND (project <=> ?)',
+          [finalAssignee, finalProject ?? null]
         );
-        if (conflicts.length > 0) {
-          const [usedRows] = await pool.query(
-            'SELECT priority FROM tasks WHERE assignee = ? AND priority IS NOT NULL', [finalAssignee]
-          );
-          const used = new Set(usedRows.map(r => r.priority));
-          for (const c of conflicts) {
-            let next = 1;
-            while (used.has(next)) next++;
-            used.add(next);
-            await pool.query('UPDATE tasks SET priority = ? WHERE id = ?', [next, c.id]);
-          }
-        }
+        await pool.query('UPDATE tasks SET priority = ? WHERE id = ?', [(peekRow?.m || 0) + 1, id]);
       }
 
-      if (finalAssignee) await compactPrioritiesForAssignee(finalAssignee);
-      if (assigneeChanged && existing.assignee && existing.assignee !== finalAssignee) {
-        await compactPrioritiesForAssignee(existing.assignee);
+      // No manual conflict shuffling — compaction below owns the queue.
+      // preferredId makes an explicit priority an INSERT at that position:
+      // the moved task wins the tie, the incumbent and everyone after shift.
+      if (finalAssignee) {
+        await compactPrioritiesForAssignee(finalAssignee, finalProject, priorityExplicit ? id : undefined);
+      }
+      if ((assigneeChanged || projectChanged) && existing.assignee) {
+        await compactPrioritiesForAssignee(existing.assignee, existing.project);
       }
 
       if ('duration_days' in updates) await cascadeDurationLinks();
@@ -245,7 +271,7 @@ module.exports = function createRouter(deps) {
       await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
       await pool.query('DELETE FROM task_comments WHERE task_id = ?', [id]);
       if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
-      if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee);
+      if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee, t.project || null);
       await cascadeSchedule();
       res.json({ ok: true });
       io.emit('tasks:updated', { project: before?.project || null });

@@ -1592,8 +1592,10 @@ function cellHtml(t, key) {
       return `<td class="${cls}" data-col="priority">${p}</td>`;
     }
     case 'notes': {
-      // Free-text comments. Truncated visually via CSS so long notes don't
-      // blow up the row; full content shown on hover via title attribute.
+      // Free-text comments. Wraps + honors typed line breaks (CSS pre-wrap);
+      // whatever doesn't fit the fixed row height is clipped — full content
+      // shown on hover via title attribute. Row height stays fixed so the
+      // grid keeps its row-by-row alignment with the Gantt.
       const text = t.notes || '';
       const safe = escapeHtml(text);
       return `<td class="${cls}" data-col="notes" title="${safe}">${safe}</td>`;
@@ -2658,7 +2660,11 @@ function enterCellEdit(td, taskId, col) {
   // (We deliberately do NOT force-wipe on first keystroke — that nuked the value
   // even after the user had repositioned to append, e.g. adding "+2W" to "3FF".)
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); finalize(true); return; }
+    if (e.key === 'Enter') {
+      // Comments textarea: plain Enter = new line; Ctrl/Cmd+Enter commits.
+      if (input.tagName === 'TEXTAREA' && !e.ctrlKey && !e.metaKey) return;
+      e.preventDefault(); finalize(true); return;
+    }
     if (e.key === 'Escape') { e.preventDefault(); finalize(false); return; }
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -2838,6 +2844,16 @@ function createEditInput(col, value, task) {
     }
     sel.value = value || '';
     return sel;
+  }
+  if (col === 'notes') {
+    // Comments are multi-line: a textarea overlay so Enter starts a new
+    // line (Xiao's ask). Click away / Ctrl+Enter saves, Escape cancels.
+    const ta = document.createElement('textarea');
+    ta.className = 'cell-edit-input notes-cell-edit';
+    ta.rows = 4;
+    ta.placeholder = 'Comment — Enter for a new line, click away to save';
+    ta.value = value;
+    return ta;
   }
   const input = document.createElement('input');
   input.className = 'cell-edit-input';
@@ -7086,18 +7102,20 @@ function _pdashFinMonthControls(from, to) {
 // localStorage key so users keep their picks across the upgrade.
 // ──────────────────────────────────────────────────────────────────────
 function _deptSelectedProjects() {
+  // null = never picked (default to ALL) vs [] = explicitly "None".
   let selected;
-  try { selected = JSON.parse(localStorage.getItem('sdcDashboardProjects') || '[]'); }
-  catch (_) { selected = []; }
-  if (!Array.isArray(selected)) selected = [];
+  try { selected = JSON.parse(localStorage.getItem('sdcDashboardProjects') ?? 'null'); }
+  catch (_) { selected = null; }
+  if (!Array.isArray(selected)) selected = null;
   const allProjects = uniqueValues('project')
     .filter(p => p && p.trim().length > 0)
     .filter(p => !isTemplateProject(p))
     .filter(p => projectWorkspace(p) !== 'Sales')
     .sort();
-  if (selected.length === 0) {
-    selected = (state.openProjects || []).filter(p => p && allProjects.includes(p));
-    if (selected.length === 0 && allProjects.length > 0) selected = [allProjects[0]];
+  if (selected === null) {
+    // Default = EVERY active project. The overview is a department-wide
+    // rollup; people narrow from there.
+    selected = [...allProjects];
   } else {
     selected = selected.filter(p => allProjects.includes(p));
   }
@@ -7109,6 +7127,10 @@ function renderDeptProjectRollup() {
   if (!root) return;
 
   const { selected, allProjects } = _deptSelectedProjects();
+  // ± Variance toggle — OFF (default): milestones show just their projected/
+  // actual date and done-state, clean and compact. ON: baseline comparison
+  // appears — strike-through original dates + trending/final slip chips.
+  const showVariance = localStorage.getItem('sdcDeptShowVariance') === '1';
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const todayMs  = today.getTime();
@@ -7189,7 +7211,9 @@ function renderDeptProjectRollup() {
       let dateHtml;
       if (a.missing) {
         dateHtml = '<div class="pdash-mile-date">—</div>';
-      } else if (!a.baselineDate || a.baselineDate === a.displayDate) {
+      } else if (!showVariance || !a.baselineDate || a.baselineDate === a.displayDate) {
+        // Clean default view: just the projected/actual date (+ ✓ state).
+        // The ± Variance toggle reveals the baseline comparison below.
         dateHtml = `<div class="pdash-mile-date">${escapeHtml(a.displayDate ? fmtDate(a.displayDate) : '—')}</div>`;
       } else {
         const baseStr = fmtDate(a.baselineDate);
@@ -7205,7 +7229,7 @@ function renderDeptProjectRollup() {
       // Same math either way; the fill tells you forecast vs final. Tooltip
       // carries all three dates: baseline → scheduled → actual.
       let slipChip = '';
-      if (a.slipDays != null && a.slipDays !== 0) {
+      if (showVariance && a.slipDays != null && a.slipDays !== 0) {
         const isEarly = a.slipDays < 0;
         const tone = isEarly ? 'is-early' : 'is-late';
         const wks = _pdashDaysToWeeks(a.slipDays);
@@ -7291,8 +7315,8 @@ function renderDeptProjectRollup() {
     // ── Timeline (v11.5, replaces the grid) — reads like the schedule Gantt:
     //    month header, dashed blue Today line, one row per project, and each
     //    payment event as a DIAMOND at its date with "% · abbrev" on it.
-    //    Status colors match the old chips: red past-due, amber ≤2wks,
-    //    light blue upcoming, green paid.
+    //    Status colors match the Key Milestones legend: green paid,
+    //    red past-due, light blue future.
     const NAME_W = 280; // same name column as the Key Milestones strips
     const dayMs = 86400000;
     let winStartMs = Math.min(...rows.map(r => Date.parse(r.due_date + 'T00:00:00')), todayMs);
@@ -7327,10 +7351,12 @@ function renderDeptProjectRollup() {
       const diamonds = byProject[p].map(r => {
         const dueMs = Date.parse(r.due_date + 'T00:00:00');
         const isPast = dueMs < todayMs;
+        // Same three-status language as the Key Milestones strips: green
+        // paid, red past-due, blue future. Nothing in the future can be
+        // "late" — it hasn't happened yet — so no amber due-soon state.
         let cls = 'is-upcoming', status = 'Upcoming';
         if (r.paid)        { cls = 'is-paid';    status = 'Paid'; }
         else if (isPast)   { cls = 'is-overdue'; status = 'Invoice now'; }
-        else if (dueMs - todayMs <= 14 * dayMs) { cls = 'is-soon'; status = 'Due soon'; }
         const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '';
         const abbrev = _pdashFinAbbrev(r);
         const lbl = pctVal ? `${pctVal} ${abbrev}` : abbrev;
@@ -7353,8 +7379,14 @@ function renderDeptProjectRollup() {
       ? `<div class="pdash-fintl-today" style="left:${trackCalc(todayFrac)};"><span>Today</span></div>`
       : '';
 
+    // Long date ranges get a REAL scale instead of squishing: ~120px per
+    // month minimum, inside a horizontally scrollable wrapper. Short ranges
+    // still fit the container width (min-width never shrinks below 100%).
+    const monthsSpan = Math.max(1, span / (30.4 * dayMs));
+    const minW = Math.round(NAME_OFF + monthsSpan * 120);
     return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
-      <div class="pdash-fintl">
+      <div class="pdash-fintl-scroll">
+      <div class="pdash-fintl" style="min-width:max(100%,${minW}px)">
         ${monthLinesHtml}
         ${todayHtml}
         <div class="pdash-fintl-row pdash-fintl-head">
@@ -7362,6 +7394,7 @@ function renderDeptProjectRollup() {
           <div class="pdash-fintl-track">${monthTicksHtml}</div>
         </div>
         ${rowsHtml}
+      </div>
       </div>`;
   })();
 
@@ -7373,22 +7406,25 @@ function renderDeptProjectRollup() {
   root.innerHTML = `
     <div class="pdash-filters">
       <details class="pdash-picker">
-        <summary>📂 Projects: <strong>${
-          selected.length === 0 ? 'none'
-            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} selected`)
+        <summary>Projects: <strong>${
+          selected.length === allProjects.length ? 'all'
+            : selected.length === 0 ? 'none'
+            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} of ${allProjects.length}`)
         }</strong> <span class="pdash-picker-caret">▾</span></summary>
-        <div class="pdash-picker-list">
-          ${allProjects.map(p => `
-            <label class="pdash-picker-item">
-              <input type="checkbox" data-project="${escapeHtml(p)}" ${selected.includes(p) ? 'checked' : ''}/>
-              <span>${escapeHtml(p)}</span>
-            </label>`).join('')}
-        </div>
-        <div class="pdash-picker-actions">
-          <button type="button" data-action="select-all" class="btn-ghost btn-tight">Select all</button>
-          <button type="button" data-action="select-none" class="btn-ghost btn-tight">Clear</button>
+        <div class="pdash-picker-panel">
+          <div class="pdash-picker-list">
+            ${allProjects.map(p => `
+              <label class="pdash-picker-item">
+                <input type="checkbox" data-project="${escapeHtml(p)}" ${selected.includes(p) ? 'checked' : ''}/>
+                <span>${escapeHtml(p)}</span>
+              </label>`).join('')}
+          </div>
         </div>
       </details>
+      <button type="button" data-action="select-all" class="pdash-picker-sidebtn">Show all</button>
+      <button type="button" data-action="select-none" class="pdash-picker-sidebtn">Hide all</button>
+      <button type="button" data-action="toggle-variance" class="pdash-picker-sidebtn${showVariance ? ' is-on' : ''}"
+        title="Show each milestone's date vs the baseline — strike-through original dates plus trending/final early-late chips. Off = just the projected dates and done-state.">± Variance</button>
     </div>
 
     <section class="pdash-section">
@@ -7396,7 +7432,16 @@ function renderDeptProjectRollup() {
         <h2>🚦 Key Milestones</h2>
         <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship → SAT, per project</span>
       </header>
-      <div class="pdash-milestones">${milestoneStripsHtml}</div>
+      <div class="pdash-legend">
+        <span class="pdash-legend-item"><span class="pdash-legend-swatch is-diamond is-blue"></span>Key milestone</span>
+        <span class="pdash-legend-item"><span class="pdash-legend-swatch is-lightblue">$</span>Payment</span>
+        <span class="pdash-legend-div"></span>
+        <span class="pdash-legend-item"><span class="pdash-legend-swatch is-green">✓</span>Complete / paid</span>
+        <span class="pdash-legend-item"><span class="pdash-legend-swatch is-blue"></span>On track</span>
+        <span class="pdash-legend-item"><span class="pdash-legend-swatch is-red">!</span>Behind / past due</span>
+        <span class="pdash-legend-item"><span class="pdash-legend-swatch is-hollow"></span>No date yet</span>
+      </div>
+      <div class="pdash-milestones${showVariance ? '' : ' is-compact'}">${milestoneStripsHtml}</div>
     </section>
 
     <section class="pdash-section">
@@ -7427,6 +7472,10 @@ function renderDeptProjectRollup() {
     try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
     renderDeptProjectRollup();
     try { renderTeamDashboard(); } catch (_) {}
+  });
+  root.querySelector('[data-action="toggle-variance"]')?.addEventListener('click', () => {
+    try { localStorage.setItem('sdcDeptShowVariance', showVariance ? '0' : '1'); } catch (_) {}
+    renderDeptProjectRollup();
   });
   root.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
     inp.addEventListener('change', () => {
@@ -12856,7 +12905,19 @@ async function deleteProject(project) {
   });
   if (!ok) return;
   // Delete via the projects API endpoint — server handles cascading task/financials cleanup.
-  const projRow = state.projectsIndex && state.projectsIndex[project];
+  // Resolve the projects-table row FRESH from the server, by name. The client-side
+  // index can be stale or incomplete (renames, rows created by other users, a failed
+  // init load) — and when it missed a row that DID exist, the old code fell through
+  // to the task-by-task fallback: tasks gone, toast said "Deleted", but the projects
+  // row survived server-side and the name resurrected on the next reload (Xiao's #7).
+  let projRow = state.projectsIndex && state.projectsIndex[project];
+  try {
+    const lr = await fetch('/api/projects');
+    if (lr.ok) {
+      const row = ((await lr.json()) || []).find(p => p && p.name === project);
+      projRow = row ? { id: row.id } : null;   // server truth wins, both ways
+    }
+  } catch (_) { /* offline — fall back to the cached index row */ }
   if (projRow && projRow.id) {
     // If the server refuses (needs admin role, network down…), STOP — don't
     // clear it locally and toast "Deleted" while the row survives on the
@@ -12878,11 +12939,18 @@ async function deleteProject(project) {
     }
   } else {
     // Fallback: no project row (orphan tasks only) — delete tasks individually.
+    // Count failures and be HONEST: never toast "Deleted" when rows survived.
+    let failed = 0;
     for (const t of tasks) {
       if (t.anchor_key) { try { await api.update(t.id, { anchor_key: null }); } catch (_) {} }
     }
     for (const t of tasks) {
-      try { await api.remove(t.id); } catch (err) { console.error('delete task failed', t.id, err); }
+      try { await api.remove(t.id); } catch (err) { failed++; console.error('delete task failed', t.id, err); }
+    }
+    if (failed) {
+      showToast(`Could not delete ${failed} of ${tasks.length} task${tasks.length === 1 ? '' : 's'} — "${project}" was NOT fully deleted.`, { kind: 'error' });
+      await loadTasks();
+      return;
     }
   }
   // Remove from all client state immediately so it disappears without a reload.
@@ -14597,6 +14665,14 @@ function wireWheelZoomZone(el, handler) {
     handler(e);
   }, { passive: false });
 }
+
+// Clicking anywhere outside an open project-picker dropdown closes it —
+// <details> stays open on outside clicks by default, which felt broken.
+document.addEventListener('mousedown', (e) => {
+  document.querySelectorAll('details.pdash-picker[open]').forEach(d => {
+    if (!d.contains(e.target)) d.removeAttribute('open');
+  });
+});
 
 function render() {
   try { syncSalesModeUI(); } catch (_) {}
@@ -21651,12 +21727,8 @@ function renderTeamDashboard() {
     if (overlap.length > 0) { overPeople.push({ name: m.name, peak: Math.max(...overlap.map(r => r.peak)) }); continue; }
     if (avg < 60) underPeople.push({ name: m.name, load: avg, lead, reason: `${avg}% load` });
   }
-  // The discipline lead/manager (starred in the team grid) always shows in
-  // Current workload — first, with a bold border — even if fully booked.
-  const leadMember = realMembers.find(m => m.is_lead);
-  if (leadMember && !underPeople.some(p => p.name === leadMember.name)) {
-    underPeople.unshift({ name: leadMember.name, load: loadByName[leadMember.name] || 0, lead: true });
-  }
+  // (Current workload shows EVERY member — see workloadPeople below — so the
+  // old lead-injection into underPeople is no longer needed.)
 
   // Needs-attention visual — the health donut (moved here from the header) +
   // three problem-count tiles, side by side.
@@ -21685,11 +21757,16 @@ function renderTeamDashboard() {
     overPeople.map(p => ({ name: p.name, over: true, chip: `peak ${p.peak}%`, chipTone: 'chip-danger' })),
     'No one over-allocated in this window.');
   // Current workload — a card per person (5 across): name + a donut of their
-  // current allocation % over the window.
-  const workloadPeople = [...underPeople].sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0));
+  // current allocation % over the window. EVERY member of the discipline
+  // shows — busy and over-allocated people included — so this list always
+  // matches the team grid above (it used to show only the under-allocated,
+  // which silently dropped whoever was actually loaded). Lead first.
+  const workloadPeople = realMembers
+    .map(m => ({ name: m.name, load: loadByName[m.name] || 0, lead: !!m.is_lead }))
+    .sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0));
   deptRenderWorkloadCards('dept-available-body',
-    workloadPeople.map(p => ({ name: p.name, load: p.load, lead: !!p.lead })),
-    'Everyone is fully booked.');
+    workloadPeople,
+    'No team members in this discipline.');
   // Utilization gauge — average team load across the window (one rollup number).
   const deptUtil = memberLoads.length ? Math.round(memberLoads.reduce((a, b) => a + b, 0) / memberLoads.length) : 0;
   const gaugeEl = document.getElementById('dept-chart-available');
@@ -22558,37 +22635,38 @@ function renderResources() {
     `<div class="legend-row"><strong class="legend-title">Task</strong>${statusItems}</div>` +
     `<div class="legend-row"><strong class="legend-title">Allocation</strong>${allocItems}</div>`;
 
-  // Click a priority pill → cycle through 1..N (where N is the number of this
-  // person's tasks that overlap with at least one other). Wraps N → 1. Server-side
-  // conflict resolution displaces whoever was previously at the new priority.
+  // Click a priority pill → dropdown of every position 1..N in this person's
+  // queue for THIS project. Pick one and the task INSERTS at that position —
+  // the server shifts everyone else so the queue stays a dense 1..N with no
+  // duplicates (compactPrioritiesForAssignee, preferredId tiebreak).
   body.querySelectorAll('.res-bar-priority').forEach(pill => {
-    pill.addEventListener('click', async (e) => {
+    pill.addEventListener('click', (e) => {
       e.stopPropagation();
       const id = Number(pill.dataset.taskId);
       const cur = Number(pill.dataset.priority) || 1;
       const task = state.tasks.find(t => t.id === id);
       if (!task || !task.assignee) return;
-      // Find tasks belonging to this assignee that are in an overlapping group.
-      // The cycle modulus is the size of that group (count of tasks with priorities
-      // in the same conflict).
-      const peers = state.tasks.filter(t =>
+      // Queue = this person's open, non-milestone tasks on the SAME project.
+      const N = state.tasks.filter(t =>
         t.assignee === task.assignee &&
+        (t.project || '') === (task.project || '') &&
         !t.is_milestone &&
-        t.start_date && t.end_date
-      );
-      const overlapPeers = peers.filter(t =>
-        peers.some(o => o.id !== t.id &&
-          new Date(o.start_date) <= new Date(t.end_date) &&
-          new Date(o.end_date) >= new Date(t.start_date))
-      );
-      const N = overlapPeers.length;
-      if (N < 2) return; // single task — no cycling needed
-      const next = (cur % N) + 1;
-      pill.textContent = String(next); // optimistic update so the click reads instant
-      pill.dataset.priority = String(next);
-      pill.title = `Priority ${next} — click to change`;
-      await api.update(id, { priority: next });
-      await loadTasks();
+        (Number(t.progress) || 0) < 100
+      ).length;
+      if (N < 2) return; // nothing to reorder
+      const items = [];
+      for (let pos = 1; pos <= N; pos++) {
+        items.push({
+          label: pos === cur ? `✓ ${pos}` : String(pos),
+          onClick: async () => {
+            if (pos === cur) return;
+            pill.textContent = String(pos); // optimistic — server confirms via reload
+            await api.update(id, { priority: pos });
+            await loadTasks();
+          },
+        });
+      }
+      showContextMenu(e.clientX, e.clientY, items);
     });
   });
   body.querySelectorAll('.res-bar').forEach(b => {
@@ -23991,6 +24069,12 @@ function normalizeAnchorMilestones() {
     api.update(t.id, patch).catch(() => {});
   }
 }
+
+// NOTE (v12.7): priority renumbering lives on the SERVER now
+// (compactPrioritiesForAssignee in routes/tasks.js) — dense 1..N per
+// assignee per project over open non-milestone tasks, healed on every boot
+// and on every task change. The earlier client-side normalizer was removed
+// because the two kept fighting each other.
 
 async function loadTasks() {
   // Pull the raw list first so ensureAnchorsForProject sees ANY duplicates and skips

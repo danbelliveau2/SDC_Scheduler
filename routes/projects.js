@@ -416,7 +416,11 @@ module.exports = function createRouter(deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
-  router.delete('/api/projects/:id', requireRole('admin'), async (req, res) => {
+  // editor (not admin): PMs manage — and retire — their own schedules. Editors
+  // can already delete every task in a project one-by-one, so admin-gating the
+  // row delete only left zombie rows behind ("deleted" projects reappearing in
+  // the All-projects list after reload — Xiao's bug #7).
+  router.delete('/api/projects/:id', requireRole('editor'), async (req, res) => {
     try {
       const id = Number(req.params.id);
       const [[existing]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
