@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.0',
+    date: '2026-07-20',
+    notes: [
+      'Milestone rows: clean duration slot, unambiguous complete-checkbox.',
+      '',
+      '   ▸ Milestones show NOTHING in the duration slot anymore — the hover-only "—W" ghost (a hidden click-to-restore duration editor) read as a bug and crowded the ✓ checkbox beside it. Zero-duration means zero clutter. To turn a milestone back into a task, show the Duration column and type a duration there.',
+      '   ▸ The ✓ checkbox now owns that corner of the row — one check marks the milestone 100% complete (stamps the Completed date, drops it from priority numbering, counts toward section auto-collapse); unchecking returns it to 0%.',
+    ],
+  },
+  {
     version: '12.8',
     date: '2026-07-16',
     notes: [

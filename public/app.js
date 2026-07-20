@@ -1513,13 +1513,12 @@ function cellHtml(t, key) {
           linkBadge = `<span class="name-cell-dur-link" data-link-target-id="${t.duration_link_task_id}">${earlyText}</span> `;
         }
         durEl = `<span class="name-cell-dur" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to edit (e.g. 5d, 2w, or = then click another row to link)">${linkBadge}${wksText}</span>`;
-      } else if (t.is_milestone && !isAnchor) {
-        // Milestones show no duration, but the slot stays CLICKABLE so an
-        // accidental 0-duration can be undone — click it, type "2w", and the
-        // row is a task again. Invisible until the row is hovered (same
-        // trick as the milestone ✓ checkbox).
-        durEl = `<span class="name-cell-dur name-cell-dur-ghost" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to set (e.g. 2w) and turn this milestone back into a task">—W</span>`;
       }
+      // Milestones show NOTHING in the duration slot — they're zero-duration
+      // by definition and the old hover-ghost "—W" (a click-to-restore
+      // duration editor) read as a bug and crowded the ✓ checkbox next to
+      // it. To turn a milestone back into a task, show the Duration column
+      // (Show/hide columns) and type a duration there.
       // v4.39: dropped the .name-cell-row flex wrapper. alloc, dash, and
       // dur are now ABSOLUTE-POSITIONED inside the TD (deterministic offsets
       // from the column's left/right edges), and the task name flows in
