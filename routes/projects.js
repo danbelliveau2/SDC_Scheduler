@@ -302,7 +302,7 @@ function _promoteDefaultAlloc(bucket) {
 }
 
 module.exports = function createRouter(deps) {
-  const { pool, io, requireRole, cascadeSchedule, logHistory } = deps;
+  const { pool, io, requireRole, cascadeSchedule, logHistory, plannerClient } = deps;
   const router = Router();
 
   // ── SSE clients for projects_changed notifications ────────────────────────
@@ -372,13 +372,44 @@ module.exports = function createRouter(deps) {
 
   router.post('/api/projects', requireRole('editor'), async (req, res) => {
     try {
-      const name = (req.body.name || '').toString().trim();
+      // Optional: build the project from an SDC ETC Planner job. When
+      // from_planner_job is supplied the server fetches the job's authoritative
+      // detail itself (name defaults to "<job>_<jobName>", plus a snapshot of
+      // billable + release/delivery estimate dates) rather than trusting the
+      // client to hand those over.
+      let name = (req.body.name || '').toString().trim();
+      const snap = { job_number: req.body.job_number || null, billable: null,
+        po_start_date: null, est_start_date: null, complete_date: null, planner_synced: false };
+
+      if (req.body.from_planner_job != null && req.body.from_planner_job !== '') {
+        if (!plannerClient || !plannerClient.CONFIGURED) {
+          return res.status(503).json({ error: 'ETC Planner not configured' });
+        }
+        const jobId = String(req.body.from_planner_job);
+        let detail;
+        try { detail = await plannerClient.getJobDetail(jobId); }
+        catch (e) { return res.status(503).json({ error: `ETC Planner lookup failed: ${e.message}` }); }
+        if (!detail) return res.status(404).json({ error: `No planner job ${jobId}` });
+        if (!name) name = `${detail.jobId}_${(detail.jobName || '').toString().trim()}`.trim();
+        snap.job_number = detail.jobId;
+        snap.billable = detail.billable === true ? 1 : detail.billable === false ? 0 : null;
+        snap.po_start_date = detail.poStartDate || null;
+        snap.est_start_date = detail.startDate || null;
+        snap.complete_date = detail.completeDate || null;
+        snap.planner_synced = true;
+      }
+
       if (!name) return res.status(400).json({ error: 'name required' });
       const [[existing]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
       if (existing) return res.json(existing);
       await pool.query(
-        'INSERT INTO projects (name, status, is_template, job_number, workspace) VALUES (?, ?, ?, ?, ?)',
-        [name, req.body.status || 'active', req.body.is_template ? 1 : 0, req.body.job_number || null, req.body.workspace || 'default']
+        `INSERT INTO projects
+           (name, status, is_template, job_number, workspace,
+            billable, po_start_date, est_start_date, complete_date, planner_synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, req.body.status || 'active', req.body.is_template ? 1 : 0, snap.job_number,
+         req.body.workspace || 'default', snap.billable, snap.po_start_date, snap.est_start_date,
+         snap.complete_date, snap.planner_synced ? new Date() : null]
       );
       const [[row]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
       res.status(201).json(row);

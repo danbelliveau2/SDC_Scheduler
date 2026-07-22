@@ -253,8 +253,11 @@ async function logHistory(taskId, project, action, changedBy, before, after, cha
 // ── ETO DB (needed by eto + agent routes) ─────────────────────────────────
 const etoDb = require('./lib/etoDb');
 
+// ── ETC Planner client (needed by planner route) ──────────────────────────
+const plannerClient = require('./lib/plannerClient');
+
 // ── Route mounting ─────────────────────────────────────────────────────────
-const routeDeps = { pool, io, requireRole, requireAuth, cascadeSchedule, logHistory, etoDb, ops, agent, hoursApi, emailSvc, bcrypt, _activeCache };
+const routeDeps = { pool, io, requireRole, requireAuth, cascadeSchedule, logHistory, etoDb, plannerClient, ops, agent, hoursApi, emailSvc, bcrypt, _activeCache };
 
 app.use(require('./routes/users')(    { ...routeDeps }));
 app.use(require('./routes/tasks')(    { ...routeDeps }));
@@ -264,6 +267,7 @@ app.use(require('./routes/shopParts')({ ...routeDeps }));
 app.use(require('./routes/vendorPos')({ ...routeDeps }));
 app.use(require('./routes/financials')({ ...routeDeps }));
 app.use(require('./routes/eto')(      { ...routeDeps }));
+app.use(require('./routes/planner')(  { ...routeDeps }));
 app.use(require('./routes/agent')(    { ...routeDeps }));
 app.use(require('./routes/hours')(    { ...routeDeps }));
 app.use(require('./routes/projects')( { ...routeDeps }));

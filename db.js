@@ -252,6 +252,15 @@ async function init() {
   // Separate Power BI job ID — lets a project link a different job number for
   // hours data than the one used for ETO (e.g. multi-job rollups like "1129&1143").
   await pool.query(`ALTER TABLE projects ADD COLUMN hours_job_id VARCHAR(255)`).catch(() => {});
+  // Snapshot pulled from the SDC ETC Planner when a project is created from its
+  // job list. billable + the release/delivery estimate dates are captured once
+  // at create time; live actuals-vs-execution are fetched on demand via
+  // /api/planner/jobs/:jobId (never stored, so they can't go stale).
+  await pool.query(`ALTER TABLE projects ADD COLUMN billable TINYINT(1)`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN po_start_date DATE`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN est_start_date DATE`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN complete_date DATE`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN planner_synced_at DATETIME`).catch(() => {});
   // Clean up duplicate (po, job) rows left by syncs that overlapped before the
   // sync serializer existed. Conservatively deletes only the higher-id copy and
   // only when it carries NO PM-entered data — so manual edits are never lost; a

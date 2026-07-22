@@ -13773,6 +13773,7 @@ function showCreateScheduleDialog(defaultWs) {
         <div class="cs-seg" id="cs-seg">
           <button type="button" class="cs-seg-btn${defaultMode === 'template' ? ' is-active' : ''}" data-mode="template">A template</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'project' ? ' is-active' : ''}" data-mode="project">Another schedule</button>
+          <button type="button" class="cs-seg-btn" data-mode="planner">An ETC job</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'blank' ? ' is-active' : ''}" data-mode="blank">Blank</button>
         </div>
         <select id="cs-source" class="cs-source"></select>
@@ -13804,9 +13805,34 @@ function showCreateScheduleDialog(defaultWs) {
   const hintEl = overlay.querySelector('#cs-hint');
   let mode = defaultMode;
 
+  // ETC Planner jobs — lazily loaded the first time the "An ETC job" segment is
+  // used. null = not fetched yet, [] = fetched (unavailable or empty).
+  let plannerJobs = null;
+  const loadPlannerJobs = async () => {
+    try {
+      const r = await fetch('/api/planner/jobs?status=Active');
+      plannerJobs = r.ok ? ((await r.json()).jobs || []) : [];
+    } catch (_) { plannerJobs = []; }
+    if (mode === 'planner') { fillSource(); refresh(); }
+  };
+  const fillPlannerSource = () => {
+    if (plannerJobs === null) {
+      sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+      loadPlannerJobs();
+      return;
+    }
+    if (plannerJobs.length === 0) {
+      sourceEl.innerHTML = '<option value="" disabled selected>ETC Planner unavailable or no jobs.</option>';
+      return;
+    }
+    sourceEl.innerHTML = '<option value="" disabled selected>Pick an ETC job…</option>'
+      + plannerJobs.map(j => `<option value="${escapeHtml(j.jobId)}">${escapeHtml(j.jobId)} — ${escapeHtml(j.jobName || '')}${j.billable ? '' : ' (non-billable)'}</option>`).join('');
+  };
+
   const fillSource = () => {
     if (mode === 'blank') { sourceEl.style.display = 'none'; return; }
     sourceEl.style.display = '';
+    if (mode === 'planner') { fillPlannerSource(); return; }
     const list = mode === 'template' ? templates : projects;
     if (list.length === 0) {
       sourceEl.innerHTML = `<option value="" disabled selected>${mode === 'template' ? 'No templates yet — mark a schedule as a template first (right-click its tab → Mark as template ★).' : 'No other schedules yet.'}</option>`;
@@ -13818,7 +13844,9 @@ function showCreateScheduleDialog(defaultWs) {
   const refresh = () => {
     hintEl.textContent = mode === 'blank'
       ? 'Starts empty — just the Receipt of PO + FAT spine markers.'
-      : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
+      : mode === 'planner'
+        ? 'Creates a schedule linked to the ETC job — snapshots its billable flag + release/delivery dates, then adds the PO + FAT spine.'
+        : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
     buildBtn.disabled = !nameEl.value.trim() || (mode !== 'blank' && !sourceEl.value);
   };
   seg.querySelectorAll('.cs-seg-btn').forEach(b => b.addEventListener('click', () => {
@@ -13827,7 +13855,15 @@ function showCreateScheduleDialog(defaultWs) {
     fillSource(); refresh();
   }));
   nameEl.addEventListener('input', refresh);
-  sourceEl.addEventListener('change', refresh);
+  sourceEl.addEventListener('change', () => {
+    // Picking an ETC job auto-fills the schedule name (job convention
+    // "<jobId>_<jobName>") unless the user already typed one.
+    if (mode === 'planner' && sourceEl.value && !nameEl.value.trim()) {
+      const j = (plannerJobs || []).find(x => x.jobId === sourceEl.value);
+      if (j) nameEl.value = `${j.jobId}_${j.jobName || ''}`.trim();
+    }
+    refresh();
+  });
   fillSource(); refresh();
   setTimeout(() => nameEl.focus(), 0);
 
@@ -13855,6 +13891,33 @@ function showCreateScheduleDialog(defaultWs) {
       await ensureAnchorsForProject(name);
       await loadTasks();
       openCreated(name);
+      return;
+    }
+    if (mode === 'planner') {
+      const jobId = sourceEl.value;
+      if (!jobId) return;
+      // Fetch stays before close() so a failure keeps the dialog open with an
+      // inline error, matching the rest of this dialog's error style.
+      buildBtn.disabled = true;
+      let row = {}, ok = false;
+      try {
+        const r = await fetch('/api/projects', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from_planner_job: jobId, name }),
+        });
+        row = await r.json().catch(() => ({}));
+        ok = r.ok;
+        if (!ok) hintEl.textContent = row.error || `Couldn't create the schedule (${r.status}).`;
+      } catch (e) { hintEl.textContent = `Couldn't reach the ETC Planner: ${e.message}`; }
+      if (!ok) { buildBtn.disabled = false; return; }
+      close();
+      const created = row.name || name;
+      if (!state.openProjects.includes(created)) state.openProjects.push(created);
+      state.filters.project = created;
+      saveProjectTabs();
+      await ensureAnchorsForProject(created);
+      await loadTasks();
+      openCreated(created);
       return;
     }
     const src = sourceEl.value;
