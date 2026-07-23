@@ -202,6 +202,10 @@ async function cascadeSchedule() {
     const byId = Object.fromEntries(all.map(t => [t.id, t]));
     let changed = false;
     for (const t of all) {
+      // Manually pinned dates win over the graph: skip recomputing this task's
+      // own dates. Its successors still schedule FROM these frozen dates (they
+      // read t via byId), so the downstream chain stays consistent.
+      if (t.dates_locked) continue;
       if (t.predecessors) {
         const next = computeDatesFromPreds(t, byId);
         if (next && (next.start_date !== t.start_date || next.end_date !== t.end_date)) {

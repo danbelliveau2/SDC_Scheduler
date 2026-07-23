@@ -33,6 +33,7 @@ async function init() {
       baseline_end_date     VARCHAR(32),
       duration_link_task_id INT,
       is_action             TINYINT(1) DEFAULT 0,
+      dates_locked          TINYINT(1) DEFAULT 0,
       completed_on          VARCHAR(32),
       machine               VARCHAR(255),
       version               INT DEFAULT 1,
@@ -49,6 +50,11 @@ async function init() {
   // send `version || 1`), so every new task showed a bogus 409 conflict.
   await pool.query(`ALTER TABLE tasks MODIFY COLUMN version INT DEFAULT 1`).catch(() => {});
   await pool.query(`UPDATE tasks SET version = 1 WHERE version = 0 OR version IS NULL`).catch(() => {});
+
+  // Manual date lock: when a user edits a task's start/finish date, the task is
+  // pinned (dates_locked=1) so the predecessor cascade stops overwriting the
+  // hand-set dates. Editing the task's predecessors clears the pin again.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN dates_locked TINYINT(1) DEFAULT 0`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (

@@ -1556,7 +1556,7 @@ function cellHtml(t, key) {
         : (ph ? 'title="Placeholder — replace with a real team member when staffing this task"' : '');
       return `<td class="${classes.join(' ')}" data-col="assignee" ${title}>${escapeHtml(t.assignee || '')}</td>`;
     }
-    case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
+    case 'start':    return `<td class="${cls}" data-col="start">${t.dates_locked ? '<span class="date-lock" title="Dates locked — hand-set, ignored by the predecessor scheduler. Right-click the row to unlock.">🔒</span> ' : ''}${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'project':  return `<td class="${cls}" data-col="project" title="${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</td>`;
     case 'completed':
@@ -2883,6 +2883,7 @@ async function saveCellEdit(id, col, value, task) {
       // finish shifts to honor whatever working-days the task already had.
       const snapped = value ? snapToBusinessDay(value, 1) : null;
       data.start_date = snapped;
+      data.dates_locked = 1; // pin: a hand-set date must survive the predecessor cascade
       if (snapped && !task.is_milestone) {
         const dur = task.duration_days != null
           ? Number(task.duration_days)
@@ -2899,6 +2900,7 @@ async function saveCellEdit(id, col, value, task) {
       // Editing the finish manually overrides duration — recompute it from the new
       // span so the duration column matches what the user just set.
       data.end_date = value || null;
+      data.dates_locked = 1; // pin: a hand-set finish must survive the predecessor cascade
       if (task.is_milestone) data.start_date = value || null;
       else if (value && task.start_date) {
         const newDur = businessDaysBetween(task.start_date, value);
@@ -16632,6 +16634,20 @@ function handleRowContextMenu(e) {
         } catch (_) {}
         const project = (state.filters?.project) || '';
         openCommentPanel({ id, name: taskName, project });
+      },
+    });
+  }
+  if (task && task.dates_locked) {
+    items.push({
+      label: '🔓 Unlock dates (recompute from predecessors)',
+      onClick: async () => {
+        try {
+          await api.update(id, { dates_locked: 0 });
+          await loadTasks();
+          if (typeof showToast === 'function') showToast('Dates unlocked — recomputed from predecessors.');
+        } catch (e) {
+          if (typeof showToast === 'function') showToast(e.message || 'Unlock failed', { kind: 'error' });
+        }
       },
     });
   }
