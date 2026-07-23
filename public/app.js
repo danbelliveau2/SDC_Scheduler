@@ -17887,42 +17887,51 @@ async function openProjectReleaseModal(project) {
     const money = (k) => `<input type="text" inputmode="decimal" class="pr-bg-input pr-bg-money" data-bk="${k}" value="${fmtMoney(b && b[k])}">`;
     return `<div class="pr-budget-wrap"><table class="pr-budget-grid">
       <colgroup>
+        <col style="width:44px">
         <col style="width:62px"><col style="width:66px"><col style="width:62px">
         <col style="width:44px"><col style="width:50px"><col style="width:54px"><col style="width:72px">
-        <col style="width:78px"><col style="width:74px">
+        <col style="width:78px"><col style="width:74px"><col style="width:78px">
         <col style="width:54px"><col style="width:54px"><col style="width:54px"><col style="width:54px">
+        <col style="width:54px"><col style="width:54px">
         <col style="width:104px">
       </colgroup>
       <thead>
         <tr>
-          <th colspan="9" class="pr-bg-grp">Design and Build</th>
+          <th colspan="11" class="pr-bg-grp">Design and Build</th>
           <th colspan="2" class="pr-bg-grp">Testing</th>
           <th colspan="2" class="pr-bg-grp">Teardown &amp; Install</th>
+          <th colspan="2" class="pr-bg-grp">Warranty</th>
           <th rowspan="3" class="pr-bg-parts-h">Parts Cost</th>
         </tr>
         <tr>
+          <th class="pr-bg-c-me">PM</th>
           <th class="pr-bg-c-me">ME</th>
           <th colspan="2" class="pr-bg-c-ce">CE</th>
           <th colspan="4" class="pr-bg-c-gen">General Engineering</th>
-          <th colspan="2" class="pr-bg-c-shop">Shop</th>
+          <th colspan="3" class="pr-bg-c-shop">Shop</th>
           <th class="pr-bg-c-test">Eng</th><th class="pr-bg-c-test">Shop</th>
+          <th class="pr-bg-c-ti">Eng</th><th class="pr-bg-c-ti">Shop</th>
           <th class="pr-bg-c-ti">Eng</th><th class="pr-bg-c-ti">Shop</th>
         </tr>
         <tr class="pr-bg-leaf">
+          <th class="pr-bg-c-me">PM</th>
           <th class="pr-bg-c-me">ME General</th>
           <th class="pr-bg-c-ce">Design &amp; Drawings</th><th class="pr-bg-c-ce">Software</th>
           <th class="pr-bg-c-gen">HMI</th><th class="pr-bg-c-gen">Robot</th><th class="pr-bg-c-gen">Vision</th><th class="pr-bg-c-gen">Database &amp; Device</th>
-          <th class="pr-bg-c-shop">Mechanical Build</th><th class="pr-bg-c-shop">Electrical Build</th>
+          <th class="pr-bg-c-shop">Mechanical Build</th><th class="pr-bg-c-shop">Electrical Build</th><th class="pr-bg-c-shop">Manufacturing</th>
           <th class="pr-bg-c-test">ME &amp; CE</th><th class="pr-bg-c-test">MB &amp; EB</th>
+          <th class="pr-bg-c-ti">ME &amp; CE</th><th class="pr-bg-c-ti">MB &amp; EB</th>
           <th class="pr-bg-c-ti">ME &amp; CE</th><th class="pr-bg-c-ti">MB &amp; EB</th>
         </tr>
       </thead>
       <tbody><tr>
+        <td>${inp('pm')}</td>
         <td>${inp('me')}</td><td>${inp('ce_design_drawings')}</td><td>${inp('ce_software')}</td>
         <td>${inp('hmi')}</td><td>${inp('robot')}</td><td>${inp('vision')}</td><td>${inp('database_device')}</td>
-        <td>${inp('mechanical_build')}</td><td>${inp('electrical_build')}</td>
+        <td>${inp('mechanical_build')}</td><td>${inp('electrical_build')}</td><td>${inp('manufacturing')}</td>
         <td>${inp('testing_eng')}</td><td>${inp('testing_shop')}</td>
         <td>${inp('teardown_install_eng')}</td><td>${inp('teardown_install_shop')}</td>
+        <td>${inp('warranty_eng')}</td><td>${inp('warranty_shop')}</td>
         <td>${money('parts_cost')}</td>
       </tr></tbody>
     </table></div>`;
@@ -17935,6 +17944,8 @@ async function openProjectReleaseModal(project) {
         <p class="pr-muted">Upload the SDC Project Release (.docx). We'll pull the order date, delivery, financial milestones, penalty clause, and the project budget (hours + parts cost) image.</p>
         <button type="button" class="btn-primary pr-upload-btn">⬆ Upload Project Release (.docx)</button>
         <input type="file" accept=".docx" class="pr-file" style="display:none;">
+        <p class="pr-muted" style="margin-top:14px;">…or pull the quoted hours straight from the ETC Planner (uses this project's job number):</p>
+        <button type="button" class="btn-ghost pr-pull-etc-btn">🔄 Pull quoted hours from ETC</button>
         <div class="pr-status"></div>
       </div>`;
     }
@@ -17959,6 +17970,7 @@ async function openProjectReleaseModal(project) {
       </div>
       <div class="pr-foot">
         <span class="pr-muted pr-filename">📎 ${escapeHtml(rel.name || 'Project Release.docx')}${rel.accepted_at ? ' · accepted' : (rel.uploaded_at ? ' · uploaded ' + escapeHtml(new Date(rel.uploaded_at).toLocaleDateString()) : '')}</span>
+        <button type="button" class="btn-ghost pr-refresh-etc-btn" title="Re-pull the quoted hours from the ETC Planner">🔄 Refresh quoted hours from ETC</button>
         <button type="button" class="btn-ghost pr-view-btn" title="Open the original Word document">📄 View original</button>
         <button type="button" class="btn-ghost pr-replace-btn">⬆ Replace…</button>
         <button type="button" class="btn-primary pr-accept-btn">✓ Accept &amp; apply</button>
@@ -17968,7 +17980,7 @@ async function openProjectReleaseModal(project) {
   };
 
   overlay.innerHTML = `
-    <div class="modal-card" style="max-width: 940px;">
+    <div class="modal-card" style="max-width: 1180px;">
       <div class="modal-head">
         <h2 style="margin:0;">Project Release — ${escapeHtml(project)}</h2>
         <button class="modal-close" type="button">×</button>
@@ -17978,6 +17990,30 @@ async function openProjectReleaseModal(project) {
   document.body.appendChild(overlay);
   overlay.querySelector('.modal-close').addEventListener('click', close);
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+  // Pull / refresh the quoted-hours budget from the ETC Planner (server re-pulls
+  // by this project's job number and rewrites the project_quote budget). On
+  // success, reload the panel so the grid shows the fresh numbers.
+  overlay.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.pr-refresh-etc-btn, .pr-pull-etc-btn');
+    if (!btn) return;
+    e.preventDefault();
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ Pulling from ETC…';
+    try {
+      const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote/refresh-from-etc`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `Refresh failed (${r.status})`);
+      if (state.quoteCache) delete state.quoteCache[project]; // force Δ overlay to re-read
+      try { showToast('Quoted hours pulled from the ETC Planner.'); } catch (_) {}
+      close();
+      try { await openProjectReleaseModal(project); } catch (_) {}
+      try { renderTable(); } catch (_) {}
+    } catch (err) {
+      btn.disabled = false; btn.textContent = orig;
+      try { showToast(err.message || 'Refresh failed', { kind: 'error' }); } catch (_) {}
+    }
+  });
 
   // Read the editable fields back into the release object.
   const readEdits = () => {
