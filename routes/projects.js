@@ -325,6 +325,11 @@ module.exports = function createRouter(deps) {
   });
 
   function notifyClients(type, extra = {}) {
+    // Emit over socket.io too — the browser's realtime layer (realtime-ui.js)
+    // listens on socket.io, and nothing consumes the SSE channel, so
+    // project create/rename/delete used to never propagate live. Socket.io
+    // first so it always fires regardless of SSE subscribers.
+    try { io.emit(type, extra); } catch (_) {}
     if (_sseClients.size === 0) return;
     const data = JSON.stringify({ type, ...extra });
     for (const client of _sseClients) {
@@ -437,6 +442,23 @@ module.exports = function createRouter(deps) {
         await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE task_history SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE task_comments SET project = ? WHERE project = ?', [updates.name, existing.name]);
+        // Meeting notes, quote, and estimate blobs live in `settings` keyed by
+        // the project NAME (e.g. `project_notes:<name>`). A rename that didn't
+        // move these orphaned the data — the panel loaded the new name, found
+        // nothing, and the notes "disappeared." Migrate each. If a blob already
+        // exists at the new name, keep it (don't clobber) and drop the old.
+        for (const prefix of ['project_notes', 'project_quote', 'project_estimate']) {
+          const oldKey = `${prefix}:${existing.name}`;
+          const newKey = `${prefix}:${updates.name}`;
+          const [[oldRow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [oldKey]);
+          if (!oldRow) continue;
+          const [[newRow]] = await pool.query('SELECT `key` FROM settings WHERE `key` = ?', [newKey]);
+          if (!newRow) {
+            await pool.query('UPDATE settings SET `key` = ? WHERE `key` = ?', [newKey, oldKey]);
+          } else {
+            await pool.query('DELETE FROM settings WHERE `key` = ?', [oldKey]);
+          }
+        }
       }
 
       const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');

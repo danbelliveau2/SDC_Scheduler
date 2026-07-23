@@ -131,9 +131,14 @@
     },
   },
   notes: {
+    // Throws on a failed load (network/5xx) so callers can tell "load failed"
+    // from "no notes yet" (a 200 returning null). This distinction matters:
+    // treating a failed load as empty and then autosaving would WIPE the real
+    // notes on the server — the bug behind "I lost all my meeting notes."
     get: async (project) => {
-      try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/notes`); if (!r.ok) return null; return await r.json(); }
-      catch (_) { return null; }
+      const r = await fetch(`/api/project/${encodeURIComponent(project)}/notes`);
+      if (!r.ok) throw new Error(`notes load failed (${r.status})`);
+      return await r.json();
     },
     save: async (project, data) => fetch(`/api/project/${encodeURIComponent(project)}/notes`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || { sessions: [] }),
@@ -14768,10 +14773,29 @@ function render() {
 function _notesGenId() { return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 let _notesSaveTimer = null;
 function saveProjectNotes(project) {
+  // Never autosave notes for a project whose blob wasn't loaded successfully —
+  // otherwise a failed load (or a not-yet-loaded project) would persist an
+  // empty/stale blob over the real server notes. This is the guard that keeps
+  // "lost all my meeting notes" from happening.
+  if (!state._notesLoaded || !state._notesLoaded[project]) return;
   clearTimeout(_notesSaveTimer);
   _notesSaveTimer = setTimeout(() => {
-    api.notes.save(project, state.projectNotes[project] || { sessions: [] }).catch(() => {});
+    api.notes.save(project, state.projectNotes[project] || { sessions: [] })
+      .then(r => { if (r && !r.ok) showToast('Notes could not be saved — check your connection.', { kind: 'error' }); })
+      .catch(() => showToast('Notes could not be saved — check your connection.', { kind: 'error' }));
   }, 500);
+}
+
+// Force a fresh reload of a project's notes from the server (used by the
+// realtime notes:updated handler and on socket reconnect). Clears the cached
+// blob + loaded flag so renderProjectNotes re-fetches.
+function reloadProjectNotes(project) {
+  if (!project) return;
+  if (state._notesLoaded) delete state._notesLoaded[project];
+  delete state.projectNotes[project];
+  if (state.view === 'schedule' && (state.filters && state.filters.project) === project) {
+    renderProjectNotes();
+  }
 }
 // Transient (not persisted) per-meeting composer drafts + the id of the note
 // currently open for editing. Cleared on Add / Done.
@@ -15003,11 +15027,24 @@ function renderProjectNotes() {
   const project = state.filters && state.filters.project;
   if (!project || state.view !== 'schedule') { el.style.display = 'none'; return; }
   el.style.display = '';
-  if (!state.projectNotes[project]) {
+  if (!state.projectNotes[project] || !(state._notesLoaded && state._notesLoaded[project])) {
+    // Re-fetch unless this project's notes were VERIFIED-loaded (loaded flag).
+    // The Actions key-info aggregator may have left a display-only empty
+    // placeholder in projectNotes without the flag; the schedule panel must
+    // still do its own authoritative load before enabling autosave.
     el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span></div>`;
+    state._notesLoaded = state._notesLoaded || {};
     api.notes.get(project).then(data => {
       state.projectNotes[project] = (data && Array.isArray(data.sessions)) ? data : { sessions: [] };
+      state._notesLoaded[project] = true; // safe to autosave now
       if ((state.filters && state.filters.project) === project) renderProjectNotes();
+    }).catch(() => {
+      // Load failed — do NOT fall back to an empty blob. Leaving projectNotes
+      // undefined keeps autosave disabled (saveProjectNotes checks the loaded
+      // flag) so a transient error can never overwrite real notes, and a later
+      // render or reconnect retries the fetch.
+      el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span><span class="notes-count" style="color:#b00020">couldn't load — retrying…</span></div>`;
+      setTimeout(() => { if ((state.filters && state.filters.project) === project) renderProjectNotes(); }, 4000);
     });
     return;
   }
@@ -20477,7 +20514,14 @@ function renderActionsKeyInfo() {
     host.innerHTML = `<div class="actions-keyinfo-head">★ Key Information</div><div class="actions-empty">Loading notes…</div>`;
     missing.forEach(p => {
       api.notes.get(p)
-        .then(d => { state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] }; })
+        .then(d => {
+          state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] };
+          state._notesLoaded = state._notesLoaded || {};
+          state._notesLoaded[p] = true; // verified-loaded — safe to autosave
+        })
+        // Display-only fallback for the aggregate view. Deliberately does NOT
+        // set the loaded flag, so the schedule panel re-fetches authoritatively
+        // before enabling autosave (never wipes real notes on a failed load).
         .catch(() => { state.projectNotes[p] = { sessions: [] }; })
         .finally(() => { if (projects.every(pp => state.projectNotes[pp]) && state.view === 'actions') renderActionsKeyInfo(); });
     });
