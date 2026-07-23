@@ -1,8 +1,81 @@
-﻿const api = {
+﻿// ── Save status + data-loss guard ────────────────────────────────────────────
+// The scheduler autosaves every edit (see api.update / api.create). This tracks
+// in-flight saves and any that FAILED (network / server error, e.g. the ~2-min
+// server restart landing mid-save) so the user gets honest feedback + a "Save
+// now" retry, and the browser-close warning fires ONLY when a save is actually
+// pending or failed — never on every navigation. A failed save keeps the edit's
+// payload so it can be re-sent (with a fresh version) instead of being lost.
+const SaveTracker = {
+  inFlight: 0,
+  failures: [],            // { kind:'update'|'create', id?, data }
+  begin() { this.inFlight++; renderSaveStatus(); },
+  end()   { this.inFlight = Math.max(0, this.inFlight - 1); renderSaveStatus(); },
+  fail(entry) { this.failures.push(entry); renderSaveStatus(); },
+  hasPending() { return this.inFlight > 0 || this.failures.length > 0; },
+};
+function _saveChipEl() {
+  let el = document.getElementById('save-status-chip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'save-status-chip';
+    el.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:99999;display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:20px;font:600 12px/1.2 sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.18);transition:opacity .3s;';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+let _saveChipHideTimer = null;
+function renderSaveStatus() {
+  let el;
+  try { el = _saveChipEl(); } catch (_) { return; } // DOM not ready yet
+  clearTimeout(_saveChipHideTimer);
+  el.style.opacity = '1';
+  if (SaveTracker.failures.length > 0) {
+    const n = SaveTracker.failures.length;
+    el.style.background = '#fdecea'; el.style.color = '#b3261e'; el.style.border = '1px solid #f4c7c3';
+    el.innerHTML = `⚠ ${n} unsaved edit${n > 1 ? 's' : ''} <button id="save-retry-btn" type="button" style="cursor:pointer;border:none;background:#b3261e;color:#fff;border-radius:12px;padding:3px 10px;font:600 11px sans-serif;">Save now</button>`;
+    const b = el.querySelector('#save-retry-btn'); if (b) b.onclick = flushSaves;
+  } else if (SaveTracker.inFlight > 0) {
+    el.style.background = '#fff8e1'; el.style.color = '#8a6d00'; el.style.border = '1px solid #f0e0a0';
+    el.innerHTML = '⏳ Saving…';
+  } else {
+    el.style.background = '#e7f5ea'; el.style.color = '#1e7d34'; el.style.border = '1px solid #bfe3c6';
+    el.innerHTML = '✓ All changes saved';
+    _saveChipHideTimer = setTimeout(() => { try { el.style.opacity = '0'; } catch (_) {} }, 2500);
+  }
+}
+// Retry every failed save. Each retry re-injects a fresh version (api.update
+// strips + re-reads it), and api.* re-records anything that still fails.
+async function flushSaves() {
+  const pending = SaveTracker.failures.splice(0);
+  renderSaveStatus();
+  for (const f of pending) {
+    const d = { ...f.data }; delete d.version;
+    try {
+      if (f.kind === 'create') await api.create(d);
+      else await api.update(f.id, d);
+    } catch (_) { /* re-recorded by api.* */ }
+  }
+  try { if (typeof loadTasks === 'function') await loadTasks(); } catch (_) {}
+  renderSaveStatus();
+}
+window.addEventListener('beforeunload', (e) => {
+  if (SaveTracker.hasPending()) { e.preventDefault(); e.returnValue = ''; return ''; }
+});
+
+const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
-  create: (data) => {
+  create: async (data) => {
     window._lastLocalEdit = Date.now();
-    return fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+    SaveTracker.begin();
+    try {
+      const r = await fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      SaveTracker.fail({ kind: 'create', data });
+      if (typeof showToast === 'function') showToast("Couldn't add a row — click “Save now” to retry.", { kind: 'error' });
+      return {};
+    } finally { SaveTracker.end(); }
   },
   // Phase 5 (conflict detection) wrapper: inject the current version from
   // state.tasks so the server can detect "somebody else saved first" and
@@ -17,22 +90,32 @@
         if (current && current.version != null) data = { ...data, version: current.version };
       } catch (_) {}
     }
-    const r = await fetch(`/api/tasks/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    const body = await r.json();
-    if (r.status === 409) {
-      if (typeof showToast === 'function') {
-        showToast('Someone else just edited this row. Reloading…', { kind: 'warn' });
+    SaveTracker.begin();
+    try {
+      const r = await fetch(`/api/tasks/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (r.status === 409) {
+        // Conflict, not a lost edit — server has newer data; reload rather than
+        // overwrite. NOT tracked as a failure (retrying would clobber).
+        const body = await r.json().catch(() => ({}));
+        if (typeof showToast === 'function') showToast('Someone else just edited this row. Reloading…', { kind: 'warn' });
+        try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
+        return body.server_row || body;
       }
-      try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
-      // Hand the server's authoritative row back to the caller so chained
-      // .then() consumers don't choke on undefined.
-      return body.server_row || body;
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      // Network / server error — the edit did NOT persist. Record it for retry
+      // (via the "Save now" chip) and tell the user instead of failing silently.
+      SaveTracker.fail({ kind: 'update', id, data });
+      if (typeof showToast === 'function') showToast("Couldn't save an edit — click “Save now” to retry.", { kind: 'error' });
+      try { return (typeof state !== 'undefined' && state.tasks) ? (state.tasks.find(t => t.id === id) || {}) : {}; } catch (_) { return {}; }
+    } finally {
+      SaveTracker.end();
     }
-    return body;
   },
   remove: (id) => {
     window._lastLocalEdit = Date.now();
