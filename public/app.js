@@ -24,7 +24,34 @@ function _saveChipEl() {
   return el;
 }
 let _saveChipHideTimer = null;
+// Keep the toolbar Save button (#btn-save) in sync with the same state as the
+// floating chip. The button is ALWAYS visible; clicking it force-saves + retries
+// any pending/failed edits (a no-op confirmation when everything's already saved).
+function _renderSaveButton() {
+  const b = document.getElementById('btn-save');
+  if (!b) return;
+  b.onclick = () => flushSaves(true);
+  b.style.transition = 'background .2s,color .2s';
+  const n = SaveTracker.failures.length;
+  if (n > 0) {
+    b.disabled = false;
+    b.textContent = `💾 Save now (${n})`;
+    b.style.background = '#b3261e'; b.style.color = '#fff'; b.style.fontWeight = '700';
+    b.title = `${n} edit${n > 1 ? 's' : ''} didn't save — click to retry.`;
+  } else if (SaveTracker.inFlight > 0) {
+    b.disabled = true;
+    b.textContent = '💾 Saving…';
+    b.style.background = ''; b.style.color = ''; b.style.fontWeight = '';
+    b.title = 'Saving your latest edit…';
+  } else {
+    b.disabled = false;
+    b.textContent = '💾 Saved';
+    b.style.background = ''; b.style.color = ''; b.style.fontWeight = '';
+    b.title = 'Edits save automatically as you make them. Click to force-save and retry anything that didn’t save.';
+  }
+}
 function renderSaveStatus() {
+  try { _renderSaveButton(); } catch (_) {}
   let el;
   try { el = _saveChipEl(); } catch (_) { return; } // DOM not ready yet
   clearTimeout(_saveChipHideTimer);
@@ -33,7 +60,7 @@ function renderSaveStatus() {
     const n = SaveTracker.failures.length;
     el.style.background = '#fdecea'; el.style.color = '#b3261e'; el.style.border = '1px solid #f4c7c3';
     el.innerHTML = `⚠ ${n} unsaved edit${n > 1 ? 's' : ''} <button id="save-retry-btn" type="button" style="cursor:pointer;border:none;background:#b3261e;color:#fff;border-radius:12px;padding:3px 10px;font:600 11px sans-serif;">Save now</button>`;
-    const b = el.querySelector('#save-retry-btn'); if (b) b.onclick = flushSaves;
+    const b = el.querySelector('#save-retry-btn'); if (b) b.onclick = () => flushSaves(true);
   } else if (SaveTracker.inFlight > 0) {
     el.style.background = '#fff8e1'; el.style.color = '#8a6d00'; el.style.border = '1px solid #f0e0a0';
     el.innerHTML = '⏳ Saving…';
@@ -44,10 +71,15 @@ function renderSaveStatus() {
   }
 }
 // Retry every failed save. Each retry re-injects a fresh version (api.update
-// strips + re-reads it), and api.* re-records anything that still fails.
-async function flushSaves() {
+// strips + re-reads it), and api.* re-records anything that still fails. When
+// nothing is pending, a click just confirms "all saved" (no needless reload).
+async function flushSaves(fromClick) {
   const pending = SaveTracker.failures.splice(0);
   renderSaveStatus();
+  if (pending.length === 0) {
+    if (fromClick && typeof showToast === 'function') showToast('All changes are saved.', { kind: 'success' });
+    return;
+  }
   for (const f of pending) {
     const d = { ...f.data }; delete d.version;
     try {
@@ -57,10 +89,15 @@ async function flushSaves() {
   }
   try { if (typeof loadTasks === 'function') await loadTasks(); } catch (_) {}
   renderSaveStatus();
+  if (fromClick && typeof showToast === 'function') {
+    showToast(SaveTracker.failures.length ? 'Some edits still couldn’t save — will keep the values for retry.' : 'All changes saved.', { kind: SaveTracker.failures.length ? 'error' : 'success' });
+  }
 }
 window.addEventListener('beforeunload', (e) => {
   if (SaveTracker.hasPending()) { e.preventDefault(); e.returnValue = ''; return ''; }
 });
+// Wire the toolbar Save button on load so it's clickable before any save activity.
+window.addEventListener('DOMContentLoaded', () => { try { _renderSaveButton(); } catch (_) {} });
 
 const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
