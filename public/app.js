@@ -1,8 +1,118 @@
-﻿const api = {
+﻿// ── Save status + data-loss guard ────────────────────────────────────────────
+// The scheduler autosaves every edit (see api.update / api.create). This tracks
+// in-flight saves and any that FAILED (network / server error, e.g. the ~2-min
+// server restart landing mid-save) so the user gets honest feedback + a "Save
+// now" retry, and the browser-close warning fires ONLY when a save is actually
+// pending or failed — never on every navigation. A failed save keeps the edit's
+// payload so it can be re-sent (with a fresh version) instead of being lost.
+const SaveTracker = {
+  inFlight: 0,
+  failures: [],            // { kind:'update'|'create', id?, data }
+  begin() { this.inFlight++; renderSaveStatus(); },
+  end()   { this.inFlight = Math.max(0, this.inFlight - 1); renderSaveStatus(); },
+  fail(entry) { this.failures.push(entry); renderSaveStatus(); },
+  hasPending() { return this.inFlight > 0 || this.failures.length > 0; },
+};
+function _saveChipEl() {
+  let el = document.getElementById('save-status-chip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'save-status-chip';
+    el.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:99999;display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:20px;font:600 12px/1.2 sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.18);transition:opacity .3s;';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+let _saveChipHideTimer = null;
+// Keep the toolbar Save button (#btn-save) in sync with the same state as the
+// floating chip. The button is ALWAYS visible; clicking it force-saves + retries
+// any pending/failed edits (a no-op confirmation when everything's already saved).
+function _renderSaveButton() {
+  const b = document.getElementById('btn-save');
+  if (!b) return;
+  b.onclick = () => flushSaves(true);
+  b.style.transition = 'background .2s,color .2s';
+  const n = SaveTracker.failures.length;
+  if (n > 0) {
+    b.disabled = false;
+    b.textContent = `💾 Save now (${n})`;
+    b.style.background = '#b3261e'; b.style.color = '#fff'; b.style.fontWeight = '700';
+    b.title = `${n} edit${n > 1 ? 's' : ''} didn't save — click to retry.`;
+  } else if (SaveTracker.inFlight > 0) {
+    b.disabled = true;
+    b.textContent = '💾 Saving…';
+    b.style.background = ''; b.style.color = ''; b.style.fontWeight = '';
+    b.title = 'Saving your latest edit…';
+  } else {
+    b.disabled = false;
+    b.textContent = '💾 Saved';
+    b.style.background = ''; b.style.color = ''; b.style.fontWeight = '';
+    b.title = 'Edits save automatically as you make them. Click to force-save and retry anything that didn’t save.';
+  }
+}
+function renderSaveStatus() {
+  try { _renderSaveButton(); } catch (_) {}
+  let el;
+  try { el = _saveChipEl(); } catch (_) { return; } // DOM not ready yet
+  clearTimeout(_saveChipHideTimer);
+  el.style.opacity = '1';
+  if (SaveTracker.failures.length > 0) {
+    const n = SaveTracker.failures.length;
+    el.style.background = '#fdecea'; el.style.color = '#b3261e'; el.style.border = '1px solid #f4c7c3';
+    el.innerHTML = `⚠ ${n} unsaved edit${n > 1 ? 's' : ''} <button id="save-retry-btn" type="button" style="cursor:pointer;border:none;background:#b3261e;color:#fff;border-radius:12px;padding:3px 10px;font:600 11px sans-serif;">Save now</button>`;
+    const b = el.querySelector('#save-retry-btn'); if (b) b.onclick = () => flushSaves(true);
+  } else if (SaveTracker.inFlight > 0) {
+    el.style.background = '#fff8e1'; el.style.color = '#8a6d00'; el.style.border = '1px solid #f0e0a0';
+    el.innerHTML = '⏳ Saving…';
+  } else {
+    el.style.background = '#e7f5ea'; el.style.color = '#1e7d34'; el.style.border = '1px solid #bfe3c6';
+    el.innerHTML = '✓ All changes saved';
+    _saveChipHideTimer = setTimeout(() => { try { el.style.opacity = '0'; } catch (_) {} }, 2500);
+  }
+}
+// Retry every failed save. Each retry re-injects a fresh version (api.update
+// strips + re-reads it), and api.* re-records anything that still fails. When
+// nothing is pending, a click just confirms "all saved" (no needless reload).
+async function flushSaves(fromClick) {
+  const pending = SaveTracker.failures.splice(0);
+  renderSaveStatus();
+  if (pending.length === 0) {
+    if (fromClick && typeof showToast === 'function') showToast('All changes are saved.', { kind: 'success' });
+    return;
+  }
+  for (const f of pending) {
+    const d = { ...f.data }; delete d.version;
+    try {
+      if (f.kind === 'create') await api.create(d);
+      else await api.update(f.id, d);
+    } catch (_) { /* re-recorded by api.* */ }
+  }
+  try { if (typeof loadTasks === 'function') await loadTasks(); } catch (_) {}
+  renderSaveStatus();
+  if (fromClick && typeof showToast === 'function') {
+    showToast(SaveTracker.failures.length ? 'Some edits still couldn’t save — will keep the values for retry.' : 'All changes saved.', { kind: SaveTracker.failures.length ? 'error' : 'success' });
+  }
+}
+window.addEventListener('beforeunload', (e) => {
+  if (SaveTracker.hasPending()) { e.preventDefault(); e.returnValue = ''; return ''; }
+});
+// Wire the toolbar Save button on load so it's clickable before any save activity.
+window.addEventListener('DOMContentLoaded', () => { try { _renderSaveButton(); } catch (_) {} });
+
+const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
-  create: (data) => {
+  create: async (data) => {
     window._lastLocalEdit = Date.now();
-    return fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+    SaveTracker.begin();
+    try {
+      const r = await fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      SaveTracker.fail({ kind: 'create', data });
+      if (typeof showToast === 'function') showToast("Couldn't add a row — click “Save now” to retry.", { kind: 'error' });
+      return {};
+    } finally { SaveTracker.end(); }
   },
   // Phase 5 (conflict detection) wrapper: inject the current version from
   // state.tasks so the server can detect "somebody else saved first" and
@@ -17,22 +127,32 @@
         if (current && current.version != null) data = { ...data, version: current.version };
       } catch (_) {}
     }
-    const r = await fetch(`/api/tasks/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    const body = await r.json();
-    if (r.status === 409) {
-      if (typeof showToast === 'function') {
-        showToast('Someone else just edited this row. Reloading…', { kind: 'warn' });
+    SaveTracker.begin();
+    try {
+      const r = await fetch(`/api/tasks/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (r.status === 409) {
+        // Conflict, not a lost edit — server has newer data; reload rather than
+        // overwrite. NOT tracked as a failure (retrying would clobber).
+        const body = await r.json().catch(() => ({}));
+        if (typeof showToast === 'function') showToast('Someone else just edited this row. Reloading…', { kind: 'warn' });
+        try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
+        return body.server_row || body;
       }
-      try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
-      // Hand the server's authoritative row back to the caller so chained
-      // .then() consumers don't choke on undefined.
-      return body.server_row || body;
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) {
+      // Network / server error — the edit did NOT persist. Record it for retry
+      // (via the "Save now" chip) and tell the user instead of failing silently.
+      SaveTracker.fail({ kind: 'update', id, data });
+      if (typeof showToast === 'function') showToast("Couldn't save an edit — click “Save now” to retry.", { kind: 'error' });
+      try { return (typeof state !== 'undefined' && state.tasks) ? (state.tasks.find(t => t.id === id) || {}) : {}; } catch (_) { return {}; }
+    } finally {
+      SaveTracker.end();
     }
-    return body;
   },
   remove: (id) => {
     window._lastLocalEdit = Date.now();
@@ -131,9 +251,14 @@
     },
   },
   notes: {
+    // Throws on a failed load (network/5xx) so callers can tell "load failed"
+    // from "no notes yet" (a 200 returning null). This distinction matters:
+    // treating a failed load as empty and then autosaving would WIPE the real
+    // notes on the server — the bug behind "I lost all my meeting notes."
     get: async (project) => {
-      try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/notes`); if (!r.ok) return null; return await r.json(); }
-      catch (_) { return null; }
+      const r = await fetch(`/api/project/${encodeURIComponent(project)}/notes`);
+      if (!r.ok) throw new Error(`notes load failed (${r.status})`);
+      return await r.json();
     },
     save: async (project, data) => fetch(`/api/project/${encodeURIComponent(project)}/notes`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || { sessions: [] }),
@@ -1556,7 +1681,7 @@ function cellHtml(t, key) {
         : (ph ? 'title="Placeholder — replace with a real team member when staffing this task"' : '');
       return `<td class="${classes.join(' ')}" data-col="assignee" ${title}>${escapeHtml(t.assignee || '')}</td>`;
     }
-    case 'start':    return `<td class="${cls}" data-col="start">${fmtDate(t.start_date)}</td>`;
+    case 'start':    return `<td class="${cls}" data-col="start">${t.dates_locked ? '<span class="date-lock" title="Dates locked — hand-set, ignored by the predecessor scheduler. Right-click the row to unlock.">🔒</span> ' : ''}${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'project':  return `<td class="${cls}" data-col="project" title="${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</td>`;
     case 'completed':
@@ -2890,6 +3015,7 @@ async function saveCellEdit(id, col, value, task) {
       // finish shifts to honor whatever working-days the task already had.
       const snapped = value ? snapToBusinessDay(value, 1) : null;
       data.start_date = snapped;
+      data.dates_locked = 1; // pin: a hand-set date must survive the predecessor cascade
       if (snapped && !task.is_milestone) {
         const dur = task.duration_days != null
           ? Number(task.duration_days)
@@ -2906,6 +3032,7 @@ async function saveCellEdit(id, col, value, task) {
       // Editing the finish manually overrides duration — recompute it from the new
       // span so the duration column matches what the user just set.
       data.end_date = value || null;
+      data.dates_locked = 1; // pin: a hand-set finish must survive the predecessor cascade
       if (task.is_milestone) data.start_date = value || null;
       else if (value && task.start_date) {
         const newDur = businessDaysBetween(task.start_date, value);
@@ -13852,6 +13979,7 @@ function showCreateScheduleDialog(defaultWs) {
         <div class="cs-seg" id="cs-seg">
           <button type="button" class="cs-seg-btn${defaultMode === 'template' ? ' is-active' : ''}" data-mode="template">A template</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'project' ? ' is-active' : ''}" data-mode="project">Another schedule</button>
+          <button type="button" class="cs-seg-btn" data-mode="planner">An ETC job</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'blank' ? ' is-active' : ''}" data-mode="blank">Blank</button>
         </div>
         <select id="cs-source" class="cs-source"></select>
@@ -13883,9 +14011,55 @@ function showCreateScheduleDialog(defaultWs) {
   const hintEl = overlay.querySelector('#cs-hint');
   let mode = defaultMode;
 
+  // ETC Planner jobs — lazily loaded the first time the "An ETC job" segment is
+  // used. State: plannerJobs is an ARRAY once loaded ([] = genuinely no jobs);
+  // it stays null while unloaded OR after a FAILED fetch (so the list can retry
+  // — the old code cached a failure as [] and got stuck showing "unavailable",
+  // e.g. when the dialog was opened before the user was signed in). plannerError
+  // holds the failure message; clicking the segment again retries.
+  let plannerJobs = null;
+  let plannerLoading = false;
+  let plannerError = null;
+  const loadPlannerJobs = async () => {
+    if (plannerLoading) return;
+    plannerLoading = true; plannerError = null;
+    try {
+      const r = await fetch('/api/planner/jobs?status=Active');
+      if (!r.ok) { plannerJobs = null; plannerError = `ETC Planner unavailable (${r.status})`; }
+      else { const b = await r.json().catch(() => ({})); plannerJobs = Array.isArray(b.jobs) ? b.jobs : []; }
+    } catch (_) { plannerJobs = null; plannerError = 'Could not reach the ETC Planner'; }
+    finally { plannerLoading = false; }
+    if (mode === 'planner') { fillPlannerSource(); refresh(); }
+  };
+  const fillPlannerSource = () => {
+    if (plannerLoading) {
+      sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+      return;
+    }
+    if (Array.isArray(plannerJobs)) {
+      if (plannerJobs.length === 0) {
+        sourceEl.innerHTML = '<option value="" disabled selected>No active ETC jobs found.</option>';
+        return;
+      }
+      sourceEl.innerHTML = '<option value="" disabled selected>Pick an ETC job…</option>'
+        + plannerJobs.map(j => `<option value="${escapeHtml(j.jobId)}">${escapeHtml(j.jobId)} — ${escapeHtml(j.jobName || '')}${j.billable ? '' : ' (non-billable)'}</option>`).join('');
+      return;
+    }
+    // Not loaded yet (null). A prior failure shows a retry hint; otherwise kick
+    // off the fetch. Re-selecting the "An ETC job" segment clears the error to
+    // force a fresh attempt (see the segment click handler).
+    if (plannerError) {
+      sourceEl.innerHTML = `<option value="" disabled selected>${escapeHtml(plannerError)} — click "An ETC job" to retry.</option>`;
+      return;
+    }
+    sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+    loadPlannerJobs();
+  };
+
   const fillSource = () => {
     if (mode === 'blank') { sourceEl.style.display = 'none'; return; }
     sourceEl.style.display = '';
+    if (mode === 'planner') { fillPlannerSource(); return; }
     const list = mode === 'template' ? templates : projects;
     if (list.length === 0) {
       sourceEl.innerHTML = `<option value="" disabled selected>${mode === 'template' ? 'No templates yet — mark a schedule as a template first (right-click its tab → Mark as template ★).' : 'No other schedules yet.'}</option>`;
@@ -13897,16 +14071,29 @@ function showCreateScheduleDialog(defaultWs) {
   const refresh = () => {
     hintEl.textContent = mode === 'blank'
       ? 'Starts empty — just the Receipt of PO + FAT spine markers.'
-      : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
+      : mode === 'planner'
+        ? 'Builds the full schedule from the SDC standard template, linked to the ETC job — snapshots its billable flag + release/delivery dates, imports its quoted hours into the Project Release budget, and adds the PO + FAT spine.'
+        : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
     buildBtn.disabled = !nameEl.value.trim() || (mode !== 'blank' && !sourceEl.value);
   };
   seg.querySelectorAll('.cs-seg-btn').forEach(b => b.addEventListener('click', () => {
     mode = b.dataset.mode;
     seg.querySelectorAll('.cs-seg-btn').forEach(x => x.classList.toggle('is-active', x === b));
+    // Re-selecting "An ETC job" after a failed load clears the error so the
+    // list retries (recovers from a fetch that ran before sign-in, etc.).
+    if (mode === 'planner' && !Array.isArray(plannerJobs)) plannerError = null;
     fillSource(); refresh();
   }));
   nameEl.addEventListener('input', refresh);
-  sourceEl.addEventListener('change', refresh);
+  sourceEl.addEventListener('change', () => {
+    // Picking an ETC job auto-fills the schedule name (job convention
+    // "<jobId>_<jobName>") unless the user already typed one.
+    if (mode === 'planner' && sourceEl.value && !nameEl.value.trim()) {
+      const j = (plannerJobs || []).find(x => x.jobId === sourceEl.value);
+      if (j) nameEl.value = `${j.jobId}_${j.jobName || ''}`.trim();
+    }
+    refresh();
+  });
   fillSource(); refresh();
   setTimeout(() => nameEl.focus(), 0);
 
@@ -13934,6 +14121,43 @@ function showCreateScheduleDialog(defaultWs) {
       await ensureAnchorsForProject(name);
       await loadTasks();
       openCreated(name);
+      return;
+    }
+    if (mode === 'planner') {
+      const jobId = sourceEl.value;
+      if (!jobId) return;
+      // Fetch stays before close() so a failure keeps the dialog open with an
+      // inline error, matching the rest of this dialog's error style.
+      buildBtn.disabled = true;
+      let row = {}, ok = false;
+      try {
+        const r = await fetch('/api/projects', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from_planner_job: jobId, name }),
+        });
+        row = await r.json().catch(() => ({}));
+        ok = r.ok;
+        if (!ok) hintEl.textContent = row.error || `Couldn't create the schedule (${r.status}).`;
+      } catch (e) { hintEl.textContent = `Couldn't reach the ETC Planner: ${e.message}`; }
+      if (!ok) { buildBtn.disabled = false; return; }
+      close();
+      const created = row.name || name;
+      // The ETC POST created the linked project (billable + dates snapshot +
+      // imported quoted hours). Now lay down the STANDARD schedule from the SDC
+      // template — clone its tasks, financials, predecessors and PO/FAT spine —
+      // so the new project isn't empty. Falls back to an empty linked project if
+      // the template isn't available in this session.
+      const ETC_TEMPLATE = 'SDC_StandardProject_Template';
+      if (state.tasks.some(t => t.project === ETC_TEMPLATE)) {
+        await duplicateProject(ETC_TEMPLATE, created); // clones + opens + loadTasks
+      } else {
+        if (!state.openProjects.includes(created)) state.openProjects.push(created);
+        state.filters.project = created;
+        saveProjectTabs();
+        await ensureAnchorsForProject(created);
+        await loadTasks();
+      }
+      openCreated(created);
       return;
     }
     const src = sourceEl.value;
@@ -14782,10 +15006,29 @@ function render() {
 function _notesGenId() { return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 let _notesSaveTimer = null;
 function saveProjectNotes(project) {
+  // Never autosave notes for a project whose blob wasn't loaded successfully —
+  // otherwise a failed load (or a not-yet-loaded project) would persist an
+  // empty/stale blob over the real server notes. This is the guard that keeps
+  // "lost all my meeting notes" from happening.
+  if (!state._notesLoaded || !state._notesLoaded[project]) return;
   clearTimeout(_notesSaveTimer);
   _notesSaveTimer = setTimeout(() => {
-    api.notes.save(project, state.projectNotes[project] || { sessions: [] }).catch(() => {});
+    api.notes.save(project, state.projectNotes[project] || { sessions: [] })
+      .then(r => { if (r && !r.ok) showToast('Notes could not be saved — check your connection.', { kind: 'error' }); })
+      .catch(() => showToast('Notes could not be saved — check your connection.', { kind: 'error' }));
   }, 500);
+}
+
+// Force a fresh reload of a project's notes from the server (used by the
+// realtime notes:updated handler and on socket reconnect). Clears the cached
+// blob + loaded flag so renderProjectNotes re-fetches.
+function reloadProjectNotes(project) {
+  if (!project) return;
+  if (state._notesLoaded) delete state._notesLoaded[project];
+  delete state.projectNotes[project];
+  if (state.view === 'schedule' && (state.filters && state.filters.project) === project) {
+    renderProjectNotes();
+  }
 }
 // Transient (not persisted) per-meeting composer drafts + the id of the note
 // currently open for editing. Cleared on Add / Done.
@@ -15017,11 +15260,24 @@ function renderProjectNotes() {
   const project = state.filters && state.filters.project;
   if (!project || state.view !== 'schedule') { el.style.display = 'none'; return; }
   el.style.display = '';
-  if (!state.projectNotes[project]) {
+  if (!state.projectNotes[project] || !(state._notesLoaded && state._notesLoaded[project])) {
+    // Re-fetch unless this project's notes were VERIFIED-loaded (loaded flag).
+    // The Actions key-info aggregator may have left a display-only empty
+    // placeholder in projectNotes without the flag; the schedule panel must
+    // still do its own authoritative load before enabling autosave.
     el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span></div>`;
+    state._notesLoaded = state._notesLoaded || {};
     api.notes.get(project).then(data => {
       state.projectNotes[project] = (data && Array.isArray(data.sessions)) ? data : { sessions: [] };
+      state._notesLoaded[project] = true; // safe to autosave now
       if ((state.filters && state.filters.project) === project) renderProjectNotes();
+    }).catch(() => {
+      // Load failed — do NOT fall back to an empty blob. Leaving projectNotes
+      // undefined keeps autosave disabled (saveProjectNotes checks the loaded
+      // flag) so a transient error can never overwrite real notes, and a later
+      // render or reconnect retries the fetch.
+      el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span><span class="notes-count" style="color:#b00020">couldn't load — retrying…</span></div>`;
+      setTimeout(() => { if ((state.filters && state.filters.project) === project) renderProjectNotes(); }, 4000);
     });
     return;
   }
@@ -16651,6 +16907,20 @@ function handleRowContextMenu(e) {
       },
     });
   }
+  if (task && task.dates_locked) {
+    items.push({
+      label: '🔓 Unlock dates (recompute from predecessors)',
+      onClick: async () => {
+        try {
+          await api.update(id, { dates_locked: 0 });
+          await loadTasks();
+          if (typeof showToast === 'function') showToast('Dates unlocked — recomputed from predecessors.');
+        } catch (e) {
+          if (typeof showToast === 'function') showToast(e.message || 'Unlock failed', { kind: 'error' });
+        }
+      },
+    });
+  }
   items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
   showContextMenu(cx, cy, items);
 }
@@ -17901,42 +18171,51 @@ async function openProjectReleaseModal(project) {
     const money = (k) => `<input type="text" inputmode="decimal" class="pr-bg-input pr-bg-money" data-bk="${k}" value="${fmtMoney(b && b[k])}">`;
     return `<div class="pr-budget-wrap"><table class="pr-budget-grid">
       <colgroup>
+        <col style="width:44px">
         <col style="width:62px"><col style="width:66px"><col style="width:62px">
         <col style="width:44px"><col style="width:50px"><col style="width:54px"><col style="width:72px">
-        <col style="width:78px"><col style="width:74px">
+        <col style="width:78px"><col style="width:74px"><col style="width:78px">
         <col style="width:54px"><col style="width:54px"><col style="width:54px"><col style="width:54px">
+        <col style="width:54px"><col style="width:54px">
         <col style="width:104px">
       </colgroup>
       <thead>
         <tr>
-          <th colspan="9" class="pr-bg-grp">Design and Build</th>
+          <th colspan="11" class="pr-bg-grp">Design and Build</th>
           <th colspan="2" class="pr-bg-grp">Testing</th>
           <th colspan="2" class="pr-bg-grp">Teardown &amp; Install</th>
+          <th colspan="2" class="pr-bg-grp">Warranty</th>
           <th rowspan="3" class="pr-bg-parts-h">Parts Cost</th>
         </tr>
         <tr>
+          <th class="pr-bg-c-me">PM</th>
           <th class="pr-bg-c-me">ME</th>
           <th colspan="2" class="pr-bg-c-ce">CE</th>
           <th colspan="4" class="pr-bg-c-gen">General Engineering</th>
-          <th colspan="2" class="pr-bg-c-shop">Shop</th>
+          <th colspan="3" class="pr-bg-c-shop">Shop</th>
           <th class="pr-bg-c-test">Eng</th><th class="pr-bg-c-test">Shop</th>
+          <th class="pr-bg-c-ti">Eng</th><th class="pr-bg-c-ti">Shop</th>
           <th class="pr-bg-c-ti">Eng</th><th class="pr-bg-c-ti">Shop</th>
         </tr>
         <tr class="pr-bg-leaf">
+          <th class="pr-bg-c-me">PM</th>
           <th class="pr-bg-c-me">ME General</th>
           <th class="pr-bg-c-ce">Design &amp; Drawings</th><th class="pr-bg-c-ce">Software</th>
           <th class="pr-bg-c-gen">HMI</th><th class="pr-bg-c-gen">Robot</th><th class="pr-bg-c-gen">Vision</th><th class="pr-bg-c-gen">Database &amp; Device</th>
-          <th class="pr-bg-c-shop">Mechanical Build</th><th class="pr-bg-c-shop">Electrical Build</th>
+          <th class="pr-bg-c-shop">Mechanical Build</th><th class="pr-bg-c-shop">Electrical Build</th><th class="pr-bg-c-shop">Manufacturing</th>
           <th class="pr-bg-c-test">ME &amp; CE</th><th class="pr-bg-c-test">MB &amp; EB</th>
+          <th class="pr-bg-c-ti">ME &amp; CE</th><th class="pr-bg-c-ti">MB &amp; EB</th>
           <th class="pr-bg-c-ti">ME &amp; CE</th><th class="pr-bg-c-ti">MB &amp; EB</th>
         </tr>
       </thead>
       <tbody><tr>
+        <td>${inp('pm')}</td>
         <td>${inp('me')}</td><td>${inp('ce_design_drawings')}</td><td>${inp('ce_software')}</td>
         <td>${inp('hmi')}</td><td>${inp('robot')}</td><td>${inp('vision')}</td><td>${inp('database_device')}</td>
-        <td>${inp('mechanical_build')}</td><td>${inp('electrical_build')}</td>
+        <td>${inp('mechanical_build')}</td><td>${inp('electrical_build')}</td><td>${inp('manufacturing')}</td>
         <td>${inp('testing_eng')}</td><td>${inp('testing_shop')}</td>
         <td>${inp('teardown_install_eng')}</td><td>${inp('teardown_install_shop')}</td>
+        <td>${inp('warranty_eng')}</td><td>${inp('warranty_shop')}</td>
         <td>${money('parts_cost')}</td>
       </tr></tbody>
     </table></div>`;
@@ -17949,6 +18228,8 @@ async function openProjectReleaseModal(project) {
         <p class="pr-muted">Upload the SDC Project Release (.docx). We'll pull the order date, delivery, financial milestones, penalty clause, and the project budget (hours + parts cost) image.</p>
         <button type="button" class="btn-primary pr-upload-btn">⬆ Upload Project Release (.docx)</button>
         <input type="file" accept=".docx" class="pr-file" style="display:none;">
+        <p class="pr-muted" style="margin-top:14px;">…or pull the quoted hours straight from the ETC Planner (uses this project's job number):</p>
+        <button type="button" class="btn-ghost pr-pull-etc-btn">🔄 Pull quoted hours from ETC</button>
         <div class="pr-status"></div>
       </div>`;
     }
@@ -17973,6 +18254,7 @@ async function openProjectReleaseModal(project) {
       </div>
       <div class="pr-foot">
         <span class="pr-muted pr-filename">📎 ${escapeHtml(rel.name || 'Project Release.docx')}${rel.accepted_at ? ' · accepted' : (rel.uploaded_at ? ' · uploaded ' + escapeHtml(new Date(rel.uploaded_at).toLocaleDateString()) : '')}</span>
+        <button type="button" class="btn-ghost pr-refresh-etc-btn" title="Re-pull the quoted hours from the ETC Planner">🔄 Refresh quoted hours from ETC</button>
         <button type="button" class="btn-ghost pr-view-btn" title="Open the original Word document">📄 View original</button>
         <button type="button" class="btn-ghost pr-replace-btn">⬆ Replace…</button>
         <button type="button" class="btn-primary pr-accept-btn">✓ Accept &amp; apply</button>
@@ -17982,7 +18264,7 @@ async function openProjectReleaseModal(project) {
   };
 
   overlay.innerHTML = `
-    <div class="modal-card" style="max-width: 940px;">
+    <div class="modal-card" style="max-width: 1180px;">
       <div class="modal-head">
         <h2 style="margin:0;">Project Release — ${escapeHtml(project)}</h2>
         <button class="modal-close" type="button">×</button>
@@ -17992,6 +18274,30 @@ async function openProjectReleaseModal(project) {
   document.body.appendChild(overlay);
   overlay.querySelector('.modal-close').addEventListener('click', close);
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+  // Pull / refresh the quoted-hours budget from the ETC Planner (server re-pulls
+  // by this project's job number and rewrites the project_quote budget). On
+  // success, reload the panel so the grid shows the fresh numbers.
+  overlay.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.pr-refresh-etc-btn, .pr-pull-etc-btn');
+    if (!btn) return;
+    e.preventDefault();
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = '⏳ Pulling from ETC…';
+    try {
+      const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote/refresh-from-etc`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `Refresh failed (${r.status})`);
+      if (state.quoteCache) delete state.quoteCache[project]; // force Δ overlay to re-read
+      try { showToast('Quoted hours pulled from the ETC Planner.'); } catch (_) {}
+      close();
+      try { await openProjectReleaseModal(project); } catch (_) {}
+      try { renderTable(); } catch (_) {}
+    } catch (err) {
+      btn.disabled = false; btn.textContent = orig;
+      try { showToast(err.message || 'Refresh failed', { kind: 'error' }); } catch (_) {}
+    }
+  });
 
   // Read the editable fields back into the release object.
   const readEdits = () => {
@@ -20534,7 +20840,14 @@ function renderActionsKeyInfo() {
     host.innerHTML = `<div class="actions-keyinfo-head">★ Key Information</div><div class="actions-empty">Loading notes…</div>`;
     missing.forEach(p => {
       api.notes.get(p)
-        .then(d => { state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] }; })
+        .then(d => {
+          state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] };
+          state._notesLoaded = state._notesLoaded || {};
+          state._notesLoaded[p] = true; // verified-loaded — safe to autosave
+        })
+        // Display-only fallback for the aggregate view. Deliberately does NOT
+        // set the loaded flag, so the schedule panel re-fetches authoritatively
+        // before enabling autosave (never wipes real notes on a failed load).
         .catch(() => { state.projectNotes[p] = { sessions: [] }; })
         .finally(() => { if (projects.every(pp => state.projectNotes[pp]) && state.view === 'actions') renderActionsKeyInfo(); });
     });

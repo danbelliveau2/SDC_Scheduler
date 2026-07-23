@@ -25,6 +25,83 @@ const SMARTSHEET_ANCHORS = {
   'acceptance at customer (sat)': 'sat',
 };
 
+// ── ETC Planner quoted-hours → Project Release budget ────────────────────────
+// The ETC app quotes hours per section code (10-211 ME General, etc.). When a
+// scheduler project is created from an ETC job, map those into the flat budget
+// grid the Project Release panel shows. PM (10-111), Manufacturing (10-413) and
+// Warranty (70-211/70-411) get their own budget cells but no hours_breakdown
+// slot — they're recorded in the budget only (not scheduler dept buckets, so
+// they don't feed the Δ "quoted" overlay).
+function etcQuotedToBudget(bySection, partsCost) {
+  const n = (c) => { const v = Number((bySection || {})[c]); return Number.isFinite(v) ? v : 0; };
+  const pc = Number(partsCost);
+  return {
+    pm:                    n('10-111'),
+    me:                    n('10-211'),
+    ce_design_drawings:    n('10-312'),
+    ce_software:           n('10-313'),
+    hmi:                   n('10-515'),
+    robot:                 n('10-516'),
+    vision:                n('10-517'),
+    database_device:       n('10-518'),
+    mechanical_build:      n('10-411'),
+    electrical_build:      n('10-412'),
+    manufacturing:         n('10-413'),
+    testing_eng:           n('40-211'),
+    testing_shop:          n('40-411'),
+    teardown_install_eng:  n('50-211'),
+    teardown_install_shop: n('50-411'),
+    warranty_eng:          n('70-211'),
+    warranty_shop:         n('70-411'),
+    parts_cost:            Number.isFinite(pc) ? pc : null,
+  };
+}
+
+// Server-side port of app.js _budgetToHoursBreakdown — KEEP IN SYNC. Only the
+// 13 scheduler dept cells feed hours_breakdown; pm/manufacturing/warranty are
+// budget-only.
+function budgetToHoursBreakdown(b) {
+  const n = (v) => (v == null || v === '' || isNaN(Number(v))) ? 0 : Number(v);
+  const blank = () => ({ mech: 0, ce_des: 0, ce_drw: 0, ce_sw: 0, hmi: 0, robot: 0, vision: 0, build: 0, wire_panel: 0, wire_machine: 0 });
+  const s10 = blank(), s40 = blank(), s50 = blank();
+  s10.mech = n(b.me); s10.ce_des = n(b.ce_design_drawings); s10.ce_sw = n(b.ce_software);
+  s10.hmi = n(b.hmi) + n(b.database_device); s10.robot = n(b.robot); s10.vision = n(b.vision);
+  s10.build = n(b.mechanical_build); s10.wire_panel = n(b.electrical_build);
+  s40.mech = n(b.testing_eng); s40.build = n(b.testing_shop);
+  s50.mech = n(b.teardown_install_eng); s50.build = n(b.teardown_install_shop);
+  return { section_10: s10, section_40: s40, section_50: s50 };
+}
+
+// Build/merge a project_quote blob from an ETC planner job detail. Preserves any
+// existing project_release fields (e.g. a manually-uploaded .docx release) and
+// only refreshes the budget + hours_breakdown.
+function etcDetailToQuoteBlob(detail, existing) {
+  const budget = etcQuotedToBudget(detail.quotedHoursBySection, detail.costQuoted);
+  const q = (existing && typeof existing === 'object') ? { ...existing } : {};
+  q.hours_breakdown = budgetToHoursBreakdown(budget);
+  if (budget.parts_cost != null) q.parts_cost = budget.parts_cost;
+  const prevRel = (q.project_release && typeof q.project_release === 'object') ? q.project_release : {};
+  q.project_release = {
+    ...prevRel,
+    name: prevRel.name || 'ETC quoted hours',
+    budget,
+    imported_from_etc: true,
+    etc_job_id: detail.jobId != null ? String(detail.jobId) : (prevRel.etc_job_id || null),
+    receipt_of_po: prevRel.receipt_of_po || detail.poStartDate || null,
+    etc_synced_at: new Date().toISOString(),
+  };
+  return q;
+}
+
+// True if an ETC-derived budget actually carries numbers worth saving (avoids
+// creating an empty synthetic release for jobs with no quoted hours yet).
+function etcBudgetHasContent(budget) {
+  if (!budget) return false;
+  const hourKeys = ['pm','me','ce_design_drawings','ce_software','hmi','robot','vision','database_device','mechanical_build','electrical_build','manufacturing','testing_eng','testing_shop','teardown_install_eng','teardown_install_shop','warranty_eng','warranty_shop'];
+  if (hourKeys.some(k => Number(budget[k]) > 0)) return true;
+  return budget.parts_cost != null && Number(budget.parts_cost) > 0;
+}
+
 const SMARTSHEET_SKIP_PATTERNS = [
   /to completion$/i,
   /design to fat$/i,
@@ -302,7 +379,7 @@ function _promoteDefaultAlloc(bucket) {
 }
 
 module.exports = function createRouter(deps) {
-  const { pool, io, requireRole, cascadeSchedule, logHistory } = deps;
+  const { pool, io, requireRole, cascadeSchedule, logHistory, plannerClient } = deps;
   const router = Router();
 
   // ── SSE clients for projects_changed notifications ────────────────────────
@@ -325,6 +402,11 @@ module.exports = function createRouter(deps) {
   });
 
   function notifyClients(type, extra = {}) {
+    // Emit over socket.io too — the browser's realtime layer (realtime-ui.js)
+    // listens on socket.io, and nothing consumes the SSE channel, so
+    // project create/rename/delete used to never propagate live. Socket.io
+    // first so it always fires regardless of SSE subscribers.
+    try { io.emit(type, extra); } catch (_) {}
     if (_sseClients.size === 0) return;
     const data = JSON.stringify({ type, ...extra });
     for (const client of _sseClients) {
@@ -372,17 +454,99 @@ module.exports = function createRouter(deps) {
 
   router.post('/api/projects', requireRole('editor'), async (req, res) => {
     try {
-      const name = (req.body.name || '').toString().trim();
+      // Optional: build the project from an SDC ETC Planner job. When
+      // from_planner_job is supplied the server fetches the job's authoritative
+      // detail itself (name defaults to "<job>_<jobName>", plus a snapshot of
+      // billable + release/delivery estimate dates) rather than trusting the
+      // client to hand those over.
+      let name = (req.body.name || '').toString().trim();
+      const snap = { job_number: req.body.job_number || null, billable: null,
+        po_start_date: null, est_start_date: null, complete_date: null, planner_synced: false };
+      let plannerDetail = null; // ETC job detail, reused below to import quoted hours
+
+      if (req.body.from_planner_job != null && req.body.from_planner_job !== '') {
+        if (!plannerClient || !plannerClient.CONFIGURED) {
+          return res.status(503).json({ error: 'ETC Planner not configured' });
+        }
+        const jobId = String(req.body.from_planner_job);
+        let detail;
+        try { detail = await plannerClient.getJobDetail(jobId); }
+        catch (e) { return res.status(503).json({ error: `ETC Planner lookup failed: ${e.message}` }); }
+        if (!detail) return res.status(404).json({ error: `No planner job ${jobId}` });
+        if (!name) name = `${detail.jobId}_${(detail.jobName || '').toString().trim()}`.trim();
+        snap.job_number = detail.jobId;
+        snap.billable = detail.billable === true ? 1 : detail.billable === false ? 0 : null;
+        snap.po_start_date = detail.poStartDate || null;
+        snap.est_start_date = detail.startDate || null;
+        snap.complete_date = detail.completeDate || null;
+        snap.planner_synced = true;
+        plannerDetail = detail;
+      }
+
       if (!name) return res.status(400).json({ error: 'name required' });
       const [[existing]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
       if (existing) return res.json(existing);
       await pool.query(
-        'INSERT INTO projects (name, status, is_template, job_number, workspace) VALUES (?, ?, ?, ?, ?)',
-        [name, req.body.status || 'active', req.body.is_template ? 1 : 0, req.body.job_number || null, req.body.workspace || 'default']
+        `INSERT INTO projects
+           (name, status, is_template, job_number, workspace,
+            billable, po_start_date, est_start_date, complete_date, planner_synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, req.body.status || 'active', req.body.is_template ? 1 : 0, snap.job_number,
+         req.body.workspace || 'default', snap.billable, snap.po_start_date, snap.est_start_date,
+         snap.complete_date, snap.planner_synced ? new Date() : null]
       );
       const [[row]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
+
+      // Import the ETC-quoted hours into the Project Release budget so they're
+      // filled in (and saved) automatically — no re-typing. Best-effort: a
+      // failure here must not fail project creation.
+      if (plannerDetail && plannerDetail.quotedHoursBySection
+          && Object.keys(plannerDetail.quotedHoursBySection).length) {
+        try {
+          const blob = etcDetailToQuoteBlob(plannerDetail, null);
+          if (etcBudgetHasContent(blob.project_release.budget)) {
+            await pool.query(
+              'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+              [`project_quote:${name}`, JSON.stringify(blob)]
+            );
+          }
+        } catch (e) { console.warn('[planner] quoted-hours import failed:', e.message); }
+      }
+
       res.status(201).json(row);
       notifyClients('projects_changed');
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Re-pull the ETC quoted hours for an existing project and refresh its
+  // Project Release budget (keyed on the project's stored job_number). Preserves
+  // any manually-entered project_release fields.
+  router.post('/api/project/:project/quote/refresh-from-etc', requireRole('editor'), async (req, res) => {
+    try {
+      if (!plannerClient || !plannerClient.CONFIGURED) {
+        return res.status(503).json({ error: 'ETC Planner not configured' });
+      }
+      const project = req.params.project;
+      const [[proj]] = await pool.query('SELECT job_number FROM projects WHERE name = ?', [project]);
+      const jobId = proj && proj.job_number ? String(proj.job_number) : null;
+      if (!jobId) return res.status(400).json({ error: 'This project has no ETC job number to refresh from.' });
+      let detail;
+      try { detail = await plannerClient.getJobDetail(jobId); }
+      catch (e) { return res.status(503).json({ error: `ETC Planner lookup failed: ${e.message}` }); }
+      if (!detail) return res.status(404).json({ error: `No ETC job ${jobId}` });
+      if (!detail.quotedHoursBySection || !Object.keys(detail.quotedHoursBySection).length) {
+        return res.status(404).json({ error: `ETC job ${jobId} has no quoted hours yet.` });
+      }
+      const key = `project_quote:${project}`;
+      let existing = {};
+      const [[erow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [key]);
+      if (erow) { try { existing = JSON.parse(erow.value) || {}; } catch { existing = {}; } }
+      const blob = etcDetailToQuoteBlob(detail, existing);
+      await pool.query(
+        'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)',
+        [key, JSON.stringify(blob)]
+      );
+      res.json({ ok: true, budget: blob.project_release.budget, hours_breakdown: blob.hours_breakdown });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -406,6 +570,23 @@ module.exports = function createRouter(deps) {
         await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE task_history SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE task_comments SET project = ? WHERE project = ?', [updates.name, existing.name]);
+        // Meeting notes, quote, and estimate blobs live in `settings` keyed by
+        // the project NAME (e.g. `project_notes:<name>`). A rename that didn't
+        // move these orphaned the data — the panel loaded the new name, found
+        // nothing, and the notes "disappeared." Migrate each. If a blob already
+        // exists at the new name, keep it (don't clobber) and drop the old.
+        for (const prefix of ['project_notes', 'project_quote', 'project_estimate']) {
+          const oldKey = `${prefix}:${existing.name}`;
+          const newKey = `${prefix}:${updates.name}`;
+          const [[oldRow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', [oldKey]);
+          if (!oldRow) continue;
+          const [[newRow]] = await pool.query('SELECT `key` FROM settings WHERE `key` = ?', [newKey]);
+          if (!newRow) {
+            await pool.query('UPDATE settings SET `key` = ? WHERE `key` = ?', [newKey, oldKey]);
+          } else {
+            await pool.query('DELETE FROM settings WHERE `key` = ?', [oldKey]);
+          }
+        }
       }
 
       const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');

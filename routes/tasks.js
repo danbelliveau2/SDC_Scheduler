@@ -1,7 +1,7 @@
 'use strict';
 const { Router } = require('express');
 
-const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'completed_on', 'machine'];
+const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'dates_locked', 'completed_on', 'machine'];
 
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole, cascadeSchedule, logHistory, emailSvc } = deps;
@@ -69,7 +69,7 @@ module.exports = function createRouter(deps) {
     }
     for (let iter = 0; iter < 20; iter++) {
       const [linked] = await pool.query(
-        'SELECT id, duration_days, duration_link_task_id, start_date, end_date FROM tasks WHERE duration_link_task_id IS NOT NULL'
+        'SELECT id, duration_days, duration_link_task_id, start_date, end_date FROM tasks WHERE duration_link_task_id IS NOT NULL AND COALESCE(dates_locked, 0) = 0'
       );
       let changed = false;
       for (const dep of linked) {
@@ -184,7 +184,7 @@ module.exports = function createRouter(deps) {
       const updates = {};
       for (const f of FIELDS) {
         if (f in req.body) {
-          if (f === 'is_milestone' || f === 'is_action') updates[f] = req.body[f] ? 1 : 0;
+          if (f === 'is_milestone' || f === 'is_action' || f === 'dates_locked') updates[f] = req.body[f] ? 1 : 0;
           else if (INT_FIELDS.has(f)) updates[f] = req.body[f] == null || req.body[f] === '' ? null : Number(req.body[f]) || 0;
           else if (DATE_FIELDS.has(f)) updates[f] = req.body[f] ? String(req.body[f]).slice(0, 10) : null;
           else updates[f] = req.body[f] === '' ? null : req.body[f];
@@ -200,6 +200,25 @@ module.exports = function createRouter(deps) {
         }
       }
       if (Object.keys(updates).length === 0) return res.json(existing);
+
+      // ── Manual date lock (auto-pin) ─────────────────────────────────────────
+      // Editing a start/finish date PINS the task so the predecessor cascade
+      // (server.js cascadeSchedule) stops reverting the hand-set dates — the
+      // root cause of "I changed dates and they went back overnight." Editing
+      // the task's predecessors UNPINS it (the user is handing scheduling back
+      // to the graph). An explicit `dates_locked` in the request always wins,
+      // so a future lock/unlock toggle can override either default.
+      if (!('dates_locked' in updates)) {
+        if ('predecessors' in req.body) {
+          updates.dates_locked = 0;
+        } else if (('start_date' in req.body || 'end_date' in req.body) && !('duration_days' in req.body)) {
+          // A pure Start/Finish date edit pins. A duration edit (which also
+          // ships end_date) does NOT — it stays graph-driven. The client sends
+          // an explicit dates_locked=1 on real Finish-date edits (which also
+          // carry duration_days), and that explicit flag is honored above.
+          updates.dates_locked = 1;
+        }
+      }
 
       const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
       await pool.query(`UPDATE tasks SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);

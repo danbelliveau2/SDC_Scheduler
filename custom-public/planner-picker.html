@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create Schedule from ETC Job · SDC</title>
+<style>
+  :root {
+    --sdc-blue:#1574c4; --navy:#061d39; --light-blue:#aacee8; --gray:#d9d9d9;
+    --green:#74c415; --yellow:#ffde51; --bg:#f4f6f9; --card:#fff; --line:#e2e6ea;
+    --text:#1b2733; --muted:#667283;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+         background:var(--bg); color:var(--text); }
+  header { background:var(--navy); color:#fff; padding:14px 20px; display:flex;
+           align-items:center; gap:12px; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  .status { margin-left:auto; font-size:12.5px; padding:4px 10px; border-radius:999px;
+            background:rgba(255,255,255,.12); }
+  .status.ok { background:rgba(116,196,21,.25); }
+  .status.bad { background:rgba(220,60,60,.30); }
+  .wrap { display:grid; grid-template-columns:minmax(280px,380px) 1fr; gap:16px;
+          padding:16px; max-width:1100px; margin:0 auto; }
+  @media (max-width:760px){ .wrap{ grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          overflow:hidden; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em;
+             color:var(--muted); margin:0; padding:12px 14px; border-bottom:1px solid var(--line); }
+  #search { width:100%; border:0; border-bottom:1px solid var(--line); padding:11px 14px;
+            font-size:14px; outline:none; }
+  #search:focus { background:#f8fbff; }
+  .list { max-height:70vh; overflow:auto; }
+  .job { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+         border:0; background:none; padding:9px 14px; cursor:pointer; font-size:13.5px;
+         border-bottom:1px solid #f0f2f5; }
+  .job:hover { background:#f0f7ff; }
+  .job.active { background:#e3f0fd; }
+  .job .id { font-variant-numeric:tabular-nums; color:var(--muted); min-width:44px; }
+  .job .nm { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pill { font-size:10.5px; font-weight:700; padding:2px 7px; border-radius:999px; }
+  .pill.bill { background:#e3f6d4; color:#356a06; }
+  .pill.nonbill { background:#ffe6e6; color:#a12626; }
+  .detail { padding:16px; }
+  .detail .placeholder { color:var(--muted); font-size:14px; padding:30px 6px; text-align:center; }
+  .detail h3 { margin:0 0 2px; font-size:18px; }
+  .detail .sub { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px 18px; margin:12px 0; }
+  .field label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.03em;
+                 color:var(--muted); margin-bottom:2px; }
+  .field .v { font-size:14px; font-variant-numeric:tabular-nums; }
+  .section-title { font-size:12px; text-transform:uppercase; letter-spacing:.04em;
+                   color:var(--muted); margin:16px 0 6px; border-top:1px solid var(--line); padding-top:12px; }
+  table.exec { width:100%; border-collapse:collapse; font-size:13.5px; }
+  table.exec td { padding:5px 6px; border-bottom:1px solid #f0f2f5; }
+  table.exec td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  table.exec tr.tot td { font-weight:700; border-top:2px solid var(--line); }
+  .actions { margin-top:18px; display:flex; gap:10px; align-items:center; }
+  button.primary { background:var(--sdc-blue); color:#fff; border:0; border-radius:8px;
+                   padding:10px 16px; font-size:14px; font-weight:600; cursor:pointer; }
+  button.primary:hover { background:#1263a8; }
+  button.primary:disabled { opacity:.5; cursor:default; }
+  .name-in { flex:1; border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:14px; }
+  #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+           background:var(--navy); color:#fff; padding:11px 18px; border-radius:8px;
+           font-size:14px; opacity:0; pointer-events:none; transition:opacity .2s; max-width:90vw; }
+  #toast.show { opacity:1; }
+  #toast.err { background:#a12626; }
+  #toast.ok { background:#356a06; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Create Schedule from ETC Job</h1>
+  <span id="status" class="status">checking…</span>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>Jobs from ETC Planner</h2>
+    <input id="search" type="search" placeholder="Search job number or name…" autocomplete="off">
+    <div id="list" class="list"></div>
+  </div>
+
+  <div class="card">
+    <h2>Details</h2>
+    <div id="detail" class="detail">
+      <div class="placeholder">Pick a job on the left to see its release dates, billable status, and actuals vs. execution ETC.</div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+// Standalone MVP for the "create a schedule from the ETC job list" feature.
+// Talks to the scheduler's own /api/planner/* proxy (which server-to-server
+// hits the ETC Planner). Attaches the JWT from localStorage when auth is on;
+// works without it when AUTH_ENABLED=false. Dan can later port these three
+// calls into showCreateScheduleDialog() in public/app.js.
+
+const TOKEN = localStorage.getItem('sdc_auth_token');
+function api(path, opts = {}) {
+  const headers = Object.assign({}, opts.headers);
+  if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  return fetch(path, Object.assign({}, opts, { headers }));
+}
+function toast(msg, kind) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'show ' + (kind || '');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.className = '', 4000);
+}
+const fmtNum = n => (n == null ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }));
+const fmtDate = d => d || '—';
+
+let JOBS = [], selected = null;
+
+async function checkStatus() {
+  const el = document.getElementById('status');
+  try {
+    const r = await api('/api/planner/status');
+    const s = await r.json();
+    if (!s.configured) { el.textContent = 'ETC Planner not configured'; el.className = 'status bad'; return false; }
+    if (!s.connected)  { el.textContent = 'ETC Planner unreachable'; el.className = 'status bad'; return false; }
+    el.textContent = 'Connected · ' + (s.jobCount ?? '?') + ' jobs'; el.className = 'status ok'; return true;
+  } catch (e) { el.textContent = 'error'; el.className = 'status bad'; return false; }
+}
+
+async function loadJobs() {
+  try {
+    const r = await api('/api/planner/jobs?status=Active');
+    if (!r.ok) { renderList([]); return; }
+    JOBS = (await r.json()).jobs || [];
+    renderList(JOBS);
+  } catch (e) { renderList([]); }
+}
+
+function renderList(jobs) {
+  const q = (document.getElementById('search').value || '').toLowerCase();
+  const filtered = jobs.filter(j =>
+    !q || j.jobId.toLowerCase().includes(q) || (j.jobName || '').toLowerCase().includes(q));
+  const list = document.getElementById('list');
+  if (filtered.length === 0) { list.innerHTML = '<div style="padding:16px;color:#667283;font-size:13px">No jobs.</div>'; return; }
+  list.innerHTML = filtered.map(j => `
+    <button class="job${selected && selected.jobId === j.jobId ? ' active' : ''}" data-id="${j.jobId}">
+      <span class="id">${j.jobId}</span>
+      <span class="nm">${escapeHtml(j.jobName || '')}</span>
+      <span class="pill ${j.billable ? 'bill' : 'nonbill'}">${j.billable ? 'Billable' : 'Non-bill'}</span>
+    </button>`).join('');
+  list.querySelectorAll('.job').forEach(b =>
+    b.addEventListener('click', () => selectJob(b.dataset.id)));
+}
+
+async function selectJob(jobId) {
+  selected = JOBS.find(j => j.jobId === jobId) || { jobId };
+  renderList(JOBS);
+  const d = document.getElementById('detail');
+  d.innerHTML = '<div class="placeholder">Loading…</div>';
+  try {
+    const r = await api('/api/planner/jobs/' + encodeURIComponent(jobId));
+    if (!r.ok) { d.innerHTML = '<div class="placeholder">Could not load job ' + escapeHtml(jobId) + '.</div>'; return; }
+    renderDetail(await r.json());
+  } catch (e) { d.innerHTML = '<div class="placeholder">Error loading job.</div>'; }
+}
+
+function renderDetail(j) {
+  const ex = j.executionEtc || { engineering: 0, shop: 0, parts: 0 };
+  const total = (ex.engineering || 0) + (ex.shop || 0) + (ex.parts || 0);
+  const h = j.hours || {};
+  const d = document.getElementById('detail');
+  d.innerHTML = `
+    <h3>${escapeHtml(j.jobName || '')} <span class="pill ${j.billable ? 'bill' : 'nonbill'}">${j.billable ? 'Billable' : 'Non-billable'}</span></h3>
+    <div class="sub">Job ${escapeHtml(j.jobId)} · ${escapeHtml(j.customer || '—')} · ${escapeHtml(j.type || '—')}</div>
+
+    <div class="section-title">Release / delivery estimate</div>
+    <div class="grid2">
+      <div class="field"><label>PO Start</label><div class="v">${fmtDate(j.poStartDate)}</div></div>
+      <div class="field"><label>Start</label><div class="v">${fmtDate(j.startDate)}</div></div>
+      <div class="field"><label>Complete</label><div class="v">${fmtDate(j.completeDate)}</div></div>
+      <div class="field"><label>Quoted cost</label><div class="v">${j.costQuoted == null ? '—' : '$' + fmtNum(j.costQuoted)}</div></div>
+    </div>
+
+    <div class="section-title">Actuals vs. execution ETC ${j.executionMonth ? '· ' + j.executionMonth : ''}</div>
+    <table class="exec">
+      <tr><td>Engineering hours (act / est)</td><td class="n">${fmtNum(h.actEng)} / ${fmtNum(h.estEng)}</td></tr>
+      <tr><td>Mfg hours (act / est)</td><td class="n">${fmtNum(h.actMfg)} / ${fmtNum(h.estMfg)}</td></tr>
+      <tr><td>Execution ETC — Engineering</td><td class="n">${fmtNum(ex.engineering)}</td></tr>
+      <tr><td>Execution ETC — Shop</td><td class="n">${fmtNum(ex.shop)}</td></tr>
+      <tr><td>Execution ETC — Parts</td><td class="n">${fmtNum(ex.parts)}</td></tr>
+      <tr class="tot"><td>Total execution ETC</td><td class="n">${fmtNum(total)}</td></tr>
+    </table>
+
+    <div class="actions">
+      <input class="name-in" id="proj-name" value="${escapeHtml(j.jobId + '_' + (j.jobName || ''))}">
+      <button class="primary" id="create-btn">Create schedule</button>
+    </div>`;
+  document.getElementById('create-btn').addEventListener('click', () => createProject(j.jobId));
+}
+
+async function createProject(jobId) {
+  const btn = document.getElementById('create-btn');
+  const name = (document.getElementById('proj-name').value || '').trim();
+  btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const r = await api('/api/projects', {
+      method: 'POST',
+      body: JSON.stringify({ from_planner_job: jobId, name: name || undefined }),
+    });
+    const row = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(row.error || ('Failed (' + r.status + ')'), 'err'); btn.disabled = false; btn.textContent = 'Create schedule'; return; }
+    toast('Created schedule "' + row.name + '"', 'ok');
+    btn.textContent = 'Created ✓';
+  } catch (e) { toast('Error: ' + e.message, 'err'); btn.disabled = false; btn.textContent = 'Create schedule'; }
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+
+document.getElementById('search').addEventListener('input', () => renderList(JOBS));
+(async () => { if (await checkStatus()) loadJobs(); })();
+</script>
+</body>
+</html>

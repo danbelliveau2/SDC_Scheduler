@@ -56,7 +56,46 @@
     });
   });
 
+  // Meeting notes changed on another tab/user. The server emits this but the
+  // client previously ignored it, so notes only refreshed on a full project
+  // switch ("click off and back on"). Reload the active project's notes.
+  socket.on('notes:updated', (payload) => {
+    if (_isLocalEcho()) return;
+    const project = payload && payload.project;
+    _debounce('notes', () => {
+      if (typeof reloadProjectNotes === 'function' && project) reloadProjectNotes(project);
+    });
+  });
+
+  // Project list changed (create / rename / delete). Reload tasks so renamed
+  // or new projects show without a manual refresh.
+  socket.on('projects_changed', () => {
+    if (_isLocalEcho()) return;
+    _debounce('projects', () => {
+      if (typeof loadTasks === 'function') loadTasks();
+    });
+  });
+
+  // 'connect' fires on the INITIAL connect and on every RECONNECT. The prod
+  // server restarts every ~2 min (git auto-pull) and on each deploy, dropping
+  // all sockets; any event emitted while we were disconnected is missed, so the
+  // tab silently shows stale data until a manual project switch. On reconnect,
+  // re-pull everything the user is looking at. (Skip the very first connect —
+  // app.js init() already did the initial load.)
+  let _connectedBefore = false;
   socket.on('connect', () => {
+    if (_connectedBefore) {
+      _debounce('reconnect', () => {
+        try {
+          if (typeof loadTasks === 'function') loadTasks();
+          if (typeof loadSettings === 'function') loadSettings();
+          if (typeof loadTeam === 'function') loadTeam();
+          const project = (typeof state !== 'undefined') ? state?.filters?.project : null;
+          if (project && typeof reloadProjectNotes === 'function') reloadProjectNotes(project);
+        } catch (_) {}
+      }, 300);
+    }
+    _connectedBefore = true;
     // Phase 4.1: announce ourselves as present on the active project so the
     // server can broadcast a "currently editing" pill list. Best-effort —
     // app.js doesn't have a state.filters.project until after init.
