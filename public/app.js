@@ -13813,27 +13813,48 @@ function showCreateScheduleDialog(defaultWs) {
   let mode = defaultMode;
 
   // ETC Planner jobs — lazily loaded the first time the "An ETC job" segment is
-  // used. null = not fetched yet, [] = fetched (unavailable or empty).
+  // used. State: plannerJobs is an ARRAY once loaded ([] = genuinely no jobs);
+  // it stays null while unloaded OR after a FAILED fetch (so the list can retry
+  // — the old code cached a failure as [] and got stuck showing "unavailable",
+  // e.g. when the dialog was opened before the user was signed in). plannerError
+  // holds the failure message; clicking the segment again retries.
   let plannerJobs = null;
+  let plannerLoading = false;
+  let plannerError = null;
   const loadPlannerJobs = async () => {
+    if (plannerLoading) return;
+    plannerLoading = true; plannerError = null;
     try {
       const r = await fetch('/api/planner/jobs?status=Active');
-      plannerJobs = r.ok ? ((await r.json()).jobs || []) : [];
-    } catch (_) { plannerJobs = []; }
-    if (mode === 'planner') { fillSource(); refresh(); }
+      if (!r.ok) { plannerJobs = null; plannerError = `ETC Planner unavailable (${r.status})`; }
+      else { const b = await r.json().catch(() => ({})); plannerJobs = Array.isArray(b.jobs) ? b.jobs : []; }
+    } catch (_) { plannerJobs = null; plannerError = 'Could not reach the ETC Planner'; }
+    finally { plannerLoading = false; }
+    if (mode === 'planner') { fillPlannerSource(); refresh(); }
   };
   const fillPlannerSource = () => {
-    if (plannerJobs === null) {
+    if (plannerLoading) {
       sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
-      loadPlannerJobs();
       return;
     }
-    if (plannerJobs.length === 0) {
-      sourceEl.innerHTML = '<option value="" disabled selected>ETC Planner unavailable or no jobs.</option>';
+    if (Array.isArray(plannerJobs)) {
+      if (plannerJobs.length === 0) {
+        sourceEl.innerHTML = '<option value="" disabled selected>No active ETC jobs found.</option>';
+        return;
+      }
+      sourceEl.innerHTML = '<option value="" disabled selected>Pick an ETC job…</option>'
+        + plannerJobs.map(j => `<option value="${escapeHtml(j.jobId)}">${escapeHtml(j.jobId)} — ${escapeHtml(j.jobName || '')}${j.billable ? '' : ' (non-billable)'}</option>`).join('');
       return;
     }
-    sourceEl.innerHTML = '<option value="" disabled selected>Pick an ETC job…</option>'
-      + plannerJobs.map(j => `<option value="${escapeHtml(j.jobId)}">${escapeHtml(j.jobId)} — ${escapeHtml(j.jobName || '')}${j.billable ? '' : ' (non-billable)'}</option>`).join('');
+    // Not loaded yet (null). A prior failure shows a retry hint; otherwise kick
+    // off the fetch. Re-selecting the "An ETC job" segment clears the error to
+    // force a fresh attempt (see the segment click handler).
+    if (plannerError) {
+      sourceEl.innerHTML = `<option value="" disabled selected>${escapeHtml(plannerError)} — click "An ETC job" to retry.</option>`;
+      return;
+    }
+    sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+    loadPlannerJobs();
   };
 
   const fillSource = () => {
@@ -13859,6 +13880,9 @@ function showCreateScheduleDialog(defaultWs) {
   seg.querySelectorAll('.cs-seg-btn').forEach(b => b.addEventListener('click', () => {
     mode = b.dataset.mode;
     seg.querySelectorAll('.cs-seg-btn').forEach(x => x.classList.toggle('is-active', x === b));
+    // Re-selecting "An ETC job" after a failed load clears the error so the
+    // list retries (recovers from a fetch that ran before sign-in, etc.).
+    if (mode === 'planner' && !Array.isArray(plannerJobs)) plannerError = null;
     fillSource(); refresh();
   }));
   nameEl.addEventListener('input', refresh);
