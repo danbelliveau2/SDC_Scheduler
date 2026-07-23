@@ -13852,7 +13852,7 @@ function showCreateScheduleDialog(defaultWs) {
     hintEl.textContent = mode === 'blank'
       ? 'Starts empty — just the Receipt of PO + FAT spine markers.'
       : mode === 'planner'
-        ? 'Creates a schedule linked to the ETC job — snapshots its billable flag + release/delivery dates, then adds the PO + FAT spine.'
+        ? 'Builds the full schedule from the SDC standard template, linked to the ETC job — snapshots its billable flag + release/delivery dates, imports its quoted hours into the Project Release budget, and adds the PO + FAT spine.'
         : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
     buildBtn.disabled = !nameEl.value.trim() || (mode !== 'blank' && !sourceEl.value);
   };
@@ -13919,11 +13919,21 @@ function showCreateScheduleDialog(defaultWs) {
       if (!ok) { buildBtn.disabled = false; return; }
       close();
       const created = row.name || name;
-      if (!state.openProjects.includes(created)) state.openProjects.push(created);
-      state.filters.project = created;
-      saveProjectTabs();
-      await ensureAnchorsForProject(created);
-      await loadTasks();
+      // The ETC POST created the linked project (billable + dates snapshot +
+      // imported quoted hours). Now lay down the STANDARD schedule from the SDC
+      // template — clone its tasks, financials, predecessors and PO/FAT spine —
+      // so the new project isn't empty. Falls back to an empty linked project if
+      // the template isn't available in this session.
+      const ETC_TEMPLATE = 'SDC_StandardProject_Template';
+      if (state.tasks.some(t => t.project === ETC_TEMPLATE)) {
+        await duplicateProject(ETC_TEMPLATE, created); // clones + opens + loadTasks
+      } else {
+        if (!state.openProjects.includes(created)) state.openProjects.push(created);
+        state.filters.project = created;
+        saveProjectTabs();
+        await ensureAnchorsForProject(created);
+        await loadTasks();
+      }
       openCreated(created);
       return;
     }
