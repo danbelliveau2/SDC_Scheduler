@@ -2432,7 +2432,14 @@ function handleCellClick(e) {
     const task = state.tasks.find(t => t.id === taskId);
     if (!task) return;
     const newProgress = (task.progress || 0) >= 100 ? 0 : 100;
-    api.update(taskId, { progress: newProgress }).then(() => loadTasks()).catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
+    api.update(taskId, { progress: newProgress })
+      .then(async () => {
+        // PO / FAT / SAT also exist as financial-milestone rows — mirror the
+        // check there so one click updates both places.
+        try { await syncFinancialsFromAnchor(task, newProgress >= 100); } catch (_) {}
+        return loadTasks();
+      })
+      .catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
     return;
   }
   const td = e.target.closest('td[data-col]');
@@ -7404,7 +7411,7 @@ function renderDeptProjectRollup() {
   // ── Compose ──
   root.innerHTML = `
     <div class="pdash-filters">
-      <details class="pdash-picker">
+      <details class="pdash-picker"${state._pdashPickerOpen ? ' open' : ''}>
         <summary>Projects: <strong>${
           selected.length === allProjects.length ? 'all'
             : selected.length === 0 ? 'none'
@@ -7453,6 +7460,12 @@ function renderDeptProjectRollup() {
   `;
 
   // ── Wire handlers ──
+  // Keep the picker OPEN across the re-render every checkbox change triggers —
+  // check/uncheck as many projects as you like; it only closes on click-off
+  // (the global mousedown handler) or the summary button.
+  root.querySelector('details.pdash-picker')?.addEventListener('toggle', (e) => {
+    state._pdashPickerOpen = e.target.open;
+  });
   root.querySelectorAll('.pdash-picker input[type="checkbox"]').forEach(box => {
     box.addEventListener('change', () => {
       const sel = [...root.querySelectorAll('.pdash-picker input[type="checkbox"]')]
@@ -12049,9 +12062,45 @@ function renderWorkspacePage() {
 // projects as a tree.)
 function renderWorkspaceBar() { /* no-op — kept for callers that haven't been updated yet */ }
 
+// ── Footer PM / Debug-lead selectors ────────────────────────────────────────
+// Live in the schedule footer next to Project Release so ownership is always
+// visible and editable in place (Dan: "I don't wanna right click — I want it
+// to be obvious"). Backed by the same settings.project_leads store the
+// Departments PM filter + dashboard read.
+function renderScheduleLeads() {
+  const box = document.getElementById('schedule-leads');
+  if (!box) return;
+  const project = state.filters.project;
+  if (!project) { box.innerHTML = ''; return; }
+  // PM = only the Project Management team. Debug lead = a PM or an engineer
+  // (mechanical or controls) — Dan's spec.
+  const peopleIn = (discs) => state.team
+    .filter(m => m.active !== 0 && !isPlaceholder(m.name) && discs.includes(m.discipline))
+    .map(m => m.name)
+    .sort((a, b) => a.localeCompare(b));
+  const sel = (role, icon, label, people) => {
+    const cur = projectLead(project, role);
+    // Keep a stale assignee visible even if they left the pool — otherwise
+    // the select silently shows the wrong person.
+    const opts = (cur && !people.includes(cur)) ? [cur, ...people] : people;
+    return `<label class="schedule-lead" title="${label} for ${escapeHtml(project)} — shared with everyone; drives the Departments PM filter.">${icon} ${label}
+      <select data-lead-role="${role}">
+        <option value="">—</option>
+        ${opts.map(n => `<option value="${escapeHtml(n)}" ${n === cur ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+      </select>
+    </label>`;
+  };
+  box.innerHTML = sel('pm', '👤', 'PM', peopleIn(['pm']))
+                + sel('debug', '🛠', 'Debug lead', peopleIn(['pm', 'mech', 'controls']));
+  box.querySelectorAll('select[data-lead-role]').forEach(s => {
+    s.addEventListener('change', () => setProjectLead(project, s.dataset.leadRole, s.value));
+  });
+}
+
 function renderProjectTabs() {
   const wrap = document.getElementById('project-tabs');
   if (!wrap) return;
+  try { renderScheduleLeads(); } catch (_) {}
 
   // When signed in (personId persisted), the personal tab is ALWAYS visible
   // in the strip — even when the user clicks away to a project tab — so
@@ -12877,6 +12926,36 @@ function showProjectTabMenu(x, y, project) {
   items.push({ label: 'Duplicate to new project…',          onClick: () => duplicateProject(project) });
   items.push({ label: 'Merge another project into this…',   onClick: () => mergeAnotherProjectInto(project, x, y) });
   items.push({ label: isTemplate ? 'Unmark as template' : 'Mark as template ★', onClick: () => toggleTemplate(project) });
+  // 2b) Ownership — PM + Debug lead, picked from the active team. Shared
+  //     server-side (settings.project_leads); the Departments page filters
+  //     its timeline by PM and shows the per-PM dashboard from these.
+  const leadItem = (role, icon, label) => {
+    const cur = projectLead(project, role);
+    // PM = Project Management team only; Debug lead = PM or engineer
+    // (mech/controls). Same pools as the footer selectors.
+    const discs = role === 'pm' ? ['pm'] : ['pm', 'mech', 'controls'];
+    return {
+      label: `${icon} ${label}: ${cur || '—'}`,
+      onClick: () => {
+        const people = state.team
+          .filter(m => m.active !== 0 && !isPlaceholder(m.name) && discs.includes(m.discipline))
+          .map(m => m.name)
+          .sort((a, b) => a.localeCompare(b));
+        const picks = people.map(n => ({
+          label: (n === cur ? '✓ ' : '') + n,
+          onClick: () => setProjectLead(project, role, n),
+        }));
+        if (cur) {
+          picks.push({ separator: true });
+          picks.push({ label: `Clear ${label.toLowerCase()}`, danger: true, onClick: () => setProjectLead(project, role, '') });
+        }
+        showContextMenu(x, y, picks);
+      },
+    };
+  };
+  items.push({ separator: true });
+  items.push(leadItem('pm', '👤', 'PM'));
+  items.push(leadItem('debug', '🛠', 'Debug lead'));
   // 3) Destructive — only on non-template tabs.
   if (!isTemplate) {
     items.push({ separator: true });
@@ -17537,6 +17616,51 @@ function _milestoneAnchor(label) {
   return null;
 }
 
+// ── Two-way done-sync: schedule anchor ✓ ⇄ financial-milestone Sent ────────
+// Receipt of PO / FAT / SAT live in BOTH places — as an anchor row on the
+// schedule AND as a payment row in the financial milestones. Checking either
+// one off now checks the other off too (and unchecking un-checks it), so the
+// Departments tab never shows "done in the schedule but not sent" limbo.
+const SYNCABLE_ANCHORS = new Set(['receipt_of_po', 'fat', 'sat']);
+// Which anchor a financial row corresponds to: the explicit sync_to_anchor
+// wins; otherwise infer from the name (SAT before FAT — "Acceptance at
+// Customer (SAT)" contains both words).
+function _finRowAnchorKey(f) {
+  if (f && f.sync_to_anchor && SYNCABLE_ANCHORS.has(f.sync_to_anchor)) return f.sync_to_anchor;
+  const s = String((f && f.name) || '').toLowerCase();
+  if (/\bsat\b|customer/.test(s)) return 'sat';
+  if (/\bfat\b|acceptance/.test(s)) return 'fat';
+  if (/receipt|\bpo\b|down|deposit/.test(s)) return 'receipt_of_po';
+  return null;
+}
+// Schedule ✓ toggled → mirror to the matching financial row(s).
+async function syncFinancialsFromAnchor(task, done) {
+  const key = task && inferredAnchorKey(task);
+  if (!key || !SYNCABLE_ANCHORS.has(key) || !task.project) return;
+  let rows = state.financials[task.project];
+  if (!rows) { try { rows = await api.financials.list(task.project); } catch (_) { rows = []; } }
+  const targets = (rows || []).filter(f => _finRowAnchorKey(f) === key && !!f.paid !== !!done);
+  if (targets.length === 0) return;
+  for (const f of targets) {
+    try { await api.financials.update(f.id, { paid: done ? 1 : 0 }); } catch (_) {}
+  }
+  try { await loadFinancialsForProject(task.project); } catch (_) {}
+  if (state.showFinancials) { try { renderGantt(); } catch (_) {} }
+}
+// Financial Sent toggled → mirror to the matching schedule anchor.
+async function syncAnchorFromFinancial(project, finRow, paid) {
+  const key = _finRowAnchorKey(finRow);
+  if (!key || !SYNCABLE_ANCHORS.has(key)) return;
+  const t = state.tasks.find(x => x.project === project && inferredAnchorKey(x) === key);
+  if (!t) return;
+  const done = (Number(t.progress) || 0) >= 100;
+  if (done === !!paid) return;
+  try {
+    await api.update(t.id, { progress: paid ? 100 : 0 });
+    await loadTasks();
+  } catch (_) {}
+}
+
 // Accept → apply the (possibly edited) release to the project: replace the
 // financial milestones, set delivery + penalty on the quote, and move the
 // schedule so Receipt of PO lands on the release date (uniform day shift of
@@ -17664,10 +17788,16 @@ async function mountFinancialsEditor(container, project) {
           else if (field === 'predecessors') value = finPredParse(el.value) || null;
           else value = el.value || null;
           try {
+            // Grab the row BEFORE the reload replaces state.financials.
+            const finRow = (state.financials[project] || []).find(r => r.id === id);
             await api.financials.update(id, { [field]: value });
             await loadFinancialsForProject(project);
             if (field === 'predecessors') await renderGrid();
             if (state.showFinancials) renderGantt();
+            // Sent toggled on a PO/FAT/SAT row → mirror to the schedule anchor ✓.
+            if (field === 'paid' && finRow) {
+              try { await syncAnchorFromFinancial(project, finRow, !!value); } catch (_) {}
+            }
           } catch (err) { console.warn('[financial save]', err); }
         });
       });
@@ -19442,11 +19572,17 @@ function openFinancialsModal(project) {
           // and the footer button would stay red.
           const savePromise = (async () => {
             try {
+              // Grab the row BEFORE the reload replaces state.financials.
+              const finRow = (state.financials[project] || []).find(r => r.id === id);
               await api.financials.update(id, { [field]: value });
               await loadFinancialsForProject(project);
               if (field === 'predecessors') await render();
               if (state.showFinancials) renderGantt();
               try { refreshFinancialsButtonState(); } catch (_) {}
+              // Sent toggled on a PO/FAT/SAT row → mirror to the schedule anchor ✓.
+              if (field === 'paid' && finRow) {
+                try { await syncAnchorFromFinancial(project, finRow, !!value); } catch (_) {}
+              }
             } catch (err) {
               console.warn('[financial save]', err);
             }
@@ -21494,6 +21630,33 @@ function _resTaskStatus(t) {
   return drift < 0 ? 'behind' : 'ontrack';
 }
 
+// ── Project leads (PM / Debug lead) ─────────────────────────────────────────
+// Stored server-side in the settings key 'project_leads' so everyone sees the
+// same assignments:  { "<project>": { pm: "Name", debug: "Name" } }
+// Assigned from the project tab's right-click menu; the Departments page
+// filters its timeline by PM and shows the PM mini-dashboard from this map.
+function projectLead(project, role) {
+  const map = (state.settings && state.settings.project_leads) || {};
+  const rec = map[project];
+  return (rec && rec[role]) || '';
+}
+async function setProjectLead(project, role, name) {
+  state.settings = state.settings || {};
+  const map = state.settings.project_leads = state.settings.project_leads || {};
+  const rec = map[project] = map[project] || {};
+  if (name) rec[role] = name; else delete rec[role];
+  if (!rec.pm && !rec.debug) delete map[project];
+  try {
+    await api.putSetting('project_leads', map);
+    showToast(name
+      ? `${role === 'pm' ? 'PM' : 'Debug lead'} for ${project}: ${name}`
+      : `Cleared the ${role === 'pm' ? 'PM' : 'debug lead'} on ${project}.`);
+  } catch (e) {
+    showToast('Could not save: ' + (e.message || e), { kind: 'error' });
+  }
+  if (state.view === 'team') { try { renderResources(); } catch (_) {} }
+}
+
 function resourcesTasksFor(memberName) {
   // All tasks (across all projects) currently assigned to this person, that have valid
   // dates so they can be plotted on the timeline.
@@ -21504,6 +21667,7 @@ function resourcesTasksFor(memberName) {
   //   - Tasks whose schedule-status bucket has been toggled OFF in the
   //     Departments-tab status chips (see state.resources.statusFilter).
   const projFilter = state.resources.project;
+  const pmFilter = state.resources.pm;
   const sf = (state.resources && state.resources.statusFilter) || { zero: true, behind: true, ontrack: true, done: false };
   return state.tasks.filter(t =>
     t.assignee === memberName &&
@@ -21511,6 +21675,7 @@ function resourcesTasksFor(memberName) {
     !isTemplateProject(t.project) &&
     projectWorkspace(t.project) !== 'Sales' &&
     (!projFilter || t.project === projFilter) &&
+    (!pmFilter || projectLead(t.project, 'pm') === pmFilter) &&
     sf[_resTaskStatus(t)] !== false
   );
 }
@@ -21723,7 +21888,17 @@ function renderTeamDashboard() {
     const lead = !!m.is_lead;
     if (memTasks.length === 0) { underPeople.push({ name: m.name, load: 0, lead, reason: 'no open tasks' }); continue; }
     const overlap = computeOverloadRegions(memTasks, today);
-    if (overlap.length > 0) { overPeople.push({ name: m.name, peak: Math.max(...overlap.map(r => r.peak)) }); continue; }
+    if (overlap.length > 0) {
+      // Keep the actual PERIODS (dates, not just the peak) — the overview
+      // card lists "over-allocated Aug 1 – Aug 8 · 170%" per person.
+      const periods = overlap.map(r => ({
+        from: new Date(todayMs + r.startDay * 86400000).toISOString().slice(0, 10),
+        to:   new Date(todayMs + r.endDay   * 86400000).toISOString().slice(0, 10),
+        peak: r.peak,
+      }));
+      overPeople.push({ name: m.name, peak: Math.max(...overlap.map(r => r.peak)), periods });
+      continue;
+    }
     if (avg < 60) underPeople.push({ name: m.name, load: avg, lead, reason: `${avg}% load` });
   }
   // (Current workload shows EVERY member — see workloadPeople below — so the
@@ -21752,9 +21927,24 @@ function renderTeamDashboard() {
     project: t.project, name: t.name, assignee: t.assignee,
     rightChip: { text: `since ${fmtDate(t.start_date)}`, tone: 'danger' }, onClick: () => jumpToTask(t),
   }), 'Nothing started without a real owner.');
-  deptRenderPeopleList('dept-over-body',
-    overPeople.map(p => ({ name: p.name, over: true, chip: `peak ${p.peak}%`, chipTone: 'chip-danger' })),
-    'No one over-allocated in this window.');
+  // Over-allocated card — per person, list the exact PERIODS they're over
+  // (Dan: "he's over-allocated from this date to this date"), each with its
+  // own peak %. Person row keeps the overall peak chip.
+  const overBody = document.getElementById('dept-over-body');
+  if (overBody) {
+    overBody.innerHTML = overPeople.length === 0
+      ? `<p class="dashboard-empty">No one over-allocated in this window.</p>`
+      : overPeople.map(p => `
+        <div class="dashboard-row dashboard-row-person is-over">
+          <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
+          <span class="dashboard-chip chip-danger">peak ${p.peak}%</span>
+        </div>
+        ${p.periods.map(x => `
+          <div class="dashboard-row dept-over-period" title="${escapeHtml(`${p.name} is over-allocated ${fmtDate(x.from)} – ${fmtDate(x.to)} (peak ${x.peak}%)`)}">
+            <span class="dept-over-dates">${escapeHtml(fmtDate(x.from))} – ${escapeHtml(fmtDate(x.to))}</span>
+            <span class="dashboard-chip chip-danger">${x.peak}%</span>
+          </div>`).join('')}`).join('');
+  }
   // Current workload — a card per person (5 across): name + a donut of their
   // current allocation % over the window. EVERY member of the discipline
   // shows — busy and over-allocated people included — so this list always
@@ -22270,6 +22460,68 @@ function renderResources() {
       projects.map(p => `<option value="${escapeHtml(p)}" ${state.resources.project === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
   }
 
+  // ── PM filter + PM mini-dashboard ── driven by settings.project_leads
+  //    (assigned via right-click on a project tab). The dropdown narrows the
+  //    timeline to one PM's projects; the chip row shows each PM's open /
+  //    behind task counts and clicking a chip toggles the same filter.
+  const leadsMap = (state.settings && state.settings.project_leads) || {};
+  const pmProjects = {};
+  for (const [proj, rec] of Object.entries(leadsMap)) {
+    if (!rec || !rec.pm) continue;
+    if (isTemplateProject(proj) || projectWorkspace(proj) === 'Sales') continue;
+    (pmProjects[rec.pm] = pmProjects[rec.pm] || []).push(proj);
+  }
+  const pmNames = Object.keys(pmProjects).sort((a, b) => a.localeCompare(b));
+  if (state.resources.pm && !pmNames.includes(state.resources.pm)) state.resources.pm = '';
+  const pmSel = document.getElementById('resources-pm');
+  if (pmSel && !pmSel.dataset.bound) {
+    pmSel.dataset.bound = '1';
+    pmSel.addEventListener('change', () => {
+      state.resources.pm = pmSel.value;
+      renderResources();
+    });
+  }
+  if (pmSel) {
+    pmSel.innerHTML = '<option value="">All PMs</option>' +
+      pmNames.map(n => `<option value="${escapeHtml(n)}" ${state.resources.pm === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    // No PMs assigned anywhere yet → hide the control instead of showing a
+    // dropdown with only "All PMs" in it.
+    const wrap = pmSel.closest('label');
+    if (wrap) wrap.style.display = pmNames.length ? '' : 'none';
+  }
+  const pmDash = document.getElementById('resources-pm-dash');
+  if (pmDash) {
+    if (!pmDash.dataset.bound) {
+      pmDash.dataset.bound = '1';
+      pmDash.addEventListener('click', (e) => {
+        const chip = e.target.closest('.res-pm-chip');
+        if (!chip) return;
+        state.resources.pm = state.resources.pm === chip.dataset.pm ? '' : chip.dataset.pm;
+        renderResources();
+      });
+    }
+    pmDash.innerHTML = pmNames.map(pm => {
+      const projs = new Set(pmProjects[pm]);
+      let open = 0, behind = 0;
+      for (const t of state.tasks) {
+        if (!projs.has(t.project)) continue;
+        const pct = Number(t.progress) || 0;
+        if (pct >= 100) continue;
+        open++;
+        if (_resTaskStatus(t) === 'behind') behind++;
+      }
+      const on = state.resources.pm === pm;
+      const projList = pmProjects[pm].join(', ');
+      return `<button type="button" class="res-pm-chip${on ? ' is-on' : ''}" data-pm="${escapeHtml(pm)}"
+        title="${escapeHtml(`${pm} — ${projs.size} project${projs.size === 1 ? '' : 's'}: ${projList}. Click to ${on ? 'clear the filter' : 'filter the timeline to these projects'}.`)}">
+        <strong>${escapeHtml(pm)}</strong>
+        <span class="res-pm-open">${open} open</span>
+        ${behind ? `<span class="res-pm-behind">${behind} behind</span>` : ''}
+      </button>`;
+    }).join('');
+    pmDash.style.display = pmNames.length ? '' : 'none';
+  }
+
   // ── Status filter — inline icon chips (click to show/hide each bucket),
   //    same feel as the Schedule view toggle. is-on class reflects state. ──
   const statusBar = document.getElementById('resources-status-filters');
@@ -22481,10 +22733,14 @@ function renderResources() {
     // capacity warning) — skip overload entirely on those rows.
     const overload = ph ? [] : computeOverloadRegions(tasks, minDate);
     const peakLoad = overload.length === 0 ? null : Math.max(...overload.map(r => r.peak));
+    // Day-offset → readable date for tooltips, so hovering answers "over-
+    // allocated FROM when TO when" instead of making the user squint at the
+    // axis (Dan's ask).
+    const dayToStr = (d) => fmtDate(new Date(minDate.getTime() + d * 86400000).toISOString().slice(0, 10));
     const overloadHtml = overload.map(r => {
       const x = r.startDay * pxPerDay;
       const w = Math.max(2, (r.endDay - r.startDay + 1) * pxPerDay);
-      return `<div class="res-overload" style="left:${x}px;width:${w}px;height:${rowH}px" title="Peak ${r.peak}% allocation"></div>`;
+      return `<div class="res-overload" style="left:${x}px;width:${w}px;height:${rowH}px" title="${escapeHtml(`Over-allocated ${dayToStr(r.startDay)} – ${dayToStr(r.endDay)} — peak ${r.peak}%`)}"></div>`;
     }).join('');
 
     // Load segments — one pill per contiguous span of equal total allocation. Sits below
@@ -22504,9 +22760,10 @@ function renderResources() {
       if (s.total > 100)      cls = 'load-over';
       else if (s.total >= 85) cls = 'load-good';
       const dayLabel = s.startDay === s.endDay ? '' : ` (${s.endDay - s.startDay + 1}d)`;
+      const segTip = `${s.total > 100 ? 'OVER-ALLOCATED — ' : ''}${s.total}% total · ${dayToStr(s.startDay)} – ${dayToStr(s.endDay)}${dayLabel}`;
       return `
         <div class="res-load-seg ${cls}" style="left:${x}px;width:${w}px;height:${STRIP_H}px;bottom:${Math.max(0, ROW_PAD - 2)}px"
-             title="${s.total}% total${dayLabel}">${s.total}%</div>`;
+             title="${escapeHtml(segTip)}">${s.total}%</div>`;
     }).join('');
 
     // A task only NEEDS a priority when it overlaps in time with another task for
@@ -22540,12 +22797,13 @@ function renderResources() {
       const alloc = task.is_milestone ? null : (task.allocation == null ? 90 : task.allocation);
       const labelDate = `${fmtDate(task.start_date)} – ${fmtDate(task.end_date)}`;
       const tip = `${task.project ? `[${task.project}] ` : ''}${task.name} · ${labelDate}${alloc != null ? ` · ${alloc}%` : ''}`;
-      // 100% is the default — at the default we skip the alloc text entirely so the bar's
-      // full width belongs to the label (no more "Ro…" clipping just to fit "100%"). For
-      // non-default allocations we append " · 50%" to the label string itself, which lets
-      // the existing ellipsis handle truncation gracefully when the bar is narrow.
-      const baseLabel = task.project ? `${task.project} · ${task.name}` : task.name;
-      const labelText = (alloc != null && alloc !== 100) ? `${baseLabel} · ${alloc}%` : baseLabel;
+      // Bar label — job NUMBER + task name, nothing else (Dan's spec: "just
+      // the project number and then the task description"). The full story
+      // (project name, dates, allocation) lives in the hover tooltip;
+      // allocation has its own load strip below; duration IS the bar length.
+      const jobNum = (String(task.project || '').match(/^\s*(\d{3,})/) || [])[1] || '';
+      const projShort = jobNum || task.project || '';
+      const barLabel = projShort ? `${projShort} - ${task.name}` : task.name;
       const lowAllocClass = (alloc != null && alloc < 100) ? ' low-alloc' : '';
       const overClass = state.overAllocatedTaskIds.has(task.id) ? ' over-allocated' : '';
       // Bar color reflects SCHEDULE STATUS — same scheme as the % complete pill
@@ -22568,27 +22826,27 @@ function renderResources() {
       //     A solo task at a unique date span doesn't need a priority — it's the
       //     only thing competing for that day, automatically #1.
       const showPriPill = !ph && overlapIds.has(task.id);
+      // Tiny bars are ALL pill — the pill's tooltip must carry the full task
+      // story too, or hovering a couple-day task tells you nothing but
+      // "Priority 1" (Dan's complaint: "it just says one").
       const priPill = showPriPill
-        ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="Priority ${pri} — click to change">${pri}</span>`
+        ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="${escapeHtml(`Priority ${pri} — click to change.\n${tip}`)}">${pri}</span>`
         : '';
-      // Task-bar label — shows DURATION only. Per Dan's spec: the task
-      // bar is the "top section" (status color + duration); the load strip
-      // below the bars is where allocation lives (with its own
-      // under/good/over color scheme). Format: "Project · TaskName · 3w".
-      // The low-alloc CSS class on partial-allocation bars still applies,
-      // giving them a visual hatch so you can spot part-timers.
-      const durWeeks = task.duration_days
-        ? Math.max(0.5, Math.round((task.duration_days / 5) * 2) / 2)  // half-week steps, 0.5w floor
-        : Math.round((dur / 7) * 2) / 2;
-      const durStr = (!task.is_milestone && durWeeks > 0) ? ` · ${durWeeks}w` : '';
-      const allocStr = (alloc != null) ? ` · ${alloc}%` : '';
-      const enrichedLabel = `${baseLabel}${allocStr}${durStr}`;
+      // Label stays INSIDE the bar, always (outside labels overlapped
+      // neighboring bars — unreadable). Degrade by width, per Dan's spec:
+      // full "1148 - Task name" when it fits, JUST the project number when
+      // the bar is small, nothing when even that can't fit (~6px/char at
+      // this font size; the hover tooltip always has the full story).
+      const innerW = w - (showPriPill ? 22 : 6);
+      const labelShown = innerW >= barLabel.length * 6 ? barLabel
+                       : innerW >= String(projShort).length * 6 ? String(projShort)
+                       : '';
       return `
         <div class="res-bar ${statusClass}${lowAllocClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;"
              title="${escapeHtml(tip)}"
              data-task-id="${task.id}">
           ${priPill}
-          <span class="res-bar-label">${escapeHtml(enrichedLabel)}</span>
+          ${labelShown ? `<span class="res-bar-label">${escapeHtml(labelShown)}</span>` : ''}
         </div>`;
     }).join('');
     const totalDuration = tasks.reduce((sum, t) => sum + Math.max(1, Math.round((new Date(t.end_date) - new Date(t.start_date)) / 86400000) + 1), 0);

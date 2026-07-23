@@ -12283,6 +12283,87 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
 .pdash-mile-fin.is-overdue .pdash-mile-label    { color: var(--danger); }
 .pdash-fin-badge.is-overdue .pdash-fin-badge-abbrev { color: var(--danger); }
 
+/* ── Footer PM / Debug-lead selectors (schedule footer, next to Project
+   Release). Centered in the otherwise-empty banner space. ── */
+.schedule-leads {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 auto;   /* centers in the flex-end footer, button stays right */
+}
+.schedule-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  color: var(--text, #1f2937);
+  white-space: nowrap;
+}
+.schedule-lead select {
+  padding: 3px 6px;
+  font-size: var(--fs-md);
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 6px;
+  background: #fff;
+  max-width: 180px;
+}
+body.customer-view .schedule-leads { display: none; }
+
+/* Over-allocated card — indented period rows under each person:
+   "07/24/26 – 08/07/26   [170%]". Dates in tabular figures so the
+   ranges line up down the list. */
+.dept-over-period { padding-left: 24px; }
+.dept-over-period .dept-over-dates {
+  font-size: var(--fs-sm);
+  color: var(--text-muted, #64748b);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── PM mini-dashboard (Departments, above the resource timeline) ──
+   One chip per PM with open/behind counts across their projects; the active
+   chip (= PM filter on) fills SDC blue. Hidden entirely until any project
+   has a PM assigned (right-click a project tab on the Schedule). */
+.res-pm-dash {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 18px 2px;
+}
+.res-pm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 999px;
+  background: var(--surface, #fff);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  color: var(--text, #1f2937);
+}
+.res-pm-chip:hover { border-color: var(--sdc-primary, #1574c4); }
+.res-pm-chip.is-on {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: #fff;
+}
+.res-pm-chip .res-pm-open {
+  font-size: var(--fs-xs);
+  color: var(--text-muted, #64748b);
+}
+.res-pm-chip.is-on .res-pm-open { color: #dbeafe; }
+.res-pm-chip .res-pm-behind {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: #dc2626;
+  background: #fee2e2;
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
 /* Over-capacity / over-load resource indicators */
 .resources-row.has-overload .resources-name     { color: var(--danger); }
 .est-load-over                                  { background: var(--danger-bg); color: var(--danger); }

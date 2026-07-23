@@ -16,7 +16,12 @@ module.exports = function createRouter(deps) {
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
 
-  router.put('/api/settings/:key', requireRole('admin'), async (req, res) => {
+  // Most settings are admin-only (colors, thresholds), but a few keys are
+  // normal PM workflow — editors may write those.
+  const EDITOR_KEYS = new Set(['project_leads']); // { "<project>": { pm, debug } }
+  router.put('/api/settings/:key',
+    (req, res, next) => requireRole(EDITOR_KEYS.has(req.params.key) ? 'editor' : 'admin')(req, res, next),
+    async (req, res) => {
     try {
       const key = req.params.key;
       const value = JSON.stringify(req.body);

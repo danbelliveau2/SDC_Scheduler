@@ -4,6 +4,24 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.1',
+    date: '2026-07-23',
+    notes: [
+      'Project ownership (PM + Debug lead), one-click milestone sync, and a readable resource timeline.',
+      '',
+      'SCHEDULE:',
+      '   ▸ PM + Debug lead live in the footer next to Project Release — always visible, pick from a dropdown (PM = the Project Management team; Debug lead = a PM or a mech/controls engineer). Shared with everyone.',
+      '   ▸ PO / FAT / SAT are checked off ONCE, anywhere — the schedule anchor ✓ and the financial-milestone Sent box now mirror each other both ways. No more "done in the schedule but not showing on Departments".',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ Resource bar labels are just "1148 - Task name"; small bars degrade to the project number alone, tiny ones rely on hover — which now always tells the full story (project, task, dates, allocation), including on the little priority pills.',
+      '   ▸ Hover any red over-allocation stripe or load pill and it says exactly WHEN: "Over-allocated 08/01/26 – 08/08/26 — peak 170%".',
+      '   ▸ The Over-allocated card lists each person\'s exact over-allocated periods with dates and peak %, not just a peak number.',
+      '   ▸ New PM filter + PM dashboard above the timeline: one chip per PM with open/behind counts across their projects; click a chip (or use the All PMs dropdown) to narrow the timeline to their projects. Appears once PMs are assigned.',
+      '   ▸ The project picker stays open while you check/uncheck — closes only on click-off.',
+    ],
+  },
+  {
     version: '13.0',
     date: '2026-07-20',
     notes: [
