@@ -13986,7 +13986,7 @@ function showCreateScheduleDialog(defaultWs) {
         <div class="cs-seg" id="cs-seg">
           <button type="button" class="cs-seg-btn${defaultMode === 'template' ? ' is-active' : ''}" data-mode="template">A template</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'project' ? ' is-active' : ''}" data-mode="project">Another schedule</button>
-          <button type="button" class="cs-seg-btn" data-mode="planner">An ETC job</button>
+          <button type="button" class="cs-seg-btn" data-mode="planner">A Projects Report</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'blank' ? ' is-active' : ''}" data-mode="blank">Blank</button>
         </div>
         <select id="cs-source" class="cs-source"></select>
@@ -14018,7 +14018,7 @@ function showCreateScheduleDialog(defaultWs) {
   const hintEl = overlay.querySelector('#cs-hint');
   let mode = defaultMode;
 
-  // ETC Planner jobs — lazily loaded the first time the "An ETC job" segment is
+  // SDC Projects Reports jobs — lazily loaded the first time the "An ETC job" segment is
   // used. State: plannerJobs is an ARRAY once loaded ([] = genuinely no jobs);
   // it stays null while unloaded OR after a FAILED fetch (so the list can retry
   // — the old code cached a failure as [] and got stuck showing "unavailable",
@@ -14032,23 +14032,23 @@ function showCreateScheduleDialog(defaultWs) {
     plannerLoading = true; plannerError = null;
     try {
       const r = await fetch('/api/planner/jobs?status=Active');
-      if (!r.ok) { plannerJobs = null; plannerError = `ETC Planner unavailable (${r.status})`; }
+      if (!r.ok) { plannerJobs = null; plannerError = `SDC Projects Reports unavailable (${r.status})`; }
       else { const b = await r.json().catch(() => ({})); plannerJobs = Array.isArray(b.jobs) ? b.jobs : []; }
-    } catch (_) { plannerJobs = null; plannerError = 'Could not reach the ETC Planner'; }
+    } catch (_) { plannerJobs = null; plannerError = 'Could not reach the SDC Projects Reports'; }
     finally { plannerLoading = false; }
     if (mode === 'planner') { fillPlannerSource(); refresh(); }
   };
   const fillPlannerSource = () => {
     if (plannerLoading) {
-      sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+      sourceEl.innerHTML = '<option value="" disabled selected>Loading Projects Reports…</option>';
       return;
     }
     if (Array.isArray(plannerJobs)) {
       if (plannerJobs.length === 0) {
-        sourceEl.innerHTML = '<option value="" disabled selected>No active ETC jobs found.</option>';
+        sourceEl.innerHTML = '<option value="" disabled selected>No active Projects Reports found.</option>';
         return;
       }
-      sourceEl.innerHTML = '<option value="" disabled selected>Pick an ETC job…</option>'
+      sourceEl.innerHTML = '<option value="" disabled selected>Pick a Projects Report…</option>'
         + plannerJobs.map(j => `<option value="${escapeHtml(j.jobId)}">${escapeHtml(j.jobId)} — ${escapeHtml(j.jobName || '')}${j.billable ? '' : ' (non-billable)'}</option>`).join('');
       return;
     }
@@ -14056,10 +14056,10 @@ function showCreateScheduleDialog(defaultWs) {
     // off the fetch. Re-selecting the "An ETC job" segment clears the error to
     // force a fresh attempt (see the segment click handler).
     if (plannerError) {
-      sourceEl.innerHTML = `<option value="" disabled selected>${escapeHtml(plannerError)} — click "An ETC job" to retry.</option>`;
+      sourceEl.innerHTML = `<option value="" disabled selected>${escapeHtml(plannerError)} — click "A Projects Report" to retry.</option>`;
       return;
     }
-    sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+    sourceEl.innerHTML = '<option value="" disabled selected>Loading Projects Reports…</option>';
     loadPlannerJobs();
   };
 
@@ -14079,7 +14079,7 @@ function showCreateScheduleDialog(defaultWs) {
     hintEl.textContent = mode === 'blank'
       ? 'Starts empty — just the Receipt of PO + FAT spine markers.'
       : mode === 'planner'
-        ? 'Builds the full schedule from the SDC standard template, linked to the ETC job — snapshots its billable flag + release/delivery dates, imports its quoted hours into the Project Release budget, and adds the PO + FAT spine.'
+        ? 'Builds the full schedule from the SDC standard template, linked to the Projects Report job — snapshots its billable flag + release/delivery dates, imports its quoted hours into the Project Release budget, and adds the PO + FAT spine.'
         : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
     buildBtn.disabled = !nameEl.value.trim() || (mode !== 'blank' && !sourceEl.value);
   };
@@ -14145,7 +14145,7 @@ function showCreateScheduleDialog(defaultWs) {
         row = await r.json().catch(() => ({}));
         ok = r.ok;
         if (!ok) hintEl.textContent = row.error || `Couldn't create the schedule (${r.status}).`;
-      } catch (e) { hintEl.textContent = `Couldn't reach the ETC Planner: ${e.message}`; }
+      } catch (e) { hintEl.textContent = `Couldn't reach the SDC Projects Reports: ${e.message}`; }
       if (!ok) { buildBtn.disabled = false; return; }
       close();
       const created = row.name || name;
@@ -18298,7 +18298,7 @@ async function openProjectReleaseModal(project) {
         <p class="pr-muted">Upload the SDC Project Release (.docx). We'll pull the order date, delivery, financial milestones, penalty clause, and the project budget (hours + parts cost) image.</p>
         <button type="button" class="btn-primary pr-upload-btn">⬆ Upload Project Release (.docx)</button>
         <input type="file" accept=".docx" class="pr-file" style="display:none;">
-        <p class="pr-muted" style="margin-top:14px;">…or pull the quoted hours straight from the ETC Planner (uses this project's job number):</p>
+        <p class="pr-muted" style="margin-top:14px;">…or pull the quoted hours straight from the SDC Projects Reports (uses this project's job number):</p>
         <button type="button" class="btn-ghost pr-pull-etc-btn">🔄 Pull quoted hours from ETC</button>
         <div class="pr-status"></div>
       </div>`;
@@ -18344,7 +18344,7 @@ async function openProjectReleaseModal(project) {
   overlay.querySelector('.modal-close').addEventListener('click', close);
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
 
-  // Pull / refresh the quoted-hours budget from the ETC Planner (server re-pulls
+  // Pull / refresh the quoted-hours budget from the SDC Projects Reports (server re-pulls
   // by this project's job number and rewrites the project_quote budget). On
   // success, reload the panel so the grid shows the fresh numbers.
   overlay.addEventListener('click', async (e) => {
@@ -18358,7 +18358,7 @@ async function openProjectReleaseModal(project) {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `Refresh failed (${r.status})`);
       if (state.quoteCache) delete state.quoteCache[project]; // force Δ overlay to re-read
-      try { showToast('Quoted hours pulled from the ETC Planner.'); } catch (_) {}
+      try { showToast('Quoted hours pulled from the SDC Projects Reports.'); } catch (_) {}
       close();
       try { await openProjectReleaseModal(project); } catch (_) {}
       try { renderTable(); } catch (_) {}
