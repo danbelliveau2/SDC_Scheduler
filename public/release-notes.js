@@ -4,6 +4,18 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.2',
+    date: '2026-07-24',
+    notes: [
+      'View the Project Release right in the app.',
+      '',
+      '   ▸ The Project Release panel footer is three clean pill buttons: 📄 Open Project Release · ⬆ Update Project Release… · ✓ Accept & apply. (The little stray icons are gone.)',
+      '   ▸ Open renders the uploaded Word document IN the browser, PDF-style — white pages, real page breaks, headers/footers, tables — scroll, read, close. No download, no Word. A ⬇ Download button in the viewer grabs the actual .docx when you need to edit it.',
+      '   ▸ Update replaces the stored document with a newer revision and re-parses the dates, milestones, and budget from it.',
+      '   ▸ Heads-up: releases uploaded before this feature only stored the parsed data — re-upload once to attach the viewable document.',
+    ],
+  },
+  {
     version: '13.1',
     date: '2026-07-23',
     notes: [

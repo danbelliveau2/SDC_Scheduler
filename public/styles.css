@@ -7765,7 +7765,58 @@ body[data-view="setup"] #btn-add { display: none; }
 .pr-empty .btn-primary { margin-top: 4px; }
 .pr-foot { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .pr-filename { flex: 1 1 auto; font-size: var(--fs-xs); }
+/* The attached-file name is a live link — click opens the original .docx. */
+.pr-view-link { color: var(--sdc-primary, #1574c4); text-decoration: none; cursor: pointer; }
+.pr-view-link:hover { text-decoration: underline; }
 .pr-status { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 10px; }
+
+/* ── In-app .docx viewer — the Project Release doc rendered like a PDF.
+   Sits ABOVE the release modal (960); gray reading background with the
+   white "pages" docx-preview renders. ── */
+.docx-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.62);
+  z-index: 980;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+}
+.docx-viewer-card {
+  background: #e8edf3;
+  width: min(980px, 96vw);
+  height: 93vh;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(6, 29, 57, 0.35);
+}
+.docx-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #fff;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  flex: 0 0 auto;
+}
+.docx-viewer-title {
+  flex: 1 1 auto;
+  font-weight: var(--fw-bold);
+  color: var(--sdc-dark, #061d39);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.docx-viewer-close { font-size: 16px; }
+.docx-viewer-body { flex: 1 1 auto; overflow: auto; }
+/* docx-preview lays out real letter-size pages with their own margins and
+   shadows — do NOT override its wrapper (stripping the padding is what
+   squished the layout). Just let horizontal scroll kick in when the modal
+   is narrower than the page. */
+.docx-viewer-doc .docx-wrapper { padding: 18px; }
 .pr-edithint { font-size: var(--fs-sm); margin: 0 0 14px; }
 .pr-input {
   height: 34px; box-sizing: border-box; padding: 0 10px; font-size: var(--fs-base);

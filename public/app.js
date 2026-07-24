@@ -17931,6 +17931,69 @@ async function syncAnchorFromFinancial(project, finRow, paid) {
   } catch (_) {}
 }
 
+// ── In-app .docx viewer ─────────────────────────────────────────────────────
+// Renders the stored Project Release Word doc right in the browser (docx-preview
+// off the CDN, lazy-loaded on first use) — view it like a PDF, no download, no
+// Word. Falls back to a plain download if the library can't load (offline).
+async function _loadDocxPreviewLibs() {
+  if (window.docx && window.docx.renderAsync) return true;
+  const load = (src) => new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  try {
+    if (!window.JSZip) await load('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+    await load('https://cdn.jsdelivr.net/npm/docx-preview@0.3.2/dist/docx-preview.min.js');
+    return !!(window.docx && window.docx.renderAsync);
+  } catch (_) { return false; }
+}
+async function openDocxViewer(blob, title) {
+  document.getElementById('docx-viewer-overlay')?.remove();
+  const ov = document.createElement('div');
+  ov.id = 'docx-viewer-overlay';
+  ov.className = 'docx-viewer-overlay';
+  ov.innerHTML = `
+    <div class="docx-viewer-card">
+      <div class="docx-viewer-head">
+        <span class="docx-viewer-title">📄 ${escapeHtml(title)}</span>
+        <button type="button" class="btn-secondary docx-viewer-dl" title="Save a copy of the .docx">⬇ Download</button>
+        <button type="button" class="btn-icon docx-viewer-close" title="Close">✕</button>
+      </div>
+      <div class="docx-viewer-body"><div class="docx-viewer-doc">Loading document…</div></div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  ov.querySelector('.docx-viewer-close').addEventListener('click', close);
+  ov.querySelector('.docx-viewer-dl').addEventListener('click', () => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = title || 'Project Release.docx'; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  });
+  const target = ov.querySelector('.docx-viewer-doc');
+  target.textContent = '';
+  try {
+    // Fidelity options: real page breaks + true page width/height, headers +
+    // footers, and the experimental tab-stop engine (SDC release forms lean
+    // hard on tabs + tables — without it the layout collapses).
+    await window.docx.renderAsync(blob, target, undefined, {
+      inWrapper: true,
+      breakPages: true,
+      ignoreWidth: false,
+      ignoreHeight: false,
+      renderHeaders: true,
+      renderFooters: true,
+      experimental: true,
+      useBase64URL: true,
+    });
+  } catch (_) {
+    target.textContent = 'Could not render this document in the browser — use ⬇ Download instead.';
+  }
+}
+
 // Accept → apply the (possibly edited) release to the project: replace the
 // financial milestones, set delivery + penalty on the quote, and move the
 // schedule so Receipt of PO lands on the release date (uniform day shift of
@@ -18253,10 +18316,9 @@ async function openProjectReleaseModal(project) {
         <div class="pr-budget-status"></div>
       </div>
       <div class="pr-foot">
-        <span class="pr-muted pr-filename">📎 ${escapeHtml(rel.name || 'Project Release.docx')}${rel.accepted_at ? ' · accepted' : (rel.uploaded_at ? ' · uploaded ' + escapeHtml(new Date(rel.uploaded_at).toLocaleDateString()) : '')}</span>
-        <button type="button" class="btn-ghost pr-refresh-etc-btn" title="Re-pull the quoted hours from the ETC Planner">🔄 Refresh quoted hours from ETC</button>
-        <button type="button" class="btn-ghost pr-view-btn" title="Open the original Word document">📄 View original</button>
-        <button type="button" class="btn-ghost pr-replace-btn">⬆ Replace…</button>
+        <button type="button" class="btn-secondary pr-open-btn" title="${escapeHtml(rel.name || 'Project Release.docx')} — open the original Word document">📄 Open Project Release</button>
+        <button type="button" class="btn-secondary pr-replace-btn" title="Upload a newer revision of the release .docx — replaces the stored document and re-parses it">⬆ Update Project Release…</button>
+        <span class="pr-foot-spacer" style="flex:1 1 auto"></span>
         <button type="button" class="btn-primary pr-accept-btn">✓ Accept &amp; apply</button>
         <input type="file" accept=".docx" class="pr-file" style="display:none;">
       </div>
@@ -18411,19 +18473,29 @@ async function openProjectReleaseModal(project) {
       el.addEventListener('blur',  () => { el.value = fmtMoney(el.value.replace(/[^0-9.]/g, '') || ''); });
     });
 
-    // View the original Word doc (stored alongside the release).
-    overlay.querySelector('.pr-view-btn')?.addEventListener('click', async () => {
+    // View the original Word doc (stored alongside the release) — rendered
+    // IN the browser like a PDF (no download, no Word). Falls back to a
+    // download only if the viewer library can't load.
+    const viewOriginal = async (e) => {
+      if (e) e.preventDefault();
       try {
+        if (statusEl) statusEl.textContent = 'Opening document…';
         const r = await fetch(`/api/project/${encodeURIComponent(project)}/estimate-file`);
         const est = r.ok ? await r.json() : null;
         if (!est || !est.data) { if (statusEl) statusEl.textContent = 'No original document is stored — re-upload to attach it.'; return; }
         const bytes = Uint8Array.from(atob(est.data), c => c.charCodeAt(0));
         const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href = url; a.download = est.name || 'Project Release.docx'; a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1500);
-      } catch (e) { if (statusEl) statusEl.textContent = 'Could not open the document: ' + (e.message || e); }
-    });
+        if (statusEl) statusEl.textContent = '';
+        if (await _loadDocxPreviewLibs()) {
+          await openDocxViewer(blob, est.name || 'Project Release.docx');
+        } else {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = est.name || 'Project Release.docx'; a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1500);
+        }
+      } catch (e2) { if (statusEl) statusEl.textContent = 'Could not open the document: ' + (e2.message || e2); }
+    };
+    overlay.querySelector('.pr-open-btn')?.addEventListener('click', viewOriginal);
 
     // Accept & apply.
     overlay.querySelector('.pr-accept-btn')?.addEventListener('click', async () => {
