@@ -1,7 +1,22 @@
 'use strict';
 const { Router } = require('express');
+const planner = require('../lib/plannerClient');
 
 const TEAM_DISCIPLINES = new Set(['mech', 'controls', 'pm', 'build', 'wire']);
+
+// Scheduler discipline code → ETC Planner's full label (ETC stores labels).
+const ETC_DISCIPLINE_LABEL = {
+  pm: 'Project Management', mech: 'Mechanical Engineers',
+  controls: 'Controls Engineers', build: 'Builders', wire: 'Electricians',
+};
+// Nickname-normalized name key so team_members names line up with the ETC
+// roster names despite spelling drift (Mike/Michael, Josh/Joshua, …).
+const ETC_NICKNAMES = { mike:'michael', josh:'joshua', rich:'richard', tim:'timothy', matt:'matthew', rob:'robert', dave:'david', mitch:'mitchell', nick:'nicholas', greg:'gregory', dan:'daniel', tom:'thomas', jon:'jonathan', chris:'christopher', andy:'andrew', bill:'william', billy:'william', sam:'samuel', joe:'joseph', jim:'james', ben:'benjamin' };
+function normEtcName(name) {
+  const parts = String(name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9 ]/g, ' ').trim().split(/\s+/);
+  if (parts.length) parts[0] = ETC_NICKNAMES[parts[0]] || parts[0];
+  return parts.join('');
+}
 
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole } = deps;
@@ -85,6 +100,67 @@ module.exports = function createRouter(deps) {
       conn.release();
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── ETC master-roster extras (Unassigned + Inactive) ──────────────────────
+  // ETC Planner is the master employee list. Unassigned = ETC active people not
+  // yet on a Scheduler team (name-matched vs team_members); Inactive = ETC
+  // inactive people. Fail-SOFT: if the planner isn't configured/reachable, the
+  // board still renders its own 5 discipline cards.
+  router.get('/api/team/etc-extras', async (req, res) => {
+    try {
+      if (!planner.CONFIGURED) return res.json({ ok: false, unassigned: [], inactive: [], reason: 'ETC Planner not configured' });
+      const employees = await planner.getEmployees();
+      const [team] = await pool.query('SELECT name FROM team_members');
+      const teamKeys = new Set(team.map(t => normEtcName(t.name)));
+      const isPh = (n) => /placeholder/i.test(n || '');
+      const unassigned = [], inactive = [];
+      for (const e of employees) {
+        if (isPh(e.name)) continue;
+        if (!e.active) { inactive.push({ paylocityId: e.paylocityId, name: e.name, discipline: e.discipline }); continue; }
+        if (!teamKeys.has(normEtcName(e.name))) unassigned.push({ paylocityId: e.paylocityId, name: e.name, discipline: e.discipline });
+      }
+      unassigned.sort((a, b) => a.name.localeCompare(b.name));
+      inactive.sort((a, b) => a.name.localeCompare(b.name));
+      res.json({ ok: true, unassigned, inactive });
+    } catch (e) {
+      res.json({ ok: false, unassigned: [], inactive: [], reason: e.message });
+    }
+  });
+
+  // Assign an ETC person to a discipline: create/repoint the team_members row
+  // AND push the grouping back to the planner (keyed by paylocityId) so both
+  // apps agree. Planner push is best-effort — the Scheduler assignment stands
+  // even if the planner is momentarily unreachable.
+  router.post('/api/team/assign-from-etc', requireRole('editor'), async (req, res) => {
+    try {
+      const name = (req.body.name || '').trim();
+      const discipline = req.body.discipline;
+      const paylocityId = (req.body.paylocityId || '').toString().trim();
+      if (!name) return res.status(400).json({ error: 'name required' });
+      if (!TEAM_DISCIPLINES.has(discipline)) return res.status(400).json({ error: 'invalid discipline' });
+
+      const [[dupe]] = await pool.query('SELECT * FROM team_members WHERE name = ?', [name]);
+      let row = dupe;
+      if (!dupe) {
+        const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order),0) AS m FROM team_members WHERE discipline = ?', [discipline]);
+        const [result] = await pool.query('INSERT INTO team_members (name, discipline, sort_order) VALUES (?, ?, ?)', [name, discipline, maxRow.m + 1]);
+        [[row]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [result.insertId]);
+      } else if (dupe.discipline !== discipline) {
+        await pool.query('UPDATE team_members SET discipline = ? WHERE id = ?', [discipline, dupe.id]);
+        [[row]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [dupe.id]);
+      }
+
+      let etcPushed = false;
+      if (paylocityId && planner.CONFIGURED) {
+        try { await planner.setEmployeeDiscipline(paylocityId, ETC_DISCIPLINE_LABEL[discipline] || null); etcPushed = true; }
+        catch (_) { /* Scheduler assignment stands even if the planner is down */ }
+      }
+      res.json({ ok: true, member: row, etcPushed });
+      io.emit('team:updated');
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
   });
 
   return router;

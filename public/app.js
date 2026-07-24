@@ -179,6 +179,13 @@ const api = {
       window._lastLocalEdit = Date.now();
       return fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json());
     },
+    // ETC-master roster extras: Unassigned (ETC active, not on a team) + Inactive.
+    etcExtras: () => fetch('/api/team/etc-extras').then(r => r.json()).catch(() => ({ ok: false, unassigned: [], inactive: [] })),
+    // Drag an ETC person into a discipline: create/repoint here + push to ETC.
+    assignFromEtc: (data) => {
+      window._lastLocalEdit = Date.now();
+      return fetch('/api/team/assign-from-etc', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+    },
   },
   // Shop Parts (Parts in Shop) — independent from tasks; its own table + routes.
   shopParts: {
@@ -21817,6 +21824,39 @@ function renderTeam() {
       </section>`;
   }).join('');
 
+  // ETC-master extras — "Unassigned" (ETC active people not yet on a team,
+  // draggable into the 5 cards) + "Inactive" (ETC inactive people, read-only).
+  // Fail-soft: if ETC isn't connected, show one small note card instead.
+  const extras = state.teamExtras || { ok: false, unassigned: [], inactive: [] };
+  const bubble = (p, drag) => `
+    <li class="team-bubble${drag ? '' : ' is-inactive'}"${drag ? ' draggable="true"' : ''} data-pid="${escapeHtml(String(p.paylocityId || ''))}" data-name="${escapeHtml(p.name)}" title="${escapeHtml(p.name)}${p.discipline ? ' — ' + escapeHtml(p.discipline) : ''}">
+      ${drag ? '<span class="team-member-grip" title="Drag into a team">⋮⋮</span>' : ''}
+      <span class="team-bubble-name">${escapeHtml(p.name)}</span>
+      ${!drag && p.discipline ? `<span class="team-bubble-spec">${escapeHtml(p.discipline)}</span>` : ''}
+    </li>`;
+  let extrasHtml = '';
+  if (!extras.ok) {
+    extrasHtml = `
+      <section class="team-card team-card-extra">
+        <header class="team-card-head" style="background:#e2e8f0;color:#334155"><h3>Unassigned / Inactive</h3></header>
+        <div class="team-card-note">ETC roster not connected${extras.reason ? ` — ${escapeHtml(extras.reason)}` : ''}.</div>
+      </section>`;
+  } else {
+    extrasHtml = `
+      <section class="team-card team-card-extra" data-extra="unassigned">
+        <header class="team-card-head" style="background:#e2e8f0;color:#334155"><h3>Unassigned</h3></header>
+        <div class="team-card-capacity"><span class="cap-stat"><span class="cap-num">${extras.unassigned.length}</span> people</span></div>
+        <div class="team-card-note">Drag a name into a team on the left to assign it (updates ETC too).</div>
+        <ul class="team-list team-bubble-list">${extras.unassigned.map(p => bubble(p, true)).join('')}</ul>
+      </section>
+      <section class="team-card team-card-extra">
+        <header class="team-card-head" style="background:#cbd5e1;color:#334155"><h3>Inactive</h3></header>
+        <div class="team-card-capacity"><span class="cap-stat"><span class="cap-num">${extras.inactive.length}</span> people</span></div>
+        <ul class="team-list team-bubble-list">${extras.inactive.map(p => bubble(p, false)).join('')}</ul>
+      </section>`;
+  }
+  grid.insertAdjacentHTML('beforeend', extrasHtml);
+
   // Wire add-member buttons (one per card).
   grid.querySelectorAll('[data-action="add-member"]').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -21963,6 +22003,42 @@ function renderTeam() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ order }),
       });
+      await loadTeam();
+    });
+  });
+
+  // Drag an "Unassigned" ETC bubble into a discipline card → create/repoint the
+  // team_members row and push the grouping back to ETC. Uses a DISTINCT drag
+  // data-type + a non-.team-member class so it never collides with the
+  // within-card row reorder above.
+  const ETC_DND = 'application/x-etc-unassigned';
+  grid.querySelectorAll('.team-bubble[draggable="true"]').forEach(li => {
+    li.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData(ETC_DND, JSON.stringify({ pid: li.dataset.pid, name: li.dataset.name }));
+      li.classList.add('is-dragging');
+    });
+    li.addEventListener('dragend', () => li.classList.remove('is-dragging'));
+  });
+  grid.querySelectorAll('.team-card[data-discipline]').forEach(card => {
+    card.addEventListener('dragover', (e) => {
+      if (!Array.from(e.dataTransfer.types).includes(ETC_DND)) return; // ignore row-reorder drags
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      card.classList.add('drop-target-card');
+    });
+    card.addEventListener('dragleave', (e) => {
+      if (!card.contains(e.relatedTarget)) card.classList.remove('drop-target-card');
+    });
+    card.addEventListener('drop', async (e) => {
+      const raw = e.dataTransfer.getData(ETC_DND);
+      if (!raw) return; // not our drag — let the row reorder handler deal with it
+      e.preventDefault();
+      card.classList.remove('drop-target-card');
+      let payload; try { payload = JSON.parse(raw); } catch { return; }
+      const discipline = card.dataset.discipline;
+      if (!payload.name || !discipline) return;
+      await api.team.assignFromEtc({ paylocityId: payload.pid, name: payload.name, discipline });
       await loadTeam();
     });
   });
@@ -24816,6 +24892,10 @@ function computeOverAllocatedTasks(tasks) {
 }
 async function loadTeam() {
   state.team = await api.team.list();
+  // Pull ETC's Unassigned + Inactive people (fail-soft: if the planner is off,
+  // the board still renders its own 5 discipline cards). Non-blocking on error.
+  try { state.teamExtras = await api.team.etcExtras(); }
+  catch (_) { state.teamExtras = { ok: false, unassigned: [], inactive: [] }; }
   // Re-render whichever view depends on the team list. The Schedule grid only renders
   // assignee names (any string), but the Team tab and Resources tab both need a fresh
   // list, and the Schedule grid's inline-edit dropdown reads state.team at click time

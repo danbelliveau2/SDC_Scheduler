@@ -12611,3 +12611,28 @@ textarea:focus-visible,
   padding: 18px 12px;
   font-style: italic;
 }
+
+/* ── ETC-master team extras: Unassigned + Inactive cards ─────────────────── */
+.team-card-extra { border-style: dashed; }
+.team-card-note {
+  padding: 4px 10px 6px;
+  font-size: var(--fs-2xs);
+  color: var(--muted, #64748b);
+  line-height: 1.3;
+}
+.team-bubble-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.team-bubble {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px;
+  background: #eef2f7; border: 1px solid #d5dee8;
+  font-size: var(--fs-md); max-width: 100%;
+}
+.team-bubble[draggable="true"] { cursor: grab; }
+.team-bubble[draggable="true"]:hover { background: #e2ecf7; border-color: #b8cbe0; }
+.team-bubble.is-dragging { opacity: 0.5; }
+.team-bubble.is-inactive { background: #f1f5f9; color: #64748b; }
+.team-bubble-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-bubble-spec { font-size: var(--fs-2xs); color: #94a3b8; }
+.team-card[data-discipline].drop-target-card {
+  outline: 2px dashed #2a5a8c; outline-offset: -2px; background: #eaf2fb;
+}
