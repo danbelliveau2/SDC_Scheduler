@@ -27645,6 +27645,11 @@ async function init() {
   } catch (_) {}
 
   loadTasks().then(() => {
+    // Deep-link from the SDC ETC Planner (?job=…): jump straight to that job's
+    // project schedule. Runs here — after loadTasks() has hydrated the tabs and
+    // restored the last active project from sessionStorage — so this override
+    // wins. No-op when there's no ?job= param.
+    _applyEtcJobDeepLink();
     // On boot / reload, fit the whole project into the Gantt viewport instead
     // of restoring a stale zoom/scroll (which left it half off-screen). Defer
     // two frames so the grid+Gantt layout settles before zoomToFit measures.
@@ -27668,6 +27673,40 @@ async function init() {
   if (typeof initCommentsUI === 'function') {
     try { initCommentsUI(); } catch (_) {}
   }
+}
+
+// ── SDC ETC Planner deep-link ────────────────────────────────────────────────
+// The ETC Planner's grids (Projects / Monthly ETC / Job Hour Details) link here
+// as `/?job=<etcJobId>&view=schedule` so a manager can jump straight from a
+// job's hours to its project schedule. Resolve the job number against
+// projectsIndex (name → { job_number }, built in init() from /api/projects); if
+// a project matches, make it the active project and show its schedule. Called
+// from init() inside loadTasks().then() so it runs AFTER loadProjectTabs() has
+// restored the last active project from sessionStorage — this override wins.
+// The ?job= param is stripped afterward so a later manual reload doesn't keep
+// forcing the jump.
+function _applyEtcJobDeepLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const jobParam = (params.get('job') || '').trim();
+    if (!jobParam) return;
+    const index = state.projectsIndex || {};
+    const match = Object.keys(index).find(
+      (name) => String(index[name].job_number || '').trim() === jobParam
+    );
+    if (match) {
+      state.filters.project = match;
+      if (!Array.isArray(state.openProjects)) state.openProjects = [''];
+      if (!state.openProjects.includes(match)) state.openProjects.push(match);
+      try { loadMachinesSubset(match); } catch (_) {}
+      try { loadMachineColors(match); } catch (_) {}
+      try { saveProjectTabs(); } catch (_) {}
+      setView('schedule'); // renders the schedule for the now-active project
+    } else {
+      console.warn(`[ETC deep-link] No Scheduler project has job_number "${jobParam}".`);
+    }
+    try { history.replaceState(null, '', location.pathname); } catch (_) {}
+  } catch (_) { /* deep-link is best-effort; never block boot */ }
 }
 
 document.addEventListener('DOMContentLoaded', init);
