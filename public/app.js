@@ -27701,7 +27701,26 @@ function _applyEtcJobDeepLink() {
       try { loadMachinesSubset(match); } catch (_) {}
       try { loadMachineColors(match); } catch (_) {}
       try { saveProjectTabs(); } catch (_) {}
+      // Opening from the ETC Planner should land on a clean, fully-fitted view:
+      // collapse the bottom drawers (Notes / Procurement / Job Hours) so they
+      // don't steal vertical space, then apply BOTH fit controls — ⛶ zoom-to-fit
+      // (width) and ↕ fit-height (row height) — so the whole schedule is visible
+      // with no scrolling. Set the drawer flags BEFORE setView so the first
+      // render already draws them collapsed.
+      try {
+        _setDrawerCollapsed('notes', true);
+        _setDrawerCollapsed('proc', true);
+        _setDrawerCollapsed('hours', true);
+      } catch (_) {}
       setView('schedule'); // renders the schedule for the now-active project
+      const fitClean = () => {
+        try { zoomToFit(); } catch (_) {}
+        try { document.getElementById('btn-zoom-height')?.click(); } catch (_) {}
+      };
+      // Two frames for the synchronous render, plus a delayed pass to catch the
+      // async machine/data render (rows must exist for fit-height to measure).
+      requestAnimationFrame(() => requestAnimationFrame(fitClean));
+      setTimeout(fitClean, 450);
     } else {
       console.warn(`[ETC deep-link] No Scheduler project has job_number "${jobParam}".`);
     }
