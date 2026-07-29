@@ -11671,8 +11671,20 @@ function renderProjectsPage() {
   const wsWithProjects = WORKSPACES.filter(ws => byWs[ws].some(p => !isTemplateProject(p))).length;
 
   root.innerHTML = `
-    <h1 class="projects-page-title">Projects</h1>
-    <div class="projects-page-sub">${nonTmplCount} schedule${nonTmplCount !== 1 ? 's' : ''} across ${wsWithProjects} workspace${wsWithProjects !== 1 ? 's' : ''}</div>
+    <!-- Title block and the cross-app link share one flex row. The title/sub
+         classes are styled by class alone (no parent selector), so wrapping them
+         is safe. Inline flex rather than a new CSS class to keep this contained
+         to app.js. The rail's "Reports" icon does the same thing; this is the
+         in-page counterpart, since arriving here from the Reports app's sidebar
+         is now a normal round trip. -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">
+      <div style="min-width:0;">
+        <h1 class="projects-page-title">Projects</h1>
+        <div class="projects-page-sub">${nonTmplCount} schedule${nonTmplCount !== 1 ? 's' : ''} across ${wsWithProjects} workspace${wsWithProjects !== 1 ? 's' : ''}</div>
+      </div>
+      <a class="toolbar-toggle-btn" id="link-reports-projects" href="${_reportsAppUrl('/quoted')}" target="_blank" rel="noopener"
+         title="Open SDC Projects Reports (Projects grid) in a new tab" style="flex:none;text-decoration:none;white-space:nowrap;">← SDC Projects Reports</a>
+    </div>
     <div class="projects-search-wrap">
       <span class="projects-search-icon">🔍</span>
       <input class="projects-search-input" type="text" placeholder="Search projects…" value="${escapeHtml(searchQ)}" autocomplete="off" spellcheck="false" />
@@ -27650,6 +27662,15 @@ async function init() {
     // restored the last active project from sessionStorage — so this override
     // wins. No-op when there's no ?job= param.
     _applyEtcJobDeepLink();
+    // ?view=<name> (e.g. the Reports app's sidebar link → ?view=projects).
+    // After the job deep-link, which owns the view when ?job= is present.
+    _applyViewDeepLink();
+    // Point the rail's Reports link at whatever hostname this app was reached by.
+    _initReportsRailLink();
+    // Restore "← Back to report" on a plain refresh of a tab that was opened
+    // from the reports app — by then ?ret= has been stripped from the URL, so
+    // the target comes from sessionStorage. No-op for normal visitors.
+    _initEtcBackButton();
     // On boot / reload, fit the whole project into the Gantt viewport instead
     // of restoring a stale zoom/scroll (which left it half off-screen). Defer
     // two frames so the grid+Gantt layout settles before zoomToFit measures.
@@ -27685,11 +27706,117 @@ async function init() {
 // restored the last active project from sessionStorage — this override wins.
 // The ?job= param is stripped afterward so a later manual reload doesn't keep
 // forcing the jump.
+// ── Reports rail link (sibling app on :3010) ────────────────────────────────
+// Keeps the hard-coded server-app1 href working when this app is reached by a
+// different hostname (localhost during dev, an IP, a future rename): the two
+// services always live on the same machine, so only the port differs. The
+// mirror-image link lives in the Reports app's own sidebar ("Project
+// Scheduler"), pointing back at ?view=projects here.
+const REPORTS_APP_PORT = '3010';
+
+// Absolute URL into the Reports app, on whatever host this app was reached by.
+function _reportsAppUrl(path) {
+  return `${location.protocol}//${location.hostname}:${REPORTS_APP_PORT}${path || '/'}`;
+}
+
+function _initReportsRailLink() {
+  const link = document.getElementById('link-reports-sidebar');
+  if (!link) return;
+  try {
+    const url = new URL(link.getAttribute('href'), location.origin);
+    if (url.hostname !== location.hostname) link.href = _reportsAppUrl(url.pathname + url.search);
+  } catch (_) { /* leave the static href alone */ }
+}
+
+// ── ?view= deep-link ────────────────────────────────────────────────────────
+// Land on a named top-level view (projects / favorites / team / job-hours / …)
+// instead of whatever localStorage last restored — this is what the Reports
+// app's "Project Scheduler" sidebar link uses (?view=projects). Until now the
+// param was accepted but ignored: the ETC job deep-link called setView() itself
+// and nothing else ever read it.
+//
+// Skipped entirely when ?job= is present — that handler owns the view (it opens
+// the job's schedule) and would be fighting this one.
+//
+// Validated by asking the DOM whether a matching #view-<name> section exists,
+// so the list can't drift out of sync with the rail the way a hard-coded array
+// would, and an unknown value is simply ignored rather than blanking the page.
+function _applyViewDeepLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    if ((params.get('job') || '').trim()) return;
+    const view = (params.get('view') || '').trim();
+    if (!view || !/^[a-z-]{1,32}$/.test(view)) return;
+    if (!document.getElementById(`view-${view}`)) return;
+    setView(view);
+  } catch (_) { /* deep-link is best-effort; never block boot */ }
+}
+
+// ── "← Back to report" (companion to the ETC deep-link) ─────────────────────
+// The reports app hands over the page to return to as ?ret=<absolute url>,
+// because neither browser Back nor document.referrer can do the job:
+//   • The report's Gantt icon/menu opens this app in a NEW TAB, so that tab's
+//     history has no earlier entry — history.back() is a no-op.
+//   • The two apps sit on different ports (3010 vs 4003), and the reports app
+//     sends a strict-origin referrer cross-origin, so document.referrer arrives
+//     as a bare "http://host:3010/" with the report's path and filters stripped.
+// The target is kept in sessionStorage (tab-scoped, so only the tab that was
+// opened from a report grows the button) and survives the query-string cleanup
+// _applyEtcJobDeepLink does, plus any manual refresh afterwards.
+const ETC_BACK_KEY = 'etcBackUrl';
+
+// Only accept an http(s) URL on this same host — the reports app is a sibling
+// service on another port of the same machine. Without that check, a
+// hand-crafted ?ret= would turn this button into an open redirect.
+function _sanitizeEtcBackUrl(raw) {
+  if (!raw) return '';
+  try {
+    // No base argument on purpose: the reports app always hands over an
+    // absolute URL, so anything relative (or plain junk like "not a url") must
+    // be rejected rather than quietly resolved against this app's own origin
+    // and navigated to as a dead Scheduler path.
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    if (url.hostname !== location.hostname) return '';
+    return url.href;
+  } catch (_) {
+    return '';
+  }
+}
+
+function _setEtcBackTarget(raw) {
+  const href = _sanitizeEtcBackUrl(raw);
+  if (!href) return;
+  try { sessionStorage.setItem(ETC_BACK_KEY, href); } catch (_) {}
+  _initEtcBackButton();
+}
+
+// Called on boot too (after _applyEtcJobDeepLink), so a refresh of an
+// ETC-opened tab keeps its Back button even though ?ret= is long gone.
+function _initEtcBackButton() {
+  const btn = document.getElementById('btn-etc-back');
+  if (!btn) return;
+  let href = '';
+  try { href = _sanitizeEtcBackUrl(sessionStorage.getItem(ETC_BACK_KEY) || ''); } catch (_) {}
+  if (!href) return;
+  btn.classList.remove('hidden');
+  // A plain navigation, not history.back(): by the time this is clicked the
+  // viewer may have pushed any number of in-app states, so back() is not
+  // reliably one hop from the report. Going straight to the handed-over URL
+  // lands on the exact report page — filters, sort and columns included, since
+  // the reports app keeps that state in the query string.
+  btn.onclick = () => { location.href = href; };
+}
+
 function _applyEtcJobDeepLink() {
   try {
     const params = new URLSearchParams(location.search);
     const jobParam = (params.get('job') || '').trim();
     if (!jobParam) return;
+    // Wire "← Back to report" before anything else, so it works even when the
+    // job number doesn't resolve to a project (the most likely moment someone
+    // wants to go back).
+    _setEtcBackTarget(params.get('ret') || '');
     const index = state.projectsIndex || {};
     const match = Object.keys(index).find(
       (name) => String(index[name].job_number || '').trim() === jobParam
@@ -27701,26 +27828,37 @@ function _applyEtcJobDeepLink() {
       try { loadMachinesSubset(match); } catch (_) {}
       try { loadMachineColors(match); } catch (_) {}
       try { saveProjectTabs(); } catch (_) {}
-      // Opening from the ETC Planner should land on a clean, fully-fitted view:
-      // collapse the bottom drawers (Notes / Procurement / Job Hours) so they
-      // don't steal vertical space, then apply BOTH fit controls — ⛶ zoom-to-fit
-      // (width) and ↕ fit-height (row height) — so the whole schedule is visible
-      // with no scrolling. Set the drawer flags BEFORE setView so the first
-      // render already draws them collapsed.
+      // Opening from the ETC Planner should land on ONE predictable layout, not
+      // whatever the viewer last left behind: bottom drawers (Notes /
+      // Procurement / Job Hours) collapsed, the shared "Active Project Default"
+      // column view applied, and ROW HEIGHT pinned to the friendly 50 step.
+      // Set the drawer flags BEFORE setView so the first render already draws
+      // them collapsed.
       try {
         _setDrawerCollapsed('notes', true);
         _setDrawerCollapsed('proc', true);
         _setDrawerCollapsed('hours', true);
       } catch (_) {}
       setView('schedule'); // renders the schedule for the now-active project
-      const fitClean = () => {
+      const openStandard = () => {
+        // Same view the View ▾ dropdown's "Active Project Default" row applies
+        // (the server-side shared default). _applyColumnViewObj no-ops when no
+        // default has been published yet, so this degrades to "leave it alone".
+        try { _applyColumnViewObj(_sharedViews().default, 'Active Project Default'); } catch (_) {}
+        // ROW HEIGHT 50 on the Zoom popover's friendly 0-100 scale (→ 17px).
+        // This REPLACES the old ↕ fit-height click: fit-height derives a height
+        // from the row count, so a long schedule opened at an unreadably small
+        // row height and no two jobs looked the same. Must run AFTER the view —
+        // _applyColumnViewObj ends in compressColumns(), which re-zooms.
+        try { setRowHeight(friendlyRowHToPx(50)); } catch (_) {}
+        // Width-fit is still wanted (the whole timeline visible, no h-scroll).
         try { zoomToFit(); } catch (_) {}
-        try { document.getElementById('btn-zoom-height')?.click(); } catch (_) {}
       };
       // Two frames for the synchronous render, plus a delayed pass to catch the
-      // async machine/data render (rows must exist for fit-height to measure).
-      requestAnimationFrame(() => requestAnimationFrame(fitClean));
-      setTimeout(fitClean, 450);
+      // async machine/data render (rows must exist before the view's compress
+      // can measure them).
+      requestAnimationFrame(() => requestAnimationFrame(openStandard));
+      setTimeout(openStandard, 450);
     } else {
       console.warn(`[ETC deep-link] No Scheduler project has job_number "${jobParam}".`);
     }

@@ -111,6 +111,23 @@
       </span>
       <span class="app-sidebar-label">Job Hours</span>
     </button>
+    <!-- SDC Projects Reports (the ETC app) — sibling service on port 3010 of
+         this same host. Opens in its own tab so the schedule stays put, same as
+         the Manual link below. The href is absolute so it still works if JS
+         fails; _initReportsRailLink() rewrites the hostname at boot to match
+         however this app was reached (server-app1 vs localhost). -->
+    <a class="app-sidebar-icon" id="link-reports-sidebar" href="http://server-app1:3010/quoted" target="_blank" rel="noopener" title="SDC Projects Reports — Projects, Monthly ETC and Job Hour Details" style="text-decoration:none;">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+          <path d="M14 3v6h6"/>
+          <line x1="8.5" y1="17" x2="8.5" y2="13.5"/>
+          <line x1="12" y1="17" x2="12" y2="11.5"/>
+          <line x1="15.5" y1="17" x2="15.5" y2="14.5"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Reports</span>
+    </a>
     <button class="app-sidebar-icon" id="btn-ask-sidebar" type="button" title="Ask the SDC assistant">
       <span class="app-sidebar-glyph app-sidebar-glyph-svg">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -207,6 +224,13 @@
              Vertical dividers between every adjacent group.
              Quote vs Schedule lives in the bottom footer. -->
         <div class="schedule-toolbar">
+          <!-- Shown ONLY when this schedule was opened from the SDC Projects
+               Reports app (?job=…&ret=…) — see _applyEtcJobDeepLink(). The link
+               opens in a new tab, so browser Back has no entry to return to;
+               this navigates to the exact report URL (filters and all) that was
+               handed over. Hidden by default for everyone else. -->
+          <button id="btn-etc-back" class="toolbar-toggle-btn hidden" type="button" title="Return to the Projects Reports page you came from">← Back to report</button>
+
           <div class="dropdown">
             <button id="btn-columns" class="toolbar-toggle-btn" type="button" title="Show, hide, or reorder grid columns. Drag rows in the menu to reorder them in the grid.">Show/hide columns ▾</button>
             <div id="columns-menu" class="dropdown-menu hidden"></div>
@@ -949,7 +973,7 @@
   <script src="auth-ui.js?v=20260616-eto23"></script>
   <script src="phases.js?v=20260601-168"></script>
   <script src="release-notes.js?v=20260601-190"></script>
-  <script src="app.js?v=20260728-etc-fitclean"></script>
+  <script src="app.js?v=20260729-etc-crosslinks2"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
