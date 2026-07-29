@@ -9010,14 +9010,17 @@ body[data-view="setup"] #btn-add { display: none; }
   font-weight: var(--fw-bold);
 }
 
+/* Was a hard repeat(5) when there were exactly five delivery teams. Now that
+   there is one bucket per department (12), auto-fill lays out as many columns as
+   fit and wraps the rest, so adding a department needs no CSS change. */
 .team-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
 }
-/* On narrower screens, drop to a 3-up grid so cards stay readable. */
+/* On narrower screens, let cards get a little tighter before wrapping. */
 @media (max-width: 1400px) {
-  .team-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .team-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 }
 .team-card {
   background: var(--surface);

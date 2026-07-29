@@ -283,14 +283,40 @@ const api = {
 // v4.64: password updated to 'sdcautomation' (all lowercase).
 const TEAM_PASSWORD = 'sdcautomation';
 
+// v4.65: one bucket per company department, so the Departments board matches the
+// official Employee-Department map rather than only the five delivery teams.
+// The first five keys are unchanged — renaming them would orphan every existing
+// team_members row and the ETC mirror (see sync-scheduler-team.ts there).
+// `scheduling: false` marks a back-office bucket: it shows on the board for
+// headcount, but its members are deliberately NOT offered in task assignee
+// dropdowns (see relevantDisciplinesForTask) — a Finance or Sales name in every
+// dropdown is noise for everyone.
 const DISCIPLINES = [
   { key: 'pm',       label: 'Project Management',   short: 'PM',       color: '#e9d5ff', text: '#581c87' },
   { key: 'mech',     label: 'Mechanical Engineers', short: 'Mech',     color: '#bfdbfe', text: '#1e3a8a' },
   { key: 'controls', label: 'Controls Engineers',   short: 'Controls', color: '#bbf7d0', text: '#14532d' },
   { key: 'build',    label: 'Builders',             short: 'Build',    color: '#fed7aa', text: '#7c2d12' },
   { key: 'wire',     label: 'Electricians',         short: 'Wire',     color: '#fef08a', text: '#713f12' },
+  { key: 'service',  label: 'Service Engineering',  short: 'Service',  color: '#99f6e4', text: '#134e4a' },
+  { key: 'mfgops',   label: 'Manufacturing Ops',    short: 'MfgOps',   color: '#c7d2fe', text: '#312e81' },
+  { key: 'ops',      label: 'Operations',           short: 'Ops',      color: '#e2e8f0', text: '#1e293b' },
+  { key: 'finance',  label: 'Finance',              short: 'Finance',  color: '#d9f99d', text: '#365314', scheduling: false },
+  { key: 'growth',   label: 'Growth / Bus. Dev.',   short: 'Growth',   color: '#fecdd3', text: '#881337', scheduling: false },
+  { key: 'sales',    label: 'Sales',                short: 'Sales',    color: '#fbcfe8', text: '#831843', scheduling: false },
+  { key: 'exec',     label: 'Executive Leadership', short: 'Exec',     color: '#f5d0fe', text: '#701a75', scheduling: false },
 ];
 const DISCIPLINE_BY_KEY = Object.fromEntries(DISCIPLINES.map(d => [d.key, d]));
+
+// Discipline groupings used by relevantDisciplinesForTask below. Named here
+// rather than repeated inline so a new bucket is added in ONE place per group
+// instead of at a dozen return statements.
+//   ENGINEERING_DISCIPLINES — desk engineering work
+//   SHOP_DISCIPLINES        — floor / trade work
+// 'service' appears in BOTH: the service engineers sit across controls, wire and
+// build today, so they stay assignable to everything they already do.
+const ENGINEERING_DISCIPLINES = ['mech', 'controls', 'service'];
+const SHOP_DISCIPLINES = ['build', 'wire', 'service', 'mfgops', 'ops'];
+const ALL_SCHEDULABLE_DISCIPLINES = [...new Set([...ENGINEERING_DISCIPLINES, ...SHOP_DISCIPLINES])];
 
 const state = {
   tasks: [],
@@ -830,7 +856,7 @@ function computeDisciplineCapacity(discKey, members) {
 // or missing classification returns ALL disciplines so the dropdown still shows
 // every option as a safe default.
 function relevantDisciplinesForTask(task) {
-  if (!task) return ['mech', 'controls', 'build', 'wire'];
+  if (!task) return ALL_SCHEDULABLE_DISCIPLINES;
   const pg  = task.phase_group;
   const dep = task.department;
   const sub = task.sub_department;
@@ -841,34 +867,34 @@ function relevantDisciplinesForTask(task) {
     if (sub === 'controls') return ['controls'];
     if (sub === 'build')    return ['build'];
     if (sub === 'wire')     return ['wire'];
-    if (sub === 'general')  return ['mech', 'controls'];   // any engineer
+    if (sub === 'general')  return ENGINEERING_DISCIPLINES;   // any engineer
     // Department-level rows (no sub) — engineering = either engineer,
     // shop = either trade, procurement = anyone.
-    if (dep === 'engineering') return ['mech', 'controls'];
-    if (dep === 'shop')        return ['build', 'wire'];
-    if (dep === 'procurement') return ['mech', 'controls', 'build', 'wire'];
+    if (dep === 'engineering') return ENGINEERING_DISCIPLINES;
+    if (dep === 'shop')        return SHOP_DISCIPLINES;
+    if (dep === 'procurement') return ALL_SCHEDULABLE_DISCIPLINES;
   }
 
   // Section 40 — Machine Testing: dept-only, both disciplines under each.
   if (pg === 'machine_testing') {
-    if (dep === 'engineering') return ['mech', 'controls'];
-    if (dep === 'shop')        return ['build', 'wire'];
+    if (dep === 'engineering') return ENGINEERING_DISCIPLINES;
+    if (dep === 'shop')        return SHOP_DISCIPLINES;
   }
 
   // Section 50 — Teardown & Install. Teardown is shop-only; Install has both.
   if (pg === 'teardown_install') {
-    if (dep === 'teardown') return ['build', 'wire'];
+    if (dep === 'teardown') return SHOP_DISCIPLINES;
     if (dep === 'install') {
-      if (sub === 'engineering') return ['mech', 'controls'];
-      if (sub === 'shop')        return ['build', 'wire'];
+      if (sub === 'engineering') return ENGINEERING_DISCIPLINES;
+      if (sub === 'shop')        return SHOP_DISCIPLINES;
       // Install at the dept level — anyone.
-      return ['mech', 'controls', 'build', 'wire'];
+      return ALL_SCHEDULABLE_DISCIPLINES;
     }
   }
 
   // Anything else (no classification, anchors before they're given a section,
-  // etc.) — return all four so the dropdown is unconstrained.
-  return ['mech', 'controls', 'build', 'wire'];
+  // etc.) — every schedulable discipline, so the dropdown is unconstrained.
+  return ALL_SCHEDULABLE_DISCIPLINES;
 }
 
 function isWeekendDate(d) {

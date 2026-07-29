@@ -2,12 +2,26 @@
 const { Router } = require('express');
 const planner = require('../lib/plannerClient');
 
-const TEAM_DISCIPLINES = new Set(['mech', 'controls', 'pm', 'build', 'wire']);
+// Must stay in step with DISCIPLINES in public/app.js — this is the server-side
+// gate, so a bucket the board can render but this Set doesn't know would reject
+// every drag into it with "invalid discipline".
+const TEAM_DISCIPLINES = new Set([
+  'mech', 'controls', 'pm', 'build', 'wire',
+  // v4.65: one bucket per company department (from the official
+  // Employee-Department map). The last four are back-office — on the board for
+  // headcount, but not offered as task assignees (see app.js).
+  'service', 'mfgops', 'ops', 'finance', 'growth', 'sales', 'exec',
+]);
 
 // Scheduler discipline code → ETC Planner's full label (ETC stores labels).
+// Mirrored by DISCIPLINE_LABEL in the ETC app's sync-scheduler-team.ts; both
+// sides need every key or a member pushed across lands with a blank grouping.
 const ETC_DISCIPLINE_LABEL = {
   pm: 'Project Management', mech: 'Mechanical Engineers',
   controls: 'Controls Engineers', build: 'Builders', wire: 'Electricians',
+  service: 'Service Engineering', mfgops: 'Manufacturing Operations',
+  ops: 'Operations', finance: 'Finance', growth: 'Growth / Business Development',
+  sales: 'Sales', exec: 'Executive Leadership',
 };
 // Nickname-normalized name key so team_members names line up with the ETC
 // roster names despite spelling drift (Mike/Michael, Josh/Joshua, …).
