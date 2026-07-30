@@ -288,9 +288,11 @@ const TEAM_PASSWORD = 'sdcautomation';
 // The first five keys are unchanged — renaming them would orphan every existing
 // team_members row and the ETC mirror (see sync-scheduler-team.ts there).
 // `scheduling: false` marks a back-office bucket: it shows on the board for
-// headcount, but its members are deliberately NOT offered in task assignee
-// dropdowns (see relevantDisciplinesForTask) — a Finance or Sales name in every
-// dropdown is noise for everyone.
+// headcount, but its members are not offered in task assignee dropdowns — a
+// Finance or Sales name in every dropdown is noise for everyone. The flag is
+// documentation only; the actual exclusion comes from those keys being absent
+// from ENGINEERING_DISCIPLINES / SHOP_DISCIPLINES below, which is what
+// relevantDisciplinesForTask returns.
 const DISCIPLINES = [
   { key: 'pm',       label: 'Project Management',   short: 'PM',       color: '#e9d5ff', text: '#581c87' },
   { key: 'mech',     label: 'Mechanical Engineers', short: 'Mech',     color: '#bfdbfe', text: '#1e3a8a' },
@@ -312,11 +314,7 @@ const DISCIPLINE_BY_KEY = Object.fromEntries(DISCIPLINES.map(d => [d.key, d]));
 // (Unassigned / Inactive) are hidden from the board — their DISCIPLINES
 // entries stay so team_members rows, the ETC mirror and the assignee
 // dropdowns keep working. Drop a key from this set to bring a card back.
-// mfgops + ops came back: they ARE schedulable (they're in
-// ALL_SCHEDULABLE_DISCIPLINES), so hiding them from the board while their
-// people stayed in every assignee dropdown made the two lists disagree.
-// Only the non-schedulable back-office buckets stay hidden.
-const BOARD_HIDDEN_DISCIPLINES = new Set(['finance', 'sales', 'exec']);
+const BOARD_HIDDEN_DISCIPLINES = new Set(['mfgops', 'ops', 'finance', 'sales', 'exec']);
 const BOARD_SHOW_ETC_EXTRAS = false;
 
 // Per-department name allowlist for the board. A department listed here shows
@@ -328,6 +326,41 @@ const BOARD_MEMBER_ALLOWLIST = {
   growth: ['Riana Pulsford'],
 };
 
+// The departments the Departments page actually shows. EVERY list on that page
+// walks this — the board cards AND the discipline tab strip above the resources
+// timeline / Department Overview. Going through one helper is the point: the tab
+// strip used to render raw DISCIPLINES, so it listed Manufacturing Ops,
+// Operations, Finance, Sales and Executive Leadership as clickable tabs that had
+// no matching card anywhere on the page.
+function boardVisibleDisciplines() {
+  return DISCIPLINES.filter(d => !BOARD_HIDDEN_DISCIPLINES.has(d.key));
+}
+
+// The people shown in ONE department bucket, in display order. This is the
+// single source of truth for "who is in this department": the board cards and
+// the assignee dropdown both call it, so a name can never appear in one and
+// not the other. Applies BOARD_MEMBER_ALLOWLIST (Growth shows Riana only).
+//   opts.includeInactive — the board shows everyone on the card; the dropdown
+//     must not offer an inactive person as a new assignee.
+//   opts.placeholders    — 'include' (default), 'only', or 'exclude'. The card
+//     renders reals and its PLACEHOLDERS stripe as two calls; the dropdown
+//     takes them together in one group.
+function membersForDiscipline(discKey, opts = {}) {
+  const allowNames = BOARD_MEMBER_ALLOWLIST[discKey]
+    ? new Set(BOARD_MEMBER_ALLOWLIST[discKey].map(n => n.trim().toLowerCase()))
+    : null;
+  const out = (state.team || []).filter(m => {
+    if (m.discipline !== discKey) return false;
+    if (allowNames && !allowNames.has(String(m.name || '').trim().toLowerCase())) return false;
+    if (!opts.includeInactive && m.active === 0) return false;
+    const ph = isPlaceholder(m.name);
+    if (opts.placeholders === 'only'    && !ph) return false;
+    if (opts.placeholders === 'exclude' &&  ph) return false;
+    return true;
+  });
+  return sortMembersForDisplay(out);
+}
+
 // Discipline groupings used by relevantDisciplinesForTask below. Named here
 // rather than repeated inline so a new bucket is added in ONE place per group
 // instead of at a dozen return statements.
@@ -335,8 +368,13 @@ const BOARD_MEMBER_ALLOWLIST = {
 //   SHOP_DISCIPLINES        — floor / trade work
 // 'service' appears in BOTH: the service engineers sit across controls, wire and
 // build today, so they stay assignable to everything they already do.
+//
+// mfgops / ops are deliberately NOT here. v4.65 (222162b) added them to
+// SHOP_DISCIPLINES, which is why Manufacturing Ops and Operations names started
+// showing in every shop dropdown — Dan's original four-discipline version never
+// offered them, and those two buckets are now hidden from the board anyway.
 const ENGINEERING_DISCIPLINES = ['mech', 'controls', 'service'];
-const SHOP_DISCIPLINES = ['build', 'wire', 'service', 'mfgops', 'ops'];
+const SHOP_DISCIPLINES = ['build', 'wire', 'service'];
 const ALL_SCHEDULABLE_DISCIPLINES = [...new Set([...ENGINEERING_DISCIPLINES, ...SHOP_DISCIPLINES])];
 
 const state = {
@@ -897,6 +935,13 @@ function sortMembersForDisplay(members) {
   });
 }
 
+// Which disciplines may own this task, from its section / department /
+// sub_department. Dan's original rule (Rev 4.0, 6d6d02c): a CONTROLS row offers
+// only controls engineers, a BUILD row only builders, so a trade cannot land on
+// an engineering task by mistake. Ambiguous buckets widen to a group.
+// Restored after a brief experiment that made the dropdown mirror the whole
+// Departments board - that removed the guardrail and let any department onto
+// any row.
 function relevantDisciplinesForTask(task) {
   if (!task) return ALL_SCHEDULABLE_DISCIPLINES;
   const pg  = task.phase_group;
@@ -938,6 +983,9 @@ function relevantDisciplinesForTask(task) {
   // etc.) — every schedulable discipline, so the dropdown is unconstrained.
   return ALL_SCHEDULABLE_DISCIPLINES;
 }
+
+
+
 
 function isWeekendDate(d) {
   const day = d.getUTCDay();
@@ -3008,16 +3056,22 @@ function currentCellValue(task, col) {
 
 function createEditInput(col, value, task) {
   if (col === 'assignee') {
-    // Constrained to active team members in the disciplines that plausibly own
-    // this task. CONTROLS ENGINEERING task → only controls engineers. BUILD task
-    // → only builders. Ambiguous buckets (General Engineering, Section 40/50
-    // dept-level) widen to every relevant discipline. Cross-discipline
-    // assignment isn't offered here — use the Resources view if you really need
-    // to assign across boundaries.
+    // DAN'S RULE (restored): only the disciplines that plausibly own this task.
+    // A CONTROLS ENGINEERING row offers only controls engineers, a BUILD row
+    // only builders; ambiguous buckets (General Engineering, §40/§50 dept-level)
+    // widen to a group. The guardrail is the point — it stops a trade landing on
+    // an engineering task. Cross-discipline assignment goes through the
+    // Resources view.
     //
-    // One nuance: if the task is ALREADY assigned to someone from a discipline
-    // outside the filter, we expand the filter just enough to include them so
-    // they don't disappear from the dropdown when the user opens it.
+    // What's kept from the mirror experiment: the PEOPLE inside each group now
+    // come from membersForDiscipline(), the same helper the board cards use, so
+    // the allowlist (Growth = Riana only) and the lead-first / placeholders-last
+    // ordering match the cards. Only the SET of departments differs from the
+    // board, by design.
+    //
+    // Nuance preserved from Dan's version: if the task is already assigned to
+    // someone outside the filter, widen just enough to include their discipline
+    // so they don't vanish when the dropdown opens.
     const sel = document.createElement('select');
     sel.className = 'cell-edit-input';
     const blank = document.createElement('option');
@@ -3030,9 +3084,9 @@ function createEditInput(col, value, task) {
     const seen = new Set();
     for (const disc of DISCIPLINES) {
       if (!relevant.has(disc.key)) continue;
-      const members = sortMembersForDisplay(
-        state.team.filter(m => m.discipline === disc.key && m.active !== 0)
-      );
+      // includeInactive stays false: the board shows an inactive person on the
+      // card, but offering them as a NEW assignee would be wrong.
+      const members = membersForDiscipline(disc.key);
       if (members.length === 0) continue;
       const og = document.createElement('optgroup');
       og.label = disc.label;
@@ -21864,26 +21918,21 @@ function renderTeam() {
       </li>`;
   };
 
-  grid.innerHTML = DISCIPLINES.filter(disc => !BOARD_HIDDEN_DISCIPLINES.has(disc.key)).map(disc => {
+  grid.innerHTML = boardVisibleDisciplines().map(disc => {
     // v4.56: placeholders are now SHOWN at the bottom of each card (per
     // user request). Reals on top (sorted lead-first then sort_order),
     // placeholders below in a separate visual stripe so the user can see
     // role markers like "ME Placeholder" / "Build Placeholder" are still
     // around to absorb action-item assignments before staffing locks.
-    const allow = BOARD_MEMBER_ALLOWLIST[disc.key]
-      ? new Set(BOARD_MEMBER_ALLOWLIST[disc.key].map(n => n.trim().toLowerCase()))
-      : null;
-    const allInDisc = state.team.filter(m => m.discipline === disc.key
-      && (!allow || allow.has(String(m.name || '').trim().toLowerCase())));
-    // Both halves go through sortMembersForDisplay — the same comparator the
-    // assignee dropdown uses, so card order and dropdown order can't drift.
-    // The card still renders them as two visual lists (reals, then the
-    // PLACEHOLDERS stripe); the shared sorter only decides order within each.
-    const reals        = sortMembersForDisplay(allInDisc.filter(m => !isPlaceholder(m.name)));
-    const placeholders = sortMembersForDisplay(allInDisc.filter(m => isPlaceholder(m.name)));
-    // Capacity math still only counts reals (the cap helper internally
-    // filters placeholders), so passing allInDisc here is fine.
-    const all = allInDisc.filter(m => !isPlaceholder(m.name));
+    // membersForDiscipline() is the shared source of truth with the assignee
+    // dropdown — same allowlist, same ordering — so a name can't show on a card
+    // and be missing from the dropdown (or vice versa). The card renders reals
+    // and the PLACEHOLDERS stripe as two visual lists, hence two calls.
+    // includeInactive: the card is the headcount view and shows everyone.
+    const reals        = membersForDiscipline(disc.key, { includeInactive: true, placeholders: 'exclude' });
+    const placeholders = membersForDiscipline(disc.key, { includeInactive: true, placeholders: 'only' });
+    // Capacity math only counts reals (the cap helper filters placeholders too).
+    const all = reals;
 
     const realRows = reals.map(renderRow).join('');
     const phRows   = placeholders.map(renderRow).join('');
@@ -22970,7 +23019,14 @@ function renderResources() {
     });
   }
   if (discWrap) {
-    discWrap.innerHTML = DISCIPLINES.map(d => `
+    const visible = boardVisibleDisciplines();
+    // setFocusedMember() can point state.resources.discipline at a department
+    // that's hidden from this page. Snap back to the first visible tab so we
+    // never render a strip with no active tab filtering to an invisible dept.
+    if (!visible.some(d => d.key === state.resources.discipline) && visible.length) {
+      state.resources.discipline = visible[0].key;
+    }
+    discWrap.innerHTML = visible.map(d => `
       <button type="button" class="discipline-tab ${state.resources.discipline === d.key ? 'active' : ''}"
               data-discipline="${d.key}"
               style="--disc-color:${d.color};--disc-text:${d.text}">
