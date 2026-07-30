@@ -1630,19 +1630,105 @@ body.customer-view .customer-view-flatten.is-active {
   border-color: var(--anchor-fill, #befa4f);
 }
 
-/* Ctrl+P / browser print from customer view picks up landscape + tight
-   margins automatically. The on-screen customer-view rules above already
-   strip the chrome, so the print preview matches what's on screen. */
+/* Ctrl+P / browser print from customer view. The on-screen customer-view
+   rules above strip the toolbar chrome, but the SCREEN layout is deliberately
+   viewport-locked — main and #view-schedule are overflow:hidden and every
+   height comes from flex:1 off the viewport, so the grid/gantt scroll
+   internally instead of growing. Chrome does not paginate content inside a
+   clipped/scrolling box: it prints the first screenful and drops the rest.
+   The block below undoes exactly that for print — kill the clipping, release
+   the heights, drop the fixed sidebar, and let the table paginate. Keep these
+   rules print-only; relaxing overflow on screen re-breaks drag-pan (see the
+   note on `main`).
+
+   The Gantt's <svg> is sized in pixels to the project span (2400px+), which
+   is far wider than a page — printGanttFit() in app.js adds a viewBox on
+   beforeprint so it scales down, and removes it on afterprint. The CSS here
+   only makes the svg honor its box; without the JS the chart still overflows.
+
+   Everything is print-scoped, so nothing here can affect the editing view. */
 @media print {
   @page { size: landscape; margin: 0.3in; }
+
+  /* 1. Release the viewport lock. These are the overflow:hidden / flex:1
+        chain from html down to the two panes. Height:auto lets real content
+        height drive pagination; overflow:visible lets pages 2..n exist. */
+  html, body, main,
+  .view.active,
+  #view-schedule, #view-schedule.active,
+  .schedule-split,
+  .schedule-grid,
+  .schedule-gantt,
+  #gantt-container,
+  /* frappe-gantt 0.6.1 (CDN stylesheet) puts its own overflow:auto scroller
+     INSIDE #gantt-container. Miss this one and the chart is still clipped to
+     one screenful no matter what the outer boxes say. */
+  #gantt-container .gantt-container {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    display: block !important;
+    flex: none !important;
+  }
+  /* The two panes are side-by-side on screen via flex on .schedule-split.
+     display:block above would stack them, so restore the row for the split
+     only — grid LEFT, Gantt RIGHT, same as the screen (and the house rule). */
+  .schedule-split {
+    display: flex !important;
+    align-items: flex-start !important;
+  }
+  .schedule-grid  { flex: 0 0 auto !important; }
+  .schedule-gantt { flex: 1 1 auto !important; min-width: 0 !important; }
+
+  /* 2. Drop the fixed sidebar and the body margin that reserves its 90px.
+        position:fixed elements otherwise repeat on every printed page. */
+  .app-sidebar { display: none !important; }
   body {
+    margin-left: 0 !important;
     background: white !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+
+  /* 3. Chrome that must not reach paper. The customer-view class already
+        hides most of it on screen; repeating it here means a print from the
+        NORMAL editing view is usable too, not only from customer view.
+        Selectors verified against index.html — the drawer stack and the
+        toast are position:fixed/overlay, so they'd otherwise burn in on
+        every page. The project-name banner is deliberately NOT hidden: it's
+        the one bit of chrome a customer PDF wants. */
+  .schedule-toolbar,
+  .project-tab-bar,
+  .machine-tab-bar,
+  .machine-clone-banner,
+  #schedule-drawer-stack,
+  .schedule-footer,
   .customer-view-exit,
   .customer-view-flatten,
-  .sdc-toast-container { display: none !important; }
+  #sdc-toast,
+  .schedule-divider,
+  #row-height-bar,
+  #empty-state,
+  #gantt-empty,
+  #revision-popover,
+  #project-stats-popup {
+    display: none !important;
+  }
+
+  /* 4. Let the task table paginate instead of being cut mid-row, and repeat
+        the header on every page so page 2+ is readable on its own. */
+  #tasks-table { table-layout: fixed !important; width: 100% !important; }
+  #tasks-table thead { display: table-header-group !important; }
+  #tasks-table tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+
+  /* 5. Scale the Gantt SVG into the page. Needs the viewBox that
+        printGanttFit() installs — width:auto alone would keep the px width. */
+  .schedule-gantt svg, #gantt-container svg {
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100% !important;
+  }
 }
 .schedule-project-meta {
   font-size: var(--fs-md);

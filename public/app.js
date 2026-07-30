@@ -307,6 +307,27 @@ const DISCIPLINES = [
 ];
 const DISCIPLINE_BY_KEY = Object.fromEntries(DISCIPLINES.map(d => [d.key, d]));
 
+// Departments board shows the delivery teams only. The back-office buckets
+// (added in v4.65 for the headcount map) and the ETC roster extras
+// (Unassigned / Inactive) are hidden from the board — their DISCIPLINES
+// entries stay so team_members rows, the ETC mirror and the assignee
+// dropdowns keep working. Drop a key from this set to bring a card back.
+// mfgops + ops came back: they ARE schedulable (they're in
+// ALL_SCHEDULABLE_DISCIPLINES), so hiding them from the board while their
+// people stayed in every assignee dropdown made the two lists disagree.
+// Only the non-schedulable back-office buckets stay hidden.
+const BOARD_HIDDEN_DISCIPLINES = new Set(['finance', 'sales', 'exec']);
+const BOARD_SHOW_ETC_EXTRAS = false;
+
+// Per-department name allowlist for the board. A department listed here shows
+// ONLY these people; everyone else in it stays in the database (and in the
+// assignee dropdowns) but is not drawn on the card. Names are matched
+// case-insensitively on the trimmed member name. Leave a department out of
+// this map to show its full roster.
+const BOARD_MEMBER_ALLOWLIST = {
+  growth: ['Riana Pulsford'],
+};
+
 // Discipline groupings used by relevantDisciplinesForTask below. Named here
 // rather than repeated inline so a new bucket is added in ONE place per group
 // instead of at a dozen return statements.
@@ -855,6 +876,27 @@ function computeDisciplineCapacity(discKey, members) {
 // either engineers OR shop could own it) return multiple disciplines. Unknown
 // or missing classification returns ALL disciplines so the dropdown still shows
 // every option as a safe default.
+// Canonical display order for a list of team members within ONE discipline:
+// department lead first (★), then sort_order, with placeholders pushed to the
+// bottom. Used by BOTH the Departments board cards and the assignee dropdown
+// so the two lists always read the same way — they used to disagree (the
+// board sorted lead-first, the dropdown used raw state.team order, so a card
+// opened on "Mike Czenszak" while the dropdown opened on "Brian Mack").
+// Returns a NEW array; never mutates the input.
+function sortMembersForDisplay(members) {
+  const rank = (m) => (isPlaceholder(m.name) ? 1 : 0);
+  return [...members].sort((a, b) => {
+    // Placeholders last, regardless of lead flag or sort_order.
+    const aPh = rank(a), bPh = rank(b);
+    if (aPh !== bPh) return aPh - bPh;
+    // Leads on top within the reals.
+    const aLead = a.is_lead ? 0 : 1;
+    const bLead = b.is_lead ? 0 : 1;
+    if (aLead !== bLead) return aLead - bLead;
+    return (a.sort_order || 0) - (b.sort_order || 0);
+  });
+}
+
 function relevantDisciplinesForTask(task) {
   if (!task) return ALL_SCHEDULABLE_DISCIPLINES;
   const pg  = task.phase_group;
@@ -2748,7 +2790,13 @@ function enterDurationLinkPickMode(sourceTaskId) {
 
 
 function enterCellEdit(td, taskId, col) {
-  if (td.querySelector('input, select')) return;
+  // Already editing this cell — bail. TEXTAREA must be in this list: the
+  // comments editor is a <textarea>, and without it every click inside the
+  // open box re-entered here, wiped the td and rebuilt the editor with
+  // .select(). That made the mouse useless for placing the caret or
+  // drag-selecting (keyboard still worked, since keys fire no click) and
+  // threw away uncommitted typing.
+  if (td.querySelector('input, select, textarea')) return;
   const task = state.tasks.find(t => t.id === taskId);
   if (!task) return;
   // A predecessor-linked task's dates are governed by the link. Clicking a
@@ -2982,7 +3030,9 @@ function createEditInput(col, value, task) {
     const seen = new Set();
     for (const disc of DISCIPLINES) {
       if (!relevant.has(disc.key)) continue;
-      const members = state.team.filter(m => m.discipline === disc.key && m.active !== 0);
+      const members = sortMembersForDisplay(
+        state.team.filter(m => m.discipline === disc.key && m.active !== 0)
+      );
       if (members.length === 0) continue;
       const og = document.createElement('optgroup');
       og.label = disc.label;
@@ -21811,28 +21861,26 @@ function renderTeam() {
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
-        <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
       </li>`;
   };
 
-  grid.innerHTML = DISCIPLINES.map(disc => {
+  grid.innerHTML = DISCIPLINES.filter(disc => !BOARD_HIDDEN_DISCIPLINES.has(disc.key)).map(disc => {
     // v4.56: placeholders are now SHOWN at the bottom of each card (per
     // user request). Reals on top (sorted lead-first then sort_order),
     // placeholders below in a separate visual stripe so the user can see
     // role markers like "ME Placeholder" / "Build Placeholder" are still
     // around to absorb action-item assignments before staffing locks.
-    const allInDisc = state.team.filter(m => m.discipline === disc.key);
-    const reals = allInDisc
-      .filter(m => !isPlaceholder(m.name))
-      .sort((a, b) => {
-        const aLead = a.is_lead ? 0 : 1;
-        const bLead = b.is_lead ? 0 : 1;
-        if (aLead !== bLead) return aLead - bLead;
-        return (a.sort_order || 0) - (b.sort_order || 0);
-      });
-    const placeholders = allInDisc
-      .filter(m => isPlaceholder(m.name))
-      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    const allow = BOARD_MEMBER_ALLOWLIST[disc.key]
+      ? new Set(BOARD_MEMBER_ALLOWLIST[disc.key].map(n => n.trim().toLowerCase()))
+      : null;
+    const allInDisc = state.team.filter(m => m.discipline === disc.key
+      && (!allow || allow.has(String(m.name || '').trim().toLowerCase())));
+    // Both halves go through sortMembersForDisplay — the same comparator the
+    // assignee dropdown uses, so card order and dropdown order can't drift.
+    // The card still renders them as two visual lists (reals, then the
+    // PLACEHOLDERS stripe); the shared sorter only decides order within each.
+    const reals        = sortMembersForDisplay(allInDisc.filter(m => !isPlaceholder(m.name)));
+    const placeholders = sortMembersForDisplay(allInDisc.filter(m => isPlaceholder(m.name)));
     // Capacity math still only counts reals (the cap helper internally
     // filters placeholders), so passing allInDisc here is fine.
     const all = allInDisc.filter(m => !isPlaceholder(m.name));
@@ -21873,7 +21921,9 @@ function renderTeam() {
       ${!drag && p.discipline ? `<span class="team-bubble-spec">${escapeHtml(p.discipline)}</span>` : ''}
     </li>`;
   let extrasHtml = '';
-  if (!extras.ok) {
+  if (!BOARD_SHOW_ETC_EXTRAS) {
+    extrasHtml = '';
+  } else if (!extras.ok) {
     extrasHtml = `
       <section class="team-card team-card-extra">
         <header class="team-card-head" style="background:#e2e8f0;color:#334155"><h3>Unassigned / Inactive</h3></header>
@@ -21923,21 +21973,9 @@ function renderTeam() {
     });
   });
 
-  // Remove member.
-  grid.querySelectorAll('[data-action="remove-member"]').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const id = Number(btn.dataset.id);
-      const member = state.team.find(m => m.id === id);
-      if (!member) return;
-      const tasksRef = state.tasks.filter(t => t.assignee === member.name).length;
-      const msg = tasksRef > 0
-        ? `Remove ${member.name}? They're still listed as the assignee on ${tasksRef} task(s) — those tasks will keep the name but it will be marked "(not on team)".`
-        : `Remove ${member.name}?`;
-      if (!(await showConfirmAt(e.clientX, e.clientY, { message: msg, confirmLabel: 'Remove', danger: true }))) return;
-      await api.team.remove(id);
-      await loadTeam();
-    });
-  });
+  // Remove-member button is gone from the cards on purpose — people leave the
+  // board by going Inactive in the ETC roster, not by being deleted here.
+  // api.team.remove() is left in place for other callers.
 
   // Toggle lead — star button next to each team member's name.
   grid.querySelectorAll('[data-action="toggle-lead"]').forEach(btn => {
@@ -21984,9 +22022,9 @@ function renderTeam() {
       setFocusedMember(newFocus);
     });
   });
-  // Lead-toggle + remove buttons get explicit stopPropagation so their
-  // existing async handlers run without also triggering setFocusedMember.
-  grid.querySelectorAll('[data-action="toggle-lead"], [data-action="remove-member"]').forEach(btn => {
+  // Lead-toggle gets explicit stopPropagation so its existing async handler
+  // runs without also triggering setFocusedMember.
+  grid.querySelectorAll('[data-action="toggle-lead"]').forEach(btn => {
     btn.addEventListener('click', (e) => e.stopPropagation());
   });
 
@@ -26383,6 +26421,59 @@ function enterCustomerView() {
     });
   });
 }
+
+// Ctrl+P support. The Gantt <svg> carries a PIXEL width equal to the project
+// span (2400px+), so on paper the bars run straight off the right edge — the
+// @media print CSS can't fix that on its own, because width:100% on an svg
+// with no viewBox just stretches the viewport without rescaling the contents.
+// So: on beforeprint, stamp a viewBox matching the svg's current pixel box and
+// drop the width/height attributes; the browser then scales the whole chart
+// uniformly into whatever width the printed page gives it. afterprint puts the
+// original attributes back so the editing view is untouched.
+//
+// This is the ONE piece of the old print pipeline worth keeping (the v3.6x
+// version also called zoomToFit() inside beforeprint, which triggered a full
+// synchronous renderGantt() and froze the print preview on big schedules —
+// see release-notes v3.62/v3.63). We deliberately do NO re-render here:
+// reading two attributes and writing three is cheap enough to run inline with
+// the print dialog opening.
+let _printSvgRestore = null;
+
+function printGanttFit() {
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg || _printSvgRestore) return;
+    // getBBox/attribute width — prefer the laid-out box, fall back to attrs.
+    const w = Number(svg.getAttribute('width')) || svg.clientWidth || 0;
+    const h = Number(svg.getAttribute('height')) || svg.clientHeight || 0;
+    if (!w || !h) return;                       // nothing measurable — leave it alone
+    _printSvgRestore = {
+      svg,
+      width:   svg.getAttribute('width'),
+      height:  svg.getAttribute('height'),
+      viewBox: svg.getAttribute('viewBox'),
+    };
+    if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+  } catch (_) { /* swallow — printing must never throw */ }
+}
+
+function printGanttRestore() {
+  try {
+    const r = _printSvgRestore;
+    _printSvgRestore = null;
+    if (!r || !r.svg) return;
+    if (r.width  != null) r.svg.setAttribute('width',  r.width);   else r.svg.removeAttribute('width');
+    if (r.height != null) r.svg.setAttribute('height', r.height);  else r.svg.removeAttribute('height');
+    if (r.viewBox != null) r.svg.setAttribute('viewBox', r.viewBox); else r.svg.removeAttribute('viewBox');
+    r.svg.removeAttribute('preserveAspectRatio');
+  } catch (_) { /* swallow */ }
+}
+
+window.addEventListener('beforeprint', printGanttFit);
+window.addEventListener('afterprint', printGanttRestore);
 
 function exitCustomerView() {
   if (!document.body.classList.contains('customer-view')) return;
