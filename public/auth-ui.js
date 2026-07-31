@@ -76,7 +76,46 @@ window.fetch = async function (input, init) {
 };
 
 // ── boot ────────────────────────────────────────────────────────────────
+// Arrived from the ETC Planner with a signed assertion? Trade it for a real
+// session before asking anyone to sign in. Runs before _boot's /api/auth/me
+// check, so the modal never flashes for someone who is already authenticated
+// next door.
+//
+// The parameter is stripped from the address bar either way: it is single-use, so
+// leaving it in the URL would mean a refresh or a shared link failing with "token
+// already used", which reads as a broken app rather than as expected behaviour.
+async function _trySsoHandoff() {
+  const params = new URLSearchParams(location.search);
+  const token = params.get('sso');
+  if (!token) return;
+  params.delete('sso');
+  const clean = location.pathname + (params.toString() ? '?' + params : '') + location.hash;
+  try {
+    const r = await _originalFetch('/api/auth/sso', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (r.ok) {
+      const body = await r.json();
+      window.sdcAuth.token = body.token;
+      window.sdcAuth.user  = body.user;
+      localStorage.setItem(TOKEN_KEY, body.token);
+      try { localStorage.setItem(USER_KEY, JSON.stringify(body.user)); } catch (_) {}
+    } else {
+      // 404 = no Scheduler account for that person; anything else = a broken
+      // hand-off. Either way _boot() falls through to the normal login modal, so
+      // the failure costs one extra sign-in rather than blocking access.
+      console.warn('[auth] SSO hand-off declined (' + r.status + ')');
+    }
+  } catch (e) {
+    console.warn('[auth] SSO hand-off failed:', e && e.message);
+  }
+  history.replaceState(null, '', clean);
+}
+
 async function _boot() {
+  await _trySsoHandoff();
   try {
     const r = await _originalFetch('/api/auth/me', {
       headers: window.sdcAuth.token ? { Authorization: 'Bearer ' + window.sdcAuth.token } : {},

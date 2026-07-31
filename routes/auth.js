@@ -1,5 +1,20 @@
 'use strict';
 const { Router } = require('express');
+const crypto = require('crypto');
+
+// ── Spent SSO nonces (in-memory) ─────────────────────────────────────────────
+// Tokens from the ETC Planner are single-use. In-memory is the right scope: the
+// tokens live 60 seconds, so a restart losing the set costs nothing worse than
+// allowing a replay of a token that is almost certainly already expired.
+const _ssoSpent = new Map();
+const SSO_NONCE_TTL_MS = 5 * 60 * 1000;
+function _ssoRemember(nonce) {
+  const now = Date.now();
+  _ssoSpent.set(nonce, now + SSO_NONCE_TTL_MS);
+  if (_ssoSpent.size > 500) {
+    for (const [k, until] of _ssoSpent) if (until < now) _ssoSpent.delete(k);
+  }
+}
 
 // ── Login rate limiter (in-memory) ───────────────────────────────────────────
 const _loginAttempts = new Map();
@@ -53,6 +68,70 @@ module.exports = function createRouter(deps) {
         user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },
       });
     } catch (e) { res.status(500).json({ error: 'Login failed: ' + e.message }); }
+  });
+
+  // ── SSO hand-off from the SDC ETC Planner ───────────────────────────────────
+  // The planner already authenticated the person; this exchanges its short-lived
+  // signed assertion for a normal Scheduler session, so following a link from
+  // there does not stop at the login modal.
+  //
+  // Trust anchor is SCHEDULER_SHARED_TOKEN — the secret the two apps already use
+  // for their server-to-server calls. The message is domain-prefixed ("sso:v1"),
+  // so a token minted for this cannot be replayed as a raw bearer token against
+  // the integration endpoints, and vice versa.
+  //
+  // It does NOT create accounts. An assertion says who someone is; whether they
+  // may use the Scheduler is this app's decision. An unknown email gets 404 and
+  // the client falls back to the normal login form.
+  router.post('/api/auth/sso', async (req, res) => {
+    try {
+      const secret = process.env.SCHEDULER_SHARED_TOKEN || '';
+      if (!secret) return res.status(503).json({ error: 'SSO is not configured on this server.' });
+
+      const raw = (req.body && req.body.token ? String(req.body.token) : '').slice(0, 2048);
+      const [payload, sig] = raw.split('.');
+      if (!payload || !sig) return res.status(400).json({ error: 'Malformed SSO token.' });
+
+      const expected = crypto.createHmac('sha256', secret).update('sso:v1:' + payload).digest('base64url');
+      // Length check first: timingSafeEqual throws on mismatched lengths.
+      if (sig.length !== expected.length ||
+          !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+        return res.status(401).json({ error: 'Invalid SSO token.' });
+      }
+
+      let body;
+      try { body = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); }
+      catch { return res.status(400).json({ error: 'Malformed SSO token.' }); }
+
+      const email = (body && body.e ? String(body.e) : '').trim().toLowerCase();
+      const exp   = Number(body && body.x);
+      const nonce = body && body.n ? String(body.n) : '';
+      if (!email || !exp || !nonce) return res.status(400).json({ error: 'Incomplete SSO token.' });
+      if (exp < Math.floor(Date.now() / 1000)) return res.status(401).json({ error: 'SSO token expired.' });
+
+      // Single use. A token lives ~60s; remembering spent nonces for a few
+      // minutes is enough to stop a replay from browser history or a log, and the
+      // map is swept so it cannot grow without bound.
+      if (_ssoSpent.has(nonce)) return res.status(401).json({ error: 'SSO token already used.' });
+      _ssoRemember(nonce);
+
+      const [rows] = await pool.query('SELECT * FROM users WHERE LOWER(TRIM(email)) = ?', [email]);
+      const user = rows[0] || null;
+      // 404, not 401: the token was perfectly valid, this app just has no such
+      // user. The client distinguishes them — one is "sign in normally", the other
+      // means something is wrong with the hand-off.
+      if (!user) return res.status(404).json({ error: 'No Scheduler account for ' + email, code: 'NO_ACCOUNT' });
+      if (!user.active) {
+        return res.status(403).json({ error: 'This account is disabled. Ask an admin to re-enable it.', code: 'ACCOUNT_DISABLED' });
+      }
+
+      await pool.query('UPDATE users SET last_login = ? WHERE id = ?',
+        [new Date().toISOString().slice(0, 19).replace('T', ' '), user.id]);
+      res.json({
+        token: signToken(user),
+        user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar_color: user.avatar_color },
+      });
+    } catch (e) { res.status(500).json({ error: 'SSO failed: ' + e.message }); }
   });
 
   router.get('/api/auth/me', requireAuth, (req, res) => {
