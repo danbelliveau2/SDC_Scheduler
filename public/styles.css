@@ -1658,19 +1658,105 @@ body.customer-view .customer-view-flatten.is-active {
   border-color: var(--anchor-fill, #befa4f);
 }
 
-/* Ctrl+P / browser print from customer view picks up landscape + tight
-   margins automatically. The on-screen customer-view rules above already
-   strip the chrome, so the print preview matches what's on screen. */
+/* Ctrl+P / browser print from customer view. The on-screen customer-view
+   rules above strip the toolbar chrome, but the SCREEN layout is deliberately
+   viewport-locked — main and #view-schedule are overflow:hidden and every
+   height comes from flex:1 off the viewport, so the grid/gantt scroll
+   internally instead of growing. Chrome does not paginate content inside a
+   clipped/scrolling box: it prints the first screenful and drops the rest.
+   The block below undoes exactly that for print — kill the clipping, release
+   the heights, drop the fixed sidebar, and let the table paginate. Keep these
+   rules print-only; relaxing overflow on screen re-breaks drag-pan (see the
+   note on `main`).
+
+   The Gantt's <svg> is sized in pixels to the project span (2400px+), which
+   is far wider than a page — printGanttFit() in app.js adds a viewBox on
+   beforeprint so it scales down, and removes it on afterprint. The CSS here
+   only makes the svg honor its box; without the JS the chart still overflows.
+
+   Everything is print-scoped, so nothing here can affect the editing view. */
 @media print {
   @page { size: landscape; margin: 0.3in; }
+
+  /* 1. Release the viewport lock. These are the overflow:hidden / flex:1
+        chain from html down to the two panes. Height:auto lets real content
+        height drive pagination; overflow:visible lets pages 2..n exist. */
+  html, body, main,
+  .view.active,
+  #view-schedule, #view-schedule.active,
+  .schedule-split,
+  .schedule-grid,
+  .schedule-gantt,
+  #gantt-container,
+  /* frappe-gantt 0.6.1 (CDN stylesheet) puts its own overflow:auto scroller
+     INSIDE #gantt-container. Miss this one and the chart is still clipped to
+     one screenful no matter what the outer boxes say. */
+  #gantt-container .gantt-container {
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    display: block !important;
+    flex: none !important;
+  }
+  /* The two panes are side-by-side on screen via flex on .schedule-split.
+     display:block above would stack them, so restore the row for the split
+     only — grid LEFT, Gantt RIGHT, same as the screen (and the house rule). */
+  .schedule-split {
+    display: flex !important;
+    align-items: flex-start !important;
+  }
+  .schedule-grid  { flex: 0 0 auto !important; }
+  .schedule-gantt { flex: 1 1 auto !important; min-width: 0 !important; }
+
+  /* 2. Drop the fixed sidebar and the body margin that reserves its 90px.
+        position:fixed elements otherwise repeat on every printed page. */
+  .app-sidebar { display: none !important; }
   body {
+    margin-left: 0 !important;
     background: white !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+
+  /* 3. Chrome that must not reach paper. The customer-view class already
+        hides most of it on screen; repeating it here means a print from the
+        NORMAL editing view is usable too, not only from customer view.
+        Selectors verified against index.html — the drawer stack and the
+        toast are position:fixed/overlay, so they'd otherwise burn in on
+        every page. The project-name banner is deliberately NOT hidden: it's
+        the one bit of chrome a customer PDF wants. */
+  .schedule-toolbar,
+  .project-tab-bar,
+  .machine-tab-bar,
+  .machine-clone-banner,
+  #schedule-drawer-stack,
+  .schedule-footer,
   .customer-view-exit,
   .customer-view-flatten,
-  .sdc-toast-container { display: none !important; }
+  #sdc-toast,
+  .schedule-divider,
+  #row-height-bar,
+  #empty-state,
+  #gantt-empty,
+  #revision-popover,
+  #project-stats-popup {
+    display: none !important;
+  }
+
+  /* 4. Let the task table paginate instead of being cut mid-row, and repeat
+        the header on every page so page 2+ is readable on its own. */
+  #tasks-table { table-layout: fixed !important; width: 100% !important; }
+  #tasks-table thead { display: table-header-group !important; }
+  #tasks-table tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+
+  /* 5. Scale the Gantt SVG into the page. Needs the viewBox that
+        printGanttFit() installs — width:auto alone would keep the px width. */
+  .schedule-gantt svg, #gantt-container svg {
+    width: 100% !important;
+    height: auto !important;
+    max-width: 100% !important;
+  }
 }
 .schedule-project-meta {
   font-size: var(--fs-md);
@@ -9038,14 +9124,17 @@ body[data-view="setup"] #btn-add { display: none; }
   font-weight: var(--fw-bold);
 }
 
+/* Was a hard repeat(5) when there were exactly five delivery teams. Now that
+   there is one bucket per department (12), auto-fill lays out as many columns as
+   fit and wraps the rest, so adding a department needs no CSS change. */
 .team-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
 }
-/* On narrower screens, drop to a 3-up grid so cards stay readable. */
+/* On narrower screens, let cards get a little tighter before wrapping. */
 @media (max-width: 1400px) {
-  .team-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .team-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
 }
 .team-card {
   background: var(--surface);
@@ -12638,4 +12727,41 @@ textarea:focus-visible,
   color: var(--text-muted);
   padding: 18px 12px;
   font-style: italic;
+}
+
+/* ── ETC-master team extras: Unassigned + Inactive cards ─────────────────── */
+.team-card-extra { border-style: dashed; }
+.team-card-note {
+  padding: 4px 10px 6px;
+  font-size: var(--fs-2xs);
+  color: var(--muted, #64748b);
+  line-height: 1.3;
+}
+/* align-content/align-items pinned to flex-start deliberately. This list also
+   carries .team-list (flex: 1), so it grows to fill a card that the grid has
+   stretched to match the tallest card in its row — Inactive, with ~37 names.
+   A wrapping flex container defaults to align-content: stretch, which hands that
+   leftover height to the wrapped LINES: with few names (3 lines in a very tall
+   card) each pill grew to ~170px and border-radius: 999px turned it into a
+   circle. Packing to the top keeps pills pill-shaped at any count. */
+.team-bubble-list {
+  list-style: none; margin: 0; padding: 6px;
+  display: flex; flex-wrap: wrap; gap: 4px;
+  align-content: flex-start;
+  align-items: flex-start;
+}
+.team-bubble {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px;
+  background: #eef2f7; border: 1px solid #d5dee8;
+  font-size: var(--fs-md); max-width: 100%;
+}
+.team-bubble[draggable="true"] { cursor: grab; }
+.team-bubble[draggable="true"]:hover { background: #e2ecf7; border-color: #b8cbe0; }
+.team-bubble.is-dragging { opacity: 0.5; }
+.team-bubble.is-inactive { background: #f1f5f9; color: #64748b; }
+.team-bubble-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-bubble-spec { font-size: var(--fs-2xs); color: #94a3b8; }
+.team-card[data-discipline].drop-target-card {
+  outline: 2px dashed #2a5a8c; outline-offset: -2px; background: #eaf2fb;
 }

@@ -179,6 +179,13 @@ const api = {
       window._lastLocalEdit = Date.now();
       return fetch(`/api/team/${id}`, { method: 'DELETE' }).then(r => r.json());
     },
+    // ETC-master roster extras: Unassigned (ETC active, not on a team) + Inactive.
+    etcExtras: () => fetch('/api/team/etc-extras').then(r => r.json()).catch(() => ({ ok: false, unassigned: [], inactive: [] })),
+    // Drag an ETC person into a discipline: create/repoint here + push to ETC.
+    assignFromEtc: (data) => {
+      window._lastLocalEdit = Date.now();
+      return fetch('/api/team/assign-from-etc', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json());
+    },
   },
   // Shop Parts (Parts in Shop) — independent from tasks; its own table + routes.
   shopParts: {
@@ -276,14 +283,99 @@ const api = {
 // v4.64: password updated to 'sdcautomation' (all lowercase).
 const TEAM_PASSWORD = 'sdcautomation';
 
+// v4.65: one bucket per company department, so the Departments board matches the
+// official Employee-Department map rather than only the five delivery teams.
+// The first five keys are unchanged — renaming them would orphan every existing
+// team_members row and the ETC mirror (see sync-scheduler-team.ts there).
+// `scheduling: false` marks a back-office bucket: it shows on the board for
+// headcount, but its members are not offered in task assignee dropdowns — a
+// Finance or Sales name in every dropdown is noise for everyone. The flag is
+// documentation only; the actual exclusion comes from those keys being absent
+// from ENGINEERING_DISCIPLINES / SHOP_DISCIPLINES below, which is what
+// relevantDisciplinesForTask returns.
 const DISCIPLINES = [
   { key: 'pm',       label: 'Project Management',   short: 'PM',       color: '#e9d5ff', text: '#581c87' },
   { key: 'mech',     label: 'Mechanical Engineers', short: 'Mech',     color: '#bfdbfe', text: '#1e3a8a' },
   { key: 'controls', label: 'Controls Engineers',   short: 'Controls', color: '#bbf7d0', text: '#14532d' },
   { key: 'build',    label: 'Builders',             short: 'Build',    color: '#fed7aa', text: '#7c2d12' },
   { key: 'wire',     label: 'Electricians',         short: 'Wire',     color: '#fef08a', text: '#713f12' },
+  { key: 'service',  label: 'Service Engineering',  short: 'Service',  color: '#99f6e4', text: '#134e4a' },
+  { key: 'mfgops',   label: 'Manufacturing Ops',    short: 'MfgOps',   color: '#c7d2fe', text: '#312e81' },
+  { key: 'ops',      label: 'Operations',           short: 'Ops',      color: '#e2e8f0', text: '#1e293b' },
+  { key: 'finance',  label: 'Finance',              short: 'Finance',  color: '#d9f99d', text: '#365314', scheduling: false },
+  { key: 'growth',   label: 'Growth / Bus. Dev.',   short: 'Growth',   color: '#fecdd3', text: '#881337', scheduling: false },
+  { key: 'sales',    label: 'Sales',                short: 'Sales',    color: '#fbcfe8', text: '#831843', scheduling: false },
+  { key: 'exec',     label: 'Executive Leadership', short: 'Exec',     color: '#f5d0fe', text: '#701a75', scheduling: false },
 ];
 const DISCIPLINE_BY_KEY = Object.fromEntries(DISCIPLINES.map(d => [d.key, d]));
+
+// Departments board shows the delivery teams only. The back-office buckets
+// (added in v4.65 for the headcount map) and the ETC roster extras
+// (Unassigned / Inactive) are hidden from the board — their DISCIPLINES
+// entries stay so team_members rows, the ETC mirror and the assignee
+// dropdowns keep working. Drop a key from this set to bring a card back.
+const BOARD_HIDDEN_DISCIPLINES = new Set(['mfgops', 'ops', 'finance', 'sales', 'exec']);
+const BOARD_SHOW_ETC_EXTRAS = false;
+
+// Per-department name allowlist for the board. A department listed here shows
+// ONLY these people; everyone else in it stays in the database (and in the
+// assignee dropdowns) but is not drawn on the card. Names are matched
+// case-insensitively on the trimmed member name. Leave a department out of
+// this map to show its full roster.
+const BOARD_MEMBER_ALLOWLIST = {
+  growth: ['Riana Pulsford'],
+};
+
+// The departments the Departments page actually shows. EVERY list on that page
+// walks this — the board cards AND the discipline tab strip above the resources
+// timeline / Department Overview. Going through one helper is the point: the tab
+// strip used to render raw DISCIPLINES, so it listed Manufacturing Ops,
+// Operations, Finance, Sales and Executive Leadership as clickable tabs that had
+// no matching card anywhere on the page.
+function boardVisibleDisciplines() {
+  return DISCIPLINES.filter(d => !BOARD_HIDDEN_DISCIPLINES.has(d.key));
+}
+
+// The people shown in ONE department bucket, in display order. This is the
+// single source of truth for "who is in this department": the board cards and
+// the assignee dropdown both call it, so a name can never appear in one and
+// not the other. Applies BOARD_MEMBER_ALLOWLIST (Growth shows Riana only).
+//   opts.includeInactive — the board shows everyone on the card; the dropdown
+//     must not offer an inactive person as a new assignee.
+//   opts.placeholders    — 'include' (default), 'only', or 'exclude'. The card
+//     renders reals and its PLACEHOLDERS stripe as two calls; the dropdown
+//     takes them together in one group.
+function membersForDiscipline(discKey, opts = {}) {
+  const allowNames = BOARD_MEMBER_ALLOWLIST[discKey]
+    ? new Set(BOARD_MEMBER_ALLOWLIST[discKey].map(n => n.trim().toLowerCase()))
+    : null;
+  const out = (state.team || []).filter(m => {
+    if (m.discipline !== discKey) return false;
+    if (allowNames && !allowNames.has(String(m.name || '').trim().toLowerCase())) return false;
+    if (!opts.includeInactive && m.active === 0) return false;
+    const ph = isPlaceholder(m.name);
+    if (opts.placeholders === 'only'    && !ph) return false;
+    if (opts.placeholders === 'exclude' &&  ph) return false;
+    return true;
+  });
+  return sortMembersForDisplay(out);
+}
+
+// Discipline groupings used by relevantDisciplinesForTask below. Named here
+// rather than repeated inline so a new bucket is added in ONE place per group
+// instead of at a dozen return statements.
+//   ENGINEERING_DISCIPLINES — desk engineering work
+//   SHOP_DISCIPLINES        — floor / trade work
+// 'service' appears in BOTH: the service engineers sit across controls, wire and
+// build today, so they stay assignable to everything they already do.
+//
+// mfgops / ops are deliberately NOT here. v4.65 (222162b) added them to
+// SHOP_DISCIPLINES, which is why Manufacturing Ops and Operations names started
+// showing in every shop dropdown — Dan's original four-discipline version never
+// offered them, and those two buckets are now hidden from the board anyway.
+const ENGINEERING_DISCIPLINES = ['mech', 'controls', 'service'];
+const SHOP_DISCIPLINES = ['build', 'wire', 'service'];
+const ALL_SCHEDULABLE_DISCIPLINES = [...new Set([...ENGINEERING_DISCIPLINES, ...SHOP_DISCIPLINES])];
 
 const state = {
   tasks: [],
@@ -822,8 +914,36 @@ function computeDisciplineCapacity(discKey, members) {
 // either engineers OR shop could own it) return multiple disciplines. Unknown
 // or missing classification returns ALL disciplines so the dropdown still shows
 // every option as a safe default.
+// Canonical display order for a list of team members within ONE discipline:
+// department lead first (★), then sort_order, with placeholders pushed to the
+// bottom. Used by BOTH the Departments board cards and the assignee dropdown
+// so the two lists always read the same way — they used to disagree (the
+// board sorted lead-first, the dropdown used raw state.team order, so a card
+// opened on "Mike Czenszak" while the dropdown opened on "Brian Mack").
+// Returns a NEW array; never mutates the input.
+function sortMembersForDisplay(members) {
+  const rank = (m) => (isPlaceholder(m.name) ? 1 : 0);
+  return [...members].sort((a, b) => {
+    // Placeholders last, regardless of lead flag or sort_order.
+    const aPh = rank(a), bPh = rank(b);
+    if (aPh !== bPh) return aPh - bPh;
+    // Leads on top within the reals.
+    const aLead = a.is_lead ? 0 : 1;
+    const bLead = b.is_lead ? 0 : 1;
+    if (aLead !== bLead) return aLead - bLead;
+    return (a.sort_order || 0) - (b.sort_order || 0);
+  });
+}
+
+// Which disciplines may own this task, from its section / department /
+// sub_department. Dan's original rule (Rev 4.0, 6d6d02c): a CONTROLS row offers
+// only controls engineers, a BUILD row only builders, so a trade cannot land on
+// an engineering task by mistake. Ambiguous buckets widen to a group.
+// Restored after a brief experiment that made the dropdown mirror the whole
+// Departments board - that removed the guardrail and let any department onto
+// any row.
 function relevantDisciplinesForTask(task) {
-  if (!task) return ['mech', 'controls', 'build', 'wire'];
+  if (!task) return ALL_SCHEDULABLE_DISCIPLINES;
   const pg  = task.phase_group;
   const dep = task.department;
   const sub = task.sub_department;
@@ -834,35 +954,38 @@ function relevantDisciplinesForTask(task) {
     if (sub === 'controls') return ['controls'];
     if (sub === 'build')    return ['build'];
     if (sub === 'wire')     return ['wire'];
-    if (sub === 'general')  return ['mech', 'controls'];   // any engineer
+    if (sub === 'general')  return ENGINEERING_DISCIPLINES;   // any engineer
     // Department-level rows (no sub) — engineering = either engineer,
     // shop = either trade, procurement = anyone.
-    if (dep === 'engineering') return ['mech', 'controls'];
-    if (dep === 'shop')        return ['build', 'wire'];
-    if (dep === 'procurement') return ['mech', 'controls', 'build', 'wire'];
+    if (dep === 'engineering') return ENGINEERING_DISCIPLINES;
+    if (dep === 'shop')        return SHOP_DISCIPLINES;
+    if (dep === 'procurement') return ALL_SCHEDULABLE_DISCIPLINES;
   }
 
   // Section 40 — Machine Testing: dept-only, both disciplines under each.
   if (pg === 'machine_testing') {
-    if (dep === 'engineering') return ['mech', 'controls'];
-    if (dep === 'shop')        return ['build', 'wire'];
+    if (dep === 'engineering') return ENGINEERING_DISCIPLINES;
+    if (dep === 'shop')        return SHOP_DISCIPLINES;
   }
 
   // Section 50 — Teardown & Install. Teardown is shop-only; Install has both.
   if (pg === 'teardown_install') {
-    if (dep === 'teardown') return ['build', 'wire'];
+    if (dep === 'teardown') return SHOP_DISCIPLINES;
     if (dep === 'install') {
-      if (sub === 'engineering') return ['mech', 'controls'];
-      if (sub === 'shop')        return ['build', 'wire'];
+      if (sub === 'engineering') return ENGINEERING_DISCIPLINES;
+      if (sub === 'shop')        return SHOP_DISCIPLINES;
       // Install at the dept level — anyone.
-      return ['mech', 'controls', 'build', 'wire'];
+      return ALL_SCHEDULABLE_DISCIPLINES;
     }
   }
 
   // Anything else (no classification, anchors before they're given a section,
-  // etc.) — return all four so the dropdown is unconstrained.
-  return ['mech', 'controls', 'build', 'wire'];
+  // etc.) — every schedulable discipline, so the dropdown is unconstrained.
+  return ALL_SCHEDULABLE_DISCIPLINES;
 }
+
+
+
 
 function isWeekendDate(d) {
   const day = d.getUTCDay();
@@ -2715,7 +2838,13 @@ function enterDurationLinkPickMode(sourceTaskId) {
 
 
 function enterCellEdit(td, taskId, col) {
-  if (td.querySelector('input, select')) return;
+  // Already editing this cell — bail. TEXTAREA must be in this list: the
+  // comments editor is a <textarea>, and without it every click inside the
+  // open box re-entered here, wiped the td and rebuilt the editor with
+  // .select(). That made the mouse useless for placing the caret or
+  // drag-selecting (keyboard still worked, since keys fire no click) and
+  // threw away uncommitted typing.
+  if (td.querySelector('input, select, textarea')) return;
   const task = state.tasks.find(t => t.id === taskId);
   if (!task) return;
   // A predecessor-linked task's dates are governed by the link. Clicking a
@@ -2932,16 +3061,22 @@ function currentCellValue(task, col) {
 
 function createEditInput(col, value, task) {
   if (col === 'assignee') {
-    // Constrained to active team members in the disciplines that plausibly own
-    // this task. CONTROLS ENGINEERING task → only controls engineers. BUILD task
-    // → only builders. Ambiguous buckets (General Engineering, Section 40/50
-    // dept-level) widen to every relevant discipline. Cross-discipline
-    // assignment isn't offered here — use the Resources view if you really need
-    // to assign across boundaries.
+    // DAN'S RULE (restored): only the disciplines that plausibly own this task.
+    // A CONTROLS ENGINEERING row offers only controls engineers, a BUILD row
+    // only builders; ambiguous buckets (General Engineering, §40/§50 dept-level)
+    // widen to a group. The guardrail is the point — it stops a trade landing on
+    // an engineering task. Cross-discipline assignment goes through the
+    // Resources view.
     //
-    // One nuance: if the task is ALREADY assigned to someone from a discipline
-    // outside the filter, we expand the filter just enough to include them so
-    // they don't disappear from the dropdown when the user opens it.
+    // What's kept from the mirror experiment: the PEOPLE inside each group now
+    // come from membersForDiscipline(), the same helper the board cards use, so
+    // the allowlist (Growth = Riana only) and the lead-first / placeholders-last
+    // ordering match the cards. Only the SET of departments differs from the
+    // board, by design.
+    //
+    // Nuance preserved from Dan's version: if the task is already assigned to
+    // someone outside the filter, widen just enough to include their discipline
+    // so they don't vanish when the dropdown opens.
     const sel = document.createElement('select');
     sel.className = 'cell-edit-input';
     const blank = document.createElement('option');
@@ -2954,7 +3089,9 @@ function createEditInput(col, value, task) {
     const seen = new Set();
     for (const disc of DISCIPLINES) {
       if (!relevant.has(disc.key)) continue;
-      const members = state.team.filter(m => m.discipline === disc.key && m.active !== 0);
+      // includeInactive stays false: the board shows an inactive person on the
+      // card, but offering them as a NEW assignee would be wrong.
+      const members = membersForDiscipline(disc.key);
       if (members.length === 0) continue;
       const og = document.createElement('optgroup');
       og.label = disc.label;
@@ -11672,8 +11809,20 @@ function renderProjectsPage() {
   const wsWithProjects = WORKSPACES.filter(ws => byWs[ws].some(p => !isTemplateProject(p))).length;
 
   root.innerHTML = `
-    <h1 class="projects-page-title">Projects</h1>
-    <div class="projects-page-sub">${nonTmplCount} schedule${nonTmplCount !== 1 ? 's' : ''} across ${wsWithProjects} workspace${wsWithProjects !== 1 ? 's' : ''}</div>
+    <!-- Title block and the cross-app link share one flex row. The title/sub
+         classes are styled by class alone (no parent selector), so wrapping them
+         is safe. Inline flex rather than a new CSS class to keep this contained
+         to app.js. The rail's "Reports" icon does the same thing; this is the
+         in-page counterpart, since arriving here from the Reports app's sidebar
+         is now a normal round trip. -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">
+      <div style="min-width:0;">
+        <h1 class="projects-page-title">Projects</h1>
+        <div class="projects-page-sub">${nonTmplCount} schedule${nonTmplCount !== 1 ? 's' : ''} across ${wsWithProjects} workspace${wsWithProjects !== 1 ? 's' : ''}</div>
+      </div>
+      <a class="toolbar-toggle-btn" id="link-reports-projects" href="${_reportsAppUrl('/quoted')}" target="_blank" rel="noopener"
+         title="Open SDC Projects Reports (Projects grid) in a new tab" style="flex:none;text-decoration:none;white-space:nowrap;">← SDC Projects Reports</a>
+    </div>
     <div class="projects-search-wrap">
       <span class="projects-search-icon">🔍</span>
       <input class="projects-search-input" type="text" placeholder="Search projects…" value="${escapeHtml(searchQ)}" autocomplete="off" spellcheck="false" />
@@ -13987,7 +14136,7 @@ function showCreateScheduleDialog(defaultWs) {
         <div class="cs-seg" id="cs-seg">
           <button type="button" class="cs-seg-btn${defaultMode === 'template' ? ' is-active' : ''}" data-mode="template">A template</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'project' ? ' is-active' : ''}" data-mode="project">Another schedule</button>
-          <button type="button" class="cs-seg-btn" data-mode="planner">An ETC job</button>
+          <button type="button" class="cs-seg-btn" data-mode="planner">A Projects Report</button>
           <button type="button" class="cs-seg-btn${defaultMode === 'blank' ? ' is-active' : ''}" data-mode="blank">Blank</button>
         </div>
         <select id="cs-source" class="cs-source"></select>
@@ -14019,7 +14168,7 @@ function showCreateScheduleDialog(defaultWs) {
   const hintEl = overlay.querySelector('#cs-hint');
   let mode = defaultMode;
 
-  // ETC Planner jobs — lazily loaded the first time the "An ETC job" segment is
+  // SDC Projects Reports jobs — lazily loaded the first time the "An ETC job" segment is
   // used. State: plannerJobs is an ARRAY once loaded ([] = genuinely no jobs);
   // it stays null while unloaded OR after a FAILED fetch (so the list can retry
   // — the old code cached a failure as [] and got stuck showing "unavailable",
@@ -14033,23 +14182,23 @@ function showCreateScheduleDialog(defaultWs) {
     plannerLoading = true; plannerError = null;
     try {
       const r = await fetch('/api/planner/jobs?status=Active');
-      if (!r.ok) { plannerJobs = null; plannerError = `ETC Planner unavailable (${r.status})`; }
+      if (!r.ok) { plannerJobs = null; plannerError = `SDC Projects Reports unavailable (${r.status})`; }
       else { const b = await r.json().catch(() => ({})); plannerJobs = Array.isArray(b.jobs) ? b.jobs : []; }
-    } catch (_) { plannerJobs = null; plannerError = 'Could not reach the ETC Planner'; }
+    } catch (_) { plannerJobs = null; plannerError = 'Could not reach the SDC Projects Reports'; }
     finally { plannerLoading = false; }
     if (mode === 'planner') { fillPlannerSource(); refresh(); }
   };
   const fillPlannerSource = () => {
     if (plannerLoading) {
-      sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+      sourceEl.innerHTML = '<option value="" disabled selected>Loading Projects Reports…</option>';
       return;
     }
     if (Array.isArray(plannerJobs)) {
       if (plannerJobs.length === 0) {
-        sourceEl.innerHTML = '<option value="" disabled selected>No active ETC jobs found.</option>';
+        sourceEl.innerHTML = '<option value="" disabled selected>No active Projects Reports found.</option>';
         return;
       }
-      sourceEl.innerHTML = '<option value="" disabled selected>Pick an ETC job…</option>'
+      sourceEl.innerHTML = '<option value="" disabled selected>Pick a Projects Report…</option>'
         + plannerJobs.map(j => `<option value="${escapeHtml(j.jobId)}">${escapeHtml(j.jobId)} — ${escapeHtml(j.jobName || '')}${j.billable ? '' : ' (non-billable)'}</option>`).join('');
       return;
     }
@@ -14057,10 +14206,10 @@ function showCreateScheduleDialog(defaultWs) {
     // off the fetch. Re-selecting the "An ETC job" segment clears the error to
     // force a fresh attempt (see the segment click handler).
     if (plannerError) {
-      sourceEl.innerHTML = `<option value="" disabled selected>${escapeHtml(plannerError)} — click "An ETC job" to retry.</option>`;
+      sourceEl.innerHTML = `<option value="" disabled selected>${escapeHtml(plannerError)} — click "A Projects Report" to retry.</option>`;
       return;
     }
-    sourceEl.innerHTML = '<option value="" disabled selected>Loading ETC jobs…</option>';
+    sourceEl.innerHTML = '<option value="" disabled selected>Loading Projects Reports…</option>';
     loadPlannerJobs();
   };
 
@@ -14080,7 +14229,7 @@ function showCreateScheduleDialog(defaultWs) {
     hintEl.textContent = mode === 'blank'
       ? 'Starts empty — just the Receipt of PO + FAT spine markers.'
       : mode === 'planner'
-        ? 'Builds the full schedule from the SDC standard template, linked to the ETC job — snapshots its billable flag + release/delivery dates, imports its quoted hours into the Project Release budget, and adds the PO + FAT spine.'
+        ? 'Builds the full schedule from the SDC standard template, linked to the Projects Report job — snapshots its billable flag + release/delivery dates, imports its quoted hours into the Project Release budget, and adds the PO + FAT spine.'
         : 'Clones every task, milestone, and predecessor. Real-person assignees are blanked; placeholders carry through.';
     buildBtn.disabled = !nameEl.value.trim() || (mode !== 'blank' && !sourceEl.value);
   };
@@ -14146,7 +14295,7 @@ function showCreateScheduleDialog(defaultWs) {
         row = await r.json().catch(() => ({}));
         ok = r.ok;
         if (!ok) hintEl.textContent = row.error || `Couldn't create the schedule (${r.status}).`;
-      } catch (e) { hintEl.textContent = `Couldn't reach the ETC Planner: ${e.message}`; }
+      } catch (e) { hintEl.textContent = `Couldn't reach the SDC Projects Reports: ${e.message}`; }
       if (!ok) { buildBtn.disabled = false; return; }
       close();
       const created = row.name || name;
@@ -18340,7 +18489,7 @@ async function openProjectReleaseModal(project) {
         <p class="pr-muted">Upload the SDC Project Release (.docx). We'll pull the order date, delivery, financial milestones, penalty clause, and the project budget (hours + parts cost) image.</p>
         <button type="button" class="btn-primary pr-upload-btn">⬆ Upload Project Release (.docx)</button>
         <input type="file" accept=".docx" class="pr-file" style="display:none;">
-        <p class="pr-muted" style="margin-top:14px;">…or pull the quoted hours straight from the ETC Planner (uses this project's job number):</p>
+        <p class="pr-muted" style="margin-top:14px;">…or pull the quoted hours straight from the SDC Projects Reports (uses this project's job number):</p>
         <button type="button" class="btn-ghost pr-pull-etc-btn">🔄 Pull quoted hours from ETC</button>
         <div class="pr-status"></div>
       </div>`;
@@ -18386,7 +18535,7 @@ async function openProjectReleaseModal(project) {
   overlay.querySelector('.modal-close').addEventListener('click', close);
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
 
-  // Pull / refresh the quoted-hours budget from the ETC Planner (server re-pulls
+  // Pull / refresh the quoted-hours budget from the SDC Projects Reports (server re-pulls
   // by this project's job number and rewrites the project_quote budget). On
   // success, reload the panel so the grid shows the fresh numbers.
   overlay.addEventListener('click', async (e) => {
@@ -18400,7 +18549,7 @@ async function openProjectReleaseModal(project) {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `Refresh failed (${r.status})`);
       if (state.quoteCache) delete state.quoteCache[project]; // force Δ overlay to re-read
-      try { showToast('Quoted hours pulled from the ETC Planner.'); } catch (_) {}
+      try { showToast('Quoted hours pulled from the SDC Projects Reports.'); } catch (_) {}
       close();
       try { await openProjectReleaseModal(project); } catch (_) {}
       try { renderTable(); } catch (_) {}
@@ -21815,31 +21964,24 @@ function renderTeam() {
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
-        <button type="button" class="remove-btn" data-action="remove-member" data-id="${m.id}" title="Remove">×</button>
       </li>`;
   };
 
-  grid.innerHTML = DISCIPLINES.map(disc => {
+  grid.innerHTML = boardVisibleDisciplines().map(disc => {
     // v4.56: placeholders are now SHOWN at the bottom of each card (per
     // user request). Reals on top (sorted lead-first then sort_order),
     // placeholders below in a separate visual stripe so the user can see
     // role markers like "ME Placeholder" / "Build Placeholder" are still
     // around to absorb action-item assignments before staffing locks.
-    const allInDisc = state.team.filter(m => m.discipline === disc.key);
-    const reals = allInDisc
-      .filter(m => !isPlaceholder(m.name))
-      .sort((a, b) => {
-        const aLead = a.is_lead ? 0 : 1;
-        const bLead = b.is_lead ? 0 : 1;
-        if (aLead !== bLead) return aLead - bLead;
-        return (a.sort_order || 0) - (b.sort_order || 0);
-      });
-    const placeholders = allInDisc
-      .filter(m => isPlaceholder(m.name))
-      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-    // Capacity math still only counts reals (the cap helper internally
-    // filters placeholders), so passing allInDisc here is fine.
-    const all = allInDisc.filter(m => !isPlaceholder(m.name));
+    // membersForDiscipline() is the shared source of truth with the assignee
+    // dropdown — same allowlist, same ordering — so a name can't show on a card
+    // and be missing from the dropdown (or vice versa). The card renders reals
+    // and the PLACEHOLDERS stripe as two visual lists, hence two calls.
+    // includeInactive: the card is the headcount view and shows everyone.
+    const reals        = membersForDiscipline(disc.key, { includeInactive: true, placeholders: 'exclude' });
+    const placeholders = membersForDiscipline(disc.key, { includeInactive: true, placeholders: 'only' });
+    // Capacity math only counts reals (the cap helper filters placeholders too).
+    const all = reals;
 
     const realRows = reals.map(renderRow).join('');
     const phRows   = placeholders.map(renderRow).join('');
@@ -21865,6 +22007,41 @@ function renderTeam() {
         <button type="button" class="team-add-btn" data-action="add-member" data-discipline="${disc.key}">+ Add member</button>
       </section>`;
   }).join('');
+
+  // ETC-master extras — "Unassigned" (ETC active people not yet on a team,
+  // draggable into the 5 cards) + "Inactive" (ETC inactive people, read-only).
+  // Fail-soft: if ETC isn't connected, show one small note card instead.
+  const extras = state.teamExtras || { ok: false, unassigned: [], inactive: [] };
+  const bubble = (p, drag) => `
+    <li class="team-bubble${drag ? '' : ' is-inactive'}"${drag ? ' draggable="true"' : ''} data-pid="${escapeHtml(String(p.paylocityId || ''))}" data-name="${escapeHtml(p.name)}" title="${escapeHtml(p.name)}${p.discipline ? ' — ' + escapeHtml(p.discipline) : ''}">
+      ${drag ? '<span class="team-member-grip" title="Drag into a team">⋮⋮</span>' : ''}
+      <span class="team-bubble-name">${escapeHtml(p.name)}</span>
+      ${!drag && p.discipline ? `<span class="team-bubble-spec">${escapeHtml(p.discipline)}</span>` : ''}
+    </li>`;
+  let extrasHtml = '';
+  if (!BOARD_SHOW_ETC_EXTRAS) {
+    extrasHtml = '';
+  } else if (!extras.ok) {
+    extrasHtml = `
+      <section class="team-card team-card-extra">
+        <header class="team-card-head" style="background:#e2e8f0;color:#334155"><h3>Unassigned / Inactive</h3></header>
+        <div class="team-card-note">ETC roster not connected${extras.reason ? ` — ${escapeHtml(extras.reason)}` : ''}.</div>
+      </section>`;
+  } else {
+    extrasHtml = `
+      <section class="team-card team-card-extra" data-extra="unassigned">
+        <header class="team-card-head" style="background:#e2e8f0;color:#334155"><h3>Unassigned</h3></header>
+        <div class="team-card-capacity"><span class="cap-stat"><span class="cap-num">${extras.unassigned.length}</span> people</span></div>
+        <div class="team-card-note">Drag a name into a team on the left to assign it (updates ETC too).</div>
+        <ul class="team-list team-bubble-list">${extras.unassigned.map(p => bubble(p, true)).join('')}</ul>
+      </section>
+      <section class="team-card team-card-extra">
+        <header class="team-card-head" style="background:#cbd5e1;color:#334155"><h3>Inactive</h3></header>
+        <div class="team-card-capacity"><span class="cap-stat"><span class="cap-num">${extras.inactive.length}</span> people</span></div>
+        <ul class="team-list team-bubble-list">${extras.inactive.map(p => bubble(p, false)).join('')}</ul>
+      </section>`;
+  }
+  grid.insertAdjacentHTML('beforeend', extrasHtml);
 
   // Wire add-member buttons (one per card).
   grid.querySelectorAll('[data-action="add-member"]').forEach(btn => {
@@ -21894,21 +22071,9 @@ function renderTeam() {
     });
   });
 
-  // Remove member.
-  grid.querySelectorAll('[data-action="remove-member"]').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const id = Number(btn.dataset.id);
-      const member = state.team.find(m => m.id === id);
-      if (!member) return;
-      const tasksRef = state.tasks.filter(t => t.assignee === member.name).length;
-      const msg = tasksRef > 0
-        ? `Remove ${member.name}? They're still listed as the assignee on ${tasksRef} task(s) — those tasks will keep the name but it will be marked "(not on team)".`
-        : `Remove ${member.name}?`;
-      if (!(await showConfirmAt(e.clientX, e.clientY, { message: msg, confirmLabel: 'Remove', danger: true }))) return;
-      await api.team.remove(id);
-      await loadTeam();
-    });
-  });
+  // Remove-member button is gone from the cards on purpose — people leave the
+  // board by going Inactive in the ETC roster, not by being deleted here.
+  // api.team.remove() is left in place for other callers.
 
   // Toggle lead — star button next to each team member's name.
   grid.querySelectorAll('[data-action="toggle-lead"]').forEach(btn => {
@@ -21955,9 +22120,9 @@ function renderTeam() {
       setFocusedMember(newFocus);
     });
   });
-  // Lead-toggle + remove buttons get explicit stopPropagation so their
-  // existing async handlers run without also triggering setFocusedMember.
-  grid.querySelectorAll('[data-action="toggle-lead"], [data-action="remove-member"]').forEach(btn => {
+  // Lead-toggle gets explicit stopPropagation so its existing async handler
+  // runs without also triggering setFocusedMember.
+  grid.querySelectorAll('[data-action="toggle-lead"]').forEach(btn => {
     btn.addEventListener('click', (e) => e.stopPropagation());
   });
 
@@ -22012,6 +22177,42 @@ function renderTeam() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ order }),
       });
+      await loadTeam();
+    });
+  });
+
+  // Drag an "Unassigned" ETC bubble into a discipline card → create/repoint the
+  // team_members row and push the grouping back to ETC. Uses a DISTINCT drag
+  // data-type + a non-.team-member class so it never collides with the
+  // within-card row reorder above.
+  const ETC_DND = 'application/x-etc-unassigned';
+  grid.querySelectorAll('.team-bubble[draggable="true"]').forEach(li => {
+    li.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'copy';
+      e.dataTransfer.setData(ETC_DND, JSON.stringify({ pid: li.dataset.pid, name: li.dataset.name }));
+      li.classList.add('is-dragging');
+    });
+    li.addEventListener('dragend', () => li.classList.remove('is-dragging'));
+  });
+  grid.querySelectorAll('.team-card[data-discipline]').forEach(card => {
+    card.addEventListener('dragover', (e) => {
+      if (!Array.from(e.dataTransfer.types).includes(ETC_DND)) return; // ignore row-reorder drags
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      card.classList.add('drop-target-card');
+    });
+    card.addEventListener('dragleave', (e) => {
+      if (!card.contains(e.relatedTarget)) card.classList.remove('drop-target-card');
+    });
+    card.addEventListener('drop', async (e) => {
+      const raw = e.dataTransfer.getData(ETC_DND);
+      if (!raw) return; // not our drag — let the row reorder handler deal with it
+      e.preventDefault();
+      card.classList.remove('drop-target-card');
+      let payload; try { payload = JSON.parse(raw); } catch { return; }
+      const discipline = card.dataset.discipline;
+      if (!payload.name || !discipline) return;
+      await api.team.assignFromEtc({ paylocityId: payload.pid, name: payload.name, discipline });
       await loadTeam();
     });
   });
@@ -22867,7 +23068,14 @@ function renderResources() {
     });
   }
   if (discWrap) {
-    discWrap.innerHTML = DISCIPLINES.map(d => `
+    const visible = boardVisibleDisciplines();
+    // setFocusedMember() can point state.resources.discipline at a department
+    // that's hidden from this page. Snap back to the first visible tab so we
+    // never render a strip with no active tab filtering to an invisible dept.
+    if (!visible.some(d => d.key === state.resources.discipline) && visible.length) {
+      state.resources.discipline = visible[0].key;
+    }
+    discWrap.innerHTML = visible.map(d => `
       <button type="button" class="discipline-tab ${state.resources.discipline === d.key ? 'active' : ''}"
               data-discipline="${d.key}"
               style="--disc-color:${d.color};--disc-text:${d.text}">
@@ -24865,6 +25073,10 @@ function computeOverAllocatedTasks(tasks) {
 }
 async function loadTeam() {
   state.team = await api.team.list();
+  // Pull ETC's Unassigned + Inactive people (fail-soft: if the planner is off,
+  // the board still renders its own 5 discipline cards). Non-blocking on error.
+  try { state.teamExtras = await api.team.etcExtras(); }
+  catch (_) { state.teamExtras = { ok: false, unassigned: [], inactive: [] }; }
   // Re-render whichever view depends on the team list. The Schedule grid only renders
   // assignee names (any string), but the Team tab and Resources tab both need a fresh
   // list, and the Schedule grid's inline-edit dropdown reads state.team at click time
@@ -26315,6 +26527,59 @@ function enterCustomerView() {
   });
 }
 
+// Ctrl+P support. The Gantt <svg> carries a PIXEL width equal to the project
+// span (2400px+), so on paper the bars run straight off the right edge — the
+// @media print CSS can't fix that on its own, because width:100% on an svg
+// with no viewBox just stretches the viewport without rescaling the contents.
+// So: on beforeprint, stamp a viewBox matching the svg's current pixel box and
+// drop the width/height attributes; the browser then scales the whole chart
+// uniformly into whatever width the printed page gives it. afterprint puts the
+// original attributes back so the editing view is untouched.
+//
+// This is the ONE piece of the old print pipeline worth keeping (the v3.6x
+// version also called zoomToFit() inside beforeprint, which triggered a full
+// synchronous renderGantt() and froze the print preview on big schedules —
+// see release-notes v3.62/v3.63). We deliberately do NO re-render here:
+// reading two attributes and writing three is cheap enough to run inline with
+// the print dialog opening.
+let _printSvgRestore = null;
+
+function printGanttFit() {
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg || _printSvgRestore) return;
+    // getBBox/attribute width — prefer the laid-out box, fall back to attrs.
+    const w = Number(svg.getAttribute('width')) || svg.clientWidth || 0;
+    const h = Number(svg.getAttribute('height')) || svg.clientHeight || 0;
+    if (!w || !h) return;                       // nothing measurable — leave it alone
+    _printSvgRestore = {
+      svg,
+      width:   svg.getAttribute('width'),
+      height:  svg.getAttribute('height'),
+      viewBox: svg.getAttribute('viewBox'),
+    };
+    if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+  } catch (_) { /* swallow — printing must never throw */ }
+}
+
+function printGanttRestore() {
+  try {
+    const r = _printSvgRestore;
+    _printSvgRestore = null;
+    if (!r || !r.svg) return;
+    if (r.width  != null) r.svg.setAttribute('width',  r.width);   else r.svg.removeAttribute('width');
+    if (r.height != null) r.svg.setAttribute('height', r.height);  else r.svg.removeAttribute('height');
+    if (r.viewBox != null) r.svg.setAttribute('viewBox', r.viewBox); else r.svg.removeAttribute('viewBox');
+    r.svg.removeAttribute('preserveAspectRatio');
+  } catch (_) { /* swallow */ }
+}
+
+window.addEventListener('beforeprint', printGanttFit);
+window.addEventListener('afterprint', printGanttRestore);
+
 function exitCustomerView() {
   if (!document.body.classList.contains('customer-view')) return;
   document.body.classList.remove('customer-view');
@@ -27614,6 +27879,20 @@ async function init() {
   } catch (_) {}
 
   loadTasks().then(() => {
+    // Deep-link from the SDC ETC Planner (?job=…): jump straight to that job's
+    // project schedule. Runs here — after loadTasks() has hydrated the tabs and
+    // restored the last active project from sessionStorage — so this override
+    // wins. No-op when there's no ?job= param.
+    _applyEtcJobDeepLink();
+    // ?view=<name> (e.g. the Reports app's sidebar link → ?view=projects).
+    // After the job deep-link, which owns the view when ?job= is present.
+    _applyViewDeepLink();
+    // Point the rail's Reports link at whatever hostname this app was reached by.
+    _initReportsRailLink();
+    // Restore "← Back to report" on a plain refresh of a tab that was opened
+    // from the reports app — by then ?ret= has been stripped from the URL, so
+    // the target comes from sessionStorage. No-op for normal visitors.
+    _initEtcBackButton();
     // On boot / reload, fit the whole project into the Gantt viewport instead
     // of restoring a stale zoom/scroll (which left it half off-screen). Defer
     // two frames so the grid+Gantt layout settles before zoomToFit measures.
@@ -27637,6 +27916,176 @@ async function init() {
   if (typeof initCommentsUI === 'function') {
     try { initCommentsUI(); } catch (_) {}
   }
+}
+
+// ── SDC ETC Planner deep-link ────────────────────────────────────────────────
+// The ETC Planner's grids (Projects / Monthly ETC / Job Hour Details) link here
+// as `/?job=<etcJobId>&view=schedule` so a manager can jump straight from a
+// job's hours to its project schedule. Resolve the job number against
+// projectsIndex (name → { job_number }, built in init() from /api/projects); if
+// a project matches, make it the active project and show its schedule. Called
+// from init() inside loadTasks().then() so it runs AFTER loadProjectTabs() has
+// restored the last active project from sessionStorage — this override wins.
+// The ?job= param is stripped afterward so a later manual reload doesn't keep
+// forcing the jump.
+// ── Reports rail link (sibling app on :3010) ────────────────────────────────
+// Keeps the hard-coded server-app1 href working when this app is reached by a
+// different hostname (localhost during dev, an IP, a future rename): the two
+// services always live on the same machine, so only the port differs. The
+// mirror-image link lives in the Reports app's own sidebar ("Project
+// Scheduler"), pointing back at ?view=projects here.
+const REPORTS_APP_PORT = '3010';
+
+// Absolute URL into the Reports app, on whatever host this app was reached by.
+function _reportsAppUrl(path) {
+  return `${location.protocol}//${location.hostname}:${REPORTS_APP_PORT}${path || '/'}`;
+}
+
+function _initReportsRailLink() {
+  const link = document.getElementById('link-reports-sidebar');
+  if (!link) return;
+  try {
+    const url = new URL(link.getAttribute('href'), location.origin);
+    if (url.hostname !== location.hostname) link.href = _reportsAppUrl(url.pathname + url.search);
+  } catch (_) { /* leave the static href alone */ }
+}
+
+// ── ?view= deep-link ────────────────────────────────────────────────────────
+// Land on a named top-level view (projects / favorites / team / job-hours / …)
+// instead of whatever localStorage last restored — this is what the Reports
+// app's "Project Scheduler" sidebar link uses (?view=projects). Until now the
+// param was accepted but ignored: the ETC job deep-link called setView() itself
+// and nothing else ever read it.
+//
+// Skipped entirely when ?job= is present — that handler owns the view (it opens
+// the job's schedule) and would be fighting this one.
+//
+// Validated by asking the DOM whether a matching #view-<name> section exists,
+// so the list can't drift out of sync with the rail the way a hard-coded array
+// would, and an unknown value is simply ignored rather than blanking the page.
+function _applyViewDeepLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    if ((params.get('job') || '').trim()) return;
+    const view = (params.get('view') || '').trim();
+    if (!view || !/^[a-z-]{1,32}$/.test(view)) return;
+    if (!document.getElementById(`view-${view}`)) return;
+    setView(view);
+  } catch (_) { /* deep-link is best-effort; never block boot */ }
+}
+
+// ── "← Back to report" (companion to the ETC deep-link) ─────────────────────
+// The reports app hands over the page to return to as ?ret=<absolute url>,
+// because neither browser Back nor document.referrer can do the job:
+//   • The report's Gantt icon/menu opens this app in a NEW TAB, so that tab's
+//     history has no earlier entry — history.back() is a no-op.
+//   • The two apps sit on different ports (3010 vs 4003), and the reports app
+//     sends a strict-origin referrer cross-origin, so document.referrer arrives
+//     as a bare "http://host:3010/" with the report's path and filters stripped.
+// The target is kept in sessionStorage (tab-scoped, so only the tab that was
+// opened from a report grows the button) and survives the query-string cleanup
+// _applyEtcJobDeepLink does, plus any manual refresh afterwards.
+const ETC_BACK_KEY = 'etcBackUrl';
+
+// Only accept an http(s) URL on this same host — the reports app is a sibling
+// service on another port of the same machine. Without that check, a
+// hand-crafted ?ret= would turn this button into an open redirect.
+function _sanitizeEtcBackUrl(raw) {
+  if (!raw) return '';
+  try {
+    // No base argument on purpose: the reports app always hands over an
+    // absolute URL, so anything relative (or plain junk like "not a url") must
+    // be rejected rather than quietly resolved against this app's own origin
+    // and navigated to as a dead Scheduler path.
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    if (url.hostname !== location.hostname) return '';
+    return url.href;
+  } catch (_) {
+    return '';
+  }
+}
+
+function _setEtcBackTarget(raw) {
+  const href = _sanitizeEtcBackUrl(raw);
+  if (!href) return;
+  try { sessionStorage.setItem(ETC_BACK_KEY, href); } catch (_) {}
+  _initEtcBackButton();
+}
+
+// Called on boot too (after _applyEtcJobDeepLink), so a refresh of an
+// ETC-opened tab keeps its Back button even though ?ret= is long gone.
+function _initEtcBackButton() {
+  const btn = document.getElementById('btn-etc-back');
+  if (!btn) return;
+  let href = '';
+  try { href = _sanitizeEtcBackUrl(sessionStorage.getItem(ETC_BACK_KEY) || ''); } catch (_) {}
+  if (!href) return;
+  btn.classList.remove('hidden');
+  // A plain navigation, not history.back(): by the time this is clicked the
+  // viewer may have pushed any number of in-app states, so back() is not
+  // reliably one hop from the report. Going straight to the handed-over URL
+  // lands on the exact report page — filters, sort and columns included, since
+  // the reports app keeps that state in the query string.
+  btn.onclick = () => { location.href = href; };
+}
+
+function _applyEtcJobDeepLink() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const jobParam = (params.get('job') || '').trim();
+    if (!jobParam) return;
+    // Wire "← Back to report" before anything else, so it works even when the
+    // job number doesn't resolve to a project (the most likely moment someone
+    // wants to go back).
+    _setEtcBackTarget(params.get('ret') || '');
+    const index = state.projectsIndex || {};
+    const match = Object.keys(index).find(
+      (name) => String(index[name].job_number || '').trim() === jobParam
+    );
+    if (match) {
+      state.filters.project = match;
+      if (!Array.isArray(state.openProjects)) state.openProjects = [''];
+      if (!state.openProjects.includes(match)) state.openProjects.push(match);
+      try { loadMachinesSubset(match); } catch (_) {}
+      try { loadMachineColors(match); } catch (_) {}
+      try { saveProjectTabs(); } catch (_) {}
+      // Opening from the ETC Planner should land on ONE predictable layout, not
+      // whatever the viewer last left behind: bottom drawers (Notes /
+      // Procurement / Job Hours) collapsed, the shared "Active Project Default"
+      // column view applied, and ROW HEIGHT pinned to the friendly 50 step.
+      // Set the drawer flags BEFORE setView so the first render already draws
+      // them collapsed.
+      try {
+        _setDrawerCollapsed('notes', true);
+        _setDrawerCollapsed('proc', true);
+        _setDrawerCollapsed('hours', true);
+      } catch (_) {}
+      setView('schedule'); // renders the schedule for the now-active project
+      const openStandard = () => {
+        // Same view the View ▾ dropdown's "Active Project Default" row applies
+        // (the server-side shared default). _applyColumnViewObj no-ops when no
+        // default has been published yet, so this degrades to "leave it alone".
+        try { _applyColumnViewObj(_sharedViews().default, 'Active Project Default'); } catch (_) {}
+        // ROW HEIGHT 50 on the Zoom popover's friendly 0-100 scale (→ 17px).
+        // This REPLACES the old ↕ fit-height click: fit-height derives a height
+        // from the row count, so a long schedule opened at an unreadably small
+        // row height and no two jobs looked the same. Must run AFTER the view —
+        // _applyColumnViewObj ends in compressColumns(), which re-zooms.
+        try { setRowHeight(friendlyRowHToPx(50)); } catch (_) {}
+        // Width-fit is still wanted (the whole timeline visible, no h-scroll).
+        try { zoomToFit(); } catch (_) {}
+      };
+      // Two frames for the synchronous render, plus a delayed pass to catch the
+      // async machine/data render (rows must exist before the view's compress
+      // can measure them).
+      requestAnimationFrame(() => requestAnimationFrame(openStandard));
+      setTimeout(openStandard, 450);
+    } else {
+      console.warn(`[ETC deep-link] No Scheduler project has job_number "${jobParam}".`);
+    }
+    try { history.replaceState(null, '', location.pathname); } catch (_) {}
+  } catch (_) { /* deep-link is best-effort; never block boot */ }
 }
 
 document.addEventListener('DOMContentLoaded', init);
