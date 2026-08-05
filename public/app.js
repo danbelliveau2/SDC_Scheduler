@@ -2854,8 +2854,13 @@ function _confirmPredChange(td, task, parsed, col) {
       <button type="button" class="pcp-no">Cancel</button>
       <button type="button" class="pcp-yes">Yes, change it</button>
     </div>`;
-  pop.style.left = Math.round(Math.min(r.left, window.innerWidth - 280)) + 'px';
-  pop.style.top  = Math.round(r.bottom + 6) + 'px';
+  {
+    // Rect coords are visual px; the popup renders inside the zoomed body
+    // (layout px) — divide by the app scale so it anchors to the cell.
+    const z = _appScale();
+    pop.style.left = Math.round(Math.min(r.left / z, window.innerWidth / z - 280)) + 'px';
+    pop.style.top  = Math.round(r.bottom / z + 6) + 'px';
+  }
   document.body.appendChild(pop);
   const close = () => { pop.remove(); document.removeEventListener('mousedown', onDoc, true); };
   const onDoc = (e) => { if (!pop.contains(e.target)) close(); };
@@ -11563,9 +11568,12 @@ function _jhpTipMove(x, y) {
   const tip = document.getElementById('jhp-tip');
   if (!tip) return;
   const W = tip.offsetWidth || 200, H = tip.offsetHeight || 120;
-  const vw = window.innerWidth, vh = window.innerHeight;
-  tip.style.left = (x + 14 + W > vw ? x - W - 10 : x + 14) + 'px';
-  tip.style.top  = (y + 14 + H > vh ? y - H - 10 : y + 14) + 'px';
+  // Mouse coords → layout px inside the zoomed body (app scale).
+  const z = _appScale();
+  const xl = x / z, yl = y / z;
+  const vw = window.innerWidth / z, vh = window.innerHeight / z;
+  tip.style.left = (xl + 14 + W > vw ? xl - W - 10 : xl + 14) + 'px';
+  tip.style.top  = (yl + 14 + H > vh ? yl - H - 10 : yl + 14) + 'px';
 }
 
 function renderProjectsPage() {
@@ -17157,6 +17165,44 @@ function moveTaskInline(id, x, y) {
   });
 }
 
+// ── App scale ────────────────────────────────────────────────────────────────
+// Uniform zoom of the ENTIRE interface — sidebar, toolbars, grid, Gantt,
+// popups — so the layout RATIO is identical on every screen; only the size
+// changes. Different monitors/resolutions were rendering wildly different
+// proportions (giant sidebar on one screen, toolbar buttons cut off on
+// another). Saved per machine in localStorage; the −/%/+ control lives at
+// the bottom of the sidebar. Implemented with CSS zoom on <body> (Chromium
+// standardized zoom keeps clientX ↔ getBoundingClientRect consistent);
+// fixed-position popups placed from mouse coordinates divide by the scale
+// (see showContextMenu / _confirmPredChange / _jhpTipMove).
+const APP_SCALE_DEFAULT = 0.85;  // Dan: "what is 85% right now, be the default"
+function _appScale() {
+  const v = Number(localStorage.getItem('sdcAppScale'));
+  return (v >= 0.5 && v <= 1.5) ? v : APP_SCALE_DEFAULT;
+}
+function applyAppScale() {
+  const s = _appScale();
+  document.body.style.zoom = String(s);
+  const pct = document.getElementById('app-scale-pct');
+  if (pct) pct.textContent = Math.round(s * 100) + '%';
+}
+function setAppScale(s) {
+  s = Math.round(Math.min(1.5, Math.max(0.5, s)) * 20) / 20;
+  try { localStorage.setItem('sdcAppScale', String(s)); } catch (_) {}
+  applyAppScale();
+  // The Gantt sizes itself off pixel measurements — re-render + re-align
+  // after the layout re-scales so bars stay glued to their grid rows.
+  try { renderGantt(); } catch (_) {}
+  try { if (state.view === 'team') renderResources(); } catch (_) {}
+}
+(function initAppScale() {
+  applyAppScale();
+  // 10% steps — big, decisive bumps (5% felt like fiddling).
+  document.getElementById('app-scale-minus')?.addEventListener('click', () => setAppScale(_appScale() - 0.10));
+  document.getElementById('app-scale-plus')?.addEventListener('click', () => setAppScale(_appScale() + 0.10));
+  document.getElementById('app-scale-pct')?.addEventListener('click', () => setAppScale(APP_SCALE_DEFAULT));
+})();
+
 function showContextMenu(x, y, items) {
   const existing = document.getElementById('row-context-menu');
   if (existing) existing.remove();
@@ -17199,8 +17245,11 @@ function showContextMenu(x, y, items) {
   const pad = 8;
   const w = menu.offsetWidth || 200;
   const h = menu.offsetHeight || 100;
-  menu.style.left = Math.min(window.innerWidth - w - pad, Math.max(pad, x)) + 'px';
-  menu.style.top  = Math.min(window.innerHeight - h - pad, Math.max(pad, y)) + 'px';
+  // Mouse coords are visual px; the menu lives inside the zoomed body
+  // (layout px) — divide by the app scale so it lands under the cursor.
+  const z = _appScale();
+  menu.style.left = Math.min(window.innerWidth / z - w - pad, Math.max(pad, x / z)) + 'px';
+  menu.style.top  = Math.min(window.innerHeight / z - h - pad, Math.max(pad, y / z)) + 'px';
   setTimeout(() => {
     const onDoc = (ev) => {
       if (!menu.contains(ev.target)) {

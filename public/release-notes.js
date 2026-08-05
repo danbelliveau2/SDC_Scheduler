@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.3',
+    date: '2026-07-24',
+    notes: [
+      'App scale — one interface, every screen.',
+      '',
+      '   ▸ New − % + control at the bottom of the sidebar (right above your avatar): scales the ENTIRE app — sidebar, toolbars, grid, Gantt, popups — as one unit, so the layout ratio is identical on every monitor and nothing gets cut off on small/low-res screens.',
+      '   ▸ 10% steps, range 50–150%. Default is 85%; click the % number to snap back to it.',
+      '   ▸ Saved per computer — set it once on the laptop, once at the desk, each remembers its own.',
+    ],
+  },
+  {
     version: '13.2',
     date: '2026-07-24',
     notes: [

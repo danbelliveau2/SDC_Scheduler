@@ -217,6 +217,34 @@ body {
   font-size: 10px;
 }
 
+/* ── App-scale control (sidebar bottom) — − / % / + . The % button doubles
+   as reset-to-100. Muted like the rev pill; brightens on hover. ── */
+.app-scale-ctl {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  /* Big bottom margin clears the floating signed-in avatar (position:fixed,
+     bottom 58px + ~46px tall) so the control sits right ABOVE it. */
+  margin: 2px 6px 56px;
+}
+.app-scale-ctl button {
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.55);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.app-scale-ctl button:hover {
+  background: rgba(255,255,255,0.16);
+  color: #fff;
+}
+#app-scale-pct { min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
+
 /* ==========================================================================
    Projects page — full-page list of workspaces with collapsible sections.
    ========================================================================== */
