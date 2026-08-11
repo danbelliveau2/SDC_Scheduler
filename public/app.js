@@ -28004,10 +28004,18 @@ function _initReportsRailLink() {
     // Opened SYNCHRONOUSLY, before the async mint below — a window.open()
     // issued after an awaited fetch is popup-blocked in most browsers, since
     // by then it is no longer inside the click's own call stack.
-    const win = window.open('', '_blank', 'noopener');
+    //
+    // No 'noopener' in the features string: per spec, window.open() ALWAYS
+    // returns null when 'noopener' is set, which broke this exact pattern —
+    // `win` was always null, so this always fell to the (blocked) async
+    // fallback below and left a permanently-blank tab. The destination is
+    // this app's own trusted sibling (the ETC Planner), never an
+    // attacker-controlled URL, so there is no reverse-tabnabbing risk being
+    // traded away here.
+    const win = window.open('', '_blank');
     _mintedReportsUrl(path).then((url) => {
       if (win) win.location.href = url;
-      else window.open(url, '_blank', 'noopener'); // popup was blocked anyway; try once more as a fallback
+      else window.open(url, '_blank'); // popup was blocked anyway; try once more as a fallback
     });
   });
 }
@@ -28047,11 +28055,15 @@ async function _openEtcJobHours(project, section) {
       return;
     }
     // Same popup-safe "open blank now, navigate once the mint resolves"
-    // pattern as the rail link above.
-    const win = window.open('', 'sdc-reports-job-hours', 'noopener');
+    // pattern as the rail link above — and the same 'noopener' bug fixed
+    // there: it forces window.open() to return null, so `win` was always
+    // null and this always fell through to the async (and usually blocked)
+    // fallback, leaving a permanently-blank tab. See the rail link's comment
+    // for why dropping it here carries no real tradeoff.
+    const win = window.open('', 'sdc-reports-job-hours');
     const url = await _mintedReportsUrl(_etcJobHoursPath(jobNumber, section));
     if (win) win.location.href = url;
-    else window.open(url, 'sdc-reports-job-hours', 'noopener');
+    else window.open(url, 'sdc-reports-job-hours');
   } catch (_) { /* best-effort — never block the click */ }
 }
 
