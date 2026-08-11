@@ -22,6 +22,11 @@ const { pool } = require('./db');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./lib/auth');
 const ops = require('./lib/ops'); // backups, health/status, crash logging
 const agent = require('./lib/agent'); // local-Ollama read-only assistant
+// Moved up from where it used to live (just above routeDeps) so the auth
+// router — mounted further up, before requireAuth — can also take it as a
+// dep, for the ETC Planner logout-revoke call. require() is cached, so
+// having this run earlier changes nothing about what it resolves to.
+const plannerClient = require('./lib/plannerClient');
 let hoursApi;
 try { hoursApi = require('./lib/hoursApi'); } catch (_) { hoursApi = { ENABLED: false, getJobHours: () => Promise.reject(new Error('not configured')) }; }
 let emailSvc;
@@ -89,7 +94,7 @@ app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModifie
 app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, lastModified: true }));
 
 // ─── Public auth routes (BEFORE global requireAuth guard) ──────────────────
-app.use(require('./routes/auth')({ pool, io, requireAuth, signToken, bcrypt, AUTH_ENABLED }));
+app.use(require('./routes/auth')({ pool, io, requireAuth, signToken, bcrypt, AUTH_ENABLED, plannerClient }));
 
 // Public capability probe — no auth needed, frontend uses this to show/hide the Job Hours drawer
 app.get('/api/hours/status', (_req, res) => res.json({ enabled: hoursApi.ENABLED }));
@@ -97,22 +102,32 @@ app.get('/api/hours/status', (_req, res) => res.json({ enabled: hoursApi.ENABLED
 // Global auth guard — every /api/* request below this line goes through it.
 app.use(requireAuth);
 
-// Active-flag check: JWT tokens can outlive a user's active=0 status.
-// Re-checks the DB on every authenticated request; 60-second in-memory cache.
-const _activeCache = new Map(); // userId → { active, expiresAt }
+// Active-flag + token-version check: JWT tokens can outlive a user's
+// active=0 status, or a sign-out (here or on the SDC ETC Planner, via the
+// SSO hand-off) that bumped token_version to invalidate everything issued
+// before it. Both are re-checked on the DB on every authenticated request,
+// together, sharing the SAME 60-second in-memory cache and query — a token
+// carries its OWN version (signToken(), lib/auth.js) as of whenever it was
+// issued, so a mismatch against the CURRENT column value means "revoked
+// since this token was signed."
+const _activeCache = new Map(); // userId → { active, tokenVersion, expiresAt }
 const ACTIVE_CACHE_TTL_MS = 60_000;
 app.use(async (req, res, next) => {
   if (!req.authUser || !req.authUser.id || req.authUser.id === 0) return next();
+  const tokenVersion = req.authUser.token_version || 0;
   const cached = _activeCache.get(req.authUser.id);
   if (cached && Date.now() < cached.expiresAt) {
     if (!cached.active) return res.status(403).json({ error: 'Your account has been disabled. Contact an admin.', code: 'ACCOUNT_DISABLED' });
+    if (cached.tokenVersion !== tokenVersion) return res.status(401).json({ error: 'Session expired. Please log in again.', code: 'TOKEN_EXPIRED' });
     return next();
   }
   try {
-    const [[u]] = await pool.query('SELECT active FROM users WHERE id = ?', [req.authUser.id]);
+    const [[u]] = await pool.query('SELECT active, token_version FROM users WHERE id = ?', [req.authUser.id]);
     const active = u ? !!u.active : false;
-    _activeCache.set(req.authUser.id, { active, expiresAt: Date.now() + ACTIVE_CACHE_TTL_MS });
+    const currentVersion = u ? (u.token_version || 0) : 0;
+    _activeCache.set(req.authUser.id, { active, tokenVersion: currentVersion, expiresAt: Date.now() + ACTIVE_CACHE_TTL_MS });
     if (!active) return res.status(403).json({ error: 'Your account has been disabled. Contact an admin.', code: 'ACCOUNT_DISABLED' });
+    if (currentVersion !== tokenVersion) return res.status(401).json({ error: 'Session expired. Please log in again.', code: 'TOKEN_EXPIRED' });
   } catch (_) { /* DB error — fail open so a DB hiccup doesn't lock everyone out */ }
   next();
 });
@@ -256,9 +271,8 @@ async function logHistory(taskId, project, action, changedBy, before, after, cha
 
 // ── ETO DB (needed by eto + agent routes) ─────────────────────────────────
 const etoDb = require('./lib/etoDb');
-
-// ── ETC Planner client (needed by planner route) ──────────────────────────
-const plannerClient = require('./lib/plannerClient');
+// plannerClient itself now required near the top of this file (see there) —
+// it's needed earlier than this point now, by the auth router.
 
 // ── Route mounting ─────────────────────────────────────────────────────────
 const routeDeps = { pool, io, requireRole, requireAuth, cascadeSchedule, logHistory, etoDb, plannerClient, ops, agent, hoursApi, emailSvc, bcrypt, _activeCache };

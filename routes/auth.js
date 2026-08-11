@@ -1,6 +1,7 @@
 'use strict';
 const { Router } = require('express');
 const crypto = require('crypto');
+const { mintEtcSsoToken } = require('../lib/etcSso');
 
 // ── Spent SSO nonces (in-memory) ─────────────────────────────────────────────
 // Tokens from the ETC Planner are single-use. In-memory is the right scope: the
@@ -40,7 +41,7 @@ function _randomAvatarColor() {
 }
 
 module.exports = function createRouter(deps) {
-  const { pool, io, requireAuth, signToken, bcrypt, AUTH_ENABLED } = deps;
+  const { pool, io, requireAuth, signToken, bcrypt, AUTH_ENABLED, plannerClient } = deps;
   const router = Router();
 
   router.post('/api/auth/login', async (req, res) => {
@@ -136,6 +137,67 @@ module.exports = function createRouter(deps) {
 
   router.get('/api/auth/me', requireAuth, (req, res) => {
     res.json({ user: req.authUser, auth_enabled: AUTH_ENABLED });
+  });
+
+  // ── SSO hand-off TO the SDC ETC Planner ──────────────────────────────────
+  // The mirror of POST /api/auth/sso above: mints a short-lived signed
+  // assertion of whoever is CURRENTLY logged into this app, so a link out to
+  // the Planner (the Job Hours/Procurement drawer launchers, the Reports
+  // sidebar link — see public/app.js) doesn't stop at its login form either.
+  // `requireAuth` here for the same reason /api/auth/me needs it explicitly:
+  // this router is mounted before the app-wide requireAuth in server.js, so
+  // nothing has set req.authUser yet without it.
+  router.get('/api/auth/mint-etc-sso', requireAuth, (req, res) => {
+    const token = mintEtcSsoToken(req.authUser && req.authUser.email);
+    if (!token) return res.status(503).json({ error: 'SSO is not configured on this server.' });
+    res.json({ token });
+  });
+
+  // ── Cross-app logout: revoke ON the ETC Planner ─────────────────────────
+  // Called from THIS app's own sign-out (public/auth-ui.js's signOut()), so
+  // logging out here also invalidates any Planner session established via
+  // the SSO hand-off — the mirror of what the Planner's logout does to this
+  // app over POST /api/auth/revoke-session above. Best-effort: signing out
+  // of THIS app must never hang or fail because the Planner is slow or
+  // unreachable (plannerClient.send() already time-boxes the call), and this
+  // app's own token is already gone client-side by the time this call is
+  // even made.
+  router.post('/api/auth/revoke-etc-session', requireAuth, async (req, res) => {
+    try {
+      if (plannerClient && plannerClient.CONFIGURED && req.authUser && req.authUser.email) {
+        await plannerClient.revokeEtcSession(req.authUser.email);
+      }
+    } catch (_) { /* best-effort — the Planner not knowing this person, or being unreachable, isn't this call's problem */ }
+    res.json({ ok: true });
+  });
+
+  // ── Cross-app logout: revoked FROM the ETC Planner ──────────────────────
+  // Called server-to-server from the Planner's own sign-out action, so
+  // logging out there also invalidates any Scheduler session for the same
+  // person — the mirror of what THIS app's logout does to the Planner (see
+  // public/auth-ui.js's signOut(), and its POST to the Planner's
+  // /api/integration/revoke-session). Not in requireAuth's normal path —
+  // there is no per-user JWT to check, only the shared secret, checked here
+  // directly, the same way the Planner's own /api/integration/* guards do.
+  //
+  // Bumps token_version rather than touching the account row itself — this
+  // only ever affects which already-issued JWTs are still honoured (see the
+  // active-flag middleware in server.js), never login itself.
+  router.post('/api/auth/revoke-session', async (req, res) => {
+    const secret = process.env.SCHEDULER_SHARED_TOKEN || '';
+    if (!secret) return res.status(503).json({ error: 'SSO is not configured on this server.' });
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    if (token.length !== secret.length || token !== secret) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const email = (req.body && req.body.email ? String(req.body.email) : '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: 'email_required' });
+    try {
+      const [result] = await pool.query('UPDATE users SET token_version = token_version + 1 WHERE LOWER(TRIM(email)) = ?', [email]);
+      if (!result.affectedRows) return res.status(404).json({ error: 'user_not_found' });
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: 'Revoke failed: ' + e.message }); }
   });
 
   router.put('/api/auth/password', requireAuth, async (req, res) => {
