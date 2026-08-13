@@ -77,6 +77,14 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE team_members ADD INDEX idx_team_discipline (discipline)`).catch(() => {});
+  // Stable link into ETC Planner's Employee.id (2026-08-13) — the shared
+  // source of truth for the 7 delivery-team groupings, replacing the old
+  // name-matched sync. Null for placeholders (ME Placeholder, etc.) and for
+  // the 5 back-office disciplines that stay Scheduler-local; see
+  // routes/team.js for where a linked row's discipline/active get written
+  // through to the shared Employee row.
+  await pool.query(`ALTER TABLE team_members ADD COLUMN employee_id INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE team_members ADD INDEX idx_team_employee (employee_id)`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS project_financials (

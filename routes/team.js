@@ -1,6 +1,32 @@
 'use strict';
 const { Router } = require('express');
 const planner = require('../lib/plannerClient');
+const { isEtcSharedConfigured, etcQuery } = require('../lib/mysqlDb');
+
+// The 7 delivery-team codes shared with ETC Planner's Employee.team
+// (2026-08-13) — a subset of TEAM_DISCIPLINES below. The other 5 (ops,
+// finance, growth, sales, exec) stay Scheduler-local by design (see the
+// migration plan's "scope of groups" decision), so a discipline/active edit
+// on one of THOSE never gets written through, even for a row whose
+// employee_id happens to be set (the one-time link script matched by name
+// against ETC's whole roster, not just the 7 in-scope teams, so a back-office
+// person can be linked as metadata without being in scope for writes).
+const SHARED_TEAM_DISCIPLINES = new Set(['pm', 'mech', 'controls', 'build', 'wire', 'service', 'mfgops']);
+
+// Writes a linked row's discipline/active through to the shared Employee row
+// — the ONE place that decides a linked person's group/status, replacing the
+// old hourly name-matched pull + HTTP push. Fails soft: if the shared
+// connection isn't configured or the write fails, the caller's own
+// team_members write already succeeded, so the board stays correct either
+// way — this only keeps ETC in step.
+async function writeThroughToEtc(employeeId, discipline, active) {
+  if (employeeId == null || !SHARED_TEAM_DISCIPLINES.has(discipline) || !isEtcSharedConfigured()) return;
+  try {
+    await etcQuery('UPDATE sdc_etc_planner.Employee SET team = ?, active = ? WHERE id = ?', [discipline, active ? 1 : 0, employeeId]);
+  } catch (e) {
+    console.error(`[team] write-through to ETC Employee#${employeeId} failed:`, e.message);
+  }
+}
 
 // Must stay in step with DISCIPLINES in public/app.js — this is the server-side
 // gate, so a bucket the board can render but this Set doesn't know would reject
@@ -13,16 +39,6 @@ const TEAM_DISCIPLINES = new Set([
   'service', 'mfgops', 'ops', 'finance', 'growth', 'sales', 'exec',
 ]);
 
-// Scheduler discipline code → ETC Planner's full label (ETC stores labels).
-// Mirrored by DISCIPLINE_LABEL in the ETC app's sync-scheduler-team.ts; both
-// sides need every key or a member pushed across lands with a blank grouping.
-const ETC_DISCIPLINE_LABEL = {
-  pm: 'Project Management', mech: 'Mechanical Engineers',
-  controls: 'Controls Engineers', build: 'Builders', wire: 'Electricians',
-  service: 'Service Engineering', mfgops: 'Manufacturing Operations',
-  ops: 'Operations', finance: 'Finance', growth: 'Growth / Business Development',
-  sales: 'Sales', exec: 'Executive Leadership',
-};
 // Nickname-normalized name key so team_members names line up with the ETC
 // roster names despite spelling drift (Mike/Michael, Josh/Joshua, …).
 const ETC_NICKNAMES = { mike:'michael', josh:'joshua', rich:'richard', tim:'timothy', matt:'matthew', rob:'robert', dave:'david', mitch:'mitchell', nick:'nicholas', greg:'gregory', dan:'daniel', tom:'thomas', jon:'jonathan', chris:'christopher', andy:'andrew', bill:'william', billy:'william', sam:'samuel', joe:'joseph', jim:'james', ben:'benjamin' };
@@ -82,6 +98,9 @@ module.exports = function createRouter(deps) {
       const [[updated]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [id]);
       res.json(updated);
       io.emit('team:updated');
+      if ('discipline' in updates || 'active' in updates) {
+        writeThroughToEtc(existing.employee_id, updated.discipline, Boolean(updated.active));
+      }
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
@@ -165,10 +184,29 @@ module.exports = function createRouter(deps) {
         [[row]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [dupe.id]);
       }
 
+      // Direct write-through, replacing the old HTTP push via plannerClient
+      // (2026-08-13) — this comes from ETC's own "Unassigned"/"Inactive"
+      // cards, so the person is already a real Employee row keyed by
+      // paylocityId; link team_members.employee_id to it (once, if not
+      // already set) so future edits stay ID-matched, then write the
+      // assignment straight to the shared row.
       let etcPushed = false;
-      if (paylocityId && planner.CONFIGURED) {
-        try { await planner.setEmployeeDiscipline(paylocityId, ETC_DISCIPLINE_LABEL[discipline] || null); etcPushed = true; }
-        catch (_) { /* Scheduler assignment stands even if the planner is down */ }
+      if (paylocityId && isEtcSharedConfigured()) {
+        try {
+          let employeeId = row.employee_id;
+          if (employeeId == null) {
+            const [[emp]] = await etcQuery('SELECT id FROM sdc_etc_planner.Employee WHERE paylocityId = ?', [paylocityId]);
+            if (emp) {
+              employeeId = emp.id;
+              await pool.query('UPDATE team_members SET employee_id = ? WHERE id = ?', [employeeId, row.id]);
+              row.employee_id = employeeId;
+            }
+          }
+          if (employeeId != null) {
+            await writeThroughToEtc(employeeId, discipline, true);
+            etcPushed = true;
+          }
+        } catch (_) { /* Scheduler assignment stands even if ETC's shared table is unreachable */ }
       }
       res.json({ ok: true, member: row, etcPushed });
       io.emit('team:updated');
