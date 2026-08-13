@@ -2,6 +2,9 @@
 const { Router } = require('express');
 const crypto = require('crypto');
 const { mintEtcSsoToken } = require('../lib/etcSso');
+const { isEtcSharedConfigured, etcQuery } = require('../lib/mysqlDb');
+const { isCompanyEmail } = require('../lib/companyEmail');
+const { nameFromEmail } = require('../lib/nameFromEmail');
 
 // ── Spent SSO nonces (in-memory) ─────────────────────────────────────────────
 // Tokens from the ETC Planner are single-use. In-memory is the right scope: the
@@ -81,9 +84,11 @@ module.exports = function createRouter(deps) {
   // so a token minted for this cannot be replayed as a raw bearer token against
   // the integration endpoints, and vice versa.
   //
-  // It does NOT create accounts. An assertion says who someone is; whether they
-  // may use the Scheduler is this app's decision. An unknown email gets 404 and
-  // the client falls back to the normal login form.
+  // Shared-account project (2026-08-13): a company-email assertion with no
+  // existing Scheduler user now creates one, low-privilege by default — see
+  // below. A non-company email with no existing user still gets 404; auto-
+  // provisioning stays scoped to people this app would let self-register
+  // anyway (routes/auth.js's own POST /api/auth/register has the same gate).
   router.post('/api/auth/sso', async (req, res) => {
     try {
       const secret = process.env.SCHEDULER_SHARED_TOKEN || '';
@@ -117,11 +122,41 @@ module.exports = function createRouter(deps) {
       _ssoRemember(nonce);
 
       const [rows] = await pool.query('SELECT * FROM users WHERE LOWER(TRIM(email)) = ?', [email]);
-      const user = rows[0] || null;
-      // 404, not 401: the token was perfectly valid, this app just has no such
-      // user. The client distinguishes them — one is "sign in normally", the other
-      // means something is wrong with the hand-off.
-      if (!user) return res.status(404).json({ error: 'No Scheduler account for ' + email, code: 'NO_ACCOUNT' });
+      let user = rows[0] || null;
+      if (!user) {
+        // 404, not 401, for anyone auto-provisioning doesn't cover: the token was
+        // perfectly valid, this app just has no such user (and won't create one).
+        // The client distinguishes 404 from 401 — one means "sign in normally",
+        // the other means something is wrong with the hand-off.
+        if (!isCompanyEmail(email)) {
+          return res.status(404).json({ error: 'No Scheduler account for ' + email, code: 'NO_ACCOUNT' });
+        }
+        // First time this person has reached the Scheduler via the Reports
+        // hand-off. role='viewer': the lowest tier, same as any brand-new
+        // person would need an admin to actually elevate — see
+        // requireRole()'s three-tier check in lib/auth.js. The password is
+        // never used going forward: this app never learns it, and nothing
+        // here checks it again for a linked row (PUT /api/auth/password still
+        // requires knowing the current one, so it naturally stays out of
+        // reach). reports_user_id is best-effort — set when the shared Reports
+        // connection is configured and reachable, but a linked row missing it
+        // is still a fully working Scheduler account, not a failed one.
+        const unusableHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
+        let reportsUserId = null;
+        if (isEtcSharedConfigured()) {
+          try {
+            const [etcRows] = await etcQuery('SELECT id FROM User WHERE LOWER(TRIM(email)) = ?', [email]);
+            reportsUserId = etcRows[0] ? etcRows[0].id : null;
+          } catch (_) { /* best-effort — see comment above */ }
+        }
+        const [ins] = await pool.query(
+          `INSERT INTO users (email, name, password_hash, role, avatar_color, reports_user_id) VALUES (?, ?, ?, 'viewer', ?, ?)`,
+          [email, nameFromEmail(email), unusableHash, _randomAvatarColor(), reportsUserId],
+        );
+        const [newRows] = await pool.query('SELECT * FROM users WHERE id = ?', [ins.insertId]);
+        user = newRows[0];
+        io.emit('users:updated');
+      }
       if (!user.active) {
         return res.status(403).json({ error: 'This account is disabled. Ask an admin to re-enable it.', code: 'ACCOUNT_DISABLED' });
       }
@@ -225,6 +260,9 @@ module.exports = function createRouter(deps) {
     const avatar_color = (req.body.avatar_color || _randomAvatarColor()).toString().slice(0, 20);
     if (!email || !name || !password) return res.status(400).json({ error: 'email, name, password required' });
     if (password.length < 1)           return res.status(400).json({ error: 'Password is required.' });
+    // Shared-account project (2026-08-13): company-only, matching Reports'
+    // registerUser() gate — see lib/companyEmail.js.
+    if (!isCompanyEmail(email))        return res.status(400).json({ error: 'Sign-up is limited to @sdcautomation.com email addresses.' });
     try {
       const hash = await bcrypt.hash(password, 12);
       const [r] = await pool.query(

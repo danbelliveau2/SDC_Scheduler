@@ -195,6 +195,16 @@ async function init() {
   // Reports-side logout calls out to bump, over POST /api/auth/revoke-session
   // — the mirror of what THIS app's own logout does to Reports.
   await pool.query(`ALTER TABLE users ADD COLUMN token_version INT DEFAULT 0`).catch(() => {});
+  // Stable link into Reports' User.id (shared-account project, 2026-08-13) —
+  // Reports is the one place a password actually lives; a linked row's own
+  // password_hash stops being checked (see routes/auth.js's POST
+  // /api/auth/login) once this is set. UNIQUE because the reverse is also
+  // true: a given Reports account should never end up linked from two
+  // different Scheduler rows. Null for anyone not yet linked — see
+  // scripts/link-etc-users.js for the one-time backfill and routes/auth.js's
+  // POST /api/auth/sso for how a brand-new row gets this set going forward.
+  await pool.query(`ALTER TABLE users ADD COLUMN reports_user_id INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE users ADD UNIQUE INDEX idx_users_reports_user_id (reports_user_id)`).catch(() => {});
   // Normalize any legacy emails stored with stray case/whitespace so they match
   // the trim+lowercase login lookup. Per-row + guarded so a (rare) collision
   // can't abort boot. Idempotent — only touches rows that aren't already clean.
