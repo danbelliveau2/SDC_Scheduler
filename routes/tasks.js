@@ -3,6 +3,16 @@ const { Router } = require('express');
 
 const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'dates_locked', 'completed_on', 'machine'];
 
+// Every catch block here used to do `res.status(500).json({error: e.message})`
+// and NOTHING else — the real cause of any specific save failure was visible
+// only in a response body nobody was capturing server-side (found live,
+// 2026-08-13, while chasing a save that failed the same way on every retry).
+// One shape for every log line so grepping the server output for a task id or
+// user turns up every attempt against it.
+function logSaveError(action, taskId, req, err) {
+  console.error(`[tasks] ${action} #${taskId} failed (user=${req.user || 'anonymous'}): ${err.message}`);
+}
+
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole, cascadeSchedule, logHistory, emailSvc } = deps;
   const router = Router();
@@ -104,7 +114,22 @@ module.exports = function createRouter(deps) {
   });
 
   // ── POST /api/tasks ───────────────────────────────────────────────────────────
+  // Same two-phase shape as PUT below: the INSERT itself must succeed or fail
+  // cleanly; the compaction/cascade that follows is best-effort and logged.
+  //
+  // `client_ref` (2026-08-13) makes a retried create idempotent: it's a value
+  // the CLIENT generates once per create attempt and resends unchanged on
+  // every retry. If a first attempt's INSERT actually committed but its
+  // response never reached the browser (dropped connection, the ~2-min deploy
+  // restart landing mid-request), a naive retry would insert a second,
+  // duplicate row — with client_ref UNIQUE, that retry's INSERT hits
+  // ER_DUP_ENTRY instead, and this returns the row that already exists rather
+  // than creating another one.
   router.post('/api/tasks', requireRole('editor'), async (req, res) => {
+    const clientRef = req.body.client_ref ? String(req.body.client_ref).slice(0, 64) : null;
+    let task;
+
+    // ── Phase 1: the create itself ────────────────────────────────────────────
     try {
       const { name } = req.body;
       if (!name) return res.status(400).json({ error: 'name required' });
@@ -128,7 +153,7 @@ module.exports = function createRouter(deps) {
         );
         nextPriority = (peekRow?.m || 0) + 1;
       }
-      const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'machine'];
+      const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'machine', 'client_ref'];
       const values = [
         name,
         req.body.project || null,
@@ -150,80 +175,159 @@ module.exports = function createRouter(deps) {
         req.body.anchor_key || null,
         req.body.is_action ? 1 : 0,
         req.body.machine || null,
+        clientRef,
       ];
       const placeholders = cols.map(() => '?').join(', ');
-      const [result] = await pool.query(`INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders})`, values);
-      if (req.body.assignee) await compactPrioritiesForAssignee(req.body.assignee, req.body.project || null, req.body.priority != null ? result.insertId : undefined);
+      let insertId;
+      try {
+        const [result] = await pool.query(`INSERT INTO tasks (${cols.join(', ')}) VALUES (${placeholders})`, values);
+        insertId = result.insertId;
+      } catch (e) {
+        if (clientRef && e.code === 'ER_DUP_ENTRY') {
+          const [[dupe]] = await pool.query('SELECT * FROM tasks WHERE client_ref = ?', [clientRef]);
+          if (dupe) { res.json(dupe); return; }
+        }
+        throw e;
+      }
+      [[task]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [insertId]);
+    } catch (e) {
+      logSaveError('POST', 'new', req, e);
+      return res.status(500).json({ error: e.message });
+    }
+
+    // ── Phase 2: derived side effects (best-effort) ──────────────────────────
+    try {
+      if (task.assignee) await compactPrioritiesForAssignee(task.assignee, task.project || null, req.body.priority != null ? task.id : undefined);
       await cascadeSchedule();
-      const [[task]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [result.insertId]);
-      await logHistory(task.id, task.project, 'create', null, null, task, null);
-      res.json(task);
-      io.emit('tasks:updated', { project: task.project || null });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+      logSaveError('POST (side effects)', task.id, req, e);
+    }
+
+    try {
+      const [[final]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [task.id]);
+      await logHistory(final.id, final.project, 'create', req.user || null, null, final, null);
+      res.json(final);
+      io.emit('tasks:updated', { project: final.project || null });
+    } catch (e) {
+      logSaveError('POST (response)', task.id, req, e);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // ── PUT /api/tasks/:id ────────────────────────────────────────────────────────
+  //
+  // Split into two phases (2026-08-13, found live: a side-effect throwing here
+  // used to report the WHOLE edit as failed even after the field write already
+  // committed — the client would then retry an edit that had already saved).
+  //
+  // Phase 1 — the actual edit the user made. Transactional: the field UPDATE
+  // and the version bump either both land or neither does. Any failure here IS
+  // a real save failure and the client is right to retry it.
+  //
+  // Phase 2 — priority compaction + the duration/schedule cascades. These are
+  // DERIVED from the edit, not the edit itself, and can affect many other rows.
+  // Best-effort: a failure here is logged (see logSaveError) but never turns a
+  // successful edit into a reported failure. The cascade math itself
+  // (cascadeSchedule / cascadeDurationLinks / computeDatesFromPreds) is
+  // unchanged — only how a failure IN it is handled.
   router.put('/api/tasks/:id', requireRole('editor'), async (req, res) => {
+    const id = Number(req.params.id);
+    let existing, updates;
+
+    // ── Phase 1: the edit itself ──────────────────────────────────────────────
+    {
+      let conn;
+      try {
+        conn = await pool.getConnection();
+        await conn.beginTransaction();
+
+        const [[existingRow]] = await conn.query('SELECT * FROM tasks WHERE id = ?', [id]);
+        if (!existingRow) {
+          await conn.rollback();
+          return res.status(404).json({ error: 'not found' });
+        }
+        existing = existingRow;
+
+        if (req.body.version != null && existing.version != null
+            && Number(req.body.version) !== Number(existing.version)) {
+          await conn.rollback();
+          return res.status(409).json({
+            error: 'This task was modified by another user. Refresh to see the latest version.',
+            code: 'STALE_VERSION',
+            server_version: existing.version,
+            server_row: existing,
+          });
+        }
+
+        const INT_FIELDS = new Set(['duration_days','progress','allocation','priority','duration_link_task_id','is_action']);
+        const DATE_FIELDS = new Set(['start_date','end_date','baseline_start_date','baseline_end_date','completed_on']);
+        updates = {};
+        for (const f of FIELDS) {
+          if (f in req.body) {
+            if (f === 'is_milestone' || f === 'is_action' || f === 'dates_locked') updates[f] = req.body[f] ? 1 : 0;
+            else if (INT_FIELDS.has(f)) {
+              if (req.body[f] == null || req.body[f] === '') { updates[f] = null; continue; }
+              const n = Number(req.body[f]);
+              // A non-numeric value used to silently become 0 (`Number(x) || 0`)
+              // — a quiet data-corruption path disguised as a successful save.
+              if (Number.isNaN(n)) {
+                await conn.rollback();
+                return res.status(400).json({ error: `"${req.body[f]}" is not a valid number for ${f}.`, field: f });
+              }
+              updates[f] = n;
+            }
+            else if (DATE_FIELDS.has(f)) updates[f] = req.body[f] ? String(req.body[f]).slice(0, 10) : null;
+            else updates[f] = req.body[f] === '' ? null : req.body[f];
+          }
+        }
+        if ('progress' in updates && !('completed_on' in updates)) {
+          const newProgress = Number(updates.progress) || 0;
+          const oldProgress = Number(existing.progress) || 0;
+          if (newProgress >= 100 && oldProgress < 100) {
+            updates.completed_on = new Date().toISOString().slice(0, 10);
+          } else if (newProgress < 100 && oldProgress >= 100) {
+            updates.completed_on = null;
+          }
+        }
+        if (Object.keys(updates).length === 0) {
+          await conn.rollback();
+          return res.json(existing);
+        }
+
+        // ── Manual date lock (auto-pin) ─────────────────────────────────────
+        // Editing a start/finish date PINS the task so the predecessor cascade
+        // (server.js cascadeSchedule) stops reverting the hand-set dates — the
+        // root cause of "I changed dates and they went back overnight." Editing
+        // the task's predecessors UNPINS it (the user is handing scheduling
+        // back to the graph). An explicit `dates_locked` in the request always
+        // wins, so a future lock/unlock toggle can override either default.
+        if (!('dates_locked' in updates)) {
+          if ('predecessors' in req.body) {
+            updates.dates_locked = 0;
+          } else if (('start_date' in req.body || 'end_date' in req.body) && !('duration_days' in req.body)) {
+            // A pure Start/Finish date edit pins. A duration edit (which also
+            // ships end_date) does NOT — it stays graph-driven. The client
+            // sends an explicit dates_locked=1 on real Finish-date edits
+            // (which also carry duration_days), honored above.
+            updates.dates_locked = 1;
+          }
+        }
+
+        const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+        await conn.query(`UPDATE tasks SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
+        await conn.query('UPDATE tasks SET version = COALESCE(version,1) + 1 WHERE id = ?', [id]);
+        await conn.commit();
+      } catch (e) {
+        try { await conn.rollback(); } catch (_) {}
+        logSaveError('PUT', id, req, e);
+        return res.status(500).json({ error: e.message });
+      } finally {
+        if (conn) conn.release();
+      }
+    }
+
+    // ── Phase 2: derived side effects (best-effort) ──────────────────────────
     try {
-      const id = Number(req.params.id);
-      const [[existing]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
-      if (!existing) return res.status(404).json({ error: 'not found' });
-
-      if (req.body.version != null && existing.version != null
-          && Number(req.body.version) !== Number(existing.version)) {
-        return res.status(409).json({
-          error: 'This task was modified by another user. Refresh to see the latest version.',
-          code: 'STALE_VERSION',
-          server_version: existing.version,
-          server_row: existing,
-        });
-      }
-
-      const INT_FIELDS = new Set(['duration_days','progress','allocation','priority','duration_link_task_id','is_action']);
-      const DATE_FIELDS = new Set(['start_date','end_date','baseline_start_date','baseline_end_date','completed_on']);
-      const updates = {};
-      for (const f of FIELDS) {
-        if (f in req.body) {
-          if (f === 'is_milestone' || f === 'is_action' || f === 'dates_locked') updates[f] = req.body[f] ? 1 : 0;
-          else if (INT_FIELDS.has(f)) updates[f] = req.body[f] == null || req.body[f] === '' ? null : Number(req.body[f]) || 0;
-          else if (DATE_FIELDS.has(f)) updates[f] = req.body[f] ? String(req.body[f]).slice(0, 10) : null;
-          else updates[f] = req.body[f] === '' ? null : req.body[f];
-        }
-      }
-      if ('progress' in updates && !('completed_on' in updates)) {
-        const newProgress = Number(updates.progress) || 0;
-        const oldProgress = Number(existing.progress) || 0;
-        if (newProgress >= 100 && oldProgress < 100) {
-          updates.completed_on = new Date().toISOString().slice(0, 10);
-        } else if (newProgress < 100 && oldProgress >= 100) {
-          updates.completed_on = null;
-        }
-      }
-      if (Object.keys(updates).length === 0) return res.json(existing);
-
-      // ── Manual date lock (auto-pin) ─────────────────────────────────────────
-      // Editing a start/finish date PINS the task so the predecessor cascade
-      // (server.js cascadeSchedule) stops reverting the hand-set dates — the
-      // root cause of "I changed dates and they went back overnight." Editing
-      // the task's predecessors UNPINS it (the user is handing scheduling back
-      // to the graph). An explicit `dates_locked` in the request always wins,
-      // so a future lock/unlock toggle can override either default.
-      if (!('dates_locked' in updates)) {
-        if ('predecessors' in req.body) {
-          updates.dates_locked = 0;
-        } else if (('start_date' in req.body || 'end_date' in req.body) && !('duration_days' in req.body)) {
-          // A pure Start/Finish date edit pins. A duration edit (which also
-          // ships end_date) does NOT — it stays graph-driven. The client sends
-          // an explicit dates_locked=1 on real Finish-date edits (which also
-          // carry duration_days), and that explicit flag is honored above.
-          updates.dates_locked = 1;
-        }
-      }
-
-      const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-      await pool.query(`UPDATE tasks SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
-      await pool.query('UPDATE tasks SET version = COALESCE(version,1) + 1 WHERE id = ?', [id]);
-
       const finalAssignee = ('assignee' in updates) ? updates.assignee : existing.assignee;
       const finalProject  = ('project'  in updates) ? updates.project  : existing.project;
       const assigneeChanged = 'assignee' in updates && updates.assignee !== existing.assignee;
@@ -252,23 +356,41 @@ module.exports = function createRouter(deps) {
 
       if ('duration_days' in updates) await cascadeDurationLinks();
       await cascadeSchedule();
+    } catch (e) {
+      logSaveError('PUT (side effects)', id, req, e);
+      // The edit itself already committed in Phase 1 — fall through to a
+      // normal success response rather than reporting it as failed.
+    }
 
+    try {
       const [[updated]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
-      await logHistory(id, updated.project, 'update', null, existing, updated, null);
+      await logHistory(id, updated.project, 'update', req.user || null, existing, updated, null);
       res.json(updated);
       io.emit('tasks:updated', { project: updated.project || null });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+      logSaveError('PUT (response)', id, req, e);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // ── DELETE /api/tasks/:id ─────────────────────────────────────────────────────
+  // Same two-phase shape as PUT/POST above: the delete + its predecessor-
+  // reference cleanup either all commit or none do (a partial delete would
+  // leave other tasks pointing at a row that no longer exists). Compaction
+  // and the schedule cascade after it are derived and best-effort.
   router.delete('/api/tasks/:id', requireRole('editor'), async (req, res) => {
+    const id = Number(req.params.id);
+    let before, t;
+
     try {
-      const id = Number(req.params.id);
-      const [[before]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
-      const [[t]] = await pool.query('SELECT anchor_key, assignee FROM tasks WHERE id = ?', [id]);
+      const [[beforeRow]] = await pool.query('SELECT * FROM tasks WHERE id = ?', [id]);
+      before = beforeRow;
+      const [[tRow]] = await pool.query('SELECT anchor_key, assignee FROM tasks WHERE id = ?', [id]);
+      t = tRow;
       if (t && t.anchor_key && t.anchor_key !== 'backlog') {
         return res.status(400).json({ error: 'Anchor milestones cannot be deleted.' });
       }
+
       const stripRef = (predStr, marker) => {
         if (!predStr) return predStr;
         const kept = String(predStr).split(',').map(s => s.trim()).filter(Boolean).filter(seg => {
@@ -277,24 +399,44 @@ module.exports = function createRouter(deps) {
         });
         return kept.join(', ');
       };
-      const [taskRefs] = await pool.query('SELECT id, predecessors FROM tasks WHERE predecessors LIKE ?', [`%${id}%`]);
-      for (const r of taskRefs) {
-        const np = stripRef(r.predecessors, false);
-        if (np !== r.predecessors) await pool.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [np || null, r.id]);
+
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        const [taskRefs] = await conn.query('SELECT id, predecessors FROM tasks WHERE predecessors LIKE ?', [`%${id}%`]);
+        for (const r of taskRefs) {
+          const np = stripRef(r.predecessors, false);
+          if (np !== r.predecessors) await conn.query('UPDATE tasks SET predecessors = ? WHERE id = ?', [np || null, r.id]);
+        }
+        const [finRefs] = await conn.query('SELECT id, predecessors FROM project_financials WHERE predecessors LIKE ?', [`%#${id}%`]);
+        for (const r of finRefs) {
+          const np = stripRef(r.predecessors, true);
+          if (np !== r.predecessors) await conn.query('UPDATE project_financials SET predecessors = ? WHERE id = ?', [np || null, r.id]);
+        }
+        await conn.query('DELETE FROM tasks WHERE id = ?', [id]);
+        await conn.query('DELETE FROM task_comments WHERE task_id = ?', [id]);
+        await conn.commit();
+      } catch (e) {
+        try { await conn.rollback(); } catch (_) {}
+        throw e;
+      } finally {
+        conn.release();
       }
-      const [finRefs] = await pool.query('SELECT id, predecessors FROM project_financials WHERE predecessors LIKE ?', [`%#${id}%`]);
-      for (const r of finRefs) {
-        const np = stripRef(r.predecessors, true);
-        if (np !== r.predecessors) await pool.query('UPDATE project_financials SET predecessors = ? WHERE id = ?', [np || null, r.id]);
-      }
-      await pool.query('DELETE FROM tasks WHERE id = ?', [id]);
-      await pool.query('DELETE FROM task_comments WHERE task_id = ?', [id]);
-      if (before) await logHistory(id, before.project, 'delete', null, before, null, null);
+    } catch (e) {
+      logSaveError('DELETE', id, req, e);
+      return res.status(500).json({ error: e.message });
+    }
+
+    try {
+      if (before) await logHistory(id, before.project, 'delete', req.user || null, before, null, null);
       if (t && t.assignee) await compactPrioritiesForAssignee(t.assignee, t.project || null);
       await cascadeSchedule();
-      res.json({ ok: true });
-      io.emit('tasks:updated', { project: before?.project || null });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+      logSaveError('DELETE (side effects)', id, req, e);
+    }
+
+    res.json({ ok: true });
+    io.emit('tasks:updated', { project: before?.project || null });
   });
 
   // ── POST /api/tasks/reorder ───────────────────────────────────────────────────

@@ -5,14 +5,84 @@
 // now" retry, and the browser-close warning fires ONLY when a save is actually
 // pending or failed — never on every navigation. A failed save keeps the edit's
 // payload so it can be re-sent (with a fresh version) instead of being lost.
+//
+// ── Failure classes (2026-08-13, found live) ────────────────────────────────
+// A stuck "Save now (N)" that never clears on retry was traced to treating
+// every non-2xx status identically — a 404 for a task someone else already
+// deleted, or a 400 the server explicitly rejected, retries FOREVER exactly
+// as failed as the first time, because retrying can't change why it failed.
+// Only network errors / 5xx are actually transient. See classifyFailure().
+const RETRYABLE = 'retryable';   // network error, 5xx — worth retrying
+const GONE = 'gone';             // 404 — the row no longer exists client-side
+const REJECTED = 'rejected';     // 400 — the server explicitly rejected the value
+const AUTH = 'auth';             // 401 — auth-ui's own modal already handles this
+
+function classifyFailure(status) {
+  if (status === 404) return GONE;
+  if (status === 400) return REJECTED;
+  if (status === 401 || status === 403) return AUTH;
+  return RETRYABLE; // network error (no status), 5xx, anything unrecognized
+}
+
 const SaveTracker = {
   inFlight: 0,
-  failures: [],            // { kind:'update'|'create', id?, data }
+  failures: [],            // { kind:'update'|'create', id?, data, seq, attempts }
+  _seq: 0,
   begin() { this.inFlight++; renderSaveStatus(); },
   end()   { this.inFlight = Math.max(0, this.inFlight - 1); renderSaveStatus(); },
-  fail(entry) { this.failures.push(entry); renderSaveStatus(); },
+  nextSeq() { return ++this._seq; },
+  // Keyed by task+field (updates) or by the create's own client_ref (creates)
+  // — NOT by arrival order. Two failed edits to the SAME field replace one
+  // another here (newest `seq` wins) instead of both queuing, which is what
+  // used to let an older value win a race against a newer one on retry: two
+  // in-flight requests can have their fetch `catch` fire in either order,
+  // which has nothing to do with which edit the user actually made more
+  // recently.
+  fail(entry) {
+    const key = entry.kind === 'create'
+      ? `create:${entry.data.client_ref}`
+      : `update:${entry.id}:${Object.keys(entry.data).sort().join(',')}`;
+    const i = this.failures.findIndex((f) => f._key === key);
+    entry._key = key;
+    entry.attempts = entry.attempts || 0;
+    if (i >= 0) {
+      if (entry.seq >= this.failures[i].seq) this.failures[i] = entry;
+    } else {
+      this.failures.push(entry);
+    }
+    renderSaveStatus();
+    if (entry.retryClass === RETRYABLE) scheduleAutoRetry(entry);
+  },
   hasPending() { return this.inFlight > 0 || this.failures.length > 0; },
 };
+
+// Automatic background retry for TRANSIENT failures only (RETRYABLE) — a
+// permanent failure (GONE/REJECTED/AUTH) is never auto-retried, since
+// retrying it can't succeed; it waits for the user to act (refresh, fix the
+// value, sign in). Backoff: 2s, 8s, 20s, then stop — "Save now" stays
+// available after that rather than retrying forever unattended.
+const AUTO_RETRY_DELAYS_MS = [2000, 8000, 20000];
+function scheduleAutoRetry(entry) {
+  if (entry.attempts >= AUTO_RETRY_DELAYS_MS.length) return;
+  const delay = AUTO_RETRY_DELAYS_MS[entry.attempts];
+  setTimeout(async () => {
+    // The entry may have been superseded (a newer edit to the same field) or
+    // already cleared (a manual "Save now" got there first) by the time this
+    // timer fires — only retry if it's still the exact entry queued.
+    if (!SaveTracker.failures.some((f) => f._key === entry._key && f.seq === entry.seq)) return;
+    await attemptSave(entry, { isRetry: true });
+  }, delay);
+}
+
+// One send attempt, shared by the initial call, "Save now", and automatic
+// background retry — so all three classify failures and queue/dequeue the
+// exact same way. Returns the server row on success.
+async function attemptSave(entry, { isRetry } = {}) {
+  const d = { ...entry.data };
+  if (isRetry) delete d.version; // api.update re-injects a FRESH version below
+  if (entry.kind === 'create') return api.create(d, { retryOf: entry, isRetry });
+  return api.update(entry.id, d, { retryOf: entry, isRetry });
+}
 function _saveChipEl() {
   let el = document.getElementById('save-status-chip');
   if (!el) {
@@ -70,22 +140,22 @@ function renderSaveStatus() {
     _saveChipHideTimer = setTimeout(() => { try { el.style.opacity = '0'; } catch (_) {} }, 2500);
   }
 }
-// Retry every failed save. Each retry re-injects a fresh version (api.update
-// strips + re-reads it), and api.* re-records anything that still fails. When
-// nothing is pending, a click just confirms "all saved" (no needless reload).
+// Retry every failed save. Replayed in EDIT order (`seq`), not queue order —
+// two failures for the same task+field are already deduped to one entry by
+// SaveTracker.fail, but this keeps a mixed batch (several different cells)
+// applying in the order the user actually made the edits. Each retry
+// re-injects a fresh version (api.update strips + re-reads it), and api.*
+// re-records anything that still fails. When nothing is pending, a click
+// just confirms "all saved" (no needless reload).
 async function flushSaves(fromClick) {
-  const pending = SaveTracker.failures.splice(0);
+  const pending = SaveTracker.failures.splice(0).sort((a, b) => a.seq - b.seq);
   renderSaveStatus();
   if (pending.length === 0) {
     if (fromClick && typeof showToast === 'function') showToast('All changes are saved.', { kind: 'success' });
     return;
   }
   for (const f of pending) {
-    const d = { ...f.data }; delete d.version;
-    try {
-      if (f.kind === 'create') await api.create(d);
-      else await api.update(f.id, d);
-    } catch (_) { /* re-recorded by api.* */ }
+    try { await attemptSave(f, { isRetry: true }); } catch (_) { /* re-recorded by api.* */ }
   }
   try { if (typeof loadTasks === 'function') await loadTasks(); } catch (_) {}
   renderSaveStatus();
@@ -99,18 +169,49 @@ window.addEventListener('beforeunload', (e) => {
 // Wire the toolbar Save button on load so it's clickable before any save activity.
 window.addEventListener('DOMContentLoaded', () => { try { _renderSaveButton(); } catch (_) {} });
 
+// Per-attempt id, NOT crypto.randomUUID() — production runs over plain HTTP
+// (see this app's own deployment notes), where that API is undefined. Only
+// needs to be unique enough to tell two create attempts apart; a real UUID
+// isn't necessary for that.
+function newClientRef() {
+  return Date.now() + '-' + Math.random().toString(36).slice(2);
+}
+
 const api = {
   list: () => fetch('/api/tasks').then(r => r.json()),
-  create: async (data) => {
+  // `opts.retryOf`, when present, is the SaveTracker entry this attempt is
+  // retrying — reused here only to read its already-assigned client_ref
+  // (assigned ONCE, at the very first attempt, in the block below) rather
+  // than generating a new one per retry, which would defeat the point.
+  create: async (data, opts = {}) => {
     window._lastLocalEdit = Date.now();
+    if (!data.client_ref) data.client_ref = (opts.retryOf && opts.retryOf.data.client_ref) || newClientRef();
+    const seq = (opts.retryOf && opts.retryOf.seq) || SaveTracker.nextSeq();
     SaveTracker.begin();
     try {
       const r = await fetch('/api/tasks', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) {
+        const err = new Error(`HTTP ${r.status}`);
+        err.status = r.status;
+        err.body = await r.json().catch(() => ({}));
+        throw err;
+      }
       return await r.json();
     } catch (e) {
-      SaveTracker.fail({ kind: 'create', data });
-      if (typeof showToast === 'function') showToast("Couldn't add a row — click “Save now” to retry.", { kind: 'error' });
+      const cls = classifyFailure(e.status);
+      if (cls === AUTH) {
+        // auth-ui's fetch wrapper already popped a re-login modal on this —
+        // queuing a second, generic "couldn't save" on top of it is just
+        // noise, and retrying with no token can't succeed anyway.
+        return {};
+      }
+      const attempts = (opts.retryOf ? opts.retryOf.attempts : 0) + (opts.isRetry ? 1 : 0);
+      SaveTracker.fail({ kind: 'create', data, seq, retryClass: cls, attempts });
+      if (cls === REJECTED && e.body && e.body.error) {
+        if (typeof showToast === 'function') showToast(e.body.error, { kind: 'error' });
+      } else if (typeof showToast === 'function') {
+        showToast("Couldn't add a row — click “Save now” to retry.", { kind: 'error' });
+      }
       return {};
     } finally { SaveTracker.end(); }
   },
@@ -118,7 +219,7 @@ const api = {
   // state.tasks so the server can detect "somebody else saved first" and
   // return 409. On 409, surface a toast + trigger a refresh so the user
   // sees the latest data instead of overwriting it.
-  update: async (id, data) => {
+  update: async (id, data, opts = {}) => {
     window._lastLocalEdit = Date.now();
     if (data && data.version == null) {
       try {
@@ -127,6 +228,7 @@ const api = {
         if (current && current.version != null) data = { ...data, version: current.version };
       } catch (_) {}
     }
+    const seq = (opts.retryOf && opts.retryOf.seq) || SaveTracker.nextSeq();
     SaveTracker.begin();
     try {
       const r = await fetch(`/api/tasks/${id}`, {
@@ -142,13 +244,39 @@ const api = {
         try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
         return body.server_row || body;
       }
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      if (!r.ok) {
+        const err = new Error(`HTTP ${r.status}`);
+        err.status = r.status;
+        err.body = await r.json().catch(() => ({}));
+        throw err;
+      }
       return await r.json();
     } catch (e) {
+      // Classify BEFORE deciding whether this is even a "failed save" the
+      // user needs to retry — see classifyFailure()'s own header comment.
+      const cls = classifyFailure(e.status);
+      if (cls === AUTH) {
+        return (typeof state !== 'undefined' && state.tasks) ? (state.tasks.find(t => t.id === id) || {}) : {};
+      }
+      if (cls === GONE) {
+        // The row no longer exists (deleted/merged elsewhere) — no retry
+        // count can ever fix that. Drop it from the retry queue (if it was
+        // already in there from an earlier attempt) and refresh instead.
+        SaveTracker.failures = SaveTracker.failures.filter((f) => !(f.kind === 'update' && f.id === id));
+        renderSaveStatus();
+        if (typeof showToast === 'function') showToast('This row was removed — refreshing…', { kind: 'warn' });
+        try { if (typeof loadTasks === 'function') loadTasks(); } catch (_) {}
+        return (typeof state !== 'undefined' && state.tasks) ? (state.tasks.find(t => t.id === id) || {}) : {};
+      }
+      const attempts = (opts.retryOf ? opts.retryOf.attempts : 0) + (opts.isRetry ? 1 : 0);
       // Network / server error — the edit did NOT persist. Record it for retry
       // (via the "Save now" chip) and tell the user instead of failing silently.
-      SaveTracker.fail({ kind: 'update', id, data });
-      if (typeof showToast === 'function') showToast("Couldn't save an edit — click “Save now” to retry.", { kind: 'error' });
+      SaveTracker.fail({ kind: 'update', id, data, seq, retryClass: cls, attempts });
+      if (cls === REJECTED && e.body && e.body.error) {
+        if (typeof showToast === 'function') showToast(e.body.error, { kind: 'error' });
+      } else if (typeof showToast === 'function') {
+        showToast("Couldn't save an edit — click “Save now” to retry.", { kind: 'error' });
+      }
       try { return (typeof state !== 'undefined' && state.tasks) ? (state.tasks.find(t => t.id === id) || {}) : {}; } catch (_) { return {}; }
     } finally {
       SaveTracker.end();

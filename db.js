@@ -56,6 +56,15 @@ async function init() {
   // hand-set dates. Editing the task's predecessors clears the pin again.
   await pool.query(`ALTER TABLE tasks ADD COLUMN dates_locked TINYINT(1) DEFAULT 0`).catch(() => {});
 
+  // Idempotency key for POST /api/tasks (2026-08-13) — a value the CLIENT
+  // generates once per create attempt and resends unchanged on every retry.
+  // The UNIQUE index is what lets a retried create detect "I already did
+  // this" instead of inserting a duplicate row when a first attempt's INSERT
+  // committed but its response never reached the browser. Null for every
+  // task created before this existed.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN client_ref VARCHAR(64) NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE tasks ADD UNIQUE INDEX idx_tasks_client_ref (client_ref)`).catch(() => {});
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (
       \`key\`      VARCHAR(255) PRIMARY KEY,
