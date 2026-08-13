@@ -170,6 +170,14 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE users ADD INDEX idx_users_email (email)`).catch(() => {});
+  // Bumped to invalidate every previously-issued JWT for this user — the
+  // server-side half of "sign out" (JWTs are otherwise stateless and would
+  // keep working until their natural 30-day expiry regardless). Embedded in
+  // signToken()'s claims, re-checked on every request in the active-flag
+  // middleware right below the global requireAuth in server.js. Also what a
+  // Reports-side logout calls out to bump, over POST /api/auth/revoke-session
+  // — the mirror of what THIS app's own logout does to Reports.
+  await pool.query(`ALTER TABLE users ADD COLUMN token_version INT DEFAULT 0`).catch(() => {});
   // Normalize any legacy emails stored with stray case/whitespace so they match
   // the trim+lowercase login lookup. Per-row + guarded so a (rare) collision
   // can't abort boot. Idempotent — only touches rows that aren't already clean.

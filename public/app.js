@@ -15626,6 +15626,7 @@ function renderScheduleProcurement() {
   const bar = `<div class="notes-bar proc-drawer-bar" data-action="toggle-proc-drawer">
     <span class="notes-bar-title">📦 Procurement</span>
     <span class="notes-count">${stat}</span>
+    <button class="btn-ghost btn-tight" type="button" data-action="open-etc-job-hours" data-etc-section="procurement" title="Open this job's Procurement in SDC Reports">↗ Reports</button>
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
   if (collapsed) { el.innerHTML = bar; _wireProcDrawer(el, job, project); layoutNotesPanel(); return; }
@@ -15745,6 +15746,15 @@ function _wireProcDrawer(el, job, project) {
   // onclick (not addEventListener) so re-renders never stack duplicate handlers.
   el.onclick = (e) => {
     const t = e.target;
+    // Checked BEFORE the toggle-proc-drawer branch below: this button lives
+    // INSIDE the bar div that itself carries data-action="toggle-proc-drawer",
+    // so closest() on any other element inside the bar would otherwise resolve
+    // to that ancestor and just collapse/expand the drawer instead.
+    const etcBtn = t.closest('[data-action="open-etc-job-hours"]');
+    if (etcBtn) {
+      _openEtcJobHours(project, etcBtn.dataset.etcSection || '');
+      return;
+    }
     if (t.closest('[data-action="toggle-proc-drawer"]')) {
       const willOpen = el.classList.contains('is-collapsed');
       el.classList.toggle('is-collapsed');
@@ -16001,6 +16011,7 @@ function renderScheduleHours() {
   const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
     <span class="notes-bar-title">⏱ Job Hours</span>
     <span class="notes-count">${stat}</span>
+    <button class="btn-ghost btn-tight" type="button" data-action="open-etc-job-hours" title="Open this job's Job Hour Details in SDC Reports">↗ Reports</button>
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
 
@@ -16378,6 +16389,14 @@ async function _hoursLinkJobFlow(project) {
 function _wireHoursDrawer(el, job, project) {
   _drawerRestoreHeight('hours-drawer-body');
   el.onclick = (e) => {
+    // Checked BEFORE toggle-hours-drawer below — same reason as the
+    // Procurement drawer's identical check: this button is nested inside the
+    // bar div that itself toggles the drawer.
+    const etcBtn = e.target.closest('[data-action="open-etc-job-hours"]');
+    if (etcBtn) {
+      _openEtcJobHours(project, '');
+      return;
+    }
     if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
       el.classList.toggle('is-collapsed');
       _setDrawerCollapsed('hours', el.classList.contains('is-collapsed'));
@@ -27960,13 +27979,111 @@ function _reportsAppUrl(path) {
   return `${location.protocol}//${location.hostname}:${REPORTS_APP_PORT}${path || '/'}`;
 }
 
+// ── Mint-then-open, shared by every Scheduler → Reports link ───────────────
+// The other half of the SSO hand-off _applyEtcJobDeepLink's side already
+// does (Reports → here): mint a fresh signed assertion of whoever is
+// CURRENTLY logged into THIS app (server-side, GET /api/auth/mint-etc-sso —
+// the secret itself never reaches the browser), then point at Reports' own
+// /api/auth/sso, which exchanges it for a real Reports session before
+// landing on `path`. Falls back to the plain, undecorated Reports URL for
+// ANY failure (SSO not configured, not logged into Scheduler, network
+// hiccup) — degrades to Reports' normal login, exactly like the existing
+// Reports → Scheduler direction already does when ITS secret is unset.
+async function _mintedReportsUrl(path) {
+  try {
+    const r = await fetch('/api/auth/mint-etc-sso');
+    if (r.ok) {
+      const body = await r.json();
+      if (body && body.token) {
+        return _reportsAppUrl(`/api/auth/sso?token=${encodeURIComponent(body.token)}&next=${encodeURIComponent(path)}`);
+      }
+    }
+  } catch (_) { /* fall through to the plain link */ }
+  return _reportsAppUrl(path);
+}
+
 function _initReportsRailLink() {
   const link = document.getElementById('link-reports-sidebar');
   if (!link) return;
+  let path = '/quoted'; // matches the static fallback href's own path
   try {
     const url = new URL(link.getAttribute('href'), location.origin);
-    if (url.hostname !== location.hostname) link.href = _reportsAppUrl(url.pathname + url.search);
+    path = url.pathname + url.search;
+    if (url.hostname !== location.hostname) link.href = _reportsAppUrl(path);
   } catch (_) { /* leave the static href alone */ }
+  // Mint-then-navigate on click. The link keeps its own `target="_blank"`
+  // href as a plain fallback (works with no JS, and for a middle-click that
+  // bypasses this handler); a real click always opened a FRESH tab before
+  // this change, and still does — `window.open('', '_blank')` here is the
+  // same "always a new one" semantic, not the named-reusable-tab pattern
+  // _openEtcJobHours below uses, since changing that would be a behavior
+  // change this task doesn't ask for.
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    // Opened SYNCHRONOUSLY, before the async mint below — a window.open()
+    // issued after an awaited fetch is popup-blocked in most browsers, since
+    // by then it is no longer inside the click's own call stack.
+    //
+    // No 'noopener' in the features string: per spec, window.open() ALWAYS
+    // returns null when 'noopener' is set, which broke this exact pattern —
+    // `win` was always null, so this always fell to the (blocked) async
+    // fallback below and left a permanently-blank tab. The destination is
+    // this app's own trusted sibling (the ETC Planner), never an
+    // attacker-controlled URL, so there is no reverse-tabnabbing risk being
+    // traded away here.
+    const win = window.open('', '_blank');
+    _mintedReportsUrl(path).then((url) => {
+      if (win) win.location.href = url;
+      else window.open(url, '_blank'); // popup was blocked anyway; try once more as a fallback
+    });
+  });
+}
+
+// ── Open this project's Job Hour Details in the Reports app ────────────────
+// Companion to _applyEtcJobDeepLink (the opposite direction): a small launcher
+// in the Job Hours and Procurement drawer bars opens the Reports app's Job
+// Hour Details page for the SAME job, landing straight on Procurement when
+// asked for it. Reads job_number straight from projectsIndex rather than
+// trusting either drawer's OWN `job` local — the Hours drawer's `job` can be
+// `hours_job_id`, a separate (and sometimes multi-job, e.g. "1129&1143")
+// Power BI linkage field, not the plain ETC job id Reports' ?jobs= expects.
+//
+// `?jobs=`, not `?job=` — Reports' singular ?job= expects its OWN internal
+// numeric row id, which this app has no way to know; ?jobs= takes the job
+// NUMBER string directly (job_number here IS Job.jobId there, same identity
+// the ETC-side deep link already relies on) and is the param Reports' own
+// picker writes today, so this rides the current path instead of the one
+// being phased out.
+//
+// A NAMED window target, not a bare new tab: clicking this a second time —
+// same job or a different one — drives the SAME already-open Reports tab via
+// a normal navigation (fresh page, new job) instead of piling up a new tab
+// per click.
+function _etcJobHoursPath(jobNumber, section) {
+  let path = `/job-hours?jobs=${encodeURIComponent(jobNumber)}`;
+  if (section) path += `&section=${encodeURIComponent(section)}`;
+  return path;
+}
+
+async function _openEtcJobHours(project, section) {
+  try {
+    const idx = project && state.projectsIndex && state.projectsIndex[project];
+    const jobNumber = idx && String(idx.job_number || '').trim();
+    if (!jobNumber) {
+      showToast('This project has no linked ETC job number yet.', { kind: 'error' });
+      return;
+    }
+    // Same popup-safe "open blank now, navigate once the mint resolves"
+    // pattern as the rail link above — and the same 'noopener' bug fixed
+    // there: it forces window.open() to return null, so `win` was always
+    // null and this always fell through to the async (and usually blocked)
+    // fallback, leaving a permanently-blank tab. See the rail link's comment
+    // for why dropping it here carries no real tradeoff.
+    const win = window.open('', 'sdc-reports-job-hours');
+    const url = await _mintedReportsUrl(_etcJobHoursPath(jobNumber, section));
+    if (win) win.location.href = url;
+    else window.open(url, 'sdc-reports-job-hours');
+  } catch (_) { /* best-effort — never block the click */ }
 }
 
 // ── ?view= deep-link ────────────────────────────────────────────────────────

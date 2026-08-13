@@ -27,9 +27,20 @@ window.sdcAuth = {
   token: localStorage.getItem(TOKEN_KEY) || null,
   authEnabled: false,
   signOut() {
+    const token = window.sdcAuth.token;
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
-    location.reload();
+    // Tell the ETC Planner too, so a session established there via the SSO
+    // hand-off doesn't outlive signing out HERE — the mirror of what the
+    // Planner's own logout already does to this app. Best-effort: uses the
+    // token captured above (this app's OWN token is already cleared by the
+    // time the request is even sent), and is capped at 1.5s so a slow or
+    // unreachable Planner can delay the reload only briefly, never block it
+    // — location.reload() below always runs regardless of how this settles.
+    const revoke = token
+      ? _originalFetch('/api/auth/revoke-etc-session', { method: 'POST', headers: { Authorization: 'Bearer ' + token } }).catch(() => {})
+      : Promise.resolve();
+    Promise.race([revoke, new Promise((resolve) => setTimeout(resolve, 1500))]).then(() => location.reload());
   },
   showLogin() { _openModal(); },
 };
