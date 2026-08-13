@@ -13,8 +13,17 @@ function _genTempPassword() {
 }
 
 module.exports = function createRouter(deps) {
-  const { pool, io, requireRole, bcrypt, _activeCache } = deps;
+  const { pool, io, requireRole, bcrypt, _activeCache, plannerClient } = deps;
   const router = Router();
+
+  // Best-effort push of a linked account's new hash to the ETC Planner — see
+  // routes/auth.js's own copy (PUT /api/auth/password) for the fuller reasoning.
+  // Never awaited by a caller that's already committed to its own response.
+  function _syncToEtc(reportsUserId, email, passwordHash) {
+    if (reportsUserId && plannerClient && plannerClient.CONFIGURED) {
+      plannerClient.syncPasswordToEtc(email, passwordHash).catch(() => {});
+    }
+  }
 
   router.get('/api/users', requireRole('admin'), async (_req, res) => {
     try {
@@ -64,6 +73,7 @@ module.exports = function createRouter(deps) {
       if (!Object.keys(upd).length) return res.json(u);
       const setClause = Object.keys(upd).map(k => `${k}=?`).join(',');
       await pool.query(`UPDATE users SET ${setClause} WHERE id=?`, [...Object.values(upd), id]);
+      if (upd.password_hash) _syncToEtc(u.reports_user_id, upd.email || u.email, upd.password_hash);
       // Invalidate active cache so a disable/enable takes effect within the next request.
       _activeCache.delete(id);
       io.emit('users:updated');
@@ -98,7 +108,7 @@ module.exports = function createRouter(deps) {
   router.post('/api/users/:id/reset-password', requireRole('admin'), async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const [[u]] = await pool.query('SELECT id,email,name FROM users WHERE id=?', [id]);
+      const [[u]] = await pool.query('SELECT id,email,name,reports_user_id FROM users WHERE id=?', [id]);
       if (!u) return res.status(404).json({ error: 'User not found' });
       let pw = (req.body && req.body.new_password ? String(req.body.new_password) : '').trim().slice(0, 1024);
       let generated = false;
@@ -106,6 +116,7 @@ module.exports = function createRouter(deps) {
       if (pw.length < 1) return res.status(400).json({ error: 'New password cannot be empty.' });
       const hash = await bcrypt.hash(pw, 12);
       await pool.query('UPDATE users SET password_hash=?, active=1 WHERE id=?', [hash, id]);
+      _syncToEtc(u.reports_user_id, u.email, hash);
       _activeCache.delete(id);
       io.emit('users:updated');
       res.json({ ok: true, email: u.email, name: u.name, reactivated: true, tempPassword: pw, generated });

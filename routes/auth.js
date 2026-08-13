@@ -43,6 +43,20 @@ function _randomAvatarColor() {
   return colors[Math.floor(Math.random() * colors.length)];
 }
 
+// Shared by the two password-hash sync endpoints below — same check
+// /api/auth/revoke-session already does inline; pulled into one place here since
+// two more call sites is where that stops paying for itself.
+function _checkSharedSecret(req) {
+  const secret = process.env.SCHEDULER_SHARED_TOKEN || '';
+  if (!secret) return { ok: false, status: 503, error: 'SSO is not configured on this server.' };
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  if (token.length !== secret.length || token !== secret) return { ok: false, status: 401, error: 'unauthorized' };
+  return { ok: true };
+}
+
+const BCRYPT_HASH_RE = /^\$2[aby]\$\d{2}\$.{53}$/;
+
 module.exports = function createRouter(deps) {
   const { pool, io, requireAuth, signToken, bcrypt, AUTH_ENABLED, plannerClient } = deps;
   const router = Router();
@@ -134,24 +148,31 @@ module.exports = function createRouter(deps) {
         // First time this person has reached the Scheduler via the Reports
         // hand-off. role='viewer': the lowest tier, same as any brand-new
         // person would need an admin to actually elevate — see
-        // requireRole()'s three-tier check in lib/auth.js. The password is
-        // never used going forward: this app never learns it, and nothing
-        // here checks it again for a linked row (PUT /api/auth/password still
-        // requires knowing the current one, so it naturally stays out of
-        // reach). reports_user_id is best-effort — set when the shared Reports
-        // connection is configured and reachable, but a linked row missing it
-        // is still a fully working Scheduler account, not a failed one.
-        const unusableHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
+        // requireRole()'s three-tier check in lib/auth.js. Seeded with their
+        // CURRENT Reports password hash (read over the same shared connection
+        // already used for the employee/team unification) so the same
+        // password works directly on THIS app's own login form immediately —
+        // sharing a one-way bcrypt hash isn't "copying a password" (see
+        // routes/auth.js's own POST /api/auth/sync-password for the fuller
+        // reasoning). Falls back to a random, unusable hash only if that read
+        // fails; reports_user_id is best-effort the same way — a linked row
+        // missing either is still a fully working Scheduler account, not a
+        // failed one.
+        let passwordHash = null;
         let reportsUserId = null;
         if (isEtcSharedConfigured()) {
           try {
-            const [etcRows] = await etcQuery('SELECT id FROM User WHERE LOWER(TRIM(email)) = ?', [email]);
-            reportsUserId = etcRows[0] ? etcRows[0].id : null;
+            const [etcRows] = await etcQuery('SELECT id, passwordHash FROM User WHERE LOWER(TRIM(email)) = ?', [email]);
+            if (etcRows[0]) {
+              reportsUserId = etcRows[0].id;
+              passwordHash = etcRows[0].passwordHash;
+            }
           } catch (_) { /* best-effort — see comment above */ }
         }
+        if (!passwordHash) passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
         const [ins] = await pool.query(
           `INSERT INTO users (email, name, password_hash, role, avatar_color, reports_user_id) VALUES (?, ?, ?, 'viewer', ?, ?)`,
-          [email, nameFromEmail(email), unusableHash, _randomAvatarColor(), reportsUserId],
+          [email, nameFromEmail(email), passwordHash, _randomAvatarColor(), reportsUserId],
         );
         const [newRows] = await pool.query('SELECT * FROM users WHERE id = ?', [ins.insertId]);
         user = newRows[0];
@@ -235,6 +256,56 @@ module.exports = function createRouter(deps) {
     } catch (e) { res.status(500).json({ error: 'Revoke failed: ' + e.message }); }
   });
 
+  // ── Password hash sync, pushed FROM the ETC Planner ─────────────────────
+  // Called when a LINKED account's Reports password changes (its own change-
+  // password action, or a future admin flow), so this app's login form keeps
+  // working from the same credential without ever seeing the plaintext
+  // (shared-account project, 2026-08-13). Only a bcrypt HASH crosses this
+  // boundary — see sdc-etc-planner's matching route for why that isn't
+  // "copying a password". Applied only to a row already linked via
+  // reports_user_id: an email that merely happens to match on both sides but
+  // was never actually linked must not have its LOCAL password silently
+  // overwritten by a same-named Reports account.
+  router.post('/api/auth/sync-password', async (req, res) => {
+    const check = _checkSharedSecret(req);
+    if (!check.ok) return res.status(check.status).json({ error: check.error });
+
+    const email = (req.body && req.body.email ? String(req.body.email) : '').trim().toLowerCase();
+    const passwordHash = req.body && req.body.passwordHash ? String(req.body.passwordHash) : '';
+    if (!email || !passwordHash) return res.status(400).json({ error: 'email_and_passwordHash_required' });
+    if (!BCRYPT_HASH_RE.test(passwordHash)) return res.status(400).json({ error: 'passwordHash_does_not_look_like_bcrypt' });
+
+    try {
+      const [result] = await pool.query(
+        'UPDATE users SET password_hash = ? WHERE LOWER(TRIM(email)) = ? AND reports_user_id IS NOT NULL',
+        [passwordHash, email],
+      );
+      if (!result.affectedRows) return res.status(404).json({ error: 'user_not_found_or_not_linked' });
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: 'Sync failed: ' + e.message }); }
+  });
+
+  // ── Password hash fetch, pulled BY the ETC Planner ──────────────────────
+  // Used only at auto-provision time (see POST /api/auth/sso above and the
+  // mirror in sdc-etc-planner's auth.ts): a brand-new Reports account for a
+  // Scheduler-only person seeds its OWN hash from this app's current one, so
+  // the same password works immediately on both sides. Bearer-guarded the
+  // same as every other server-to-server endpoint here — never reachable
+  // from the browser.
+  router.get('/api/auth/password-hash', async (req, res) => {
+    const check = _checkSharedSecret(req);
+    if (!check.ok) return res.status(check.status).json({ error: check.error });
+
+    const email = (req.query && req.query.email ? String(req.query.email) : '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: 'email_required' });
+
+    try {
+      const [rows] = await pool.query('SELECT password_hash FROM users WHERE LOWER(TRIM(email)) = ?', [email]);
+      if (!rows[0]) return res.status(404).json({ error: 'user_not_found' });
+      res.json({ passwordHash: rows[0].password_hash });
+    } catch (e) { res.status(500).json({ error: 'Fetch failed: ' + e.message }); }
+  });
+
   router.put('/api/auth/password', requireAuth, async (req, res) => {
     try {
       const { current_password, new_password } = req.body || {};
@@ -249,6 +320,11 @@ module.exports = function createRouter(deps) {
         return res.status(401).json({ error: 'Current password is incorrect' });
       const hash = await bcrypt.hash(String(new_password), 12);
       await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [hash, user.id]);
+      // Keeps a linked Reports account working from the SAME password —
+      // best-effort, never blocks the response this app already committed to.
+      if (user.reports_user_id && plannerClient && plannerClient.CONFIGURED) {
+        plannerClient.syncPasswordToEtc(user.email, hash).catch(() => {});
+      }
       res.json({ ok: true, message: 'Password updated successfully' });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
