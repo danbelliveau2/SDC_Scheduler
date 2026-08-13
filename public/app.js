@@ -12470,11 +12470,22 @@ function renderProjectTabs() {
         ${close}
       </button>`;
   };
+  // Departments as a PINNED TAB right next to All projects — same page the
+  // sidebar icon opens, but one click away from any schedule, and the page
+  // keeps its scroll spot when you bounce schedule ↔ departments (Dan's ask:
+  // "scroll down, go look at a schedule, come back — don't start from the top").
+  const deptTabHtml = `
+      <button class="project-tab is-dept${state.view === 'team' ? ' active' : ''}" data-dept-tab="1" type="button" draggable="false"
+        title="Departments — team, resource timeline, milestones. Keeps your place when you switch away and back.">
+        <span class="project-tab-label">Departments</span>
+      </button>`;
   // The "Active Projects" row label only shows when the Sales banner exists —
   // with a single row there's nothing to distinguish it from.
   const activeLabel = salesTabs.length ? '<span class="project-tabs-row-label">Active Projects</span>' : '';
+  let mainTabsHtml = mainTabs.map(p => tabHtml(p, false) + (p === '' ? deptTabHtml : '')).join('');
+  if (!mainTabs.includes('')) mainTabsHtml = deptTabHtml + mainTabsHtml;
   wrap.innerHTML =
-    `<div class="project-tabs-row">${activeLabel}${personalTabHtml + mainTabs.map(p => tabHtml(p, false)).join('')}</div>`
+    `<div class="project-tabs-row">${activeLabel}${personalTabHtml + mainTabsHtml}</div>`
     + (salesTabs.length
       ? `<div class="project-tabs-row project-tabs-row-sales"><span class="project-tabs-row-label">Sales</span>${salesTabs.map(p => tabHtml(p, true)).join('')}</div>`
       : '');
@@ -12504,8 +12515,13 @@ function renderProjectTabs() {
     });
   }
 
-  // Regular project tabs (NOT the personal tab) — wire normal click behavior.
-  wrap.querySelectorAll('.project-tab:not(.is-personal)').forEach(btn => {
+  // Departments tab — just navigates; it's not a project (no project filter,
+  // no context menu, no drag).
+  wrap.querySelector('.project-tab.is-dept')?.addEventListener('click', () => setView('team'));
+
+  // Regular project tabs (NOT the personal or Departments tabs) — wire normal
+  // click behavior.
+  wrap.querySelectorAll('.project-tab:not(.is-personal):not(.is-dept)').forEach(btn => {
     btn.addEventListener('click', (e) => {
       if (e.target.closest('.project-tab-close')) return;
       // Clicking a regular project tab while signed in: keep personId
@@ -25086,7 +25102,7 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 // Views that are simple scrollable containers — save/restore their scroll position.
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts'];
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -25139,6 +25155,9 @@ function setView(view) {
     state.resources.zoomPercent = friendlyToZoom(5);
     state.resources.barHeight = friendlyResRowToPx(4);
     renderTeam();
+    // Come back to the SAME spot on the page — schedule ↔ departments
+    // round-trips shouldn't restart you at the top.
+    _restoreScrollPos(view);
   }
   else if (view === 'shop-parts') { loadShopParts(); _restoreScrollPos(view); }
   else if (view === 'vendor-pos') { loadVendorPOs(); _restoreScrollPos(view); }

@@ -1179,6 +1179,9 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 .project-tab-dot-closed { background: #FFDE51; }   /* SDC yellow */
 .project-tab-dot-personal { background: var(--sdc-primary, #1574c4); } /* SDC blue */
 .project-tab.is-all { font-style: italic; }
+/* Departments pseudo-tab — pinned next to All projects. Italic like the
+   other pseudo-tab so both read as "pages", not schedules. */
+.project-tab.is-dept { font-style: italic; }
 /* Personal-mode tab — distinguishes a "signed in" pseudo-tab from regular
    project tabs. Pinned at position 0, with a blue accent that matches the
    personal banner. Active state gets a thicker lime underline so it's
