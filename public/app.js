@@ -1077,11 +1077,14 @@ function relevantDisciplinesForTask(task) {
   const sub = task.sub_department;
 
   // Section 10 — Design & Build: sub-department is highly specific where set.
+  // Service people work across projects — engineering subs also offer the
+  // service engineers, shop subs also offer the service techs (Dan: "if I'm
+  // in engineering I should be able to select any of the service engineers").
   if (pg === 'design_build') {
-    if (sub === 'mech')     return ['mech'];
-    if (sub === 'controls') return ['controls'];
-    if (sub === 'build')    return ['build'];
-    if (sub === 'wire')     return ['wire'];
+    if (sub === 'mech')     return ['mech', 'service'];
+    if (sub === 'controls') return ['controls', 'service'];
+    if (sub === 'build')    return ['build', 'service'];
+    if (sub === 'wire')     return ['wire', 'service'];
     if (sub === 'general')  return ENGINEERING_DISCIPLINES;   // any engineer
     // Department-level rows (no sub) — engineering = either engineer,
     // shop = either trade, procurement = anyone.

@@ -3355,6 +3355,22 @@ body.customer-view .customer-view-flatten.is-active {
   border-color: rgba(255,255,255,0.2);
 }
 .btn-ghost:hover { background: rgba(255,255,255,0.18); }
+/* Ghost buttons were styled for the DARK toolbar — inside a white modal they
+   rendered white-on-white, i.e. invisible ("+ Add change quote", "+ Add
+   milestone", "+ Add level" all vanished). In any modal card they take the
+   blue-outline secondary look instead. */
+.modal-card .btn-ghost,
+.modal-overlay .btn-ghost {
+  background: #fff;
+  color: var(--sdc-primary, #1574c4);
+  border: 1px solid var(--sdc-primary, #1574c4);
+  font-weight: var(--fw-bold);
+}
+.modal-card .btn-ghost:hover,
+.modal-overlay .btn-ghost:hover {
+  background: #eaf3fb;
+  color: var(--sdc-primary, #1574c4);
+}
 .btn-danger {
   background: var(--danger);
   color: white;
