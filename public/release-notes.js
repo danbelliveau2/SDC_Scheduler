@@ -4,6 +4,30 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.4',
+    date: '2026-08-19',
+    notes: [
+      'Multi-machine money, change quotes, one-line person transitions, custom key milestones, and the Communication Plan.',
+      '',
+      'PROJECT RELEASE:',
+      '   ▸ Multi-machine projects get MACHINE PILLS (M1 · M2 · All) — delivery, penalty clause, financial milestones, and the budget grid are all PER MACHINE. The All pill stacks every machine\'s blocks on one page. M2\'s milestones seed as a copy of M1\'s (same %s and descriptions — you rewire the triggers).',
+      '   ▸ CHANGE QUOTES: log each CQ (number, description, amount, +weeks, approved date) — every CQ gets its own quoted-hours grid that ADDS into the project\'s quoted total, and "→ milestone" tracks its payment with the financial milestones.',
+      '   ▸ PM / Manufacturing / Warranty columns dropped from the budget grid (standard fees). Receipt of PO prefills from the schedule; delivery + penalty apply live (no more waiting for Accept).',
+      '   ▸ 📄 Open Project Release reads the Word doc right in the app, PDF-style; ⬆ Update replaces it.',
+      '',
+      'SCHEDULE:',
+      '   ▸ 📇 COMMUNICATION PLAN (footer, next to Project Release): SDC + customer team directories with roles/emails/phones, the meeting cadence (frequency, WHEN — e.g. Tuesdays 9 AM — format, led-by, audience), how Issues vs Risks get communicated, and a both-sides escalation ladder. Saves as you type.',
+      '   ▸ JOIN LINES: right-click → "⛓ Join with another line…", then click the other line on the grid — the pair shows as ONE line with ONE person (summed duration, continuous bar). Right-click → split to undo. Joins are shared and clone with templates.',
+      '   ▸ ⭐ MAKE KEY MILESTONE: right-click any milestone → it becomes a key milestone (green chip + anchor diamond, same as PO / Mech 1 / FAT), right where it sits. Right-click again to demote. "Parts+Drawings for Panel Ready" is a recognized key milestone out of the box.',
+      '   ▸ Milestone durations are back: click the (invisible) duration slot on a milestone row, type "2w", and it\'s a task again.',
+      '   ▸ Machine tab right-click → "＋ Add lines to M2 from the schedule…" clones more lines into an EXISTING machine — and sections can be opened/closed during any line-selection mode now.',
+      '',
+      'GANTT + STATS:',
+      '   ▸ The stats box scopes to the machine you\'re viewing — and on All, stacks a block per machine (duration, FAT, penalty each from that machine\'s terms).',
+      '   ▸ Each machine with a penalty clause gets its own red penalty line, labeled (e.g. "M2 · Penalty starts 08/26/27").',
+    ],
+  },
+  {
     version: '13.3',
     date: '2026-07-24',
     notes: [

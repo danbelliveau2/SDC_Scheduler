@@ -55,6 +55,10 @@ async function init() {
   // pinned (dates_locked=1) so the predecessor cascade stops overwriting the
   // hand-set dates. Editing the task's predecessors clears the pin again.
   await pool.query(`ALTER TABLE tasks ADD COLUMN dates_locked TINYINT(1) DEFAULT 0`).catch(() => {});
+  // Person-transition join: a task with join_prev=1 displays ON the previous
+  // row's line (one person rolling from one task straight into the next).
+  // Display-level only — scheduling math still sees two tasks.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN join_prev TINYINT(1) DEFAULT 0`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -94,6 +98,9 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE project_financials ADD INDEX idx_financials_project (project)`).catch(() => {});
+  // Multi-machine payment terms: each financial milestone can belong to a
+  // machine (M1/M2/…). NULL/'' = M1 / single-machine project (legacy rows).
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN machine VARCHAR(32)`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (

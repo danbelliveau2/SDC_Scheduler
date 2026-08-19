@@ -657,10 +657,10 @@ function buildCanonicalTaskOrder() {
   const buckets = {};
   // Mech 1 Release + Machine Power-Up flow through their hierarchy bucket; all
   // other anchors render at fixed spine positions outside the walk.
-  const INLINE_ANCHORS = new Set(['mech_release_1', 'machine_power_up']);
+  const SPINE_ANCHORS = new Set(['receipt_of_po', 'fat', 'ship_machine', 'sat']);
   for (const t of filtered) {
     const k = inferredAnchorKey(t);
-    if (k && !INLINE_ANCHORS.has(k)) continue;
+    if (k && SPINE_ANCHORS.has(k)) continue;
     const path = groupPath(t.phase_group, t.department, t.sub_department);
     (buckets[path] ||= []).push(t);
   }
@@ -717,11 +717,11 @@ function buildCanonicalTaskOrder() {
   for (const t of aboveSectionTasks) order.push(t.id);
   for (const group of HIERARCHY) {
     if (state.scheduleView?.flatten || isPersonalMode()) {
-      // Same INLINE_ANCHORS rule as the table walk.
+      // Same SPINE_ANCHORS rule as the table walk.
       let sectionTasks = filtered.filter(t => {
         if (t.phase_group !== group.key) return false;
         const k = inferredAnchorKey(t);
-        return !k || INLINE_ANCHORS.has(k);
+        return !k || !SPINE_ANCHORS.has(k);
       });
       sortBucket(sectionTasks);
       // Splice Ship Machine into section 50 by sort_order so line numbers
@@ -1642,7 +1642,58 @@ function phaseChip(phaseKey) {
 }
 
 // ---------- Table rendering ----------
+// ── Person-transition chains ────────────────────────────────────────────────
+// One person finishing a task and rolling straight into the next reads as ONE
+// line: "ME Concept → ME Design · Caleb · 7W". The underlying data stays two
+// tasks (predecessors, %, history all keep working) — this is a DISPLAY merge:
+// the continuation row is hidden from the grid, the head row shows the
+// combined name/duration/finish, and the Gantt draws both bars on the head's
+// row so they read as one continuous bar with a seam at the handoff.
+// EXPLICIT, not automatic (Dan): right-click a row → "Join with line below".
+// Joining sets join_prev=1 on the second task (a real DB column — shared with
+// everyone and it clones with templates) and unifies the assignee so the pair
+// reads as one person's line. Right-click a joined line → split to undo.
+let _chainMap = {};        // head task id -> [taskIds, in order]
+let _chainTailToHead = {}; // continuation task id -> head task id
+function _chainTasks(headId) {
+  return (_chainMap[headId] || []).map(id => state.tasks.find(x => x.id === id)).filter(Boolean);
+}
+// Walk a sorted bucket list: hide joined continuation tasks, record the chains.
+function _collapseChains(arr) {
+  const out = [];
+  let head = null;   // last emitted row = the head any join_prev task attaches to
+  for (const t of arr) {
+    if (head && t.join_prev && !t.is_milestone && !inferredAnchorKey(t) && !t.is_action) {
+      (_chainMap[head.id] = _chainMap[head.id] || [head.id]).push(t.id);
+      _chainTailToHead[t.id] = head.id;
+      continue;                    // joined — no row of its own
+    }
+    out.push(t);
+    head = t;
+  }
+  return out;
+}
+
 function cellHtml(t, key) {
+  // Chain-head rows render a MERGED VIEW: combined name, summed duration,
+  // the chain's final finish date, and duration-weighted % complete. `t` is
+  // shadowed with a display copy — the real tasks are untouched, and any
+  // click-to-edit pill still carries the head's id.
+  if (_chainMap[t.id]) {
+    const tasks = _chainTasks(t.id);
+    if (tasks.length > 1) {
+      const totDays = tasks.reduce((s, x) => s + (Number(x.duration_days) || 0), 0);
+      const wPct = totDays > 0
+        ? Math.round(tasks.reduce((s, x) => s + (Number(x.duration_days) || 0) * (Number(x.progress) || 0), 0) / totDays)
+        : (Number(t.progress) || 0);
+      t = { ...t,
+        name: tasks.map(x => x.name).join(' → '),
+        end_date: tasks[tasks.length - 1].end_date || t.end_date,
+        duration_days: totDays,
+        progress: wPct,
+      };
+    }
+  }
   const cls = colClass(key);
   switch (key) {
     case 'line':     return `<td class="${cls}" data-col="line"><span class="row-drag" draggable="true" title="Drag to move">⋮⋮</span><span class="line-num"></span></td>`;
@@ -1761,12 +1812,14 @@ function cellHtml(t, key) {
           linkBadge = `<span class="name-cell-dur-link" data-link-target-id="${t.duration_link_task_id}">${earlyText}</span> `;
         }
         durEl = `<span class="name-cell-dur" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to edit (e.g. 5d, 2w, or = then click another row to link)">${linkBadge}${wksText}</span>`;
+      } else if (t.is_milestone && !isAnchor) {
+        // Milestones show NOTHING in the duration slot (the old visible
+        // "—W" ghost read as a bug) — but the slot is still there,
+        // invisible: DOUBLE-CLICK it to type a duration and turn the
+        // milestone back into a task (Dan's spec after making it
+        // completely dead trapped 0-duration rows as milestones forever).
+        durEl = `<span class="name-cell-dur name-cell-dur-ghost" data-dur-ghost="1" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Click to give this milestone a duration — turns it back into a task"></span>`;
       }
-      // Milestones show NOTHING in the duration slot — they're zero-duration
-      // by definition and the old hover-ghost "—W" (a click-to-restore
-      // duration editor) read as a bug and crowded the ✓ checkbox next to
-      // it. To turn a milestone back into a task, show the Duration column
-      // (Show/hide columns) and type a duration there.
       // v4.39: dropped the .name-cell-row flex wrapper. alloc, dash, and
       // dur are now ABSOLUTE-POSITIONED inside the TD (deterministic offsets
       // from the column's left/right edges), and the task name flows in
@@ -2009,11 +2062,11 @@ function renderTable() {
   // are the exceptions — they live INSIDE the hierarchy buckets (10 → Mech Eng
   // and 10 → Shop → Wire respectively) so they flow with their team's work.
   // Anchor styling is layered on at render time via renderTaskRow's branching.
-  const INLINE_ANCHORS = new Set(['mech_release_1', 'machine_power_up']);
+  const SPINE_ANCHORS = new Set(['receipt_of_po', 'fat', 'ship_machine', 'sat']);
   const buckets = {};
   for (const t of filtered) {
     const k = inferredAnchorKey(t);
-    if (k && !INLINE_ANCHORS.has(k)) continue;
+    if (k && SPINE_ANCHORS.has(k)) continue;
     const path = groupPath(t.phase_group, t.department, t.sub_department);
     (buckets[path] ||= []).push(t);
   }
@@ -2035,6 +2088,14 @@ function renderTable() {
     }
   };
   for (const k in buckets) sortBucket(buckets[k]);
+  // Person-transition chains — collapse same-person back-to-back tasks into
+  // one displayed line (see _collapseChains). Maps rebuild every render; only
+  // the row list actually being rendered gets collapsed (buckets vs flat).
+  _chainMap = {};
+  _chainTailToHead = {};
+  if (!(state.scheduleView.flatten || isPersonalMode())) {
+    for (const k in buckets) buckets[k] = _collapseChains(buckets[k]);
+  }
 
   // Flatten mode collects every task under each section into one ordered list and
   // skips dept / sub-dept walks. Built once so it's cheap to look up per section.
@@ -2049,11 +2110,12 @@ function renderTable() {
   if (flattenEffective) {
     for (const t of filtered) {
       const k = inferredAnchorKey(t);
-      if (k && !INLINE_ANCHORS.has(k)) continue;
+      if (k && SPINE_ANCHORS.has(k)) continue;
       if (!t.phase_group) continue;
       (flatBySection[t.phase_group] ||= []).push(t);
     }
     for (const k in flatBySection) sortBucket(flatBySection[k]);
+    for (const k in flatBySection) flatBySection[k] = _collapseChains(flatBySection[k]);
   }
 
   // Per-department QUOTED vs SCHEDULED hours overlay (H view-pill). Shows on
@@ -2459,6 +2521,10 @@ function handleCloneModeRowClick(e) {
   if (!cm) return false;
   // Let the inline pred editor keep its own click semantics.
   if (e.target.closest('.clone-pred-editor')) return false;
+  // Section headers stay LIVE during selection — collapse/expand must keep
+  // working so a section closed before entering clone mode can be opened to
+  // select its lines (Dan hit exactly this with section 50).
+  if (e.target.closest('tr.group-header')) return false;
   // Anything else inside the table body is eaten in clone mode. Even
   // clicks on shared-anchor rows (machine=null) are blocked — the
   // user is focused on the M1 → M2 flow and shouldn't be opening
@@ -3867,6 +3933,7 @@ function renderGantt() {
   try { drawFinancialOverlay(); } catch (_) {}
   try { drawPenaltyClauseLine(); } catch (_) {}
   try { drawBarMeta(); } catch (_) {}
+  try { fixChainLabels(); } catch (_) {}
   try { drawMachineBorders(); } catch (_) {}
   try { renderProjectStatsPopup(); } catch (_) {}
   // Montserrat loads async and is wider than the fallback — if labels were
@@ -3878,6 +3945,7 @@ function renderGantt() {
     document.fonts.ready.then(() => {
       try { clipBarLabels(); } catch (_) {}
       try { drawBarMeta(); } catch (_) {}
+      try { fixChainLabels(); } catch (_) {}
     });
   }
 }
@@ -4415,6 +4483,83 @@ function drawMachineBorders() {
 // Skipped for milestones, anchors, and backlog. Runs AFTER drawCustomArrows
 // so the arrow <path> elements exist in the DOM and we can query their bboxes
 // for collision detection.
+// ── Joined-line label rescue ── runs AFTER clipBarLabels + drawBarMeta (the
+// label cascade owns final label positions). A chain segment whose name got
+// pushed OUTSIDE-RIGHT of its bar would sit under the NEXT segment's bar on
+// the same row (ME Concept hiding behind ME Design). Flip those to
+// OUTSIDE-LEFT — that side is open — and nudge past the alloc·dur meta text
+// if it also sits out there. The chain's LAST segment keeps outside-right
+// (nothing follows it).
+function fixChainLabels() {
+  const svg = document.querySelector('#gantt-container .gantt');
+  if (!svg) return;
+  if (!_chainMap || Object.keys(_chainMap).length === 0) return;
+  for (const headId of Object.keys(_chainMap)) {
+    const ids = _chainMap[headId] || [];
+    // Every member except the LAST has a next segment to its right.
+    for (const id of ids.slice(0, -1)) {
+      const wrap = svg.querySelector(`.bar-wrapper[data-id="${id}"]`);
+      if (!wrap) continue;
+      const label = wrap.querySelector('.bar-label');
+      const bar = wrap.querySelector('.bar');
+      if (!label || !bar) continue;
+      const barX = +bar.getAttribute('x') || 0;
+      const barW = +bar.getAttribute('width') || 0;
+      const labelX = +label.getAttribute('x') || 0;
+      const barY = +bar.getAttribute('y') || 0;
+      const barH = +bar.getAttribute('height') || 0;
+      const isOutsideRight = label.classList.contains('bar-label-outside')
+        || label.classList.contains('big')
+        || labelX >= barX + barW - 1;
+      if (!isOutsideRight) continue;
+      let labelW = 0;
+      try { labelW = label.getBBox().width; } catch (_) { labelW = String(label.textContent || '').length * 6.5; }
+      // Preferred: outside-LEFT (right-aligned against the bar), stepping
+      // past the alloc·dur meta if it's parked out there too.
+      let rightEdge = barX - 6;
+      const meta = wrap.querySelector('.sdc-bar-meta');
+      if (meta) {
+        try {
+          const mb = meta.getBBox();
+          if (mb.x < barX) rightEdge = Math.min(rightEdge, mb.x - 6);
+        } catch (_) {}
+      }
+      label.style.transform = '';
+      label.style.textAnchor = '';
+      label.style.display = '';
+      label.style.fontFamily = 'sans-serif';
+      label.setAttribute('paint-order', 'stroke');
+      label.setAttribute('stroke', 'rgba(255,255,255,0.9)');
+      label.setAttribute('stroke-width', '2.5');
+      label.setAttribute('stroke-linejoin', 'round');
+      label.setAttribute('y', String(barY + barH / 2));
+      label.setAttribute('dominant-baseline', 'central');
+      // NOTE: text-anchor must be set as an inline STYLE — frappe-gantt's
+      // stylesheet forces `text-anchor: middle` via CSS, and CSS beats SVG
+      // presentation attributes. Attribute-only anchoring silently rendered
+      // the text centered (half under the next bar). Hard-won via live DOM
+      // inspection — do not "simplify" back to setAttribute.
+      if (rightEdge - labelW > 2) {
+        // Room on the left — pop out there.
+        label.style.textAnchor = 'end';
+        label.setAttribute('text-anchor', 'end');
+        label.setAttribute('x', String(rightEdge));
+        label.classList.add('bar-label-outside');
+      } else {
+        // No room on the left (bar at the chart's left edge, or meta in the
+        // way) — anchor INSIDE at the bar's left edge and let the text
+        // overflow onto its own continuation segment. The white halo keeps
+        // it readable across the seam; it's all one joined line anyway.
+        label.style.textAnchor = 'start';
+        label.setAttribute('text-anchor', 'start');
+        label.setAttribute('x', String(barX + 4));
+        label.classList.remove('bar-label-outside');
+        label.setAttribute('fill', '#1f2937');
+      }
+    }
+  }
+}
+
 function drawBarMeta() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
@@ -4757,9 +4902,35 @@ function renderProjectStatsPopup() {
     });
   }
   const _quote = state.projectQuotes[project] || null;
-  const _soldW = _quote && Number.isFinite(Number(_quote.sold_delivery_weeks))
-    ? Number(_quote.sold_delivery_weeks)
-    : null;
+  const _allMachines = Array.from(new Set(tasks.filter(t => t.machine).map(t => t.machine)))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const _rel = _quote && _quote.project_release ? _quote.project_release : null;
+  // Quoted delivery + penalty for a machine (null = project / machine 1).
+  // Machine 1 lives in the release base fields / quote; M2+ under
+  // release.machines[M] — set in the Project Release panel's machine tabs.
+  const _termsFor = (m) => {
+    const isBase = !m || _allMachines.length < 2 || m === _allMachines[0];
+    let dw = null, hasPen = false, pw = null;
+    if (_rel) {
+      const sc = !isBase ? (_rel.machines && _rel.machines[m]) : _rel;
+      if (sc) {
+        if (sc.delivery_weeks != null) dw = Number(sc.delivery_weeks);
+        hasPen = !!sc.penalty;
+        if (sc.penalty_weeks != null) pw = Number(sc.penalty_weeks);
+      }
+    }
+    if (isBase) {
+      if (dw == null && _quote && Number.isFinite(Number(_quote.sold_delivery_weeks))) dw = Number(_quote.sold_delivery_weeks);
+      if (!hasPen && _quote && _quote.has_penalty_clause) { hasPen = true; pw = Number(_quote.penalty_clause_weeks); }
+    }
+    return {
+      soldW: (Number.isFinite(dw) && dw > 0) ? Math.round(dw * 2) / 2 : null,
+      penW:  (hasPen && Number.isFinite(pw) && pw > 0) ? pw : null,
+    };
+  };
+  // Viewing one machine → that machine's sold delivery + penalty drive the box.
+  const _activeTerms = _termsFor(activeMachine);
+  const _soldW = _activeTerms.soldW;
   let durationLabel = '—';
   if (po && fat && po.start_date && fat.start_date) {
     const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
@@ -4915,19 +5086,17 @@ function renderProjectStatsPopup() {
   // weeks. Single value (no Q/S split since this is just a calendar
   // event derived from the contract).
   let penaltyRow = '';
-  if (_quote && _quote.has_penalty_clause && _quote.penalty_clause_weeks != null && po && po.start_date) {
-    const wks = Number(_quote.penalty_clause_weeks);
-    if (Number.isFinite(wks) && wks > 0) {
-      const d = new Date(po.start_date + 'T00:00:00');
-      d.setDate(d.getDate() + Math.round(wks * 7));
-      const dateStr = fmtDate(d.toISOString().slice(0, 10));
-      const isPast = fat?.start_date && fat.start_date > d.toISOString().slice(0, 10);
-      penaltyRow = `
-        <div class="popup-row">
-          <span class="popup-label">Penalty</span>
-          <span class="popup-value" title="Penalty clause start date — PO + ${wks} weeks. Set on Quote vs Schedule → 'Has penalty clause'.">${escapeHtml(dateStr)}${isPast ? ' <span class="popup-fat-var stat-late">past</span>' : ''}</span>
-        </div>`;
-    }
+  if (_activeTerms.penW != null && po && po.start_date) {
+    const wks = _activeTerms.penW;
+    const d = new Date(po.start_date + 'T00:00:00');
+    d.setDate(d.getDate() + Math.round(wks * 7));
+    const dateStr = fmtDate(d.toISOString().slice(0, 10));
+    const isPast = fat?.start_date && fat.start_date > d.toISOString().slice(0, 10);
+    penaltyRow = `
+      <div class="popup-row">
+        <span class="popup-label">Penalty</span>
+        <span class="popup-value" title="Penalty clause start date — PO + ${wks} weeks${activeMachine ? ' (' + escapeHtml(activeMachine) + ')' : ''}. Set on the Project Release.">${escapeHtml(dateStr)}${isPast ? ' <span class="popup-fat-var stat-late">past</span>' : ''}</span>
+      </div>`;
   }
   // Column header — appears at the top of the popup so the user knows
   // which side is Quoted vs Scheduled. Skipped when no row has a
@@ -4955,6 +5124,62 @@ function renderProjectStatsPopup() {
     ? 'Collapse — show only the live schedule numbers.'
     : 'Expand — show Quoted vs Scheduled comparison + penalty clause.';
 
+  // ALL-machines view on a multi-machine project: STACK a mini-block per
+  // machine — Duration / FAT / Penalty each scoped to that machine and its
+  // own release terms (delivery + penalty live per machine now). The box
+  // gets taller; that's the point ("if it's both, it should be both").
+  const stackAll = hasMultiMachine && !activeMachine;
+  const machineBlocksHtml = (advanced) => _allMachines.map(m => {
+    const mStats = computeProjectStats(project, m);
+    const mFat = mStats.fat || null;
+    const terms = _termsFor(m);
+    let schedWm = null;
+    if (po && mFat && po.start_date && mFat.start_date) {
+      const days = Math.round((new Date(mFat.start_date + 'T00:00:00') - new Date(po.start_date + 'T00:00:00')) / 86400000);
+      schedWm = Math.max(0, _toHalfWeek(days));
+    }
+    const schedFatM = mFat?.start_date ? fmtDate(mFat.start_date) : '—';
+    let varChip = '';
+    if (mStats.fatVariance != null) {
+      const wks = Math.round((mStats.fatVariance / 5) * 2) / 2;
+      varChip = wks === 0 ? '<span class="popup-fat-var stat-ok">0W</span>'
+        : wks > 0 ? `<span class="popup-fat-var stat-late">+${wks}W</span>`
+        : `<span class="popup-fat-var stat-early">${wks}W</span>`;
+    }
+    let durVal, fatVal, penRow = '';
+    if (advanced) {
+      durVal = schedWm == null ? '—'
+        : terms.soldW != null
+          ? `<span class="popup-vs"><span class="popup-vs-q">${terms.soldW}W</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${schedWm}W</span></span>`
+          : `${schedWm}W`;
+      let qFat = null;
+      if (po && po.start_date && terms.soldW != null) {
+        const t = new Date(po.start_date + 'T00:00:00');
+        t.setDate(t.getDate() + Math.round(terms.soldW * 7));
+        qFat = fmtDate(t.toISOString().slice(0, 10));
+      }
+      fatVal = qFat
+        ? `<span class="popup-vs"><span class="popup-vs-q">${escapeHtml(qFat)}</span> <span class="popup-vs-sep">/</span> <span class="popup-vs-s">${escapeHtml(schedFatM)}</span></span>`
+        : schedFatM;
+      if (terms.penW != null && po && po.start_date) {
+        const d = new Date(po.start_date + 'T00:00:00');
+        d.setDate(d.getDate() + Math.round(terms.penW * 7));
+        const iso = d.toISOString().slice(0, 10);
+        const past = mFat?.start_date && mFat.start_date > iso;
+        penRow = `<div class="popup-row"><span class="popup-label">Penalty</span><span class="popup-value" title="${escapeHtml(m)} penalty start — PO + ${terms.penW} weeks.">${escapeHtml(fmtDate(iso))}${past ? ' <span class="popup-fat-var stat-late">past</span>' : ''}</span></div>`;
+      }
+    } else {
+      durVal = schedWm == null ? '—' : `${schedWm}W`;
+      fatVal = schedFatM;
+    }
+    const c = getMachineColor(project, m);
+    return `
+      <div class="popup-mach-head" style="background:${c.hex};color:${c.text};">${escapeHtml(m)}</div>
+      <div class="popup-row"><span class="popup-label">Duration</span><span class="popup-value">${durVal}</span></div>
+      <div class="popup-row"><span class="popup-label">FAT</span><span class="popup-value">${fatVal}${varChip}</span></div>
+      ${penRow}`;
+  }).join('');
+
   if (popupMode === 'simple') {
     // Simple = just the scheduled values, single column per row.
     const schedDur = (() => {
@@ -4970,6 +5195,7 @@ function renderProjectStatsPopup() {
     popup.innerHTML = `
       <button type="button" class="popup-mode-toggle" data-action="popup-toggle" title="${escapeHtml(toggleTitle)}">${escapeHtml(toggleLabel)}</button>
       ${scopeHeader}
+      ${stackAll ? simpleCompleteRow + machineBlocksHtml(false) : `
       <div class="popup-row">
         <span class="popup-label">Duration</span>
         <span class="popup-value">${schedDur}${machineDeltaChip}</span>
@@ -4978,13 +5204,14 @@ function renderProjectStatsPopup() {
       <div class="popup-row">
         <span class="popup-label">FAT</span>
         <span class="popup-value">${schedFatStr}${fatVarChip}</span>
-      </div>
+      </div>`}
     `;
   } else {
     popup.innerHTML = `
       <button type="button" class="popup-mode-toggle" data-action="popup-toggle" title="${escapeHtml(toggleTitle)}">${escapeHtml(toggleLabel)}</button>
       ${scopeHeader}
       ${colHeader}
+      ${stackAll ? completeRow + machineBlocksHtml(true) : `
       <div class="popup-row">
         <span class="popup-label">Duration</span>
         <span class="popup-value" title="Sold delivery (left, muted) / Current scheduled PO→FAT span (right, bold). Half-week steps.">${durationLabel}${machineDeltaChip}</span>
@@ -4996,7 +5223,7 @@ function renderProjectStatsPopup() {
           ${fatDateLabel}${fatVarChip}
         </span>
       </div>
-      ${penaltyRow}
+      ${penaltyRow}`}
     `;
   }
   // Wire the toggle button — flips mode + re-renders so the new
@@ -5255,95 +5482,108 @@ function drawPenaltyClauseLine() {
       return;
     }
     const quote = state.projectQuotes[project];
-    if (!quote || !quote.has_penalty_clause) return;
-    const wks = Number(quote.penalty_clause_weeks);
-    if (!Number.isFinite(wks) || wks <= 0) return;
-    // PO start anchors the date math (penalty = PO + N weeks). FAT
-    // bar anchors the VERTICAL extent (~2 rows above to 2 below).
+    const rel = quote && quote.project_release ? quote.project_release : null;
     const tasks = state.tasks.filter(t => t.project === project);
     const po = tasks.find(t => inferredAnchorKey(t) === 'receipt_of_po');
-    const fat = tasks.find(t => inferredAnchorKey(t) === 'fat');
     if (!po || !po.start_date) return;
-    const penaltyDateObj = new Date(po.start_date + 'T00:00:00');
-    penaltyDateObj.setDate(penaltyDateObj.getDate() + Math.round(wks * 7));
-    const penaltyISO = penaltyDateObj.toISOString().slice(0, 10);
+    // ONE line per machine that has a penalty clause (M2's terms live under
+    // release.machines[M2]; machine 1 / single-machine = the base fields).
+    // Only machines currently shown (machine-subset filter) get their line.
+    const allMachines = Array.from(new Set(tasks.filter(t => t.machine).map(t => t.machine)))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const multi = allMachines.length >= 2;
+    const subset = state.filters.machinesSubset || [];
+    const shown = (m) => !m || subset.length === 0 || subset.includes(m);
+    const penFor = (m) => {
+      const isBase = !m || !multi || m === allMachines[0];
+      let hasPen = false, pw = null;
+      if (rel) {
+        const sc = !isBase ? (rel.machines && rel.machines[m]) : rel;
+        if (sc) { hasPen = !!sc.penalty; pw = sc.penalty_weeks != null ? Number(sc.penalty_weeks) : null; }
+      }
+      if (isBase && !hasPen && quote && quote.has_penalty_clause) { hasPen = true; pw = Number(quote.penalty_clause_weeks); }
+      return (hasPen && Number.isFinite(pw) && pw > 0) ? pw : null;
+    };
     const g = state.gantt;
     const cw = g.options.column_width;
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
-    // Work-day positioning so the line lands on the same column as
-    // a task ending on that date (matches compressGanttToWorkDays).
-    const x = workDayOffset(penaltyISO, g.gantt_start) * pxPerDay;
-    if (x < 0) return;
-    // Find the FAT bar's y to anchor the line. If FAT isn't rendered
-    // (filtered out), fall back to mid-chart.
     const svgH = +svg.getAttribute('height') || svg.viewBox?.baseVal?.height || 600;
-    let fatY = svgH / 2;
-    let rowH = 28;
-    if (fat) {
-      const wrap = svg.querySelector(`.bar-wrapper[data-id="${fat.id}"]`);
-      const bar = wrap && wrap.querySelector('.bar');
-      if (bar) {
-        fatY = +bar.getAttribute('y');
-        rowH = +bar.getAttribute('height') || rowH;
-      }
-    }
-    // Span: 2 rows ABOVE FAT to 2 rows BELOW — short enough not to
-    // dominate the chart, long enough to read as "this matters
-    // around delivery". Each row is roughly rowH + a few px padding.
-    const ROW_STRIDE = rowH + 8;
-    const yTop = Math.max(40, fatY - 2 * ROW_STRIDE);
-    const yBottom = fatY + 3 * ROW_STRIDE;
 
-    const layer = document.createElementNS(SVG_NS, 'g');
-    layer.setAttribute('class', 'sdc-penalty-line');
-    layer.style.pointerEvents = 'none';
-    svg.appendChild(layer);
-    // Vertical red line.
-    const line = document.createElementNS(SVG_NS, 'line');
-    line.setAttribute('x1', x);
-    line.setAttribute('x2', x);
-    line.setAttribute('y1', yTop);
-    line.setAttribute('y2', yBottom);
-    line.setAttribute('stroke', '#dc2626');
-    line.setAttribute('stroke-width', '2.2');
-    layer.appendChild(line);
-    // Label — "Penalty starts" + date. Positioned to the RIGHT of
-    // the line and vertically centered between the line's top and
-    // bottom so it doesn't sit ON TOP of any task bar (centering it
-    // above the line was overlapping with bars in busy areas like
-    // Test/Debug rows).
-    const labelText = `Penalty starts ${fmtDate(penaltyISO)}`;
-    const padX = 6;
-    const approxCharW = 6.2;
-    const labelW = labelText.length * approxCharW + padX * 2;
-    const labelH = 16;
-    const rectX = x + 6;
-    const rectY = ((yTop + yBottom) / 2) - (labelH / 2);
-    const rect = document.createElementNS(SVG_NS, 'rect');
-    rect.setAttribute('x', rectX);
-    rect.setAttribute('y', rectY);
-    rect.setAttribute('width', labelW);
-    rect.setAttribute('height', labelH);
-    rect.setAttribute('rx', '3');
-    rect.setAttribute('fill', '#fff');
-    rect.setAttribute('stroke', '#dc2626');
-    rect.setAttribute('stroke-width', '1.4');
-    layer.appendChild(rect);
-    const text = document.createElementNS(SVG_NS, 'text');
-    // Anchor text to the LEFT edge of the pill (since the pill sits
-    // to the right of the line now, not centered above it).
-    text.setAttribute('x', rectX + labelW / 2);
-    text.setAttribute('y', rectY + labelH / 2 + 1);
-    text.setAttribute('text-anchor', 'middle');
-    text.setAttribute('dominant-baseline', 'central');
-    text.setAttribute('fill', '#b91c1c');
-    text.style.fontFamily = "'Montserrat', sans-serif";
-    text.style.fontSize = '11px';
-    text.style.fontWeight = '700';
-    text.textContent = labelText;
-    layer.appendChild(text);
+    for (const m of (multi ? allMachines : [null])) {
+      if (!shown(m)) continue;
+      const wks = penFor(m);
+      if (wks == null) continue;
+      const penaltyDateObj = new Date(po.start_date + 'T00:00:00');
+      penaltyDateObj.setDate(penaltyDateObj.getDate() + Math.round(wks * 7));
+      const penaltyISO = penaltyDateObj.toISOString().slice(0, 10);
+      // Work-day positioning so the line lands on the same column as
+      // a task ending on that date (matches compressGanttToWorkDays).
+      const x = workDayOffset(penaltyISO, g.gantt_start) * pxPerDay;
+      if (x < 0) continue;
+      // THIS machine's FAT bar anchors the vertical extent (~2 rows above
+      // to 2 below). Falls back to mid-chart when FAT isn't rendered.
+      const fat = tasks.find(t => inferredAnchorKey(t) === 'fat' && (!m || t.machine === m))
+               || tasks.find(t => inferredAnchorKey(t) === 'fat');
+      let fatY = svgH / 2;
+      let rowH = 28;
+      if (fat) {
+        const wrap = svg.querySelector(`.bar-wrapper[data-id="${fat.id}"]`);
+        const bar = wrap && wrap.querySelector('.bar');
+        if (bar) {
+          fatY = +bar.getAttribute('y');
+          rowH = +bar.getAttribute('height') || rowH;
+        }
+      }
+      const ROW_STRIDE = rowH + 8;
+      const yTop = Math.max(40, fatY - 2 * ROW_STRIDE);
+      const yBottom = fatY + 3 * ROW_STRIDE;
+
+      const layer = document.createElementNS(SVG_NS, 'g');
+      layer.setAttribute('class', 'sdc-penalty-line');
+      layer.style.pointerEvents = 'none';
+      svg.appendChild(layer);
+      // Vertical red line.
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', x);
+      line.setAttribute('x2', x);
+      line.setAttribute('y1', yTop);
+      line.setAttribute('y2', yBottom);
+      line.setAttribute('stroke', '#dc2626');
+      line.setAttribute('stroke-width', '2.2');
+      layer.appendChild(line);
+      // Label — "[M2 · ] Penalty starts <date>" to the RIGHT of the line,
+      // vertically centered so it doesn't sit on top of busy bar rows.
+      const labelText = `${multi && m ? m + ' · ' : ''}Penalty starts ${fmtDate(penaltyISO)}`;
+      const padX = 6;
+      const approxCharW = 6.2;
+      const labelW = labelText.length * approxCharW + padX * 2;
+      const labelH = 16;
+      const rectX = x + 6;
+      const rectY = ((yTop + yBottom) / 2) - (labelH / 2);
+      const rect = document.createElementNS(SVG_NS, 'rect');
+      rect.setAttribute('x', rectX);
+      rect.setAttribute('y', rectY);
+      rect.setAttribute('width', labelW);
+      rect.setAttribute('height', labelH);
+      rect.setAttribute('rx', '3');
+      rect.setAttribute('fill', '#fff');
+      rect.setAttribute('stroke', '#dc2626');
+      rect.setAttribute('stroke-width', '1.4');
+      layer.appendChild(rect);
+      const text = document.createElementNS(SVG_NS, 'text');
+      text.setAttribute('x', rectX + labelW / 2);
+      text.setAttribute('y', rectY + labelH / 2 + 1);
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('dominant-baseline', 'central');
+      text.setAttribute('fill', '#b91c1c');
+      text.style.fontFamily = "'Montserrat', sans-serif";
+      text.style.fontSize = '11px';
+      text.style.fontWeight = '700';
+      text.textContent = labelText;
+      layer.appendChild(text);
+    }
   } catch (_) { /* swallow — render chain must continue */ }
 }
 
@@ -5679,7 +5919,12 @@ function alignGanttToGrid() {
   const rowH = state.layout.rowHeight;
   ganttSvg.querySelectorAll('.bar-wrapper[data-id]').forEach(wrap => {
     const id = wrap.getAttribute('data-id');
-    const targetTop = gridYs[id];
+    let targetTop = gridYs[id];
+    // Chain continuations have no grid row of their own — their bar lands on
+    // the chain HEAD's row, so the pair reads as one continuous bar.
+    if (targetTop === undefined && _chainTailToHead[Number(id)] != null) {
+      targetTop = gridYs[_chainTailToHead[Number(id)]];
+    }
     if (targetTop === undefined) return;
     const bar = wrap.querySelector('.bar');
     if (!bar) return;
@@ -5690,6 +5935,10 @@ function alignGanttToGrid() {
     if (Math.abs(dy) < 0.5) return;
     shiftElementY(wrap, dy);
   });
+
+  // (Joined-line label rescue lives in fixChainLabels(), which runs AFTER
+  // clipBarLabels/drawBarMeta — the label cascade owns final positions, so
+  // fixing them here was too early and got overridden.)
 
   // Clear any old custom stripes — keep the gantt background plain white.
   const oldStripes = ganttSvg.querySelector('.sdc-row-stripes');
@@ -12698,6 +12947,13 @@ function renderProjectTabs() {
   // 📄 Project Release toolbar button — disabled when there's no active project
   // tab (the release is per-project). Tooltip explains.
   const quoteBtn = document.getElementById('btn-toolbar-quote');
+  const commBtn = document.getElementById('btn-toolbar-commplan');
+  if (commBtn) {
+    commBtn.disabled = !state.filters.project;
+    commBtn.title = !state.filters.project
+      ? 'Pick a project tab first — the Communication Plan is per-project.'
+      : `Communication Plan for ${state.filters.project} — SDC + customer contacts, meeting cadence, escalation path.`;
+  }
   if (quoteBtn) {
     const onAllProjects = !state.filters.project;
     quoteBtn.disabled = onAllProjects;
@@ -12816,6 +13072,20 @@ function wireMachineSubTabButtons() {
         },
       });
       items.push({ separator: true });
+      // Add MORE lines to a machine that already exists — same grid-select
+      // flow as building the machine, minus the naming (Dan: closed section
+      // 50 during the original clone → couldn't pick its lines; this is the
+      // catch-up path).
+      items.push({
+        label: `＋ Add lines to ${m} from the schedule…`,
+        onClick: () => {
+          const others = Array.from(new Set(
+            (state.tasks || []).filter(t => t.project === project && t.machine && t.machine !== m).map(t => t.machine)
+          )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+          enterMachineCloneMode(others[0] || 'M1', m, { addToExisting: true });
+        },
+      });
+      items.push({ separator: true });
       items.push({
         label: `Delete machine ${m} (all its tasks)`,
         danger: true,
@@ -12918,15 +13188,18 @@ async function openAddMachineDialog() {
   enterMachineCloneMode(source, target);
 }
 
-function enterMachineCloneMode(sourceMachine, targetName) {
+function enterMachineCloneMode(sourceMachine, targetName, opts = {}) {
   // Start with NOTHING selected. The user clicks each row they want to
   // duplicate into the new machine — typically just the build/wire/test
   // work specific to a second physical machine, not the shared PO /
   // design / mech-release rows. Double-click a selected row to set a
   // custom predecessor (e.g. "wait for M1's Build to finish first").
+  // opts.addToExisting: target machine already exists — we're cloning MORE
+  // lines into it (name is fixed; server skips its already-exists guard).
   state.cloneMode = {
     sourceMachine,
     targetName,
+    addToExisting: !!opts.addToExisting,
     includeIds: new Set(),
     customPredecessors: new Map(),
   };
@@ -12945,11 +13218,81 @@ function exitMachineCloneMode() {
   render();
 }
 
+// ── Join-pick mode ── grid-select flavor of the person-transition join:
+// rows gray out, the user clicks the line to join onto the head row. Same
+// interaction language as the machine-clone selector; section headers stay
+// live so collapsed sections can be opened mid-pick.
+function enterJoinPickMode(headTask) {
+  state.joinPick = { headId: headTask.id, headName: headTask.name || 'task' };
+  document.body.classList.add('join-pick-mode');
+  render();
+  renderJoinPickBanner();
+}
+function exitJoinPickMode() {
+  state.joinPick = null;
+  document.body.classList.remove('join-pick-mode');
+  render();
+}
+function renderJoinPickBanner() {
+  const el = document.getElementById('machine-clone-banner');
+  if (!el || !state.joinPick) return;
+  el.hidden = false;
+  el.innerHTML = `
+    <span class="mcb-label">⛓ Joining onto <strong>${escapeHtml(state.joinPick.headName)}</strong>:</span>
+    <span class="mcb-hint">Click the line to join — it moves below this one and both share ONE person. Sections still open/close.</span>
+    <button type="button" class="mcb-btn" id="jp-cancel">Cancel</button>`;
+  el.querySelector('#jp-cancel').addEventListener('click', () => exitJoinPickMode());
+}
+function handleJoinPickClick(e) {
+  const jp = state.joinPick;
+  if (!jp) return false;
+  if (e.target.closest('tr.group-header')) return false;   // collapse/expand stays live
+  e.preventDefault();
+  e.stopPropagation();
+  if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return true;
+  const pick = state.tasks.find(x => x.id === Number(tr.dataset.id));
+  const head = state.tasks.find(x => x.id === jp.headId);
+  if (!pick || !head || pick.id === head.id) return true;
+  if (pick.is_milestone || inferredAnchorKey(pick) || pick.is_action || pick.join_prev
+      || pick.project !== head.project || (pick.machine || '') !== (head.machine || '')) {
+    showToast('That line can\'t be joined — pick a regular task on the same machine.', { kind: 'info' });
+    return true;
+  }
+  (async () => {
+    // One resource for the joined line: the HEAD row's assignee wins
+    // (placeholders included); the picked task takes it too.
+    const who = head.assignee || pick.assignee || null;
+    try {
+      await api.update(pick.id, {
+        join_prev: 1,
+        assignee: who,
+        // Land directly below the head — the join renders as its
+        // continuation, so it must follow it in sort order + section.
+        sort_order: (head.sort_order || 0) + 0.5,
+        phase_group: head.phase_group || null,
+        department: head.department || null,
+        sub_department: head.sub_department || null,
+      });
+      if ((head.assignee || null) !== who) await api.update(head.id, { assignee: who });
+      showToast(`Joined "${pick.name}" onto "${head.name}" — one line, one person.`);
+    } catch (err) { showToast(err.message || 'Join failed', { kind: 'error' }); }
+    exitJoinPickMode();
+    await loadTasks();
+  })();
+  return true;
+}
+
 function renderMachineCloneBanner() {
   const el = document.getElementById('machine-clone-banner');
   if (!el) return;
   const cm = state.cloneMode;
-  if (!cm) { el.hidden = true; el.innerHTML = ''; return; }
+  if (!cm) {
+    // The banner element is shared with join-pick mode — keep its banner up.
+    if (state.joinPick) { renderJoinPickBanner(); return; }
+    el.hidden = true; el.innerHTML = ''; return;
+  }
   const includeCount = cm.includeIds.size;
   const predCount    = cm.customPredecessors.size;
   // Every machine already on the project is a valid clone source — M4 might
@@ -12963,7 +13306,14 @@ function renderMachineCloneBanner() {
     .map(m => `<option value="${escapeHtml(m)}"${m === cm.sourceMachine ? ' selected' : ''}>${escapeHtml(m)}</option>`)
     .join('');
   el.hidden = false;
-  el.innerHTML = `
+  el.innerHTML = cm.addToExisting ? `
+    <span class="mcb-label">Adding lines to <strong>${escapeHtml(cm.targetName)}</strong>, cloning from
+      <select id="mcb-source" title="Which existing machine to copy rows from">${sourceOptions}</select>:</span>
+    <span class="mcb-hint">Click each row to add · double-click for a custom predecessor · sections still open/close</span>
+    <span class="mcb-status">${includeCount} selected${predCount ? ` · ${predCount} custom pred` : ''}</span>
+    <button type="button" class="mcb-btn" id="mcb-cancel">Cancel</button>
+    <button type="button" class="mcb-btn mcb-btn-confirm" id="mcb-confirm">Add lines</button>
+  ` : `
     <span class="mcb-label">New machine cloning from
       <select id="mcb-source" title="Which existing machine to copy rows from">${sourceOptions}</select>:</span>
     <label class="mcb-name-wrap">
@@ -12975,7 +13325,7 @@ function renderMachineCloneBanner() {
     <button type="button" class="mcb-btn" id="mcb-cancel">Cancel</button>
     <button type="button" class="mcb-btn mcb-btn-confirm" id="mcb-confirm">Complete</button>
   `;
-  el.querySelector('#mcb-name').addEventListener('input', (e) => {
+  el.querySelector('#mcb-name')?.addEventListener('input', (e) => {
     cm.targetName = e.target.value;
   });
   el.querySelector('#mcb-source').addEventListener('change', (e) => {
@@ -13019,6 +13369,7 @@ async function confirmMachineClone() {
         targetMachine: finalName,
         includeTaskIds: Array.from(cm.includeIds),
         customPredecessors: customPredsObj,
+        addToExisting: !!cm.addToExisting,
       }),
     });
     // Always read the body so we can show the server's actual message
@@ -13703,6 +14054,7 @@ async function duplicateProject(source, targetName = null) {
       priority: 1,
       notes: t.notes || null,
       anchor_key: t.anchor_key || null,
+      join_prev: t.join_prev ? 1 : 0,   // person-transition joins carry into clones/templates
     };
     try {
       const created = await api.create(payload);
@@ -17067,8 +17419,39 @@ function handleRowContextMenu(e) {
     { label: '＋ Add task below', onClick: () => createTaskBelow(id) },
     { label: '＋ Add action below', onClick: () => createTaskBelow(id, true) },
   ];
+  // Person-transition joins — show two back-to-back tasks as ONE line with
+  // ONE person. Explicit via right-click; split undoes it.
+  if (task && !task.is_milestone && !inferredAnchorKey(task) && !task.is_action) {
+    if (_chainMap[id] && (_chainMap[id] || []).length > 1) {
+      items.push({ label: '⛓ Split into separate lines', onClick: async () => {
+        for (const tid of _chainMap[id].slice(1)) {
+          try { await api.update(tid, { join_prev: 0 }); } catch (_) {}
+        }
+        await loadTasks();
+      }});
+    } else {
+      // Pick the other line ON THE GRID (same select-a-row feel as building
+      // another machine) — rows gray out, click the one to join.
+      items.push({ label: '⛓ Join with another line…', onClick: () => enterJoinPickMode(task) });
+    }
+  }
   if (task && !(task.is_milestone || inferredAnchorKey(task))) {
     items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
+  }
+  // Key-milestone promotion — any MILESTONE row can become a key milestone
+  // (green chip + anchor diamond, same format as PO / Mech 1 / FAT). Custom
+  // keys are per-row ('custom_<id>') so they never collide with the built-in
+  // spine anchors; demote via the same menu.
+  if (task && task.is_milestone && !inferredAnchorKey(task)) {
+    items.push({ label: '⭐ Make key milestone', onClick: async () => {
+      try { await api.update(id, { anchor_key: 'custom_' + id }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
+      await loadTasks();
+    }});
+  } else if (task && String(task.anchor_key || '').startsWith('custom_')) {
+    items.push({ label: '⭐ Remove key-milestone status', onClick: async () => {
+      try { await api.update(id, { anchor_key: null }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
+      await loadTasks();
+    }});
   }
   items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
   // Copy to another machine — for filling in rows the user missed during
@@ -18098,9 +18481,25 @@ async function saveProjectRelease(project, release) {
   try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`); if (r.ok) quote = (await r.json()) || {}; } catch (_) {}
   quote = quote || {};
   quote.project_release = release;
+  // LIVE-apply delivery + penalty to the quote. These used to apply only on
+  // "Accept & apply" — so filling them in the panel left the stats box's
+  // QUOTED duration and the Gantt's penalty line blank, which read as broken
+  // (Dan). Accept still owns the schedule shift (moving tasks to the PO date).
+  if (release) {
+    if (release.delivery_weeks != null) quote.sold_delivery_weeks = release.delivery_weeks;
+    quote.has_penalty_clause = release.penalty ? 1 : 0;
+    if (release.penalty_weeks != null) quote.penalty_clause_weeks = release.penalty_weeks;
+  }
   await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(quote),
   });
+  // Drop cached quote reads so the stats box + penalty line pick up the new
+  // values on the next render — and repaint now if this project is on screen.
+  try { if (state.projectQuotes) delete state.projectQuotes[project]; } catch (_) {}
+  try { if (state.quoteCache) delete state.quoteCache[project]; } catch (_) {}
+  if ((state.filters.project || '') === project && state.view === 'schedule') {
+    try { renderGantt(); } catch (_) {}
+  }
 }
 
 // The Project Release panel — replaces the old Quote vs Schedule modal. Simple:
@@ -18279,12 +18678,17 @@ async function applyProjectRelease(project, rel) {
 // from openFinancialsModal so it can live inline in the Project Release panel).
 // Same columns + live-save behavior: %, Description, Trigger (predecessor),
 // Date, Sent. Right-click a row to add/delete; "+ Add milestone" appends.
-async function mountFinancialsEditor(container, project) {
+// Optional `machine` (e.g. 'M1'/'M2') filters to that machine's rows and tags
+// new rows with it — per-machine payment terms on multi-machine projects.
+// Rows with no machine value count as M1 (legacy single-machine data).
+async function mountFinancialsEditor(container, project, machine) {
   if (!container || !project) return;
+  const machineMatches = (r) => !machine || (r.machine || 'M1') === machine;
   const renderGrid = async (opts = {}) => {
     let rows;
     try { rows = state.financials[project] || await loadFinancialsForProject(project); }
     catch (e) { rows = []; }
+    rows = (rows || []).filter(machineMatches);
     if (state._financialsApiBroken) {
       container.innerHTML = `<div class="financials-error"><p><strong>Financial milestones aren't available yet.</strong></p><p>The server needs to be restarted to add the financial-milestones table + endpoints.</p></div>`;
       return;
@@ -18328,7 +18732,7 @@ async function mountFinancialsEditor(container, project) {
         e.preventDefault();
         showContextMenu(e.clientX, e.clientY, [
           { label: '+ Add milestone below', onClick: async () => {
-              await api.financials.create({ project, name: '' });
+              await api.financials.create({ project, name: '', machine: machine || null });
               await loadFinancialsForProject(project);
               await renderGrid({ focusLastNameInput: true });
               if (state.showFinancials) renderGantt();
@@ -18373,7 +18777,7 @@ async function mountFinancialsEditor(container, project) {
       if (btn.disabled) return;          // guard against a double-click adding two empty rows
       btn.disabled = true;
       try {
-        await api.financials.create({ project, name: '' });
+        await api.financials.create({ project, name: '', machine: machine || null });
         await loadFinancialsForProject(project);
         await renderGrid({ focusLastNameInput: true });
         if (state.showFinancials) renderGantt();
@@ -18385,6 +18789,29 @@ async function mountFinancialsEditor(container, project) {
     }
   };
   await renderGrid();
+}
+
+// Seed machine 2+'s financial milestones as a COPY of machine 1's set —
+// same descriptions + percentages, blank triggers/dates (the user rewires the
+// triggers to that machine's own tasks). Runs once per machine: skipped as
+// soon as the machine has any rows of its own.
+async function _seedMachineFinancials(project, machine, baseMachine) {
+  let rows = [];
+  try { rows = state.financials[project] || await loadFinancialsForProject(project); } catch (_) {}
+  rows = rows || [];
+  if (rows.some(r => (r.machine || baseMachine) === machine)) return;
+  const base = rows.filter(r => (r.machine || baseMachine) === baseMachine);
+  if (!base.length) return;
+  for (const r of base) {
+    try {
+      await api.financials.create({
+        project, name: r.name, percent: r.percent, amount: null,
+        due_date: null, paid: 0, predecessors: null, sync_to_anchor: null,
+        machine,
+      });
+    } catch (_) {}
+  }
+  try { await loadFinancialsForProject(project); } catch (_) {}
 }
 
 // Seed a project's financial milestones FROM the release's parsed milestones —
@@ -18438,6 +18865,220 @@ function _hoursBreakdownToBudget(hb) {
   };
 }
 
+// ── Communication Plan ──────────────────────────────────────────────────────
+// Per-project who's-who + meeting cadence + escalation path, based on the
+// standard PM communication-plan template: a stakeholder directory for both
+// sides (role / name / email / phone), the recurring communications (what,
+// how often, format, who leads, who attends), and a 3-level escalation
+// ladder. Stored in the project quote blob (quote.comm_plan) — same
+// editor-level endpoint the Project Release uses, saves live as you type.
+function _commPlanDefaults(project) {
+  return {
+    sdc: [
+      { role: 'Project Manager',         name: projectLead(project, 'pm') || '', email: '', phone: '' },
+      { role: 'Engineering Lead',        name: '', email: '', phone: '' },
+      { role: 'Technician Lead',         name: '', email: '', phone: '' },
+      { role: 'Debug Lead',              name: projectLead(project, 'debug') || '', email: '', phone: '' },
+      { role: 'Sales / Account Manager', name: '', email: '', phone: '' },
+    ],
+    customer: [
+      { role: 'Project Manager',          name: '', email: '', phone: '' },
+      { role: 'Engineering Contact',      name: '', email: '', phone: '' },
+      { role: 'Purchasing',               name: '', email: '', phone: '' },
+      { role: 'Plant / Facility Contact', name: '', email: '', phone: '' },
+    ],
+    cadence: [
+      { name: 'Project Kickoff',        frequency: 'Once — after PO',      when: '',              format: 'Teams / on-site', owner: 'SDC PM',          audience: 'Both project teams' },
+      { name: 'Status Update',          frequency: 'Weekly',               when: '',              format: 'Email + Teams',   owner: 'SDC PM',          audience: 'Customer PM + stakeholders' },
+      { name: 'Design Review',          frequency: 'At design milestones', when: '',              format: 'Teams',           owner: 'SDC Engineering', audience: 'Customer engineering' },
+      { name: 'FAT',                    frequency: 'At FAT date',          when: '',              format: 'On-site at SDC',  owner: 'SDC PM',          audience: 'Customer team' },
+      { name: 'Issue (happening now)',  frequency: 'Same day',             when: 'As it happens', format: 'Phone, then email', owner: 'Whoever finds it', audience: 'Both PMs — escalate below' },
+      { name: 'Risk (could happen)',    frequency: 'Raised at status update', when: '',           format: 'Status update + risk list', owner: 'SDC PM', audience: 'Both project teams' },
+    ],
+    escalation: [
+      { level: '1', sdc: 'Project Manager',     customer: 'Project Manager',            when: 'Day-to-day issues, schedule questions' },
+      { level: '2', sdc: 'Engineering Manager', customer: 'Engineering Manager',        when: 'Unresolved after 3 business days, scope changes' },
+      { level: '3', sdc: 'SDC Ownership',       customer: 'Plant / Program Management', when: 'Commercial disputes, major schedule slips' },
+    ],
+    notes: '',
+  };
+}
+
+async function openCommPlanModal(project) {
+  if (!project) { await showAlertDialog('Pick a project tab first.'); return; }
+  document.getElementById('comm-plan-modal')?.remove();
+
+  let quote = {};
+  try {
+    const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+    if (r.ok) quote = (await r.json()) || {};
+  } catch (_) {}
+  quote = quote || {};
+  const plan = quote.comm_plan && typeof quote.comm_plan === 'object'
+    ? quote.comm_plan
+    : _commPlanDefaults(project);
+  // Older saved plans might miss a section — backfill so render never breaks.
+  const d = _commPlanDefaults(project);
+  for (const k of ['sdc', 'customer', 'cadence', 'escalation']) {
+    if (!Array.isArray(plan[k])) plan[k] = d[k];
+  }
+  if (typeof plan.notes !== 'string') plan.notes = '';
+
+  const overlay = document.createElement('div');
+  overlay.id = 'comm-plan-modal';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  const close = () => overlay.remove();
+
+  const inp = (section, i, field, value, placeholder) =>
+    `<input type="text" data-cp="${section}.${i}.${field}" value="${escapeHtml(value || '')}" placeholder="${escapeHtml(placeholder || '')}" autocomplete="off">`;
+  const delBtn = (section, i) =>
+    `<button type="button" class="cp-del" data-cp-del="${section}.${i}" title="Remove this row">×</button>`;
+
+  const peopleTable = (section, title, cls) => `
+    <div class="cp-people-col">
+      <div class="cp-table-title ${cls}">${escapeHtml(title)}</div>
+      <table class="cp-table">
+        <colgroup><col style="width:32%"><col style="width:26%"><col style="width:26%"><col style="width:12%"><col style="width:4%"></colgroup>
+        <thead><tr><th>Role</th><th>Name</th><th>Email</th><th>Phone</th><th></th></tr></thead>
+        <tbody>
+          ${plan[section].map((r, i) => `<tr>
+            <td>${inp(section, i, 'role', r.role, 'Role')}</td>
+            <td>${inp(section, i, 'name', r.name, 'Name')}</td>
+            <td>${inp(section, i, 'email', r.email, 'name@company.com')}</td>
+            <td>${inp(section, i, 'phone', r.phone, '')}</td>
+            <td>${delBtn(section, i)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="${section}">+ Add person</button>
+    </div>`;
+
+  const bodyHtml = () => `
+    <p class="pr-muted pr-edithint">Who's who on both sides, how this project communicates, and where issues escalate. <strong>Saves as you type</strong> — shared with everyone on this project.</p>
+    <div class="pr-field"><div class="pr-label">Project team directory</div>
+      <div class="cp-people">
+        ${peopleTable('sdc', 'SDC', 'cp-side-sdc')}
+        ${peopleTable('customer', 'Customer', 'cp-side-customer')}
+      </div>
+    </div>
+    <div class="pr-field"><div class="pr-label">Communication cadence <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— what happens, how often, and who runs it</span></div>
+      <table class="cp-table cp-cadence">
+        <colgroup><col style="width:18%"><col style="width:14%"><col style="width:15%"><col style="width:14%"><col style="width:15%"><col style="width:20%"><col style="width:4%"></colgroup>
+        <thead><tr><th>Communication</th><th>Frequency</th><th title="The standing slot — e.g. Tuesdays 9:00 AM ET">When</th><th>Format</th><th>Led by</th><th>Audience</th><th></th></tr></thead>
+        <tbody>
+          ${plan.cadence.map((r, i) => `<tr>
+            <td>${inp('cadence', i, 'name', r.name, 'Meeting / update')}</td>
+            <td>${inp('cadence', i, 'frequency', r.frequency, 'Weekly / biweekly')}</td>
+            <td>${inp('cadence', i, 'when', r.when, 'e.g. Tuesdays 9:00 AM')}</td>
+            <td>${inp('cadence', i, 'format', r.format, 'Teams / email')}</td>
+            <td>${inp('cadence', i, 'owner', r.owner, 'SDC PM')}</td>
+            <td>${inp('cadence', i, 'audience', r.audience, 'Who attends')}</td>
+            <td>${delBtn('cadence', i)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="cadence">+ Add communication</button>
+    </div>
+    <div class="pr-field"><div class="pr-label">Escalation path <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— issues climb one level at a time</span></div>
+      <table class="cp-table cp-escalation">
+        <colgroup><col style="width:8%"><col style="width:26%"><col style="width:26%"><col style="width:36%"><col style="width:4%"></colgroup>
+        <thead><tr><th>Level</th><th>SDC contact</th><th>Customer contact</th><th>When to escalate</th><th></th></tr></thead>
+        <tbody>
+          ${plan.escalation.map((r, i) => `<tr>
+            <td class="cp-level">${inp('escalation', i, 'level', r.level, String(i + 1))}</td>
+            <td>${inp('escalation', i, 'sdc', r.sdc, 'SDC role / name')}</td>
+            <td>${inp('escalation', i, 'customer', r.customer, 'Customer role / name')}</td>
+            <td>${inp('escalation', i, 'when', r.when, 'What triggers this level')}</td>
+            <td>${delBtn('escalation', i)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="escalation">+ Add level</button>
+    </div>
+    <div class="pr-field"><div class="pr-label">Notes</div>
+      <textarea class="cp-notes" data-cp-notes placeholder="Anything else the team should know — customer preferences, time zones, site rules…">${escapeHtml(plan.notes || '')}</textarea>
+    </div>
+    <div class="pr-foot">
+      <span class="pr-muted cp-save-status">Saves as you type</span>
+      <span class="pr-foot-spacer" style="flex:1 1 auto"></span>
+      <button type="button" class="btn-primary cp-close-btn">Done</button>
+    </div>`;
+
+  overlay.innerHTML = `
+    <div class="modal-card" style="max-width: min(1560px, 96vw); width: 96vw;">
+      <div class="modal-head">
+        <h2 style="margin:0;">📇 Communication Plan — ${escapeHtml(project)}</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body" id="cp-body">${bodyHtml()}</div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('.modal-close').addEventListener('click', close);
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+
+  // Read every input back into the plan object.
+  const readPlan = () => {
+    overlay.querySelectorAll('input[data-cp]').forEach(el => {
+      const [section, i, field] = el.dataset.cp.split('.');
+      if (plan[section] && plan[section][Number(i)]) plan[section][Number(i)][field] = el.value;
+    });
+    const notes = overlay.querySelector('[data-cp-notes]');
+    if (notes) plan.notes = notes.value;
+  };
+  let _cpSaveTimer = null;
+  const savePlan = () => {
+    readPlan();
+    clearTimeout(_cpSaveTimer);
+    const statusEl = overlay.querySelector('.cp-save-status');
+    if (statusEl) statusEl.textContent = 'Saving…';
+    _cpSaveTimer = setTimeout(async () => {
+      try {
+        let q = {};
+        const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
+        if (r.ok) q = (await r.json()) || {};
+        q = q || {};
+        q.comm_plan = plan;
+        await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q),
+        });
+        if (statusEl) statusEl.textContent = 'Saved ✓';
+      } catch (_) {
+        if (statusEl) statusEl.textContent = 'Could not save — check the connection.';
+      }
+    }, 600);
+  };
+  const wire = () => {
+    overlay.querySelectorAll('input[data-cp], [data-cp-notes]').forEach(el => {
+      el.addEventListener('input', savePlan);
+    });
+    overlay.querySelectorAll('[data-cp-add]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        readPlan();
+        const section = btn.dataset.cpAdd;
+        const blank = section === 'cadence' ? { name: '', frequency: '', when: '', format: '', owner: '', audience: '' }
+          : section === 'escalation' ? { level: String(plan.escalation.length + 1), sdc: '', customer: '', when: '' }
+          : { role: '', name: '', email: '', phone: '' };
+        plan[section].push(blank);
+        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
+        wire();
+        savePlan();
+      });
+    });
+    overlay.querySelectorAll('[data-cp-del]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        readPlan();
+        const [section, i] = btn.dataset.cpDel.split('.');
+        plan[section].splice(Number(i), 1);
+        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
+        wire();
+        savePlan();
+      });
+    });
+    overlay.querySelector('.cp-close-btn')?.addEventListener('click', close);
+  };
+  wire();
+}
+
 async function openProjectReleaseModal(project) {
   if (!project) { await showAlertDialog('Pick a project tab first.'); return; }
   document.getElementById('project-release-modal')?.remove();
@@ -18454,10 +19095,38 @@ async function openProjectReleaseModal(project) {
   overlay.className = 'modal-overlay app-dialog-overlay';
   const close = () => overlay.remove();
 
-  // Budget grid: seed from a saved budget, else derive from existing quoted hours.
-  const seedBudget = (rel) => (rel && rel.budget && Object.keys(rel.budget).length)
-    ? rel.budget
-    : _hoursBreakdownToBudget(quoteObj.hours_breakdown || {});
+  // ── Multi-machine releases ── every machine gets ITS OWN delivery, penalty,
+  // financial milestones, and budget (a duplicate machine almost always has
+  // different hours + payment terms). M1 lives in the release's base fields
+  // (so single-machine projects change nothing); M2+ live under
+  // release.machines[M] = { delivery_weeks, penalty, penalty_weeks, budget }.
+  // The machine pills above the fields switch which machine you're editing.
+  const machines = Array.from(new Set(
+    state.tasks.filter(t => t.project === project && t.machine).map(t => String(t.machine))
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const multiMachine = machines.length >= 2;
+  // Selected machine: a machine name, or '__all__' = every machine stacked
+  // (view/edit them all at once — "it's just longer"). null = single-machine.
+  let relMachine = multiMachine ? machines[0] : null;
+  // Which machines get a fields/milestones/budget BLOCK in the body.
+  const blockMachines = () => !multiMachine ? [null]
+    : (relMachine === '__all__' ? machines : [relMachine]);
+  const scopeOf = (rel, m) => {
+    if (!rel) return null;
+    if (!multiMachine || m == null || m === machines[0]) return rel;   // first machine = base fields
+    rel.machines = rel.machines || {};
+    return rel.machines[m] = rel.machines[m] || {};
+  };
+
+  // Budget grid seed per machine: saved budget, else (machine 1 only) derive
+  // from existing quoted hours. M2+ start blank until filled.
+  const seedBudgetFor = (rel, m) => {
+    const scope = scopeOf(rel, m);
+    if (scope && scope !== rel) return scope.budget || {};
+    return (rel && rel.budget && Object.keys(rel.budget).length)
+      ? rel.budget
+      : _hoursBreakdownToBudget(quoteObj.hours_breakdown || {});
+  };
   // Accounting format for the Parts Cost: "$182,160.00".
   const fmtMoney = (v) => (v == null || v === '') ? '' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   // Horizontal grid mirroring the release's budget picture: section/sub-section
@@ -18465,53 +19134,47 @@ async function openProjectReleaseModal(project) {
   const budgetGridHtml = (b) => {
     const inp = (k) => `<input type="number" min="0" step="any" class="pr-bg-input" data-bk="${k}" value="${b && b[k] != null ? b[k] : ''}">`;
     const money = (k) => `<input type="text" inputmode="decimal" class="pr-bg-input pr-bg-money" data-bk="${k}" value="${fmtMoney(b && b[k])}">`;
+    // PM / Manufacturing / Warranty are STANDARD FEES — not shown here (Dan).
+    // Their keys stay in rel.budget if an older release saved them; they're
+    // just no longer displayed or edited.
     return `<div class="pr-budget-wrap"><table class="pr-budget-grid">
       <colgroup>
-        <col style="width:44px">
         <col style="width:62px"><col style="width:66px"><col style="width:62px">
         <col style="width:44px"><col style="width:50px"><col style="width:54px"><col style="width:72px">
-        <col style="width:78px"><col style="width:74px"><col style="width:78px">
+        <col style="width:78px"><col style="width:74px">
         <col style="width:54px"><col style="width:54px"><col style="width:54px"><col style="width:54px">
-        <col style="width:54px"><col style="width:54px">
         <col style="width:104px">
       </colgroup>
       <thead>
         <tr>
-          <th colspan="11" class="pr-bg-grp">Design and Build</th>
+          <th colspan="9" class="pr-bg-grp">Design and Build</th>
           <th colspan="2" class="pr-bg-grp">Testing</th>
           <th colspan="2" class="pr-bg-grp">Teardown &amp; Install</th>
-          <th colspan="2" class="pr-bg-grp">Warranty</th>
           <th rowspan="3" class="pr-bg-parts-h">Parts Cost</th>
         </tr>
         <tr>
-          <th class="pr-bg-c-me">PM</th>
           <th class="pr-bg-c-me">ME</th>
           <th colspan="2" class="pr-bg-c-ce">CE</th>
           <th colspan="4" class="pr-bg-c-gen">General Engineering</th>
-          <th colspan="3" class="pr-bg-c-shop">Shop</th>
+          <th colspan="2" class="pr-bg-c-shop">Shop</th>
           <th class="pr-bg-c-test">Eng</th><th class="pr-bg-c-test">Shop</th>
-          <th class="pr-bg-c-ti">Eng</th><th class="pr-bg-c-ti">Shop</th>
           <th class="pr-bg-c-ti">Eng</th><th class="pr-bg-c-ti">Shop</th>
         </tr>
         <tr class="pr-bg-leaf">
-          <th class="pr-bg-c-me">PM</th>
           <th class="pr-bg-c-me">ME General</th>
           <th class="pr-bg-c-ce">Design &amp; Drawings</th><th class="pr-bg-c-ce">Software</th>
           <th class="pr-bg-c-gen">HMI</th><th class="pr-bg-c-gen">Robot</th><th class="pr-bg-c-gen">Vision</th><th class="pr-bg-c-gen">Database &amp; Device</th>
-          <th class="pr-bg-c-shop">Mechanical Build</th><th class="pr-bg-c-shop">Electrical Build</th><th class="pr-bg-c-shop">Manufacturing</th>
+          <th class="pr-bg-c-shop">Mechanical Build</th><th class="pr-bg-c-shop">Electrical Build</th>
           <th class="pr-bg-c-test">ME &amp; CE</th><th class="pr-bg-c-test">MB &amp; EB</th>
-          <th class="pr-bg-c-ti">ME &amp; CE</th><th class="pr-bg-c-ti">MB &amp; EB</th>
           <th class="pr-bg-c-ti">ME &amp; CE</th><th class="pr-bg-c-ti">MB &amp; EB</th>
         </tr>
       </thead>
       <tbody><tr>
-        <td>${inp('pm')}</td>
         <td>${inp('me')}</td><td>${inp('ce_design_drawings')}</td><td>${inp('ce_software')}</td>
         <td>${inp('hmi')}</td><td>${inp('robot')}</td><td>${inp('vision')}</td><td>${inp('database_device')}</td>
-        <td>${inp('mechanical_build')}</td><td>${inp('electrical_build')}</td><td>${inp('manufacturing')}</td>
+        <td>${inp('mechanical_build')}</td><td>${inp('electrical_build')}</td>
         <td>${inp('testing_eng')}</td><td>${inp('testing_shop')}</td>
         <td>${inp('teardown_install_eng')}</td><td>${inp('teardown_install_shop')}</td>
-        <td>${inp('warranty_eng')}</td><td>${inp('warranty_shop')}</td>
         <td>${money('parts_cost')}</td>
       </tr></tbody>
     </table></div>`;
@@ -18529,25 +19192,101 @@ async function openProjectReleaseModal(project) {
         <div class="pr-status"></div>
       </div>`;
     }
-    const poISO = _relDateToISO(rel.receipt_of_po);
+    // Receipt of PO: the release's own date wins; when the release doesn't
+    // carry one, PREFILL from the schedule's Receipt of PO anchor — the two
+    // are the same fact, and making Dan re-type it here read as a bug.
+    let poISO = _relDateToISO(rel.receipt_of_po);
+    if (!poISO) {
+      const poTask = state.tasks.find(t => t.project === project && inferredAnchorKey(t) === 'receipt_of_po');
+      if (poTask && (poTask.start_date || poTask.end_date)) {
+        poISO = String(poTask.start_date || poTask.end_date).slice(0, 10);
+        rel.receipt_of_po = poISO;   // keep the release object in step with what's shown
+      }
+    }
+    // Machine pills — only on multi-machine projects. Delivery, penalty,
+    // milestones, and budget below belong to the SELECTED machine; the All
+    // pill stacks every machine's blocks (it's just longer).
+    const machinePills = multiMachine ? `
+      <div class="pr-machine-bar">
+        <span class="pr-label" style="margin:0;">Machine</span>
+        ${machines.map(m => {
+          const c = getMachineColor(project, m);
+          return `<button type="button" class="pr-machine-pill${m === relMachine ? ' is-on' : ''}" data-machine="${escapeHtml(m)}"
+            style="${m === relMachine ? `background:${c.hex};color:${c.text};border-color:${c.hex};` : ''}">${escapeHtml(m)}</button>`;
+        }).join('')}
+        <button type="button" class="pr-machine-pill${relMachine === '__all__' ? ' is-on is-all' : ''}" data-machine="__all__"
+          title="Show every machine's delivery, penalty, milestones and budget stacked on one page">All</button>
+        <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— delivery, penalty, milestones &amp; budget below are per machine</span>
+      </div>` : '';
+    // One block per machine: delivery + penalty, that machine's financial
+    // milestones, and its budget grid. Single-machine projects get one
+    // unlabeled block (m = null → base fields), same as always.
+    const machineBlock = (m) => {
+      const scope = scopeOf(rel, m);
+      const tag = multiMachine ? ` — ${escapeHtml(m)}` : '';
+      const attr = escapeHtml(m || '');
+      const head = (multiMachine && relMachine === '__all__')
+        ? (() => { const c = getMachineColor(project, m); return `<div class="pr-mach-head" style="background:${c.hex};color:${c.text};">${escapeHtml(m)}</div>`; })()
+        : '';
+      return `
+      ${head}
+      <div data-machine-block="${attr}">
+        <div class="pr-grid">
+          <div class="pr-field"><div class="pr-label">Delivery (weeks)${tag}</div>
+            <input type="number" class="pr-delivery pr-input" min="0" step="any" value="${scope.delivery_weeks != null ? scope.delivery_weeks : ''}"></div>
+          <div class="pr-field"><div class="pr-label">Penalty clause${tag}</div>
+            <label class="pr-penalty-wrap"><input type="checkbox" class="pr-penalty" ${scope.penalty ? 'checked' : ''}> after
+            <input type="number" class="pr-penalty-weeks pr-input pr-input-sm" min="0" step="any" value="${scope.penalty_weeks != null ? scope.penalty_weeks : ''}"> wks</label></div>
+        </div>
+        <div class="pr-field"><div class="pr-label">Financial milestones${tag} <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— edit right here; saves live</span></div>
+          <div class="pr-financials" data-fin-machine="${attr}"><div class="pr-muted">Loading…</div></div>
+        </div>
+        <div class="pr-field"><div class="pr-label">Project budget — quoted hours${tag} <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— feeds the Δ "quoted" on the grid; edit any cell</span></div>
+          <div data-budget-machine="${attr}">${budgetGridHtml(seedBudgetFor(rel, m))}</div>
+          <div class="pr-budget-status"></div>
+        </div>
+      </div>`;
+    };
     return `
       <p class="pr-muted pr-edithint">Pulled from the release. Fix anything that didn't parse right — the financial milestones below save as you type. <strong>Accept</strong> applies the PO date, delivery, and penalty to the schedule.</p>
+      ${machinePills}
       <div class="pr-grid">
         <div class="pr-field"><div class="pr-label">Receipt of PO</div>
           <input type="date" class="pr-po pr-input" value="${poISO}"></div>
-        <div class="pr-field"><div class="pr-label">Delivery (weeks)</div>
-          <input type="number" class="pr-delivery pr-input" min="0" step="any" value="${rel.delivery_weeks != null ? rel.delivery_weeks : ''}"></div>
-        <div class="pr-field"><div class="pr-label">Penalty clause</div>
-          <label class="pr-penalty-wrap"><input type="checkbox" class="pr-penalty" ${rel.penalty ? 'checked' : ''}> after
-          <input type="number" class="pr-penalty-weeks pr-input pr-input-sm" min="0" step="any" value="${rel.penalty_weeks != null ? rel.penalty_weeks : ''}"> wks</label></div>
       </div>
-      <div class="pr-field"><div class="pr-label">Financial milestones <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— edit right here; saves live</span></div>
-        <div class="pr-financials" id="pr-financials"><div class="pr-muted">Loading…</div></div>
-      </div>
-      <div class="pr-field"><div class="pr-label">Project budget — quoted hours <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— feeds the Δ "quoted" on the grid; edit any cell</span></div>
-        ${budgetGridHtml(seedBudget(rel))}
-        <div class="pr-budget-status"></div>
-      </div>
+      ${blockMachines().map(machineBlock).join('')}
+      ${(() => {
+        // ── Change quotes ── scope sold AFTER the original release. Project-
+        // level (not per machine). "→ milestone" drops the CQ into the
+        // financial milestones so its payment gets tracked like the rest.
+        rel.change_quotes = Array.isArray(rel.change_quotes) ? rel.change_quotes : [];
+        const rows = rel.change_quotes.map((r, i) => `<tr>
+          <td><input type="text" data-cq="${i}.num" value="${escapeHtml(r.num || '')}" placeholder="CQ1"></td>
+          <td><input type="text" data-cq="${i}.desc" value="${escapeHtml(r.desc || '')}" placeholder="What changed / what was added"></td>
+          <td><input type="text" inputmode="decimal" data-cq="${i}.amount" value="${escapeHtml(r.amount || '')}" placeholder="$"></td>
+          <td><input type="text" inputmode="decimal" data-cq="${i}.weeks" value="${escapeHtml(r.weeks || '')}" placeholder="+wks"></td>
+          <td><input type="date" data-cq="${i}.approved" value="${escapeHtml(r.approved || '')}"></td>
+          <td><button type="button" class="btn-ghost btn-tight pr-cq-ms" data-cq-ms="${i}" title="Add this CQ to the financial milestones so its payment is tracked">→ milestone</button></td>
+          <td><button type="button" class="cp-del" data-cq-del="${i}" title="Remove this change quote">×</button></td>
+        </tr>`).join('');
+        // Every CQ carries its OWN quoted-hours budget grid (same shape as a
+        // machine's) — CQ hours ADD into the project's combined quoted total,
+        // so the Δ overlay reflects the new sold scope.
+        const cqGrids = rel.change_quotes.map((r, i) => `
+          <div class="pr-cq-grid" data-cq-budget="${i}">
+            <div class="pr-cq-grid-title">${escapeHtml((r.num || 'CQ' + (i + 1)))}${r.desc ? ' — ' + escapeHtml(r.desc) : ''} · quoted hours</div>
+            ${budgetGridHtml(r.budget || {})}
+          </div>`).join('');
+        return `<div class="pr-field"><div class="pr-label">Change quotes <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— scope sold after the release; each CQ gets its own hours grid (adds to the quoted total); “→ milestone” tracks its payment</span></div>
+          <table class="cp-table pr-cq">
+            <colgroup><col style="width:8%"><col style="width:40%"><col style="width:12%"><col style="width:9%"><col style="width:13%"><col style="width:14%"><col style="width:4%"></colgroup>
+            <thead><tr><th>CQ #</th><th>Description</th><th>Amount</th><th>+Weeks</th><th>Approved</th><th></th><th></th></tr></thead>
+            <tbody>${rows || `<tr class="financials-empty"><td colspan="7" style="padding:6px 10px;color:var(--text-muted);font-style:italic;">No change quotes yet — click “+ Add change quote”.</td></tr>`}</tbody>
+          </table>
+          ${cqGrids}
+          <button type="button" class="btn-ghost btn-tight pr-cq-add">+ Add change quote</button>
+        </div>`;
+      })()}
       <div class="pr-foot">
         <button type="button" class="btn-secondary pr-open-btn" title="${escapeHtml(rel.name || 'Project Release.docx')} — open the original Word document">📄 Open Project Release</button>
         <button type="button" class="btn-secondary pr-replace-btn" title="Upload a newer revision of the release .docx — replaces the stored document and re-parses it">⬆ Update Project Release…</button>
@@ -18594,32 +19333,45 @@ async function openProjectReleaseModal(project) {
     }
   });
 
-  // Read the editable fields back into the release object.
+  // Read the editable fields back into the release object. Delivery + penalty
+  // go to each rendered machine block's scope; the PO date is project-wide.
   const readEdits = () => {
     if (!release) return;
     const po = overlay.querySelector('.pr-po');
-    const del = overlay.querySelector('.pr-delivery');
-    const pen = overlay.querySelector('.pr-penalty');
-    const penW = overlay.querySelector('.pr-penalty-weeks');
     if (po) release.receipt_of_po = po.value || null;
-    if (del) release.delivery_weeks = del.value === '' ? null : Number(del.value);
-    if (pen) release.penalty = !!pen.checked;
-    if (penW) release.penalty_weeks = penW.value === '' ? null : Number(penW.value);
+    overlay.querySelectorAll('[data-machine-block]').forEach(block => {
+      const m = block.dataset.machineBlock || null;
+      const scope = scopeOf(release, m);
+      const del = block.querySelector('.pr-delivery');
+      const pen = block.querySelector('.pr-penalty');
+      const penW = block.querySelector('.pr-penalty-weeks');
+      if (del) scope.delivery_weeks = del.value === '' ? null : Number(del.value);
+      if (pen) scope.penalty = !!pen.checked;
+      if (penW) scope.penalty_weeks = penW.value === '' ? null : Number(penW.value);
+    });
   };
   const persistEdits = async () => { readEdits(); if (release) { try { await saveProjectRelease(project, release); } catch (_) {} } };
-  // Seed (first time only) + render the live Financial Milestones grid inline.
+  // Seed + mount the live Financial Milestones grid in EVERY rendered block.
+  // Machine 2+ seeds a copy of machine 1's set on first open — same %s and
+  // descriptions, blank triggers (the user rewires them to that machine's
+  // tasks) — per Dan: "the milestones mimic machine one".
   const mountFin = async () => {
-    const c = overlay.querySelector('#pr-financials');
-    if (!c || !release) return;
+    if (!release) return;
     try { await _seedFinancialsFromRelease(project, release); } catch (_) {}
-    try { await mountFinancialsEditor(c, project); } catch (_) {}
+    for (const c of overlay.querySelectorAll('[data-fin-machine]')) {
+      const m = c.dataset.finMachine || null;
+      if (multiMachine && m && m !== machines[0]) {
+        try { await _seedMachineFinancials(project, m, machines[0]); } catch (_) {}
+      }
+      try { await mountFinancialsEditor(c, project, multiMachine ? m : undefined); } catch (_) {}
+    }
   };
 
   // Budget grid → quote.hours_breakdown (the Δ "quoted" source). Saving also
   // invalidates the grid's quote cache so the Δ overlay re-reads immediately.
-  const readBudget = () => {
+  const readBudget = (wrapper) => {
     const b = {};
-    overlay.querySelectorAll('.pr-bg-input').forEach(el => {
+    wrapper.querySelectorAll('.pr-bg-input').forEach(el => {
       let raw = el.value;
       if (el.classList.contains('pr-bg-money')) raw = raw.replace(/[$,\s]/g, '');  // strip $ , and spaces
       b[el.dataset.bk] = raw === '' ? null : Number(raw);
@@ -18628,15 +19380,43 @@ async function openProjectReleaseModal(project) {
   };
   const saveBudget = async () => {
     if (!release) return;
-    const budget = readBudget();
-    release.budget = budget;
+    // Read every rendered budget grid into its machine's scope.
+    overlay.querySelectorAll('[data-budget-machine]').forEach(wrap => {
+      const m = wrap.dataset.budgetMachine || null;
+      scopeOf(release, m).budget = readBudget(wrap);
+    });
+    // …and every change quote's grid into its CQ row.
+    overlay.querySelectorAll('[data-cq-budget]').forEach(wrap => {
+      const i = Number(wrap.dataset.cqBudget);
+      if (release.change_quotes && release.change_quotes[i]) release.change_quotes[i].budget = readBudget(wrap);
+    });
+    // The Δ "quoted" overlay compares per department across the WHOLE
+    // project (all machines' task rows), so quoted hours = the SUM of every
+    // machine's budget PLUS every change quote's hours. Same for parts cost.
+    const allBudgets = [release.budget || {}];
+    if (multiMachine) {
+      for (const m of machines.slice(1)) {
+        const mb = release.machines && release.machines[m] && release.machines[m].budget;
+        if (mb) allBudgets.push(mb);
+      }
+    }
+    for (const cq of (release.change_quotes || [])) {
+      if (cq && cq.budget) allBudgets.push(cq.budget);
+    }
+    const combined = {};
+    for (const b of allBudgets) {
+      for (const [k, v] of Object.entries(b)) {
+        if (v == null || v === '' || isNaN(Number(v))) continue;
+        combined[k] = (combined[k] || 0) + Number(v);
+      }
+    }
     try {
       let q = {};
       const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
       if (r.ok) q = (await r.json()) || {};
       q = q || {};
-      q.hours_breakdown = _budgetToHoursBreakdown(budget);
-      if (budget.parts_cost != null) q.parts_cost = budget.parts_cost;
+      q.hours_breakdown = _budgetToHoursBreakdown(combined);
+      if (combined.parts_cost != null) q.parts_cost = combined.parts_cost;
       q.project_release = release;
       quoteObj = q;
       await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
@@ -18671,7 +19451,10 @@ async function openProjectReleaseModal(project) {
       const budget = (data && data.budget && typeof data.budget === 'object') ? data.budget : data;
       if (!budget || typeof budget !== 'object') { if (statusEl) statusEl.textContent = ''; return; }
       let filled = 0;
-      overlay.querySelectorAll('.pr-bg-input').forEach(el => {
+      // The release picture is MACHINE 1's budget — fill only the first
+      // (base-machine) grid, never M2+'s.
+      const baseWrap = overlay.querySelector('[data-budget-machine]');
+      (baseWrap ? baseWrap.querySelectorAll('.pr-bg-input') : []).forEach(el => {
         const v = budget[el.dataset.bk];
         if (v != null && v !== '' && !isNaN(Number(v))) {
           el.value = el.classList.contains('pr-bg-money') ? fmtMoney(v) : Number(v);
@@ -18690,6 +19473,78 @@ async function openProjectReleaseModal(project) {
     const statusEl = overlay.querySelector('.pr-status');
     overlay.querySelector('.pr-upload-btn')?.addEventListener('click', () => fileEl?.click());
     overlay.querySelector('.pr-replace-btn')?.addEventListener('click', () => fileEl?.click());
+
+    // Change quotes — live-save edits; add/remove rows; "→ milestone" pushes
+    // the CQ into the financial milestones (amount-based, payment tracked).
+    const readCQ = () => {
+      if (!release) return;
+      overlay.querySelectorAll('input[data-cq]').forEach(el => {
+        const [i, f] = el.dataset.cq.split('.');
+        const row = release.change_quotes && release.change_quotes[Number(i)];
+        if (row) row[f] = el.value;
+      });
+    };
+    const rerenderPanel = () => {
+      overlay.querySelector('#pr-body').innerHTML = bodyHtml(release);
+      wire();
+      mountFin();
+    };
+    overlay.querySelectorAll('input[data-cq]').forEach(el => {
+      el.addEventListener('change', async () => {
+        readCQ();
+        try { await saveProjectRelease(project, release); } catch (_) {}
+      });
+    });
+    overlay.querySelector('.pr-cq-add')?.addEventListener('click', async () => {
+      readEdits(); readCQ();
+      release.change_quotes = Array.isArray(release.change_quotes) ? release.change_quotes : [];
+      release.change_quotes.push({ num: 'CQ' + (release.change_quotes.length + 1), desc: '', amount: '', weeks: '', approved: '' });
+      try { await saveProjectRelease(project, release); } catch (_) {}
+      rerenderPanel();
+    });
+    overlay.querySelectorAll('[data-cq-del]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        readEdits(); readCQ();
+        release.change_quotes.splice(Number(btn.dataset.cqDel), 1);
+        try { await saveProjectRelease(project, release); } catch (_) {}
+        rerenderPanel();
+      });
+    });
+    overlay.querySelectorAll('[data-cq-ms]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        readCQ();
+        const r = release.change_quotes[Number(btn.dataset.cqMs)];
+        if (!r) return;
+        const amt = Number(String(r.amount || '').replace(/[$,\s]/g, ''));
+        try {
+          await api.financials.create({
+            project,
+            name: `${(r.num || 'CQ').trim()} — ${(r.desc || 'Change quote').trim()}`,
+            percent: null,
+            amount: Number.isFinite(amt) && amt > 0 ? amt : null,
+            due_date: r.approved || null,
+            paid: 0, predecessors: null, sync_to_anchor: null, machine: null,
+          });
+          await loadFinancialsForProject(project);
+          mountFin();
+          showToast('Change quote added to the financial milestones.');
+        } catch (err) { showToast('Could not add the milestone: ' + (err.message || err), { kind: 'error' }); }
+      });
+    });
+
+    // Machine pills — capture the CURRENT machine's fields first, then
+    // re-render the panel scoped to the newly selected machine.
+    overlay.querySelectorAll('.pr-machine-pill').forEach(p => {
+      p.addEventListener('click', async () => {
+        if (p.dataset.machine === relMachine) return;
+        readEdits();
+        try { await saveProjectRelease(project, release); } catch (_) {}
+        relMachine = p.dataset.machine;
+        overlay.querySelector('#pr-body').innerHTML = bodyHtml(release);
+        wire();
+        mountFin();
+      });
+    });
 
     // Edits (PO date / delivery / penalty): save on change. The financial
     // milestones grid below saves itself live (see mountFinancialsEditor).
@@ -18770,7 +19625,7 @@ async function openProjectReleaseModal(project) {
   mountFin();
   // Auto-read the budget picture on OPEN too (not just on upload) — but only
   // when the grid is still empty, so we never clobber numbers already entered.
-  const _seeded = release ? seedBudget(release) : null;
+  const _seeded = release ? seedBudgetFor(release, multiMachine ? machines[0] : null) : null;
   const _hasNums = _seeded && Object.keys(_seeded).some(k => k !== 'database_device' && Number(_seeded[k]) > 0);
   if (release && release.budget_image && !_hasNums) autoFillBudget(release);
 }
@@ -24819,6 +25674,12 @@ const ANCHOR_DEFS = [
     phaseGroup: 'design_build', department: 'engineering', subDepartment: 'mech' },
   { key: 'machine_power_up', name: 'Machine Power-Up', defaultOffsetDays: 45,
     phaseGroup: 'design_build', department: 'shop', subDepartment: 'wire' },
+  // Parts + drawings ready for the panel build — lives in 10 → Shop → Wire
+  // right above Panel Building (typical trigger: panel-build start − 0.5w).
+  // NOT auto-created in every project (noAutoCreate) — it arrives via the
+  // standard template row, or by naming a row "Parts+Drawings for Panel Ready".
+  { key: 'parts_panel_ready', name: 'Parts+Drawings for Panel Ready', defaultOffsetDays: 40,
+    phaseGroup: 'design_build', department: 'shop', subDepartment: 'wire', noAutoCreate: true },
   { key: 'fat',              name: 'FAT',              defaultOffsetDays: 60 },
   { key: 'ship_machine',     name: 'Ship Machine',     defaultOffsetDays: 75 },
   // SAT — acceptance at the customer's plant. Closes section 50 (after the
@@ -24849,6 +25710,8 @@ function inferredAnchorKey(t) {
   if (n === 'fat')                                        return 'fat';
   if (n === 'ship machine')                               return 'ship_machine';
   if (n === 'sat' || n === 'acceptance at customer (sat)') return 'sat';
+  if (/^parts\s*(\+|and|&)\s*drawings\s+for\s+panel\s+(build\s+)?ready$/.test(n)
+      || /^parts\s*(\+|and|&)\s*drawings\s+ready\s+for\s+panel(\s+build)?$/.test(n)) return 'parts_panel_ready';
   return null;
 }
 
@@ -24903,6 +25766,7 @@ async function ensureAnchorsForProject(project) {
     .filter(Boolean));
   let created = false;
   for (const a of ANCHOR_DEFS) {
+    if (a.noAutoCreate) continue;   // template-delivered anchors only — never injected
     if (have.has(a.key)) continue;
     const date = a.defaultOffsetDays === 0 ? todayISO() : offsetISO(a.defaultOffsetDays);
     await api.create({
@@ -27517,18 +28381,27 @@ async function init() {
   // cloneMode is null the trap is a no-op so normal editing still works.
   tbodyEl.addEventListener('click', (e) => {
     if (state.cloneMode) handleCloneModeRowClick(e);
+    else if (state.joinPick) handleJoinPickClick(e);
   }, true);
   tbodyEl.addEventListener('click', handleCellClick);
   tbodyEl.addEventListener('dblclick', (e) => {
-    if (state.cloneMode) handleCloneModeRowDblClick(e);
+    if (state.cloneMode) { handleCloneModeRowDblClick(e); return; }
+    // Milestone duration slot (invisible ghost) — double-click to type a
+    // duration and turn the milestone back into a task.
+    const ghost = e.target.closest('[data-dur-ghost]');
+    if (ghost) {
+      e.preventDefault();
+      enterPillEdit(ghost, Number(ghost.dataset.taskId), 'duration');
+    }
   });
   // Also trap mousedown in capture phase — some editors (enterPillEdit)
   // wire their own document-level mousedown listeners on first interaction,
   // which would fire BEFORE our click handler. Eating the mousedown stops
   // them in their tracks too.
   tbodyEl.addEventListener('mousedown', (e) => {
-    if (!state.cloneMode) return;
+    if (!state.cloneMode && !state.joinPick) return;
     if (e.target.closest('.clone-pred-editor')) return;
+    if (e.target.closest('tr.group-header')) return;   // collapse/expand stays live
     e.preventDefault();
     e.stopPropagation();
     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
@@ -27633,6 +28506,15 @@ async function init() {
       // replacing the estimate and already renders in sales mode.
       if (isSalesView()) openQuoteCompareModal(p);
       else openProjectReleaseModal(p);
+    });
+  }
+  // 📇 Communication Plan — per-project who's-who + cadence + escalation.
+  const commPlanBtn = document.getElementById('btn-toolbar-commplan');
+  if (commPlanBtn) {
+    commPlanBtn.addEventListener('click', () => {
+      const p = state.filters.project;
+      if (!p) return;
+      openCommPlanModal(p);
     });
   }
   // 💲 Financial Milestones — opens the same per-project editor that the

@@ -4857,7 +4857,10 @@ body.hide-desc-text .th-label-desc { display: none !important; }
 /* Milestone duration ghost — the clickable "—W" in the DUR slot that turns
    a milestone back into a task. Hidden until hover so milestone rows stay
    clean; faint on hover so it reads as an affordance, not data. */
-#tasks-tbody .name-cell-dur-ghost { opacity: 0; }
+/* Invisible but PRESENT — the empty span needs a real hit area so the
+   double-click (add a duration back to a milestone) has something to land
+   on. Tooltip on hover explains it. */
+#tasks-tbody .name-cell-dur-ghost { opacity: 0; display: inline-block; min-width: 44px; min-height: 15px; }
 #tasks-tbody tr:hover .name-cell-dur-ghost { opacity: 0.55; }
 body.hide-pct-pill .name-cell-dur { right: 8px; }
 body.hide-pct-pill .th-label-dur  { right: 8px; }
@@ -7882,10 +7885,151 @@ body[data-view="setup"] #btn-add { display: none; }
 .pr-empty .btn-primary { margin-top: 4px; }
 .pr-foot { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
 .pr-filename { flex: 1 1 auto; font-size: var(--fs-xs); }
+/* Machine selector bar (multi-machine releases) — delivery/penalty/milestones/
+   budget below it belong to the highlighted machine. Active pill takes the
+   machine's schedule color. */
+.pr-machine-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: var(--surface-alt, #f1f5f9);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+.pr-machine-pill {
+  min-width: 44px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  background: #fff;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.pr-machine-pill:hover { border-color: var(--sdc-primary, #1574c4); }
+.pr-machine-pill.is-on { box-shadow: 0 1px 4px rgba(6,29,57,0.25); }
+.pr-machine-pill.is-all { background: var(--sdc-dark, #061d39); color: #fff; border-color: var(--sdc-dark, #061d39); }
+/* Stats-box machine header (All-machines view) — small colored pill dividing
+   each machine's Duration/FAT/Penalty block. */
+.popup-mach-head {
+  display: inline-block;
+  font-weight: var(--fw-extrabold);
+  font-size: var(--fs-xs);
+  padding: 1px 10px;
+  border-radius: 999px;
+  margin: 7px 0 2px;
+}
+
+/* Machine section header in the stacked "All" view — colored to match the
+   machine's schedule color so the blocks scan at a glance. */
+.pr-mach-head {
+  display: inline-block;
+  font-weight: var(--fw-extrabold);
+  font-size: var(--fs-md);
+  padding: 3px 14px;
+  border-radius: 999px;
+  margin: 14px 0 8px;
+}
+[data-machine-block] { border-bottom: 1px dashed var(--border, #e2e8f0); padding-bottom: 6px; margin-bottom: 10px; }
+[data-machine-block]:last-of-type { border-bottom: none; }
 /* The attached-file name is a live link — click opens the original .docx. */
 .pr-view-link { color: var(--sdc-primary, #1574c4); text-decoration: none; cursor: pointer; }
 .pr-view-link:hover { text-decoration: underline; }
 .pr-status { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 10px; }
+
+/* ── Communication Plan modal ── SDC-styled who's-who + cadence + escalation.
+   SDC side titled in SDC navy, customer side in SDC yellow; tables share the
+   financials-grid look. */
+.cp-people { display: flex; gap: 16px; flex-wrap: wrap; }
+.cp-people-col { flex: 1 1 440px; min-width: 380px; }
+.cp-table-title {
+  display: inline-block;
+  font-weight: var(--fw-extrabold);
+  font-size: var(--fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 12px;
+  border-radius: 999px;
+  margin-bottom: 6px;
+}
+.cp-side-sdc      { background: var(--sdc-primary, #1574c4); color: #fff; }
+.cp-side-customer { background: var(--sdc-accent, #ffde51); color: var(--sdc-dark, #061d39); }
+.cp-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: #fff;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+}
+.cp-table th {
+  background: var(--surface-alt, #f1f5f9);
+  color: var(--text-muted, #64748b);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-strong, #cbd5e1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cp-table td { border-bottom: 1px solid var(--border, #eef2f6); padding: 0; }
+.cp-table input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 5px 8px;
+  font-size: var(--fs-md);
+  color: var(--text, #1f2937);
+  box-sizing: border-box;
+}
+.cp-table input:focus {
+  outline: none;
+  background: #eef5fb;
+  box-shadow: inset 0 0 0 1px var(--sdc-primary, #1574c4);
+}
+.cp-table .cp-del {
+  border: none;
+  background: none;
+  color: var(--text-muted, #94a3b8);
+  cursor: pointer;
+  font-size: 13px;
+  width: 100%;
+}
+.cp-table .cp-del:hover { color: var(--danger, #dc2626); }
+.cp-cadence, .cp-escalation { margin-bottom: 4px; }
+.cp-escalation .cp-level input { text-align: center; font-weight: var(--fw-extrabold); color: var(--sdc-primary, #1574c4); }
+.cp-add { margin-top: 4px; }
+.cp-notes {
+  width: 100%;
+  min-height: 64px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  resize: vertical;
+}
+.cp-save-status { font-size: var(--fs-sm); }
+
+/* Change-quote budget grids — one per CQ under the CQ table. */
+.pr-cq-grid { margin-top: 10px; }
+.pr-cq-grid-title {
+  display: inline-block;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
+  color: var(--sdc-dark, #061d39);
+  background: var(--sdc-accent, #ffde51);
+  border-radius: 999px;
+  padding: 1px 12px;
+  margin-bottom: 4px;
+}
 
 /* ── In-app .docx viewer — the Project Release doc rendered like a PDF.
    Sits ABOVE the release modal (960); gray reading background with the

@@ -1,7 +1,7 @@
 'use strict';
 const { Router } = require('express');
 
-const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'dates_locked', 'completed_on', 'machine'];
+const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'dates_locked', 'completed_on', 'machine', 'join_prev'];
 
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole, cascadeSchedule, logHistory, emailSvc } = deps;

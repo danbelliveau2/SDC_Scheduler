@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260731-134" />
+  <link rel="stylesheet" href="styles.css?v=20260819-150" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
 </head>
 <body>
@@ -392,6 +392,7 @@
              server-side (settings.project_leads); drives the Departments PM
              filter + dashboard. Populated by renderScheduleLeads(). -->
         <div class="schedule-leads" id="schedule-leads"></div>
+        <button id="btn-toolbar-commplan" class="toolbar-toggle-btn" type="button" title="Communication Plan — who's who on the SDC and customer sides, meeting cadence, and the escalation path for this project.">📇 Communication Plan</button>
         <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Upload the SDC Project Release (.docx) — order date, delivery, penalty, the project budget image, AND the editable financial-milestones grid (fill it out right here). Per-dept hours vs quote live on the grid (Δ).">📄 Project Release</button>
       </div>
       <!-- Bottom drawer stack — fixed overlay at the bottom of the viewport.
@@ -982,8 +983,8 @@
        from app.js / comments-ui.js. -->
   <script src="auth-ui.js?v=20260811-sso2"></script>
   <script src="phases.js?v=20260601-168"></script>
-  <script src="release-notes.js?v=20260601-191"></script>
-  <script src="app.js?v=20260811-135"></script>
+  <script src="release-notes.js?v=20260819-192"></script>
+  <script src="app.js?v=20260819-150"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

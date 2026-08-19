@@ -1554,6 +1554,7 @@ module.exports = function createRouter(deps) {
         includeTaskIds,
         chainTaskIds,
         customPredecessors,
+        addToExisting,
       } = req.body || {};
       if (!project || !sourceMachine || !targetMachine) {
         return res.status(400).json({ error: 'project, sourceMachine, targetMachine required' });
@@ -1562,7 +1563,10 @@ module.exports = function createRouter(deps) {
         return res.status(400).json({ error: 'sourceMachine and targetMachine must differ' });
       }
       const [[existingMachine]] = await pool.query('SELECT COUNT(*) AS c FROM tasks WHERE project = ? AND machine = ?', [project, targetMachine]);
-      if (existingMachine.c > 0) {
+      // addToExisting: clone MORE lines into a machine that already exists
+      // (right-click the machine tab → "Add lines…"). Without the flag the
+      // guard protects against accidentally re-cloning a whole machine.
+      if (existingMachine.c > 0 && !addToExisting) {
         return res.status(409).json({ error: `Machine "${targetMachine}" already has ${existingMachine.c} tasks in this project.` });
       }
       let sourceTasks;

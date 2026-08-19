@@ -1,7 +1,9 @@
 'use strict';
 const { Router } = require('express');
 
-const FIN_FIELDS = ['name', 'percent', 'amount', 'due_date', 'paid', 'predecessors', 'sync_to_anchor', 'sort_order'];
+// 'machine' — per-machine payment terms on multi-machine projects (M1/M2/…);
+// NULL/'' means M1 / single-machine (legacy rows keep working untouched).
+const FIN_FIELDS = ['name', 'percent', 'amount', 'due_date', 'paid', 'predecessors', 'sync_to_anchor', 'sort_order', 'machine'];
 
 module.exports = function createRouter(deps) {
   const { pool, requireRole } = deps;
@@ -24,7 +26,7 @@ module.exports = function createRouter(deps) {
       const name = (req.body.name || '').toString().trim();
       const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), -1) AS m FROM project_financials WHERE project = ?', [project]);
       const [result] = await pool.query(
-        'INSERT INTO project_financials (project, name, percent, amount, due_date, paid, predecessors, sync_to_anchor, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO project_financials (project, name, percent, amount, due_date, paid, predecessors, sync_to_anchor, sort_order, machine) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [project, name,
          req.body.percent != null ? Number(req.body.percent) : null,
          req.body.amount  != null ? Number(req.body.amount)  : null,
@@ -32,7 +34,8 @@ module.exports = function createRouter(deps) {
          req.body.paid ? 1 : 0,
          req.body.predecessors || null,
          req.body.sync_to_anchor || null,
-         maxRow.m + 1]
+         maxRow.m + 1,
+         req.body.machine || null]
       );
       const [[row]] = await pool.query('SELECT * FROM project_financials WHERE id = ?', [result.insertId]);
       res.json(row);
