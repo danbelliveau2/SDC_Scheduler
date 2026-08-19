@@ -60,6 +60,15 @@ async function init() {
   // Display-level only — scheduling math still sees two tasks.
   await pool.query(`ALTER TABLE tasks ADD COLUMN join_prev TINYINT(1) DEFAULT 0`).catch(() => {});
 
+  // Idempotency key for POST /api/tasks (2026-08-13) — a value the CLIENT
+  // generates once per create attempt and resends unchanged on every retry.
+  // The UNIQUE index is what lets a retried create detect "I already did
+  // this" instead of inserting a duplicate row when a first attempt's INSERT
+  // committed but its response never reached the browser. Null for every
+  // task created before this existed.
+  await pool.query(`ALTER TABLE tasks ADD COLUMN client_ref VARCHAR(64) NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE tasks ADD UNIQUE INDEX idx_tasks_client_ref (client_ref)`).catch(() => {});
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS settings (
       \`key\`      VARCHAR(255) PRIMARY KEY,
@@ -81,6 +90,14 @@ async function init() {
     )
   `);
   await pool.query(`ALTER TABLE team_members ADD INDEX idx_team_discipline (discipline)`).catch(() => {});
+  // Stable link into ETC Planner's Employee.id (2026-08-13) — the shared
+  // source of truth for the 7 delivery-team groupings, replacing the old
+  // name-matched sync. Null for placeholders (ME Placeholder, etc.) and for
+  // the 5 back-office disciplines that stay Scheduler-local; see
+  // routes/team.js for where a linked row's discipline/active get written
+  // through to the shared Employee row.
+  await pool.query(`ALTER TABLE team_members ADD COLUMN employee_id INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE team_members ADD INDEX idx_team_employee (employee_id)`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS project_financials (
@@ -185,6 +202,16 @@ async function init() {
   // Reports-side logout calls out to bump, over POST /api/auth/revoke-session
   // — the mirror of what THIS app's own logout does to Reports.
   await pool.query(`ALTER TABLE users ADD COLUMN token_version INT DEFAULT 0`).catch(() => {});
+  // Stable link into Reports' User.id (shared-account project, 2026-08-13) —
+  // Reports is the one place a password actually lives; a linked row's own
+  // password_hash stops being checked (see routes/auth.js's POST
+  // /api/auth/login) once this is set. UNIQUE because the reverse is also
+  // true: a given Reports account should never end up linked from two
+  // different Scheduler rows. Null for anyone not yet linked — see
+  // scripts/link-etc-users.js for the one-time backfill and routes/auth.js's
+  // POST /api/auth/sso for how a brand-new row gets this set going forward.
+  await pool.query(`ALTER TABLE users ADD COLUMN reports_user_id INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE users ADD UNIQUE INDEX idx_users_reports_user_id (reports_user_id)`).catch(() => {});
   // Normalize any legacy emails stored with stray case/whitespace so they match
   // the trim+lowercase login lookup. Per-row + guarded so a (rare) collision
   // can't abort boot. Idempotent — only touches rows that aren't already clean.
