@@ -8005,6 +8005,10 @@ body[data-view="setup"] #btn-add { display: none; }
 .cp-cadence, .cp-escalation { margin-bottom: 4px; }
 .cp-escalation .cp-level input { text-align: center; font-weight: var(--fw-extrabold); color: var(--sdc-primary, #1574c4); }
 .cp-add { margin-top: 4px; }
+/* The always-there "add someone" blank row — dashed top edge + muted
+   placeholders so it reads as an invitation, not an empty record. */
+.cp-blank-row td { border-top: 1px dashed var(--border-strong, #cbd5e1); background: #fafcff; }
+.cp-blank-row input::placeholder { color: #9db4c8; font-style: italic; }
 .cp-notes {
   width: 100%;
   min-height: 64px;

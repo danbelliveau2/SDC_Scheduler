@@ -2259,7 +2259,39 @@ function renderTable() {
   if (hoursProject) {
     const q = state.quoteCache ? state.quoteCache[hoursProject] : undefined;
     if (q === undefined) ensureProjectQuote(hoursProject);   // async — re-renders when it lands
-    else if (q && q.hours_breakdown) quotedMap = deriveQuotedBuckets(q);
+    else if (q && q.hours_breakdown) {
+      quotedMap = deriveQuotedBuckets(q);
+      // Machine subset active → QUOTED must match what's on screen: sum only
+      // the SELECTED machines' release budgets (M1 = base fields, M2+ under
+      // release.machines). Scheduled already scopes via the row filter, so
+      // without this the Δ compared "M1's scheduled" against "everyone's
+      // quoted" and every department read as under-scheduled. Change-quote
+      // hours aren't machine-tagged — they only count in the all-machines
+      // view. Falls back to the full quote when the release has no
+      // per-machine budgets to scope with.
+      const _mSubset = state.filters.machinesSubset || [];
+      const _rel = q.project_release;
+      if (_mSubset.length && _rel) {
+        const _projMachines = Array.from(new Set(
+          state.tasks.filter(t => t.project === hoursProject && t.machine).map(t => t.machine)
+        )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        const combined = {};
+        const addB = (b) => {
+          for (const [k, v] of Object.entries(b || {})) {
+            if (v == null || v === '' || isNaN(Number(v))) continue;
+            combined[k] = (combined[k] || 0) + Number(v);
+          }
+        };
+        for (const m of _mSubset) {
+          const isBase = _projMachines.length > 0 && m === _projMachines[0];
+          const sc = isBase ? _rel : (_rel.machines && _rel.machines[m]);
+          if (sc && sc.budget) addB(sc.budget);
+        }
+        if (Object.keys(combined).length) {
+          quotedMap = deriveQuotedBuckets({ hours_breakdown: _budgetToHoursBreakdown(combined) });
+        }
+      }
+    }
   }
   const deptHoursFor = (taskList) => {
     if (!hoursProject || !taskList || !taskList.length) return null;
@@ -17582,6 +17614,30 @@ function handleRowContextMenu(e) {
     }});
   }
   items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
+  // Assign / reassign the row to a machine — no more "copy to machine and
+  // delete the original" dance for rows that never got a machine tag.
+  if (task && task.project) {
+    const projMachines = Array.from(new Set(
+      state.tasks.filter(t => t.project === task.project && t.machine).map(t => t.machine)
+    )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    if (projMachines.length) {
+      items.push({ label: `🔧 Machine: ${task.machine || '— none'}…`, onClick: () => {
+        const picks = projMachines.map(mm => ({
+          label: `${task.machine === mm ? '✓ ' : ''}${mm}`,
+          onClick: async () => {
+            try { await api.update(id, { machine: mm }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
+            await loadTasks();
+          },
+        }));
+        picks.push({ separator: true });
+        picks.push({ label: 'No machine (shared row)', onClick: async () => {
+          try { await api.update(id, { machine: null }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
+          await loadTasks();
+        }});
+        showContextMenu(cx, cy, picks);
+      }});
+    }
+  }
   // Copy to another machine — for filling in rows the user missed during
   // the original clone (e.g. M1.FAT didn't get clicked into M2). Lists
   // every OTHER machine in the project as a target.
@@ -17828,6 +17884,7 @@ async function addAdditionalResource(sourceId) {
     priority: 1,
     notes: null,
     sort_order: newOrder,
+    machine: src.machine || null,   // stay on the source row's machine
   };
   const created = await api.create(payload);
   pushUndoSnapshot(src, ['name'], `Add additional resource (${newName})`);
@@ -17840,7 +17897,10 @@ async function addAdditionalResource(sourceId) {
 
 async function createTaskInSection(g, d, s) {
   const project = state.filters.project || null;
-  const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project });
+  // Viewing exactly one machine → the new row belongs to that machine.
+  const subset = state.filters.machinesSubset || [];
+  const machine = subset.length === 1 ? subset[0] : null;
+  const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project, machine });
   await loadTasks();
   const tr = document.querySelector(`tr[data-id="${created.id}"]`);
   if (!tr) return;
@@ -19003,17 +19063,17 @@ function _hoursBreakdownToBudget(hb) {
 function _commPlanDefaults(project) {
   return {
     sdc: [
-      { role: 'Project Manager',         name: projectLead(project, 'pm') || '', email: '', phone: '' },
-      { role: 'Engineering Lead',        name: '', email: '', phone: '' },
-      { role: 'Technician Lead',         name: '', email: '', phone: '' },
-      { role: 'Debug Lead',              name: projectLead(project, 'debug') || '', email: '', phone: '' },
-      { role: 'Sales / Account Manager', name: '', email: '', phone: '' },
+      { role: 'Project Manager',         name: projectLead(project, 'pm') || '', email: '', phone: '', when: 'First stop for everything — schedule, status, coordination' },
+      { role: 'Engineering Lead',        name: '', email: '', phone: '', when: 'Design questions, technical decisions, drawings' },
+      { role: 'Technician Lead',         name: '', email: '', phone: '', when: 'Build / shop-floor questions, assembly status' },
+      { role: 'Debug Lead',              name: projectLead(project, 'debug') || '', email: '', phone: '', when: 'Machine debug, testing issues, on-site startup' },
+      { role: 'Sales / Account Manager', name: '', email: '', phone: '', when: 'Commercial questions, new scope, relationship' },
     ],
     customer: [
-      { role: 'Project Manager',          name: '', email: '', phone: '' },
-      { role: 'Engineering Contact',      name: '', email: '', phone: '' },
-      { role: 'Purchasing',               name: '', email: '', phone: '' },
-      { role: 'Plant / Facility Contact', name: '', email: '', phone: '' },
+      { role: 'Project Manager',          name: '', email: '', phone: '', when: 'Schedule, status, coordination on the customer side' },
+      { role: 'Engineering Contact',      name: '', email: '', phone: '', when: 'Technical approvals, specs, design sign-off' },
+      { role: 'Purchasing',               name: '', email: '', phone: '', when: 'POs, invoices, change-quote paperwork' },
+      { role: 'Plant / Facility Contact', name: '', email: '', phone: '', when: 'Site access, utilities, install windows' },
     ],
     cadence: [
       { name: 'Project Kickoff',        frequency: 'Once — after PO',      when: '',              format: 'Teams / on-site', owner: 'SDC PM',          audience: 'Both project teams' },
@@ -19023,10 +19083,15 @@ function _commPlanDefaults(project) {
       { name: 'Issue (happening now)',  frequency: 'Same day',             when: 'As it happens', format: 'Phone, then email', owner: 'Whoever finds it', audience: 'Both PMs — escalate below' },
       { name: 'Risk (could happen)',    frequency: 'Raised at status update', when: '',           format: 'Status update + risk list', owner: 'SDC PM', audience: 'Both project teams' },
     ],
-    escalation: [
-      { level: '1', sdc: 'Project Manager',     customer: 'Project Manager',            when: 'Day-to-day issues, schedule questions' },
-      { level: '2', sdc: 'Engineering Manager', customer: 'Engineering Manager',        when: 'Unresolved after 3 business days, scope changes' },
-      { level: '3', sdc: 'SDC Ownership',       customer: 'Plant / Program Management', when: 'Commercial disputes, major schedule slips' },
+    escalation_sdc: [
+      { level: '1', who: 'Project Manager',     when: 'Day-to-day issues, schedule questions' },
+      { level: '2', who: 'Engineering Manager', when: 'Unresolved after 3 business days, scope changes' },
+      { level: '3', who: 'SDC Ownership',       when: 'Commercial disputes, major schedule slips' },
+    ],
+    escalation_customer: [
+      { level: '1', who: 'Project Manager',            when: 'Day-to-day issues, schedule questions' },
+      { level: '2', who: 'Engineering Manager',        when: 'Unresolved after 3 business days, scope changes' },
+      { level: '3', who: 'Plant / Program Management', when: 'Commercial disputes, major schedule slips' },
     ],
     notes: '',
   };
@@ -19045,9 +19110,16 @@ async function openCommPlanModal(project) {
   const plan = quote.comm_plan && typeof quote.comm_plan === 'object'
     ? quote.comm_plan
     : _commPlanDefaults(project);
+  // Migrate the old combined escalation table (one row carried both sides)
+  // into the per-side ladders.
+  if (Array.isArray(plan.escalation)) {
+    plan.escalation_sdc = plan.escalation.map(r => ({ level: r.level, who: r.sdc, when: r.when }));
+    plan.escalation_customer = plan.escalation.map(r => ({ level: r.level, who: r.customer, when: r.when }));
+    delete plan.escalation;
+  }
   // Older saved plans might miss a section — backfill so render never breaks.
   const d = _commPlanDefaults(project);
-  for (const k of ['sdc', 'customer', 'cadence', 'escalation']) {
+  for (const k of ['sdc', 'customer', 'cadence', 'escalation_sdc', 'escalation_customer']) {
     if (!Array.isArray(plan[k])) plan[k] = d[k];
   }
   if (typeof plan.notes !== 'string') plan.notes = '';
@@ -19066,19 +19138,27 @@ async function openCommPlanModal(project) {
     <div class="cp-people-col">
       <div class="cp-table-title ${cls}">${escapeHtml(title)}</div>
       <table class="cp-table">
-        <colgroup><col style="width:32%"><col style="width:26%"><col style="width:26%"><col style="width:12%"><col style="width:4%"></colgroup>
-        <thead><tr><th>Role</th><th>Name</th><th>Email</th><th>Phone</th><th></th></tr></thead>
+        <colgroup><col style="width:19%"><col style="width:17%"><col style="width:20%"><col style="width:12%"><col style="width:28%"><col style="width:4%"></colgroup>
+        <thead><tr><th>Role</th><th>Name</th><th>Email</th><th>Phone</th><th title="What this person is the contact FOR — which situations go to them.">Contact for…</th><th></th></tr></thead>
         <tbody>
           ${plan[section].map((r, i) => `<tr>
             <td>${inp(section, i, 'role', r.role, 'Role')}</td>
             <td>${inp(section, i, 'name', r.name, 'Name')}</td>
             <td>${inp(section, i, 'email', r.email, 'name@company.com')}</td>
             <td>${inp(section, i, 'phone', r.phone, '')}</td>
+            <td>${inp(section, i, 'when', r.when, 'Which situations go to them')}</td>
             <td>${delBtn(section, i)}</td>
           </tr>`).join('')}
+          <tr class="cp-blank-row">
+            <td><input type="text" data-cp-new="${section}.role" placeholder="+ Add someone — role…" autocomplete="off"></td>
+            <td><input type="text" data-cp-new="${section}.name" placeholder="Name" autocomplete="off"></td>
+            <td><input type="text" data-cp-new="${section}.email" placeholder="Email" autocomplete="off"></td>
+            <td><input type="text" data-cp-new="${section}.phone" placeholder="Phone" autocomplete="off"></td>
+            <td><input type="text" data-cp-new="${section}.when" placeholder="Contact for…" autocomplete="off"></td>
+            <td></td>
+          </tr>
         </tbody>
       </table>
-      <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="${section}">+ Add person</button>
     </div>`;
 
   const bodyHtml = () => `
@@ -19107,21 +19187,26 @@ async function openCommPlanModal(project) {
       </table>
       <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="cadence">+ Add communication</button>
     </div>
-    <div class="pr-field"><div class="pr-label">Escalation path <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— issues climb one level at a time</span></div>
-      <table class="cp-table cp-escalation">
-        <colgroup><col style="width:8%"><col style="width:26%"><col style="width:26%"><col style="width:36%"><col style="width:4%"></colgroup>
-        <thead><tr><th>Level</th><th>SDC contact</th><th>Customer contact</th><th>When to escalate</th><th></th></tr></thead>
-        <tbody>
-          ${plan.escalation.map((r, i) => `<tr>
-            <td class="cp-level">${inp('escalation', i, 'level', r.level, String(i + 1))}</td>
-            <td>${inp('escalation', i, 'sdc', r.sdc, 'SDC role / name')}</td>
-            <td>${inp('escalation', i, 'customer', r.customer, 'Customer role / name')}</td>
-            <td>${inp('escalation', i, 'when', r.when, 'What triggers this level')}</td>
-            <td>${delBtn('escalation', i)}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-      <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="escalation">+ Add level</button>
+    <div class="pr-field"><div class="pr-label">Escalation paths <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— each side has its own ladder; issues climb one level at a time</span></div>
+      <div class="cp-people">
+        ${['escalation_sdc', 'escalation_customer'].map(section => `
+        <div class="cp-people-col">
+          <div class="cp-table-title ${section === 'escalation_sdc' ? 'cp-side-sdc' : 'cp-side-customer'}">${section === 'escalation_sdc' ? 'SDC escalation' : 'Customer escalation'}</div>
+          <table class="cp-table cp-escalation">
+            <colgroup><col style="width:10%"><col style="width:34%"><col style="width:52%"><col style="width:4%"></colgroup>
+            <thead><tr><th>Level</th><th>Contact</th><th>When to escalate</th><th></th></tr></thead>
+            <tbody>
+              ${plan[section].map((r, i) => `<tr>
+                <td class="cp-level">${inp(section, i, 'level', r.level, String(i + 1))}</td>
+                <td>${inp(section, i, 'who', r.who, 'Role / name')}</td>
+                <td>${inp(section, i, 'when', r.when, 'What triggers this level')}</td>
+                <td>${delBtn(section, i)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="${section}">+ Add level</button>
+        </div>`).join('')}
+      </div>
     </div>
     <div class="pr-field"><div class="pr-label">Notes</div>
       <textarea class="cp-notes" data-cp-notes placeholder="Anything else the team should know — customer preferences, time zones, site rules…">${escapeHtml(plan.notes || '')}</textarea>
@@ -19184,9 +19269,28 @@ async function openCommPlanModal(project) {
         readPlan();
         const section = btn.dataset.cpAdd;
         const blank = section === 'cadence' ? { name: '', frequency: '', when: '', format: '', owner: '', audience: '' }
-          : section === 'escalation' ? { level: String(plan.escalation.length + 1), sdc: '', customer: '', when: '' }
-          : { role: '', name: '', email: '', phone: '' };
+          : section.startsWith('escalation') ? { level: String(plan[section].length + 1), who: '', when: '' }
+          : { role: '', name: '', email: '', phone: '', when: '' };
         plan[section].push(blank);
+        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
+        wire();
+        savePlan();
+      });
+    });
+    // Always-there blank row at the bottom of each people table — type in it
+    // and (on blur) it becomes a real row with a fresh blank underneath.
+    overlay.querySelectorAll('input[data-cp-new]').forEach(el => {
+      el.addEventListener('change', () => {
+        const section = el.dataset.cpNew.split('.')[0];
+        const vals = {};
+        let any = false;
+        overlay.querySelectorAll(`input[data-cp-new^="${section}."]`).forEach(x => {
+          vals[x.dataset.cpNew.split('.')[1]] = x.value;
+          if (x.value.trim()) any = true;
+        });
+        if (!any) return;
+        readPlan();
+        plan[section].push({ role: '', name: '', email: '', phone: '', when: '', ...vals });
         overlay.querySelector('#cp-body').innerHTML = bodyHtml();
         wire();
         savePlan();
