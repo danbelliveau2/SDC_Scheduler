@@ -96,6 +96,10 @@ app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, last
 // ─── Public auth routes (BEFORE global requireAuth guard) ──────────────────
 app.use(require('./routes/auth')({ pool, io, requireAuth, signToken, bcrypt, AUTH_ENABLED, plannerClient }));
 
+// Server-to-server integration API for other SDC apps (bearer-token auth,
+// not a signed-in session) — also BEFORE the global requireAuth guard.
+app.use(require('./routes/integration')({ pool }));
+
 // Public capability probe — no auth needed, frontend uses this to show/hide the Job Hours drawer
 app.get('/api/hours/status', (_req, res) => res.json({ enabled: hoursApi.ENABLED }));
 
