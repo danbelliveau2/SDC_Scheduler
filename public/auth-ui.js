@@ -26,21 +26,21 @@ window.sdcAuth = {
   user: null,
   token: localStorage.getItem(TOKEN_KEY) || null,
   authEnabled: false,
+  // ── SDC Tools centralized login (2026-08-20) ──────────────────────────────
+  // Clears only THIS app's local token. It deliberately no longer calls
+  // /api/auth/revoke-etc-session: now that the shell owns one login for the
+  // whole suite, revoking the ETC Planner from here created a MUTUAL
+  // REVOCATION LOOP — the Planner's own logout revokes this app straight
+  // back, each bumping the other's token_version, so a perfectly good SSO
+  // hand-off died seconds after it succeeded and BOTH apps demanded a fresh
+  // login. Observed live: users.token_version climbing 7 → 9 → 14 on its own.
+  // Suite-wide sign-out belongs to the shell (shell/electron/sdcSession.js's
+  // clearSdcSession), which clears every app's cookie in one place. Do not
+  // reintroduce cross-app revoke without a single owner of session lifetime.
   signOut() {
-    const token = window.sdcAuth.token;
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
-    // Tell the ETC Planner too, so a session established there via the SSO
-    // hand-off doesn't outlive signing out HERE — the mirror of what the
-    // Planner's own logout already does to this app. Best-effort: uses the
-    // token captured above (this app's OWN token is already cleared by the
-    // time the request is even sent), and is capped at 1.5s so a slow or
-    // unreachable Planner can delay the reload only briefly, never block it
-    // — location.reload() below always runs regardless of how this settles.
-    const revoke = token
-      ? _originalFetch('/api/auth/revoke-etc-session', { method: 'POST', headers: { Authorization: 'Bearer ' + token } }).catch(() => {})
-      : Promise.resolve();
-    Promise.race([revoke, new Promise((resolve) => setTimeout(resolve, 1500))]).then(() => location.reload());
+    location.reload();
   },
   showLogin() { _openModal(); },
 };
