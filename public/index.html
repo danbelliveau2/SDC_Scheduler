@@ -978,6 +978,22 @@
   <!-- Cache-bust local scripts via a ?v= query string. The number gets
        bumped any time a Dan-side render fix needs to forcibly invalidate
        a browser's cached copy of app.js / phases.js / etc. -->
+  <!-- SDC Tools centralized login: if the Electron shell already signed this
+       person in and minted a Scheduler token (shell/electron/sdcSession.js +
+       SDC_Scheduler/routes/ssoCentral.js), seed it into localStorage BEFORE
+       auth-ui.js's own synchronous init reads localStorage below — so
+       opening this app from the shell never shows the login modal for
+       someone already signed into SDC Tools. A plain browser tab with no
+       such cookie is unaffected; auth-ui.js's normal login flow is
+       untouched. -->
+  <script>
+    (function () {
+      try {
+        var m = document.cookie.match(/(?:^|; )scheduler_token=([^;]*)/);
+        if (m) localStorage.setItem('sdc_auth_token', decodeURIComponent(m[1]));
+      } catch (_) {}
+    })();
+  </script>
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->

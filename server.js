@@ -96,6 +96,11 @@ app.use(express.static(path.join(__dirname, 'custom-public'), { etag: true, last
 // ─── Public auth routes (BEFORE global requireAuth guard) ──────────────────
 app.use(require('./routes/auth')({ pool, io, requireAuth, signToken, bcrypt, AUTH_ENABLED, plannerClient }));
 
+// SDC Tools centralized login — the shell calls this once after its own
+// Azure AD login; it IS the authentication step, same reasoning as the
+// SSO route just above.
+app.use(require('./routes/ssoCentral')({ pool, io, signToken, bcrypt }));
+
 // Server-to-server integration API for other SDC apps (bearer-token auth,
 // not a signed-in session) — also BEFORE the global requireAuth guard.
 app.use(require('./routes/integration')({ pool }));

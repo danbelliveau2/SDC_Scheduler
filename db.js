@@ -224,6 +224,24 @@ async function init() {
     if (dirty.length) console.log(`[db] normalized ${dirty.length} user email(s) to trim+lowercase`);
   } catch (_) { /* users table may be mid-migration on a fresh DB */ }
 
+  // Per-app roles for SDC Tools apps that have their own role concept but no
+  // users table of their own (today: Calendar's admin/hr/manager/employee).
+  // Scheduler's own role stays in `users.role` above — not duplicated here.
+  // Read/written by routes/ssoCentral.js (the central SSO exchange) and
+  // seeded from each app's pre-migration role source by a one-time backfill
+  // script run at that app's cutover — see scripts/link-etc-users.js for the
+  // precedent this follows.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sdc_app_roles (
+      id         INT AUTO_INCREMENT PRIMARY KEY,
+      email      VARCHAR(255) NOT NULL,
+      app        VARCHAR(32) NOT NULL,
+      role_value VARCHAR(32) NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY idx_sdc_app_roles_email_app (email, app)
+    )
+  `);
+
   // Per-job materials-estimate override (PM-entered). ETO is read-only and its
   // EstTotalMaterials is often unset, so PMs can enter the real estimate here;
   // the Procurement Cost tab uses it for the "vs estimate" + ETC figures.
