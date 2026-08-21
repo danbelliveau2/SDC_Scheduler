@@ -18650,6 +18650,34 @@ async function parseProjectRelease(arrayBuffer, fileName) {
     }
   }
 
+  // ── Multi-machine releases ── "Payment Milestones for 1st Machine:" /
+  // "…for 2nd Machine:" sections. Each machine's bullet list parses into its
+  // own set; machine 1's list becomes the main `milestones`. Without this,
+  // the global scan mashed every machine's bullets into one list (the 1163
+  // incident: two machines combined, M2 wiped).
+  const machine_milestones = {};
+  const secRe = /payment\s+milestones\s+for\s+(?:the\s+)?(\d+)(?:st|nd|rd|th)\s+machine/gi;
+  const secHits = [];
+  let sm;
+  while ((sm = secRe.exec(text))) secHits.push({ n: Number(sm[1]), idx: sm.index });
+  const multi_machine = secHits.length >= 2;
+  if (multi_machine) {
+    for (let i = 0; i < secHits.length; i++) {
+      const chunk = text.slice(secHits[i].idx, i + 1 < secHits.length ? secHits[i + 1].idx : text.length);
+      const list = [];
+      const re = /(\d{1,3})\s*%\s*([A-Za-z][^\d\n|(]{2,60})/g;
+      let r;
+      while ((r = re.exec(chunk)) && list.length < 8) {
+        list.push({ pct: Number(r[1]), label: r[2].trim() });
+      }
+      if (list.length) machine_milestones['M' + secHits[i].n] = list;
+    }
+    if (machine_milestones.M1 && machine_milestones.M1.length) {
+      milestones.length = 0;
+      milestones.push(...machine_milestones.M1);
+    }
+  }
+
   // Penalty clause — present only if the doc actually mentions one.
   const penalty = /penalt/i.test(text);
   let penalty_weeks = null;
@@ -18689,16 +18717,20 @@ async function parseProjectRelease(arrayBuffer, fileName) {
     uploaded_at: new Date().toISOString(),
     receipt_of_po, delivery_weeks, delivery_date,
     milestones, penalty, penalty_weeks, budget_image,
+    multi_machine, machine_milestones,
   };
 }
 
 // Persist the parsed release onto the project's quote object (arbitrary JSON,
 // no whitelist server-side) so it loads on every open without re-parsing.
-async function saveProjectRelease(project, release) {
+// opts.snapshotPrev: stash the PREVIOUS release alongside so a bad upload can
+// be reverted (↩ Revert last upload in the panel).
+async function saveProjectRelease(project, release, opts = {}) {
   let quote = {};
   try { const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`); if (r.ok) quote = (await r.json()) || {}; } catch (_) {}
   quote = quote || {};
   quote.project_release = release;
+  if (opts.snapshotPrev !== undefined) quote.project_release_prev = opts.snapshotPrev || null;
   // LIVE-apply delivery + penalty to the quote. These used to apply only on
   // "Accept & apply" — so filling them in the panel left the stats box's
   // QUOTED duration and the Gantt's penalty line blank, which read as broken
@@ -19552,6 +19584,7 @@ async function openProjectReleaseModal(project) {
       <div class="pr-foot">
         <button type="button" class="btn-secondary pr-open-btn" title="${escapeHtml(rel.name || 'Project Release.docx')} — open the original Word document">📄 Open Project Release</button>
         <button type="button" class="btn-secondary pr-replace-btn" title="Upload a newer revision of the release .docx — replaces the stored document and re-parses it">⬆ Update Project Release…</button>
+        ${quoteObj && quoteObj.project_release_prev ? `<button type="button" class="btn-secondary pr-revert-btn" title="Undo the last upload — puts the release back exactly as it was before, including per-machine terms and budgets.">↩ Revert last upload</button>` : ''}
         <span class="pr-foot-spacer" style="flex:1 1 auto"></span>
         <button type="button" class="btn-primary pr-accept-btn">✓ Accept &amp; apply</button>
         <input type="file" accept=".docx" class="pr-file" style="display:none;">
@@ -19847,6 +19880,23 @@ async function openProjectReleaseModal(project) {
     };
     overlay.querySelector('.pr-open-btn')?.addEventListener('click', viewOriginal);
 
+    // ↩ Revert last upload — swap the release back to the pre-upload
+    // snapshot. The bad version becomes the new snapshot, so revert is
+    // itself revertible.
+    overlay.querySelector('.pr-revert-btn')?.addEventListener('click', async () => {
+      const prev = quoteObj && quoteObj.project_release_prev;
+      if (!prev) return;
+      const current = release;
+      release = prev;
+      try { await saveProjectRelease(project, release, { snapshotPrev: current }); } catch (_) {}
+      quoteObj.project_release = release;
+      quoteObj.project_release_prev = current;
+      overlay.querySelector('#pr-body').innerHTML = bodyHtml(release);
+      wire();
+      mountFin();
+      showToast('Reverted — the release is back to how it was before the last upload.');
+    });
+
     // Accept & apply.
     overlay.querySelector('.pr-accept-btn')?.addEventListener('click', async () => {
       readEdits();
@@ -19864,7 +19914,19 @@ async function openProjectReleaseModal(project) {
         try {
           const buf = await file.arrayBuffer();
           const parsed = await parseProjectRelease(buf, file.name);
-          await saveProjectRelease(project, parsed);
+          // A RE-UPLOAD must never destroy curated data (the 1163 incident):
+          // carry forward everything the doc's parse doesn't own — the
+          // per-machine scopes (delivery/penalty/budgets), the change quotes,
+          // and hand-entered budgets. The previous release is snapshotted so
+          // ↩ Revert can undo the whole upload.
+          const prev = release || null;
+          const prevHadBudget = !!(prev && prev.budget && Object.values(prev.budget).some(v => Number(v) > 0));
+          if (prev) {
+            parsed.change_quotes = prev.change_quotes || [];
+            if (prev.machines) parsed.machines = prev.machines;
+            if (prevHadBudget) parsed.budget = prev.budget;
+          }
+          await saveProjectRelease(project, parsed, { snapshotPrev: prev });
           // Stash the raw .docx so "View original" can open it later.
           try {
             const b64 = _bytesToBase64(new Uint8Array(buf));
@@ -19873,10 +19935,20 @@ async function openProjectReleaseModal(project) {
             });
           } catch (_) {}
           release = parsed;
+          quoteObj.project_release = parsed;
+          quoteObj.project_release_prev = prev;
           overlay.querySelector('#pr-body').innerHTML = bodyHtml(release);
           wire();
           mountFin();
-          autoFillBudget(release);   // best-effort OCR of the budget picture
+          // OCR of the budget picture — ONLY when there were no curated
+          // numbers to protect, and never on a multi-machine release (its
+          // picture holds several machines' tables; reading it as one grid
+          // is how two machines got combined into one).
+          if (!prevHadBudget && !parsed.multi_machine) {
+            autoFillBudget(release);
+          } else if (parsed.multi_machine && statusEl) {
+            statusEl.textContent = 'Multi-machine release detected — each machine\'s milestones parsed separately. Enter/verify each machine\'s hours on its tab (the budget picture holds several tables, so it isn\'t auto-read).';
+          }
         } catch (err) {
           if (statusEl) statusEl.textContent = 'Could not read that file: ' + (err.message || err);
         }
