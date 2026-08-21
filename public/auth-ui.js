@@ -71,6 +71,12 @@ window.fetch = async function (input, init) {
     init.headers.set('Authorization', 'Bearer ' + window.sdcAuth.token);
   }
   const res = await _originalFetch(input, init);
+  // Share mode: 401s are EXPECTED — only a handful of read endpoints accept
+  // the share token; everything else politely refuses. Never open the login
+  // modal or clear a stored token here (an SDC person testing the customer
+  // link still has their own JWT in localStorage — nuking it and demanding a
+  // sign-in was exactly the bug).
+  if (SHARE_TOKEN) return res;
   // 401 → only treat as "session expired" when we ACTUALLY HELD a token that the
   // server rejected. Without this guard, any stray 401 wiped the token and
   // trapped the user behind the login modal mid-work ("surprise logout"). When

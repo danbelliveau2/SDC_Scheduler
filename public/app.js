@@ -4098,6 +4098,7 @@ function renderGantt() {
   try { drawBarMeta(); } catch (_) {}
   try { fixChainLabels(); } catch (_) {}
   try { drawMachineBorders(); } catch (_) {}
+  try { pinGanttDateAxis(); } catch (_) {}   // re-pin dates at the current scroll
   try { renderProjectStatsPopup(); } catch (_) {}
   // Montserrat loads async and is wider than the fallback — if labels were
   // measured before it finished loading they get mis-placed. Once fonts are
@@ -13117,6 +13118,13 @@ function renderProjectTabs() {
       ? 'Pick a project tab first — the Communication Plan is per-project.'
       : `Communication Plan for ${state.filters.project} — SDC + customer contacts, meeting cadence, escalation path.`;
   }
+  const shareBtn = document.getElementById('btn-toolbar-sharelink');
+  if (shareBtn) {
+    shareBtn.disabled = !state.filters.project;
+    shareBtn.title = !state.filters.project
+      ? 'Pick a project tab first — customer links are per-project.'
+      : `Copy ${state.filters.project}'s live customer link — read-only web view, no login. Revoke from the project tab's right-click menu.`;
+  }
   if (quoteBtn) {
     const onAllProjects = !state.filters.project;
     quoteBtn.disabled = onAllProjects;
@@ -13719,6 +13727,23 @@ function openMachineColorPicker(x, y, project, machine) {
 // (rename / duplicate / merge), then destructive operations. Things
 // with other entry points (Quote vs Schedule toolbar button, workspace
 // drag-and-drop) live elsewhere and aren't duplicated here.
+// Mint (or reuse) this project's live customer link and copy it — the URL
+// opens the read-only customer view with no login. Shared by the footer
+// 🔗 Customer Link button and the project tab's right-click menu.
+async function copyCustomerLink(project) {
+  const rec = state.projectsIndex && state.projectsIndex[project];
+  if (!rec || !rec.id) { showToast('This project has no database row yet — open it once and try again.', { kind: 'error' }); return; }
+  try {
+    const r = await fetch(`/api/projects/${rec.id}/share-link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    const url = `${location.origin}/?cust=${body.token}`;
+    try { await navigator.clipboard.writeText(url); } catch (_) {}
+    showToast('Customer link copied — live, read-only view of this project. Anyone with the link can see it. (Revoke: right-click the project tab.)', { duration: 7000 });
+    console.log('[share] customer link for', project, url);
+  } catch (err) { showToast('Could not create the link: ' + (err.message || err), { kind: 'error' }); }
+}
+
 function showProjectTabMenu(x, y, project) {
   const isTemplate = isTemplateProject(project);
   const items = [];
@@ -13774,19 +13799,7 @@ function showProjectTabMenu(x, y, project) {
   // always showing the LIVE customer view of this one project, read-only,
   // no login. Copy it, send it, revoke it when the project closes.
   items.push({ separator: true });
-  items.push({ label: '🔗 Copy live customer link', onClick: async () => {
-    const rec = state.projectsIndex && state.projectsIndex[project];
-    if (!rec || !rec.id) { showToast('This project has no database row yet — open it once and try again.', { kind: 'error' }); return; }
-    try {
-      const r = await fetch(`/api/projects/${rec.id}/share-link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-      const body = await r.json();
-      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
-      const url = `${location.origin}/?cust=${body.token}`;
-      try { await navigator.clipboard.writeText(url); } catch (_) {}
-      showToast('Customer link copied — read-only live view of this project. Anyone with the link can see it.', { duration: 6000 });
-      console.log('[share] customer link for', project, url);
-    } catch (err) { showToast('Could not create the link: ' + (err.message || err), { kind: 'error' }); }
-  }});
+  items.push({ label: '🔗 Copy live customer link', onClick: () => copyCustomerLink(project) });
   items.push({ label: '🔗 Revoke customer link…', onClick: async () => {
     const rec = state.projectsIndex && state.projectsIndex[project];
     if (!rec || !rec.id) return;
@@ -17979,6 +17992,11 @@ function setAppScale(s) {
   // after the layout re-scales so bars stay glued to their grid rows.
   try { renderGantt(); } catch (_) {}
   try { if (state.view === 'team') renderResources(); } catch (_) {}
+  // Customer share view: re-fit after the scale change so the whole project
+  // stays in view at the new size.
+  if (document.body.classList.contains('share-link-view')) {
+    setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 250);
+  }
 }
 (function initAppScale() {
   applyAppScale();
@@ -19279,10 +19297,17 @@ async function openCommPlanModal(project) {
       <button type="button" class="btn-primary cp-close-btn">Done</button>
     </div>`;
 
+  // Resizable window — native browser resize grip (bottom-right corner).
+  // The size the user drags to is remembered per browser and restored on
+  // the next open.
+  let savedSize = null;
+  try { savedSize = JSON.parse(localStorage.getItem('sdcCommPlanSize') || 'null'); } catch (_) {}
+  const startW = savedSize && savedSize.w ? Math.min(savedSize.w, window.innerWidth - 30) : Math.min(1560, window.innerWidth * 0.96);
+  const startH = savedSize && savedSize.h ? Math.min(savedSize.h, window.innerHeight - 30) : Math.round(window.innerHeight * 0.9);
   overlay.innerHTML = `
-    <div class="modal-card" style="max-width: min(1560px, 96vw); width: 96vw;">
+    <div class="modal-card cp-card" style="max-width: none; width: ${startW}px; height: ${startH}px;">
       <div class="modal-head">
-        <h2 style="margin:0;">📇 Communication Plan — ${escapeHtml(project)}</h2>
+        <h2 style="margin:0;">📇 Communication Plan — ${escapeHtml(project)} <span class="pr-muted" style="font-size:11px;font-weight:400;">drag the bottom-right corner to resize</span></h2>
         <button class="modal-close" type="button">×</button>
       </div>
       <div class="modal-body" id="cp-body">${bodyHtml()}</div>
@@ -19290,6 +19315,17 @@ async function openCommPlanModal(project) {
   document.body.appendChild(overlay);
   overlay.querySelector('.modal-close').addEventListener('click', close);
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  // Persist the dragged size (debounced) so it opens that way next time.
+  try {
+    const card = overlay.querySelector('.cp-card');
+    let t = null;
+    new ResizeObserver(() => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        try { localStorage.setItem('sdcCommPlanSize', JSON.stringify({ w: Math.round(card.offsetWidth), h: Math.round(card.offsetHeight) })); } catch (_) {}
+      }, 400);
+    }).observe(card);
+  } catch (_) {}
 
   // Read every input back into the plan object.
   const readPlan = () => {
@@ -26404,6 +26440,26 @@ function _setupScrollPersist() {
   });
 }
 
+// Keep the Gantt's DATE AXIS pinned while scrolling vertically — the grid's
+// column headers are sticky, but frappe draws its dates inside the SVG, so
+// they scrolled away with the bars (Dan: "the dates should stay fixed").
+// Translate the header groups down by scrollTop, and re-append them to the
+// end of the SVG so they PAINT ON TOP of the bars sliding underneath.
+function pinGanttDateAxis() {
+  try {
+    const gantt = document.getElementById('schedule-gantt');
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!gantt || !svg) return;
+    const y = gantt.scrollTop || 0;
+    for (const sel of ['.grid-header', '.date', '.sdc-weekday-letter-group']) {
+      svg.querySelectorAll(sel).forEach(el => {
+        el.setAttribute('transform', `translate(0, ${y})`);
+        if (el.parentNode !== svg || el !== svg.lastElementChild) svg.appendChild(el);
+      });
+    }
+  } catch (_) { /* cosmetic — never break scrolling */ }
+}
+
 // Sync vertical scroll between grid and gantt so rows always line up.
 function setupScrollSync() {
   const grid = document.getElementById('schedule-grid');
@@ -26414,12 +26470,14 @@ function setupScrollSync() {
     if (lock) return;
     lock = true;
     gantt.scrollTop = grid.scrollTop;
+    pinGanttDateAxis();
     requestAnimationFrame(() => { lock = false; });
   });
   gantt.addEventListener('scroll', () => {
     if (lock) return;
     lock = true;
     grid.scrollTop = gantt.scrollTop;
+    pinGanttDateAxis();
     requestAnimationFrame(() => { lock = false; });
   });
 }
@@ -28851,6 +28909,15 @@ async function init() {
       openCommPlanModal(p);
     });
   }
+  // 🔗 Customer Link — mint/copy the live read-only share URL for this project.
+  const shareLinkBtn = document.getElementById('btn-toolbar-sharelink');
+  if (shareLinkBtn) {
+    shareLinkBtn.addEventListener('click', () => {
+      const p = state.filters.project;
+      if (!p) return;
+      copyCustomerLink(p);
+    });
+  }
   // 💲 Financial Milestones — opens the same per-project editor that the
   // Quote modal exposes via its "$ Financial Milestones" link.
   const finToolbarBtn = document.getElementById('btn-toolbar-financials');
@@ -29151,6 +29218,17 @@ async function init() {
         try { enterCustomerView(); } catch (_) {}
         if (!document.body.classList.contains('customer-view') && tries > 0) {
           setTimeout(() => _enterShareCustomer(tries - 1), 700);
+        } else {
+          // Landed. Customers ALWAYS open zoomed-to-fit (whole project in
+          // view), and they get the app-scale control — floated bottom-right
+          // since the sidebar it lives in is hidden here. Their setting
+          // saves in their own browser, sized to their screen.
+          setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 700);
+          const ctl = document.querySelector('.app-scale-ctl');
+          if (ctl && !ctl.classList.contains('share-floating')) {
+            ctl.classList.add('share-floating');
+            document.body.appendChild(ctl);
+          }
         }
       };
       setTimeout(() => _enterShareCustomer(5), 400);

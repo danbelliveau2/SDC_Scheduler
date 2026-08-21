@@ -7955,6 +7955,21 @@ body[data-view="setup"] #btn-add { display: none; }
 .pr-view-link:hover { text-decoration: underline; }
 .pr-status { font-size: var(--fs-sm); color: var(--text-muted); margin-top: 10px; }
 
+/* Resizable Communication Plan window — native grip in the bottom-right
+   corner; the body scrolls inside whatever size the user drags to. */
+.cp-card {
+  resize: both;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 640px;
+  min-height: 380px;
+  max-width: 98vw !important;
+  max-height: 96vh;
+}
+.cp-card .modal-head { flex: 0 0 auto; }
+.cp-card .modal-body { flex: 1 1 auto; overflow: auto; }
+
 /* ── Communication Plan modal ── SDC-styled who's-who + cadence + escalation.
    SDC side titled in SDC navy, customer side in SDC yellow; tables share the
    financials-grid look. */
@@ -8046,6 +8061,30 @@ body.share-link-view #btn-customer-view-flatten,
 body.share-link-view .app-sidebar,
 body.share-link-view .sdc-auth-pill,
 body.share-link-view .app-scale-ctl { display: none !important; }
+/* The sidebar is gone here — reclaim its reserved 90px so the page starts at
+   the left edge like a normal website (no dead gray strip). */
+body.share-link-view { margin-left: 0 !important; }
+/* Internal drawers/footer have no business on a customer page (Notes was
+   even showing a red "couldn't load" retry bar). */
+body.share-link-view .schedule-footer,
+body.share-link-view #schedule-drawer-stack,
+body.share-link-view .schedule-notes,
+body.share-link-view .schedule-proc-drawer,
+body.share-link-view .schedule-hours-drawer { display: none !important; }
+/* …except the app-scale control, which floats bottom-LEFT (where it lives in
+   the real app) so the customer can size the page to THEIR screen. */
+body.share-link-view .app-scale-ctl.share-floating {
+  display: flex !important;
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 500;
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--sdc-dark, #061d39);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(6, 29, 57, 0.35);
+}
 
 /* Change-quote budget grids — one per CQ under the CQ table. */
 .pr-cq-grid { margin-top: 10px; }
