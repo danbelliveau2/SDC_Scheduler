@@ -8038,6 +8038,15 @@ body[data-view="setup"] #btn-add { display: none; }
 }
 .cp-save-status { font-size: var(--fs-sm); }
 
+/* ── Customer share-link mode ── the customer view with no way out and no
+   internal chrome: the exit/flatten floaters, sidebar, and avatar are gone.
+   What's left is exactly what a customer should see: the schedule. */
+body.share-link-view #btn-customer-view-exit,
+body.share-link-view #btn-customer-view-flatten,
+body.share-link-view .app-sidebar,
+body.share-link-view .sdc-auth-pill,
+body.share-link-view .app-scale-ctl { display: none !important; }
+
 /* Change-quote budget grids — one per CQ under the CQ table. */
 .pr-cq-grid { margin-top: 10px; }
 .pr-cq-grid-title {

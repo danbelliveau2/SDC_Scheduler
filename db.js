@@ -300,6 +300,10 @@ async function init() {
   // Separate Power BI job ID — lets a project link a different job number for
   // hours data than the one used for ETO (e.g. multi-job rollups like "1129&1143").
   await pool.query(`ALTER TABLE projects ADD COLUMN hours_job_id VARCHAR(255)`).catch(() => {});
+  // Live customer share links: a random token per project; anyone holding it
+  // gets READ-ONLY, project-scoped access to the customer view (no login).
+  await pool.query(`ALTER TABLE projects ADD COLUMN share_token VARCHAR(64)`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD UNIQUE INDEX idx_projects_share_token (share_token)`).catch(() => {});
   // Snapshot pulled from the SDC ETC Planner when a project is created from its
   // job list. billable + the release/delivery estimate dates are captured once
   // at create time; live actuals-vs-execution are fetched on demand via

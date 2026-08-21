@@ -103,6 +103,27 @@ app.use(require('./routes/integration')({ pool }));
 // Public capability probe — no auth needed, frontend uses this to show/hide the Job Hours drawer
 app.get('/api/hours/status', (_req, res) => res.json({ enabled: hoursApi.ENABLED }));
 
+// ─── Live customer share links ──────────────────────────────────────────────
+// A valid per-project share token (X-Share-Token header, set by the frontend
+// when opened via /?cust=<token>) grants READ-ONLY access to the handful of
+// GETs the customer view needs, SCOPED to that one project (routes filter on
+// req.shareProject). Everything else — every write, every other endpoint —
+// still requires a real signed-in JWT. Revoking = clearing the token on the
+// projects row.
+const SHARE_GET_PATHS = new Set(['/api/tasks', '/api/team', '/api/settings', '/api/financials', '/api/share/info']);
+app.use(async (req, res, next) => {
+  const tok = req.headers['x-share-token'];
+  if (!tok || req.method !== 'GET' || !SHARE_GET_PATHS.has(req.path)) return next();
+  try {
+    const [[row]] = await pool.query('SELECT id, name FROM projects WHERE share_token = ?', [String(tok).slice(0, 64)]);
+    if (!row) return res.status(401).json({ error: 'This share link is no longer valid.', code: 'SHARE_REVOKED' });
+    req.shareProject = row.name;
+    req.authUser = { id: 0, email: 'customer@share-link', name: 'Customer link', role: 'viewer' };
+    if (req.path === '/api/share/info') return res.json({ project: row.name });
+    next();
+  } catch (e) { res.status(503).json({ error: e.message }); }
+});
+
 // Global auth guard — every /api/* request below this line goes through it.
 app.use(requireAuth);
 

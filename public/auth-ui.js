@@ -55,11 +55,19 @@ try {
 // ── fetch wrapper ────────────────────────────────────────────────────────
 // Attaches Bearer token + intercepts 401/403 with a friendly message. Wraps
 // the global window.fetch so app.js needs no changes.
+// Customer share link (/?cust=<token>): no login — every request carries the
+// share token instead of a JWT, and the server scopes it to one project,
+// read-only. The login modal is suppressed entirely in this mode.
+const SHARE_TOKEN = new URLSearchParams(location.search).get('cust') || null;
+window.sdcAuth.shareMode = !!SHARE_TOKEN;
+
 const _originalFetch = window.fetch.bind(window);
 window.fetch = async function (input, init) {
   init = init || {};
   init.headers = new Headers(init.headers || {});
-  if (window.sdcAuth.token) {
+  if (SHARE_TOKEN) {
+    init.headers.set('X-Share-Token', SHARE_TOKEN);
+  } else if (window.sdcAuth.token) {
     init.headers.set('Authorization', 'Bearer ' + window.sdcAuth.token);
   }
   const res = await _originalFetch(input, init);
@@ -126,6 +134,9 @@ async function _trySsoHandoff() {
 }
 
 async function _boot() {
+  // Customer share link: no login, no modal, no user pill — the share token
+  // on every request is the whole identity (read-only, one project).
+  if (SHARE_TOKEN) return;
   await _trySsoHandoff();
   try {
     const r = await _originalFetch('/api/auth/me', {

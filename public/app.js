@@ -13770,6 +13770,33 @@ function showProjectTabMenu(x, y, project) {
   items.push({ separator: true });
   items.push(leadItem('pm', '👤', 'PM'));
   items.push(leadItem('debug', '🛠', 'Debug lead'));
+  // Live customer link — Smartsheet-style: a URL the customer keeps open,
+  // always showing the LIVE customer view of this one project, read-only,
+  // no login. Copy it, send it, revoke it when the project closes.
+  items.push({ separator: true });
+  items.push({ label: '🔗 Copy live customer link', onClick: async () => {
+    const rec = state.projectsIndex && state.projectsIndex[project];
+    if (!rec || !rec.id) { showToast('This project has no database row yet — open it once and try again.', { kind: 'error' }); return; }
+    try {
+      const r = await fetch(`/api/projects/${rec.id}/share-link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+      const url = `${location.origin}/?cust=${body.token}`;
+      try { await navigator.clipboard.writeText(url); } catch (_) {}
+      showToast('Customer link copied — read-only live view of this project. Anyone with the link can see it.', { duration: 6000 });
+      console.log('[share] customer link for', project, url);
+    } catch (err) { showToast('Could not create the link: ' + (err.message || err), { kind: 'error' }); }
+  }});
+  items.push({ label: '🔗 Revoke customer link…', onClick: async () => {
+    const rec = state.projectsIndex && state.projectsIndex[project];
+    if (!rec || !rec.id) return;
+    const ok = await showConfirmDialog({ title: 'Revoke the customer link?', message: `Anyone holding ${project}'s link loses access immediately. A new link can be made later.`, okLabel: 'Revoke', danger: true });
+    if (!ok) return;
+    try {
+      await fetch(`/api/projects/${rec.id}/share-link`, { method: 'DELETE' });
+      showToast('Customer link revoked.');
+    } catch (err) { showToast(err.message || 'Revoke failed', { kind: 'error' }); }
+  }});
   // 3) Destructive — only on non-template tabs.
   if (!isTemplate) {
     items.push({ separator: true });
@@ -29034,6 +29061,29 @@ async function init() {
   } catch (_) {}
 
   loadTasks().then(() => {
+    // Customer share link (/?cust=<token>): the server already scoped every
+    // read to ONE project — lock the UI onto it, enter the customer view,
+    // and stop. No tabs, no sidebar, no editing (the server rejects writes).
+    if (window.sdcAuth && window.sdcAuth.shareMode) {
+      const shareProject = (state.tasks.find(t => t.project) || {}).project || '';
+      state.openProjects = shareProject ? [shareProject] : [];
+      state.filters.project = shareProject;
+      state.view = 'schedule';
+      document.body.dataset.view = 'schedule';
+      document.body.classList.add('share-link-view');
+      render();
+      // enterCustomerView measures the settled layout — at boot the first
+      // attempt can land before the grid/Gantt exist and silently no-op, so
+      // retry until the class actually sticks.
+      const _enterShareCustomer = (tries) => {
+        try { enterCustomerView(); } catch (_) {}
+        if (!document.body.classList.contains('customer-view') && tries > 0) {
+          setTimeout(() => _enterShareCustomer(tries - 1), 700);
+        }
+      };
+      setTimeout(() => _enterShareCustomer(5), 400);
+      return;
+    }
     // Deep-link from the SDC ETC Planner (?job=…): jump straight to that job's
     // project schedule. Runs here — after loadTasks() has hydrated the tabs and
     // restored the last active project from sessionStorage — so this override

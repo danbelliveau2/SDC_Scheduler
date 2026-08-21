@@ -11,7 +11,8 @@ module.exports = function createRouter(deps) {
 
   router.get('/api/financials', async (req, res) => {
     try {
-      const project = (req.query.project || '').toString();
+      // Customer share link → forced to that project regardless of the query.
+      const project = req.shareProject || (req.query.project || '').toString();
       const [rows] = project
         ? await pool.query('SELECT * FROM project_financials WHERE project = ? ORDER BY sort_order, id', [project])
         : await pool.query('SELECT * FROM project_financials ORDER BY project, sort_order, id');

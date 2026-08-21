@@ -614,6 +614,29 @@ module.exports = function createRouter(deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── Live customer share links ── generate / read / revoke the per-project
+  // token. Anyone holding the link sees the READ-ONLY customer view of this
+  // one project (see the share middleware in server.js).
+  router.post('/api/projects/:id/share-link', requireRole('editor'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const [[row]] = await pool.query('SELECT id, name, share_token FROM projects WHERE id = ?', [id]);
+      if (!row) return res.status(404).json({ error: 'not found' });
+      let token = row.share_token;
+      if (!token || req.body?.regenerate) {
+        token = require('crypto').randomBytes(24).toString('hex');
+        await pool.query('UPDATE projects SET share_token = ? WHERE id = ?', [token, id]);
+      }
+      res.json({ ok: true, token });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  router.delete('/api/projects/:id/share-link', requireRole('editor'), async (req, res) => {
+    try {
+      await pool.query('UPDATE projects SET share_token = NULL WHERE id = ?', [Number(req.params.id)]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   router.post('/api/projects/ensure', requireRole('editor'), async (req, res) => {
     try {
       const name = (req.body.name || '').toString().trim();
