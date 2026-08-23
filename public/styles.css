@@ -3263,12 +3263,20 @@ body.customer-view .customer-view-flatten.is-active {
   width: 64px;
 }
 
-/* Per-project Procurement summary row — no expand, so unlike .notes-bar it
-   shouldn't look clickable outside its "↗ Reports" button. */
-.schedule-proc-drawer { flex: 0 0 auto; display: flex; flex-direction: column; }
-.proc-drawer-bar { cursor: default; }
-.proc-drawer-bar:hover { background: var(--sdc-dark, #061d39); }
-.proc-drawer-body { background: var(--surface, #fff); padding: 0 14px 24px; overflow-y: auto; max-height: 65vh; }
+/* Procurement + Job Hours summary buttons — compact, sit side by side (wrap
+   onto their own line if the window is narrow), NOT full-width accordion
+   rows like Notes. Each whole button is its own click target straight into
+   SDC Reports; see renderScheduleProcurement/renderScheduleHours. */
+.schedule-summary-row { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 14px; background: #fff; border-top: 1px solid var(--border, #e2e8f0); }
+.schedule-summary-btn {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  border: 1px solid #c8d5e3; background: #fff; color: #1e293b;
+  padding: 6px 14px; border-radius: 8px;
+  font-family: inherit; font-size: var(--fs-md); font-weight: var(--fw-semibold);
+  cursor: pointer; white-space: nowrap;
+}
+.schedule-summary-btn:hover { background: var(--surface-alt, #f1f5f9); border-color: #94a3b8; }
+.schedule-summary-sep { color: #94a3b8; margin: 0 2px; }
 .proc-drawer-head {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 4px; margin-bottom: 4px;
@@ -12541,11 +12549,7 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
 #jhp-tip .jt-under{ color: #4ade80; }
 #jhp-tip .jt-div  { border-top: 1px solid rgba(255,255,255,0.08); margin: 6px 0; }
 
-/* ── Job Hours summary row — no expand, see .proc-drawer-bar above ─────────── */
-.schedule-hours-drawer { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--border-mid); }
-.hours-drawer-bar { cursor: default; }
-.hours-drawer-bar:hover { background: var(--sdc-dark, #061d39); }
-.hours-drawer-body { background: var(--surface); padding: 10px 14px 18px; overflow-x: auto; overflow-y: auto; max-height: 100vh; }
+/* ── Job Hours summary button — styled with Procurement's; see .schedule-summary-btn ── */
 
 /* Billing group summary cards */
 .hours-bg-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }

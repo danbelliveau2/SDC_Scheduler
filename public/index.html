@@ -397,12 +397,16 @@
         <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Upload the SDC Project Release (.docx) — order date, delivery, penalty, the project budget image, AND the editable financial-milestones grid (fill it out right here). Per-dept hours vs quote live on the grid (Δ).">📄 Project Release</button>
       </div>
       <!-- Bottom drawer stack — fixed overlay at the bottom of the viewport.
-           All three drawers live here so they stack correctly without pushing
-           the schedule content up. -->
+           Everything here stacks without pushing the schedule content up.
+           Notes keeps its own full-width expand/collapse row; Procurement and
+           Job Hours are compact buttons that sit side by side (wrapping onto
+           their own line if the window is narrow) below it. -->
       <div id="schedule-drawer-stack">
         <div id="schedule-notes" class="schedule-notes is-collapsed"></div>
-        <div id="schedule-procurement" class="schedule-proc-drawer is-collapsed"></div>
-        <div id="schedule-hours" class="schedule-hours-drawer is-collapsed"></div>
+        <div id="schedule-summary-row" class="schedule-summary-row">
+          <button id="schedule-procurement" type="button" class="schedule-proc-drawer schedule-summary-btn"></button>
+          <button id="schedule-hours" type="button" class="schedule-hours-drawer schedule-summary-btn"></button>
+        </div>
       </div>
     </section>
 

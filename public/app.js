@@ -14947,10 +14947,11 @@ window.addEventListener('resize', () => {
   if (split) split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
 });
 
-// ── Per-project Procurement summary row ─────────────────────────────────────
-// Compact readiness glance at the bottom of the Schedule view — no expand,
-// no inline BOM/cost drill-down. "↗ Reports" is the only way into detail now
-// (SDC Reports app, pre-scoped to this job's Procurement tab).
+// ── Per-project Procurement summary button ──────────────────────────────────
+// Compact readiness glance at the bottom of the Schedule view. No expand, no
+// inline BOM/cost drill-down, no separate "Reports" control — the whole
+// button IS the drill-through into SDC Reports, pre-scoped to this job's
+// Procurement tab.
 const _procCache = {};   // job → readiness payload (just for the % ready / no-PO stat)
 function renderScheduleProcurement() {
   const el = document.getElementById('schedule-procurement');
@@ -14959,46 +14960,30 @@ function renderScheduleProcurement() {
   const idx = project && state.projectsIndex && state.projectsIndex[project];
   const job = idx && idx.job_number;
   // Only hide when the project/view is wrong or ETO isn't configured at all.
-  // A project that simply has no linked job still shows the row (empty state).
+  // A project that simply has no linked job still shows the button (empty state).
   if (!project || state.view !== 'schedule' || !_etoAvailable) {
     el.style.display = 'none';
     return;
   }
   el.style.display = '';
+  el.onclick = () => _openEtcJobHours(project, 'procurement');
   if (!job) {
-    el.innerHTML = `<div class="notes-bar proc-drawer-bar">
-      <span class="notes-bar-title">📦 Procurement</span>
-      <span class="notes-count">No ETO job linked</span>
-    </div>`;
+    el.innerHTML = `📦 Procurement <span class="schedule-summary-sep">·</span> No ETO job linked`;
+    el.title = 'Link this project to a Total ETO job to see Procurement readiness.';
     return;
   }
   const data = _procCache[job];
   let stat = 'Loading…';
-  if (data && data.error) stat = `<span class="proc-nopo">couldn't load — try Reports</span>`;
+  if (data && data.error) stat = `<span class="proc-nopo">couldn't load</span>`;
   else if (data && data.totals) stat = `${data.totals.pct}% ready · <span class="${data.totals.noPO ? 'proc-nopo' : ''}">${data.totals.noPO} no PO</span>`;
-  el.innerHTML = `<div class="notes-bar proc-drawer-bar">
-    <span class="notes-bar-title">📦 Procurement</span>
-    <span class="notes-count">${stat}</span>
-    <button class="btn-ghost btn-tight" type="button" data-action="open-etc-job-hours" data-etc-section="procurement" title="Open this job's Procurement in SDC Reports">↗ Reports</button>
-  </div>`;
-  _wireReportsButton(el, project);
+  el.innerHTML = `📦 Procurement <span class="schedule-summary-sep">·</span> ${stat}`;
+  el.title = "Open this job's Procurement in SDC Reports";
   if (!data) {
     fetch(`/api/eto/readiness/${encodeURIComponent(job)}`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`request failed (${r.status})`)))
       .then(d => { _procCache[job] = d; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); })
       .catch(e => { _procCache[job] = { error: e.message }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
   }
-}
-
-// Shared by the Procurement and Job Hours rows below — both are just a label +
-// stat + "↗ Reports" button now, so one delegated handler covers either.
-// `data-etc-section` on the button (present for Procurement, absent for Job
-// Hours) is what _openEtcJobHours uses to land on the right tab in Reports.
-function _wireReportsButton(el, project) {
-  el.onclick = (e) => {
-    const etcBtn = e.target.closest('[data-action="open-etc-job-hours"]');
-    if (etcBtn) _openEtcJobHours(project, etcBtn.dataset.etcSection || '');
-  };
 }
 // ── Per-project Job Hours drawer ─────────────────────────────────────────────
 // Collapsible panel below Procurement. Shows Quoted / Actual / Diff per
@@ -15054,10 +15039,11 @@ function ctrlAbortMsg(e) {
     : String(e);
 }
 
-// ── Per-project Job Hours summary row ───────────────────────────────────────
-// Compact quoted/actual glance at the bottom of the Schedule view — no
-// expand, no inline pivot table/charts. "↗ Reports" is the only way into
-// detail now (SDC Reports app, pre-scoped to this job's Job Hour Details).
+// ── Per-project Job Hours summary button ────────────────────────────────────
+// Compact quoted/actual glance — same pattern as the Procurement button
+// above: the whole button IS the drill-through into SDC Reports' Job Hour
+// Details, no expand, no inline pivot table/charts, no separate "Reports"
+// control.
 function renderScheduleHours() {
   const el = document.getElementById('schedule-hours');
   if (!el) return;
@@ -15065,17 +15051,16 @@ function renderScheduleHours() {
   const idx = project && state.projectsIndex && state.projectsIndex[project];
   const job = (idx && idx.hours_job_id) || (idx && idx.job_number);
   // Only hide when the project/view is wrong or Power BI isn't configured at all.
-  // A project with no linked job still shows the row (empty state).
+  // A project with no linked job still shows the button (empty state).
   if (!project || state.view !== 'schedule' || !_hoursAvailable) {
     el.style.display = 'none';
     return;
   }
   el.style.display = '';
+  el.onclick = () => _openEtcJobHours(project, '');
   if (!job) {
-    el.innerHTML = `<div class="notes-bar hours-drawer-bar">
-      <span class="notes-bar-title">⏱ Job Hours</span>
-      <span class="notes-count">No job linked</span>
-    </div>`;
+    el.innerHTML = `⏱ Job Hours <span class="schedule-summary-sep">·</span> No job linked`;
+    el.title = 'Link a Power BI job ID to see hours for this project.';
     return;
   }
   const data = _hoursCache[job];
@@ -15083,7 +15068,7 @@ function renderScheduleHours() {
     ? `Jobs #${data.jobIds.join(' & #')}`
     : `Job #${escapeHtml(String(job))}`;
   let stat = data ? jobLabel : 'Loading…';
-  if (data && data.error) stat = `<span class="proc-nopo">couldn't load — try Reports</span>`;
+  if (data && data.error) stat = `<span class="proc-nopo">couldn't load</span>`;
   else if (data && data.totals && data.fns && data.fns.length) {
     const q = data.totals.quoted, a = data.totals.actual;
     const over = a > q;
@@ -15091,12 +15076,8 @@ function renderScheduleHours() {
     const diffLabel = diff > 0 ? ` (${over ? '+' : '-'}${diff})` : '';
     stat = `${Math.round(q)} quoted · <span style="color:${over ? 'var(--danger)' : 'var(--success)'}; font-weight:700">${Math.round(a)} actual${diffLabel}</span>`;
   }
-  el.innerHTML = `<div class="notes-bar hours-drawer-bar">
-    <span class="notes-bar-title">⏱ Job Hours</span>
-    <span class="notes-count">${stat}</span>
-    <button class="btn-ghost btn-tight" type="button" data-action="open-etc-job-hours" title="Open this job's Job Hour Details in SDC Reports">↗ Reports</button>
-  </div>`;
-  _wireReportsButton(el, project);
+  el.innerHTML = `⏱ Job Hours <span class="schedule-summary-sep">·</span> ${stat}`;
+  el.title = "Open this job's Job Hour Details in SDC Reports";
   if (!data) _loadScheduleHoursDrawer(job, project);
 }
 
