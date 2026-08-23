@@ -7,7 +7,14 @@ module.exports = function createRouter(deps) {
 
   router.get('/api/settings', async (req, res) => {
     try {
-      const [rows] = await pool.query('SELECT `key`, value FROM settings');
+      // project_estimate:* and project_quote:* hold base64 .xlsx blobs (tens of MB total) —
+      // they're fetched individually via /api/project/:project/quote and .../estimate-file,
+      // never read off the bulk settings object, so excluding them here just drops dead
+      // weight. Without this, every page load and every settings:updated / socket-reconnect
+      // refetch pulls the entire multi-MB blob set for no reason.
+      const [rows] = await pool.query(
+        "SELECT `key`, value FROM settings WHERE `key` NOT LIKE 'project_estimate:%' AND `key` NOT LIKE 'project_quote:%'"
+      );
       const out = {};
       for (const r of rows) {
         try { out[r.key] = JSON.parse(r.value); } catch { out[r.key] = r.value; }

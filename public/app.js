@@ -178,7 +178,10 @@ function newClientRef() {
 }
 
 const api = {
-  list: () => fetch('/api/tasks').then(r => r.json()),
+  list: () => fetch('/api/tasks').then(async r => {
+    if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.error || `HTTP ${r.status}`); }
+    return r.json();
+  }),
   // `opts.retryOf`, when present, is the SaveTracker entry this attempt is
   // retrying — reused here only to read its already-assigned client_ref
   // (assigned ONCE, at the very first attempt, in the block below) rather
@@ -289,7 +292,10 @@ const api = {
   getSettings: () => fetch('/api/settings').then(r => r.json()),
   putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(r => r.json()),
   team: {
-    list:   () => fetch('/api/team').then(r => r.json()),
+    list:   () => fetch('/api/team').then(async r => {
+      if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.error || `HTTP ${r.status}`); }
+      return r.json();
+    }),
     // Stamp _lastLocalEdit on every write so the realtime-ui Socket listener
     // skips the immediate echo. Without this stamp, the socket's debounced
     // loadTeam() fires 250 ms after the local save and tears down whatever
@@ -3916,6 +3922,14 @@ function renderGantt() {
     })
     .filter(t => !state._exportOnlyIds || inferredAnchorKey(t) || state._exportOnlyIds.has(t.id));
 
+  // Exposed so the drawer chain below (drawBarMeta, drawMilestoneDiamonds, etc.)
+  // can loop the tasks actually rendering bars right now instead of state.tasks
+  // (every project). Every drawer already skips a task when its .bar-wrapper
+  // doesn't exist, and bar-wrappers only exist for tasks in `filtered` — so this
+  // is a pure cost reduction (was O(all-projects' tasks) per drawer), not a
+  // behavior change.
+  state._visibleTasks = filtered;
+
   renderGanttLegend();
 
   if (filtered.length === 0) {
@@ -4179,9 +4193,10 @@ function compressGanttToWorkDays() {
     // Track each bar's old + new x so the downstream drawers can be told.
     state._workDayMap = { pxPerDay, ganttStart };
 
+    const visibleById = new Map((state._visibleTasks || state.tasks).map(x => [x.id, x]));
     for (const wrap of svg.querySelectorAll('.bar-wrapper')) {
       const id = Number(wrap.dataset.id);
-      const t = state.tasks.find(x => x.id === id);
+      const t = visibleById.get(id);
       if (!t || !t.start_date) continue;
       const startOff = wdo(t.start_date);
       const endOff   = t.end_date ? wdo(t.end_date) : startOff;
@@ -4630,7 +4645,7 @@ function drawMachineBorders() {
     });
     // Gated by the M view-pill + project must actually have 2+ machines.
     if (!shouldShowMachineVisuals()) return;
-    for (const task of state.tasks) {
+    for (const task of (state._visibleTasks || state.tasks)) {
       if (!task.machine) continue;
       const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
       if (!wrap) continue;
@@ -4792,7 +4807,7 @@ function drawBarMeta() {
   const LABEL_H = 11;  // 9px font + small descent / breathing room
   const GAP     = 2;   // bar → label vertical offset
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (task.is_milestone) continue;
     if (inferredAnchorKey(task)) continue;
     if (isBacklogTask(task)) continue;
@@ -5513,7 +5528,7 @@ function drawBaselineGhosts() {
     return sign * Math.max(0, days - 1);
   };
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.baseline_start_date || !task.baseline_end_date) continue;
     if (!task.start_date || !task.end_date) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
@@ -5763,7 +5778,7 @@ function drawFinancialOverlay() {
   // bars are all filtered out (so the All-projects view shows everything, a single
   // project tab shows just that one).
   const visibleProjects = new Set();
-  for (const t of state.tasks) {
+  for (const t of (state._visibleTasks || state.tasks)) {
     if (!t.start_date) continue;
     if (svg.querySelector(`.bar-wrapper[data-id="${t.id}"]`)) {
       visibleProjects.add(t.project || '');
@@ -5970,7 +5985,7 @@ function drawScheduleStatus() {
   // Clear any prior chips before re-drawing (each render rebuilds them).
   svg.querySelectorAll('.sdc-status-chip').forEach(el => el.remove());
   const todayISO = new Date().toISOString().slice(0, 10);
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (task.is_milestone) continue;
     if (!task.start_date || !task.end_date) continue;
     if (inferredAnchorKey(task)) continue;
@@ -6364,7 +6379,7 @@ function drawMilestoneDiamonds() {
   // done vs Mech 1 Release done — sat in the same view.)
   const CHECK_COLOR = '#1e293b';   // slate-800; reads against both lime + slate diamonds
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
     if (!wrap) continue;
@@ -6522,7 +6537,7 @@ function clipBarLabels() {
     svg.clientWidth ||
     Infinity;
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
     if (!wrap) continue;
@@ -6619,7 +6634,7 @@ function drawMilestoneLabels() {
   // so the spine dates are always visible in Both view without scrolling.
   // Anchor diamonds have a concentric outer ring (~75% larger than inner);
   // labels must clear THAT outer edge, not just the inner diamond.
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
     if (!wrap) continue;
@@ -6922,7 +6937,7 @@ function drawCustomArrows() {
   // terminate at the visible outer edge, not the underlying bar-wrapper rect.
   // Anchor diamonds have an OUTER RING ~75% larger than the inner — arrows
   // must terminate at that outer edge, otherwise they pierce the ring.
-  const taskById = Object.fromEntries(state.tasks.map(t => [String(t.id), t]));
+  const taskById = Object.fromEntries((state._visibleTasks || state.tasks).map(t => [String(t.id), t]));
   const bars = [...svg.querySelectorAll('.bar-wrapper')].map(w => {
     const rect = w.querySelector('.bar');
     if (!rect) return null;
@@ -6965,7 +6980,7 @@ function drawCustomArrows() {
   // see end of this function. Collecting jobs here avoids a per-arrow forward
   // declaration.
   const lagLabelJobs = [];
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.predecessors) continue;
     const succ = barById[String(task.id)];
     if (!succ) continue;
@@ -15704,7 +15719,7 @@ document.addEventListener('mousedown', (e) => {
   });
 });
 
-function render() {
+function render(opts = {}) {
   try { syncSalesModeUI(); } catch (_) {}
   try { fitScheduleToolbar(); } catch (_) {}
   renderProjectTabs();
@@ -15716,7 +15731,10 @@ function render() {
   renderPersonalBanner();
   if (state.view === 'schedule') {
     renderTable();
-    renderGantt();
+    // deferGantt: caller is about to run zoomToFit() itself (which renders the
+    // Gantt at the correct fit-to-viewport zoom) — skip this render so a nav
+    // into Schedule doesn't run the full Gantt pipeline twice back to back.
+    if (!opts.deferGantt) renderGantt();
     try { decorateCloneModeRows(); } catch (_) {}
   } else if (state.view === 'team') {
     renderTeam();
@@ -26341,7 +26359,10 @@ function computeOverAllocatedTasks(tasks) {
   return flagged;
 }
 async function loadTeam() {
-  state.team = await api.team.list();
+  try { state.team = await api.team.list(); } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not load team: ' + e.message, { kind: 'error' });
+    return;
+  }
   // Pull ETC's Unassigned + Inactive people (fail-soft: if the planner is off,
   // the board still renders its own 5 discipline cards). Non-blocking on error.
   try { state.teamExtras = await api.team.etcExtras(); }
@@ -26412,15 +26433,29 @@ function setView(view) {
     // round-trips shouldn't restart you at the top.
     _restoreScrollPos(view);
   }
-  else if (view === 'shop-parts') { loadShopParts(); _restoreScrollPos(view); }
-  else if (view === 'vendor-pos') { loadVendorPOs(); _restoreScrollPos(view); }
+  else if (view === 'shop-parts') {
+    // Reuse what's already loaded — shop_parts:updated (realtime-ui.js) keeps
+    // it fresh when the data actually changes, so a plain nav here shouldn't
+    // re-fetch the whole table every time.
+    if (Array.isArray(state.shopParts)) renderShopPartsPage(); else loadShopParts();
+    _restoreScrollPos(view);
+  }
+  else if (view === 'vendor-pos') {
+    // Same reuse as shop-parts, above — vendor_pos:updated covers CRUD saves
+    // AND the 30-min ETO sync cron.
+    if (Array.isArray(state.vendorPOs)) renderVendorPOsPage(); else loadVendorPOs();
+    _restoreScrollPos(view);
+  }
   else if (view === 'job-hours')  { renderJobHoursPage(); _restoreScrollPos(view); }
   else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
   else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
   else if (view === 'recents')   { renderRecentsPage(); _restoreScrollPos(view); }
   else if (view === 'actions')   renderActionsPage();
   else {
-    render();
+    // Gantt render deferred to zoomToFit() below — rendering it here too would
+    // mean two full Gantt rebuilds (once at the stale zoom, once at the fit
+    // zoom) for every nav into Schedule.
+    render({ deferGantt: true });
     // Opening / switching to a schedule: fit the whole project into the Gantt
     // viewport (don't leave it scrolled half off-screen). Deferred two frames so
     // the grid+Gantt layout settles before zoomToFit measures the panel.
@@ -28261,7 +28296,6 @@ function setupModeSegControl() {
 
 function setPaneMode(mode) {
   if (!['grid', 'both', 'gantt'].includes(mode)) return;
-  const becomingVisible = !state.layout.showGantt && mode !== 'grid';
   state.layout.showGantt = (mode !== 'grid');
   state.scheduleView.ganttOnly = (mode === 'gantt');
   // When the Gantt becomes visible (grid → both / grid → gantt / both → gantt) auto
@@ -28273,15 +28307,15 @@ function setPaneMode(mode) {
   saveScheduleView();
   applyGanttVisibility();
   applyScheduleView();
-  // When the Gantt panel was just unhidden, the browser hasn't finished laying out
-  // the now-visible panel yet — its clientWidth still reads stale (often 0). Defer
-  // renderGantt to the next animation frame so the fit calc measures the actual
-  // new panel width. For grid-only, no Gantt rendering needed anyway.
-  if (becomingVisible) {
-    requestAnimationFrame(() => renderGantt());
-  } else if (mode !== 'grid') {
-    renderGantt();
-  }
+  // Used to also renderGantt() here (immediately, or 1-rAF-deferred while the
+  // just-unhidden panel's clientWidth settled) — but the zoom-to-fit block
+  // below ALWAYS runs on this same `mode !== 'grid'` condition, and it does
+  // its own renderGantt() at the correct fit zoom. Rendering twice meant every
+  // pane change into Both/Gantt ran the full Gantt pipeline twice back to
+  // back. Whatever the panel showed before (empty, or last time's Gantt)
+  // holds for a couple of frames until zoomToFit's render lands. For
+  // grid-only, no Gantt rendering needed anyway.
+  //
   // ALWAYS finish a pane change that shows the Gantt with an explicit
   // zoom-to-fit against the settled layout (double rAF — same proven pattern
   // as the ⛶ button and customer view). The _fitOnNextRender flag alone kept
