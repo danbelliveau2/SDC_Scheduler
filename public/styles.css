@@ -3263,9 +3263,11 @@ body.customer-view .customer-view-flatten.is-active {
   width: 64px;
 }
 
-/* Per-project Procurement drawer (opens down like Notes) */
+/* Per-project Procurement summary row — no expand, so unlike .notes-bar it
+   shouldn't look clickable outside its "↗ Reports" button. */
 .schedule-proc-drawer { flex: 0 0 auto; display: flex; flex-direction: column; }
-.schedule-proc-drawer.is-collapsed .proc-drawer-body { display: none; }
+.proc-drawer-bar { cursor: default; }
+.proc-drawer-bar:hover { background: var(--sdc-dark, #061d39); }
 .proc-drawer-body { background: var(--surface, #fff); padding: 0 14px 24px; overflow-y: auto; max-height: 65vh; }
 .proc-drawer-head {
   display: flex; align-items: center; gap: 10px;
@@ -12539,10 +12541,10 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
 #jhp-tip .jt-under{ color: #4ade80; }
 #jhp-tip .jt-div  { border-top: 1px solid rgba(255,255,255,0.08); margin: 6px 0; }
 
-/* ── Job Hours drawer ──────────────────────────────────────────────────────── */
+/* ── Job Hours summary row — no expand, see .proc-drawer-bar above ─────────── */
 .schedule-hours-drawer { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--border-mid); }
-.schedule-hours-drawer.is-collapsed .hours-drawer-body { display: none; }
-.hours-drawer-bar { cursor: pointer; }
+.hours-drawer-bar { cursor: default; }
+.hours-drawer-bar:hover { background: var(--sdc-dark, #061d39); }
 .hours-drawer-body { background: var(--surface); padding: 10px 14px 18px; overflow-x: auto; overflow-y: auto; max-height: 100vh; }
 
 /* Billing group summary cards */
