@@ -392,21 +392,23 @@
              server-side (settings.project_leads); drives the Departments PM
              filter + dashboard. Populated by renderScheduleLeads(). -->
         <div class="schedule-leads" id="schedule-leads"></div>
+        <!-- Compact Procurement/Job Hours summary buttons — same toolbar-toggle-btn
+             styling as Customer Link/Communication Plan/Project Release. Each whole
+             button is its own drill-through straight into SDC Reports, pre-scoped to
+             the active project. Populated by renderScheduleProcurement()/renderScheduleHours(). -->
+        <button id="schedule-procurement" type="button" class="schedule-proc-drawer toolbar-toggle-btn"></button>
+        <button id="schedule-hours" type="button" class="schedule-hours-drawer toolbar-toggle-btn"></button>
         <button id="btn-toolbar-sharelink" class="toolbar-toggle-btn" type="button" title="Copy this project's live customer link — a read-only web page of the schedule (customer view), no login. Revoke it from the project tab's right-click menu.">🔗 Customer Link</button>
         <button id="btn-toolbar-commplan" class="toolbar-toggle-btn" type="button" title="Communication Plan — who's who on the SDC and customer sides, meeting cadence, and the escalation path for this project.">📇 Communication Plan</button>
         <button id="btn-toolbar-quote" class="toolbar-toggle-btn" type="button" title="Upload the SDC Project Release (.docx) — order date, delivery, penalty, the project budget image, AND the editable financial-milestones grid (fill it out right here). Per-dept hours vs quote live on the grid (Δ).">📄 Project Release</button>
       </div>
       <!-- Bottom drawer stack — fixed overlay at the bottom of the viewport.
-           Everything here stacks without pushing the schedule content up.
-           Notes keeps its own full-width expand/collapse row; Procurement and
-           Job Hours are compact buttons that sit side by side (wrapping onto
-           their own line if the window is narrow) below it. -->
+           Notes stacks here on its own, full-width, with its existing
+           expand/collapse behavior. Procurement/Job Hours moved up into
+           schedule-footer above (they're plain toolbar buttons now, not a
+           drawer of their own). -->
       <div id="schedule-drawer-stack">
         <div id="schedule-notes" class="schedule-notes is-collapsed"></div>
-        <div id="schedule-summary-row" class="schedule-summary-row">
-          <button id="schedule-procurement" type="button" class="schedule-proc-drawer schedule-summary-btn"></button>
-          <button id="schedule-hours" type="button" class="schedule-hours-drawer schedule-summary-btn"></button>
-        </div>
       </div>
     </section>
 

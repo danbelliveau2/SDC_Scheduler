@@ -14948,10 +14948,11 @@ window.addEventListener('resize', () => {
 });
 
 // ── Per-project Procurement summary button ──────────────────────────────────
-// Compact readiness glance at the bottom of the Schedule view. No expand, no
-// inline BOM/cost drill-down, no separate "Reports" control — the whole
-// button IS the drill-through into SDC Reports, pre-scoped to this job's
-// Procurement tab.
+// Compact readiness glance, rendered as a plain toolbar button in
+// schedule-footer (alongside Customer Link / Communication Plan / Project
+// Release) — no expand, no inline BOM/cost drill-down, no separate "Reports"
+// control. The whole button IS the drill-through into SDC Reports, pre-scoped
+// to this job's Procurement tab.
 const _procCache = {};   // job → readiness payload (just for the % ready / no-PO stat)
 function renderScheduleProcurement() {
   const el = document.getElementById('schedule-procurement');
@@ -14968,7 +14969,7 @@ function renderScheduleProcurement() {
   el.style.display = '';
   el.onclick = () => _openEtcJobHours(project, 'procurement');
   if (!job) {
-    el.innerHTML = `📦 Procurement <span class="schedule-summary-sep">·</span> No ETO job linked`;
+    el.innerHTML = `📦 Procurement · No ETO job linked`;
     el.title = 'Link this project to a Total ETO job to see Procurement readiness.';
     return;
   }
@@ -14976,7 +14977,7 @@ function renderScheduleProcurement() {
   let stat = 'Loading…';
   if (data && data.error) stat = `<span class="proc-nopo">couldn't load</span>`;
   else if (data && data.totals) stat = `${data.totals.pct}% ready · <span class="${data.totals.noPO ? 'proc-nopo' : ''}">${data.totals.noPO} no PO</span>`;
-  el.innerHTML = `📦 Procurement <span class="schedule-summary-sep">·</span> ${stat}`;
+  el.innerHTML = `📦 Procurement · ${stat}`;
   el.title = "Open this job's Procurement in SDC Reports";
   if (!data) {
     fetch(`/api/eto/readiness/${encodeURIComponent(job)}`)
@@ -15040,10 +15041,10 @@ function ctrlAbortMsg(e) {
 }
 
 // ── Per-project Job Hours summary button ────────────────────────────────────
-// Compact quoted/actual glance — same pattern as the Procurement button
-// above: the whole button IS the drill-through into SDC Reports' Job Hour
-// Details, no expand, no inline pivot table/charts, no separate "Reports"
-// control.
+// Compact quoted/actual glance — same pattern and same schedule-footer
+// toolbar row as the Procurement button above: the whole button IS the
+// drill-through into SDC Reports' Job Hour Details, no expand, no inline
+// pivot table/charts, no separate "Reports" control.
 function renderScheduleHours() {
   const el = document.getElementById('schedule-hours');
   if (!el) return;
@@ -15059,7 +15060,7 @@ function renderScheduleHours() {
   el.style.display = '';
   el.onclick = () => _openEtcJobHours(project, '');
   if (!job) {
-    el.innerHTML = `⏱ Job Hours <span class="schedule-summary-sep">·</span> No job linked`;
+    el.innerHTML = `⏱ Job Hours · No job linked`;
     el.title = 'Link a Power BI job ID to see hours for this project.';
     return;
   }
@@ -15076,7 +15077,7 @@ function renderScheduleHours() {
     const diffLabel = diff > 0 ? ` (${over ? '+' : '-'}${diff})` : '';
     stat = `${Math.round(q)} quoted · <span style="color:${over ? 'var(--danger)' : 'var(--success)'}; font-weight:700">${Math.round(a)} actual${diffLabel}</span>`;
   }
-  el.innerHTML = `⏱ Job Hours <span class="schedule-summary-sep">·</span> ${stat}`;
+  el.innerHTML = `⏱ Job Hours · ${stat}`;
   el.title = "Open this job's Job Hour Details in SDC Reports";
   if (!data) _loadScheduleHoursDrawer(job, project);
 }
