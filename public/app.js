@@ -27372,13 +27372,13 @@ async function init() {
 // restored the last active project from sessionStorage — this override wins.
 // The ?job= param is stripped afterward so a later manual reload doesn't keep
 // forcing the jump.
-// ── Reports rail link (sibling app on :3010) ────────────────────────────────
+// ── Reports rail link (sibling app on :4006) ────────────────────────────────
 // Keeps the hard-coded server-app1 href working when this app is reached by a
 // different hostname (localhost during dev, an IP, a future rename): the two
 // services always live on the same machine, so only the port differs. The
 // mirror-image link lives in the Reports app's own sidebar ("Project
 // Scheduler"), pointing back at ?view=projects here.
-const REPORTS_APP_PORT = '3010';
+const REPORTS_APP_PORT = '4006';
 
 // Absolute URL into the Reports app, on whatever host this app was reached by.
 function _reportsAppUrl(path) {
@@ -27521,9 +27521,9 @@ function _applyViewDeepLink() {
 // because neither browser Back nor document.referrer can do the job:
 //   • The report's Gantt icon/menu opens this app in a NEW TAB, so that tab's
 //     history has no earlier entry — history.back() is a no-op.
-//   • The two apps sit on different ports (3010 vs 4003), and the reports app
+//   • The two apps sit on different ports (4006 vs 4003), and the reports app
 //     sends a strict-origin referrer cross-origin, so document.referrer arrives
-//     as a bare "http://host:3010/" with the report's path and filters stripped.
+//     as a bare "http://host:4006/" with the report's path and filters stripped.
 // The target is kept in sessionStorage (tab-scoped, so only the tab that was
 // opened from a report grows the button) and survives the query-string cleanup
 // _applyEtcJobDeepLink does, plus any manual refresh afterwards.
