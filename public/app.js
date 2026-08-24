@@ -27378,11 +27378,33 @@ async function init() {
 // services always live on the same machine, so only the port differs. The
 // mirror-image link lives in the Reports app's own sidebar ("Project
 // Scheduler"), pointing back at ?view=projects here.
-const REPORTS_APP_PORT = '4006';
+// Port comes from the server (GET /api/config/reports-url, sourced from
+// ETC_PLANNER_URL — the same env var lib/plannerClient.js already uses for
+// server-to-server calls), not a hardcoded constant here — so a future port
+// change is one .env edit, not a find-and-replace across this file. Fetched
+// once and cached; every caller awaits the same in-flight promise.
+let _reportsPortPromise = null;
+function _fetchReportsPort() {
+  if (!_reportsPortPromise) {
+    _reportsPortPromise = fetch('/api/config/reports-url')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => (d && d.port) || null)
+      .catch(() => null);
+  }
+  return _reportsPortPromise;
+}
 
-// Absolute URL into the Reports app, on whatever host this app was reached by.
-function _reportsAppUrl(path) {
-  return `${location.protocol}//${location.hostname}:${REPORTS_APP_PORT}${path || '/'}`;
+// Absolute URL into the Reports app, on whatever host this app was reached
+// by. Returns null (never throws) if the port isn't configured server-side —
+// callers must check for null rather than navigate to a broken URL.
+async function _reportsAppUrl(path) {
+  const port = await _fetchReportsPort();
+  if (!port) {
+    console.error('[reports] ETC_PLANNER_URL is not configured on the server — cannot build a link to the Reports app.');
+    showToast('The Reports app link is not configured. Contact IT.', { kind: 'error' });
+    return null;
+  }
+  return `${location.protocol}//${location.hostname}:${port}${path || '/'}`;
 }
 
 // ── Mint-then-open, shared by every Scheduler → Reports link ───────────────
@@ -27415,7 +27437,9 @@ function _initReportsRailLink() {
   try {
     const url = new URL(link.getAttribute('href'), location.origin);
     path = url.pathname + url.search;
-    if (url.hostname !== location.hostname) link.href = _reportsAppUrl(path);
+    if (url.hostname !== location.hostname) {
+      _reportsAppUrl(path).then((resolved) => { if (resolved) link.href = resolved; });
+    }
   } catch (_) { /* leave the static href alone */ }
   // Mint-then-navigate on click. The link keeps its own `target="_blank"`
   // href as a plain fallback (works with no JS, and for a middle-click that
@@ -27439,6 +27463,7 @@ function _initReportsRailLink() {
     // traded away here.
     const win = window.open('', '_blank');
     _mintedReportsUrl(path).then((url) => {
+      if (!url) { if (win) win.close(); return; } // _reportsAppUrl already logged + toasted why
       if (win) win.location.href = url;
       else window.open(url, '_blank'); // popup was blocked anyway; try once more as a fallback
     });
@@ -27487,9 +27512,13 @@ async function _openEtcJobHours(project, section) {
     // for why dropping it here carries no real tradeoff.
     const win = window.open('', 'sdc-reports-job-hours');
     const url = await _mintedReportsUrl(_etcJobHoursPath(jobNumber, section));
+    if (!url) { if (win) win.close(); return; } // _reportsAppUrl already logged + toasted why
     if (win) win.location.href = url;
     else window.open(url, 'sdc-reports-job-hours');
-  } catch (_) { /* best-effort — never block the click */ }
+  } catch (e) {
+    console.error('[reports] Failed to open Reports link:', e);
+    showToast('Could not open the Reports app. Please try again.', { kind: 'error' });
+  }
 }
 
 // ── ?view= deep-link ────────────────────────────────────────────────────────
