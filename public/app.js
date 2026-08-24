@@ -1994,7 +1994,7 @@ function cellHtml(t, key) {
         : (ph ? 'title="Placeholder — replace with a real team member when staffing this task"' : '');
       return `<td class="${classes.join(' ')}" data-col="assignee" ${title}>${escapeHtml(t.assignee || '')}</td>`;
     }
-    case 'start':    return `<td class="${cls}" data-col="start">${t.dates_locked ? '<span class="date-lock" title="Dates locked — hand-set, ignored by the predecessor scheduler. Right-click the row to unlock.">🔒</span> ' : ''}${fmtDate(t.start_date)}</td>`;
+    case 'start':    return `<td class="${cls}" data-col="start">${t.dates_locked ? '<span class="date-lock" title="Pinned — this date was hand-set, so the predecessor scheduler will not move it. You can still edit it: click the date. Right-click the row to unpin and recompute from predecessors.">🔒</span> ' : ''}${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'project':  return `<td class="${cls}" data-col="project" title="${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</td>`;
     case 'completed':
@@ -3218,14 +3218,39 @@ function _confirmPredChange(td, task, parsed, col) {
       <button type="button" class="pcp-no">Cancel</button>
       <button type="button" class="pcp-yes">Yes, change it</button>
     </div>`;
+  document.body.appendChild(pop);
   {
     // Rect coords are visual px; the popup renders inside the zoomed body
     // (layout px) — divide by the app scale so it anchors to the cell.
     const z = _appScale();
-    pop.style.left = Math.round(Math.min(r.left / z, window.innerWidth / z - 280)) + 'px';
-    pop.style.top  = Math.round(r.bottom / z + 6) + 'px';
+    const vw = window.innerWidth / z;
+    const vh = window.innerHeight / z;
+    pop.style.left = Math.round(Math.min(r.left / z, vw - 280)) + 'px';
+
+    // ── Clamp VERTICALLY too (2026-08-24) ────────────────────────────────
+    // `left` was already clamped against the viewport; `top` was not. This is
+    // position:fixed, so a popup placed past the bottom edge cannot be
+    // scrolled to — it is simply invisible. For any row in the lower ~100px of
+    // the grid, clicking a Start/Finish date therefore appeared to do NOTHING:
+    // no editor, no dialog, no error. Reported as "the START dates show a lock
+    // icon and cannot be edited" on project 1148, whose every task has a
+    // predecessor and so always takes this path.
+    //
+    // Measured after appendChild rather than assumed: the popup's height
+    // depends on how the message wraps at the current zoom, so a hardcoded
+    // figure would be wrong at exactly the zoom levels that matter.
+    // appendChild moved above this block for that reason — offsetHeight is 0
+    // until it is in the document.
+    const h = pop.offsetHeight || 96;
+    const below = r.bottom / z + 6;
+    const above = r.top / z - h - 6;
+    // Prefer below (where it has always been); flip above when there is no
+    // room and above is genuinely better; otherwise sit against the bottom
+    // edge rather than off it.
+    let top = below;
+    if (below + h > vh) top = above >= 0 ? above : Math.max(0, vh - h - 6);
+    pop.style.top = Math.round(top) + 'px';
   }
-  document.body.appendChild(pop);
   const close = () => { pop.remove(); document.removeEventListener('mousedown', onDoc, true); };
   const onDoc = (e) => { if (!pop.contains(e.target)) close(); };
   setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0);
