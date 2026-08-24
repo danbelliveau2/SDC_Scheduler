@@ -27798,3 +27798,114 @@ document.addEventListener('DOMContentLoaded', init);
   window.addEventListener('focus', check);
   setInterval(check, 60000);
 })();
+
+// ── Global error reporting + a visible recovery affordance (2026-08-24) ────
+//
+// This app is a single-page app with no framework error boundary of its own —
+// unlike Assemblies, Build Readiness, State Logic, Calendar and Reports, which
+// all carry one. So an unhandled throw part-way through a render could leave a
+// container empty and the user looking at a blank area, with the only evidence
+// in a DevTools console nobody has open. That is the platform-wide
+// blank-screen complaint of 2026-08-24, and this app was one of the two
+// surfaces with no protection at all (the SDC Tools shell UI was the other).
+//
+// Two deliberate non-goals:
+//
+//   * It does NOT reload automatically. An auto-reload was explicitly ruled
+//     out, and it would also mask the bug while risking a loop on a
+//     deterministic error.
+//   * It does NOT replace the UI. Most unhandled rejections here come from a
+//     background poll and cost the user nothing; blanking a working Gantt to
+//     announce one would be a worse outcome than the error. So the page is left
+//     alone and a single dismissible bar appears at the bottom.
+//
+// A stale bundle is called out separately, because it is the one case where a
+// reload is genuinely the fix rather than a workaround: after a deploy, a tab
+// left open holds a build manifest naming chunks the server has replaced.
+(function _installGlobalErrorReporting() {
+  var reported = 0;
+  var BAR_ID = 'sdc-global-error-bar';
+
+  function isStaleBundle(msg) {
+    var m = String(msg || '').toLowerCase();
+    return m.indexOf('failed to load chunk') >= 0
+        || m.indexOf('loading chunk') >= 0
+        || m.indexOf('dynamically imported module') >= 0
+        || m.indexOf('importing a module script failed') >= 0;
+  }
+
+  function report(kind, message) {
+    // Cap the volume: one broken interval could otherwise post on every tick.
+    if (reported >= 10) return;
+    reported++;
+    try {
+      fetch('/api/client-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: kind,
+          message: message,
+          route: location.pathname + location.search,
+          project: (window.state && state.filters && state.filters.project) || null,
+        }),
+        keepalive: true,   // survives the user closing the tab straight after
+      }).catch(function () {});
+    } catch (_) {}
+  }
+
+  function showBar(message, stale) {
+    if (document.getElementById(BAR_ID)) return;   // one bar, not a stack
+    var bar = document.createElement('div');
+    bar.id = BAR_ID;
+    bar.setAttribute('role', 'status');
+    bar.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:12000;'
+      + 'display:flex;align-items:center;gap:10px;max-width:min(680px,94vw);'
+      + 'background:#fff;border:1px solid #f0b8b8;border-left:4px solid #c0392b;'
+      + 'border-radius:8px;padding:9px 12px;box-shadow:0 8px 24px rgba(15,23,42,0.18);'
+      + 'font:500 12.5px/1.45 "Segoe UI",system-ui,sans-serif;color:#2b2b2b;';
+    var text = document.createElement('span');
+    text.style.cssText = 'flex:1 1 auto;min-width:0';
+    text.textContent = stale
+      ? 'This tab is running an older version of the Planner. Reload to pick up the current one — nothing you have entered is lost.'
+      : 'Something on this page failed to load correctly. Your data is safe. If anything looks wrong or missing, reload.';
+    bar.appendChild(text);
+    var reload = document.createElement('button');
+    reload.type = 'button';
+    reload.textContent = 'Reload';
+    reload.style.cssText = 'flex:0 0 auto;border:none;background:#1574c4;color:#fff;font-weight:700;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer';
+    reload.onclick = function () { location.reload(); };
+    bar.appendChild(reload);
+    var hide = document.createElement('button');
+    hide.type = 'button';
+    hide.textContent = 'Dismiss';
+    hide.setAttribute('aria-label', 'Dismiss this message');
+    hide.style.cssText = 'flex:0 0 auto;border:1px solid #cbd5e1;background:#fff;color:#64748b;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer';
+    hide.onclick = function () { bar.remove(); };
+    bar.appendChild(hide);
+    document.body.appendChild(bar);
+  }
+
+  window.addEventListener('error', function (e) {
+    // Resource load failures fire here too and carry no `error` object. A
+    // missing chunk arrives this way, which is why it is checked for.
+    var msg = e.error ? ((e.error.name || 'Error') + ': ' + (e.error.message || e.error))
+                      : ('resource failed: ' + ((e.target && (e.target.src || e.target.href)) || 'unknown'));
+    var stale = isStaleBundle(msg);
+    report(stale ? 'stale-bundle' : (e.error ? 'window-error' : 'resource-error'), msg
+      + (e.error && e.error.stack ? ' | ' + e.error.stack : ''));
+    // Only surface a bar for a real exception or a stale bundle. A single
+    // failed image is not worth interrupting anyone for.
+    if (e.error || stale) showBar(msg, stale);
+  });
+
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    var msg = (r && (r.message || r.stack)) ? (r.message || r.stack) : String(r);
+    var stale = isStaleBundle(msg);
+    report(stale ? 'stale-bundle' : 'unhandled-rejection', (r && r.stack) || msg);
+    if (stale) showBar(msg, true);
+    // A non-stale rejection is logged but NOT surfaced: these are dominated by
+    // background polls and aborted fetches that cost the user nothing. The
+    // server log is where they get looked at.
+  });
+})();

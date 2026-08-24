@@ -328,6 +328,41 @@ app.get('/health', async (_req, res) => {
   } catch (e) { res.status(503).json({ ok: false, service: 'scheduler', error: e.message }); }
 });
 
+// ── Client-side error sink (2026-08-24) ────────────────────────────────────
+//
+// public/app.js is a single-page app with no framework error boundary, so an
+// unhandled throw mid-render could leave the grid container empty — a blank
+// screen with the only evidence sitting in a DevTools console nobody has open.
+// This gives the browser somewhere to report it, so a blank screen leaves a
+// trail on the server the way a child-app failure now does in the shell's own
+// sdc-tools-diagnostics.log.
+//
+// Deliberately minimal: console.error (so pm2 captures it in the app's normal
+// log, no new file or rotation to manage), a hard length cap so a runaway
+// string cannot flood the log, and it always answers 204 — a reporting
+// endpoint that can fail loudly just turns one problem into two.
+//
+// requireAuth is NOT applied: the errors most worth seeing are the ones that
+// happen before or during session setup, which is exactly when an authed
+// endpoint would reject them. It stores nothing and returns nothing.
+app.post('/api/client-error', (req, res) => {
+  try {
+    const b = req.body || {};
+    const cap = (v, n) => String(v == null ? '' : v).replace(/[\u000d\u000a]+/g, ' ').slice(0, n);
+    console.error('[client-error]', JSON.stringify({
+      at: new Date().toISOString(),
+      kind: cap(b.kind, 40),
+      message: cap(b.message, 500),
+      route: cap(b.route, 200),
+      project: cap(b.project, 80),
+      // Whether a session existed, never the token itself.
+      authed: !!req.authUser,
+      ua: cap(req.headers['user-agent'], 200),
+    }));
+  } catch (_) { /* never let the error reporter be the error */ }
+  res.status(204).end();
+});
+
 app.get('/api/status', requireAuth, async (_req, res) => {
   try { res.json(await ops.getStatus(pool)); }
   catch (e) { res.status(503).json({ ok: false, error: e.message }); }
