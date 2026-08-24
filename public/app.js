@@ -17040,6 +17040,66 @@ async function applyProjectRelease(project, rel) {
   return true;
 }
 
+// ── Deleting one financial milestone (2026-08-24) ───────────────────────────
+//
+// One routine behind BOTH the new per-row trash button and the existing
+// right-click "Delete this milestone…", and behind both places the grid is
+// rendered (the standalone Financials modal and the Project Release panel's
+// embedded copy). Four call sites, one set of rules — otherwise "does deleting
+// a Sent milestone warn me?" would have four possible answers.
+//
+// Three tiers, by how much there is to lose:
+//
+//   * A BLANK row goes immediately, no dialog. "+ Add milestone" creates its
+//     row in the database straight away (name: ''), so the blank row a user is
+//     looking at is already persisted — there is no unsaved/saved distinction
+//     to make, and confirming the removal of a row that holds nothing is pure
+//     friction. This is also what keeps empty placeholder records out of the
+//     table.
+//   * A row with CONTENT gets the plain confirmation.
+//   * A row already marked SENT gets a stronger one: its own wording naming the
+//     consequence, a "Delete anyway" button, and requireExplicit so a stray
+//     Enter cannot do it. An invoice has gone out against that line.
+//
+// Returns true when the row was actually deleted, so callers know whether to
+// re-render. Deliberately does NOT reload or re-render itself — each caller
+// already owns its own reload/render/Gantt sequence, and duplicating that here
+// would double every refresh.
+function _financialRowIsBlank(row) {
+  if (!row) return true;
+  return !String(row.name || '').trim()
+    && (row.percent === null || row.percent === undefined || row.percent === '')
+    && !String(row.predecessors || '').trim()
+    && !row.due_date
+    && !row.paid;
+}
+
+async function _deleteFinancialMilestone(project, id) {
+  const row = (state.financials[project] || []).find(r => r.id === Number(id));
+  const label = String(row?.name || '').trim();
+
+  if (!_financialRowIsBlank(row)) {
+    const opts = row.paid
+      ? {
+          title: 'Delete a milestone that has already been sent?',
+          message: `${label ? `"${label}"` : 'This milestone'} is marked Sent — an invoice has gone out against it. Deleting it removes it from ${project} permanently and cannot be undone.`,
+          okLabel: 'Delete anyway',
+          danger: true,
+          requireExplicit: true,
+        }
+      : {
+          title: 'Delete this milestone?',
+          message: `${label ? `"${label}"` : 'This milestone'} will be removed from ${project}. The other milestones keep their own percentages, triggers and dates.`,
+          okLabel: 'Delete',
+          danger: true,
+        };
+    if (!(await showConfirmDialog(opts))) return false;
+  }
+
+  await api.financials.remove(id);
+  return true;
+}
+
 // Render the editable Financial Milestones grid into ANY container (extracted
 // from openFinancialsModal so it can live inline in the Project Release panel).
 // Same columns + live-save behavior: %, Description, Trigger (predecessor),
@@ -17062,27 +17122,29 @@ async function mountFinancialsEditor(container, project, machine) {
     container.innerHTML = `
       <div class="financials-table-wrap">
         <table class="financials-table">
-          <colgroup><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /></colgroup>
+          <colgroup><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /><col class="col-actions" /></colgroup>
           <thead><tr>
             <th class="num">%</th>
             <th>Description</th>
             <th title="Predecessor — task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag ('FAT +1w'). Blank = set the Date manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
             <th>Date</th>
             <th class="paid" title="Check when the invoice has been sent.">Sent</th>
+            <th class="fin-actions"><span class="sr-only">Delete</span></th>
           </tr></thead>
           <tbody>
             ${rows.length === 0
-              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
               : rows.map(r => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
-              return `<tr data-id="${r.id}" title="Right-click to add or delete a milestone">
+              return `<tr data-id="${r.id}" title="Right-click to add a milestone">
                 <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                 <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                 <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                 <td><input type="date" data-field="due_date" value="${dateValue}" ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} /></td>
                 <td class="paid"><input type="checkbox" data-field="paid" ${r.paid ? 'checked' : ''} /></td>
+                <td class="fin-actions"><button type="button" class="fin-row-del" data-del="${r.id}" aria-label="Delete this milestone" title="Delete this milestone">🗑</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -17092,6 +17154,24 @@ async function mountFinancialsEditor(container, project, machine) {
     bind(opts);
   };
   const bind = (opts = {}) => {
+    // One delete path for the trash button and the context menu alike — see
+    // _deleteFinancialMilestone for the blank/content/Sent tiers. Re-renders
+    // only when something was actually removed, so cancelling leaves the row
+    // (and any half-typed value in it) exactly as it was.
+    const removeRow = async (rowId) => {
+      if (!(await _deleteFinancialMilestone(project, rowId))) return;
+      await loadFinancialsForProject(project);
+      await renderGrid();
+      if (state.showFinancials) renderGantt();
+      try { refreshFinancialsButtonState(); } catch (_) {}
+    };
+    container.querySelectorAll('.fin-row-del').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        removeRow(Number(btn.dataset.del));
+      });
+    });
     container.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
       tr.addEventListener('contextmenu', (e) => {
@@ -17104,15 +17184,7 @@ async function mountFinancialsEditor(container, project, machine) {
               if (state.showFinancials) renderGantt();
           }},
           { separator: true },
-          { label: 'Delete this milestone…', danger: true, onClick: async () => {
-              const row = (state.financials[project] || []).find(r => r.id === id);
-              const ok = await showConfirmDialog({ title: 'Delete financial milestone?', message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`, okLabel: 'Delete', danger: true });
-              if (!ok) return;
-              await api.financials.remove(id);
-              await loadFinancialsForProject(project);
-              await renderGrid();
-              if (state.showFinancials) renderGantt();
-          }},
+          { label: 'Delete this milestone…', danger: true, onClick: () => removeRow(id) },
         ]);
       });
       tr.querySelectorAll('input[data-field]').forEach(el => {
@@ -19405,6 +19477,7 @@ function openFinancialsModal(project) {
             <col class="col-trigger" />
             <col class="col-date" />
             <col class="col-paid" />
+            <col class="col-actions" />
           </colgroup>
           <thead>
             <tr>
@@ -19413,17 +19486,18 @@ function openFinancialsModal(project) {
               <th title="Predecessor — same syntax as the task Predecessors column. Accepts a task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag (e.g. 'FAT +1w', '12 +3d'). Blank = no automatic date; fill in the Date column manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
               <th>Date</th>
               <th class="paid" title="Check when the invoice has been sent. The Gantt line goes from dashed to solid.">Sent</th>
+              <th class="fin-actions"><span class="sr-only">Delete</span></th>
             </tr>
           </thead>
           <tbody>
             ${rows.length === 0
-              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
               : rows.map(r => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
               return `
-                <tr data-id="${r.id}" title="Right-click to add or delete a milestone">
+                <tr data-id="${r.id}" title="Right-click to add a milestone">
                   <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                   <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                   <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
@@ -19432,6 +19506,7 @@ function openFinancialsModal(project) {
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
                   </td>
                   <td class="paid"><input type="checkbox" data-field="paid" ${r.paid ? 'checked' : ''} /></td>
+                <td class="fin-actions"><button type="button" class="fin-row-del" data-del="${r.id}" aria-label="Delete this milestone" title="Delete this milestone">🗑</button></td>
                 </tr>
               `;
             }).join('')}
@@ -19459,6 +19534,22 @@ function openFinancialsModal(project) {
     // (Show-on-Gantt checkbox + handler removed — the $ toolbar icon
     //  already owns state.showFinancials.)
 
+    // Shared delete path — see the identical helper in mountFinancialsEditor
+    // and _deleteFinancialMilestone for the confirmation tiers.
+    const removeRow = async (rowId) => {
+      if (!(await _deleteFinancialMilestone(project, rowId))) return;
+      await loadFinancialsForProject(project);
+      await render();
+      if (state.showFinancials) renderGantt();
+      try { refreshFinancialsButtonState(); } catch (_) {}
+    };
+    modal.querySelectorAll('.fin-row-del').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        removeRow(Number(btn.dataset.del));
+      });
+    });
     modal.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
       // Right-click any row → context menu with Add / Delete. Replaces
@@ -19474,21 +19565,7 @@ function openFinancialsModal(project) {
               try { refreshFinancialsButtonState(); } catch (_) {}
           }},
           { separator: true },
-          { label: 'Delete this milestone…', danger: true, onClick: async () => {
-              const row = (state.financials[project] || []).find(r => r.id === id);
-              const ok = await showConfirmDialog({
-                title: 'Delete financial milestone?',
-                message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`,
-                okLabel: 'Delete',
-                danger: true,
-              });
-              if (!ok) return;
-              await api.financials.remove(id);
-              await loadFinancialsForProject(project);
-              await render();
-              if (state.showFinancials) renderGantt();
-              try { refreshFinancialsButtonState(); } catch (_) {}
-          }},
+          { label: 'Delete this milestone…', danger: true, onClick: () => removeRow(id) },
         ];
         showContextMenu(e.clientX, e.clientY, items);
       });
