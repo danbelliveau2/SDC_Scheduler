@@ -304,8 +304,18 @@ function renderOptions(o) {
   // Default to SDC machine: it is the overwhelmingly common case, and
   // pre-selecting it keeps the form exactly as easy as it was before this
   // question existed. Anyone with third-party equipment changes one click.
-  const sdc = document.querySelector('#machineTypeRow input[value="sdc"]');
-  if (sdc) sdc.checked = true;
+  // ?machine=sdc | non_sdc lets the website send the customer straight to the
+  // right variant — sdcautomation.com/service/ already splits these into two
+  // journeys ("Service for Existing SDC Machines" vs the non-SDC form), so the
+  // button that got them here already knows the answer.
+  //
+  // It PRESELECTS rather than locks: someone who clicked the wrong button, or
+  // who does not know whether SDC built their machine, must still be able to
+  // change it rather than be trapped in the wrong form.
+  const wanted = new URLSearchParams(location.search).get('machine');
+  const pick = (wanted === 'non_sdc' || wanted === 'sdc') ? wanted : 'sdc';
+  const chosen = document.querySelector(`#machineTypeRow input[value="${pick}"]`);
+  if (chosen) chosen.checked = true;
   document.querySelectorAll('#machineTypeRow input').forEach(r =>
     r.addEventListener('change', applyMachineType));
   applyMachineType();
