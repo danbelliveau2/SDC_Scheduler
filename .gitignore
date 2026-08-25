@@ -36,6 +36,10 @@ Thumbs.db
 *.err
 npm-debug.log*
 
+# Customer-uploaded Service Request attachments (photos of faults, site docs).
+# Runtime data belonging to customers — never source, never committed.
+uploads/
+
 # Local data / private assets
 Estimate Sheet/
 Smartsheet Schedules/

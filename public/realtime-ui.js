@@ -79,6 +79,17 @@
     });
   });
 
+  // Service module. Deliberately NOT skipped on _isLocalEcho(): the most
+  // valuable Service event is a CUSTOMER submitting from the website, which is
+  // never this tab's own edit, and the Service page redraws cheaply from two
+  // small queries. service-ui.js owns the redraw and no-ops unless the Service
+  // page is the one on screen.
+  socket.on('service:updated', () => {
+    _debounce('service', () => {
+      if (typeof window.onServiceUpdated === 'function') window.onServiceUpdated();
+    });
+  });
+
   // Meeting notes changed on another tab/user. The server emits this but the
   // client previously ignored it, so notes only refreshed on a full project
   // switch ("click off and back on"). Reload the active project's notes.

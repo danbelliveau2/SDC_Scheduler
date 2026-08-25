@@ -351,6 +351,189 @@ async function init() {
       AND (v1.pm IS NULL OR v1.pm = '') AND (v1.comments IS NULL OR v1.comments = '')
       AND (v1.tracking IS NULL OR v1.tracking = '') AND (v1.ship_date IS NULL OR v1.ship_date = '')
   `).catch(() => {});
+
+  // ─── Service Log Replacement (Monica R2) ──────────────────────────────────
+  //
+  // Replaces the Smartsheet-based Service workflow. The chain is:
+  //   customer request → service_requests row → 1..n service_work_orders
+  //   → assigned employee (+ a linked `tasks` row so the assignment shows in
+  //   the normal Scheduler workload) → completion → service_reports row.
+  //
+  // service_requests IS the Service Log — there is no separate "log" table.
+  // The customer-submitted fields and the internal management fields live on
+  // the same row, which is what keeps "the website request automatically
+  // creates a Service Log entry" a no-op rather than a sync job that can
+  // drift.
+  //
+  // request_no (SR-YYYY-NNNN) is the common identifier across every table
+  // here, deliberately NOT the job number: multiple Service requests can
+  // exist for the same machine/job (R2 §3).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_requests (
+      id                    INT AUTO_INCREMENT PRIMARY KEY,
+      request_no            VARCHAR(32) NOT NULL,
+      company_name          VARCHAR(255),
+      requestor_name        VARCHAR(255),
+      requestor_email       VARCHAR(255),
+      requestor_phone       VARCHAR(64),
+      machine_serial        VARCHAR(255),
+      job_number            VARCHAR(255),
+      urgency               VARCHAR(64),
+      service_details       TEXT,
+      location_type         VARCHAR(16),
+      department_needed     VARCHAR(32),
+      warranty              VARCHAR(16),
+      ppe_requirements      TEXT,
+      additional_comments   TEXT,
+      onsite_address        TEXT,
+      quote_sent            TINYINT(1) DEFAULT 0,
+      quote_sent_at         VARCHAR(32),
+      po_received           TINYINT(1) DEFAULT 0,
+      po_received_at        VARCHAR(32),
+      service_complete      TINYINT(1) DEFAULT 0,
+      service_complete_date VARCHAR(32),
+      resource_assigned     VARCHAR(255),
+      current_status        VARCHAR(64) DEFAULT 'new',
+      information_needed    TEXT,
+      source                VARCHAR(32) DEFAULT 'website',
+      created_by            VARCHAR(255),
+      created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at            DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_service_requests_no (request_no)
+    )
+  `);
+  for (const [col, idx] of [
+    ['job_number',     'idx_svc_req_job'],
+    ['company_name',   'idx_svc_req_company'],
+    ['current_status', 'idx_svc_req_status'],
+    ['service_complete', 'idx_svc_req_complete'],
+  ]) {
+    await pool.query(`ALTER TABLE service_requests ADD INDEX ${idx} (${col})`).catch(() => {});
+  }
+
+  // Work Orders (R2 §6). Every WO stays linked to its parent request; the
+  // requestor columns are NOT duplicated here — the API joins them from the
+  // parent so there is one source of truth ("should populate from the parent
+  // Service Log rather than requiring duplicate entry").
+  //
+  // task_id links to a row in `tasks`, which is how a Service assignment
+  // shows up in the assignee's normal Scheduler workload (R2 §7) WITHOUT a
+  // second employee roster. Null when no task could be created (or the task
+  // was later deleted by hand).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_work_orders (
+      id                  INT AUTO_INCREMENT PRIMARY KEY,
+      service_request_id  INT NOT NULL,
+      wo_no               VARCHAR(40) NOT NULL,
+      task_date           VARCHAR(32),
+      employee_name       VARCHAR(255),
+      employee_email      VARCHAR(255),
+      location_type       VARCHAR(16),
+      task_description    TEXT,
+      ppe_requirements    TEXT,
+      onsite_address      TEXT,
+      sdc_contact_name    VARCHAR(255),
+      sdc_contact_email   VARCHAR(255),
+      sdc_contact_phone   VARCHAR(64),
+      budgeted_hours      DECIMAL(8,2),
+      status              VARCHAR(32) DEFAULT 'open',
+      completed_at        DATETIME,
+      completed_by        VARCHAR(255),
+      task_id             INT,
+      notified_at         DATETIME,
+      reminder_sent_at    DATETIME,
+      created_by          VARCHAR(255),
+      created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_service_wo_no (wo_no),
+      CONSTRAINT fk_svc_wo_request FOREIGN KEY (service_request_id)
+        REFERENCES service_requests(id) ON DELETE CASCADE
+    )
+  `);
+  for (const [col, idx] of [
+    ['service_request_id', 'idx_svc_wo_request'],
+    ['employee_email',     'idx_svc_wo_employee'],
+    ['task_date',          'idx_svc_wo_date'],
+    ['status',             'idx_svc_wo_status'],
+  ]) {
+    await pool.query(`ALTER TABLE service_work_orders ADD INDEX ${idx} (${col})`).catch(() => {});
+  }
+
+  // Attachments (R2 §16). Files live on disk under SERVICE_UPLOAD_DIR; this
+  // table is the metadata plus the association that keeps them reachable
+  // from the Service Log detail — explicitly NOT "temporary browser state".
+  // stored_name is the on-disk name (random, so a customer-supplied filename
+  // can never traverse a path or collide); filename is what gets shown in
+  // the UI and sent back as the download name.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_attachments (
+      id                 INT AUTO_INCREMENT PRIMARY KEY,
+      service_request_id INT NOT NULL,
+      work_order_id      INT,
+      filename           VARCHAR(255) NOT NULL,
+      stored_name        VARCHAR(255) NOT NULL,
+      mime_type          VARCHAR(128),
+      size_bytes         INT,
+      uploaded_by        VARCHAR(255),
+      created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+      CONSTRAINT fk_svc_att_request FOREIGN KEY (service_request_id)
+        REFERENCES service_requests(id) ON DELETE CASCADE
+    )
+  `);
+  await pool.query(`ALTER TABLE service_attachments ADD INDEX idx_svc_att_request (service_request_id)`).catch(() => {});
+
+  // Service Report (R2 §11). Generated — prepopulated — the moment an
+  // employee marks their Work Order complete, so nothing already known from
+  // the request / log / WO has to be re-typed.
+  //
+  // folder_path is the SEAM for "generate into the appropriate Service
+  // Request folder": the report is an in-app record today, because the
+  // actual folder convention has not been confirmed yet (R2 §22 is where
+  // that gets settled with Monica). Once the location IS known, a generator
+  // can write the document out and stamp its path here with no schema or API
+  // change — same posture as R2 §5's ETO limitation: keep it extensible,
+  // don't make it a dependency.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_reports (
+      id                 INT AUTO_INCREMENT PRIMARY KEY,
+      service_request_id INT NOT NULL,
+      work_order_id      INT NOT NULL,
+      report_no          VARCHAR(40) NOT NULL,
+      status             VARCHAR(32) DEFAULT 'draft',
+      work_performed     TEXT,
+      findings           TEXT,
+      parts_used         TEXT,
+      hours_actual       DECIMAL(8,2),
+      follow_up_needed   TINYINT(1) DEFAULT 0,
+      follow_up_notes    TEXT,
+      customer_contact   VARCHAR(255),
+      prefill_json       MEDIUMTEXT,
+      folder_path        VARCHAR(512),
+      created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+      submitted_at       DATETIME,
+      submitted_by       VARCHAR(255),
+      UNIQUE KEY uq_svc_report_wo (work_order_id),
+      CONSTRAINT fk_svc_report_request FOREIGN KEY (service_request_id)
+        REFERENCES service_requests(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Audit history (R2 §19). Deliberately mirrors task_history's shape —
+  // action + who + when + a human-readable detail — rather than inventing a
+  // second audit idiom for the same job.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_history (
+      id                 INT AUTO_INCREMENT PRIMARY KEY,
+      service_request_id INT NOT NULL,
+      work_order_id      INT,
+      action             VARCHAR(64) NOT NULL,
+      detail             TEXT,
+      changed_by         VARCHAR(255),
+      changed_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`ALTER TABLE service_history ADD INDEX idx_svc_hist_request (service_request_id)`).catch(() => {});
+  await pool.query(`ALTER TABLE service_history ADD INDEX idx_svc_hist_changed_at (changed_at)`).catch(() => {});
 }
 
 const DEFAULT_SETTINGS = {

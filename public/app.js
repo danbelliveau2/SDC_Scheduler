@@ -24733,7 +24733,7 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 // Views that are simple scrollable containers — save/restore their scroll position.
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team', 'invoicing'];
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team', 'invoicing', 'service'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -24804,6 +24804,10 @@ function setView(view) {
     if (Array.isArray(state.vendorPOs)) renderVendorPOsPage(); else loadVendorPOs();
     _restoreScrollPos(view);
   }
+  // Service module (Service Log replacement) lives in service-ui.js, not here —
+  // it is a self-contained page with its own data and no Gantt involvement.
+  // This is the ONLY place app.js knows about it.
+  else if (view === 'service')    { try { renderServicePage(); } catch (_) {} _restoreScrollPos(view); }
   else if (view === 'job-hours')  { renderJobHoursPage(); _restoreScrollPos(view); }
   else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
   else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
