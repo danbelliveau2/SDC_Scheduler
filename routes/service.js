@@ -134,6 +134,34 @@ function uploadOrExplain(field) {
 }
 
 // ── Small helpers ────────────────────────────────────────────────────────────
+
+/**
+ * The real client IP, for the public endpoint's per-IP throttle.
+ *
+ * This deliberately does NOT trust the first X-Forwarded-For entry. XFF is a
+ * list the client can start: anyone may send `X-Forwarded-For: 1.2.3.4`, and a
+ * proxy APPENDS to it rather than replacing it, so the leftmost value is
+ * attacker-controlled. Keying a rate limit on it means an abuser rotates that
+ * header and gets unlimited submissions — the limiter looks present and does
+ * nothing.
+ *
+ * Order of preference:
+ *   1. CF-Connecting-IP — set by Cloudflare, which OVERWRITES any client-sent
+ *      copy, so it cannot be forged from outside. This app is published through
+ *      a Cloudflare Tunnel, making it the authoritative source here.
+ *   2. The LAST X-Forwarded-For entry — the hop nearest us, i.e. the one added
+ *      by our own proxy rather than anything the client injected.
+ *   3. req.ip.
+ */
+function clientIp(req) {
+  const cf = String(req.headers['cf-connecting-ip'] || '').trim();
+  if (cf) return cf.slice(0, 64);
+  const xff = String(req.headers['x-forwarded-for'] || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  if (xff.length) return xff[xff.length - 1].slice(0, 64);
+  return (req.ip || 'unknown').slice(0, 64);
+}
+
 const today = () => new Date().toISOString().slice(0, 10);
 const nowStamp = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const trim = (v, n = 255) => (v == null ? null : String(v).trim().slice(0, n) || null);
@@ -398,7 +426,7 @@ module.exports = function createRouter(deps) {
       for (const f of req.files || []) { try { fs.unlinkSync(f.path); } catch (_) {} }
     };
     try {
-      const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || 'unknown';
+      const ip = clientIp(req);
       if (rateLimited(ip)) {
         cleanupFiles();
         return res.status(429).json({ error: 'Too many requests from this location. Please call SDC directly if this is urgent.' });
