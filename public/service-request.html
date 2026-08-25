@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Request Service — SDC Automation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap">
 <!--
   service-request.html — the customer-facing Service Request form (R2 §1, §2).
 
@@ -22,12 +25,17 @@
   step with what the server will accept.
 -->
 <style>
+  /* Tokens supplied by the site's developer so this page matches
+     sdcautomation.com/service/ rather than approximating it:
+     blue #1574c4, green #befa4f, near-black #231f20, Montserrat 100-900,
+     buttons 60px tall / 2px radius / 2px border matching the fill / weight 600. */
   :root {
     --sdc-blue:  #1574c4;
-    --sdc-navy:  #061d39;
+    --sdc-blue-hover: #1265ab;
+    --sdc-dark:  #231f20;   /* site near-black — NOT the app's navy */
     --sdc-lime:  #befa4f;
-    --ink:       #0f172a;
-    --muted:     #64748b;
+    --ink:       #231f20;
+    --muted:     #6b6768;
     --line:      #d8dee7;
     --bg:        #f4f6f9;
     --danger:    #dc2626;
@@ -35,14 +43,14 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font: 400 15px/1.55 Montserrat, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
   header {
-    background: var(--sdc-navy); color: #fff; padding: 22px 20px;
+    background: var(--sdc-dark); color: #fff; padding: 22px 20px;
   }
   header .wrap { max-width: 820px; margin: 0 auto; }
   header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
-  header p  { margin: 0; color: #a9bdd6; font-size: 14px; }
+  header p  { margin: 0; color: #c9c5c6; font-size: 14px; }
 
   main { max-width: 820px; margin: 0 auto; padding: 22px 20px 60px; }
 
@@ -101,12 +109,17 @@
   #fileList { margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
   #fileList li { padding: 2px 0; }
 
+  #turnstileBox:not(:empty) { margin: 0 0 16px; }
   .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
   button {
-    background: var(--sdc-blue); color: #fff; border: 0; border-radius: 6px;
-    padding: 12px 26px; font: 600 15px inherit; cursor: pointer;
+    background: var(--sdc-blue); color: #fff;
+    border: 2px solid var(--sdc-blue); border-radius: 2px;
+    height: 60px; padding: 0 34px;
+    font: 600 15px Montserrat, sans-serif; cursor: pointer;
   }
-  button:hover:not(:disabled) { background: #1265ab; }
+  button:hover:not(:disabled) {
+    background: var(--sdc-blue-hover); border-color: var(--sdc-blue-hover);
+  }
   button:disabled { opacity: 0.55; cursor: progress; }
 
   .msg { padding: 11px 14px; border-radius: 6px; margin: 0 0 16px; display: none; font-size: 14px; }
@@ -117,7 +130,7 @@
   #done h2 { margin: 0 0 8px; font-size: 20px; }
   #done .num {
     display: inline-block; margin: 12px 0 6px; padding: 9px 20px;
-    background: var(--sdc-navy); color: #fff; border-radius: 6px;
+    background: var(--sdc-dark); color: #fff; border-radius: 2px;
     font: 700 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.04em;
   }
   #done p { color: var(--muted); margin: 8px 0 0; }
@@ -239,6 +252,8 @@
       </div>
     </fieldset>
 
+    <div id="turnstileBox"></div>
+
     <div class="actions">
       <button type="submit" id="submitBtn">Submit request</button>
       <span class="optional-note" style="margin:0">Fields marked * are required.</span>
@@ -322,6 +337,25 @@ function renderOptions(o) {
   const sel = document.getElementById('department_needed');
   sel.innerHTML = '<option value="">Not sure</option>' +
     o.departments.map(d => `<option value="${d.value}">${d.label}</option>`).join('');
+  mountTurnstile(o.turnstileSiteKey);
+}
+
+// Bot protection. The form this replaces was scraped and spammed via its
+// public URL; this one will be just as crawlable. The widget only appears when
+// the server reports a configured site key — with Turnstile off, the page is
+// exactly as it was.
+function mountTurnstile(siteKey) {
+  if (!siteKey) return;
+  const box = document.getElementById('turnstileBox');
+  if (!box || box.dataset.mounted) return;
+  box.dataset.mounted = '1';
+  box.className = 'cf-turnstile';
+  box.setAttribute('data-sitekey', siteKey);
+  box.setAttribute('data-theme', 'light');
+  const sc = document.createElement('script');
+  sc.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+  sc.async = true; sc.defer = true;
+  document.head.appendChild(sc);
 }
 
 fetch('/api/public/service-options')
