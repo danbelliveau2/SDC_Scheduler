@@ -2,10 +2,12 @@
  * realtime-ui.js — Phase 4 client-side Socket.io listener.
  *
  * Connects to the server's Socket.io and listens for invalidate events:
- *   tasks:updated    → debounce + reload tasks
- *   team:updated     → debounce + reload team
- *   settings:updated → debounce + reload settings
- *   users:updated    → no-op for now (Phase 3.5 may surface user list)
+ *   tasks:updated      → debounce + reload tasks
+ *   team:updated       → debounce + reload team
+ *   settings:updated   → debounce + reload settings
+ *   shop_parts:updated → debounce + reload shop parts
+ *   vendor_pos:updated → debounce + reload vendor POs
+ *   users:updated      → no-op for now (Phase 3.5 may surface user list)
  *
  * Debounced (250 ms) so a burst of saves from another tab triggers one
  * reload, not ten. Reload is best-effort — uses the existing loadTasks /
@@ -53,6 +55,27 @@
   socket.on('settings:updated', () => {
     _debounce('settings', () => {
       if (typeof loadSettings === 'function') loadSettings();
+    });
+  });
+
+  // Added along with the nav-performance pass: shop parts / vendor POs were
+  // fetched fresh on every tab visit because nothing ever invalidated them —
+  // the server already emitted these events (see routes/shopParts.js,
+  // routes/vendorPos.js, lib/cronJobs.js's 30-min ETO sync) but no listener
+  // existed. Now that setView() caches state.shopParts/state.vendorPOs across
+  // navigations, these are what keep that cache correct when the data
+  // actually changes (this tab's own edits are skipped via _isLocalEcho()).
+  socket.on('shop_parts:updated', () => {
+    if (_isLocalEcho()) return;
+    _debounce('shop_parts', () => {
+      if (typeof loadShopParts === 'function') loadShopParts();
+    });
+  });
+
+  socket.on('vendor_pos:updated', () => {
+    if (_isLocalEcho()) return;
+    _debounce('vendor_pos', () => {
+      if (typeof loadVendorPOs === 'function') loadVendorPOs();
     });
   });
 

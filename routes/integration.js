@@ -13,7 +13,7 @@ const { Router } = require('express');
 // direction (Build Readiness Report calling in, instead of this app calling
 // out to the ETC Planner).
 //
-// First consumer: Build_Readiness_Report/server/services/scheduler.js,
+// First consumer: apps/build-readiness/server/services/scheduler.js,
 // added to replace the removed Smartsheet integration's build/ship dates.
 module.exports = function createRouter(deps) {
   const { pool } = deps;

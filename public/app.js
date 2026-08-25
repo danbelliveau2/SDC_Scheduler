@@ -178,7 +178,10 @@ function newClientRef() {
 }
 
 const api = {
-  list: () => fetch('/api/tasks').then(r => r.json()),
+  list: () => fetch('/api/tasks').then(async r => {
+    if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.error || `HTTP ${r.status}`); }
+    return r.json();
+  }),
   // `opts.retryOf`, when present, is the SaveTracker entry this attempt is
   // retrying — reused here only to read its already-assigned client_ref
   // (assigned ONCE, at the very first attempt, in the block below) rather
@@ -289,7 +292,10 @@ const api = {
   getSettings: () => fetch('/api/settings').then(r => r.json()),
   putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(r => r.json()),
   team: {
-    list:   () => fetch('/api/team').then(r => r.json()),
+    list:   () => fetch('/api/team').then(async r => {
+      if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.error || `HTTP ${r.status}`); }
+      return r.json();
+    }),
     // Stamp _lastLocalEdit on every write so the realtime-ui Socket listener
     // skips the immediate echo. Without this stamp, the socket's debounced
     // loadTeam() fires 250 ms after the local save and tears down whatever
@@ -1988,7 +1994,7 @@ function cellHtml(t, key) {
         : (ph ? 'title="Placeholder — replace with a real team member when staffing this task"' : '');
       return `<td class="${classes.join(' ')}" data-col="assignee" ${title}>${escapeHtml(t.assignee || '')}</td>`;
     }
-    case 'start':    return `<td class="${cls}" data-col="start">${t.dates_locked ? '<span class="date-lock" title="Dates locked — hand-set, ignored by the predecessor scheduler. Right-click the row to unlock.">🔒</span> ' : ''}${fmtDate(t.start_date)}</td>`;
+    case 'start':    return `<td class="${cls}" data-col="start">${t.dates_locked ? '<span class="date-lock" title="Pinned — this date was hand-set, so the predecessor scheduler will not move it. You can still edit it: click the date. Right-click the row to unpin and recompute from predecessors.">🔒</span> ' : ''}${fmtDate(t.start_date)}</td>`;
     case 'finish':   return `<td class="${cls}" data-col="finish">${fmtDate(t.end_date)}</td>`;
     case 'project':  return `<td class="${cls}" data-col="project" title="${escapeHtml(t.project || '')}">${escapeHtml(t.project || '')}</td>`;
     case 'completed':
@@ -3211,14 +3217,39 @@ function _confirmPredChange(td, task, parsed, col) {
       <button type="button" class="pcp-no">Cancel</button>
       <button type="button" class="pcp-yes">Yes, change it</button>
     </div>`;
+  document.body.appendChild(pop);
   {
     // Rect coords are visual px; the popup renders inside the zoomed body
     // (layout px) — divide by the app scale so it anchors to the cell.
     const z = _appScale();
-    pop.style.left = Math.round(Math.min(r.left / z, window.innerWidth / z - 280)) + 'px';
-    pop.style.top  = Math.round(r.bottom / z + 6) + 'px';
+    const vw = window.innerWidth / z;
+    const vh = window.innerHeight / z;
+    pop.style.left = Math.round(Math.min(r.left / z, vw - 280)) + 'px';
+
+    // ── Clamp VERTICALLY too (2026-08-24) ────────────────────────────────
+    // `left` was already clamped against the viewport; `top` was not. This is
+    // position:fixed, so a popup placed past the bottom edge cannot be
+    // scrolled to — it is simply invisible. For any row in the lower ~100px of
+    // the grid, clicking a Start/Finish date therefore appeared to do NOTHING:
+    // no editor, no dialog, no error. Reported as "the START dates show a lock
+    // icon and cannot be edited" on project 1148, whose every task has a
+    // predecessor and so always takes this path.
+    //
+    // Measured after appendChild rather than assumed: the popup's height
+    // depends on how the message wraps at the current zoom, so a hardcoded
+    // figure would be wrong at exactly the zoom levels that matter.
+    // appendChild moved above this block for that reason — offsetHeight is 0
+    // until it is in the document.
+    const h = pop.offsetHeight || 96;
+    const below = r.bottom / z + 6;
+    const above = r.top / z - h - 6;
+    // Prefer below (where it has always been); flip above when there is no
+    // room and above is genuinely better; otherwise sit against the bottom
+    // edge rather than off it.
+    let top = below;
+    if (below + h > vh) top = above >= 0 ? above : Math.max(0, vh - h - 6);
+    pop.style.top = Math.round(top) + 'px';
   }
-  document.body.appendChild(pop);
   const close = () => { pop.remove(); document.removeEventListener('mousedown', onDoc, true); };
   const onDoc = (e) => { if (!pop.contains(e.target)) close(); };
   setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0);
@@ -3915,6 +3946,14 @@ function renderGantt() {
     })
     .filter(t => !state._exportOnlyIds || inferredAnchorKey(t) || state._exportOnlyIds.has(t.id));
 
+  // Exposed so the drawer chain below (drawBarMeta, drawMilestoneDiamonds, etc.)
+  // can loop the tasks actually rendering bars right now instead of state.tasks
+  // (every project). Every drawer already skips a task when its .bar-wrapper
+  // doesn't exist, and bar-wrappers only exist for tasks in `filtered` — so this
+  // is a pure cost reduction (was O(all-projects' tasks) per drawer), not a
+  // behavior change.
+  state._visibleTasks = filtered;
+
   renderGanttLegend();
 
   if (filtered.length === 0) {
@@ -4178,9 +4217,10 @@ function compressGanttToWorkDays() {
     // Track each bar's old + new x so the downstream drawers can be told.
     state._workDayMap = { pxPerDay, ganttStart };
 
+    const visibleById = new Map((state._visibleTasks || state.tasks).map(x => [x.id, x]));
     for (const wrap of svg.querySelectorAll('.bar-wrapper')) {
       const id = Number(wrap.dataset.id);
-      const t = state.tasks.find(x => x.id === id);
+      const t = visibleById.get(id);
       if (!t || !t.start_date) continue;
       const startOff = wdo(t.start_date);
       const endOff   = t.end_date ? wdo(t.end_date) : startOff;
@@ -4629,7 +4669,7 @@ function drawMachineBorders() {
     });
     // Gated by the M view-pill + project must actually have 2+ machines.
     if (!shouldShowMachineVisuals()) return;
-    for (const task of state.tasks) {
+    for (const task of (state._visibleTasks || state.tasks)) {
       if (!task.machine) continue;
       const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
       if (!wrap) continue;
@@ -4791,7 +4831,7 @@ function drawBarMeta() {
   const LABEL_H = 11;  // 9px font + small descent / breathing room
   const GAP     = 2;   // bar → label vertical offset
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (task.is_milestone) continue;
     if (inferredAnchorKey(task)) continue;
     if (isBacklogTask(task)) continue;
@@ -5512,7 +5552,7 @@ function drawBaselineGhosts() {
     return sign * Math.max(0, days - 1);
   };
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.baseline_start_date || !task.baseline_end_date) continue;
     if (!task.start_date || !task.end_date) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
@@ -5762,7 +5802,7 @@ function drawFinancialOverlay() {
   // bars are all filtered out (so the All-projects view shows everything, a single
   // project tab shows just that one).
   const visibleProjects = new Set();
-  for (const t of state.tasks) {
+  for (const t of (state._visibleTasks || state.tasks)) {
     if (!t.start_date) continue;
     if (svg.querySelector(`.bar-wrapper[data-id="${t.id}"]`)) {
       visibleProjects.add(t.project || '');
@@ -5969,7 +6009,7 @@ function drawScheduleStatus() {
   // Clear any prior chips before re-drawing (each render rebuilds them).
   svg.querySelectorAll('.sdc-status-chip').forEach(el => el.remove());
   const todayISO = new Date().toISOString().slice(0, 10);
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (task.is_milestone) continue;
     if (!task.start_date || !task.end_date) continue;
     if (inferredAnchorKey(task)) continue;
@@ -6363,7 +6403,7 @@ function drawMilestoneDiamonds() {
   // done vs Mech 1 Release done — sat in the same view.)
   const CHECK_COLOR = '#1e293b';   // slate-800; reads against both lime + slate diamonds
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
     if (!wrap) continue;
@@ -6521,7 +6561,7 @@ function clipBarLabels() {
     svg.clientWidth ||
     Infinity;
 
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
     if (!wrap) continue;
@@ -6618,7 +6658,7 @@ function drawMilestoneLabels() {
   // so the spine dates are always visible in Both view without scrolling.
   // Anchor diamonds have a concentric outer ring (~75% larger than inner);
   // labels must clear THAT outer edge, not just the inner diamond.
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.is_milestone) continue;
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
     if (!wrap) continue;
@@ -6921,7 +6961,7 @@ function drawCustomArrows() {
   // terminate at the visible outer edge, not the underlying bar-wrapper rect.
   // Anchor diamonds have an OUTER RING ~75% larger than the inner — arrows
   // must terminate at that outer edge, otherwise they pierce the ring.
-  const taskById = Object.fromEntries(state.tasks.map(t => [String(t.id), t]));
+  const taskById = Object.fromEntries((state._visibleTasks || state.tasks).map(t => [String(t.id), t]));
   const bars = [...svg.querySelectorAll('.bar-wrapper')].map(w => {
     const rect = w.querySelector('.bar');
     if (!rect) return null;
@@ -6964,7 +7004,7 @@ function drawCustomArrows() {
   // see end of this function. Collecting jobs here avoids a per-arrow forward
   // declaration.
   const lagLabelJobs = [];
-  for (const task of state.tasks) {
+  for (const task of (state._visibleTasks || state.tasks)) {
     if (!task.predecessors) continue;
     const succ = barById[String(task.id)];
     if (!succ) continue;
@@ -9699,8 +9739,6 @@ let _hoursAvailable = false;
 let _hoursChecked = false;
 const _hoursCache = {};
 const _hoursFetching = {};
-// UI filter state — survives re-renders within a session
-const _hoursUI = { mode: 'quoted', billing: 'all', fnSel: null, fnOpen: false, fnExp: new Set(), fnSearch: '' };
 function _hoursCheckOnce() {
   if (_hoursChecked) return;
   _hoursChecked = true;
@@ -9877,1140 +9915,6 @@ async function _loadQuoteEtoActuals(project, overlay) {
   } catch (_) { /* cosmetic — modal works fine without the strip */ }
 }
 
-// ── Procurement page (build readiness from Total ETO) ───────────────────────
-// Per-assembly received / ordered / no-PO rollups for a linked job's BOM.
-// Ported from the standalone Build Readiness Report app; same math, rendered
-// in the scheduler's own grid style. Read-only — nothing here writes anywhere.
-// Parts-list column definitions — key, label, and default CSS-var width
-const PROC_PART_COLS = [
-  { key: 'qty',     label: 'Qty',             w: 'var(--pc0,44px)'  },
-  { key: 'pn',      label: 'Part No',         w: 'var(--pc1,160px)' },
-  { key: 'desc',    label: 'Description',     w: 'var(--pc2,1fr)'   },
-  { key: 'parent',  label: 'Parent Assembly', w: 'var(--pc3,190px)' },
-  { key: 'cat',     label: 'Category',        w: 'var(--pc4,132px)' },
-  { key: 'mfr',     label: 'Mfr',             w: 'var(--pc5,115px)' },
-  { key: 'sup',     label: 'Supplier',        w: 'var(--pc6,120px)' },
-  { key: 'po',      label: 'PO #',            w: 'var(--pc7,64px)'  },
-  { key: 'ordered', label: 'Purchased',       w: 'var(--pc8,72px)'  },
-  { key: 'exp',     label: 'Exp',             w: 'var(--pc9,72px)'  },
-  { key: 'lead',    label: 'Lead',            w: 'var(--pc10,52px)' },
-  { key: 'due',     label: 'Due',             w: 'var(--pc11,60px)' },
-  { key: 'status',  label: 'Status',          w: 'var(--pc12,108px)'},
-];
-
-let _procState = { job: '', tab: 'assemblies', filter: 'all', vstatus: 'all', pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '', search: '', open: {}, partsListMode: 'table', upcomingWeek: 1, hiddenPartCols: [] };
-try { _procState = Object.assign(_procState, JSON.parse(localStorage.getItem('sdcProcState') || '{}')); } catch (_) {}
-function _procSave() { try { const { drawerTab: _dt, ...s } = _procState; localStorage.setItem('sdcProcState', JSON.stringify({ ...s, open: {} })); } catch (_) {} }
-const _procCache = {};   // job → readiness payload
-const _procVendorCache = {};   // job → vendor status payload (used by card view + PO panel)
-let _procLoading = false;
-
-function _procLinkedJobs() {
-  const out = [];
-  const idx = state.projectsIndex || {};
-  for (const name of Object.keys(idx)) {
-    if (idx[name].job_number) out.push({ name, job: idx[name].job_number });
-  }
-  return out.sort((a, b) => Number(a.job) - Number(b.job));
-}
-
-function _procBarColor(pct) { return pct >= 90 ? '#74C415' : pct >= 60 ? '#AACEE8' : '#1574C4'; }
-
-// ── Vendors tab (Build Readiness "Vendor Status" view) ──────────────────────
-// POs grouped by supplier, each with received progress + a status badge; click
-// a PO to expand its line items inline. Lazily fetches /api/eto/vendors/:job.
-function _procRerender() {
-  try { renderScheduleProcurement(); } catch (_) {}
-  try { renderScheduleHours(); } catch (_) {}
-}
-
-// ── Cost tab (ETO "Part Cost" report card) ──────────────────────────────────
-// Materials-only financial summary: estimated → purchased → received → paid,
-// plus left-to-pay and estimate-to-complete. Lazily fetches /api/eto/partcost.
-const _procCostCache = {}; // job → part-cost payload
-
-// One delegated listener (document-level) for the editable materials-estimate
-// controls, so they work whether the Cost card is on the full page or the drawer.
-function _procWireEstimateEditor() {
-  if (window._procEstWired) return;
-  window._procEstWired = true;
-  document.addEventListener('click', (e) => {
-    const edit = e.target.closest('[data-action="proc-edit-estimate"]');
-    if (edit) { e.preventDefault(); _procEditEstimate(edit.dataset.job); return; }
-    const rev = e.target.closest('[data-action="proc-revert-estimate"]');
-    if (rev) { e.preventDefault(); _procRevertEstimate(rev.dataset.job); return; }
-  });
-}
-async function _procEditEstimate(job) {
-  const c = _procCostCache[job] || {};
-  const v = await showPromptDialog({
-    title: 'Materials estimate to purchase',
-    message: 'Enter the estimated materials cost (USD) for this job. It drives the “Purchased vs estimate” bar and Estimate-to-Complete. (Total ETO has no reliable per-job materials budget, so PMs set it here.)',
-    placeholder: 'e.g. 200000',
-    value: (c.estimateSource === 'user' && c.estimated != null) ? String(Math.round(c.estimated)) : '',
-    validate: x => /^\d{1,12}(\.\d{1,2})?$/.test(x) ? null : 'Enter a dollar amount — numbers only (e.g. 200000).',
-    okLabel: 'Save',
-  });
-  if (v === null) return;
-  await _procSaveEstimate(job, Number(v), 'Materials estimate saved');
-}
-async function _procRevertEstimate(job) {
-  await _procSaveEstimate(job, null, 'Reverted to the Total ETO estimate');
-}
-async function _procSaveEstimate(job, estimate, okMsg) {
-  try {
-    const r = await fetch(`/api/eto/partcost/${encodeURIComponent(job)}/estimate`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ estimate }),
-    });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || ('HTTP ' + r.status));
-    delete _procCostCache[job];
-    _procCostCache[job] = await api.eto.partcost(job);
-    _procRerender();
-    if (typeof showToast === 'function') showToast(okMsg, { kind: 'success' });
-  } catch (e) { if (typeof showToast === 'function') showToast('Could not save estimate: ' + e.message, { kind: 'error' }); }
-}
-
-function _procCostGauge(c) {
-  const usd = v => _procUsd(v);
-  const budget = Number(c.estimated) || 0;
-  const spent = Number(c.purchased) || 0;
-  const projection = Number(c.projection) || 0;
-  const budgetUnset = !budget || (c.estimateSource === 'eto' && budget < spent * 0.25);
-  const pct = budgetUnset ? null : Math.round((spent / budget) * 100);
-  const projPct = budgetUnset ? null : Math.round((projection / budget) * 100);
-  const frac = budgetUnset ? 0 : Math.min(1, spent / budget);
-  const color = pct == null ? '#94a3b8' : pct <= 80 ? '#1574c4' : pct <= 100 ? '#eab308' : '#dc2626';
-
-  // 270° arc — sweep clockwise from 135° (bottom-left) over the top to 405° (=45°, bottom-right).
-  const cx = 130, cy = 130, r = 92, sw = 20;
-  const pol = (deg) => { const a = deg * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
-  const arc = (s, e) => { const [x1, y1] = pol(s), [x2, y2] = pol(e); const large = (e - s) > 180 ? 1 : 0; return `M ${x1.toFixed(1)} ${y1.toFixed(1)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`; };
-
-  // Compact dollar formatter for the small callout chips: $600,000 → $600K, $1.2M, etc.
-  const compactUsd = (v) => {
-    const n = Math.round(Number(v) || 0);
-    if (n === 0) return '—';
-    if (Math.abs(n) >= 1000000) return '$' + (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-    if (Math.abs(n) >= 1000) return '$' + Math.round(n / 1000) + 'K';
-    return '$' + n.toLocaleString();
-  };
-
-  const paid = Number(c.paid) || 0;
-  // Position on the 270° arc for a given fraction (0..1 of budget).
-  const arcAt = (f) => pol(135 + 270 * Math.min(1, Math.max(0, f)));
-  const spentFrac = budgetUnset ? null : Math.min(1, spent / budget);
-  const projFrac  = budgetUnset ? null : Math.min(1, projection / budget);
-  const paidFrac  = budgetUnset ? null : Math.min(1, paid / budget);
-
-  // Sizing — area encodes magnitude. sqrt(v/budget) so a value 4× larger
-  // shows up as a 2× radius (8× bigger by eye); reads as "this one is way
-  // bigger" rather than swamping everything. Budget = max; everything scales
-  // relative to it.
-  const sqrtFrac = (v) => (!budget || v <= 0) ? 0 : Math.min(1, Math.sqrt(v / budget));
-  const dotR = (v) => 5 + 9 * sqrtFrac(v);             // 5..14 px
-  const dot = (f, v, fill, stroke, label) => {
-    if (f == null || !(v > 0)) return '';
-    const [x, y] = arcAt(f);
-    return `<g><title>${escapeHtml(label)}: ${usd(v)}</title><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${dotR(v).toFixed(1)}" fill="${fill}" stroke="${stroke}" stroke-width="2"/></g>`;
-  };
-  // Callout box style — also scaled by value so the boxes themselves visually
-  // rank Budget > Projected > Purchased > Paid (or however the numbers fall).
-  const coStyle = (v) => {
-    const f = sqrtFrac(v);
-    return `font-size:${(10.5 + 5 * f).toFixed(1)}px;padding:${(1.5 + 3 * f).toFixed(1)}px ${(9 + 9 * f).toFixed(1)}px;`;
-  };
-
-  return `<div class="proc-gauge">
-    <div class="proc-gauge-chart">
-      <svg viewBox="0 0 260 260" class="proc-gauge-svg" role="img" aria-label="Cost gauge">
-        <path d="${arc(135, 405)}" fill="none" stroke="#e8edf3" stroke-width="${sw}" stroke-linecap="round"/>
-        ${!budgetUnset ? `<path d="${arc(135, 135 + 270 * spentFrac)}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round"/>` : ''}
-        ${dot(1, budget, '#cfe2f5', '#1574c4', 'Part Cost Budget')}
-        ${dot(projFrac, projection, '#fff', '#0f172a', 'Projected total')}
-        ${dot(spentFrac, spent, color, color, 'Part Cost Purchased')}
-        ${dot(paidFrac, paid, '#bef264', '#5a9e10', 'Part Cost Paid')}
-      </svg>
-      <div class="proc-gauge-callouts">
-        <div class="proc-gauge-co proc-gauge-co-budget" style="${coStyle(budget)}" title="Part Cost Budget — ${usd(budget)}">${compactUsd(budget)}${budgetUnset && budget ? ' <i>unset</i>' : ''}</div>
-        <div class="proc-gauge-co" style="${coStyle(projection)}" title="Projected Total (Purchased + ETC) — ${usd(projection)}">${compactUsd(projection)}</div>
-        <div class="proc-gauge-co" style="${coStyle(spent)}" title="Part Cost Purchased — ${usd(spent)}">${compactUsd(spent)}</div>
-        <div class="proc-gauge-co proc-gauge-co-paid" style="${coStyle(paid)}" title="Part Cost Paid — ${usd(paid)}">${compactUsd(paid)}</div>
-      </div>
-    </div>
-    <div class="proc-gauge-summary">
-      <div class="proc-gauge-row"><b>Part Cost Budget:</b> ${usd(budget)}${budgetUnset && budget ? ' <span class="proc-gauge-hint">— set via ✎ Edit</span>' : ''}</div>
-      <div class="proc-gauge-row"><b>Part Cost Budget Projection:</b> ${usd(projection)}${projPct != null ? ` <i>(${projPct}%)</i>` : ''}</div>
-    </div>
-  </div>`;
-}
-
-// 3 concentric ring gauges: Estimated (outer) -> Purchased (middle) -> Paid (inner)
-function _procCostWaterfall(c) {
-  const usd = v => _procUsd(v);
-  const estimated = Number(c.estimated) || 0;
-  const purchased = Number(c.purchased) || 0;
-  const paid      = Number(c.paid)      || 0;
-
-  const purRaw  = estimated ? purchased / estimated : 0;
-  const paidRaw = estimated ? paid / estimated : 0;
-  const purOver  = purRaw > 1, paidOver = paidRaw > 1;
-
-  // Scale all arcs to the largest value so over-budget shows estimated as a small slice
-  const scale = Math.max(estimated, purchased, paid) || 1;
-
-  const rings = [
-    { label: 'Estimated', sub: 'Budget',     value: estimated, pct: estimated / scale, over: false,    color: '#1574C4', tipColor: '#60a5fa', track: '#dbeafe', ro: 68, ri: 54 },
-    { label: 'Purchased', sub: 'Parts Cost', value: purchased, pct: purchased / scale, over: purOver,  color: '#061D39', tipColor: '#93c4e8', track: '#d0d9e6', ro: 49, ri: 35 },
-    { label: 'Paid',      sub: 'Parts Cost', value: paid,      pct: paid / scale,      over: paidOver, color: '#74C415', tipColor: '#a3e635', track: '#e2f5c0', ro: 30, ri: 16 },
-  ];
-
-  // large-arc always 0 — semicircle never sweeps > 180°
-  function donutPath(pct, ox, oy, ro, ri) {
-    const full = `M ${ox-ro} ${oy} A ${ro} ${ro} 0 0 1 ${ox+ro} ${oy} L ${ox+ri} ${oy} A ${ri} ${ri} 0 0 0 ${ox-ri} ${oy} Z`;
-    if (pct <= 0) return { track: full, fill: '' };
-    if (pct >= 1) return { track: full, fill: full };
-    const a = (1 - pct) * Math.PI;
-    const cos = Math.cos(a), sin = Math.sin(a);
-    const fill = `M ${ox-ro} ${oy} A ${ro} ${ro} 0 0 1 ${(ox+ro*cos).toFixed(1)} ${(oy-ro*sin).toFixed(1)} L ${(ox+ri*cos).toFixed(1)} ${(oy-ri*sin).toFixed(1)} A ${ri} ${ri} 0 0 0 ${ox-ri} ${oy} Z`;
-    return { track: full, fill };
-  }
-
-  const VW = 180, cy = 72, cx = VW / 2;
-  const mainPct = estimated ? Math.round(purRaw * 100) : 0;
-  const mainColor = purOver ? '#dc2626' : (mainPct >= 90 ? '#f59e0b' : '#0f172a');
-
-  const usdShort = v => {
-    if (!v) return '$0';
-    if (v >= 1e6) return '$' + (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
-    return '$' + Math.round(v / 1000) + 'K';
-  };
-  const arcs = rings.map(r => {
-    const { track, fill } = donutPath(r.pct, cx, cy, r.ro, r.ri);
-    const rawPct   = estimated ? (r.value / estimated) : 0;
-    const pctLabel = estimated ? Math.round(rawPct * 100) + '%' : '—';
-    const fillColor = r.color;   // never red — arc size already shows the overrun
-    const tipColor  = r.tipColor;
-    const da = `data-tl="${r.label}" data-ts="${r.sub}" data-tp="${pctLabel}" data-tv="${usd(r.value)}" data-tc="${tipColor}"`;
-    return `<path d="${track}" fill="${r.track}" ${da} style="cursor:pointer;"/>` +
-           (fill ? `<path d="${fill}" fill="${fillColor}" stroke="white" stroke-width="2.5" ${da} style="cursor:pointer;"/>` : '');
-  }).join('');
-  // Labels at the left ($0) and right (ring value) tips of each arc
-  // Labels end at each ring's right outer tip — natural spread, no overlap
-  const tipLabels = rings.map(r => {
-    const rx = (cx + r.ro - 2).toFixed(1);
-    const ly = cy + 11;
-    return `<text x="${rx}" y="${ly}" text-anchor="end" font-family="'Montserrat',sans-serif" font-size="6" font-weight="700" fill="${r.color}">${usdShort(r.value)}</text>`;
-  }).join('');
-
-  const legendRows = rings.map((r, i) => {
-    const rawPct   = estimated ? (r.value / estimated) : 0;
-    const pctLabel = estimated ? Math.round(rawPct * 100) + '%' : '—';
-    const pctColor = r.over ? '#dc2626' : '#64748b';
-    const barColor = r.over ? '#dc2626' : r.color;
-    const overTag  = r.over ? `<span style="font-size:var(--fs-2xs);background:#fee2e2;color:#dc2626;border-radius:3px;padding:1px 4px;font-weight:var(--fw-bold);margin-left:5px;vertical-align:middle;">OVER</span>` : '';
-    const border   = i < rings.length - 1 ? 'border-bottom:1px solid #f1f5f9;' : '';
-    return `
-      <div style="display:flex;align-items:center;gap:6px;padding:2px 0;${border}">
-        <div style="width:3px;height:24px;border-radius:2px;background:${barColor};flex-shrink:0;"></div>
-        <div style="flex:1;min-width:0;">
-          <div style="font-size:var(--fs-sm);font-weight:var(--fw-bold);color:#1e293b;">${r.label}${overTag}</div>
-          <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.4px;margin-top:1px;">${r.sub}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0;">
-          <div style="font-size:var(--fs-base);font-weight:var(--fw-extrabold);color:#111827;">${usd(r.value)}</div>
-          <div style="font-size:var(--fs-xs);font-weight:var(--fw-semibold);color:${pctColor};margin-top:1px;">${pctLabel}</div>
-        </div>
-      </div>`;
-  }).join('');
-
-  return `
-    <div style="background:white;border-radius:8px;border:1px solid #e2e8f0;margin-top:5px;overflow:hidden;">
-      <div style="padding:5px 8px;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">
-        <div>
-          <div style="font-size:var(--fs-md);font-weight:var(--fw-bold);color:#0f172a;letter-spacing:-0.1px;">Cost Overview</div>
-          <div style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;">${estimated ? usd(estimated) + ' estimated budget' : 'No budget set'}</div>
-        </div>
-        ${estimated ? `<div style="font-size:var(--fs-base);font-weight:var(--fw-extrabold);color:${mainColor};">${mainPct}%<span style="font-size:var(--fs-2xs);font-weight:var(--fw-medium);color:#94a3b8;margin-left:3px;">purchased</span></div>` : ''}
-      </div>
-      <div style="padding:5px 8px 2px;position:relative;">
-        <div id="cg-tip" style="display:none;position:absolute;pointer-events:none;z-index:100;background:#1e293b;color:#fff;border-radius:7px;padding:9px 13px;font-size:var(--fs-md);white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,0.25);">
-          <div id="cg-tip-h" style="font-weight:var(--fw-bold);font-size:var(--fs-base);margin-bottom:1px;"></div>
-          <div id="cg-tip-s" style="color:#94a3b8;font-size:var(--fs-xs);margin-bottom:5px;"></div>
-          <div id="cg-tip-v" style="font-weight:var(--fw-extrabold);font-size:var(--fs-lg);"></div>
-          <div id="cg-tip-p" style="font-size:var(--fs-xs);color:#94a3b8;margin-top:1px;"></div>
-        </div>
-        <svg viewBox="0 0 ${VW} 104" style="width:100%;height:auto;display:block;"
-          onmousemove="(function(e){const p=e.target.closest('[data-tl]');const t=document.getElementById('cg-tip');if(!p){t.style.display='none';return;}const b=e.currentTarget.getBoundingClientRect();t.style.left=(e.clientX-b.left+12)+'px';t.style.top=(e.clientY-b.top-75)+'px';t.style.display='block';document.getElementById('cg-tip-h').style.color=p.dataset.tc;document.getElementById('cg-tip-h').textContent=p.dataset.tl;document.getElementById('cg-tip-s').textContent=p.dataset.ts;document.getElementById('cg-tip-v').textContent=p.dataset.tv;document.getElementById('cg-tip-p').textContent=p.dataset.tp+' of estimated budget';})(event)"
-          onmouseleave="document.getElementById('cg-tip').style.display='none'">
-          ${arcs}${tipLabels}
-        </svg>
-        <div style="text-align:center;margin-top:0;padding-bottom:3px;border-bottom:1px solid #f1f5f9;">
-          <div style="font-size:var(--fs-lg);font-weight:var(--fw-extrabold);color:${mainColor};line-height:1;">${estimated ? mainPct + '%' : '—'}</div>
-          <div style="font-size:var(--fs-2xs);color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-top:1px;">of budget purchased</div>
-        </div>
-      </div>
-      <div style="padding:0 8px 4px;">${legendRows}</div>
-    </div>
-  `;
-}
-
-// Simplified panel for parts without POs
-function _procOpenNoPoPanel(vendorName, job) {
-  const data = _procCache[job];
-  if (!data || !data.partsList) return;
-
-  const noPoParts = data.partsList.filter(p => (p.supplier || 'No Supplier') === vendorName && (!p.poId || p.poId === 'NO_PO'));
-  if (!noPoParts.length) return;
-
-  document.getElementById('proc-po-overlay')?.remove();
-  const fmt = d => d ? fmtDate(d) : '—';
-  const initials = (vendorName || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-
-  const received = noPoParts.filter(p => _procPartStatus(p).key === 'received').length;
-  const total = noPoParts.length;
-  const pct = total > 0 ? Math.round((received / total) * 100) : 0;
-  const barColor = _procBarColor(pct);
-
-  const rows = noPoParts.map(p => {
-    const st = _procPartStatus(p);
-    let cls = 'ppo-line-received';
-    if (st.key !== 'received') {
-      const exp = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : NaN;
-      cls = (!isNaN(exp) && exp < Date.now()) ? 'ppo-line-late' : 'ppo-line-pending';
-    }
-    return `<div class="ppo-line ${cls}">
-      <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(p.pn || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span></span>
-      <span class="num">${p.qty ?? ''}</span>
-      <span>—</span>
-      <span>${fmt(p.requiredDate)}</span>
-      <span>${st.label}</span>
-      <span class="num">—</span>
-    </div>`;
-  }).join('');
-
-  const overlay = document.createElement('div');
-  overlay.id = 'proc-po-overlay';
-  overlay.className = 'proc-po-overlay';
-  overlay.innerHTML = `
-    <div class="proc-po-backdrop" data-action="ppo-close"></div>
-    <aside class="proc-po-panel" role="dialog" aria-label="Parts without PO">
-      <div class="ppo-head">
-        <span class="proc-vavatar">${escapeHtml(initials)}</span>
-        <div class="ppo-head-name"><div class="ppo-vname" title="${escapeHtml(vendorName)}">${escapeHtml(vendorName)}</div><div class="ppo-ponum">Parts without PO</div></div>
-        <button class="ppo-close" data-action="ppo-close" type="button" title="Close">✕</button>
-      </div>
-      <div class="ppo-summary">
-        <div class="ppo-stat"><span class="ppo-sk">TOTAL ITEMS</span><span class="ppo-sv">${total}</span></div>
-        <div class="ppo-stat ppo-prog"><span class="ppo-sk">${received}/${total} received</span><span class="proc-bar"><span class="proc-bar-fill" style="width:${pct}%;background:${barColor}"></span></span><span class="proc-pct" style="color:${barColor}">${pct}%</span></div>
-      </div>
-      <div class="ppo-lines">
-        <div class="ppo-line ppo-lines-head">
-          <span class="ppo-line-part"><span class="ppo-line-pn">Part #</span><span class="ppo-line-desc">Description</span></span>
-          <span class="num">Qty</span>
-          <span>Ordered</span>
-          <span>Due</span>
-          <span>Status</span>
-          <span class="num">Price</span>
-        </div>
-        ${rows}
-      </div>
-    </aside>
-  `;
-
-  document.body.appendChild(overlay);
-
-  // Wire close button
-  overlay.querySelectorAll('[data-action="ppo-close"]').forEach(btn => {
-    btn.addEventListener('click', () => overlay.remove());
-  });
-  overlay.querySelector('.proc-po-backdrop')?.addEventListener('click', () => overlay.remove());
-}
-
-// Open full summary panel for all items in a section (delivery or nopo)
-function _procOpenSummaryPanel(job, section, data) {
-  if (!data || !data.partsList) return;
-
-  const fmt = d => d ? fmtDate(d) : '—';
-  const now = Date.now();
-  const weekMs = 7 * 24 * 60 * 60 * 1000;
-
-  let title, parts, icon, headerColor;
-
-  if (section === 'nopo') {
-    title = 'Parts Without Purchase Order';
-    parts = data.partsList.filter(p => !p.poId || p.poId === 'NO_PO');
-    icon = '✕';
-    headerColor = '#1574C4';
-  } else if (section === 'delivery') {
-    title = 'Parts on Delivery';
-    parts = data.partsList.filter(p => p.poId && _procPartStatus(p).key !== 'received');
-    icon = '⚠';
-    headerColor = '#f59e0b';
-  } else {
-    return;
-  }
-
-  if (!parts.length) return;
-
-  const rows = parts.map(p => {
-    const st = _procPartStatus(p);
-    let cls = 'ppo-line-received';
-    if (st.key !== 'received') {
-      const exp = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : NaN;
-      cls = (!isNaN(exp) && exp < now) ? 'ppo-line-late' : 'ppo-line-pending';
-    }
-    return `<div class="ppo-line ${cls}">
-      <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(p.pn || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span></span>
-      <span class="num">${p.qty ?? ''}</span>
-      <span>${escapeHtml(p.supplier || '—')}</span>
-      <span>${fmt(p.requiredDate)}</span>
-      <span>${st.label}</span>
-      <span class="num">—</span>
-    </div>`;
-  }).join('');
-
-  document.getElementById('proc-po-overlay')?.remove();
-  const overlay = document.createElement('div');
-  overlay.id = 'proc-po-overlay';
-  overlay.className = 'proc-po-overlay';
-  overlay.innerHTML = `
-    <div class="proc-po-backdrop" data-action="ppo-close"></div>
-    <aside class="proc-po-panel" role="dialog" aria-label="${title}">
-      <div class="ppo-head">
-        <div style="font-size: var(--fs-2xl); margin-right: 8px;">${icon}</div>
-        <div class="ppo-head-name"><div class="ppo-vname">${title}</div><div class="ppo-ponum">${parts.length} items</div></div>
-        <button class="ppo-close" data-action="ppo-close" type="button" title="Close">✕</button>
-      </div>
-      <div class="ppo-lines">
-        <div class="ppo-line ppo-lines-head">
-          <span class="ppo-line-part"><span class="ppo-line-pn">Part #</span><span class="ppo-line-desc">Description</span></span>
-          <span class="num">Qty</span>
-          <span>Supplier</span>
-          <span>Due</span>
-          <span>Status</span>
-          <span class="num">Price</span>
-        </div>
-        ${rows}
-      </div>
-    </aside>
-  `;
-
-  document.body.appendChild(overlay);
-
-  // Wire close button
-  overlay.querySelectorAll('[data-action="ppo-close"]').forEach(btn => {
-    btn.addEventListener('click', () => overlay.remove());
-  });
-  overlay.querySelector('.proc-po-backdrop')?.addEventListener('click', () => overlay.remove());
-}
-
-// Right-side slide-out panel for one PO (Build Readiness style): header +
-// ordered/due/value summary + line-items table. Data comes from the cached
-// vendor status — no extra fetch. Triggered from the full page or the drawer.
-function _procOpenPoPanel(job, vname, poId) {
-  const vd = _procVendorCache[job];
-  const vendor = vd && vd.vendors && vd.vendors.find(v => v.name === vname);
-  const po = vendor && vendor.pos.find(p => String(p.po) === String(poId));
-  if (!po) return;
-  document.getElementById('proc-po-overlay')?.remove();
-  const fmt = d => d ? fmtDate(d) : '—';
-  const initials = (vname || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-  const badge = { received: ['RECEIVED', 'vstat-ok'], late: ['PAST DUE', 'vstat-bad'], open: ['LATE / EXP', 'vstat-warn'] }[po.status] || ['', ''];
-  const barColor = _procBarColor(po.pct);
-  const ordered = po.lines.map(l => l.ordered).filter(Boolean).sort()[0];
-  const due = po.lines.map(l => l.expected).filter(Boolean).sort().slice(-1)[0];
-
-  // Calculate parts-based metrics (for assembly readiness) from the parts list
-  const data = _procCache[job];
-  const poBOM = data && data.partsList ? data.partsList.filter(p => String(p.poId) === String(poId)) : [];
-  const bomReceived = poBOM.filter(p => _procPartStatus(p).key === 'received').length;
-  const bomTotal = poBOM.length;
-  const bomPct = bomTotal > 0 ? Math.round((bomReceived / bomTotal) * 100) : 0;
-  const bomBarColor = _procBarColor(bomPct);
-  const rows = po.lines.map(l => {
-    // Row tint by status, matching the card-dot legend: received → green,
-    // overdue → red, on order (not yet due) → yellow.
-    let cls = 'ppo-line-received';
-    if (l.status !== 'received') {
-      const exp = l.expected ? Date.parse(l.expected + 'T00:00:00') : NaN;
-      cls = (!isNaN(exp) && exp < Date.now()) ? 'ppo-line-late' : 'ppo-line-pending';
-    }
-    const rcvd = l.status === 'received'
-      ? `<span class="ppo-rcvd-ok">✓ ${fmt(l.receivedDate)}</span>`
-      : `<span class="ppo-rcvd-exp">Exp ${fmt(l.expected)}</span>`;
-    return `<div class="ppo-line ${cls}">
-      <span class="ppo-line-part"><span class="ppo-line-pn">${escapeHtml(l.partNumber || '—')}</span><span class="ppo-line-desc" title="${escapeHtml(l.desc || '')}">${escapeHtml(l.desc || '')}</span></span>
-      <span class="num">${l.qty ?? ''}</span>
-      <span>${fmt(l.ordered)}</span>
-      <span>${fmt(l.expected)}</span>
-      <span>${rcvd}</span>
-      <span class="num">${l.price != null ? '$' + Number(l.price).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</span>
-    </div>`;
-  }).join('');
-  const overlay = document.createElement('div');
-  overlay.id = 'proc-po-overlay';
-  overlay.className = 'proc-po-overlay';
-  overlay.innerHTML = `
-    <div class="proc-po-backdrop" data-action="ppo-close"></div>
-    <aside class="proc-po-panel" role="dialog" aria-label="PO detail">
-      <div class="ppo-head">
-        <span class="proc-vavatar">${escapeHtml(initials)}</span>
-        <div class="ppo-head-name"><div class="ppo-vname" title="${escapeHtml(vname)}">${escapeHtml(vname)}</div><div class="ppo-ponum">PO #${escapeHtml(String(poId))}</div></div>
-        <span class="proc-vbadge ${badge[1]}">${badge[0]}</span>
-        <button class="ppo-close" data-action="ppo-close" type="button" title="Close">✕</button>
-      </div>
-      <div class="ppo-summary">
-        <div class="ppo-stat"><span class="ppo-sk">ORDERED</span><span class="ppo-sv">${fmt(ordered)}</span></div>
-        <div class="ppo-stat"><span class="ppo-sk">DUE</span><span class="ppo-sv">${fmt(due)}</span></div>
-        <div class="ppo-stat"><span class="ppo-sk">PO VALUE</span><span class="ppo-sv">$${Math.round(po.price).toLocaleString()}</span></div>
-        <div style="font-size: var(--fs-xs); color: #64748b; padding: 8px 0; border-top: 1px solid #e2e8f0; margin-top: 8px;">
-          <div style="margin-bottom: 4px;">PO Lines (Supplier Status)</div>
-        </div>
-        <div class="ppo-stat ppo-prog"><span class="ppo-sk">${po.received}/${po.itemCount} received</span><span class="proc-bar"><span class="proc-bar-fill" style="width:${po.pct}%;background:${barColor}"></span></span><span class="proc-pct" style="color:${barColor}">${po.pct}%</span></div>
-        ${bomTotal > 0 ? `<div style="font-size: var(--fs-xs); color: #64748b; padding: 8px 0; border-top: 1px solid #e2e8f0; margin-top: 8px;">
-          <div style="margin-bottom: 4px;">Parts (Assembly Readiness)</div>
-        </div>
-        <div class="ppo-stat ppo-prog"><span class="ppo-sk">${bomReceived}/${bomTotal} parts</span><span class="proc-bar"><span class="proc-bar-fill" style="width:${bomPct}%;background:${bomBarColor}"></span></span><span class="proc-pct" style="color:${bomBarColor}">${bomPct}%</span></div>` : ''}
-      </div>
-      <div class="ppo-lines">
-        <div class="ppo-line ppo-line-head"><span>PART</span><span class="num">QTY</span><span>ORDERED</span><span>EXPECTED</span><span>RECEIVED</span><span class="num">PRICE</span></div>
-        ${rows}
-      </div>
-    </aside>`;
-  document.body.appendChild(overlay);
-  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
-  overlay.querySelectorAll('[data-action="ppo-close"]').forEach(b => b.addEventListener('click', close));
-  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
-  document.addEventListener('keydown', onKey);
-  // Force a reflow so the transform transition plays, then flip to the open
-  // state synchronously (rAF can no-op if the tab isn't actively painting).
-  void overlay.offsetWidth;
-  overlay.classList.add('is-open');
-}
-
-
-// Compact money — $843K / $12.4K / $730. Assembly rows are tight on space.
-// Exact whole-dollar amount with thousands separators — $5,200, $90,000, $228.
-// No K/M abbreviation, no decimals.
-function _procUsd(v) {
-  const n = Number(v) || 0;
-  if (n <= 0) return '—';
-  return '$' + Math.round(n).toLocaleString();
-}
-
-// ── Flat Parts List tab ──────────────────────────────────────────────────────
-// Every leaf-part occurrence across all assemblies, one row each, with PO +
-// delivery status. Complements the Assemblies (BOM tree) and Vendors (by-supplier)
-// views — this is the part-centric cut.
-function _procPartStatus(p) {
-  if (p.inStock) return { key: 'received', label: 'IN STOCK', cls: 'ok', sub: 'from inventory' };
-  if (p.status === 'received') return { key: 'received', label: 'RECEIVED', cls: 'ok', sub: '' };
-  if (p.hold) return { key: 'hold', label: 'ON HOLD', cls: 'hold', sub: 'in ETO' };
-  if (p.status === 'noPO') return { key: 'noPO', label: 'NO PO', cls: 'bad', sub: '' };
-  const due = p.expDate || p.requiredDate;
-  if (due) {
-    const diff = Math.ceil((Date.parse(due + 'T00:00:00') - Date.now()) / 86400000);
-    if (isNaN(diff)) return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
-    if (diff < 0) return { key: 'overdue', label: 'OVERDUE', cls: 'bad', sub: `${Math.abs(diff)}d late` };
-    if (diff <= 14) return { key: 'soon', label: 'DUE SOON', cls: 'warn', sub: `in ${diff}d` };
-    return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: `in ${diff}d` };
-  }
-  return { key: 'ordered', label: 'ON ORDER', cls: 'info', sub: '' };
-}
-
-// Display fallbacks used for both rendering and the filter dropdowns, so the
-// option values line up exactly with what shows in the rows.
-function _procMfr(p) { return p.manufacturer || 'SDC'; }
-
-// Parts List filter bar — Status, Category, Manufacturer, Supplier, Purchase
-// date range. Options come straight from the loaded BOM so they always match
-// what's in the rows. Shared by the full page and the schedule drawer so both
-// filter identically (state lives on _procState). Mirrors the ETO report.
-function _procPartsFilterBar(data) {
-  if (!data || !Array.isArray(data.partsList)) return '';
-  const pstatusOpts = [['all', 'Status: all'], ['received', 'Received'], ['ordered', 'On order'], ['soon', 'Due soon'], ['overdue', 'Overdue'], ['noPO', 'No PO'], ['hold', 'On hold']];
-  const uniqSorted = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
-  const cats = uniqSorted(data.partsList.map(p => p.category));
-  const mfrs = uniqSorted(data.partsList.map(p => _procMfr(p)));
-  const sups = uniqSorted(data.partsList.map(p => p.supplier));
-  const opt = (cur, v, label) => `<option value="${escapeHtml(String(v))}" ${cur === v ? 'selected' : ''}>${escapeHtml(String(label))}</option>`;
-  const drop = (id, title, cur, values) => `<label class="proc-filt"><span class="proc-filt-lbl">${title}</span>
-    <select id="${id}" class="proc-job-pick">${opt(cur, 'all', 'All')}${values.map(v => opt(cur, v, v)).join('')}</select></label>`;
-  const mode = _procState.pdatemode === 'invoiced' ? 'invoiced' : 'purchase';
-  const dateLabel = mode === 'invoiced' ? 'Invoiced' : 'Purchased';
-  const seg = (val, label) => `<button class="seg-btn${mode === val ? ' is-active' : ''}" data-pdatemode="${val}" type="button">${label}</button>`;
-  const active = _procState.pstatus !== 'all' || _procState.pcat !== 'all' || _procState.pmfr !== 'all' || _procState.psup !== 'all' || _procState.pfrom || _procState.pto || mode !== 'purchase';
-  const hidden = new Set(_procState.hiddenPartCols || []);
-  const colPopover = `<div class="proc-col-pop-wrap" style="position:relative;display:inline-block;">
-    <button class="proc-view-btn${hidden.size ? ' is-active' : ''}" id="proc-col-btn" type="button" title="Show / hide columns">⊞ Columns${hidden.size ? ` <span style="font-size:10px;background:#1574c4;color:#fff;border-radius:8px;padding:0 5px;margin-left:3px;">${hidden.size}</span>` : ''}</button>
-    <div class="proc-col-pop" id="proc-col-pop" style="display:none;">
-      ${PROC_PART_COLS.map(c => `<label class="proc-col-check"><input type="checkbox" data-col-key="${c.key}"${!hidden.has(c.key) ? ' checked' : ''}> ${c.label}</label>`).join('')}
-      <div style="border-top:1px solid #e2e8f0;margin-top:6px;padding-top:6px;display:flex;gap:6px;">
-        <button class="btn-ghost btn-tight" data-col-all="show" type="button">Show all</button>
-        <button class="btn-ghost btn-tight" data-col-all="reset" type="button">Reset</button>
-      </div>
-    </div>
-  </div>`;
-  return `<div class="proc-parts-filters">
-    <div class="proc-view-seg">
-      <button class="proc-view-btn${_procState.partsListMode === 'table' ? ' is-active' : ''}" data-list-mode="table" type="button">≡ List</button>
-      <button class="proc-view-btn${_procState.partsListMode === 'card' ? ' is-active' : ''}" data-list-mode="card" type="button">⊟ Card</button>
-    </div>
-    ${_procState.partsListMode === 'table' ? colPopover : ''}
-    <div class="proc-filt-divider"></div>
-    <label class="proc-filt"><span class="proc-filt-lbl">Status</span>
-      <select id="proc-pstatus" class="proc-job-pick">${pstatusOpts.map(([v, t]) => `<option value="${v}" ${_procState.pstatus === v ? 'selected' : ''}>${v === 'all' ? 'All' : t}</option>`).join('')}</select></label>
-    ${drop('proc-pcat', 'Category', _procState.pcat, cats)}
-    ${drop('proc-pmfr', 'Manufacturer', _procState.pmfr, mfrs)}
-    ${drop('proc-psup', 'Supplier', _procState.psup, sups)}
-    <label class="proc-filt"><span class="proc-filt-lbl">Date type</span>
-      <div class="seg-control proc-datemode">${seg('purchase', 'Purchase')}${seg('invoiced', 'Invoiced')}</div></label>
-    <label class="proc-filt"><span class="proc-filt-lbl">${dateLabel} from</span><input type="date" id="proc-pfrom" class="proc-date" value="${escapeHtml(_procState.pfrom || '')}"></label>
-    <label class="proc-filt"><span class="proc-filt-lbl">to</span><input type="date" id="proc-pto" class="proc-date" value="${escapeHtml(_procState.pto || '')}"></label>
-    ${active ? `<button class="btn-ghost btn-tight" id="proc-pclear" type="button">Clear</button>` : ''}
-  </div>`;
-}
-
-// Wire the parts filter controls inside `root`, re-rendering via `rerender`.
-function _wirePartsFilters(root, rerender) {
-  const bind = (id, key) => { const el = root.querySelector(id); if (el) el.addEventListener('change', () => { _procState[key] = el.value; _procSave(); rerender(); }); };
-  bind('#proc-pstatus', 'pstatus');
-  bind('#proc-pcat', 'pcat');
-  bind('#proc-pmfr', 'pmfr');
-  bind('#proc-psup', 'psup');
-  bind('#proc-pfrom', 'pfrom');
-  bind('#proc-pto', 'pto');
-  // Date Selector — apply the date range to Purchase date or Invoiced date.
-  root.querySelectorAll('[data-pdatemode]').forEach(b => b.addEventListener('click', () => {
-    _procState.pdatemode = b.dataset.pdatemode; _procSave(); rerender();
-  }));
-  // Parts List view mode toggle (List vs Card)
-  root.querySelectorAll('[data-list-mode]').forEach(b => b.addEventListener('click', () => {
-    _procState.partsListMode = b.dataset.listMode; _procSave(); rerender();
-  }));
-
-  // Columns popover — toggle visibility
-  const colBtn = root.querySelector('#proc-col-btn');
-  const colPop = root.querySelector('#proc-col-pop');
-  if (colBtn && colPop) {
-    colBtn.addEventListener('click', e => { e.stopPropagation(); colPop.style.display = colPop.style.display === 'none' ? 'block' : 'none'; });
-    colPop.addEventListener('click', e => e.stopPropagation());
-    document.addEventListener('click', () => { if (colPop) colPop.style.display = 'none'; }, { once: true, capture: false });
-    colPop.querySelectorAll('[data-col-key]').forEach(cb => {
-      cb.addEventListener('change', () => {
-        const hidden = new Set(_procState.hiddenPartCols || []);
-        cb.checked ? hidden.delete(cb.dataset.colKey) : hidden.add(cb.dataset.colKey);
-        _procState.hiddenPartCols = [...hidden]; _procSave(); rerender();
-      });
-    });
-    colPop.querySelector('[data-col-all="show"]')?.addEventListener('click', () => { _procState.hiddenPartCols = []; _procSave(); rerender(); });
-    colPop.querySelector('[data-col-all="reset"]')?.addEventListener('click', () => { _procState.hiddenPartCols = []; _procSave(); rerender(); });
-  }
-
-  const pclear = root.querySelector('#proc-pclear');
-  if (pclear) pclear.addEventListener('click', () => { Object.assign(_procState, { pstatus: 'all', pcat: 'all', pmfr: 'all', psup: 'all', pdatemode: 'purchase', pfrom: '', pto: '' }); _procSave(); rerender(); });
-}
-
-function _procFilteredParts(data) {
-  const q = (_procState.search || '').toLowerCase();
-  const want = _procState.pstatus;
-  const cat = _procState.pcat, mfr = _procState.pmfr, sup = _procState.psup;
-  const from = _procState.pfrom || '', to = _procState.pto || '';
-  return (data.partsList || []).filter(p => {
-    const st = _procPartStatus(p);
-    if (want !== 'all' && st.key !== want) return false;
-    if (cat !== 'all' && (p.category || '') !== cat) return false;
-    if (mfr !== 'all' && _procMfr(p) !== mfr) return false;
-    if (sup !== 'all' && (p.supplier || '') !== sup) return false;
-    const dcol = _procState.pdatemode === 'invoiced' ? p.invoicedDate : p.orderDate;
-    if (from && (!dcol || dcol < from)) return false;
-    if (to && (!dcol || dcol > to)) return false;
-    if (q && ![p.pn, p.desc, p.category, p.manufacturer, p.supplier, p.parentPN, p.parentDesc, p.poId].some(v => String(v || '').toLowerCase().includes(q))) return false;
-    return true;
-  });
-}
-
-function _procPartsCardView(rows) {
-  const fmt = d => d ? fmtDate(d) : '—';
-  const vendors = {};
-  const backendVendors = _procVendorCache[_procState.job]?.vendors || [];
-  const hasBackendData = backendVendors.length > 0;
-
-  // Group parts by vendor, then by PO within each vendor
-  rows.forEach(p => {
-    const vendor = p.supplier || 'No Supplier';
-    if (!vendors[vendor]) vendors[vendor] = { name: vendor, pos: {}, total: 0, received: 0 };
-
-    const poId = p.poId || 'NO_PO';
-    if (!vendors[vendor].pos[poId]) {
-      vendors[vendor].pos[poId] = { poId: p.poId, parts: [], received: 0, total: 0, orderDate: null, expDate: null };
-    }
-
-    vendors[vendor].pos[poId].parts.push(p);
-    vendors[vendor].pos[poId].total++;
-    vendors[vendor].total++;
-    if (!vendors[vendor].pos[poId].orderDate && p.orderDate) vendors[vendor].pos[poId].orderDate = p.orderDate;
-    if (!vendors[vendor].pos[poId].expDate && (p.expDate || p.requiredDate)) vendors[vendor].pos[poId].expDate = p.expDate || p.requiredDate;
-
-    if (_procPartStatus(p).key === 'received') {
-      vendors[vendor].pos[poId].received++;
-      vendors[vendor].received++;
-    }
-  });
-
-  // Update PO-level data from backend for accuracy (backend is authoritative for line status)
-  // Note: vendor-level totals stay parts-based, not line-based, to match what's displayed
-  if (hasBackendData) {
-    backendVendors.forEach(backendVendor => {
-      const vendorName = backendVendor.name;
-      if (vendors[vendorName]) {
-        for (const poKey in vendors[vendorName].pos) {
-          if (poKey === 'NO_PO') continue;
-          const cardPo = vendors[vendorName].pos[poKey];
-          // Find matching backend PO by comparing numeric values to handle string/number mismatch
-          const backendPo = backendVendor.pos.find(bp => {
-            const bpNum = parseInt(bp.po) || 0;
-            const cpNum = parseInt(poKey) || 0;
-            return bpNum > 0 && bpNum === cpNum;
-          });
-          if (backendPo) {
-            cardPo.received = backendPo.received;
-            cardPo.total = backendPo.itemCount;
-          }
-        }
-      }
-    });
-  }
-
-  const vendorCards = Object.entries(vendors).map(([vendor, vendorGroup]) => {
-    const vendorPct = vendorGroup.total > 0 ? Math.round((vendorGroup.received / vendorGroup.total) * 100) : 0;
-    const vendorBarColor = vendorPct >= 90 ? '#74c415' : vendorPct >= 60 ? '#befa4f' : '#1574c4';
-    const initials = (vendor || '?').replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-
-    // Count non-NO_PO entries
-    const poCount = Object.keys(vendorGroup.pos).filter(k => k !== 'NO_PO').length;
-
-    // Check if any POs have overdue dates (expected date in past)
-    const now = Date.now();
-    const hasOverdue = Object.values(vendorGroup.pos).some(po => {
-      if (po.received >= po.total) return false; // fully received, not overdue
-      return po.expDate && new Date(po.expDate + 'T00:00:00').getTime() < now;
-    });
-
-    let statusBadge, statusLabel;
-    if (hasOverdue) {
-      statusBadge = 'bad';
-      statusLabel = 'PAST DUE';
-    } else if (vendorPct >= 90) {
-      statusBadge = 'ok';
-      statusLabel = 'RECEIVED';
-    } else if (vendorPct >= 60) {
-      statusBadge = 'warn';
-      statusLabel = 'PARTIAL';
-    } else {
-      statusBadge = 'bad';
-      statusLabel = 'PENDING';
-    }
-
-    // Build PO rows with sort key, then sort by completion status (incomplete first)
-    const poRowsWithSort = Object.entries(vendorGroup.pos).map(([poKey, poGroup]) => {
-      const poPct = poGroup.total > 0 ? Math.round((poGroup.received / poGroup.total) * 100) : 0;
-      const poLabel = poGroup.poId ? String(poGroup.poId) : '—';
-      const rcvdText = `${poGroup.received}/${poGroup.total} rcvd`;
-      const dateText = poGroup.expDate ? fmt(poGroup.expDate) : '—';
-      const dotColor = poPct >= 100 ? 'received' : poPct >= 60 ? 'ordered' : 'noPO';
-
-      const isNoPo = poKey === 'NO_PO';
-      return {
-        html: `<div class="proc-vpo${isNoPo ? ' clickable' : ''}" data-vpo="${escapeHtml(vendor)}|${escapeHtml(poLabel)}" data-vpo-id="${poGroup.poId || ''}" ${isNoPo ? `data-nopo-vendor="${escapeHtml(vendor)}"` : ''} title="${isNoPo ? 'View parts without PO' : 'Open PO detail'}">
-        <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(poLabel)}" type="button" title="${isNoPo ? 'Parts without PO number' : 'Click to copy PO number'}">${escapeHtml(poLabel)}</button>
-        <span class="proc-vpo-rcvd">${rcvdText}</span>
-        <span class="proc-vpo-date" title="Expected delivery">${dateText}</span>
-        <span class="proc-dot proc-dot-${dotColor}" title="${poPct >= 100 ? 'All received' : poPct >= 60 ? 'On order' : 'No PO'}"></span>
-        <span class="proc-vpo-go" aria-hidden="true">›</span>
-      </div>`,
-        sortKey: dotColor === 'received' ? 1 : 0  // 0 for incomplete (top), 1 for received (bottom)
-      };
-    });
-    // Sort: incomplete POs (sortKey 0) first, then received POs (sortKey 1)
-    const poRows = poRowsWithSort.sort((a, b) => a.sortKey - b.sortKey).map(r => r.html).join('');
-
-    return `<div class="proc-pcard">
-      <div class="proc-pcard-head">
-        <span class="proc-pavatar">${escapeHtml(initials)}</span>
-        <span class="proc-pname" title="${escapeHtml(vendor)}">${escapeHtml(vendor)}</span>
-        <span class="proc-vbadge ${statusBadge === 'ok' ? 'vstat-ok' : statusBadge === 'warn' ? 'vstat-warn' : 'vstat-bad'}">${statusLabel}</span>
-      </div>
-      <div class="proc-vmeta">${poCount} PO${poCount === 1 ? '' : 's'} · ${vendorGroup.total} item${vendorGroup.total === 1 ? '' : 's'}</div>
-      <div class="proc-pbar-row"><span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, vendorPct)}%;background:${vendorBarColor}"></span></span><span class="proc-pct" style="color:${vendorBarColor}">${vendorPct}%</span></div>
-      <div class="proc-vpos">
-        <div class="proc-vpo proc-vpo-head">
-          <span class="proc-vpo-hpn" title="Purchase order number">PO #</span>
-          <span class="proc-vpo-rcvd" title="Items received / total on this PO">Received</span>
-          <span class="proc-vpo-date" title="Expected delivery date">Date</span>
-          <span class="proc-dot" style="visibility:hidden"></span>
-          <span class="proc-vpo-go" style="visibility:hidden" aria-hidden="true">›</span>
-        </div>
-        ${poRows}
-      </div>
-    </div>`;
-  }).join('');
-
-  return `<div class="proc-pcards">${vendorCards}</div>`;
-}
-
-// Build Readiness-style summary cards for Parts List - EXACT LOGIC MATCH
-function _procPartsSummary(data) {
-  if (!data || !data.partsList) return '';
-
-  const parts = data.partsList || [];
-  const fmt = d => d ? fmtDate(d) : '—';
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const todayMs = now.getTime();
-  const weekMs = 7 * 24 * 60 * 60 * 1000;
-
-  // ── DELIVERY SLIP (Build Readiness logic) ──
-  // Parts due within today ±7 days: past-due this week AND arriving this week
-  const slipWindowStart = new Date(now);
-  slipWindowStart.setDate(slipWindowStart.getDate() - 7);
-  const slipWindowEnd = new Date(now);
-  slipWindowEnd.setDate(slipWindowEnd.getDate() + 8); // +7 days, inclusive
-
-  const deliveryParts = parts.filter(p => {
-    if (!p.poId || _procPartStatus(p).key === 'received') return false;
-    const dueDate = p.expDate || p.requiredDate;
-    if (!dueDate) return false;
-    const dueDateMs = Date.parse(dueDate + 'T00:00:00');
-    if (!isFinite(dueDateMs)) return false;
-    // Within 7-day window (7 days ago to end of today)
-    return dueDateMs >= slipWindowStart.getTime() && dueDateMs < slipWindowEnd.getTime();
-  });
-
-  const deliveryCount = deliveryParts.length;
-  const deliveryOldest = deliveryParts.length ? Math.min(...deliveryParts.map(p => {
-    const reqDate = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : Infinity;
-    return isFinite(reqDate) ? reqDate : Infinity;
-  })) : null;
-  // Avg late: only count parts that are actually overdue
-  const lateParts = deliveryParts.filter(p => {
-    const dueDate = p.expDate || p.requiredDate;
-    const dueDateMs = Date.parse(dueDate + 'T00:00:00');
-    return isFinite(dueDateMs) && dueDateMs < todayMs;
-  });
-  const deliveryAvgLate = lateParts.length > 0
-    ? Math.round(lateParts.reduce((sum, p) => {
-        const dueDate = p.expDate || p.requiredDate;
-        const dueDateMs = Date.parse(dueDate + 'T00:00:00');
-        return sum + Math.ceil((todayMs - dueDateMs) / weekMs);
-      }, 0) / lateParts.length)
-    : 0;
-
-  // ── NO PURCHASE ORDER (Build Readiness logic) ──
-  // Filter out: parts on hold, parts with any PO, fully received parts
-  // Deduplicate by part number
-  const noPoParts = (() => {
-    const seen = new Set();
-    return parts.filter(p => {
-      // Skip if has PO
-      if (p.poId && p.poId !== 'NO_PO') return false;
-      // Skip if fully received
-      if (_procPartStatus(p).key === 'received') return false;
-      // Skip if on hold
-      if (p.hold || p.onHold || p.status === 'hold') return false;
-      // Deduplicate by part number
-      if (seen.has(p.pn)) return false;
-      seen.add(p.pn);
-      return true;
-    });
-  })();
-
-  const noPOCount = noPoParts.length;
-  const noPOOldest = noPoParts.length ? Math.min(...noPoParts.map(p => {
-    const reqDate = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : Infinity;
-    return isFinite(reqDate) ? reqDate : Infinity;
-  })) : null;
-  // This week: parts due within next 7 days
-  const weekEnd = new Date(now);
-  weekEnd.setDate(weekEnd.getDate() + 7);
-  const noPOThisWeek = noPoParts.filter(p => {
-    const reqDate = p.requiredDate ? Date.parse(p.requiredDate + 'T00:00:00') : NaN;
-    return isFinite(reqDate) && reqDate <= weekEnd.getTime();
-  }).length;
-
-  // ── UPCOMING DELIVERIES (Build Readiness logic) ──
-  // Parts due tomorrow through next 8 weeks (or more based on config)
-  const upcomingWindowStart = new Date(now);
-  upcomingWindowStart.setDate(upcomingWindowStart.getDate() + 1);
-  const upcomingWindowEnd = new Date(now);
-  upcomingWindowEnd.setDate(upcomingWindowEnd.getDate() + 57);  // ~8 weeks
-
-  const upcoming = parts.filter(p => {
-    if (_procPartStatus(p).key === 'received') return false;
-    const dueDate = p.expDate || p.requiredDate;
-    if (!dueDate) return false;
-    const dueDateMs = Date.parse(dueDate + 'T00:00:00');
-    if (!isFinite(dueDateMs)) return false;
-    return dueDateMs >= upcomingWindowStart.getTime() && dueDateMs < upcomingWindowEnd.getTime();
-  }).sort((a, b) => {
-    const aDate = a.expDate || a.requiredDate;
-    const bDate = b.expDate || b.requiredDate;
-    return (aDate || '').localeCompare(bDate || '');
-  });
-
-  const deliveryHtml = deliveryParts.length ? `
-    <div class="proc-stbl">
-      <div class="proc-stbl-hrow proc-stbl-grid-slip">
-        ${['Part #','Description','Supplier','Req','Exp','Ordered'].map(t => `<div class="proc-stbl-hcell">${t}</div>`).join('')}
-      </div>
-      ${deliveryParts.map(p => {
-        const expMs = p.expDate ? Date.parse(p.expDate + 'T00:00:00') : NaN;
-        const expOverdue = isFinite(expMs) && expMs <= todayMs;
-        return `<div class="proc-stbl-drow proc-stbl-grid-slip">
-          <div class="proc-stbl-cell"><span class="proc-stbl-pn" data-slip-pn="${escapeHtml(p.pn)}" title="Click to jump to part">${escapeHtml(p.pn)}</span></div>
-          <div class="proc-stbl-cell"><span class="proc-stbl-desc" title="${escapeHtml(p.desc||'')}">${escapeHtml(p.desc||'—')}</span></div>
-          <div class="proc-stbl-cell"><span class="proc-stbl-sup" title="${escapeHtml(p.supplier||'')}">${escapeHtml(p.supplier||'—')}</span></div>
-          <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.requiredDate)}</span></div>
-          <div class="proc-stbl-cell"><span class="proc-stbl-date${expOverdue ? ' proc-stbl-date-late' : ''}">${fmt(p.expDate)}</span></div>
-          <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.orderDate)}</span></div>
-        </div>`;
-      }).join('')}
-    </div>
-  ` : '<div class="proc-stbl-empty">No delivery items this week</div>';
-
-  const noPOHtml = noPoParts.length ? `
-    <div class="proc-stbl">
-      <div class="proc-stbl-hrow proc-stbl-grid-nopo">
-        ${['Part #','Description','Req Date'].map(t => `<div class="proc-stbl-hcell">${t}</div>`).join('')}
-      </div>
-      ${noPoParts.map(p => `<div class="proc-stbl-drow proc-stbl-grid-nopo">
-        <div class="proc-stbl-cell"><span class="proc-stbl-pn" data-slip-pn="${escapeHtml(p.pn)}" title="Click to jump to part">${escapeHtml(p.pn)}</span></div>
-        <div class="proc-stbl-cell"><span class="proc-stbl-desc" title="${escapeHtml(p.desc||'')}">${escapeHtml(p.desc||'—')}</span></div>
-        <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.requiredDate)}</span></div>
-      </div>`).join('')}
-    </div>
-  ` : '<div class="proc-stbl-empty">No parts without PO</div>';
-
-  const upcomingHtml = upcoming.length ? (() => {
-    const allWeekData = Array.from({length: 8}, (_, i) => {
-      const weekNum = i + 1;
-      const wStart = new Date(now); wStart.setDate(wStart.getDate() + (weekNum - 1) * 7 + 1);
-      const wEnd   = new Date(now); wEnd.setDate(wEnd.getDate() + weekNum * 7 + 1);
-      const wParts = upcoming.filter(p => {
-        const ms = Date.parse((p.expDate || p.requiredDate) + 'T00:00:00');
-        return isFinite(ms) && ms >= wStart.getTime() && ms < wEnd.getTime();
-      });
-      return { weekNum, parts: wParts, count: wParts.length };
-    });
-    const firstWeekWithData = allWeekData.find(w => w.count > 0);
-    const selectedWeek = _procState.upcomingWeek || (firstWeekWithData ? firstWeekWithData.weekNum : 1);
-    const selectedParts = (allWeekData.find(w => w.weekNum === selectedWeek) || {}).parts || [];
-    const suppliers = new Set(selectedParts.map(p => p.supplier).filter(Boolean));
-    const nearest = selectedParts.length > 0 ? Math.min(...selectedParts.map(p => Date.parse((p.expDate || p.requiredDate) + 'T00:00:00'))) : null;
-    return `
-      <div class="proc-week-tabs">
-        ${allWeekData.map(w => `<button class="proc-week-btn${w.weekNum === selectedWeek ? ' is-active' : ''}${w.count > 0 ? ' has-parts' : ''}" data-week="${w.weekNum}">${w.weekNum}W${w.count > 0 ? ` <span class="proc-week-btn-count">(${w.count})</span>` : ''}</button>`).join('')}
-      </div>
-      <div class="proc-week-stats">
-        ${[['Parts', selectedParts.length], ['Suppliers', suppliers.size], ['Nearest Exp', nearest ? fmt(new Date(nearest).toISOString().slice(0,10)) : '—']].map(([label, val]) => `<div><div class="proc-week-stat-num">${val}</div><div class="proc-week-stat-lbl">${label}</div></div>`).join('')}
-      </div>
-      <div class="proc-stbl-upcoming">
-        <div class="proc-stbl-hrow proc-stbl-grid-upcoming">
-          ${['PO #','Part #','Description','Supplier','Exp Date','Req Date','Ordered'].map(t => `<div class="proc-stbl-hcell">${t}</div>`).join('')}
-        </div>
-        ${selectedParts.length === 0
-          ? `<div class="proc-stbl-empty" style="text-align:center;padding:20px;">No parts with exp date in week ${selectedWeek}</div>`
-          : selectedParts.map(p => `<div class="proc-stbl-drow proc-stbl-grid-upcoming">
-              <div class="proc-stbl-cell"><span class="proc-stbl-date">${escapeHtml(p.poId||'—')}</span></div>
-              <div class="proc-stbl-cell"><span class="proc-stbl-pn" data-slip-pn="${escapeHtml(p.pn)}" title="Click to jump to part">${escapeHtml(p.pn)}</span></div>
-              <div class="proc-stbl-cell"><span class="proc-stbl-desc" title="${escapeHtml(p.desc||'')}">${escapeHtml(p.desc||'—')}</span></div>
-              <div class="proc-stbl-cell"><span class="proc-stbl-sup" title="${escapeHtml(p.supplier||'')}">${escapeHtml(p.supplier||'—')}</span></div>
-              <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.expDate)}</span></div>
-              <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.requiredDate)}</span></div>
-              <div class="proc-stbl-cell"><span class="proc-stbl-date">${fmt(p.orderDate)}</span></div>
-            </div>`).join('')}
-      </div>
-    `;
-  })() : '';
-
-  const statBlock = (num, cls, label) => `
-    <div>
-      <div class="proc-scard-stat-num${cls ? ' ' + cls : ''}">${num}</div>
-      <div class="proc-scard-stat-lbl">${label}</div>
-    </div>`;
-
-  return `
-    <div class="proc-summary-grid">
-      <div class="proc-scard">
-        <div class="proc-scard-title-row">
-          <div class="proc-scard-dot proc-scard-dot-amber"></div>
-          <div class="proc-scard-title">Delivery Slip</div>
-        </div>
-        <div class="proc-scard-stats">
-          ${statBlock(deliveryCount, '', 'Parts')}
-          ${statBlock('+' + deliveryAvgLate + 'd', deliveryAvgLate > 0 ? 'proc-scard-stat-num-warn' : 'proc-scard-stat-num-ok', 'Avg Late')}
-          ${statBlock(deliveryOldest ? fmt(new Date(deliveryOldest).toISOString().slice(0,10)) : '—', '', 'Oldest Req')}
-        </div>
-        ${deliveryHtml}
-      </div>
-      <div class="proc-scard">
-        <div class="proc-scard-title-row">
-          <div class="proc-scard-dot proc-scard-dot-blue"></div>
-          <div class="proc-scard-title">No Purchase Order</div>
-        </div>
-        <div class="proc-scard-stats">
-          ${statBlock(noPOCount, '', 'Parts')}
-          ${statBlock(noPOThisWeek, noPOThisWeek > 0 ? 'proc-scard-stat-num-warn' : '', 'This Week')}
-          ${statBlock(noPOOldest ? fmt(new Date(noPOOldest).toISOString().slice(0,10)) : '—', '', 'Oldest Req')}
-        </div>
-        ${noPOHtml}
-      </div>
-    </div>
-    ${upcomingHtml ? `<div class="proc-upcoming">
-      <div class="proc-upcoming-title">Upcoming Deliveries</div>
-      ${upcomingHtml}
-    </div>` : ''}
-  `;
-}
-
-function _procColResizeStart(e, colIdx) {
-  e.preventDefault();
-  e.stopPropagation();
-  const container = e.target.closest('.proc-plist');
-  if (!container) return;
-  const cell = container.querySelector('.proc-plist-head').children[colIdx];
-  const startW = cell.getBoundingClientRect().width;
-  const startX = e.clientX;
-  const minW = colIdx === 0 ? 30 : 48;
-  e.target.classList.add('resizing');
-  document.body.style.cursor = 'col-resize';
-  document.body.style.userSelect = 'none';
-  function onMove(ev) {
-    container.style.setProperty('--pc' + colIdx, Math.max(minW, startW + (ev.clientX - startX)) + 'px');
-  }
-  function onUp() {
-    e.target.classList.remove('resizing');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-  }
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-}
-
-function _procPartsTable(data) {
-  const rows = _procFilteredParts(data);
-  if (!rows.length) return `<div class="proc-empty">No parts match the current filter or search.</div>`;
-  if (_procState.partsListMode === 'card') {
-    // Preload vendor data so PO clicks work in card view
-    const job = _procState.job;
-    if (job && !_procVendorCache[job]) {
-      api.eto.vendors(job)
-        .then(d => { _procVendorCache[job] = d; })
-        .catch(e => { _procVendorCache[job] = { error: e.message }; });
-    }
-    return _procPartsCardView(rows);
-  }
-  const usd = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-  const fmt = d => d ? fmtDate(d) : '—';
-  const rh = i => `<div class="proc-col-resize" onmousedown="_procColResizeStart(event,${i})"></div>`;
-  const leadChip = (orderDate, expDate) => {
-    if (!orderDate || !expDate) return `<span>—</span>`;
-    const days = (new Date(expDate) - new Date(orderDate)) / 86400000;
-    if (isNaN(days) || days < 0) return `<span>—</span>`;
-    const wks = Math.round(days / 7 * 2) / 2; // nearest 0.5
-    const cls = wks <= 4 ? 'ok' : wks <= 8 ? 'warn' : 'long';
-    const label = `${wks}w`;
-    return `<span class="proc-lead proc-lead-${cls}" title="${Math.round(days)} day lead time (ordered → expected delivery)">${label}</span>`;
-  };
-  const dueChip = (expDate, isReceived) => {
-    if (isReceived) return `<span class="proc-due proc-due-rcvd" title="Already received">RCVD</span>`;
-    if (!expDate) return `<span>—</span>`;
-    const rawDays = (new Date(expDate) - Date.now()) / 86400000;
-    if (isNaN(rawDays)) return `<span>—</span>`;
-    const wks = Math.round(rawDays / 7 * 2) / 2;
-    const daysRounded = Math.round(rawDays);
-    if (rawDays > 7)  return `<span class="proc-due proc-due-ahead" title="Due in ${daysRounded} days">+${wks}w</span>`;
-    if (rawDays >= 0) return `<span class="proc-due proc-due-soon"  title="Due in ${daysRounded} days">+${wks}w</span>`;
-    const overWks = Math.round(Math.abs(rawDays) / 7 * 2) / 2;
-    return `<span class="proc-due proc-due-late" title="${Math.abs(daysRounded)} days overdue">-${overWks}w</span>`;
-  };
-  const hiddenSet = new Set(_procState.hiddenPartCols || []);
-  const visCols = PROC_PART_COLS.filter(c => !hiddenSet.has(c.key));
-  const gridTpl = visCols.map(c => c.w).join(' ');
-
-  // Header titles per key
-  const colTitle = { ordered: 'PO purchase date', lead: 'Days between purchase and expected delivery', due: 'Days until / since expected delivery' };
-  const hcols = visCols.map((c, i) => {
-    const t = colTitle[c.key] ? ` title="${colTitle[c.key]}"` : '';
-    const cls = c.key === 'qty' ? ' class="num"' : '';
-    return `<span${cls}${t}>${c.label}${rh(i)}</span>`;
-  }).join('');
-
-  // Row cell renderer per column key
-  const cellFor = (key, p, st) => {
-    switch (key) {
-      case 'qty':     return `<span class="num">${p.qty ?? ''}</span>`;
-      case 'pn':      return `<span class="proc-plpn" data-copy="${escapeHtml(p.pn || '')}" title="Click to copy part number">${escapeHtml(p.pn || '—')}</span>`;
-      case 'desc':    return `<span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>`;
-      case 'parent':  return `<span class="proc-plsrc" title="${escapeHtml(p.parentDesc || '')}"><span class="proc-plsrc-pn">${escapeHtml(p.parentPN || 'LOOSE')}</span></span>`;
-      case 'cat':     return `<span class="proc-plcat" title="${escapeHtml(p.category || '')}">${p.category ? escapeHtml(p.category) : '—'}</span>`;
-      case 'mfr':     return `<span class="proc-pmfr" title="${escapeHtml(p.manufacturer || '')}">${escapeHtml(p.manufacturer || 'SDC')}</span>`;
-      case 'sup':     return `<span class="proc-psup" title="${escapeHtml(p.supplier || '')}">${p.supplier ? escapeHtml(p.supplier) : '—'}</span>`;
-      case 'po':      return `<span class="proc-plpo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : '—'}</span>`;
-      case 'ordered': return `<span>${fmt(p.orderDate)}</span>`;
-      case 'exp':     return `<span>${fmt(p.expDate || p.requiredDate)}</span>`;
-      case 'lead':    return leadChip(p.orderDate, p.expDate);
-      case 'due':     return dueChip(p.expDate, st.key === 'received');
-      case 'status':  return `<span class="proc-pill proc-pill-${st.cls}" title="${escapeHtml(st.sub)}">${st.label}${st.sub ? `<i>${escapeHtml(st.sub)}</i>` : ''}</span>`;
-      default: return '<span></span>';
-    }
-  };
-
-  return `<div class="proc-plist" style="--proc-grid-cols:${gridTpl}">
-    <div class="proc-plist-head">${hcols}</div>
-    ${rows.map(p => {
-      const st = _procPartStatus(p);
-      return `<div class="proc-plrow${st.key === 'overdue' ? ' proc-plrow-overdue' : ''}" data-pn="${escapeHtml(p.pn || '')}">
-        ${visCols.map(c => cellFor(c.key, p, st)).join('')}
-      </div>`;
-    }).join('')}
-  </div>`;
-}
-
-// PM-facing section (spec) label overrides. Total ETO is read-only and its
-// section names don't always match how SDC refers to them, so we remap by
-// SpecID for DISPLAY ONLY. Add an entry here to rename a section; any section
-// not listed falls back to the ETO SDescription. Keyed by String(specId).
-//   30 → "Controls Design" (ETO)        shown as "Control-Related Parts"
-//   40 → "Machine Testing" (ETO)        shown as "Machine Testing-Related Parts"
-const SECTION_LABEL_OVERRIDE = {
-  '30': 'Control-Related Parts',
-  '40': 'Machine Testing-Related Parts',
-};
-function _procSectionLabel(specId, specName) {
-  return SECTION_LABEL_OVERRIDE[String(specId)] || specName || '';
-}
-
-// Column header for the assemblies grid — same column track as .proc-arow so
-// labels sit over their columns. Explains the otherwise-cryptic cells
-// (6/7 parts, 1 no PO, priced, cost, readiness bar).
-function _procAssemblyHeader() {
-  return `<div class="proc-arow proc-ahead">
-    <span class="proc-caret"></span>
-    <span class="proc-ah">Assembly</span>
-    <span class="proc-ah">Description</span>
-    <span class="proc-ah" title="Parts received / total parts in this assembly (e.g. 6/7 parts)">Rcvd / Total</span>
-    <span class="proc-ah" title="Parts with no purchase order yet">No PO</span>
-    <span class="proc-ah" title="Parts in this assembly that have a unit price">Priced</span>
-    <span class="proc-aspacer"></span>
-    <span class="proc-ah proc-acost" title="Purchased material cost — qty × latest PO unit price per part">Material&nbsp;$</span>
-    <span class="proc-ah" title="Build readiness — % of parts received">Readiness</span>
-    <span class="proc-ah proc-pct">%</span>
-  </div>`;
-}
-
 function _drawerResizeStart(e, bodyClass) {
   e.preventDefault();
   e.stopPropagation();
@@ -11053,83 +9957,6 @@ function _drawerRestoreHeight(bodyClass) {
 }
 
 const DRAWER_HANDLE = cls => `<div class="drawer-resize-handle" onmousedown="_drawerResizeStart(event,'${cls}')"></div>`;
-
-function _procPartsColResizeStart(e, colIdx) {
-  e.preventDefault();
-  e.stopPropagation();
-  const container = e.target.closest('.proc-parts');
-  if (!container) return;
-  const cell = container.querySelector('.proc-phead').children[colIdx];
-  const startW = cell.getBoundingClientRect().width;
-  const startX = e.clientX;
-  const minW = colIdx === 0 ? 30 : 48;
-  e.target.classList.add('resizing');
-  document.body.style.cursor = 'col-resize';
-  document.body.style.userSelect = 'none';
-  function onMove(ev) {
-    container.style.setProperty('--ap' + colIdx, Math.max(minW, startW + (ev.clientX - startX)) + 'px');
-  }
-  function onUp() {
-    e.target.classList.remove('resizing');
-    document.body.style.cursor = '';
-    document.body.style.userSelect = '';
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-  }
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-}
-
-function _procAssemblyRow(node, depth) {
-  const st = node.stats || { total: 0, received: 0, noPO: 0, ordered: 0, pct: 0 };
-  const open = !!_procState.open[node.id];
-  // Each meta fact is its own grid cell so they line up in columns down the page
-  // (parts under parts, no-PO under no-PO, priced under priced).
-  const partsCell = `${st.received}/${st.total} parts`;
-  const noPoCell  = st.noPO ? `<span class="proc-nopo-badge">⚠ ${st.noPO} no&nbsp;PO</span>` : '';
-  const pricedCount = node.parts.filter(p => (Number(p.unitPrice) || 0) > 0).length;
-  const pricedCell  = pricedCount ? `${pricedCount}/${node.parts.length}` : '';
-  // Depth no longer indents the row — the Description column starts at a fixed
-  // position on every row (consistent alignment). Nesting is conveyed by the
-  // depth-tinted row background (--d) and the expand caret, not by indentation.
-  let html = `
-    <div class="proc-arow${open ? ' proc-arow-open' : ''}" data-aid="${escapeHtml(String(node.id))}" style="--d:${depth}">
-      <span class="proc-caret${node.children.length === 0 ? ' proc-caret-leaf' : ''}">${open ? '▾' : '▸'}</span>
-      <button class="proc-pn" data-copy="${escapeHtml(node.pn)}" type="button" title="Click to copy part number">${escapeHtml(node.pn)}</button>
-      <span class="proc-aname" title="${escapeHtml(node.desc || '')}">${escapeHtml(node.desc || '')}</span>
-      <span class="proc-acol proc-acol-parts">${partsCell}</span>
-      <span class="proc-acol proc-acol-nopo">${noPoCell}</span>
-      <span class="proc-acol">${pricedCell}</span>
-      <span class="proc-aspacer"></span>
-      <span class="proc-acost" title="Purchased material cost for this assembly — qty × latest PO unit price per part. In-house parts with no PO price count as $0.">${_procUsd(st.cost)}</span>
-      <span class="proc-bar"><span class="proc-bar-fill" style="width:${Math.min(100, st.pct)}%;background:${_procBarColor(st.pct)}"></span></span>
-      <span class="proc-pct" style="color:${_procBarColor(st.pct)}">${st.pct}%</span>
-    </div>`;
-  if (open) {
-    for (const child of node.children) html += _procAssemblyRow(child, depth + 1);
-    if (node.parts.length) {
-      const q = (_procState.search || '').toLowerCase();
-      const parts = q
-        ? node.parts.filter(p => [p.pn, p.desc, p.manufacturer].some(v => String(v || '').toLowerCase().includes(q)))
-        : node.parts;
-      const money = v => v > 0 ? '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
-      const _partAccent = ['#1574C4','#0ea5e9','#38bdf8','#7dd3fc'][Math.min(depth, 3)];
-      html += `<div class="proc-parts" style="margin-left:10px;--proc-parts-accent:${_partAccent}">
-        ${parts.map(p => `
-          <div class="proc-prow proc-prow-${p.status}">
-            <span class="num">${p.qty ?? ''}</span>
-            <button class="proc-pn proc-pn-sm" data-copy="${escapeHtml(p.pn || '')}" type="button" title="Click to copy part number">${escapeHtml(p.pn || '—')}</button>
-            <span class="proc-pdesc" title="${escapeHtml(p.desc || '')}">${escapeHtml(p.desc || '')}</span>
-            <span class="proc-pmfr">${escapeHtml(p.manufacturer || '')}</span>
-            <span class="proc-ppo${p.poId ? ' clickable' : ''}" data-poid="${p.poId || ''}" title="${p.poId ? 'Click to view PO' : ''}">${p.poId ? escapeHtml(String(p.poId)) : ''}</span>
-            <span class="num">${money(p.unitPrice)}</span>
-            <span class="num">${money((Number(p.qty) || 0) * (Number(p.unitPrice) || 0))}</span>
-          </div>`).join('')}
-      </div>`;
-    }
-  }
-  return html;
-}
 
 async function loadVendorPOs() {
   try { state.vendorPOs = await api.vendorPOs.list(); } catch (_) { state.vendorPOs = []; }
@@ -15909,7 +14736,7 @@ document.addEventListener('mousedown', (e) => {
   });
 });
 
-function render() {
+function render(opts = {}) {
   try { syncSalesModeUI(); } catch (_) {}
   try { fitScheduleToolbar(); } catch (_) {}
   renderProjectTabs();
@@ -15921,7 +14748,10 @@ function render() {
   renderPersonalBanner();
   if (state.view === 'schedule') {
     renderTable();
-    renderGantt();
+    // deferGantt: caller is about to run zoomToFit() itself (which renders the
+    // Gantt at the correct fit-to-viewport zoom) — skip this render so a nav
+    // into Schedule doesn't run the full Gantt pipeline twice back to back.
+    if (!opts.deferGantt) renderGantt();
     try { decorateCloneModeRows(); } catch (_) {}
   } else if (state.view === 'team') {
     renderTeam();
@@ -16347,11 +15177,13 @@ window.addEventListener('resize', () => {
   if (split) split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
 });
 
-// ── Per-project Procurement drawer ──────────────────────────────────────────
-// Opens DOWN like the Notes drawer, scoped to the active project's ETO job:
-// readiness headline + assemblies-by-spec (reusing the Procurement page's row
-// renderer). Only shows on a real project's schedule when ETO is configured and
-// the project is linked to a job. Deep parts/job-picker live on the full page.
+// ── Per-project Procurement summary button ──────────────────────────────────
+// Compact readiness glance, rendered as a plain toolbar button in
+// schedule-footer (alongside Customer Link / Communication Plan / Project
+// Release) — no expand, no inline BOM/cost drill-down, no separate "Reports"
+// control. The whole button IS the drill-through into SDC Reports, pre-scoped
+// to this job's Procurement tab.
+const _procCache = {};   // job → readiness payload (just for the % ready / no-PO stat)
 function renderScheduleProcurement() {
   const el = document.getElementById('schedule-procurement');
   if (!el) return;
@@ -16359,321 +15191,30 @@ function renderScheduleProcurement() {
   const idx = project && state.projectsIndex && state.projectsIndex[project];
   const job = idx && idx.job_number;
   // Only hide when the project/view is wrong or ETO isn't configured at all.
-  // A project that simply has no linked job still shows the drawer (empty state).
+  // A project that simply has no linked job still shows the button (empty state).
   if (!project || state.view !== 'schedule' || !_etoAvailable) {
     el.style.display = 'none';
     return;
   }
   el.style.display = '';
-  const collapsed = _drawerCollapsed('proc');
-  el.classList.toggle('is-collapsed', collapsed);
-  // No ETO job linked → clean empty state instead of hiding the drawer.
+  el.onclick = () => _openEtcJobHours(project, 'procurement');
   if (!job) {
-    const bar = `<div class="notes-bar proc-drawer-bar" data-action="toggle-proc-drawer">
-      <span class="notes-bar-title">📦 Procurement</span>
-      <span class="notes-count">No ETO job linked</span>
-      <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
-    </div>`;
-    el.innerHTML = collapsed ? bar : bar + `<div class="proc-drawer-body"><div class="proc-empty">No procurement data — this project isn't linked to a Total ETO job.</div></div>`;
-    _wireProcDrawer(el, null, project);
+    el.innerHTML = `📦 Procurement · No ETO job linked`;
+    el.title = 'Link this project to a Total ETO job to see Procurement readiness.';
     return;
   }
   const data = _procCache[job];
-  // Bar stat: show readiness only if it's already cached — don't fire the heavy
-  // BOM query just to label a collapsed bar; the job number is free meanwhile.
-  let stat = `ETO #${escapeHtml(String(job))}`;
-  if (data && data.totals) stat = `${data.totals.pct}% ready · <span class="${data.totals.noPO ? 'proc-nopo' : ''}">${data.totals.noPO} no PO</span>`;
-  const bar = `<div class="notes-bar proc-drawer-bar" data-action="toggle-proc-drawer">
-    <span class="notes-bar-title">📦 Procurement</span>
-    <span class="notes-count">${stat}</span>
-    <button class="btn-ghost btn-tight" type="button" data-action="open-etc-job-hours" data-etc-section="procurement" title="Open this job's Procurement in SDC Reports">↗ Reports</button>
-    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
-  </div>`;
-  if (collapsed) { el.innerHTML = bar; _wireProcDrawer(el, job, project); layoutNotesPanel(); return; }
-
+  let stat = 'Loading…';
+  if (data && data.error) stat = `<span class="proc-nopo">couldn't load</span>`;
+  else if (data && data.totals) stat = `${data.totals.pct}% ready · <span class="${data.totals.noPO ? 'proc-nopo' : ''}">${data.totals.noPO} no PO</span>`;
+  el.innerHTML = `📦 Procurement · ${stat}`;
+  el.title = "Open this job's Procurement in SDC Reports";
   if (!data) {
-    el.innerHTML = bar + `<div class="proc-drawer-body">${DRAWER_HANDLE('proc-drawer-body')}<div class="proc-empty">Loading build readiness from Total ETO…</div></div>`;
-    _wireProcDrawer(el, job, project);
-    layoutNotesPanel();
     fetch(`/api/eto/readiness/${encodeURIComponent(job)}`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`request failed (${r.status})`)))
       .then(d => { _procCache[job] = d; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); })
       .catch(e => { _procCache[job] = { error: e.message }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
-    // Also load cost data for the assembly tab waterfall chart (same API as Cost tab)
-    if (!_procCostCache[job]) {
-      api.eto.partcost(job)
-        .then(d => { _procCostCache[job] = d; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); })
-        .catch(e => { _procCostCache[job] = { error: e.message }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
-    }
-    return;
   }
-
-  let body;
-  if (data.error) body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
-  else {
-    const t = data.totals || { pct: 0, parts: 0, noPO: 0, cost: 0 };
-    const specsArr = data.specs || [];
-    const head = `<div class="proc-drawer-head">
-      <span class="proc-headstat-label">Readiness</span>
-      <span class="proc-bar proc-bar-lg"><span class="proc-bar-fill" style="width:${t.pct}%;background:${_procBarColor(t.pct)}"></span></span>
-      <span class="proc-pct" style="color:${_procBarColor(t.pct)}">${t.pct}%</span>
-      <span class="proc-headstat-sub">${t.parts} parts · <span class="${t.noPO ? 'proc-nopo' : ''}">${t.noPO} no PO</span>${t.cost ? ` · ${_procUsd(t.cost)} materials` : ''}</span>
-    </div>`;
-    const dtab = _procState.drawerTab === 'parts' ? 'parts' : 'assemblies';
-    const tabs = `<div class="proc-tabs proc-drawer-tabs">
-      <button class="proc-tab${dtab === 'assemblies' ? ' is-active' : ''}" data-dtab="assemblies" type="button">Assemblies <span class="proc-tab-n">${specsArr.reduce((s, sp) => s + sp.assemblies.length, 0)}</span></button>
-      <button class="proc-tab${dtab === 'parts' ? ' is-active' : ''}" data-dtab="parts" type="button">Parts List <span class="proc-tab-n">${(data.partsList || []).length}</span></button>
-      ${dtab === 'assemblies' && specsArr.length ? `<span class="proc-drawer-tab-actions">
-        <button class="btn-ghost btn-tight" data-dexpand="1" type="button">⊞ Expand all</button>
-        <button class="btn-ghost btn-tight" data-dcollapse="1" type="button">⊟ Collapse all</button>
-      </span>` : ''}
-    </div>`;
-    let inner;
-    if (!specsArr.length) {
-      inner = `<div class="proc-empty">Total ETO has no BOM for job ${escapeHtml(String(job))} yet.</div>`;
-    } else if (dtab === 'parts') {
-      inner = _procPartsSummary(data) + _procPartsFilterBar(data) + _procPartsTable(data); // same filters as the full page
-    } else {
-      const specs = specsArr.map(spec => {
-        const specCost = spec.assemblies.reduce((s, a) => s + ((a.stats && a.stats.cost) || 0), 0);
-        return `<div class="proc-spec">
-          <div class="proc-spec-head"><span>Section ${escapeHtml(String(spec.specId))} — ${escapeHtml(_procSectionLabel(spec.specId, spec.specName))}</span><span class="proc-spec-cost">${_procUsd(specCost)}</span></div>
-          ${spec.assemblies.map(a => _procAssemblyRow(a, 0)).join('')}
-        </div>`;
-      }).join('');
-      const grand = specsArr.reduce((s, sp) => s + sp.assemblies.reduce((x, a) => x + ((a.stats && a.stats.cost) || 0), 0), 0);
-
-      // Add waterfall chart and cost summary to drawer assembly tab
-      const costData = _procCostCache[job];
-      const waterfallChartHtml = costData && !costData.error ? _procCostWaterfall(costData) : '';
-      const costSummaryHtml = costData && !costData.error ? (() => {
-        const c = costData;
-        const usd = v => _procUsd(v);
-        return `<div class="proc-cost-card-drawer">
-          <div class="proc-cost-card-title">Cost Summary</div>
-          <div class="proc-cost-estimate-row">
-            <div>
-              <div class="proc-cost-estimate-label">Estimated</div>
-              <div class="proc-cost-estimate-sub">${c.estimateSource === 'user' ? 'entered by PM' : 'from Total ETO'}</div>
-            </div>
-            <div class="proc-cost-estimate-val">
-              ${usd(c.estimated || 0)}
-              <button class="proc-cost-edit-btn proc-cost-edit" data-action="proc-edit-estimate" data-job="${escapeHtml(String(c.job))}" type="button" title="Enter the materials estimate for this job">✎ Edit</button>
-            </div>
-          </div>
-          <div class="proc-cost-grid">
-            <span class="proc-cost-key">Purchased</span><span class="proc-cost-val">${usd(c.purchased || 0)}</span>
-            <span class="proc-cost-key">Received</span><span class="proc-cost-val">${usd(c.received || 0)}</span>
-            <span class="proc-cost-key">Paid</span><span class="proc-cost-val proc-cost-val-paid">${usd(c.paid || 0)}</span>
-            <span class="proc-cost-key">Left to Pay</span><span class="proc-cost-val">${usd(c.leftToPay || 0)}</span>
-            <span class="proc-cost-key">ETC</span><span class="proc-cost-val">${usd(c.etc || 0)}</span>
-            <span class="proc-cost-key proc-cost-key-total proc-cost-divider">Projection</span><span class="proc-cost-val proc-cost-val-total proc-cost-divider">${usd(c.projection || 0)}</span>
-          </div>
-        </div>`;
-      })() : '';
-      const waterfallPlaceholder = !costData ? `<div style="padding: 12px; background: white; border-radius: 6px; border: 1px solid #e2e8f0; text-align: center; color: #64748b; font-size: var(--fs-md);">Loading cost...</div>` : '';
-
-      const assemblyContent = _procAssemblyHeader() + specs + `<div class="proc-grand">
-        <span>BOM materials value — assembly parts at latest PO price</span>
-        <span class="proc-grand-amt" title="Valuation of the readiness BOM: each assembly's parts × latest PO unit price (in-house parts with no PO price count as $0). This is BOM-scoped and is NOT the same as the 'Purchased' figure in the Cost Summary — Purchased is total PO spend on the project (every PO line, including parts not in this BOM and the same part bought on multiple POs), so it is normally higher.">${_procUsd(grand)}</span>
-      </div>`;
-
-      // Side-by-side for drawer: assembly list on left (60%), cost summary + waterfall on right (40%)
-      if (waterfallChartHtml || waterfallPlaceholder || costSummaryHtml) {
-        inner = `<div style="display: grid; grid-template-columns: 3fr 1fr; gap: 16px; align-items: stretch;">
-          <div style="border-right: 1px solid #e2e8f0; padding-right: 12px; font-size: var(--fs-sm);">
-            ${assemblyContent}
-          </div>
-          <div style="padding-left: 0; font-size: var(--fs-md); display: flex; flex-direction: column; gap: 4px;">
-            ${costSummaryHtml}
-            <div style="flex:1;">${waterfallChartHtml || waterfallPlaceholder}</div>
-          </div>
-        </div>`;
-      } else {
-        inner = assemblyContent;
-      }
-    }
-    body = head + tabs + inner;
-  }
-  el.innerHTML = bar + `<div class="proc-drawer-body">${DRAWER_HANDLE('proc-drawer-body')}${body}</div>`;
-  _procWireEstimateEditor(); // Wire estimate edit button for Assembly tab
-  _wireProcDrawer(el, job, project);
-  layoutNotesPanel();
-}
-
-function _wireProcDrawer(el, job, project) {
-  _drawerRestoreHeight('proc-drawer-body');
-  // onclick (not addEventListener) so re-renders never stack duplicate handlers.
-  el.onclick = (e) => {
-    const t = e.target;
-    // Checked BEFORE the toggle-proc-drawer branch below: this button lives
-    // INSIDE the bar div that itself carries data-action="toggle-proc-drawer",
-    // so closest() on any other element inside the bar would otherwise resolve
-    // to that ancestor and just collapse/expand the drawer instead.
-    const etcBtn = t.closest('[data-action="open-etc-job-hours"]');
-    if (etcBtn) {
-      _openEtcJobHours(project, etcBtn.dataset.etcSection || '');
-      return;
-    }
-    if (t.closest('[data-action="toggle-proc-drawer"]')) {
-      const willOpen = el.classList.contains('is-collapsed');
-      el.classList.toggle('is-collapsed');
-      _setDrawerCollapsed('proc', el.classList.contains('is-collapsed'));
-      renderScheduleProcurement();
-      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
-      return;
-    }
-    const dtab = t.closest('[data-dtab]');
-    if (dtab) { _procState.drawerTab = dtab.dataset.dtab; _procSave(); renderScheduleProcurement(); return; }
-    if (t.closest('[data-dexpand]') || t.closest('[data-dcollapse]')) {
-      const expand = !!t.closest('[data-dexpand]');
-      _procState.open = _procState.open || {};
-      if (expand) {
-        const data = _procCache[job];
-        const ids = [];
-        (function collect(nodes) { (nodes || []).forEach(n => { if (n.isAssembly) { ids.push(n.id); collect(n.children); } }); })(data && data.specs ? data.specs.flatMap(s => s.assemblies) : []);
-        ids.forEach(id => { _procState.open[id] = true; });
-      } else {
-        _procState.open = {};
-      }
-      renderScheduleProcurement();
-      return;
-    }
-    const pnBtn = t.closest('.proc-pn-sm');
-    if (pnBtn && pnBtn.closest('.proc-prow')) {
-      const pn = pnBtn.dataset.copy;
-      if (pn) {
-        _procState.drawerTab = 'parts';
-        _procState.partsListMode = 'table';
-        _procSave();
-        renderScheduleProcurement();
-        setTimeout(() => {
-          const row = el.querySelector(`.proc-plrow[data-pn="${CSS.escape(pn)}"]`);
-          if (row) {
-            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            row.classList.add('proc-plrow-highlight');
-            setTimeout(() => row.classList.remove('proc-plrow-highlight'), 1800);
-          }
-        }, 200);
-        return;
-      }
-    }
-    const slipPn = t.closest('[data-slip-pn]');
-    if (slipPn) {
-      const pn = slipPn.dataset.slipPn;
-      if (pn) {
-        _procState.drawerTab = 'parts';
-        _procState.partsListMode = 'table';
-        _procSave();
-        renderScheduleProcurement();
-        setTimeout(() => {
-          const row = el.querySelector(`.proc-plrow[data-pn="${CSS.escape(pn)}"]`);
-          if (row) {
-            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            row.classList.add('proc-plrow-highlight');
-            setTimeout(() => row.classList.remove('proc-plrow-highlight'), 1800);
-          }
-        }, 200);
-      }
-      return;
-    }
-    const copyBtn = t.closest('[data-copy]');
-    if (copyBtn) { const pn = copyBtn.dataset.copy; if (pn) { try { navigator.clipboard.writeText(pn); showToast(`Copied ${pn}`, { duration: 1500 }); } catch (_) {} } if (copyBtn.closest('.proc-prow')) return; }
-    const poClick = t.closest('[data-poid].clickable');
-    if (poClick) {
-      const poId = poClick.dataset.poid;
-      if (poId) {
-        const partData = _procCache[job];
-        const part = partData && partData.partsList && partData.partsList.find(p => String(p.poId) === String(poId));
-        const vendorName = part && part.supplier;
-        if (vendorName) {
-          const openPanel = () => _procOpenPoPanel(job, vendorName, poId);
-          if (_procVendorCache[job] && !_procVendorCache[job].error) { openPanel(); }
-          else { api.eto.vendors(job).then(d => { _procVendorCache[job] = d; openPanel(); }).catch(() => showToast('Could not load vendor data', { type: 'error', duration: 3000 })); }
-        }
-        return;
-      }
-    }
-    const plrow = t.closest('.proc-plrow');
-    if (plrow) {
-      const pn = plrow.dataset.pn;
-      const partData = _procCache[job];
-      const part = partData && partData.partsList && partData.partsList.find(p => p.pn === pn);
-      if (part && part.poId) {
-        const vendorName = part.supplier;
-        if (vendorName) {
-          const openPanel = () => _procOpenPoPanel(job, vendorName, String(part.poId));
-          if (_procVendorCache[job] && !_procVendorCache[job].error) { openPanel(); }
-          else { api.eto.vendors(job).then(d => { _procVendorCache[job] = d; openPanel(); }).catch(() => showToast('Could not load vendor data', { type: 'error', duration: 3000 })); }
-        }
-      }
-      return;
-    }
-    const vpo = t.closest('[data-vpo]');
-    if (vpo) {
-      // Check if this is a NO_PO row
-      if (vpo.dataset.nopoVendor) {
-        _procOpenNoPoPanel(vpo.dataset.nopoVendor, job);
-        return;
-      }
-      const k = vpo.dataset.vpo, i = k.indexOf('|');
-      _procOpenPoPanel(job, k.slice(0, i), k.slice(i + 1));
-      return;
-    }
-    const summaryMore = t.closest('.proc-summary-more-link');
-    if (summaryMore) {
-      const section = summaryMore.dataset.section;
-      const data = _procCache[job];
-      if (section === 'nopo') {
-        _procOpenSummaryPanel(job, 'nopo', data);
-      } else if (section === 'delivery') {
-        _procOpenSummaryPanel(job, 'delivery', data);
-      }
-      return;
-    }
-    const weekTab = t.closest('.proc-week-btn');
-    if (weekTab) {
-      const weekNum = parseInt(weekTab.dataset.week);
-      _procState.upcomingWeek = weekNum;
-      _procSave();
-      renderScheduleProcurement();
-      return;
-    }
-    const arow = t.closest('.proc-arow');
-    if (arow) {
-      _procState.open = _procState.open || {};
-      const id = arow.dataset.aid;
-      const willOpen = !_procState.open[id];
-      // When opening: only open the clicked node (1 level at a time).
-      // When closing: close the node and all its descendants.
-      const setSubtree = (nodes, targetId) => {
-        for (const n of (nodes || [])) {
-          if (String(n.id) === String(targetId)) {
-            _procState.open[n.id] = willOpen;
-            if (!willOpen) {
-              const collapseAll = (subtree) => { for (const c of (subtree || [])) { _procState.open[c.id] = false; collapseAll(c.children); } };
-              collapseAll(n.children);
-            }
-            return true;
-          }
-          if (setSubtree(n.children, targetId)) return true;
-        }
-        return false;
-      };
-      const data = _procCache[job];
-      const roots = data && data.specs ? data.specs.flatMap(s => s.assemblies) : [];
-      setSubtree(roots, id);
-      const bodyEl = el.querySelector('.proc-drawer-body');
-      const scrollTop = bodyEl ? bodyEl.scrollTop : 0;
-      renderScheduleProcurement();
-      const bodyElAfter = el.querySelector('.proc-drawer-body');
-      if (bodyElAfter) bodyElAfter.scrollTop = scrollTop;
-      return;
-    }
-  };
-  // Parts filters fire `change`/`click` on fresh elements each render — bind them
-  // separately from the onclick delegation above.
-  _wirePartsFilters(el, renderScheduleProcurement);
 }
 // ── Per-project Job Hours drawer ─────────────────────────────────────────────
 // Collapsible panel below Procurement. Shows Quoted / Actual / Diff per
@@ -16729,6 +15270,11 @@ function ctrlAbortMsg(e) {
     : String(e);
 }
 
+// ── Per-project Job Hours summary button ────────────────────────────────────
+// Compact quoted/actual glance — same pattern and same schedule-footer
+// toolbar row as the Procurement button above: the whole button IS the
+// drill-through into SDC Reports' Job Hour Details, no expand, no inline
+// pivot table/charts, no separate "Reports" control.
 function renderScheduleHours() {
   const el = document.getElementById('schedule-hours');
   if (!el) return;
@@ -16736,388 +15282,34 @@ function renderScheduleHours() {
   const idx = project && state.projectsIndex && state.projectsIndex[project];
   const job = (idx && idx.hours_job_id) || (idx && idx.job_number);
   // Only hide when the project/view is wrong or Power BI isn't configured at all.
-  // A project with no linked job still shows the drawer (empty state).
+  // A project with no linked job still shows the button (empty state).
   if (!project || state.view !== 'schedule' || !_hoursAvailable) {
     el.style.display = 'none';
     return;
   }
   el.style.display = '';
-  const collapsed = _drawerCollapsed('hours');
-  el.classList.toggle('is-collapsed', collapsed);
-  // No job linked for hours → clean empty state instead of hiding the drawer.
+  el.onclick = () => _openEtcJobHours(project, '');
   if (!job) {
-    const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
-      <span class="notes-bar-title">⏱ Job Hours</span>
-      <span class="notes-count">No job linked</span>
-      <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
-    </div>`;
-    el.innerHTML = collapsed ? bar : bar + `<div class="hours-drawer-body"><div class="proc-empty">No job hours — this project isn't linked to a Power BI job.</div></div>`;
-    _wireHoursDrawer(el, null, project);
+    el.innerHTML = `⏱ Job Hours · No job linked`;
+    el.title = 'Link a Power BI job ID to see hours for this project.';
     return;
   }
   const data = _hoursCache[job];
-
   const jobLabel = (data && data.jobIds && data.jobIds.length > 1)
     ? `Jobs #${data.jobIds.join(' & #')}`
     : `Job #${escapeHtml(String(job))}`;
-  let stat = jobLabel;
-  if (data && data.totals && data.fns && data.fns.length) {
+  let stat = data ? jobLabel : 'Loading…';
+  if (data && data.error) stat = `<span class="proc-nopo">couldn't load</span>`;
+  else if (data && data.totals && data.fns && data.fns.length) {
     const q = data.totals.quoted, a = data.totals.actual;
     const over = a > q;
     const diff = Math.round(Math.abs(q - a));
     const diffLabel = diff > 0 ? ` (${over ? '+' : '-'}${diff})` : '';
     stat = `${Math.round(q)} quoted · <span style="color:${over ? 'var(--danger)' : 'var(--success)'}; font-weight:700">${Math.round(a)} actual${diffLabel}</span>`;
   }
-  const bar = `<div class="notes-bar hours-drawer-bar" data-action="toggle-hours-drawer">
-    <span class="notes-bar-title">⏱ Job Hours</span>
-    <span class="notes-count">${stat}</span>
-    <button class="btn-ghost btn-tight" type="button" data-action="open-etc-job-hours" title="Open this job's Job Hour Details in SDC Reports">↗ Reports</button>
-    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
-  </div>`;
-
-  if (collapsed) { el.innerHTML = bar; _wireHoursDrawer(el, job, project); layoutNotesPanel(); return; }
-
-  if (!data) {
-    el.innerHTML = bar + `<div class="hours-drawer-body">${DRAWER_HANDLE('hours-drawer-body')}<div class="proc-empty">Loading job hours from Power BI…</div></div>`;
-    _wireHoursDrawer(el, job, project);
-    layoutNotesPanel();
-    _loadScheduleHoursDrawer(job, project);
-    return;
-  }
-
-  let body;
-  if (data.error) {
-    const isAuthErr = /token expired|token missing|pbi token/i.test(data.error);
-    if (isAuthErr) {
-      body = `<div class="proc-empty proc-error" style="text-align:left;padding:16px 20px;line-height:1.6">
-        <strong>Power BI authentication expired.</strong><br>
-        The refresh token lasts ~90 days. To renew it, run this once in a Command Prompt on the server:<br>
-        <code style="display:block;margin:8px 0;padding:6px 10px;background:#f4f4f4;border-radius:4px;font-size:12px">set PBI_CACHE_PATH=${escapeHtml(data.error.match(/PBI_CACHE_PATH[=\s]+([^\s&]+)/)?.[1] || 'D:\\AI Projects\\Centrailized library\\SDC_Scheduler\\pbi_cache.json')}<br>sdc-powerbi-mcp.exe login</code>
-        Then restart the scheduler server. Contact Abhi if you need help.
-      </div>`;
-    } else {
-      body = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`;
-    }
-  } else {
-    const { bgTotals, totals, jobIds } = data;
-    // Remap Manufacturing out of "Shop" group into its own standalone group
-    const fns = data.fns.map(r => r.fn === 'Manufacturing' ? { ...r, group: 'Manufacturing' } : r);
-
-    if (!fns.length) {
-      const jobLabel = jobIds && jobIds.length ? jobIds.join(' & ') : job;
-      body = `<div class="proc-empty">No hours data found in Power BI for job ${escapeHtml(jobLabel)}.<br>
-        This job may not have been set up in the Power BI model yet.</div>`;
-    } else {
-
-    const fmt = n => Math.round(n || 0).toLocaleString();
-    const diffCls = d => d < -0.5 ? ' hours-over' : d > 0.5 ? ' hours-under' : '';
-    const diffFmt = d => `${d > 0 ? '+' : ''}${fmt(d)}`;
-    const mode = _hoursUI.mode;          // 'quoted' or 'etc'
-    const bgFilter = _hoursUI.billing;   // 'all' | billing group name
-    const refKey = mode === 'etc' ? 'etc' : 'quoted';
-    const refLabel = mode === 'etc' ? 'ETC' : 'Quoted';
-
-    // Always hide PM group and Warranty section; then apply hierarchical function filter
-    const allDisplayFns = fns.filter(r => !/^pm$/i.test(r.group || '') && !/warranty/i.test(r.section || ''));
-    const fnSel   = _hoursUI.fnSel;   // null = all; else Set of 'sec||grp' keys
-    const fnSearch = (_hoursUI.fnSearch || '').toLowerCase().trim();
-    const visibleFns = allDisplayFns.filter(r => {
-      if (fnSel !== null && !fnSel.has(r.section + '||' + (r.group || ''))) return false;
-      return true;
-    });
-
-    // Build section→groups tree from all displayable fns (for the dropdown)
-    const treeMap = new Map();
-    for (const r of allDisplayFns) {
-      if (!treeMap.has(r.section)) treeMap.set(r.section, new Set());
-      treeMap.get(r.section).add(r.group || '');
-    }
-
-    // Hierarchical filter dropdown
-    const isAllSelected = fnSel === null;
-    const selCount = fnSel ? fnSel.size : 0;
-    const totalGrps = [...treeMap.values()].reduce((a, s) => a + s.size, 0);
-    const filterLabel = isAllSelected ? 'All' : `${selCount} of ${totalGrps} selected`;
-
-    let treeHtml = `<label class="hff-row hff-all"><input type="checkbox" data-hff-all="1" ${isAllSelected ? 'checked' : ''}> Select all</label>`;
-    for (const [sec, grps] of treeMap) {
-      if (fnSearch && ![sec, ...[...grps]].some(s => s.toLowerCase().includes(fnSearch))) continue;
-      const secKey = sec;
-      const expanded = _hoursUI.fnExp.has(secKey);
-      const allGrpKeys = [...grps].map(g => sec + '||' + g);
-      const secChecked = isAllSelected || allGrpKeys.every(k => fnSel && fnSel.has(k));
-      const secIndet  = !secChecked && allGrpKeys.some(k => fnSel && fnSel.has(k));
-      treeHtml += `<div class="hff-sec">
-        <label class="hff-row hff-sec-row">
-          <span class="hff-expander" data-hff-sec="${escapeHtml(sec)}">${expanded ? '▾' : '▸'}</span>
-          <input type="checkbox" data-hff-sec-key="${escapeHtml(sec)}" ${secChecked ? 'checked' : ''} ${secIndet ? 'data-indet="1"' : ''}> ${escapeHtml({'Complete Design and Build':'Sec-10: Complete Design and Build','Machine Testing':'Sec-40: Machine Testing','Teardown and Install':'Sec-50: Teardown and Install'}[sec] || sec)}
-        </label>
-        <div class="hff-grp-list"${!expanded ? ' style="display:none"' : ''}>${[...grps].filter(g => !fnSearch || g.toLowerCase().includes(fnSearch) || sec.toLowerCase().includes(fnSearch)).map(g => {
-          const key = sec + '||' + g;
-          const chk = isAllSelected || (fnSel && fnSel.has(key));
-          const _gl = x => x === 'Manufacturing' ? 'MFG' : x;
-          return `<label class="hff-row hff-grp-row"><input type="checkbox" data-hff-grp-key="${escapeHtml(key)}" ${chk ? 'checked' : ''}> ${escapeHtml(_gl(g))}</label>`;
-        }).join('')}</div>
-      </div>`;
-    }
-
-    const modeBar = `<div class="hours-filter-bar">
-      <span class="hours-filter-label">Hours Type</span>
-      <button class="hours-chip${mode === 'quoted' ? ' active' : ''}" data-hours-mode="quoted">Quoted</button>
-      <button class="hours-chip${mode === 'etc' ? ' active' : ''}" data-hours-mode="etc">ETC</button>
-      <span class="hours-filter-sep"></span>
-      <span class="hours-filter-label">Function</span>
-      <div class="hff-wrap">
-        <button class="hff-btn${_hoursUI.fnOpen ? ' open' : ''}" data-action="toggle-fn-filter">${escapeHtml(filterLabel)} <span class="hff-arrow">${_hoursUI.fnOpen ? '▲' : '▼'}</span></button>
-        ${_hoursUI.fnOpen ? `<div class="hff-dropdown">
-          <div class="hff-search"><input class="hff-search-input" placeholder="Search…" value="${escapeHtml(_hoursUI.fnSearch || '')}" data-action="hff-search"></div>
-          <div class="hff-tree">${treeHtml}</div>
-        </div>` : ''}
-      </div>
-    </div>`;
-
-    // Billing group summary cards — use actual keys from data, not a hardcoded list
-    const BG_ORDER = Object.keys(bgTotals);
-    const bgHtml = BG_ORDER.filter(bg => !/^pm$/i.test(bg) && (bgFilter === 'all' || bgFilter === bg))
-      .map(bg => {
-        const t = bgTotals[bg];
-        const ref = t[refKey];
-        const diff = ref - t.actual;
-        return `<div class="hours-bg-card">
-          <div class="hours-bg-name">${escapeHtml(bg)}</div>
-          <div class="hours-bg-nums">
-            <span class="hours-col-q">${fmt(ref)}</span>
-            <span class="hours-col-a">${fmt(t.actual)}</span>
-            <span class="hours-col-d${diffCls(diff)}">${diffFmt(diff)}</span>
-          </div>
-        </div>`;
-      }).join('');
-
-    // Pivot table — functions as columns, Quoted/Act/Diff as rows
-    // Build ordered section groups (preserves section order and per-section function duplication)
-    const secGroups = [];
-    const secSeen = new Map();
-    for (const r of visibleFns) {
-      if (!secSeen.has(r.section)) { secSeen.set(r.section, []); secGroups.push({ sec: r.section, fns: secSeen.get(r.section) }); }
-      secSeen.get(r.section).push(r);
-    }
-    // All functions in column order
-    const pivotCols = secGroups.flatMap(g => g.fns);
-
-    // Header row 1 — section spans (tooltip shows quoted vs actual totals for the section)
-    const secSpans = secGroups.map(g => {
-      const ref = g.fns.reduce((a, r) => a + r[refKey], 0);
-      const act = g.fns.reduce((a, r) => a + r.actual, 0);
-      const diff = ref - act;
-      const tip = `${g.sec}\n${refLabel}: ${fmt(ref)}\nActual: ${fmt(act)}\nDiff: ${diff >= 0 ? '+' : ''}${fmt(diff)}`;
-      return `<th class="hpt-sec-hdr" colspan="${g.fns.length}" title="${escapeHtml(tip)}">${escapeHtml(g.sec)}</th>`;
-    }).join('');
-
-    // Header row 2 — department/group spans (tooltip shows quoted vs actual for that group)
-    const grpSpans = secGroups.flatMap(g => {
-      const grpOrder = [], grpCount = new Map(), grpFns = new Map();
-      for (const r of g.fns) {
-        const key = r.group || '';
-        if (!grpCount.has(key)) { grpOrder.push(key); grpCount.set(key, 0); grpFns.set(key, []); }
-        grpCount.set(key, grpCount.get(key) + 1);
-        grpFns.get(key).push(r);
-      }
-      return grpOrder.map(grp => {
-        const rows = grpFns.get(grp);
-        const ref = rows.reduce((a, r) => a + r[refKey], 0);
-        const act = rows.reduce((a, r) => a + r.actual, 0);
-        const diff = ref - act;
-        const tip = `${g.sec} › ${grp}\n${refLabel}: ${fmt(ref)}\nActual: ${fmt(act)}\nDiff: ${diff >= 0 ? '+' : ''}${fmt(diff)}`;
-        const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
-        return `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(tip)}">${escapeHtml(_gl(grp))}</th>`;
-      });
-    }).join('');
-
-    // Header row 3 — function names (vertical rotation via span; clip-path on th contains it)
-    const _glFn = s => s === 'Manufacturing' ? 'MFG' : s;
-    const fnHdrs = pivotCols.map(r => {
-      const tip = `${escapeHtml(r.section)} › ${escapeHtml(r.group)} › ${escapeHtml(r.fn)}`;
-      return `<th class="hpt-fn-hdr" title="${tip}"><span>${escapeHtml(_glFn(r.fn))}</span></th>`;
-    }).join('');
-
-    // Data rows — each cell tooltip: "Section › Group › Function\nLabel: value"
-    const makeRow = (label, valFn, cls) => {
-      const cells = pivotCols.map(r => {
-        const v = valFn(r);
-        const tip = `${r.section} › ${r.group} › ${r.fn}\n${label}: ${fmt(v)}`;
-        return `<td class="hpt-val${cls ? cls(r) : ''}" title="${escapeHtml(tip)}">${fmt(v)}</td>`;
-      }).join('');
-      const total = pivotCols.reduce((a, r) => a + valFn(r), 0);
-      return `<tr><td class="hpt-row-lbl">${label}</td>${cells}<td class="hpt-total">${fmt(total)}</td></tr>`;
-    };
-    const pivotBody = [
-      makeRow('Quoted', r => r.quoted || 0),
-      makeRow('Actual', r => r.actual),
-      makeRow('ETC',    r => r.etc || 0),
-      makeRow('Diff',   r => r[refKey] - r.actual, r => diffCls(r[refKey] - r.actual)),
-    ].join('');
-    const totalRef = pivotCols.reduce((a, r) => a + r[refKey], 0);
-    const totalAct = pivotCols.reduce((a, r) => a + r.actual, 0);
-
-    // SVG bar chart helper — opts: { secBands, grpBands, padL, padR, exactWidth }
-    function _hoursChart(title, items, W, H, opts) {
-      W = W || 700; H = H || 340;
-      const CQ = '#5b9bd5', CA = '#1f3864';
-      const lbl = v => Math.round(v).toLocaleString();
-      const n = items.length;
-
-      // Straight x-axis labels — padB just needs label font height
-      const labelFontPx = n > 8 ? 9 : 10;
-      const legendH = 22;
-      const padL = (opts && opts.padL != null) ? opts.padL : 46;
-      const padR = (opts && opts.padR != null) ? opts.padR : 14;
-      const padT = 36;
-      const bandStripH = (opts && opts.secBands) ? 44 : 0;
-      const padB = labelFontPx + 14 + legendH + bandStripH; // label line + gap + legend + bands
-      const plotH = H - padT - padB;
-      const plotW = W - padL - padR;
-
-      const maxVal = Math.max(...items.flatMap(i => [i.quoted, i.actual]), 1);
-      const yTop = maxVal * 1.18;
-      const baseY = padT + plotH;
-      const yPx = v => baseY - (v / yTop) * plotH;
-
-      const grpW = plotW / n;
-      const bW = Math.min(Math.max(Math.floor(grpW * 0.34), 8), 38);
-      const gap = Math.max(Math.floor(grpW * 0.08), 4);
-
-      // Y gridlines + ticks
-      let gridSvg = '', tickSvg = '';
-      for (let i = 0; i <= 4; i++) {
-        const v = Math.round((yTop / 4) * i);
-        const y = yPx(v);
-        gridSvg += `<line x1="${padL}" y1="${y}" x2="${padL+plotW}" y2="${y}" stroke="#ebebeb" stroke-width="1"/>`;
-        tickSvg += `<text x="${padL-5}" y="${y+4}" text-anchor="end" font-size="10" fill="#bbb">${Math.round(v).toLocaleString()}</text>`;
-      }
-
-      // Bars + value labels + x labels
-      let barSvg = '';
-      items.forEach((item, idx) => {
-        const cx = padL + idx * grpW + grpW / 2;
-        const xQ = cx - gap / 2 - bW;
-        const xA = cx + gap / 2;
-        const hQ = item.quoted > 0 ? Math.max((item.quoted / yTop) * plotH, 2) : 0;
-        const hA = item.actual > 0 ? Math.max((item.actual / yTop) * plotH, 2) : 0;
-        const yQ = baseY - hQ, yA = baseY - hA;
-        const diff = item.quoted - item.actual;
-        const tip = `${item.label}&#10;Quoted: ${Math.round(item.quoted).toLocaleString()}&#10;Actual: ${Math.round(item.actual).toLocaleString()}&#10;Diff: ${diff >= 0 ? '+' : ''}${Math.round(diff).toLocaleString()}`;
-
-        if (item.quoted > 0) {
-          barSvg += `<rect x="${xQ}" y="${yQ}" width="${bW}" height="${hQ}" fill="${CQ}" rx="2"><title>${tip}</title></rect>`;
-          barSvg += `<text x="${xQ+bW/2}" y="${yQ-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.quoted)}</text>`;
-        }
-        if (item.actual > 0) {
-          barSvg += `<rect x="${xA}" y="${yA}" width="${bW}" height="${hA}" fill="${CA}" rx="2"><title>${tip}</title></rect>`;
-          barSvg += `<text x="${xA+bW/2}" y="${yA-4}" text-anchor="middle" font-size="10" fill="#444">${lbl(item.actual)}</text>`;
-        }
-
-        // X-axis label — straight, centered, full text
-        const ly = baseY + bandStripH + labelFontPx + 4;
-        barSvg += `<text x="${cx}" y="${ly}" text-anchor="middle" font-size="${labelFontPx}" fill="#555">${escapeHtml(item.label)}</text>`;
-
-        // Invisible hover zone
-        barSvg += `<rect x="${padL+idx*grpW}" y="${padT}" width="${grpW}" height="${plotH+10}" fill="transparent"><title>${tip}</title></rect>`;
-      });
-
-      // Section + group band strips below x-axis baseline
-      let bandsSvg = '';
-      if (opts && opts.secBands) {
-        const bandTip = (b, prefix) => {
-          if (b.ref == null) return escapeHtml(b.label);
-          const diff = b.ref - b.actual;
-          return escapeHtml(`${prefix || b.label}\n${b.ref != null ? `Quoted: ${Math.round(b.ref).toLocaleString()}\nActual: ${Math.round(b.actual).toLocaleString()}\nDiff: ${diff >= 0 ? '+' : ''}${Math.round(diff).toLocaleString()}` : ''}`);
-        };
-        const sH = 18, sY = baseY + 4;
-        let sx = padL;
-        for (const b of opts.secBands) {
-          const bw = b.count * grpW - 1;
-          bandsSvg += `<rect x="${sx}" y="${sY}" width="${bw}" height="${sH}" fill="#1e3a5f" rx="2"><title>${bandTip(b, b.label)}</title></rect>`;
-          bandsSvg += `<text x="${sx+bw/2}" y="${sY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="700" fill="white" style="pointer-events:none">${escapeHtml(b.label)}</text>`;
-          sx += b.count * grpW;
-        }
-        const gY = sY + sH + 3;
-        let gx = padL;
-        for (const b of opts.grpBands) {
-          const bw = b.count * grpW - 1;
-          bandsSvg += `<rect x="${gx}" y="${gY}" width="${bw}" height="${sH}" fill="#AACEE8" rx="2"><title>${bandTip(b, b.label)}</title></rect>`;
-          bandsSvg += `<text x="${gx+bw/2}" y="${gY+sH/2+4}" text-anchor="middle" font-size="9" font-weight="600" fill="white" style="pointer-events:none">${escapeHtml(b.label)}</text>`;
-          gx += b.count * grpW;
-        }
-      }
-
-      // Legend — sits below label area, centred
-      const legY = H - 8;
-      const legX = padL + plotW / 2 - 65;
-      const legend = `
-        <rect x="${legX}" y="${legY-11}" width="13" height="10" fill="${CQ}" rx="1"/>
-        <text x="${legX+17}" y="${legY-2}" font-size="11" fill="#555">Quoted</text>
-        <rect x="${legX+75}" y="${legY-11}" width="13" height="10" fill="${CA}" rx="1"/>
-        <text x="${legX+92}" y="${legY-2}" font-size="11" fill="#555">Actual</text>`;
-
-      const svgSizeAttr = (opts && opts.exactWidth) ? `width="${W}" height="${H}"`
-        : (opts && opts.fillBox) ? `width="100%" height="100%" preserveAspectRatio="none"`
-        : `width="100%"`;
-      return `<svg viewBox="0 0 ${W} ${H}" ${svgSizeAttr} style="display:block">
-        <text x="${W/2}" y="20" text-anchor="middle" font-size="13" font-weight="600" fill="#333">${escapeHtml(title)}</text>
-        ${gridSvg}${tickSvg}${barSvg}${bandsSvg}${legend}
-        <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
-        <line x1="${padL}" y1="${baseY}" x2="${padL+plotW}" y2="${baseY}" stroke="#ccc" stroke-width="1"/>
-      </svg>`;
-    }
-
-    const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
-    const BG_CHART_ORDER = Object.keys(bgTotals);
-    const bgGroups = BG_CHART_ORDER.filter(bg => !/^pm$/i.test(bg) && (bgFilter === 'all' || bgFilter === bg))
-      .map(bg => ({ fn: _gl(bg), label: _gl(bg), sectionLabel: null, series: [{ value: bgTotals[bg][refKey] || 0 }, { value: bgTotals[bg].actual || 0 }] }));
-
-    const colgroup = `<colgroup>
-      <col style="width:80px">
-      ${pivotCols.map(() => `<col>`).join('')}
-      <col style="width:80px">
-    </colgroup>`;
-
-    const fnChartTitle  = `${refLabel} vs Actual by Function`;
-    const bgChartTitle  = `${refLabel} vs Actual by Billing Group`;
-    const fnGroups = secGroups.flatMap(sg => sg.fns.map(r => ({
-      fn: _glFn(r.fn), label: _gl(r.group || r.fn), sectionLabel: sg.sec,
-      series: [{ value: r[refKey] || 0 }, { value: r.actual || 0 }],
-    }))).filter(g => g.series[0].value || g.series[1].value);
-    const fnChartSvg = _jhBarChart(fnChartTitle, fnGroups, [refLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 900);
-
-    const totalD = totalRef - totalAct;
-    body = `
-      ${modeBar}
-      <div class="hours-bg-row">${bgHtml}</div>
-      <div class="hours-fn-row" style="display:flex;flex-direction:column;gap:16px">
-        <div class="jhp-charts-row" style="align-items:flex-start">
-          <div class="jhp-chart-main" style="overflow-x:auto">${fnChartSvg}</div>
-          <div class="jhp-chart-side" style="overflow-x:auto">${_jhBarChart(bgChartTitle, bgGroups, [refLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 600, 900)}</div>
-        </div>
-        <div class="hpt-fn-wrap" style="padding-bottom:160px">
-          <table class="hpt" style="table-layout:auto;width:100%">
-            ${colgroup}
-            <thead>
-              <tr><th class="hpt-corner" rowspan="3"></th>${secSpans}<th class="hpt-total-hdr" rowspan="3">Total</th></tr>
-              <tr>${grpSpans}</tr>
-              <tr>${fnHdrs}</tr>
-            </thead>
-            <tbody>${pivotBody}</tbody>
-          </table>
-        </div>
-      </div>`;
-    } // end if fns.length
-  }
-
-  el.innerHTML = bar + `<div class="hours-drawer-body">${DRAWER_HANDLE('hours-drawer-body')}${body}</div>`;
-  _wireHoursDrawer(el, job, project);
-  // Apply indeterminate state to section checkboxes (can't be set in HTML)
-  el.querySelectorAll('[data-hff-sec-key][data-indet]').forEach(cb => { cb.indeterminate = true; });
-  layoutNotesPanel();
+  el.innerHTML = `⏱ Job Hours · ${stat}`;
+  el.title = "Open this job's Job Hour Details in SDC Reports";
+  if (!data) _loadScheduleHoursDrawer(job, project);
 }
 
 async function _hoursLinkJobFlow(project) {
@@ -17144,100 +15336,6 @@ async function _hoursLinkJobFlow(project) {
   if (clean) delete _hoursCache[clean];
   showToast(clean ? `Power BI job linked: ${clean}` : 'Power BI job link cleared', { kind: 'success' });
   try { renderScheduleHours(); } catch (_) {}
-}
-
-function _wireHoursDrawer(el, job, project) {
-  _drawerRestoreHeight('hours-drawer-body');
-  el.onclick = (e) => {
-    // Checked BEFORE toggle-hours-drawer below — same reason as the
-    // Procurement drawer's identical check: this button is nested inside the
-    // bar div that itself toggles the drawer.
-    const etcBtn = e.target.closest('[data-action="open-etc-job-hours"]');
-    if (etcBtn) {
-      _openEtcJobHours(project, '');
-      return;
-    }
-    if (e.target.closest('[data-action="toggle-hours-drawer"]')) {
-      el.classList.toggle('is-collapsed');
-      _setDrawerCollapsed('hours', el.classList.contains('is-collapsed'));
-      renderScheduleHours();
-      return;
-    }
-    const modeBtn = e.target.closest('[data-hours-mode]');
-    if (modeBtn) { _hoursUI.mode = modeBtn.dataset.hoursMode; renderScheduleHours(); return; }
-
-    // Toggle dropdown open/close
-    if (e.target.closest('[data-action="toggle-fn-filter"]')) {
-      _hoursUI.fnOpen = !_hoursUI.fnOpen;
-      renderScheduleHours(); return;
-    }
-    // Close dropdown if click outside it
-    if (_hoursUI.fnOpen && !e.target.closest('.hff-wrap')) {
-      _hoursUI.fnOpen = false; renderScheduleHours(); return;
-    }
-
-    // Expand/collapse section
-    const expander = e.target.closest('[data-hff-sec]');
-    if (expander) {
-      const sec = expander.dataset.hffSec;
-      if (_hoursUI.fnExp.has(sec)) _hoursUI.fnExp.delete(sec); else _hoursUI.fnExp.add(sec);
-      renderScheduleHours(); return;
-    }
-
-    // Select all
-    const allChk = e.target.closest('[data-hff-all]');
-    if (allChk) { _hoursUI.fnSel = allChk.checked ? null : new Set(); renderScheduleHours(); return; }
-
-    // Section checkbox
-    const secChk = e.target.closest('[data-hff-sec-key]');
-    if (secChk) {
-      // build full key list for this section from the current tree
-      const secName = secChk.dataset.hffSecKey;
-      const dropdown = el.querySelector('.hff-tree');
-      const grpKeys = [...(dropdown ? dropdown.querySelectorAll(`[data-hff-grp-key]`) : [])]
-        .filter(cb => cb.dataset.hffGrpKey.startsWith(secName + '||'))
-        .map(cb => cb.dataset.hffGrpKey);
-      let sel = _hoursUI.fnSel ? new Set(_hoursUI.fnSel) : null;
-      if (secChk.checked) {
-        if (sel === null) { /* already all selected */ }
-        else { grpKeys.forEach(k => sel.add(k)); }
-      } else {
-        if (sel === null) {
-          // deselect this section — build full set minus these keys
-          const allKeys = [...el.querySelectorAll('[data-hff-grp-key]')].map(c => c.dataset.hffGrpKey);
-          sel = new Set(allKeys.filter(k => !grpKeys.includes(k)));
-        } else { grpKeys.forEach(k => sel.delete(k)); }
-      }
-      if (sel && sel.size === 0) sel = new Set(); // keep empty set (nothing selected)
-      _hoursUI.fnSel = sel;
-      renderScheduleHours(); return;
-    }
-
-    // Group checkbox
-    const grpChk = e.target.closest('[data-hff-grp-key]');
-    if (grpChk) {
-      const key = grpChk.dataset.hffGrpKey;
-      let sel = _hoursUI.fnSel ? new Set(_hoursUI.fnSel) : null;
-      if (grpChk.checked) {
-        if (sel === null) { /* already all */ }
-        else sel.add(key);
-      } else {
-        if (sel === null) {
-          // deselect one — build full set minus this key
-          const allKeys = [...el.querySelectorAll('[data-hff-grp-key]')].map(c => c.dataset.hffGrpKey);
-          sel = new Set(allKeys.filter(k => k !== key));
-        } else sel.delete(key);
-      }
-      _hoursUI.fnSel = sel;
-      renderScheduleHours(); return;
-    }
-  };
-
-  // Search input (oninput, not onclick)
-  el.addEventListener('input', (e) => {
-    const inp = e.target.closest('[data-action="hff-search"]');
-    if (inp) { _hoursUI.fnSearch = inp.value; renderScheduleHours(); }
-  });
 }
 
 function _wireNotes(el, project) {
@@ -19147,6 +17245,66 @@ async function applyProjectRelease(project, rel) {
   return true;
 }
 
+// ── Deleting one financial milestone (2026-08-24) ───────────────────────────
+//
+// One routine behind BOTH the new per-row trash button and the existing
+// right-click "Delete this milestone…", and behind both places the grid is
+// rendered (the standalone Financials modal and the Project Release panel's
+// embedded copy). Four call sites, one set of rules — otherwise "does deleting
+// a Sent milestone warn me?" would have four possible answers.
+//
+// Three tiers, by how much there is to lose:
+//
+//   * A BLANK row goes immediately, no dialog. "+ Add milestone" creates its
+//     row in the database straight away (name: ''), so the blank row a user is
+//     looking at is already persisted — there is no unsaved/saved distinction
+//     to make, and confirming the removal of a row that holds nothing is pure
+//     friction. This is also what keeps empty placeholder records out of the
+//     table.
+//   * A row with CONTENT gets the plain confirmation.
+//   * A row already marked SENT gets a stronger one: its own wording naming the
+//     consequence, a "Delete anyway" button, and requireExplicit so a stray
+//     Enter cannot do it. An invoice has gone out against that line.
+//
+// Returns true when the row was actually deleted, so callers know whether to
+// re-render. Deliberately does NOT reload or re-render itself — each caller
+// already owns its own reload/render/Gantt sequence, and duplicating that here
+// would double every refresh.
+function _financialRowIsBlank(row) {
+  if (!row) return true;
+  return !String(row.name || '').trim()
+    && (row.percent === null || row.percent === undefined || row.percent === '')
+    && !String(row.predecessors || '').trim()
+    && !row.due_date
+    && !row.paid;
+}
+
+async function _deleteFinancialMilestone(project, id) {
+  const row = (state.financials[project] || []).find(r => r.id === Number(id));
+  const label = String(row?.name || '').trim();
+
+  if (!_financialRowIsBlank(row)) {
+    const opts = row.paid
+      ? {
+          title: 'Delete a milestone that has already been sent?',
+          message: `${label ? `"${label}"` : 'This milestone'} is marked Sent — an invoice has gone out against it. Deleting it removes it from ${project} permanently and cannot be undone.`,
+          okLabel: 'Delete anyway',
+          danger: true,
+          requireExplicit: true,
+        }
+      : {
+          title: 'Delete this milestone?',
+          message: `${label ? `"${label}"` : 'This milestone'} will be removed from ${project}. The other milestones keep their own percentages, triggers and dates.`,
+          okLabel: 'Delete',
+          danger: true,
+        };
+    if (!(await showConfirmDialog(opts))) return false;
+  }
+
+  await api.financials.remove(id);
+  return true;
+}
+
 // Render the editable Financial Milestones grid into ANY container (extracted
 // from openFinancialsModal so it can live inline in the Project Release panel).
 // Same columns + live-save behavior: %, Description, Trigger (predecessor),
@@ -19169,27 +17327,29 @@ async function mountFinancialsEditor(container, project, machine) {
     container.innerHTML = `
       <div class="financials-table-wrap">
         <table class="financials-table">
-          <colgroup><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /></colgroup>
+          <colgroup><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /><col class="col-actions" /></colgroup>
           <thead><tr>
             <th class="num">%</th>
             <th>Description</th>
             <th title="Predecessor — task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag ('FAT +1w'). Blank = set the Date manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
             <th>Date</th>
             <th class="paid" title="Check when the invoice has been sent.">Sent</th>
+            <th class="fin-actions"><span class="sr-only">Delete</span></th>
           </tr></thead>
           <tbody>
             ${rows.length === 0
-              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
               : rows.map(r => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
-              return `<tr data-id="${r.id}" title="Right-click to add or delete a milestone">
+              return `<tr data-id="${r.id}" title="Right-click to add a milestone">
                 <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                 <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                 <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                 <td><input type="date" data-field="due_date" value="${dateValue}" ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} /></td>
                 <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
+                <td class="fin-actions"><button type="button" class="fin-row-del" data-del="${r.id}" aria-label="Delete this milestone" title="Delete this milestone">🗑</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -19199,6 +17359,24 @@ async function mountFinancialsEditor(container, project, machine) {
     bind(opts);
   };
   const bind = (opts = {}) => {
+    // One delete path for the trash button and the context menu alike — see
+    // _deleteFinancialMilestone for the blank/content/Sent tiers. Re-renders
+    // only when something was actually removed, so cancelling leaves the row
+    // (and any half-typed value in it) exactly as it was.
+    const removeRow = async (rowId) => {
+      if (!(await _deleteFinancialMilestone(project, rowId))) return;
+      await loadFinancialsForProject(project);
+      await renderGrid();
+      if (state.showFinancials) renderGantt();
+      try { refreshFinancialsButtonState(); } catch (_) {}
+    };
+    container.querySelectorAll('.fin-row-del').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        removeRow(Number(btn.dataset.del));
+      });
+    });
     container.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
       tr.addEventListener('contextmenu', (e) => {
@@ -19211,15 +17389,7 @@ async function mountFinancialsEditor(container, project, machine) {
               if (state.showFinancials) renderGantt();
           }},
           { separator: true },
-          { label: 'Delete this milestone…', danger: true, onClick: async () => {
-              const row = (state.financials[project] || []).find(r => r.id === id);
-              const ok = await showConfirmDialog({ title: 'Delete financial milestone?', message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`, okLabel: 'Delete', danger: true });
-              if (!ok) return;
-              await api.financials.remove(id);
-              await loadFinancialsForProject(project);
-              await renderGrid();
-              if (state.showFinancials) renderGantt();
-          }},
+          { label: 'Delete this milestone…', danger: true, onClick: () => removeRow(id) },
         ]);
       });
       tr.querySelectorAll('input[data-field]').forEach(el => {
@@ -21509,6 +19679,7 @@ function openFinancialsModal(project) {
             <col class="col-trigger" />
             <col class="col-date" />
             <col class="col-paid" />
+            <col class="col-actions" />
           </colgroup>
           <thead>
             <tr>
@@ -21517,17 +19688,18 @@ function openFinancialsModal(project) {
               <th title="Predecessor — same syntax as the task Predecessors column. Accepts a task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag (e.g. 'FAT +1w', '12 +3d'). Blank = no automatic date; fill in the Date column manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
               <th>Date</th>
               <th class="paid" title="Check when the invoice has been sent. The Gantt line goes from dashed to solid.">Sent</th>
+              <th class="fin-actions"><span class="sr-only">Delete</span></th>
             </tr>
           </thead>
           <tbody>
             ${rows.length === 0
-              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
               : rows.map(r => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
               return `
-                <tr data-id="${r.id}" title="Right-click to add or delete a milestone">
+                <tr data-id="${r.id}" title="Right-click to add a milestone">
                   <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                   <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                   <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
@@ -21536,6 +19708,7 @@ function openFinancialsModal(project) {
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
                   </td>
                   <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
+                  <td class="fin-actions"><button type="button" class="fin-row-del" data-del="${r.id}" aria-label="Delete this milestone" title="Delete this milestone">🗑</button></td>
                 </tr>
               `;
             }).join('')}
@@ -21563,6 +19736,22 @@ function openFinancialsModal(project) {
     // (Show-on-Gantt checkbox + handler removed — the $ toolbar icon
     //  already owns state.showFinancials.)
 
+    // Shared delete path — see the identical helper in mountFinancialsEditor
+    // and _deleteFinancialMilestone for the confirmation tiers.
+    const removeRow = async (rowId) => {
+      if (!(await _deleteFinancialMilestone(project, rowId))) return;
+      await loadFinancialsForProject(project);
+      await render();
+      if (state.showFinancials) renderGantt();
+      try { refreshFinancialsButtonState(); } catch (_) {}
+    };
+    modal.querySelectorAll('.fin-row-del').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        removeRow(Number(btn.dataset.del));
+      });
+    });
     modal.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
       // Right-click any row → context menu with Add / Delete. Replaces
@@ -21578,21 +19767,7 @@ function openFinancialsModal(project) {
               try { refreshFinancialsButtonState(); } catch (_) {}
           }},
           { separator: true },
-          { label: 'Delete this milestone…', danger: true, onClick: async () => {
-              const row = (state.financials[project] || []).find(r => r.id === id);
-              const ok = await showConfirmDialog({
-                title: 'Delete financial milestone?',
-                message: `"${row?.name || 'This milestone'}" will be removed from ${project}.`,
-                okLabel: 'Delete',
-                danger: true,
-              });
-              if (!ok) return;
-              await api.financials.remove(id);
-              await loadFinancialsForProject(project);
-              await render();
-              if (state.showFinancials) renderGantt();
-              try { refreshFinancialsButtonState(); } catch (_) {}
-          }},
+          { label: 'Delete this milestone…', danger: true, onClick: () => removeRow(id) },
         ];
         showContextMenu(e.clientX, e.clientY, items);
       });
@@ -26541,7 +24716,10 @@ function computeOverAllocatedTasks(tasks) {
   return flagged;
 }
 async function loadTeam() {
-  state.team = await api.team.list();
+  try { state.team = await api.team.list(); } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not load team: ' + e.message, { kind: 'error' });
+    return;
+  }
   // Pull ETC's Unassigned + Inactive people (fail-soft: if the planner is off,
   // the board still renders its own 5 discipline cards). Non-blocking on error.
   try { state.teamExtras = await api.team.etcExtras(); }
@@ -26613,15 +24791,29 @@ function setView(view) {
     _restoreScrollPos(view);
   }
   else if (view === 'invoicing') { renderInvoicingPage(); _restoreScrollPos(view); }
-  else if (view === 'shop-parts') { loadShopParts(); _restoreScrollPos(view); }
-  else if (view === 'vendor-pos') { loadVendorPOs(); _restoreScrollPos(view); }
+  else if (view === 'shop-parts') {
+    // Reuse what's already loaded — shop_parts:updated (realtime-ui.js) keeps
+    // it fresh when the data actually changes, so a plain nav here shouldn't
+    // re-fetch the whole table every time.
+    if (Array.isArray(state.shopParts)) renderShopPartsPage(); else loadShopParts();
+    _restoreScrollPos(view);
+  }
+  else if (view === 'vendor-pos') {
+    // Same reuse as shop-parts, above — vendor_pos:updated covers CRUD saves
+    // AND the 30-min ETO sync cron.
+    if (Array.isArray(state.vendorPOs)) renderVendorPOsPage(); else loadVendorPOs();
+    _restoreScrollPos(view);
+  }
   else if (view === 'job-hours')  { renderJobHoursPage(); _restoreScrollPos(view); }
   else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
   else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
   else if (view === 'recents')   { renderRecentsPage(); _restoreScrollPos(view); }
   else if (view === 'actions')   renderActionsPage();
   else {
-    render();
+    // Gantt render deferred to zoomToFit() below — rendering it here too would
+    // mean two full Gantt rebuilds (once at the stale zoom, once at the fit
+    // zoom) for every nav into Schedule.
+    render({ deferGantt: true });
     // Opening / switching to a schedule: fit the whole project into the Gantt
     // viewport (don't leave it scrolled half off-screen). Deferred two frames so
     // the grid+Gantt layout settles before zoomToFit measures the panel.
@@ -28462,7 +26654,6 @@ function setupModeSegControl() {
 
 function setPaneMode(mode) {
   if (!['grid', 'both', 'gantt'].includes(mode)) return;
-  const becomingVisible = !state.layout.showGantt && mode !== 'grid';
   state.layout.showGantt = (mode !== 'grid');
   state.scheduleView.ganttOnly = (mode === 'gantt');
   // When the Gantt becomes visible (grid → both / grid → gantt / both → gantt) auto
@@ -28474,15 +26665,15 @@ function setPaneMode(mode) {
   saveScheduleView();
   applyGanttVisibility();
   applyScheduleView();
-  // When the Gantt panel was just unhidden, the browser hasn't finished laying out
-  // the now-visible panel yet — its clientWidth still reads stale (often 0). Defer
-  // renderGantt to the next animation frame so the fit calc measures the actual
-  // new panel width. For grid-only, no Gantt rendering needed anyway.
-  if (becomingVisible) {
-    requestAnimationFrame(() => renderGantt());
-  } else if (mode !== 'grid') {
-    renderGantt();
-  }
+  // Used to also renderGantt() here (immediately, or 1-rAF-deferred while the
+  // just-unhidden panel's clientWidth settled) — but the zoom-to-fit block
+  // below ALWAYS runs on this same `mode !== 'grid'` condition, and it does
+  // its own renderGantt() at the correct fit zoom. Rendering twice meant every
+  // pane change into Both/Gantt ran the full Gantt pipeline twice back to
+  // back. Whatever the panel showed before (empty, or last time's Gantt)
+  // holds for a couple of frames until zoomToFit's render lands. For
+  // grid-only, no Gantt rendering needed anyway.
+  //
   // ALWAYS finish a pane change that shows the Gantt with an explicit
   // zoom-to-fit against the settled layout (double rAF — same proven pattern
   // as the ⛶ button and customer view). The _fitOnNextRender flag alone kept
@@ -29484,17 +27675,39 @@ async function init() {
 // restored the last active project from sessionStorage — this override wins.
 // The ?job= param is stripped afterward so a later manual reload doesn't keep
 // forcing the jump.
-// ── Reports rail link (sibling app on :3010) ────────────────────────────────
+// ── Reports rail link (sibling app on :4006) ────────────────────────────────
 // Keeps the hard-coded server-app1 href working when this app is reached by a
 // different hostname (localhost during dev, an IP, a future rename): the two
 // services always live on the same machine, so only the port differs. The
 // mirror-image link lives in the Reports app's own sidebar ("Project
 // Scheduler"), pointing back at ?view=projects here.
-const REPORTS_APP_PORT = '3010';
+// Port comes from the server (GET /api/config/reports-url, sourced from
+// ETC_PLANNER_URL — the same env var lib/plannerClient.js already uses for
+// server-to-server calls), not a hardcoded constant here — so a future port
+// change is one .env edit, not a find-and-replace across this file. Fetched
+// once and cached; every caller awaits the same in-flight promise.
+let _reportsPortPromise = null;
+function _fetchReportsPort() {
+  if (!_reportsPortPromise) {
+    _reportsPortPromise = fetch('/api/config/reports-url')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => (d && d.port) || null)
+      .catch(() => null);
+  }
+  return _reportsPortPromise;
+}
 
-// Absolute URL into the Reports app, on whatever host this app was reached by.
-function _reportsAppUrl(path) {
-  return `${location.protocol}//${location.hostname}:${REPORTS_APP_PORT}${path || '/'}`;
+// Absolute URL into the Reports app, on whatever host this app was reached
+// by. Returns null (never throws) if the port isn't configured server-side —
+// callers must check for null rather than navigate to a broken URL.
+async function _reportsAppUrl(path) {
+  const port = await _fetchReportsPort();
+  if (!port) {
+    console.error('[reports] ETC_PLANNER_URL is not configured on the server — cannot build a link to the Reports app.');
+    showToast('The Reports app link is not configured. Contact IT.', { kind: 'error' });
+    return null;
+  }
+  return `${location.protocol}//${location.hostname}:${port}${path || '/'}`;
 }
 
 // ── Mint-then-open, shared by every Scheduler → Reports link ───────────────
@@ -29527,7 +27740,9 @@ function _initReportsRailLink() {
   try {
     const url = new URL(link.getAttribute('href'), location.origin);
     path = url.pathname + url.search;
-    if (url.hostname !== location.hostname) link.href = _reportsAppUrl(path);
+    if (url.hostname !== location.hostname) {
+      _reportsAppUrl(path).then((resolved) => { if (resolved) link.href = resolved; });
+    }
   } catch (_) { /* leave the static href alone */ }
   // Mint-then-navigate on click. The link keeps its own `target="_blank"`
   // href as a plain fallback (works with no JS, and for a middle-click that
@@ -29551,6 +27766,7 @@ function _initReportsRailLink() {
     // traded away here.
     const win = window.open('', '_blank');
     _mintedReportsUrl(path).then((url) => {
+      if (!url) { if (win) win.close(); return; } // _reportsAppUrl already logged + toasted why
       if (win) win.location.href = url;
       else window.open(url, '_blank'); // popup was blocked anyway; try once more as a fallback
     });
@@ -29599,9 +27815,13 @@ async function _openEtcJobHours(project, section) {
     // for why dropping it here carries no real tradeoff.
     const win = window.open('', 'sdc-reports-job-hours');
     const url = await _mintedReportsUrl(_etcJobHoursPath(jobNumber, section));
+    if (!url) { if (win) win.close(); return; } // _reportsAppUrl already logged + toasted why
     if (win) win.location.href = url;
     else window.open(url, 'sdc-reports-job-hours');
-  } catch (_) { /* best-effort — never block the click */ }
+  } catch (e) {
+    console.error('[reports] Failed to open Reports link:', e);
+    showToast('Could not open the Reports app. Please try again.', { kind: 'error' });
+  }
 }
 
 // ── ?view= deep-link ────────────────────────────────────────────────────────
@@ -29633,9 +27853,9 @@ function _applyViewDeepLink() {
 // because neither browser Back nor document.referrer can do the job:
 //   • The report's Gantt icon/menu opens this app in a NEW TAB, so that tab's
 //     history has no earlier entry — history.back() is a no-op.
-//   • The two apps sit on different ports (3010 vs 4003), and the reports app
+//   • The two apps sit on different ports (4006 vs 4003), and the reports app
 //     sends a strict-origin referrer cross-origin, so document.referrer arrives
-//     as a bare "http://host:3010/" with the report's path and filters stripped.
+//     as a bare "http://host:4006/" with the report's path and filters stripped.
 // The target is kept in sessionStorage (tab-scoped, so only the tab that was
 // opened from a report grows the button) and survives the query-string cleanup
 // _applyEtcJobDeepLink does, plus any manual refresh afterwards.
@@ -29705,15 +27925,14 @@ function _applyEtcJobDeepLink() {
       try { loadMachineColors(match); } catch (_) {}
       try { saveProjectTabs(); } catch (_) {}
       // Opening from the ETC Planner should land on ONE predictable layout, not
-      // whatever the viewer last left behind: bottom drawers (Notes /
-      // Procurement / Job Hours) collapsed, the shared "Active Project Default"
-      // column view applied, and ROW HEIGHT pinned to the friendly 50 step.
-      // Set the drawer flags BEFORE setView so the first render already draws
-      // them collapsed.
+      // whatever the viewer last left behind: the Notes drawer collapsed (the
+      // only one of the three with a collapsed/expanded state left — Procurement
+      // and Job Hours are fixed compact rows now), the shared "Active Project
+      // Default" column view applied, and ROW HEIGHT pinned to the friendly 50
+      // step. Set the flag BEFORE setView so the first render already draws it
+      // collapsed.
       try {
         _setDrawerCollapsed('notes', true);
-        _setDrawerCollapsed('proc', true);
-        _setDrawerCollapsed('hours', true);
       } catch (_) {}
       setView('schedule'); // renders the schedule for the now-active project
       const openStandard = () => {
@@ -29779,4 +27998,115 @@ document.addEventListener('DOMContentLoaded', init);
   };
   window.addEventListener('focus', check);
   setInterval(check, 60000);
+})();
+
+// ── Global error reporting + a visible recovery affordance (2026-08-24) ────
+//
+// This app is a single-page app with no framework error boundary of its own —
+// unlike Assemblies, Build Readiness, State Logic, Calendar and Reports, which
+// all carry one. So an unhandled throw part-way through a render could leave a
+// container empty and the user looking at a blank area, with the only evidence
+// in a DevTools console nobody has open. That is the platform-wide
+// blank-screen complaint of 2026-08-24, and this app was one of the two
+// surfaces with no protection at all (the SDC Tools shell UI was the other).
+//
+// Two deliberate non-goals:
+//
+//   * It does NOT reload automatically. An auto-reload was explicitly ruled
+//     out, and it would also mask the bug while risking a loop on a
+//     deterministic error.
+//   * It does NOT replace the UI. Most unhandled rejections here come from a
+//     background poll and cost the user nothing; blanking a working Gantt to
+//     announce one would be a worse outcome than the error. So the page is left
+//     alone and a single dismissible bar appears at the bottom.
+//
+// A stale bundle is called out separately, because it is the one case where a
+// reload is genuinely the fix rather than a workaround: after a deploy, a tab
+// left open holds a build manifest naming chunks the server has replaced.
+(function _installGlobalErrorReporting() {
+  var reported = 0;
+  var BAR_ID = 'sdc-global-error-bar';
+
+  function isStaleBundle(msg) {
+    var m = String(msg || '').toLowerCase();
+    return m.indexOf('failed to load chunk') >= 0
+        || m.indexOf('loading chunk') >= 0
+        || m.indexOf('dynamically imported module') >= 0
+        || m.indexOf('importing a module script failed') >= 0;
+  }
+
+  function report(kind, message) {
+    // Cap the volume: one broken interval could otherwise post on every tick.
+    if (reported >= 10) return;
+    reported++;
+    try {
+      fetch('/api/client-error', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: kind,
+          message: message,
+          route: location.pathname + location.search,
+          project: (window.state && state.filters && state.filters.project) || null,
+        }),
+        keepalive: true,   // survives the user closing the tab straight after
+      }).catch(function () {});
+    } catch (_) {}
+  }
+
+  function showBar(message, stale) {
+    if (document.getElementById(BAR_ID)) return;   // one bar, not a stack
+    var bar = document.createElement('div');
+    bar.id = BAR_ID;
+    bar.setAttribute('role', 'status');
+    bar.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:12000;'
+      + 'display:flex;align-items:center;gap:10px;max-width:min(680px,94vw);'
+      + 'background:#fff;border:1px solid #f0b8b8;border-left:4px solid #c0392b;'
+      + 'border-radius:8px;padding:9px 12px;box-shadow:0 8px 24px rgba(15,23,42,0.18);'
+      + 'font:500 12.5px/1.45 "Segoe UI",system-ui,sans-serif;color:#2b2b2b;';
+    var text = document.createElement('span');
+    text.style.cssText = 'flex:1 1 auto;min-width:0';
+    text.textContent = stale
+      ? 'This tab is running an older version of the Planner. Reload to pick up the current one — nothing you have entered is lost.'
+      : 'Something on this page failed to load correctly. Your data is safe. If anything looks wrong or missing, reload.';
+    bar.appendChild(text);
+    var reload = document.createElement('button');
+    reload.type = 'button';
+    reload.textContent = 'Reload';
+    reload.style.cssText = 'flex:0 0 auto;border:none;background:#1574c4;color:#fff;font-weight:700;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer';
+    reload.onclick = function () { location.reload(); };
+    bar.appendChild(reload);
+    var hide = document.createElement('button');
+    hide.type = 'button';
+    hide.textContent = 'Dismiss';
+    hide.setAttribute('aria-label', 'Dismiss this message');
+    hide.style.cssText = 'flex:0 0 auto;border:1px solid #cbd5e1;background:#fff;color:#64748b;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer';
+    hide.onclick = function () { bar.remove(); };
+    bar.appendChild(hide);
+    document.body.appendChild(bar);
+  }
+
+  window.addEventListener('error', function (e) {
+    // Resource load failures fire here too and carry no `error` object. A
+    // missing chunk arrives this way, which is why it is checked for.
+    var msg = e.error ? ((e.error.name || 'Error') + ': ' + (e.error.message || e.error))
+                      : ('resource failed: ' + ((e.target && (e.target.src || e.target.href)) || 'unknown'));
+    var stale = isStaleBundle(msg);
+    report(stale ? 'stale-bundle' : (e.error ? 'window-error' : 'resource-error'), msg
+      + (e.error && e.error.stack ? ' | ' + e.error.stack : ''));
+    // Only surface a bar for a real exception or a stale bundle. A single
+    // failed image is not worth interrupting anyone for.
+    if (e.error || stale) showBar(msg, stale);
+  });
+
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    var msg = (r && (r.message || r.stack)) ? (r.message || r.stack) : String(r);
+    var stale = isStaleBundle(msg);
+    report(stale ? 'stale-bundle' : 'unhandled-rejection', (r && r.stack) || msg);
+    if (stale) showBar(msg, true);
+    // A non-stale rejection is logged but NOT surfaced: these are dominated by
+    // background polls and aborted fetches that cost the user nothing. The
+    // server log is where they get looked at.
+  });
 })();

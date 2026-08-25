@@ -209,6 +209,21 @@ module.exports = function createRouter(deps) {
     res.json({ token });
   });
 
+  // ── Reports app port, for the client's cross-app links ──────────────────
+  // Single source of truth is ETC_PLANNER_URL (same env var lib/plannerClient.js
+  // uses for server-to-server calls) so the port only ever needs changing in
+  // one place. Only the PORT is handed to the client, not the full origin —
+  // public/app.js still combines it with location.hostname itself, so a
+  // Scheduler reached via localhost/server-app1/a LAN IP always builds a
+  // Reports link on the SAME host the user is already on, exactly as before.
+  // No requireAuth: the rail link initializes before login completes, and a
+  // port number isn't sensitive.
+  router.get('/api/config/reports-url', (req, res) => {
+    let port = null;
+    try { port = new URL(process.env.ETC_PLANNER_URL).port || null; } catch (_) { /* unset or invalid — port stays null */ }
+    res.json({ port });
+  });
+
   // ── Cross-app logout: revoke ON the ETC Planner ─────────────────────────
   // Called from THIS app's own sign-out (public/auth-ui.js's signOut()), so
   // logging out here also invalidates any Planner session established via

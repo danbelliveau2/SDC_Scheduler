@@ -3263,10 +3263,6 @@ body.customer-view .customer-view-flatten.is-active {
   width: 64px;
 }
 
-/* Per-project Procurement drawer (opens down like Notes) */
-.schedule-proc-drawer { flex: 0 0 auto; display: flex; flex-direction: column; }
-.schedule-proc-drawer.is-collapsed .proc-drawer-body { display: none; }
-.proc-drawer-body { background: var(--surface, #fff); padding: 0 14px 24px; overflow-y: auto; max-height: 65vh; }
 .proc-drawer-head {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 4px; margin-bottom: 4px;
@@ -5867,6 +5863,7 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
    doesn't steal vertical space from the grid + Gantt. */
 .schedule-footer {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
   padding: 6px 18px;
@@ -12694,12 +12691,6 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
 #jhp-tip .jt-under{ color: #4ade80; }
 #jhp-tip .jt-div  { border-top: 1px solid rgba(255,255,255,0.08); margin: 6px 0; }
 
-/* ── Job Hours drawer ──────────────────────────────────────────────────────── */
-.schedule-hours-drawer { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid var(--border-mid); }
-.schedule-hours-drawer.is-collapsed .hours-drawer-body { display: none; }
-.hours-drawer-bar { cursor: pointer; }
-.hours-drawer-body { background: var(--surface); padding: 10px 14px 18px; overflow-x: auto; overflow-y: auto; max-height: 100vh; }
-
 /* Billing group summary cards */
 .hours-bg-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .hours-bg-card {
@@ -13134,4 +13125,61 @@ textarea:focus-visible,
 .team-bubble-spec { font-size: var(--fs-2xs); color: #94a3b8; }
 .team-card[data-discipline].drop-target-card {
   outline: 2px dashed #2a5a8c; outline-offset: -2px; background: #eaf2fb;
+}
+
+/* ── Financial milestones: per-row delete (2026-08-24) ─────────────────────
+   A sixth, narrow column holding one trash button per row. Revealed on hover
+   so the grid stays as quiet as it was with five columns — but ALSO on
+   :focus-visible and on tr:focus-within, because hover-only would make this
+   the one action in the table a keyboard user cannot reach. The column keeps
+   its width at all times, so nothing shifts as rows are hovered. */
+.financials-table .col-actions { width: 34px; }
+.financials-table thead th.fin-actions,
+.financials-table tbody td.fin-actions { text-align: center; padding-left: 0; padding-right: 6px; }
+
+.financials-table .fin-row-del {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 5px;
+  font-size: 13px;
+  line-height: 1;
+  /* Hidden but still laid out — visibility rather than display, so the button
+     keeps its box and the row height never changes on hover. */
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 90ms ease-in-out;
+}
+.financials-table tbody tr:hover .fin-row-del,
+.financials-table tbody tr:focus-within .fin-row-del,
+.financials-table .fin-row-del:focus-visible {
+  visibility: visible;
+  opacity: 0.75;
+}
+.financials-table .fin-row-del:hover,
+.financials-table .fin-row-del:focus-visible {
+  opacity: 1;
+  background: var(--sdc-danger-bg, #fee2e2);
+}
+.financials-table .fin-row-del:focus-visible {
+  outline: 2px solid var(--sdc-primary, #1574c4);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .financials-table .fin-row-del { transition: none; }
+}
+
+/* Visually hidden, still announced — used for the delete column's header,
+   which needs no visible label but must not be an unnamed column. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
