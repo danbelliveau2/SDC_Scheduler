@@ -105,6 +105,27 @@ app.use(require('./routes/ssoCentral')({ pool, io, signToken, bcrypt }));
 // not a signed-in session) — also BEFORE the global requireAuth guard.
 app.use(require('./routes/integration')({ pool }));
 
+// ─── Service module (Monica R2) ────────────────────────────────────────────
+// Built as ONE router factory returning two routers, because the customer
+// intake and the internal Service Log are the same feature on opposite sides
+// of the auth line:
+//   publicRouter — POST a new Service Request + read the form's dropdown
+//                  vocabulary. Mounted HERE, above requireAuth, since a
+//                  customer submitting from the SDC website has no SDC login
+//                  (same reasoning as the integration router right above).
+//                  Create-only, rate-limited, honeypot-guarded.
+//   serviceRouter — the Service Log, Work Orders, attachments and reports.
+//                  Mounted with the rest of /api further down, so every one
+//                  of those endpoints sits behind the global auth guard.
+const _service = require('./routes/service');
+let _serviceRouters = null;
+try {
+  _serviceRouters = _service({ pool, io, requireRole, requireAuth, emailSvc });
+  app.use(_serviceRouters.publicRouter);
+} catch (e) {
+  console.error('[service] module failed to initialize:', e.message);
+}
+
 // Public capability probe — no auth needed, frontend uses this to show/hide the Job Hours drawer
 app.get('/api/hours/status', (_req, res) => res.json({ enabled: hoursApi.ENABLED }));
 
@@ -319,6 +340,9 @@ app.use(require('./routes/planner')(  { ...routeDeps }));
 app.use(require('./routes/agent')(    { ...routeDeps }));
 app.use(require('./routes/hours')(    { ...routeDeps }));
 app.use(require('./routes/projects')( { ...routeDeps }));
+// Service module — internal half (Service Log, Work Orders, attachments,
+// reports). Its public intake half was mounted above requireAuth; see there.
+if (_serviceRouters) app.use(_serviceRouters.router);
 
 // ── Health + status + backup ───────────────────────────────────────────────
 app.get('/health', async (_req, res) => {

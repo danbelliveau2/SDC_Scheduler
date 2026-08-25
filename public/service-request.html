@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Request Service — SDC Automation</title>
+<!--
+  service-request.html — the customer-facing Service Request form (R2 §1, §2).
+
+  Standalone on purpose. It is NOT part of the app.js single-page app: a
+  customer has no SDC login, and this page must render for someone who has
+  never seen the Scheduler. It is served out of public/, which express.static
+  mounts ABOVE the global requireAuth guard in server.js, and it talks to
+  exactly two public endpoints (routes/service.js's publicRouter).
+
+  Link or iframe it from sdcautomation.com:
+      https://<scheduler-host>/service-request.html
+
+  The dropdown options are FETCHED from /api/public/service-options rather than
+  hardcoded here, so the customer-visible vocabulary can never drift out of
+  step with what the server will accept.
+-->
+<style>
+  :root {
+    --sdc-blue:  #1574c4;
+    --sdc-navy:  #061d39;
+    --sdc-lime:  #befa4f;
+    --ink:       #0f172a;
+    --muted:     #64748b;
+    --line:      #d8dee7;
+    --bg:        #f4f6f9;
+    --danger:    #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    background: var(--sdc-navy); color: #fff; padding: 22px 20px;
+  }
+  header .wrap { max-width: 820px; margin: 0 auto; }
+  header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
+  header p  { margin: 0; color: #a9bdd6; font-size: 14px; }
+
+  main { max-width: 820px; margin: 0 auto; padding: 22px 20px 60px; }
+
+  fieldset {
+    border: 1px solid var(--line); border-radius: 8px; background: #fff;
+    padding: 16px 18px 18px; margin: 0 0 16px;
+  }
+  legend {
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--sdc-blue); padding: 0 6px;
+  }
+  .optional-note { color: var(--muted); font-size: 13px; margin: -4px 0 14px; }
+  .field-hint { color: var(--muted); font-size: 12px; margin-top: 4px; min-height: 1em; }
+
+  /* Description-style inputs get the room; short codes and pickers stay
+     narrow. Same column-width principle the Scheduler grids follow. */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+  .full { grid-column: 1 / -1; }
+  @media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+
+  label { display: block; font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+  .req::after { content: " *"; color: var(--danger); }
+
+  input[type=text], input[type=email], input[type=tel], select, textarea {
+    width: 100%; padding: 8px 10px; font: inherit; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 5px; background: #fff;
+  }
+  textarea { min-height: 108px; resize: vertical; }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--sdc-blue); box-shadow: 0 0 0 3px rgba(21,116,196,0.14);
+  }
+  .radio-row { display: flex; flex-wrap: wrap; gap: 8px; }
+  .radio-row label {
+    display: inline-flex; align-items: center; gap: 6px; font-weight: 500;
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 13px;
+    background: #fff; cursor: pointer; margin: 0;
+  }
+  .radio-row label:has(input:checked) {
+    border-color: var(--sdc-blue); background: #eaf3fb; font-weight: 600;
+  }
+  .radio-row input { margin: 0; }
+
+  /* Machine down is the one answer that changes how SDC responds — it should
+     look different from "schedule me sometime". */
+  .radio-row label:has(input[value="machine_down"]:checked) {
+    border-color: var(--danger); background: #fee2e2; color: #7f1d1d;
+  }
+  /* Non-SDC is not an error, just a different path — mark it without alarming. */
+  .radio-row label:has(input[value="non_sdc"]:checked) {
+    border-color: #b45309; background: #fffbeb; color: #7c4a03;
+  }
+
+  .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+
+  #files { font-size: 14px; }
+  #fileList { margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+  #fileList li { padding: 2px 0; }
+
+  .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  button {
+    background: var(--sdc-blue); color: #fff; border: 0; border-radius: 6px;
+    padding: 12px 26px; font: 600 15px inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: #1265ab; }
+  button:disabled { opacity: 0.55; cursor: progress; }
+
+  .msg { padding: 11px 14px; border-radius: 6px; margin: 0 0 16px; display: none; font-size: 14px; }
+  .msg.error { display: block; background: #fee2e2; border: 1px solid #fca5a5; color: #7f1d1d; }
+
+  #done { display: none; background: #fff; border: 1px solid var(--line); border-top: 4px solid var(--sdc-lime);
+          border-radius: 8px; padding: 30px 26px; text-align: center; }
+  #done h2 { margin: 0 0 8px; font-size: 20px; }
+  #done .num {
+    display: inline-block; margin: 12px 0 6px; padding: 9px 20px;
+    background: var(--sdc-navy); color: #fff; border-radius: 6px;
+    font: 700 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.04em;
+  }
+  #done p { color: var(--muted); margin: 8px 0 0; }
+  footer { max-width: 820px; margin: 0 auto; padding: 0 20px 40px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Request Service</h1>
+    <p>Tell us what the machine is doing and we will get a technician on it.</p>
+  </div>
+</header>
+
+<main>
+  <div id="msg" class="msg"></div>
+
+  <!-- Success state. Replaces the form so the customer cannot double-submit,
+       and shows the Service Request Number, which is the identifier they will
+       quote on the phone (R2 §3). -->
+  <div id="done">
+    <h2>Request received</h2>
+    <p>Your Service Request Number is</p>
+    <div class="num" id="doneNum">—</div>
+    <p>Please quote this number in any follow-up. A confirmation has gone to our Service team,<br>
+       and someone will be in touch about scheduling.</p>
+  </div>
+
+  <form id="form" novalidate>
+    <!-- Honeypot. Real people never see it; bots fill it in and get a
+         plausible-looking success with nothing stored. -->
+    <div class="hp" aria-hidden="true">
+      <label>Website<input type="text" name="website" tabindex="-1" autocomplete="off"></label>
+    </div>
+
+    <fieldset>
+      <legend>Your details</legend>
+      <div class="grid">
+        <div class="full">
+          <label class="req" for="company_name">Company Name</label>
+          <input type="text" id="company_name" name="company_name" autocomplete="organization" required>
+        </div>
+        <div>
+          <label class="req" for="requestor_name">Your Name</label>
+          <input type="text" id="requestor_name" name="requestor_name" autocomplete="name" required>
+        </div>
+        <div>
+          <label class="req" for="requestor_email">Your Email</label>
+          <input type="email" id="requestor_email" name="requestor_email" autocomplete="email" required>
+        </div>
+        <div>
+          <label class="req" for="requestor_phone">Your Phone Number</label>
+          <input type="tel" id="requestor_phone" name="requestor_phone" autocomplete="tel" required>
+        </div>
+        <div class="full">
+          <label class="req">Is this an SDC machine?</label>
+          <div class="radio-row" id="machineTypeRow"></div>
+        </div>
+        <div>
+          <label class="req" for="machine_serial" id="serialLabel">SDC Machine Serial # / Project Job #</label>
+          <input type="text" id="machine_serial" name="machine_serial" required>
+          <div class="field-hint" id="serialHint"></div>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>What do you need</legend>
+      <div class="grid">
+        <div class="full">
+          <label class="req">Service Completion Timeline / Urgency</label>
+          <div class="radio-row" id="urgencyRow"></div>
+        </div>
+        <div class="full">
+          <label class="req" for="service_details">Service Details</label>
+          <textarea id="service_details" name="service_details" required
+            placeholder="What is the machine doing? Any fault codes or alarms? When did it start?"></textarea>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Helpful, if you know it</legend>
+      <p class="optional-note">Everything below is optional — it just helps us send the right person prepared.</p>
+      <div class="grid">
+        <div>
+          <label>Remote or On-site</label>
+          <div class="radio-row" id="locationRow"></div>
+        </div>
+        <div>
+          <label>Warranty</label>
+          <div class="radio-row" id="warrantyRow"></div>
+        </div>
+        <div>
+          <label for="department_needed">SDC Department Needed</label>
+          <select id="department_needed" name="department_needed">
+            <option value="">Not sure</option>
+          </select>
+        </div>
+        <div>
+          <label for="onsite_address">On-site Address</label>
+          <input type="text" id="onsite_address" name="onsite_address" placeholder="If different from your main site">
+        </div>
+        <div class="full">
+          <label for="ppe_requirements">PPE Requirements</label>
+          <input type="text" id="ppe_requirements" name="ppe_requirements"
+            placeholder="e.g. safety glasses, steel toe, hard hat, site induction required">
+        </div>
+        <div class="full">
+          <label for="additional_comments">Additional Comments</label>
+          <textarea id="additional_comments" name="additional_comments" style="min-height:74px"></textarea>
+        </div>
+        <div class="full">
+          <label for="files">Photos or files</label>
+          <input type="file" id="files" name="files" multiple>
+          <ul id="fileList"></ul>
+        </div>
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button type="submit" id="submitBtn">Submit request</button>
+      <span class="optional-note" style="margin:0">Fields marked * are required.</span>
+    </div>
+  </form>
+</main>
+
+<footer>
+  If your machine is down and you need someone immediately, please also call SDC directly — this form creates a
+  tracked request, but a phone call is faster than any form.
+</footer>
+
+<script>
+'use strict';
+
+// The server owns the vocabulary; this page renders whatever it is told. If the
+// options call fails we fall back to the R2-defined lists rather than showing
+// an empty form — a customer with a down machine should still be able to submit.
+const FALLBACK = {
+  urgencies: [
+    { value: 'machine_down',   label: 'Machine down' },
+    { value: 'urgent_running', label: 'Machine running but urgent' },
+    { value: 'schedule',       label: 'Not urgent — want to schedule' },
+    { value: 'quote_mod',      label: 'Need modification quoted' },
+  ],
+  departments: [
+    { value: 'mechanical', label: 'Mechanical Engineering' },
+    { value: 'controls',   label: 'Controls Engineering' },
+    { value: 'shop',       label: 'Shop' },
+    { value: 'all',        label: 'All' },
+  ],
+  locations: [
+    { value: 'remote', label: 'Remote' },
+    { value: 'onsite', label: 'On-site' },
+  ],
+  warranty: [
+    { value: 'warranty',     label: 'Warranty' },
+    { value: 'non_warranty', label: 'Not warranty' },
+    { value: 'unknown',      label: "Don't know" },
+  ],
+  machineTypes: [
+    { value: 'sdc',     label: 'SDC machine' },
+    { value: 'non_sdc', label: 'Non-SDC machine' },
+  ],
+  maxFileMb: 25,
+  maxFiles: 10,
+};
+
+let OPTS = FALLBACK;
+
+function renderRadios(containerId, name, options) {
+  document.getElementById(containerId).innerHTML = options.map(o =>
+    `<label><input type="radio" name="${name}" value="${o.value}"><span>${o.label}</span></label>`
+  ).join('');
+}
+
+function renderOptions(o) {
+  OPTS = o;
+  renderRadios('urgencyRow',  'urgency',       o.urgencies);
+  renderRadios('locationRow', 'location_type', o.locations);
+  renderRadios('warrantyRow', 'warranty',      o.warranty);
+  renderRadios('machineTypeRow', 'machine_type', o.machineTypes || FALLBACK.machineTypes);
+  // Default to SDC machine: it is the overwhelmingly common case, and
+  // pre-selecting it keeps the form exactly as easy as it was before this
+  // question existed. Anyone with third-party equipment changes one click.
+  // ?machine=sdc | non_sdc lets the website send the customer straight to the
+  // right variant — sdcautomation.com/service/ already splits these into two
+  // journeys ("Service for Existing SDC Machines" vs the non-SDC form), so the
+  // button that got them here already knows the answer.
+  //
+  // It PRESELECTS rather than locks: someone who clicked the wrong button, or
+  // who does not know whether SDC built their machine, must still be able to
+  // change it rather than be trapped in the wrong form.
+  const wanted = new URLSearchParams(location.search).get('machine');
+  const pick = (wanted === 'non_sdc' || wanted === 'sdc') ? wanted : 'sdc';
+  const chosen = document.querySelector(`#machineTypeRow input[value="${pick}"]`);
+  if (chosen) chosen.checked = true;
+  document.querySelectorAll('#machineTypeRow input').forEach(r =>
+    r.addEventListener('change', applyMachineType));
+  applyMachineType();
+  const sel = document.getElementById('department_needed');
+  sel.innerHTML = '<option value="">Not sure</option>' +
+    o.departments.map(d => `<option value="${d.value}">${d.label}</option>`).join('');
+}
+
+fetch('/api/public/service-options')
+  .then(r => r.ok ? r.json() : Promise.reject())
+  .then(renderOptions)
+  .catch(() => renderOptions(FALLBACK));
+
+// An SDC machine has a serial and a job number we can look up; somebody
+// else's equipment has neither. So the same input switches between a required
+// SDC identifier and an optional free-text make/model — rather than demanding
+// a number that cannot exist, which would leave a customer with a broken
+// machine unable to submit the form at all.
+function applyMachineType() {
+  const nonSdc = document.querySelector('#machineTypeRow input[value="non_sdc"]:checked');
+  const label  = document.getElementById('serialLabel');
+  const input  = document.getElementById('machine_serial');
+  const hint   = document.getElementById('serialHint');
+  if (!label || !input) return;
+  if (nonSdc) {
+    label.textContent = 'Machine make / model';
+    label.classList.remove('req');
+    input.required = false;
+    input.placeholder = 'e.g. Fanuc R-2000iC, or leave blank if unsure';
+    hint.textContent = 'Optional — we know this will not have an SDC number.';
+  } else {
+    label.textContent = 'SDC Machine Serial # / Project Job #';
+    label.classList.add('req');
+    input.required = true;
+    input.placeholder = '';
+    hint.textContent = 'On the machine nameplate, or the job number from your order.';
+  }
+}
+
+// Show what is attached, and catch an oversized file HERE rather than after a
+// slow upload that the server was always going to reject.
+const filesInput = document.getElementById('files');
+filesInput.addEventListener('change', () => {
+  const list = document.getElementById('fileList');
+  const files = [...filesInput.files];
+  list.innerHTML = files.map(f =>
+    `<li>${f.name} — ${(f.size / 1024 / 1024).toFixed(1)} MB${
+      f.size > OPTS.maxFileMb * 1024 * 1024 ? ' <strong style="color:#dc2626">too large</strong>' : ''}</li>`
+  ).join('');
+});
+
+function showError(text) {
+  const el = document.getElementById('msg');
+  el.className = 'msg error';
+  el.textContent = text;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const btn  = document.getElementById('submitBtn');
+  document.getElementById('msg').className = 'msg';
+
+  // Mirrors the server's rule exactly (routes/service.js): the serial is
+  // required only for an SDC machine.
+  const isNonSdc = !!document.querySelector('#machineTypeRow input[value="non_sdc"]:checked');
+  const required = [
+    ['company_name',    'Company Name'],
+    ['requestor_name',  'Your Name'],
+    ['requestor_email', 'Your Email'],
+    ['requestor_phone', 'Your Phone Number'],
+    ...(isNonSdc ? [] : [['machine_serial', 'SDC Machine Serial # / Project Job #']]),
+    ['service_details', 'Service Details'],
+  ];
+  const fd = new FormData(form);
+  const missing = required.filter(([n]) => !String(fd.get(n) || '').trim()).map(([, l]) => l);
+  if (!fd.get('urgency')) missing.push('Urgency');
+  if (missing.length) return showError('Please complete: ' + missing.join(', ') + '.');
+
+  const big = [...filesInput.files].find(f => f.size > OPTS.maxFileMb * 1024 * 1024);
+  if (big) return showError(`"${big.name}" is larger than ${OPTS.maxFileMb} MB. Please attach a smaller file.`);
+  if (filesInput.files.length > OPTS.maxFiles) return showError(`Please attach no more than ${OPTS.maxFiles} files.`);
+
+  // The job number field is one input on the form ("Serial # / Job #") because
+  // that is how a customer thinks about it, but the Service Log stores both —
+  // send it as each so an SDC coordinator can search on either. For a non-SDC
+  // machine the value is a make/model, NOT a job number, so mirroring it into
+  // job_number would put junk in a column people search and filter on.
+  if (!isNonSdc) fd.set('job_number', fd.get('machine_serial'));
+
+  btn.disabled = true;
+  btn.textContent = 'Submitting…';
+  try {
+    const res  = await fetch('/api/public/service-requests', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong submitting your request.');
+    document.getElementById('doneNum').textContent = data.request_no || '—';
+    form.style.display = 'none';
+    document.getElementById('done').style.display = 'block';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (err) {
+    showError(err.message + ' If this is urgent, please call SDC directly.');
+    btn.disabled = false;
+    btn.textContent = 'Submit request';
+  }
+});
+</script>
+</body>
+</html>

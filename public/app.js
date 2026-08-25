@@ -24732,8 +24732,30 @@ async function loadTasks() {
   // creation. After backfill we collapse duplicates at the data layer.
   let raw;
   try { raw = await api.list(); } catch(e) {
+    // A FAILED load is not an empty project, and the two must never look alike:
+    // "No tasks yet" invites someone to start typing into a schedule whose real
+    // rows just didn't arrive. So this branch says what went wrong and offers a
+    // Retry that re-runs THIS request only — the shell, the current filters and
+    // everything already in state stay put, so nobody has to reload the whole
+    // Scheduler to recover from one bad response. On success the normal render
+    // hides this element again, which is what clears the error.
     const es = document.getElementById('empty-state');
-    if (es) { es.classList.remove('hidden'); es.textContent = 'Could not load tasks: ' + e.message; }
+    if (es) {
+      es.classList.remove('hidden');
+      es.textContent = 'Could not load tasks: ' + e.message + ' ';
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Retry';
+      retry.className = 'btn-primary';
+      retry.style.cssText = 'margin-left:8px;padding:4px 12px;font-size:12px;cursor:pointer';
+      retry.onclick = () => {
+        // Clear the failed state first so a second failure re-renders cleanly
+        // rather than appending a second Retry next to the first.
+        es.textContent = 'Retrying…';
+        loadTasks();
+      };
+      es.appendChild(retry);
+    }
     return;
   }
   state.tasks = raw;
@@ -24845,7 +24867,7 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 // Views that are simple scrollable containers — save/restore their scroll position.
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team', 'invoicing'];
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team', 'invoicing', 'service'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -24916,6 +24938,10 @@ function setView(view) {
     if (Array.isArray(state.vendorPOs)) renderVendorPOsPage(); else loadVendorPOs();
     _restoreScrollPos(view);
   }
+  // Service module (Service Log replacement) lives in service-ui.js, not here —
+  // it is a self-contained page with its own data and no Gantt involvement.
+  // This is the ONLY place app.js knows about it.
+  else if (view === 'service')    { try { renderServicePage(); } catch (_) {} _restoreScrollPos(view); }
   else if (view === 'job-hours')  { renderJobHoursPage(); _restoreScrollPos(view); }
   else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
   else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
