@@ -125,6 +125,9 @@ async function init() {
   await pool.query(`ALTER TABLE project_financials ADD COLUMN sent TINYINT(1) DEFAULT 0`).catch(() => {});
   await pool.query(`ALTER TABLE project_financials ADD COLUMN sent_at VARCHAR(32)`).catch(() => {});
   await pool.query(`ALTER TABLE project_financials ADD COLUMN paid_at VARCHAR(32)`).catch(() => {});
+  // Payment terms in days (Net 30 etc.) — NULL means the default (30).
+  // Drives the "sent but not paid → past due" split on the Invoicing tab.
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN terms_days INT`).catch(() => {});
   await pool.query(`UPDATE project_financials SET sent = 1 WHERE paid = 1 AND sent = 0`).catch(() => {});
 
   await pool.query(`

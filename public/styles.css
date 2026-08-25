@@ -11278,10 +11278,14 @@ td.sales-suppressed {
 .inv-card.inv-red .inv-card-count { color: #dc2626; }
 .inv-card.inv-green .inv-card-count { color: #4d9110; }
 .inv-card-sub { font-size: var(--fs-xs); color: var(--text-muted, #94a3b8); margin-bottom: 6px; }
-.inv-card-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; }
+/* Cards grow to fit — NEVER scroll inside a card (Dan). */
+.inv-card-list { display: flex; flex-direction: column; }
 .inv-empty { font-size: var(--fs-sm); color: var(--text-muted, #94a3b8); font-style: italic; padding: 8px 2px; }
+/* Items + the header row share one grid so the Amt / Due / checkbox columns
+   line up down the card. */
 .inv-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content 74px max-content;
   align-items: center;
   gap: 8px;
   padding: 4px 2px;
@@ -11289,7 +11293,7 @@ td.sales-suppressed {
   font-size: var(--fs-sm);
 }
 .inv-item:last-child { border-bottom: none; }
-.inv-item-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.inv-item-main { min-width: 0; display: flex; flex-direction: column; }
 .inv-item-proj { color: var(--text-muted, #64748b); font-size: var(--fs-2xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inv-item-name { font-weight: var(--fw-semibold); color: var(--text, #1f2937); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inv-mach { font-size: var(--fs-2xs); background: var(--surface-alt, #f1f5f9); border: 1px solid var(--border-strong, #cbd5e1); border-radius: 4px; padding: 0 4px; }
@@ -11335,12 +11339,78 @@ td.sales-suppressed {
 .pdash-fintl-ms.is-sent .pdash-fintl-di  { background: #1574c4; border-color: #1574c4; }
 .pdash-fintl-ms.is-sent .pdash-fintl-lbl { color: #0D47A1; }
 
-/* Calendar crowding: up to three label lanes per row when diamonds sit close
-   together (row height set inline by lane count). Lane 0 keeps the default
-   vertical centering; lanes 1–2 pin at fixed offsets from the top. */
-.pdash-fintl-row.has-lanes .pdash-fintl-ms.fin-lane-0 { top: 4px; transform: translateX(-50%); }
-.pdash-fintl-ms.fin-lane-1 { top: 28px; transform: translateX(-50%); }
-.pdash-fintl-ms.fin-lane-2 { top: 52px; transform: translateX(-50%); }
+/* Calendar crowding: as many label lanes per row as needed (lane top offsets
+   + row height come inline from JS). Laned rows drop the translateY centering
+   so the inline top pins each diamond to its lane. */
+.pdash-fintl-row.has-lanes .pdash-fintl-ms { transform: translateX(-50%); }
+
+/* Past-due card portions — BOTH are past due; each gets its own labeled
+   band so top vs bottom is unmistakable. The late zone is tinted red. */
+.inv-subhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 2px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.inv-subhead-n { margin-left: auto; font-weight: var(--fw-bold); }
+.inv-subhead-notsent { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.inv-subhead-late { background: #b91c1c; color: #fff; margin-top: 12px; }
+.inv-late-zone {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 0 6px;
+}
+
+/* Column header row — same grid as the items so Amt / Due / checkbox line up. */
+.inv-list-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content 74px max-content;
+  gap: 8px;
+  padding: 0 2px 2px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #64748b);
+  border-bottom: 2px solid var(--border, #e2e8f0);
+}
+.inv-list-head .inv-h-chk { text-align: right; }
+.inv-card.is-collapsed .inv-list-head { display: none; }
+
+/* Calendar drag-to-pan — grab cursor like the schedule Gantt. */
+.pdash-fintl-scroll { cursor: grab; }
+.pdash-fintl-scroll.panning { cursor: grabbing; user-select: none; }
+.inv-chk {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--sdc-blue, #1574c4);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.inv-terms {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.inv-terms input {
+  width: 44px;
+  padding: 1px 3px;
+  font-size: var(--fs-xs);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 4px;
+  text-align: center;
+}
 
 /* Paid card starts collapsed — the head row + count stay glanceable. */
 .inv-card.is-collapsed .inv-card-list { display: none; }

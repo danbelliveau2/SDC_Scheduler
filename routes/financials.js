@@ -3,7 +3,7 @@ const { Router } = require('express');
 
 // 'machine' — per-machine payment terms on multi-machine projects (M1/M2/…);
 // NULL/'' means M1 / single-machine (legacy rows keep working untouched).
-const FIN_FIELDS = ['name', 'percent', 'amount', 'due_date', 'paid', 'predecessors', 'sync_to_anchor', 'sort_order', 'machine', 'sent', 'sent_at', 'paid_at'];
+const FIN_FIELDS = ['name', 'percent', 'amount', 'due_date', 'paid', 'predecessors', 'sync_to_anchor', 'sort_order', 'machine', 'sent', 'sent_at', 'paid_at', 'terms_days'];
 
 module.exports = function createRouter(deps) {
   const { pool, requireRole } = deps;
@@ -52,7 +52,7 @@ module.exports = function createRouter(deps) {
       for (const f of FIN_FIELDS) {
         if (f in req.body) {
           if (f === 'paid' || f === 'sent') updates[f] = req.body[f] ? 1 : 0;
-          else if (f === 'percent' || f === 'amount') updates[f] = req.body[f] == null ? null : Number(req.body[f]);
+          else if (f === 'percent' || f === 'amount' || f === 'terms_days') updates[f] = req.body[f] == null ? null : Number(req.body[f]);
           else if (f === 'name') updates[f] = (req.body[f] || '').toString().trim();
           else updates[f] = req.body[f] || null;
         }
