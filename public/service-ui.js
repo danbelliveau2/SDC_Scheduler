@@ -45,7 +45,7 @@ const _svc = {
   summary: {},
   employees: [],
   detail: null,          // { request, workOrders, attachments, history }
-  filters: { search: '', urgency: '', status: '', department: '', location: '', warranty: '', employee: '' },
+  filters: { search: '', urgency: '', status: '', department: '', location: '', warranty: '', employee: '', machine_type: '' },
   loading: false,
 };
 
@@ -69,6 +69,7 @@ const URGENCY = {
 };
 const DEPARTMENTS = { mechanical: 'Mechanical Eng', controls: 'Controls Eng', shop: 'Shop', all: 'All' };
 const WARRANTY    = { warranty: 'Warranty', non_warranty: 'Not warranty', unknown: 'Unknown' };
+const MACHINE_TYPES = { sdc: 'SDC machine', non_sdc: 'Non-SDC machine' };
 
 // Free-text operational status (§17) — a starting vocabulary the coordinator
 // can override by typing. Deliberately NOT enforced server-side: §17 says not
@@ -134,7 +135,7 @@ function buildQuery() {
     if (f.location) q.set('location', f.location);
   } else {
     if (_svc.view === 'open' || _svc.view === 'completed') q.set('view', _svc.view);
-    for (const k of ['search', 'urgency', 'status', 'department', 'location', 'warranty', 'employee']) {
+    for (const k of ['search', 'urgency', 'status', 'department', 'location', 'warranty', 'employee', 'machine_type']) {
       if (f[k]) q.set(k === 'search' ? 'search' : k, f[k]);
     }
   }
@@ -279,6 +280,7 @@ function drawFilters() {
       sel('department', 'Department', f.department, Object.entries(DEPARTMENTS).map(([v, l]) => ({ v, l }))) +
       sel('location', 'Remote/On-site', f.location, [{ v: 'remote', l: 'Remote' }, { v: 'onsite', l: 'On-site' }]) +
       sel('warranty', 'Warranty', f.warranty, Object.entries(WARRANTY).map(([v, l]) => ({ v, l }))) +
+      sel('machine_type', 'Machine', f.machine_type, Object.entries(MACHINE_TYPES).map(([v, l]) => ({ v, l }))) +
       sel('employee', 'Assigned', f.employee, employeeOpts);
   }
   const anyOn = Object.values(f).some(v => v);
@@ -294,7 +296,7 @@ function drawFilters() {
   });
   const clear = document.getElementById('svcClearFilters');
   if (clear) clear.addEventListener('click', async () => {
-    _svc.filters = { search: '', urgency: '', status: '', department: '', location: '', warranty: '', employee: '' };
+    _svc.filters = { search: '', urgency: '', status: '', department: '', location: '', warranty: '', employee: '', machine_type: '' };
     document.getElementById('svcSearch').value = '';
     await loadService(); drawFilters(); drawBody();
   });
@@ -337,7 +339,8 @@ function drawRequestTable(body) {
             <td>${progressStrip(r)}</td>
             <td>${esc(r.company_name) || '—'}<div class="svc-sub">${esc(r.requestor_name) || ''}</div></td>
             <td class="svc-detail-cell">${esc(String(r.service_details || '').slice(0, 220))}</td>
-            <td>${esc(r.machine_serial || r.job_number) || '—'}</td>
+            <td>${esc(r.machine_serial || r.job_number) || '—'}${
+              r.machine_type === 'non_sdc' ? ' <span class="svc-pill svc-nonsdc" title="Not an SDC-built machine — no build history or SDC warranty">non-SDC</span>' : ''}</td>
             <td>${urgencyPill(r.urgency)}</td>
             <td>${esc(r.assigned_employees || r.resource_assigned) || '<span class="svc-sub">unassigned</span>'}</td>
             <td>${statusPill(r)}</td>
@@ -452,7 +455,8 @@ function drawDrawer(focusWoId) {
           ${field('Requestor', r.requestor_name)}
           ${field('Email', r.requestor_email)}
           ${field('Phone', r.requestor_phone)}
-          ${field('Machine serial / Job #', r.machine_serial || r.job_number)}
+          ${field('Machine', MACHINE_TYPES[r.machine_type] || 'Not stated')}
+          ${field(r.machine_type === 'non_sdc' ? 'Make / model' : 'Machine serial / Job #', r.machine_serial || r.job_number)}
           ${field('Department needed', DEPARTMENTS[r.department_needed] || r.department_needed)}
           ${field('Remote / on-site', r.location_type === 'onsite' ? 'On-site' : r.location_type === 'remote' ? 'Remote' : null)}
           ${field('Warranty', WARRANTY[r.warranty] || r.warranty)}
@@ -681,7 +685,13 @@ function openNewRequestForm() {
       <label>Requestor Name<input name="requestor_name"></label>
       <label>Requestor Email<input name="requestor_email" type="email"></label>
       <label>Requestor Phone<input name="requestor_phone"></label>
-      <label>Machine Serial / Job #<input name="machine_serial"></label>
+      <label>Machine
+        <select name="machine_type">
+          ${Object.entries(MACHINE_TYPES).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}
+        </select>
+      </label>
+      <label>Machine Serial / Job # <span style="text-transform:none;font-weight:400">(or make/model)</span>
+        <input name="machine_serial"></label>
       <label>Urgency
         <select name="urgency">${Object.entries(URGENCY).map(([v, m]) => `<option value="${v}">${m.label}</option>`).join('')}</select>
       </label>
@@ -702,7 +712,10 @@ function openNewRequestForm() {
     </div>`,
     async (data) => {
       if (!String(data.company_name || '').trim()) throw new Error('Company Name is required.');
-      data.job_number = data.machine_serial;
+      // Only mirror into job_number for an SDC machine — on third-party kit
+      // this field holds a make/model, which has no business in a column
+      // people filter and search as a job number.
+      if (data.machine_type !== 'non_sdc') data.job_number = data.machine_serial;
       data.source = 'internal';
       const created = await api('/api/service/requests', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
@@ -811,6 +824,7 @@ async function openReportForm(reportId) {
         ${row('Request #', p.request_no)}
         ${row('Work Order', p.wo_no)}
         ${row('Machine / Job', [p.machine_serial, p.job_number].filter(Boolean).join(' / '))}
+        ${row('Machine type', MACHINE_TYPES[p.machine_type])}
         ${row('Service date', p.task_date)}
         ${row('Technician', p.employee_name)}
         ${row('On-site / Remote', p.location_type === 'onsite' ? 'On-site' : p.location_type === 'remote' ? 'Remote' : '')}

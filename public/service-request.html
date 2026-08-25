@@ -55,6 +55,7 @@
     letter-spacing: 0.06em; color: var(--sdc-blue); padding: 0 6px;
   }
   .optional-note { color: var(--muted); font-size: 13px; margin: -4px 0 14px; }
+  .field-hint { color: var(--muted); font-size: 12px; margin-top: 4px; min-height: 1em; }
 
   /* Description-style inputs get the room; short codes and pickers stay
      narrow. Same column-width principle the Scheduler grids follow. */
@@ -88,6 +89,10 @@
      look different from "schedule me sometime". */
   .radio-row label:has(input[value="machine_down"]:checked) {
     border-color: var(--danger); background: #fee2e2; color: #7f1d1d;
+  }
+  /* Non-SDC is not an error, just a different path — mark it without alarming. */
+  .radio-row label:has(input[value="non_sdc"]:checked) {
+    border-color: #b45309; background: #fffbeb; color: #7c4a03;
   }
 
   .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
@@ -168,9 +173,14 @@
           <label class="req" for="requestor_phone">Your Phone Number</label>
           <input type="tel" id="requestor_phone" name="requestor_phone" autocomplete="tel" required>
         </div>
+        <div class="full">
+          <label class="req">Is this an SDC machine?</label>
+          <div class="radio-row" id="machineTypeRow"></div>
+        </div>
         <div>
-          <label class="req" for="machine_serial">SDC Machine Serial # / Project Job #</label>
+          <label class="req" for="machine_serial" id="serialLabel">SDC Machine Serial # / Project Job #</label>
           <input type="text" id="machine_serial" name="machine_serial" required>
+          <div class="field-hint" id="serialHint"></div>
         </div>
       </div>
     </fieldset>
@@ -269,6 +279,10 @@ const FALLBACK = {
     { value: 'non_warranty', label: 'Not warranty' },
     { value: 'unknown',      label: "Don't know" },
   ],
+  machineTypes: [
+    { value: 'sdc',     label: 'SDC machine' },
+    { value: 'non_sdc', label: 'Non-SDC machine' },
+  ],
   maxFileMb: 25,
   maxFiles: 10,
 };
@@ -286,6 +300,15 @@ function renderOptions(o) {
   renderRadios('urgencyRow',  'urgency',       o.urgencies);
   renderRadios('locationRow', 'location_type', o.locations);
   renderRadios('warrantyRow', 'warranty',      o.warranty);
+  renderRadios('machineTypeRow', 'machine_type', o.machineTypes || FALLBACK.machineTypes);
+  // Default to SDC machine: it is the overwhelmingly common case, and
+  // pre-selecting it keeps the form exactly as easy as it was before this
+  // question existed. Anyone with third-party equipment changes one click.
+  const sdc = document.querySelector('#machineTypeRow input[value="sdc"]');
+  if (sdc) sdc.checked = true;
+  document.querySelectorAll('#machineTypeRow input').forEach(r =>
+    r.addEventListener('change', applyMachineType));
+  applyMachineType();
   const sel = document.getElementById('department_needed');
   sel.innerHTML = '<option value="">Not sure</option>' +
     o.departments.map(d => `<option value="${d.value}">${d.label}</option>`).join('');
@@ -295,6 +318,32 @@ fetch('/api/public/service-options')
   .then(r => r.ok ? r.json() : Promise.reject())
   .then(renderOptions)
   .catch(() => renderOptions(FALLBACK));
+
+// An SDC machine has a serial and a job number we can look up; somebody
+// else's equipment has neither. So the same input switches between a required
+// SDC identifier and an optional free-text make/model — rather than demanding
+// a number that cannot exist, which would leave a customer with a broken
+// machine unable to submit the form at all.
+function applyMachineType() {
+  const nonSdc = document.querySelector('#machineTypeRow input[value="non_sdc"]:checked');
+  const label  = document.getElementById('serialLabel');
+  const input  = document.getElementById('machine_serial');
+  const hint   = document.getElementById('serialHint');
+  if (!label || !input) return;
+  if (nonSdc) {
+    label.textContent = 'Machine make / model';
+    label.classList.remove('req');
+    input.required = false;
+    input.placeholder = 'e.g. Fanuc R-2000iC, or leave blank if unsure';
+    hint.textContent = 'Optional — we know this will not have an SDC number.';
+  } else {
+    label.textContent = 'SDC Machine Serial # / Project Job #';
+    label.classList.add('req');
+    input.required = true;
+    input.placeholder = '';
+    hint.textContent = 'On the machine nameplate, or the job number from your order.';
+  }
+}
 
 // Show what is attached, and catch an oversized file HERE rather than after a
 // slow upload that the server was always going to reject.
@@ -321,12 +370,15 @@ document.getElementById('form').addEventListener('submit', async (e) => {
   const btn  = document.getElementById('submitBtn');
   document.getElementById('msg').className = 'msg';
 
+  // Mirrors the server's rule exactly (routes/service.js): the serial is
+  // required only for an SDC machine.
+  const isNonSdc = !!document.querySelector('#machineTypeRow input[value="non_sdc"]:checked');
   const required = [
     ['company_name',    'Company Name'],
     ['requestor_name',  'Your Name'],
     ['requestor_email', 'Your Email'],
     ['requestor_phone', 'Your Phone Number'],
-    ['machine_serial',  'Machine Serial # / Project Job #'],
+    ...(isNonSdc ? [] : [['machine_serial', 'SDC Machine Serial # / Project Job #']]),
     ['service_details', 'Service Details'],
   ];
   const fd = new FormData(form);
@@ -340,8 +392,10 @@ document.getElementById('form').addEventListener('submit', async (e) => {
 
   // The job number field is one input on the form ("Serial # / Job #") because
   // that is how a customer thinks about it, but the Service Log stores both —
-  // send it as each so an SDC coordinator can search on either.
-  fd.set('job_number', fd.get('machine_serial'));
+  // send it as each so an SDC coordinator can search on either. For a non-SDC
+  // machine the value is a make/model, NOT a job number, so mirroring it into
+  // job_number would put junk in a column people search and filter on.
+  if (!isNonSdc) fd.set('job_number', fd.get('machine_serial'));
 
   btn.disabled = true;
   btn.textContent = 'Submitting…';

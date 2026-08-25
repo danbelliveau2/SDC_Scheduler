@@ -41,13 +41,16 @@ const URGENCIES   = new Set(['machine_down', 'urgent_running', 'schedule', 'quot
 const DEPARTMENTS = new Set(['mechanical', 'controls', 'shop', 'all']);
 const LOCATIONS   = new Set(['remote', 'onsite']);
 const WARRANTY    = new Set(['warranty', 'non_warranty', 'unknown']);
+// Whose machine is it. Drives whether a serial / job number can be demanded
+// at all (an SDC machine has one; a third-party machine does not).
+const MACHINE_TYPES = new Set(['sdc', 'non_sdc']);
 
 // Fields a CUSTOMER may set. Kept separate from the internal list below so a
 // crafted public payload can never reach `quote_sent`, `current_status`, or any
 // other internal management field.
 const CUSTOMER_FIELDS = [
   'company_name', 'requestor_name', 'requestor_email', 'requestor_phone',
-  'machine_serial', 'job_number', 'urgency', 'service_details',
+  'machine_type', 'machine_serial', 'job_number', 'urgency', 'service_details',
   'location_type', 'department_needed', 'warranty', 'ppe_requirements',
   'additional_comments', 'onsite_address',
 ];
@@ -162,6 +165,7 @@ function validateVocab(body) {
   if (body.department_needed != null && body.department_needed !== '' && !DEPARTMENTS.has(body.department_needed)) return 'Invalid department.';
   if (body.location_type != null && body.location_type !== '' && !LOCATIONS.has(body.location_type)) return 'Invalid remote/on-site value.';
   if (body.warranty != null && body.warranty !== '' && !WARRANTY.has(body.warranty)) return 'Invalid warranty value.';
+  if (body.machine_type != null && body.machine_type !== '' && !MACHINE_TYPES.has(body.machine_type)) return 'Invalid machine type.';
   return null;
 }
 
@@ -254,7 +258,7 @@ module.exports = function createRouter(deps) {
     const [[wo]] = await pool.query(`
       SELECT w.*,
              r.request_no, r.company_name, r.requestor_name, r.requestor_email, r.requestor_phone,
-             r.machine_serial, r.job_number, r.urgency, r.department_needed, r.warranty,
+             r.machine_serial, r.job_number, r.machine_type, r.urgency, r.department_needed, r.warranty,
              r.service_details
         FROM service_work_orders w
         JOIN service_requests r ON r.id = w.service_request_id
@@ -362,6 +366,10 @@ module.exports = function createRouter(deps) {
         { value: 'non_warranty', label: 'Not warranty' },
         { value: 'unknown',      label: "Don't know" },
       ],
+      machineTypes: [
+        { value: 'sdc',     label: 'SDC machine' },
+        { value: 'non_sdc', label: 'Non-SDC machine' },
+      ],
       maxFileMb: Math.round(MAX_FILE_BYTES / 1024 / 1024),
       maxFiles: MAX_FILES,
     });
@@ -402,12 +410,18 @@ module.exports = function createRouter(deps) {
       // nothing.
       if (b.website) { cleanupFiles(); return res.json({ ok: true, request_no: 'SR-0000-0000' }); }
 
+      // The serial / job number is required ONLY for an SDC-built machine.
+      // Somebody else's equipment has no SDC serial and no SDC job number, so
+      // demanding one would make the form impossible to submit for exactly the
+      // customers who most need to describe what they have. For those, the
+      // same field is a free-text make/model and is optional.
+      const isNonSdc = b.machine_type === 'non_sdc';
       const required = [
         ['company_name',    'Company Name'],
         ['requestor_name',  'Your Name'],
         ['requestor_email', 'Your Email'],
         ['requestor_phone', 'Your Phone Number'],
-        ['machine_serial',  'Machine Serial # / Project Job #'],
+        ...(isNonSdc ? [] : [['machine_serial', 'SDC Machine Serial # / Project Job #']]),
         ['urgency',         'Service Completion Timeline / Urgency'],
         ['service_details', 'Service Details'],
       ];
@@ -476,6 +490,7 @@ module.exports = function createRouter(deps) {
         ['status', 'r.current_status'], ['urgency', 'r.urgency'],
         ['department', 'r.department_needed'], ['location', 'r.location_type'],
         ['warranty', 'r.warranty'], ['company', 'r.company_name'],
+        ['machine_type', 'r.machine_type'],
         ['job', 'r.job_number'], ['assigned', 'r.resource_assigned'],
       ]) {
         if (q[param]) { where.push(`${col} = ?`); args.push(q[param]); }
@@ -746,7 +761,7 @@ module.exports = function createRouter(deps) {
 
       const [rows] = await pool.query(`
         SELECT w.*,
-               r.request_no, r.company_name, r.job_number, r.machine_serial, r.urgency,
+               r.request_no, r.company_name, r.job_number, r.machine_serial, r.machine_type, r.urgency,
                r.requestor_name, r.requestor_email, r.requestor_phone, r.warranty,
                rep.id AS report_id, rep.status AS report_status, rep.report_no
           FROM service_work_orders w
@@ -1021,6 +1036,7 @@ module.exports = function createRouter(deps) {
         requestor_phone: wo.requestor_phone,
         machine_serial: wo.machine_serial,
         job_number: wo.job_number,
+        machine_type: wo.machine_type,
         urgency: wo.urgency,
         warranty: wo.warranty,
         department_needed: wo.department_needed,
@@ -1145,7 +1161,7 @@ module.exports.reminderSweep = async function reminderSweep({ pool, emailSvc }) 
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const [rows] = await pool.query(`
     SELECT w.*, r.request_no, r.company_name, r.requestor_name, r.requestor_email, r.requestor_phone,
-           r.machine_serial, r.job_number, r.urgency
+           r.machine_serial, r.job_number, r.machine_type, r.urgency
       FROM service_work_orders w
       JOIN service_requests r ON r.id = w.service_request_id
      WHERE w.status = 'open' AND w.task_date = ? AND w.reminder_sent_at IS NULL`, [tomorrow]);

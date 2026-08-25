@@ -154,6 +154,10 @@
 .svc-u-sched  { background: #eff6ff; border-color: var(--sdc-blue-light); color: var(--sdc-primary); }
 .svc-u-quote  { background: var(--surface-alt); }
 .svc-done     { background: var(--success-bg); border-color: var(--success); color: var(--success); }
+/* Non-SDC machine marker. Amber, not red — it is not a problem, it just means
+   no build history, no drawings and no SDC warranty to fall back on. Only
+   rendered for non-SDC rows; SDC is the norm and gets no badge. */
+.svc-nonsdc   { background: var(--warning-bg); border-color: var(--warning); color: var(--warning); }
 
 .svc-steps { display: inline-flex; gap: 3px; }
 .svc-step {

@@ -410,6 +410,18 @@ async function init() {
   ]) {
     await pool.query(`ALTER TABLE service_requests ADD INDEX ${idx} (${col})`).catch(() => {});
   }
+  // SDC-built machine vs somebody else's equipment. This is not cosmetic: an
+  // SDC machine has a serial / job number that ties the request back to its
+  // build schedule, and a third-party machine has neither — which is why the
+  // serial field stops being mandatory when this says 'non_sdc' (see the
+  // required-field check in routes/service.js). It also tells the coordinator
+  // straight away that there is no build history to look up and no SDC
+  // warranty to fall back on.
+  //
+  // Added after the table shipped, so existing rows are NULL rather than
+  // 'sdc' — a null here means "submitted before we asked", which is honest;
+  // backfilling them all to 'sdc' would invent an answer nobody gave.
+  await pool.query(`ALTER TABLE service_requests ADD COLUMN machine_type VARCHAR(16)`).catch(() => {});
 
   // Work Orders (R2 §6). Every WO stays linked to its parent request; the
   // requestor columns are NOT duplicated here — the API joins them from the
