@@ -2909,13 +2909,12 @@ function handleCellClick(e) {
     const task = state.tasks.find(t => t.id === taskId);
     if (!task) return;
     const newProgress = (task.progress || 0) >= 100 ? 0 : 100;
+    // (No financial-flag write here anymore: the Invoicing tab DERIVES
+    // "ready to invoice" from task progress — checking this off makes the
+    // linked payment show up in Ready automatically. Sent/Paid are the
+    // CFO's explicit clicks on the Invoicing page.)
     api.update(taskId, { progress: newProgress })
-      .then(async () => {
-        // PO / FAT / SAT also exist as financial-milestone rows — mirror the
-        // check there so one click updates both places.
-        try { await syncFinancialsFromAnchor(task, newProgress >= 100); } catch (_) {}
-        return loadTasks();
-      })
+      .then(() => loadTasks())
       .catch(err => showToast(err.message || 'Save failed', { kind: 'error' }));
     return;
   }
@@ -7810,6 +7809,166 @@ function _deptSelectedProjects() {
   return { selected, allProjects };
 }
 
+// ── Invoicing tab ───────────────────────────────────────────────────────────
+// The money page: status buckets up top, then the per-project key-milestone
+// strips (grouped by PM) and the payment calendar — both moved here from the
+// Departments tab.
+function renderInvoicingPage() {
+  try { renderDeptProjectRollup(); } catch (_) {}   // strips + calendar (+ buckets at its end)
+}
+
+// Lifecycle of one financial milestone. Dan's rules:
+//   paid                        → 'paid'
+//   sent (awaiting payment)     → 'sent'
+//   no trigger at all           → 'notrigger'  (its own bucket)
+//   due date passed, not sent   → 'pastdue'
+//   trigger satisfied           → 'ready'   (milestone trigger: 100% done;
+//                                            duration-task trigger: STARTED, >0%)
+//   otherwise                   → 'pending' (future — calendar only)
+function invoiceStatus(f, project) {
+  if (f.paid) return 'paid';
+  if (f.sent) return 'sent';
+  const refs = String(f.predecessors || '').split(',').map(s => s.trim()).filter(Boolean);
+  let hasTrigger = refs.length > 0;
+  let ready = false;
+  if (refs.length) {
+    ready = refs.every(r => {
+      const res = resolveFinancialTrigger(r, project);
+      if (!res || !res.task) return false;
+      const t = res.task;
+      const pct = Number(t.progress) || 0;
+      const isMile = !!t.is_milestone || Number(t.duration_days) === 0;
+      return isMile ? pct >= 100 : pct > 0;
+    });
+  } else if (f.sync_to_anchor) {
+    hasTrigger = true;
+    const t = state.tasks.find(x => x.project === project
+      && inferredAnchorKey(x) === f.sync_to_anchor
+      && (!x.machine || (x.machine || 'M1') === (f.machine || 'M1')));
+    ready = !!t && (Number(t.progress) || 0) >= 100;
+  }
+  if (!hasTrigger) return 'notrigger';
+  const due = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || null;
+  if (due && due < todayISO()) return 'pastdue';
+  return ready ? 'ready' : 'pending';
+}
+
+// The five status cards + their line items, with Sent / Paid actions.
+// Per-card expand/collapse survives re-renders within the session.
+const _invCardOpen = {};
+function renderInvoiceBuckets(selectedProjects) {
+  const root = document.getElementById('invoicing-buckets');
+  if (!root) return;
+  const buckets = { pastdue: [], ready: [], notrigger: [], sent: [], paid: [] };
+  for (const p of selectedProjects) {
+    for (const f of (state.financials[p] || [])) {
+      const st = invoiceStatus(f, p);
+      if (buckets[st]) buckets[st].push({ f, project: p, status: st });
+    }
+  }
+  // Order inside each bucket: soonest/oldest date first.
+  const dateOf = (x) => computeFinancialTriggerDate(x.f.predecessors, x.project) || x.f.due_date || '9999';
+  for (const k in buckets) buckets[k].sort((a, b) => String(dateOf(a)).localeCompare(String(dateOf(b))));
+
+  const CARDS = [
+    { key: 'pastdue',   title: 'Past due',           sub: 'date passed, not sent',            tone: 'inv-red' },
+    { key: 'ready',     title: 'Ready to invoice',   sub: 'schedule trigger met',             tone: 'inv-green' },
+    { key: 'sent',      title: 'Sent',               sub: 'awaiting payment',                 tone: 'inv-blue' },
+    // No 'paid' card — Dan: paid is history, not something to watch. Undo a
+    // paid flag from the project's financial milestones editor if needed.
+    { key: 'notrigger', title: 'No trigger',         sub: 'not tied to the schedule — each PM should fix theirs', tone: 'inv-gray' },
+  ];
+  const fmtAmt = (f) => {
+    const parts = [];
+    if (f.percent != null && Number(f.percent) > 0) parts.push(`${Number(f.percent)}%`);
+    if (f.amount != null && Number(f.amount) > 0) parts.push('$' + Number(f.amount).toLocaleString('en-US'));
+    return parts.join(' · ');
+  };
+  const itemHtml = ({ f, project, status }, { hideProject = false } = {}) => {
+    const due = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || null;
+    const when = status === 'sent' && f.sent_at ? `sent ${fmtDate(f.sent_at)}`
+               : status === 'paid' && f.paid_at ? `paid ${fmtDate(f.paid_at)}`
+               : (due ? fmtDate(due) : '—');
+    const machine = f.machine ? ` <span class="inv-mach">${escapeHtml(f.machine)}</span>` : '';
+    const actions = status === 'sent'
+      ? `<button type="button" class="inv-act inv-act-paid" data-inv-paid="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Mark this invoice PAID">💰 Paid</button>
+         <button type="button" class="inv-act inv-act-undo" data-inv-unsend="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Undo — it wasn't actually sent">↩</button>`
+      : status === 'paid'
+      ? `<button type="button" class="inv-act inv-act-undo" data-inv-unpay="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Undo — back to Sent">↩</button>`
+      : `<button type="button" class="inv-act inv-act-sent" data-inv-sent="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Mark this invoice SENT">✓ Sent</button>`;
+    return `<div class="inv-item">
+      <div class="inv-item-main">
+        ${hideProject ? '' : `<span class="inv-item-proj" title="${escapeHtml(project)}">${escapeHtml(project)}</span>`}
+        <span class="inv-item-name">${escapeHtml(f.name || '(unnamed)')}${machine}</span>
+      </div>
+      <span class="inv-item-amt">${escapeHtml(fmtAmt(f))}</span>
+      <span class="inv-item-date">${escapeHtml(when)}</span>
+      <span class="inv-item-actions">${actions}</span>
+    </div>`;
+  };
+  root.innerHTML = `<div class="inv-cards">${CARDS.map(c => {
+    const rows = buckets[c.key];
+    let items;
+    if (c.key === 'notrigger') {
+      // Grouped by PM — each person expands/collapses their own list, and
+      // every line keeps the job number so "Down Payment" isn't a mystery.
+      const byPm = {};
+      for (const row of rows) {
+        const pm = projectLead(row.project, 'pm') || '';
+        (byPm[pm] = byPm[pm] || []).push(row);
+      }
+      const pms = Object.keys(byPm).sort((a, b) => (a === '') - (b === '') || a.localeCompare(b));
+      items = pms.map(pm => `
+        <details class="inv-pm-group">
+          <summary class="inv-group-pm">👤 ${pm ? escapeHtml(pm) : 'No PM assigned'} <span class="inv-group-count">${byPm[pm].length}</span></summary>
+          ${byPm[pm].sort((a, b) => a.project.localeCompare(b.project)).map(r => itemHtml(r)).join('')}
+        </details>
+      `).join('');
+    } else {
+      items = rows.map(r => itemHtml(r)).join('');
+    }
+    const open = _invCardOpen[c.key] !== undefined ? _invCardOpen[c.key] : !c.collapsed;
+    return `<div class="inv-card ${c.tone}${open ? '' : ' is-collapsed'}" data-inv-card="${c.key}">
+      <div class="inv-card-head" title="Click to ${open ? 'collapse' : 'expand'}"><span class="inv-card-title">${c.title}</span><span class="inv-card-count">${rows.length}</span></div>
+      <div class="inv-card-sub">${c.sub}</div>
+      <div class="inv-card-list">${items || '<div class="inv-empty">Nothing here 🎉</div>'}</div>
+    </div>`;
+  }).join('')}</div>`;
+  // Card collapse/expand — Paid starts collapsed (glanceable, not important).
+  root.querySelectorAll('.inv-card-head').forEach(h => {
+    h.addEventListener('click', () => {
+      const card = h.closest('.inv-card');
+      const key = card.dataset.invCard;
+      const nowOpen = card.classList.contains('is-collapsed');
+      card.classList.toggle('is-collapsed', !nowOpen);
+      _invCardOpen[key] = nowOpen;
+    });
+  });
+
+  // Actions — one delegated handler.
+  if (!root.dataset.bound) {
+    root.dataset.bound = '1';
+    root.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.inv-act');
+      if (!btn) return;
+      const proj = btn.dataset.invProj;
+      const patch = btn.dataset.invSent ? { sent: 1, sent_at: todayISO() }
+                  : btn.dataset.invPaid ? { paid: 1, paid_at: todayISO() }
+                  : btn.dataset.invUnsend ? { sent: 0, sent_at: null }
+                  : btn.dataset.invUnpay ? { paid: 0, paid_at: null }
+                  : null;
+      const id = Number(btn.dataset.invSent || btn.dataset.invPaid || btn.dataset.invUnsend || btn.dataset.invUnpay);
+      if (!patch || !id) return;
+      btn.disabled = true;
+      try {
+        await api.financials.update(id, patch);
+        await loadFinancialsForProject(proj);
+        renderDeptProjectRollup();
+      } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); btn.disabled = false; }
+    });
+  }
+}
+
 function renderDeptProjectRollup() {
   const root = document.getElementById('dept-project-rollup');
   if (!root) return;
@@ -7834,7 +7993,7 @@ function renderDeptProjectRollup() {
   for (const p of selected) {
     if (!state.financials[p]) {
       loadFinancialsForProject(p).then(() => {
-        if (state.view === 'team') {
+        if (state.view === 'invoicing') {
           try { renderDeptProjectRollup(); } catch (_) {}
         }
       }).catch(() => {});
@@ -7946,9 +8105,11 @@ function renderDeptProjectRollup() {
       if (leftPct == null) continue;
       const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
       const fPaid = !!f.paid;
-      const fOverdue = !fPaid && fd && fd < todayISO;
+      const fSent = !fPaid && !!f.sent;
+      const fOverdue = !fPaid && !fSent && fd && fd < todayISO;
       let fCls = 'is-upcoming';
       if (fPaid)         fCls = 'is-paid';
+      else if (fSent)    fCls = 'is-sent';
       else if (!fd)      fCls = 'is-no-date';
       else if (fOverdue) fCls = 'is-overdue';
       const fPct = (f.percent != null && Number(f.percent) > 0) ? `${Number(f.percent)}% ` : '';
@@ -8035,29 +8196,51 @@ function renderDeptProjectRollup() {
 
     const byProject = {};
     for (const r of rows) (byProject[r.project] ||= []).push(r);
+    // Crowding fix: real lane assignment. A label needs ~85px; convert that
+    // to % of the track's guaranteed minimum width (the same ~120px/month
+    // scale minW uses) and place each item in the FIRST lane whose previous
+    // item is far enough left — up to 3 lanes, and the row grows to fit.
+    const _monthsSpanForLanes = Math.max(1, span / (30.4 * dayMs));
+    const laneGapPct = Math.min(30, (100 / (_monthsSpanForLanes * 120)) * 100);
     const rowsHtml = Object.keys(byProject).map(p => {
-      const diamonds = byProject[p].map(r => {
+      const sorted = byProject[p].slice().sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+      // Multi-machine project → tag every diamond with its machine (blank
+      // machine on such a project means the base machine, M1).
+      const multiMach = sorted.some(r => r.machine);
+      const machTag = (r) => !multiMach ? ''
+        : ' · ' + (r.machine ? String(r.machine).replace(/machine\s*/i, 'M') : 'M1');
+      const laneLastPct = [-999, -999, -999];
+      let laneCount = 1;
+      const diamonds = sorted.map(r => {
         const dueMs = Date.parse(r.due_date + 'T00:00:00');
         const isPast = dueMs < todayMs;
-        // Same three-status language as the Key Milestones strips: green
-        // paid, red past-due, blue future. Nothing in the future can be
-        // "late" — it hasn't happened yet — so no amber due-soon state.
+        // Lifecycle colors: green paid · solid blue sent · red past-due ·
+        // light blue future.
         let cls = 'is-upcoming', status = 'Upcoming';
         if (r.paid)        { cls = 'is-paid';    status = 'Paid'; }
+        else if (r.sent)   { cls = 'is-sent';    status = 'Sent — awaiting payment'; }
         else if (isPast)   { cls = 'is-overdue'; status = 'Invoice now'; }
+        const pct = pctOf(dueMs);
+        // First lane with room; if all three are crowded, take the one with
+        // the biggest gap (rare — only at extreme zoom-out).
+        let lane = [0, 1, 2].find(i => pct - laneLastPct[i] >= laneGapPct);
+        if (lane === undefined) lane = laneLastPct.indexOf(Math.min(...laneLastPct));
+        laneLastPct[lane] = pct;
+        laneCount = Math.max(laneCount, lane + 1);
         const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '';
         const abbrev = _pdashFinAbbrev(r);
-        const lbl = pctVal ? `${pctVal} ${abbrev}` : abbrev;
-        return `<div class="pdash-fintl-ms ${cls}" style="left:${pctOf(dueMs)}%"
-            title="${escapeHtml((r.name || abbrev) + (pctVal ? ' · ' + pctVal : '') + ' · ' + fmtDate(r.due_date) + ' · ' + status)}">
+        const lbl = (pctVal ? `${pctVal} ${abbrev}` : abbrev) + machTag(r);
+        return `<div class="pdash-fintl-ms ${cls} fin-lane-${lane}" style="left:${pct}%"
+            title="${escapeHtml((r.name || abbrev) + (pctVal ? ' · ' + pctVal : '') + machTag(r) + ' · ' + fmtDate(r.due_date) + ' · ' + status)}">
           <span class="pdash-fintl-lbl">${escapeHtml(lbl)}</span>
           <span class="pdash-fintl-di"></span>
           <span class="pdash-fintl-date">${escapeHtml(fmtDate(r.due_date))}</span>
         </div>`;
       }).join('');
-      return `<div class="pdash-fintl-row" data-project="${escapeHtml(p)}">
-        <div class="pdash-milestone-project" title="${escapeHtml(p)}">${escapeHtml(p)}</div>
-        <div class="pdash-fintl-track">${diamonds}</div>
+      const rowH = laneCount > 1 ? `style="min-height:${8 + laneCount * 24}px"` : '';
+      return `<div class="pdash-fintl-row${laneCount > 1 ? ' has-lanes' : ''}" ${rowH} data-project="${escapeHtml(p)}">
+        <div class="pdash-milestone-project pdash-fintl-projlink" title="${escapeHtml(p)} — open this project">${escapeHtml(p)}</div>
+        <div class="pdash-fintl-track" ${rowH}>${diamonds}</div>
       </div>`;
     }).join('');
 
@@ -8078,7 +8261,7 @@ function renderDeptProjectRollup() {
         ${monthLinesHtml}
         ${todayHtml}
         <div class="pdash-fintl-row pdash-fintl-head">
-          <div class="pdash-milestone-project"></div>
+          <div class="pdash-milestone-project pdash-fintl-colhead">Project</div>
           <div class="pdash-fintl-track">${monthTicksHtml}</div>
         </div>
         ${rowsHtml}
@@ -8086,9 +8269,26 @@ function renderDeptProjectRollup() {
       </div>`;
   })();
 
+  // Key-milestone strips GROUPED BY PM — one collapsible section per PM so
+  // the list stays digestible as the project count grows. Projects with no
+  // PM assignment group at the bottom.
   const milestoneStripsHtml = selected.length === 0
     ? '<div class="pdash-empty-block">Pick at least one project to see milestone dates.</div>'
-    : selected.map(p => milestoneStripForProject(p)).join('');
+    : (() => {
+        const byPm = {};
+        for (const p of selected) {
+          const pm = projectLead(p, 'pm') || '';
+          (byPm[pm] = byPm[pm] || []).push(p);
+        }
+        const pms = Object.keys(byPm).sort((a, b) => (a === '') - (b === '') || a.localeCompare(b));
+        return pms.map(pm => `
+          <details class="pdash-pm-group">
+            <summary class="pdash-pm-head">👤 ${pm ? escapeHtml(pm) : 'No PM assigned'} <span class="pdash-pm-count">${byPm[pm].length} project${byPm[pm].length === 1 ? '' : 's'}</span></summary>
+            <div class="pdash-milestones${localStorage.getItem('sdcDeptShowVariance') === '1' ? '' : ' is-compact'}">
+              ${byPm[pm].map(p => milestoneStripForProject(p)).join('')}
+            </div>
+          </details>`).join('');
+      })();
 
   // ── Compose ──
   root.innerHTML = `
@@ -8117,8 +8317,16 @@ function renderDeptProjectRollup() {
 
     <section class="pdash-section">
       <header class="pdash-section-head">
+        <h2>💲 Financial Milestones</h2>
+        <span class="pdash-section-sub">Invoiceable payment events across selected projects.</span>
+      </header>
+      ${financialsTableHtml}
+    </section>
+
+    <section class="pdash-section">
+      <header class="pdash-section-head">
         <h2>🚦 Key Milestones</h2>
-        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship → SAT, per project</span>
+        <span class="pdash-section-sub">PO → Mech 1 → Power-Up → FAT → Ship → SAT, per project — grouped by PM, click a PM to expand</span>
       </header>
       <div class="pdash-legend">
         <span class="pdash-legend-item"><span class="pdash-legend-swatch is-diamond is-blue"></span>Key milestone</span>
@@ -8129,15 +8337,7 @@ function renderDeptProjectRollup() {
         <span class="pdash-legend-item"><span class="pdash-legend-swatch is-red">!</span>Behind / past due</span>
         <span class="pdash-legend-item"><span class="pdash-legend-swatch is-hollow"></span>No date yet</span>
       </div>
-      <div class="pdash-milestones${showVariance ? '' : ' is-compact'}">${milestoneStripsHtml}</div>
-    </section>
-
-    <section class="pdash-section">
-      <header class="pdash-section-head">
-        <h2>💲 Financial Milestones</h2>
-        <span class="pdash-section-sub">Invoiceable payment events across selected projects.</span>
-      </header>
-      ${financialsTableHtml}
+      ${milestoneStripsHtml}
     </section>
   `;
 
@@ -8194,9 +8394,9 @@ function renderDeptProjectRollup() {
   });
   // Click a milestone tile or a financial row → jump to that project on
   // the schedule view.
-  root.querySelectorAll('.pdash-mile-item, .pdash-fin-row').forEach(el => {
+  root.querySelectorAll('.pdash-mile-item, .pdash-fin-row, .pdash-fintl-projlink').forEach(el => {
     el.addEventListener('click', () => {
-      const p = el.dataset.project;
+      const p = el.dataset.project || el.closest('[data-project]')?.dataset.project;
       if (!p) return;
       if (!state.openProjects.includes(p)) state.openProjects.push(p);
       state.filters.project = p;
@@ -8205,6 +8405,9 @@ function renderDeptProjectRollup() {
       setView('schedule');
     });
   });
+
+  // Status buckets up top — same selected-projects scope as the strips.
+  try { renderInvoiceBuckets(selected); } catch (_) {}
 }
 
 function renderDashboard() {
@@ -8533,9 +8736,11 @@ function renderDashboard() {
       if (leftPct == null) continue;   // custom milestones — skip strip
       const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
       const fPaid = !!f.paid;
-      const fOverdue = !fPaid && fd && fd < todayISO;
+      const fSent = !fPaid && !!f.sent;
+      const fOverdue = !fPaid && !fSent && fd && fd < todayISO;
       let fCls = 'is-upcoming';
       if (fPaid)         fCls = 'is-paid';
+      else if (fSent)    fCls = 'is-sent';
       else if (!fd)      fCls = 'is-no-date';
       else if (fOverdue) fCls = 'is-overdue';
       const monthStr = fd ? _pdashFinMonth(fd) : '—';
@@ -18984,7 +19189,7 @@ async function mountFinancialsEditor(container, project, machine) {
                 <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                 <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                 <td><input type="date" data-field="due_date" value="${dateValue}" ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} /></td>
-                <td class="paid"><input type="checkbox" data-field="paid" ${r.paid ? 'checked' : ''} /></td>
+                <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -19032,10 +19237,7 @@ async function mountFinancialsEditor(container, project, machine) {
             await loadFinancialsForProject(project);
             if (field === 'predecessors') await renderGrid();
             if (state.showFinancials) renderGantt();
-            // Sent toggled on a PO/FAT/SAT row → mirror to the schedule anchor ✓.
-            if (field === 'paid' && finRow) {
-              try { await syncAnchorFromFinancial(project, finRow, !!value); } catch (_) {}
-            }
+            // (Invoicing lifecycle owns sent/paid now — no anchor mirroring.)
           } catch (err) { console.warn('[financial save]', err); }
         });
       });
@@ -21333,7 +21535,7 @@ function openFinancialsModal(project) {
                     <input type="date" data-field="due_date" value="${dateValue}"
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
                   </td>
-                  <td class="paid"><input type="checkbox" data-field="paid" ${r.paid ? 'checked' : ''} /></td>
+                  <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
                 </tr>
               `;
             }).join('')}
@@ -21415,10 +21617,7 @@ function openFinancialsModal(project) {
               if (field === 'predecessors') await render();
               if (state.showFinancials) renderGantt();
               try { refreshFinancialsButtonState(); } catch (_) {}
-              // Sent toggled on a PO/FAT/SAT row → mirror to the schedule anchor ✓.
-              if (field === 'paid' && finRow) {
-                try { await syncAnchorFromFinancial(project, finRow, !!value); } catch (_) {}
-              }
+              // (Invoicing lifecycle owns sent/paid now — no anchor mirroring.)
             } catch (err) {
               console.warn('[financial save]', err);
             }
@@ -23200,11 +23399,8 @@ function renderPersonDashboard() {
 }
 
 function renderTeam() {
-  // Project rollup sits ABOVE the team grid — picker, key milestone
-  // strips, and the financial milestones table. Rendered first so it
-  // appears at the top even when the rest of the page is still loading.
-  try { renderDeptProjectRollup(); } catch (_) {}
-
+  // (The project rollup — key milestones + financial calendar — moved to
+  // the INVOICING tab. Departments is people + resources only now.)
   const grid = document.getElementById('team-grid');
   if (!grid) return;
 
@@ -26289,6 +26485,10 @@ async function loadTasks() {
     await loadFinancialsForAllOpenProjects();
   }
   render();
+  // The Invoicing page derives readiness from task progress — refresh it
+  // whenever tasks (re)load while it's on screen (incl. the boot case where
+  // the view restores BEFORE the first task load lands).
+  if (state.view === 'invoicing') { try { renderInvoicingPage(); } catch (_) {} }
   // Phase 2 (Abhi port): refresh 💬 badge counts for the active project after
   // every render so newly-loaded rows pick up their comment counts and saves
   // don't leave stale badges behind. Wrapped in typeof check — comments-ui.js
@@ -26355,7 +26555,7 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 // Views that are simple scrollable containers — save/restore their scroll position.
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team'];
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team', 'invoicing'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -26412,6 +26612,7 @@ function setView(view) {
     // round-trips shouldn't restart you at the top.
     _restoreScrollPos(view);
   }
+  else if (view === 'invoicing') { renderInvoicingPage(); _restoreScrollPos(view); }
   else if (view === 'shop-parts') { loadShopParts(); _restoreScrollPos(view); }
   else if (view === 'vendor-pos') { loadVendorPOs(); _restoreScrollPos(view); }
   else if (view === 'job-hours')  { renderJobHoursPage(); _restoreScrollPos(view); }

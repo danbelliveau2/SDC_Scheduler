@@ -11240,6 +11240,145 @@ td.sales-suppressed {
   border-radius: 8px;
 }
 
+/* ── Invoicing tab ── */
+#view-invoicing {
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+}
+/* One flowing page: the calendar renders full height (no inner vertical
+   scroll box), so a longer calendar simply pushes Key Milestones further
+   down and the WHOLE page scrolls. Horizontal scroll stays for the
+   ~120px/month timeline scale. */
+#view-invoicing .pdash-fintl-scroll { max-height: none; overflow-x: auto; overflow-y: visible; }
+/* Scroll-past-the-bottom room so the last section can sit mid-screen. */
+#view-invoicing #dept-project-rollup { padding-bottom: 45vh; }
+/* Status bucket cards — each scrolls its own list. */
+.inv-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.inv-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-top: 4px solid var(--border-strong, #cbd5e1);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 120px;
+}
+.inv-card.inv-red   { border-top-color: #dc2626; }
+.inv-card.inv-green { border-top-color: #74c415; }
+.inv-card.inv-blue  { border-top-color: #1574c4; }
+.inv-card.inv-done  { border-top-color: #15803d; }
+.inv-card.inv-gray  { border-top-color: #94a3b8; }
+.inv-card-head { display: flex; align-items: baseline; justify-content: space-between; }
+.inv-card-title { font-weight: var(--fw-extrabold); font-size: var(--fs-lg); color: var(--sdc-dark, #061d39); }
+.inv-card-count { font-weight: var(--fw-extrabold); font-size: var(--fs-xl); color: var(--text-muted, #64748b); }
+.inv-card.inv-red .inv-card-count { color: #dc2626; }
+.inv-card.inv-green .inv-card-count { color: #4d9110; }
+.inv-card-sub { font-size: var(--fs-xs); color: var(--text-muted, #94a3b8); margin-bottom: 6px; }
+.inv-card-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; }
+.inv-empty { font-size: var(--fs-sm); color: var(--text-muted, #94a3b8); font-style: italic; padding: 8px 2px; }
+.inv-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  border-bottom: 1px solid var(--border, #eef2f6);
+  font-size: var(--fs-sm);
+}
+.inv-item:last-child { border-bottom: none; }
+.inv-item-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.inv-item-proj { color: var(--text-muted, #64748b); font-size: var(--fs-2xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inv-item-name { font-weight: var(--fw-semibold); color: var(--text, #1f2937); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inv-mach { font-size: var(--fs-2xs); background: var(--surface-alt, #f1f5f9); border: 1px solid var(--border-strong, #cbd5e1); border-radius: 4px; padding: 0 4px; }
+.inv-item-amt { font-variant-numeric: tabular-nums; font-weight: var(--fw-bold); white-space: nowrap; }
+.inv-item-date { color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: var(--fs-xs); }
+.inv-item-actions { display: flex; gap: 4px; }
+.inv-act {
+  border: 1px solid var(--border-strong, #cbd5e1);
+  background: #fff;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  padding: 2px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.inv-act-sent { border-color: #1574c4; color: #1574c4; }
+.inv-act-sent:hover { background: #eaf3fb; }
+.inv-act-paid { border-color: #4d9110; color: #4d9110; }
+.inv-act-paid:hover { background: #f0f9e8; }
+.inv-act-undo { color: var(--text-muted, #94a3b8); padding: 2px 6px; }
+.inv-act-undo:hover { color: #dc2626; border-color: #dc2626; }
+
+/* PM groups around the key-milestone strips. */
+.pdash-pm-group { margin-bottom: 8px; }
+.pdash-pm-head {
+  cursor: pointer;
+  font-weight: var(--fw-extrabold);
+  font-size: var(--fs-md);
+  color: var(--sdc-dark, #061d39);
+  padding: 5px 10px;
+  background: var(--surface-alt, #f1f5f9);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  margin-bottom: 4px;
+  user-select: none;
+}
+.pdash-pm-count { color: var(--text-muted, #64748b); font-weight: var(--fw-semibold); font-size: var(--fs-sm); margin-left: 6px; }
+
+/* SENT tone — solid SDC blue (paid stays green, past-due red, future light). */
+.pdash-mile-fin.is-sent .pdash-mile-icon { background: #1574c4; border-color: #1574c4; color: #fff; }
+.pdash-mile-fin.is-sent .pdash-mile-label { color: #0D47A1; }
+.pdash-fintl-ms.is-sent .pdash-fintl-di  { background: #1574c4; border-color: #1574c4; }
+.pdash-fintl-ms.is-sent .pdash-fintl-lbl { color: #0D47A1; }
+
+/* Calendar crowding: up to three label lanes per row when diamonds sit close
+   together (row height set inline by lane count). Lane 0 keeps the default
+   vertical centering; lanes 1–2 pin at fixed offsets from the top. */
+.pdash-fintl-row.has-lanes .pdash-fintl-ms.fin-lane-0 { top: 4px; transform: translateX(-50%); }
+.pdash-fintl-ms.fin-lane-1 { top: 28px; transform: translateX(-50%); }
+.pdash-fintl-ms.fin-lane-2 { top: 52px; transform: translateX(-50%); }
+
+/* Paid card starts collapsed — the head row + count stay glanceable. */
+.inv-card.is-collapsed .inv-card-list { display: none; }
+.inv-card.is-collapsed { min-height: 0; }
+.inv-card-head { cursor: pointer; user-select: none; }
+
+/* No-trigger card: one collapsible <details> group per PM; every item line
+   keeps its job number. */
+.inv-pm-group { margin: 4px 0; }
+.inv-group-pm {
+  cursor: pointer;
+  user-select: none;
+  font-weight: var(--fw-extrabold);
+  font-size: var(--fs-sm);
+  color: var(--sdc-dark, #061d39);
+  background: var(--surface-alt, #f1f5f9);
+  border-radius: 6px;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.inv-group-pm::before { content: '▸'; font-size: 10px; color: var(--text-muted, #64748b); }
+.inv-pm-group[open] > .inv-group-pm::before { content: '▾'; }
+.inv-group-pm::-webkit-details-marker { display: none; }
+.inv-group-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted, #64748b);
+  background: var(--surface, #fff);
+  border-radius: 10px;
+  padding: 0 7px;
+}
+
 /* ── Key Milestones — one COMPACT strip per project. Used to be big
       30-row-tall cards; squeezed down so 20–30 active projects fit on
       screen without scrolling forever. Dot is 20px, labels are 10px,
@@ -11500,8 +11639,24 @@ td.sales-suppressed {
   left: 0;
   z-index: 3;
   background: var(--surface, #fff);
+  /* ONE line per project, always — long names ellipsize (full name in the
+     tooltip) so every calendar row is exactly the same height. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
 }
 .pdash-fintl-head .pdash-milestone-project { background: transparent; }
+/* "Project" column header + clickable project names (jump to the project). */
+.pdash-fintl-colhead {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #64748b);
+}
+.pdash-fintl-projlink { cursor: pointer; }
+.pdash-fintl-projlink:hover { color: var(--sdc-blue, #1574c4); text-decoration: underline; }
 .pdash-fintl-row {
   display: grid;
   grid-template-columns: 280px 1fr;

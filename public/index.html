@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260821-160" />
+  <link rel="stylesheet" href="styles.css?v=20260825-164" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
 </head>
 <body>
@@ -67,6 +67,17 @@
         </svg>
       </span>
       <span class="app-sidebar-label" style="white-space:nowrap;font-size:9px;letter-spacing:0">Departments</span>
+    </button>
+    <button class="app-sidebar-icon" data-view="invoicing" type="button" title="Invoicing — past due / ready to invoice / sent / paid across every project, plus the key-milestone strips and the payment calendar.">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <!-- Invoice/receipt icon: document with a $ line. -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 2h9l4 4v16l-3-2-3 2-3-2-3 2V2z"/>
+          <path d="M12 6v10"/>
+          <path d="M14.5 8c0-1-1.1-1.6-2.5-1.6S9.5 7 9.5 8s1 1.5 2.5 1.8 2.5.8 2.5 1.8-1.1 1.6-2.5 1.6-2.5-.6-2.5-1.6"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Invoicing</span>
     </button>
     <button class="app-sidebar-icon" data-view="actions" type="button" title="Notes &amp; Actions — cross-project to-do list plus each project's starred Key Information notes.">
       <!-- v4.61: checklist icon — three lines with check marks. Reads as
@@ -503,12 +514,17 @@
       </div>
     </section>
 
-    <section id="view-team" class="view">
-      <!-- Project rollup (formerly the Dashboard view). Sits ABOVE the SDC
-           Team grid so a PM lands on portfolio-level status before drilling
-           into the department roster + resource Gantt below. Body is built
-           by renderDeptProjectRollup() in app.js. -->
+    <!-- Invoicing — the money page. Status buckets (past due / ready / sent /
+         paid / no trigger), the per-project key-milestone strips grouped by
+         PM, and the payment calendar. Both money sections moved here FROM the
+         Departments tab (which is people + resources only now). Body built by
+         renderInvoicingPage() / renderDeptProjectRollup() in app.js. -->
+    <section id="view-invoicing" class="view">
+      <div id="invoicing-buckets" class="dept-project-rollup" style="padding-bottom:0;"></div>
       <div id="dept-project-rollup" class="dept-project-rollup"></div>
+    </section>
+
+    <section id="view-team" class="view">
 
       <div class="setup-pane">
         <section class="setup-card team-card-head">
@@ -1001,7 +1017,7 @@
   <script src="auth-ui.js?v=20260821-share2"></script>
   <script src="phases.js?v=20260601-168"></script>
   <script src="release-notes.js?v=20260819-192"></script>
-  <script src="app.js?v=20260821-160"></script>
+  <script src="app.js?v=20260825-164"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

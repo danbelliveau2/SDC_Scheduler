@@ -118,6 +118,14 @@ async function init() {
   // Multi-machine payment terms: each financial milestone can belong to a
   // machine (M1/M2/…). NULL/'' = M1 / single-machine project (legacy rows).
   await pool.query(`ALTER TABLE project_financials ADD COLUMN machine VARCHAR(32)`).catch(() => {});
+  // Invoice lifecycle (Invoicing tab): ready is DERIVED from the trigger
+  // task's progress; sent + paid are explicit states with dates. The old
+  // single `paid` flag doubled as "sent" — the one-time UPDATE carries it
+  // into `sent` so history lands in a sensible bucket.
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN sent TINYINT(1) DEFAULT 0`).catch(() => {});
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN sent_at VARCHAR(32)`).catch(() => {});
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN paid_at VARCHAR(32)`).catch(() => {});
+  await pool.query(`UPDATE project_financials SET sent = 1 WHERE paid = 1 AND sent = 0`).catch(() => {});
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
