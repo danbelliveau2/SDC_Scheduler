@@ -25289,9 +25289,27 @@ async function loadTeam() {
 // Required Hours, Extended and Total Costs are populated on ZERO of the 119
 // in-house rows ever written, so they would render as columns of 0 and read as
 // broken data. See routes/manufacturing.js.
+//
+// TWO SOURCES, ONE QUEUE. The shop is asked to make things two ways: an ETO
+// process schedule, or a purchase order raised against "Steven Douglas Corp."
+// (which is not a purchase — it is us making something, booked as a PO). Both
+// are merged into this one ranked list, because "what do we owe, most urgent
+// first" does not care which ETO screen the work was entered on. Showing only
+// process schedules under-reported the queue by roughly 4x: 11 parts against 41
+// open SDC-PO parts, overlapping on 1.
+//
+// The Ref column carries a PS/PO tag rather than this page growing a tenth
+// column — description needs the width more, and a row's reference number is
+// exactly where someone looks to know which ETO screen to open.
+//
+// A `sdc-po` row genuinely has NO shop-floor progress data: no punch-ins, no
+// process, no owner, no issued qty. Those cells show as unknown rather than as
+// zero (`has_progress_data` on the row says which), because rendering an
+// unknown as an idle 0 is what would make this page lie.
 // ═══════════════════════════════════════════════════════════════════════════
 let _mfgData = null;
 let _mfgFilter = 'attention'; // 'attention' | 'all'
+let _mfgSource = 'all';       // 'all' | 'process-schedule' | 'sdc-po'
 let _mfgLoading = false;
 
 const MFG_FLAGS = {
@@ -25352,16 +25370,28 @@ function renderManufacturingPage() {
 
   if (!rows.length) {
     root.innerHTML = '<div class="mfg-head"><div><h1>Manufacturing</h1></div></div>'
-      + '<div class="mfg-empty">Nothing outstanding — every in-house task in Total ETO is complete.</div>';
+      + '<div class="mfg-empty">Nothing outstanding — every in-house task and SDC purchase order in Total ETO is complete.</div>';
     return;
   }
 
+  // A source whose query failed contributes 0 rows. Say so loudly: a short
+  // queue and a partial queue look identical, and only one of them means the
+  // shop has less to do.
+  const srcErrors = [
+    d.sources && d.sources.process_schedule && d.sources.process_schedule.error,
+    d.sources && d.sources.sdc_po && d.sources.sdc_po.error,
+  ].filter(Boolean);
+
+  // Source filter is applied FIRST so the attention counts below describe the
+  // list actually on screen.
+  const sourceRows = _mfgSource === 'all' ? rows : rows.filter(r => r.source === _mfgSource);
+
   const needsAttention = (r) => (r.flags || []).some(f =>
     f === 'build-started-part-not' || f === 'overdue' || f === 'due-soon' || f === 'stalled');
-  const attentionRows = rows.filter(needsAttention);
+  const attentionRows = sourceRows.filter(needsAttention);
   // Fall back to everything when the attention list is empty, so the filter can
   // never leave the page looking blank while work is outstanding.
-  const shown = (_mfgFilter === 'attention' && attentionRows.length) ? attentionRows : rows;
+  const shown = (_mfgFilter === 'attention' && attentionRows.length) ? attentionRows : sourceRows;
 
   // Tiles appear only when non-zero: a row of zeros trains people to ignore the
   // strip, which defeats the point of having one.
@@ -25376,7 +25406,11 @@ function renderManufacturingPage() {
     tile(t.no_eto_due_date, 'no due date<br>in ETO', 'is-nodate', 'ETO has no required date for these, so the date shown is derived from the job&apos;s build start in this schedule.'),
   ].filter(Boolean).join('');
 
-  const byProcess = (d.by_process || []).map(p =>
+  // '—' is the bucket for rows with no ETO process at all, which is every
+  // sdc-po row. Dropped from the chips rather than rendered as a nameless
+  // process: the source chips already account for those rows, and a chip
+  // reading "— 46" would look like a data fault.
+  const byProcess = (d.by_process || []).filter(p => p.process && p.process !== '—').map(p =>
     '<span class="mfg-proc-chip">' + escapeHtml(p.process) + ' <b>' + p.count + '</b></span>').join('');
 
   // Group by job. Row order already arrives most-urgent-first from the server,
@@ -25398,18 +25432,38 @@ function renderManufacturingPage() {
       : '<span class="mfg-job-sched is-missing" title="This job has in-house tasks but no project in this scheduler, so there are no build dates to judge its parts against.">no project here — cannot date these parts</span>';
     const rowsHtml = j.rows.map(r => {
       const flags = r.flags || [];
-      const ageTip = 'Opened ' + _mfgFmtDays(r.started_days)
-        + (r.never_started ? ', never worked on' : ', last worked ' + _mfgFmtDays(r.last_worked_days));
-      return '<div class="mfg-row' + (flags.includes('build-started-part-not') ? ' is-critical' : '') + '">'
-        + '<span class="mfg-c-ps" title="ETO process schedule number">' + escapeHtml(r.ps_number || '') + '</span>'
+      const isPo = r.source === 'sdc-po';
+      // Same shape of sentence for both sources, but the nouns have to change:
+      // a process schedule is "worked on", a PO line is "delivered". Saying
+      // "never worked on" about a PO line would describe punch data that does
+      // not exist for it.
+      const openedWord = isPo ? 'PO raised' : 'Opened';
+      const ageTip = openedWord + ' ' + _mfgFmtDays(r.started_days)
+        + (r.never_started
+            ? (isPo ? ', nothing delivered yet' : ', never worked on')
+            : (isPo ? ', last received ' + _mfgFmtDays(r.last_worked_days)
+                    : ', last worked ' + _mfgFmtDays(r.last_worked_days)));
+      const ref = isPo
+        ? '<b class="mfg-src is-po" title="A purchase order raised against Steven Douglas Corp. — this is our own shop making the part, not a vendor buy.">PO</b> ' + escapeHtml(r.po_number || '')
+        : '<b class="mfg-src is-ps" title="ETO process schedule number.">PS</b> ' + escapeHtml(r.ps_number || '');
+      // Unknown, not empty. An sdc-po line carries no ETO process and no owner,
+      // so both read as an explicit dash with the reason on hover.
+      const unknown = (tip) => '<i class="mfg-unknown" title="' + tip + '">—</i>';
+      return '<div class="mfg-row' + (flags.includes('build-started-part-not') ? ' is-critical' : '')
+          + (isPo ? ' is-po-row' : '') + '">'
+        + '<span class="mfg-c-ps">' + ref + '</span>'
         + '<span class="mfg-c-part" title="' + escapeHtml(r.part_no || '') + '">' + escapeHtml(r.part_no || '') + '</span>'
         + '<span class="mfg-c-desc" title="' + escapeHtml(r.description || '') + '">' + escapeHtml(r.description || '') + '</span>'
-        + '<span class="mfg-c-proc">' + escapeHtml(r.process || '') + '</span>'
+        + '<span class="mfg-c-proc">' + (r.process ? escapeHtml(r.process)
+            : unknown('This is an SDC purchase order, not a process schedule, so ETO records no process for it.')) + '</span>'
         + '<span class="mfg-c-qty" title="Quantity still to make">' + (r.qty_remaining == null ? '—' : r.qty_remaining) + (r.qty ? ' <i>of ' + r.qty + '</i>' : '') + '</span>'
         + '<span class="mfg-c-due' + (flags.includes('overdue') ? ' is-late' : '') + '">' + escapeHtml(r.due || '—')
-          + (r.due_from === 'build-start' ? '<i class="mfg-derived" title="Derived from this job&apos;s build start — ETO has no required date for this schedule.">&#8962;</i>' : '') + '</span>'
-        + '<span class="mfg-c-age" title="' + escapeHtml(ageTip) + '">' + _mfgFmtDays(r.started_days) + (r.never_started ? ' <i>· not started</i>' : '') + '</span>'
-        + '<span class="mfg-c-owner" title="Owner of the ETO process schedule — NOT an assigned machinist. ETO has no assignee on these rows.">' + escapeHtml(r.owner || '—') + '</span>'
+          + (r.due_from === 'build-start' ? '<i class="mfg-derived" title="Derived from this job&apos;s build start — ETO has no required date for this ' + (isPo ? 'PO line' : 'schedule') + '.">&#8962;</i>' : '') + '</span>'
+        + '<span class="mfg-c-age" title="' + escapeHtml(ageTip) + '">' + _mfgFmtDays(r.started_days)
+          + (r.never_started ? ' <i>· ' + (isPo ? 'none delivered' : 'not started') + '</i>' : '') + '</span>'
+        + '<span class="mfg-c-owner" title="Owner of the ETO process schedule — NOT an assigned machinist. ETO has no assignee on these rows.">'
+          + (r.owner ? escapeHtml(r.owner)
+             : (isPo ? unknown('SDC purchase orders have no process-schedule owner in ETO.') : '—')) + '</span>'
         + '<span class="mfg-c-flags">' + _mfgRowBadges(r) + '</span>'
         + '</div>';
     }).join('');
@@ -25420,7 +25474,7 @@ function renderManufacturingPage() {
         + sched
         + '<span class="mfg-job-count">' + j.rows.length + ' part' + (j.rows.length === 1 ? '' : 's') + '</span>'
       + '</div>'
-      + '<div class="mfg-list-head"><span>PS #</span><span>Part No.</span><span>Description</span><span>Process</span><span>Qty</span><span>Needed</span><span>Open</span><span>Owner</span><span></span></div>'
+      + '<div class="mfg-list-head"><span title="ETO process schedule (PS) or SDC purchase order (PO) number.">Ref</span><span>Part No.</span><span>Description</span><span>Process</span><span>Qty</span><span>Needed</span><span>Open</span><span>Owner</span><span></span></div>'
       + rowsHtml
       + '</div>';
   }).join('');
@@ -25429,27 +25483,39 @@ function renderManufacturingPage() {
   const filterBtn = (key, label, n) =>
     '<button type="button" class="mfg-chip' + (_mfgFilter === key ? ' is-on' : '') + '" data-mfg-filter="' + key + '">'
     + label + (n == null ? '' : ' <b>' + n + '</b>') + '</button>';
+  const sourceBtn = (key, label, n) =>
+    '<button type="button" class="mfg-chip is-src' + (_mfgSource === key ? ' is-on' : '') + '" data-mfg-source="' + key + '">'
+    + label + (n == null ? '' : ' <b>' + n + '</b>') + '</button>';
 
   root.innerHTML = '<div class="mfg-head">'
       + '<div><h1>Manufacturing</h1>'
-      + '<div class="mfg-sub">In-house tasks from Total ETO — what the shop has to make — ranked against this schedule&apos;s build dates.</div></div>'
+      + '<div class="mfg-sub">Everything the shop has to make, from Total ETO — process schedules and purchase orders raised against Steven Douglas Corp. — ranked against this schedule&apos;s build dates.</div></div>'
       + '<div class="mfg-head-right">'
         + '<span class="mfg-stamp" title="This page reads Total ETO live on every visit; nothing is cached.">read live at ' + escapeHtml(stamp) + '</span>'
         + '<button type="button" class="mfg-btn" data-mfg-reload="1">Refresh</button>'
       + '</div></div>'
     + (tiles ? '<div class="mfg-tiles">' + tiles + '</div>'
              : '<div class="mfg-allclear">Nothing needs attention — no overdue, stalled, or build-blocking parts.</div>')
+    + (srcErrors.length ? '<div class="mfg-warn mfg-srcfail" title="One source of in-house work could not be read, so this queue is incomplete — it is not that there is less to make.">'
+        + 'Incomplete queue — ' + escapeHtml(srcErrors.join(' ')) + '</div>' : '')
     + '<div class="mfg-toolbar">'
       + filterBtn('attention', 'Needs attention', attentionRows.length)
-      + filterBtn('all', 'All open', rows.length)
+      + filterBtn('all', 'All open', sourceRows.length)
+      + '<span class="mfg-srcs">' + sourceBtn('all', 'Both sources', rows.length)
+        + sourceBtn('process-schedule', 'Process schedules', t.process_schedule)
+        + sourceBtn('sdc-po', 'SDC POs', t.sdc_po) + '</span>'
       + '<span class="mfg-procs">' + byProcess + '</span>'
-      + (t.jobs_without_schedule ? '<span class="mfg-warn" title="These jobs have in-house tasks but no project in this scheduler, so their parts cannot be judged late.">' + t.jobs_without_schedule + ' job(s) with no project here</span>' : '')
+      + (t.jobs_without_schedule ? '<span class="mfg-warn" title="These jobs have in-house tasks but no project in this scheduler, so their parts cannot be judged late. SDC POs land on internal job numbers (8000xxx) that will never have one.">' + t.jobs_without_schedule + ' job(s) with no project here</span>' : '')
     + '</div>'
     + jobBlocks
     + '<div class="mfg-foot">Hours and cost columns from ETO&apos;s own grid are omitted on purpose — they are empty on every in-house task ever recorded, so they would only ever show 0.</div>';
 
   root.querySelectorAll('[data-mfg-filter]').forEach(b => b.onclick = () => {
     _mfgFilter = b.getAttribute('data-mfg-filter');
+    renderManufacturingPage();
+  });
+  root.querySelectorAll('[data-mfg-source]').forEach(b => b.onclick = () => {
+    _mfgSource = b.getAttribute('data-mfg-source');
     renderManufacturingPage();
   });
   root.querySelectorAll('[data-mfg-reload]').forEach(b => b.onclick = () => { _mfgData = null; loadManufacturing(); });

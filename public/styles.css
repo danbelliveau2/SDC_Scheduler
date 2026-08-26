@@ -13460,7 +13460,10 @@ textarea:focus-visible,
      area without clipping; Description takes the remainder (house rule). The
      badge lane is fixed rather than `auto` — as `auto` a four-flag row stole the
      description's width and truncated it. */
-  grid-template-columns: 96px 152px minmax(160px, 2fr) 76px 62px 92px 96px 104px 152px;
+  /* Ref went 96px -> 116px when it started carrying a PS/PO tag alongside the
+     number ("PO 106403"): at 96px the six-digit PO numbers clipped. Taken out
+     of Description's 2fr remainder rather than off another fixed column. */
+  grid-template-columns: 116px 152px minmax(160px, 2fr) 76px 62px 92px 96px 104px 152px;
   gap: 10px; align-items: center; padding: 6px 12px;
 }
 .mfg-list-head { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .03em;
@@ -13479,6 +13482,28 @@ textarea:focus-visible,
 .mfg-c-qty i, .mfg-c-age i { font-style: normal; color: var(--text-muted, #94a3b8); font-size: var(--fs-sm); }
 .mfg-c-due.is-late { color: #991b1b; font-weight: var(--fw-bold, 700); }
 .mfg-derived { font-style: normal; color: var(--text-muted, #94a3b8); margin-left: 3px; cursor: help; }
+
+/* Source tag in the Ref column. Two sources of in-house work share this queue
+   (ETO process schedule vs a PO raised against Steven Douglas Corp.), and which
+   one a row came from decides which ETO screen you open and which columns are
+   even knowable — so it is labelled per row rather than only in the filters.
+   A tag, not a row-wide tint: .mfg-row.is-critical already owns the row's
+   background and left bar, and a second row-level treatment would fight it. */
+.mfg-src { display: inline-block; font-size: 9px; font-weight: var(--fw-bold, 700);
+  letter-spacing: .04em; padding: 1px 4px; border-radius: 3px; margin-right: 3px; cursor: help; }
+.mfg-src.is-ps { background: #e0e7ff; color: #3730a3; }
+.mfg-src.is-po { background: #fef3c7; color: #92400e; }
+
+/* A cell that is genuinely unknown for this row's source, as opposed to zero or
+   blank. Carries its reason on hover — see the note in app.js. */
+.mfg-unknown { font-style: normal; color: var(--text-muted, #94a3b8); cursor: help; }
+
+.mfg-srcs { display: inline-flex; gap: 4px; align-items: center; }
+
+/* One source failing leaves a queue that looks short rather than broken, so the
+   disclosure gets its own full-width line above the toolbar instead of sitting
+   among the chips where it would read as another filter. */
+.mfg-srcfail { display: block; margin: 0 0 8px; }
 .mfg-c-owner { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
 .mfg-c-flags { display: flex; gap: 4px; flex-wrap: wrap; white-space: normal; overflow: visible; }
 

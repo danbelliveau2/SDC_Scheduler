@@ -2,10 +2,10 @@
 /**
  * routes/manufacturing.js — the Manufacturing page's data (2026-08-26).
  *
- * Serves the shop's in-house manufacturing queue: Total ETO's "In House Tasks"
- * (what has to be MADE), joined to this scheduler's build dates (WHEN it is
- * needed). Read-only in both directions — nothing here writes to ETO, and
- * nothing writes to the scheduler either.
+ * Serves the shop's in-house manufacturing queue: what has to be MADE, joined
+ * to this scheduler's build dates (WHEN it is needed). Read-only in both
+ * directions — nothing here writes to ETO, and nothing writes to the scheduler
+ * either.
  *
  * WHY THIS EXISTS WHEN ETO ALREADY HAS THE GRID
  *
@@ -22,12 +22,37 @@
  * 1161's Builder 1 running Aug 25-31 and PowerUp on Sep 8. A part needed for a
  * build that already ran, invisible to the system that owns the part.
  *
+ * ── TWO SOURCES OF IN-HOUSE WORK ───────────────────────────────────────────
+ * The shop is asked to make things in two different ways, and this page merges
+ * both. Showing only the first was under-reporting the queue by roughly 4x:
+ *
+ *   process-schedule — ETO's In House Tasks (vwProcessScheduleDetailInHouse).
+ *                      Rich progress data: process name, sequence, qty issued,
+ *                      last-worked-on date, live punch-ins. Weak dates.
+ *   sdc-po          — a purchase order raised against "Steven Douglas Corp."
+ *                      That is not a purchase; it is us making something,
+ *                      booked as a PO. Firm dates, but NO progress data at all
+ *                      beyond received quantity — no punches, no process, no
+ *                      owner. See etoDb.getSdcPoTasks.
+ *
+ * Measured 2026-08-26: 11 parts in the process-schedule queue, 41 open SDC-PO
+ * parts, overlapping on exactly 1. Forty parts the shop owed were invisible.
+ *
+ * The two are complementary rather than redundant, which is why they are merged
+ * into ONE ranked queue rather than shown as two lists: the question a shop lead
+ * asks is "what do we owe, most urgent first", and that question does not care
+ * which ETO screen the work was entered on. Rows carry `source` so the UI can
+ * still say where each came from — necessary, because the columns that are null
+ * for an sdc-po row are genuinely unknown, not zero.
+ *
  * ── The join, and where it is weak ─────────────────────────────────────────
  * ETO ProjectID  ===  scheduler projects.job_number, the same key etoDb.js
  * uses everywhere else. Jobs whose in-house tasks exist but which have no
  * scheduler project simply get no build context — they are still listed, with
  * `schedule: null`, rather than dropped. Silently hiding shop work because a PM
- * has not made a project yet would be the worst possible failure here.
+ * has not made a project yet would be the worst possible failure here. SDC POs
+ * make this more visible: they land on internal/overhead job numbers
+ * (8000176, 8000189, …) that will never have a scheduler project.
  */
 const { Router } = require('express');
 
@@ -61,6 +86,8 @@ function daysAgo(d) {
   return Math.round((Date.now() - t) / DAY_MS);
 }
 
+const num = (v) => (v == null ? null : Number(v));
+
 module.exports = function createRouter(deps) {
   const { pool, etoDb } = deps;
   const router = Router();
@@ -70,20 +97,31 @@ module.exports = function createRouter(deps) {
       return res.status(503).json({ error: 'Total ETO is not configured on this server.' });
     }
 
-    let tasks;
-    try {
-      tasks = await etoDb.getInHouseTasks();
-    } catch (e) {
-      // ETO down is not the same as "nothing to make" — say so rather than
-      // rendering a reassuring empty queue.
-      return res.status(503).json({ error: `Could not reach Total ETO: ${e.message}` });
+    // Both sources are fetched independently and each is allowed to fail on its
+    // own. One source down is a partial queue, which is still useful and is
+    // DISCLOSED (`sources.*.error`); both down is a 503, because an empty
+    // manufacturing queue reads as "nothing to make" and that would be a lie.
+    const [psResult, poResult] = await Promise.all([
+      etoDb.getInHouseTasks().then(
+        (rows) => ({ rows }),
+        (e) => ({ rows: [], error: `Could not read in-house tasks: ${e.message}` }),
+      ),
+      etoDb.getSdcPoTasks().then(
+        (rows) => ({ rows }),
+        (e) => ({ rows: [], error: `Could not read SDC purchase orders: ${e.message}` }),
+      ),
+    ]);
+
+    if (psResult.error && poResult.error) {
+      return res.status(503).json({ error: `Could not reach Total ETO. ${psResult.error} ${poResult.error}` });
     }
 
     // ── Build context per job, from this scheduler ──────────────────────────
-    // One query for the jobs actually in the queue (3 jobs / 11 tasks when this
-    // was written, so no need to page). Build window = the span of every dated
-    // SHOP task; ship = the ship_machine anchor.
-    const jobs = [...new Set(tasks.map(t => String(t.ProjectID)))];
+    // One query per job in the queue. Jobs come from BOTH sources, so a job
+    // that only has SDC-PO work still gets its build dates.
+    const jobs = [...new Set(
+      [...psResult.rows, ...poResult.rows].map(t => String(t.ProjectID))
+    )];
     const schedules = new Map();
     if (jobs.length) {
       try {
@@ -121,22 +159,27 @@ module.exports = function createRouter(deps) {
       }
     }
 
-    // ── Derive the judgements the shop actually needs ───────────────────────
-    const rows = tasks.map(t => {
-      const job = String(t.ProjectID);
-      const sched = schedules.get(job) || null;
-
-      const etoDue = isoDay(t.FinalRequiredDate);
+    /**
+     * The judgements the shop actually needs, applied identically to both
+     * sources so one ranked queue is meaningful.
+     *
+     * `notStarted` differs per source and is passed in rather than derived
+     * here, because "no work logged" and "nothing delivered" are different
+     * facts that happen to answer the same question. Getting this wrong is the
+     * main hazard in merging: an sdc-po row has no LastWorkedOnDate at all, so
+     * reusing the process-schedule test verbatim would mark every single PO row
+     * "never started" and fire `stalled` / `build-started-part-not` on all of
+     * them — turning the page's loudest signals into noise.
+     */
+    function judge({ etoDue, sched, openedOn, notStarted, activeNow }) {
       // Fall back to the build start: a part is needed by the time the build
       // that consumes it begins. Flagged as derived so nobody mistakes it for
       // a date a buyer actually promised.
       const due = etoDue || (sched && sched.build_start) || null;
       const dueFrom = etoDue ? 'eto' : (due ? 'build-start' : null);
 
-      const startedDays = daysAgo(t.StartDate);
-      const lastWorkedDays = daysAgo(t.LastWorkedOnDate);
+      const openedDays = daysAgo(openedOn);
       const dueInDays = due ? -daysAgo(due) : null;
-      const neverStarted = !t.LastWorkedOnDate;
 
       // Build already underway (or done) while the part is still outstanding.
       // The loudest signal on the page, and the one ETO cannot produce.
@@ -144,43 +187,131 @@ module.exports = function createRouter(deps) {
       const buildUnderway = buildStartedDays != null && buildStartedDays >= 0;
 
       const flags = [];
-      if (buildUnderway && neverStarted) flags.push('build-started-part-not');
+      if (buildUnderway && notStarted) flags.push('build-started-part-not');
       if (dueInDays != null && dueInDays < 0) flags.push('overdue');
       else if (dueInDays != null && dueInDays <= 14) flags.push('due-soon');
-      // Stalled means opened long ago with no work logged — distinct from
+      // Stalled means opened long ago with no progress — distinct from
       // "recently raised and not started yet", which is normal.
-      if (neverStarted && startedDays != null && startedDays > 30) flags.push('stalled');
+      if (notStarted && openedDays != null && openedDays > 30) flags.push('stalled');
       if (!etoDue) flags.push('no-eto-due-date');
-      if (t.HasActivePunchIns) flags.push('active-now');
+      if (activeNow) flags.push('active-now');
 
+      return { due, due_from: dueFrom, due_in_days: dueInDays, opened_days: openedDays, flags };
+    }
+
+    // ── Source 1: ETO process schedules ────────────────────────────────────
+    const psRows = psResult.rows.map(t => {
+      const job = String(t.ProjectID);
+      const sched = schedules.get(job) || null;
+      const neverStarted = !t.LastWorkedOnDate;
+      const j = judge({
+        etoDue: isoDay(t.FinalRequiredDate),
+        sched,
+        openedOn: t.StartDate,
+        notStarted: neverStarted,
+        activeNow: !!t.HasActivePunchIns,
+      });
       return {
+        source: 'process-schedule',
         job,
+        item_id: t.ItemID == null ? null : Number(t.ItemID),
         section: t.SpecID == null ? null : Number(t.SpecID),
         ps_number: t.ProcessNumber,
         sequence: t.Sequence,
+        po_number: null,
         part_no: t.PartNumber,
         description: t.PartDesc,
         process: t.ProcessName,
-        qty: t.Quantity == null ? null : Number(t.Quantity),
-        qty_issued: t.QuantityIssued == null ? null : Number(t.QuantityIssued),
-        qty_received: t.QuantityReceived == null ? null : Number(t.QuantityReceived),
-        qty_remaining: t.RemainingQty == null ? null : Number(t.RemainingQty),
+        qty: num(t.Quantity),
+        qty_issued: num(t.QuantityIssued),
+        qty_received: num(t.QuantityReceived),
+        qty_remaining: num(t.RemainingQty),
         started_on: isoDay(t.StartDate),
-        started_days: startedDays,
+        started_days: j.opened_days,
         last_worked_on: isoDay(t.LastWorkedOnDate),
-        last_worked_days: lastWorkedDays,
+        last_worked_days: daysAgo(t.LastWorkedOnDate),
         never_started: neverStarted,
-        due,
-        due_from: dueFrom,
-        due_in_days: dueInDays,
+        due: j.due,
+        due_from: j.due_from,
+        due_in_days: j.due_in_days,
         // Owner of the process schedule, NOT an assigned machinist. ETO has no
         // assignee on these rows; see etoDb.getInHouseTasks.
         owner: t.Owner || null,
         active_now: !!t.HasActivePunchIns,
+        // Whether this row can report shop-floor progress at all. True here,
+        // false for sdc-po — so the UI can show "no progress data" instead of
+        // rendering an honest unknown as an idle zero.
+        has_progress_data: true,
         schedule: sched,
-        flags,
+        flags: j.flags,
       };
     });
+
+    // ── Source 2: POs raised against ourselves ─────────────────────────────
+    // Deduped against source 1 on (job, ItemID): the same part can be both on a
+    // process schedule and on an SDC PO (1 part when this was written). The
+    // process-schedule row wins because it is strictly richer — it carries the
+    // process, sequence, issued qty and punch state that the PO row cannot.
+    const psKeys = new Set(psRows.filter(r => r.item_id != null).map(r => `${r.job}:${r.item_id}`));
+    let dedupedCount = 0;
+    const poRows = [];
+    for (const t of poResult.rows) {
+      const job = String(t.ProjectID);
+      const itemId = t.ItemID == null ? null : Number(t.ItemID);
+      if (itemId != null && psKeys.has(`${job}:${itemId}`)) { dedupedCount++; continue; }
+
+      const sched = schedules.get(job) || null;
+      const qty = num(t.Quantity) || 0;
+      const received = num(t.QuantityReceived) || 0;
+      // Nothing delivered yet is the honest analogue of "never worked on" for a
+      // PO line: partial receipt IS progress, so it must not count as unstarted.
+      const nothingDelivered = received <= 0;
+      const j = judge({
+        // The line's own required date, falling back to the PO header's. Same
+        // precedence every other SDC app uses for a PO's expected date.
+        etoDue: isoDay(t.DateRequired) || isoDay(t.PurchaseDateRequired),
+        sched,
+        openedOn: t.PurchaseDate,
+        notStarted: nothingDelivered,
+        // No punch-in data exists on a PO line. False means "unknown", not
+        // "idle" — has_progress_data below is what says which.
+        activeNow: false,
+      });
+      poRows.push({
+        source: 'sdc-po',
+        job,
+        item_id: itemId,
+        section: t.SpecID == null ? null : Number(t.SpecID),
+        ps_number: null,
+        sequence: null,
+        po_number: t.PurchaseOrderID == null ? null : String(t.PurchaseOrderID),
+        part_no: t.PartNumber,
+        description: t.PartDesc,
+        // No process name on a PO line. Left null rather than invented so the
+        // by_process breakdown stays a real answer about ETO processes.
+        process: null,
+        qty,
+        // ETO issues no material against a PO line — unknown, not zero.
+        qty_issued: null,
+        qty_received: received,
+        qty_remaining: Math.max(0, qty - received),
+        started_on: isoDay(t.PurchaseDate),
+        started_days: j.opened_days,
+        last_worked_on: isoDay(t.LastReceivedDate),
+        last_worked_days: daysAgo(t.LastReceivedDate),
+        never_started: nothingDelivered,
+        due: j.due,
+        due_from: j.due_from,
+        due_in_days: j.due_in_days,
+        owner: null,
+        active_now: false,
+        has_progress_data: false,
+        schedule: sched,
+        flags: j.flags,
+      });
+    }
+
+    const rows = [...psRows, ...poRows];
 
     // Most urgent first: critical flag, then soonest due, then oldest.
     const rank = (r) =>
@@ -195,9 +326,16 @@ module.exports = function createRouter(deps) {
 
     res.json({
       generated_at: new Date().toISOString(),
+      // Per-source health, so a partial queue is never mistaken for a short one.
+      sources: {
+        process_schedule: { count: psRows.length, error: psResult.error || null },
+        sdc_po: { count: poRows.length, error: poResult.error || null, deduped: dedupedCount },
+      },
       totals: {
         tasks: rows.length,
         jobs: jobs.length,
+        process_schedule: psRows.length,
+        sdc_po: poRows.length,
         never_started: rows.filter(r => r.never_started).length,
         active_now: rows.filter(r => r.active_now).length,
         build_started_part_not: rows.filter(r => r.flags.includes('build-started-part-not')).length,
@@ -208,6 +346,10 @@ module.exports = function createRouter(deps) {
         // Jobs in the queue with no scheduler project to date them against.
         jobs_without_schedule: jobs.filter(j => !schedules.has(j)).length,
       },
+      by_source: [
+        { source: 'process-schedule', label: 'Process schedule', count: psRows.length },
+        { source: 'sdc-po', label: 'SDC purchase order', count: poRows.length },
+      ],
       by_process: Object.entries(
         rows.reduce((acc, r) => { acc[r.process || '—'] = (acc[r.process || '—'] || 0) + 1; return acc; }, {})
       ).map(([process, count]) => ({ process, count })).sort((a, b) => b.count - a.count),
