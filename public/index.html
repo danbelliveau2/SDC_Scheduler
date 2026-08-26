@@ -120,6 +120,15 @@
       </span>
       <span class="app-sidebar-label">Shop Parts</span>
     </button>
+    <button class="app-sidebar-icon" data-view="manufacturing" type="button" title="Manufacturing — Total ETO's in-house task queue (what the shop has to MAKE), ranked against this schedule's build dates.">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <!-- Milling/cutting tool over stock — reads as "make it here". -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 3h6v6l-3 3-3-3z"/><path d="M12 12v5"/><path d="M4 20h16"/><path d="M7 17h10"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Mfg Tasks</span>
+    </button>
     <button class="app-sidebar-icon" data-view="vendor-pos" type="button" title="Vendor PO Track — POs sent to outside vendors: PO, job, vendor, lead time, ship/tracking, status.">
       <span class="app-sidebar-glyph app-sidebar-glyph-svg">
         <!-- Truck / shipment icon — reads as "vendor / shipping". -->
@@ -689,6 +698,13 @@
          renderShopPartsPage() in app.js. -->
     <section id="view-shop-parts" class="view">
       <div id="shop-parts-page" class="shop-parts-page"></div>
+    </section>
+
+    <!-- Manufacturing — Total ETO's in-house task queue, joined to this
+         schedule's build dates. Read-only; body built by
+         renderManufacturingPage() in app.js. -->
+    <section id="view-manufacturing" class="view">
+      <div id="manufacturing-page" class="mfg-page"></div>
     </section>
 
     <!-- Vendor PO Track — POs out to outside vendors. Body built by

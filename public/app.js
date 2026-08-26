@@ -25275,7 +25275,187 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 // Views that are simple scrollable containers — save/restore their scroll position.
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team', 'invoicing', 'service'];
+// ═══════════════════════════════════════════════════════════════════════════
+// Manufacturing — Total ETO's in-house task queue (what the shop has to MAKE)
+//
+// Read-only. Pat already has this list inside ETO, so this page is NOT a copy of
+// that grid — it exists for the one thing ETO cannot say: whether a part is
+// LATE. A due date on an ETO process schedule is optional and mostly skipped
+// (set on 100 of 229 active schedules), while this app knows every job's build
+// window. So the server derives a due date from the build start where ETO has
+// none, and the page leads with what needs attention rather than a flat table.
+//
+// Four of the columns in ETO's own grid are deliberately absent: Actual Hours,
+// Required Hours, Extended and Total Costs are populated on ZERO of the 119
+// in-house rows ever written, so they would render as columns of 0 and read as
+// broken data. See routes/manufacturing.js.
+// ═══════════════════════════════════════════════════════════════════════════
+let _mfgData = null;
+let _mfgFilter = 'attention'; // 'attention' | 'all'
+let _mfgLoading = false;
+
+const MFG_FLAGS = {
+  // Order matters — badges render in this order, most serious first.
+  'build-started-part-not': { label: 'BUILD STARTED', cls: 'is-critical', tip: 'The build that needs this part has already started, and the part has never been worked on. ETO cannot flag this — it has no build dates.' },
+  'overdue':                { label: 'OVERDUE',       cls: 'is-late',     tip: 'Past its required date.' },
+  'due-soon':               { label: 'DUE SOON',      cls: 'is-soon',     tip: 'Required within 14 days.' },
+  'stalled':                { label: 'STALLED',       cls: 'is-stalled',  tip: 'Opened more than 30 days ago with no work logged against it.' },
+  'active-now':             { label: 'ON IT NOW',     cls: 'is-active',   tip: 'Someone is clocked onto this right now.' },
+  'no-eto-due-date':        { label: 'NO ETO DATE',   cls: 'is-nodate',   tip: 'No required date in ETO — the date shown is derived from this job&apos;s build start.' },
+};
+const MFG_FLAG_ORDER = Object.keys(MFG_FLAGS);
+
+async function loadManufacturing() {
+  const root = document.getElementById('manufacturing-page');
+  if (!root) return;
+  if (_mfgLoading) return;
+  _mfgLoading = true;
+  if (!_mfgData) root.innerHTML = '<div class="mfg-empty">Loading the shop queue…</div>';
+  try {
+    const res = await fetch('/api/manufacturing/in-house');
+    const body = await res.json();
+    if (!res.ok) throw new Error(body && body.error ? body.error : 'HTTP ' + res.status);
+    _mfgData = body;
+    renderManufacturingPage();
+  } catch (e) {
+    // An unreachable ETO must NOT render as an empty queue — "nothing to make"
+    // and "we could not ask" look identical and only one of them is safe.
+    root.innerHTML = '<div class="mfg-error"><strong>Could not load the manufacturing queue.</strong>'
+      + '<div class="mfg-error-detail">' + escapeHtml(e.message || String(e)) + '</div>'
+      + '<div class="mfg-error-hint">This page reads Total ETO live. Nothing is cached, so this is a connection problem rather than stale data.</div>'
+      + '<button type="button" class="mfg-btn" data-mfg-reload="1">Try again</button></div>';
+  } finally {
+    _mfgLoading = false;
+  }
+}
+
+function _mfgFmtDays(n) {
+  if (n === null || n === undefined) return '—';
+  if (n === 0) return 'today';
+  return n > 0 ? n + 'd ago' : 'in ' + Math.abs(n) + 'd';
+}
+
+function _mfgRowBadges(r) {
+  const flags = Array.isArray(r.flags) ? r.flags : [];
+  return MFG_FLAG_ORDER.filter(f => flags.includes(f)).map(f => {
+    const m = MFG_FLAGS[f];
+    return '<span class="mfg-badge ' + m.cls + '" title="' + m.tip + '">' + m.label + '</span>';
+  }).join('');
+}
+
+function renderManufacturingPage() {
+  const root = document.getElementById('manufacturing-page');
+  if (!root || !_mfgData) return;
+  const d = _mfgData;
+  const t = d.totals || {};
+  const rows = Array.isArray(d.rows) ? d.rows : [];
+
+  if (!rows.length) {
+    root.innerHTML = '<div class="mfg-head"><div><h1>Manufacturing</h1></div></div>'
+      + '<div class="mfg-empty">Nothing outstanding — every in-house task in Total ETO is complete.</div>';
+    return;
+  }
+
+  const needsAttention = (r) => (r.flags || []).some(f =>
+    f === 'build-started-part-not' || f === 'overdue' || f === 'due-soon' || f === 'stalled');
+  const attentionRows = rows.filter(needsAttention);
+  // Fall back to everything when the attention list is empty, so the filter can
+  // never leave the page looking blank while work is outstanding.
+  const shown = (_mfgFilter === 'attention' && attentionRows.length) ? attentionRows : rows;
+
+  // Tiles appear only when non-zero: a row of zeros trains people to ignore the
+  // strip, which defeats the point of having one.
+  const tile = (n, label, cls, tip) => !n ? '' :
+    '<div class="mfg-tile ' + cls + '" title="' + tip + '"><div class="mfg-tile-n">' + n + '</div><div class="mfg-tile-l">' + label + '</div></div>';
+  const tiles = [
+    tile(t.build_started_part_not, 'build started,<br>part not', 'is-critical', 'The build that consumes these parts is already underway and the part has never been worked on. This is the signal ETO cannot produce.'),
+    tile(t.overdue, 'overdue', 'is-late', 'Past the required date — ETO&apos;s, or derived from the build start where ETO has none.'),
+    tile(t.due_soon, 'due within<br>14 days', 'is-soon', 'Required within the next 14 days.'),
+    tile(t.stalled, 'stalled<br>30+ days', 'is-stalled', 'Opened more than 30 days ago with no work logged.'),
+    tile(t.active_now, 'being worked<br>right now', 'is-active', 'Someone is clocked onto these in ETO right now.'),
+    tile(t.no_eto_due_date, 'no due date<br>in ETO', 'is-nodate', 'ETO has no required date for these, so the date shown is derived from the job&apos;s build start in this schedule.'),
+  ].filter(Boolean).join('');
+
+  const byProcess = (d.by_process || []).map(p =>
+    '<span class="mfg-proc-chip">' + escapeHtml(p.process) + ' <b>' + p.count + '</b></span>').join('');
+
+  // Group by job. Row order already arrives most-urgent-first from the server,
+  // so first appearance orders the jobs by their worst part.
+  const jobs = [];
+  const jobMap = new Map();
+  for (const r of shown) {
+    if (!jobMap.has(r.job)) { jobMap.set(r.job, { job: r.job, schedule: r.schedule, rows: [] }); jobs.push(jobMap.get(r.job)); }
+    jobMap.get(r.job).rows.push(r);
+  }
+
+  const jobBlocks = jobs.map(j => {
+    const sc = j.schedule;
+    const sched = sc
+      ? '<span class="mfg-job-sched">build ' + escapeHtml(sc.build_start || '—') + ' → ' + escapeHtml(sc.build_end || '—')
+        + (sc.ship_date ? ' · ship ' + escapeHtml(sc.ship_date) : '') + '</span>'
+      // Deliberately loud: a job with shop work and no project here means nobody
+      // can tell whether its parts are late.
+      : '<span class="mfg-job-sched is-missing" title="This job has in-house tasks but no project in this scheduler, so there are no build dates to judge its parts against.">no project here — cannot date these parts</span>';
+    const rowsHtml = j.rows.map(r => {
+      const flags = r.flags || [];
+      const ageTip = 'Opened ' + _mfgFmtDays(r.started_days)
+        + (r.never_started ? ', never worked on' : ', last worked ' + _mfgFmtDays(r.last_worked_days));
+      return '<div class="mfg-row' + (flags.includes('build-started-part-not') ? ' is-critical' : '') + '">'
+        + '<span class="mfg-c-ps" title="ETO process schedule number">' + escapeHtml(r.ps_number || '') + '</span>'
+        + '<span class="mfg-c-part" title="' + escapeHtml(r.part_no || '') + '">' + escapeHtml(r.part_no || '') + '</span>'
+        + '<span class="mfg-c-desc" title="' + escapeHtml(r.description || '') + '">' + escapeHtml(r.description || '') + '</span>'
+        + '<span class="mfg-c-proc">' + escapeHtml(r.process || '') + '</span>'
+        + '<span class="mfg-c-qty" title="Quantity still to make">' + (r.qty_remaining == null ? '—' : r.qty_remaining) + (r.qty ? ' <i>of ' + r.qty + '</i>' : '') + '</span>'
+        + '<span class="mfg-c-due' + (flags.includes('overdue') ? ' is-late' : '') + '">' + escapeHtml(r.due || '—')
+          + (r.due_from === 'build-start' ? '<i class="mfg-derived" title="Derived from this job&apos;s build start — ETO has no required date for this schedule.">&#8962;</i>' : '') + '</span>'
+        + '<span class="mfg-c-age" title="' + escapeHtml(ageTip) + '">' + _mfgFmtDays(r.started_days) + (r.never_started ? ' <i>· not started</i>' : '') + '</span>'
+        + '<span class="mfg-c-owner" title="Owner of the ETO process schedule — NOT an assigned machinist. ETO has no assignee on these rows.">' + escapeHtml(r.owner || '—') + '</span>'
+        + '<span class="mfg-c-flags">' + _mfgRowBadges(r) + '</span>'
+        + '</div>';
+    }).join('');
+    return '<div class="mfg-job">'
+      + '<div class="mfg-job-head">'
+        + '<span class="mfg-job-no">' + escapeHtml(j.job) + '</span>'
+        + '<span class="mfg-job-name">' + escapeHtml((sc && sc.project) || '') + '</span>'
+        + sched
+        + '<span class="mfg-job-count">' + j.rows.length + ' part' + (j.rows.length === 1 ? '' : 's') + '</span>'
+      + '</div>'
+      + '<div class="mfg-list-head"><span>PS #</span><span>Part No.</span><span>Description</span><span>Process</span><span>Qty</span><span>Needed</span><span>Open</span><span>Owner</span><span></span></div>'
+      + rowsHtml
+      + '</div>';
+  }).join('');
+
+  const stamp = d.generated_at ? new Date(d.generated_at).toLocaleTimeString() : '';
+  const filterBtn = (key, label, n) =>
+    '<button type="button" class="mfg-chip' + (_mfgFilter === key ? ' is-on' : '') + '" data-mfg-filter="' + key + '">'
+    + label + (n == null ? '' : ' <b>' + n + '</b>') + '</button>';
+
+  root.innerHTML = '<div class="mfg-head">'
+      + '<div><h1>Manufacturing</h1>'
+      + '<div class="mfg-sub">In-house tasks from Total ETO — what the shop has to make — ranked against this schedule&apos;s build dates.</div></div>'
+      + '<div class="mfg-head-right">'
+        + '<span class="mfg-stamp" title="This page reads Total ETO live on every visit; nothing is cached.">read live at ' + escapeHtml(stamp) + '</span>'
+        + '<button type="button" class="mfg-btn" data-mfg-reload="1">Refresh</button>'
+      + '</div></div>'
+    + (tiles ? '<div class="mfg-tiles">' + tiles + '</div>'
+             : '<div class="mfg-allclear">Nothing needs attention — no overdue, stalled, or build-blocking parts.</div>')
+    + '<div class="mfg-toolbar">'
+      + filterBtn('attention', 'Needs attention', attentionRows.length)
+      + filterBtn('all', 'All open', rows.length)
+      + '<span class="mfg-procs">' + byProcess + '</span>'
+      + (t.jobs_without_schedule ? '<span class="mfg-warn" title="These jobs have in-house tasks but no project in this scheduler, so their parts cannot be judged late.">' + t.jobs_without_schedule + ' job(s) with no project here</span>' : '')
+    + '</div>'
+    + jobBlocks
+    + '<div class="mfg-foot">Hours and cost columns from ETO&apos;s own grid are omitted on purpose — they are empty on every in-house task ever recorded, so they would only ever show 0.</div>';
+
+  root.querySelectorAll('[data-mfg-filter]').forEach(b => b.onclick = () => {
+    _mfgFilter = b.getAttribute('data-mfg-filter');
+    renderManufacturingPage();
+  });
+  root.querySelectorAll('[data-mfg-reload]').forEach(b => b.onclick = () => { _mfgData = null; loadManufacturing(); });
+}
+
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'manufacturing', 'team', 'invoicing', 'service'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -25338,6 +25518,13 @@ function setView(view) {
     // it fresh when the data actually changes, so a plain nav here shouldn't
     // re-fetch the whole table every time.
     if (Array.isArray(state.shopParts)) renderShopPartsPage(); else loadShopParts();
+    _restoreScrollPos(view);
+  }
+  else if (view === 'manufacturing') {
+    // Read-only mirror of ETO's queue, so unlike shop-parts there is no realtime
+    // channel to keep it fresh — refetch on nav, and let the page's own cache
+    // note say how old the data is.
+    loadManufacturing();
     _restoreScrollPos(view);
   }
   else if (view === 'vendor-pos') {
