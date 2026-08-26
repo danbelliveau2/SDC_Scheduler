@@ -11078,21 +11078,33 @@ async function _loadJhpHours() {
   }).filter(g => g.series[0].value || g.series[1].value);
   const fnChart = _jhBarChart(chartTitle, fnGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 900);
 
-  // ── Chart 2: Billing Group — driven by hoursType filter ──────────────────
-  const BG_ORDER = ['Engineering', 'Shop', 'Manufacturing'];
+  // ── Chart 2: Section Group — driven by hoursType filter ──────────────────
+  // Subtotals are keyed on the Reports App's section GROUP since 2026-08-26,
+  // when hours moved from Power BI to Paylocity + the Reports App DB. Power BI's
+  // old "Billing Group" (Engineering / Shop / Manufacturing) has no equivalent
+  // there; these six are what SECTIONS actually carries. The data key is still
+  // called `billing` so this page did not need rewriting — only the values moved.
+  //
+  // Anything the data has but this list does not is APPENDED rather than dropped:
+  // a hard-coded order that silently hides a group is how hours go missing from a
+  // total without anyone noticing.
+  const BG_ORDER_BASE = ['Management', 'Mechanical Engineering', 'Controls Engineering',
+                         'General Engineering', 'Engineering', 'Shop', 'Manufacturing'];
+  const BG_ORDER = [...BG_ORDER_BASE, ...Object.keys(bgTotals).filter(k => !BG_ORDER_BASE.includes(k)).sort()];
   const bgGroups = BG_ORDER.filter(bg => bgTotals[bg]).map(bg => ({
     fn: _gl(bg), label: _gl(bg), sectionLabel: null,
     series: [{ value: isEtc ? bgTotals[bg].etc : bgTotals[bg].quoted }, { value: bgTotals[bg].actual }],
   }));
-  const bgChartTitle = isEtc ? 'ETC and Actual by Billing Group' : 'Quoted and Actual by Billing Group';
+  const bgChartTitle = isEtc ? 'ETC and Actual by Group' : 'Quoted and Actual by Group';
   const bgChart = _jhBarChart(bgChartTitle, bgGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 600, 900);
 
-  // billing group cards
-  const BG_CARD_ORDER = ['Engineering', 'Shop', 'Manufacturing'];
+  // group cards — only for groups present in the data, so a job with no shop
+  // hours does not show an empty SHOP card implying zero work booked.
+  const BG_CARD_ORDER = BG_ORDER.filter(bg => bgTotals[bg]);
   const bgCards = BG_CARD_ORDER.map(bg => {
     const t = bgTotals[bg] || { quoted: 0, actual: 0, etc: 0 };
     const diff = t.quoted - t.actual;
-    return `<div class="hours-bg-card" data-tip="${escapeHtml(JSON.stringify({ fn: bg, group: 'Billing Group', section: '', q: t.quoted, a: t.actual, e: t.etc||0, d: diff }))}" data-tip-row="Billing">
+    return `<div class="hours-bg-card" data-tip="${escapeHtml(JSON.stringify({ fn: bg, group: 'Group', section: '', q: t.quoted, a: t.actual, e: t.etc||0, d: diff }))}" data-tip-row="Group">
       <div class="hours-bg-name">${bg.toUpperCase()}</div>
       <div class="hours-bg-nums">
         <span class="hours-col-q">${fmt(t.quoted)}</span>
@@ -15714,7 +15726,8 @@ function renderScheduleProcurement() {
 }
 // ── Per-project Job Hours drawer ─────────────────────────────────────────────
 // Collapsible panel below Procurement. Shows Quoted / Actual / Diff per
-// function, grouped by billing group, pulled from the Power BI semantic model.
+// function, grouped by section group, from Paylocity punches via the Reports App
+// (sdc-etc-planner). NOT Power BI — see SDC_Scheduler/lib/hoursApi.js for why.
 // Only visible when PBI_USER+PBI_PASS are configured and the project has a job number.
 
 // Hard client-side ceiling for a Power BI hours fetch. The server already times
