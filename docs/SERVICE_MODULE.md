@@ -45,6 +45,8 @@ All optional — the module works without any of these, degrading sensibly.
 
 | Env var | Default | Effect |
 |---|---|---|
+| `SERVICE_PUBLIC_PORT` | *(unset)* | Second listener carrying **only** the customer form and the two `/api/public/service-*` endpoints. What the tunnel points at. Unset = not listening. See [Exposing the form](#exposing-the-form) — do not publish `PORT`. |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | *(unset)* | Cloudflare Turnstile on the public form. Unset = no-op, leaving only the honeypot and per-IP throttle. **Set before go-live** — the form this replaces was spammed via its public URL. |
 | `SERVICE_UPLOAD_DIR` | `<app>/uploads/service` | Where attachments land. Must be writable and **backed up** — it is customer data the DB dump does not contain. |
 | `SERVICE_MAX_FILE_MB` | `25` | Per-file upload cap. |
 | `SERVICE_INTAKE_EMAIL` | *(unset)* | Address notified when a website request arrives. Unset = no intake alert. |
@@ -61,15 +63,59 @@ New dependency: **`multer` ^2.2.0** (2.x — the 1.x line has open CVEs).
 > committing or a clean install will not pull multer and the app will fail to
 > boot on `require('multer')`.
 
+## Exposing the form
+
+The customer form must be reachable from the internet. The rest of this app
+must not be — and **publishing the main `PORT` would publish it**:
+`express.static(public/)` in `server.js` is mounted ABOVE the global auth
+guard, so `index.html`, `app.js` and every module's UI would be served to
+anyone who asked. The `/api/*` routes are guarded; the frontend is not.
+
+So set `SERVICE_PUBLIC_PORT` and point the tunnel at *that* port. It is a
+separate Express listener that serves exactly:
+
+- `/` and `/service-request.html`
+- `GET /api/public/service-options`
+- `POST /api/public/service-requests`
+
+...and 404s everything else. There is no path allowlist to misconfigure
+because there is nothing else on the port to reach. This works because
+`service-request.html` has no local asset dependencies — Montserrat and the
+Turnstile widget both load cross-origin.
+
+Path-scoped rules at the tunnel would also work (Cloudflare denies by
+default), but that config lives in a dashboard where nothing records it, and
+one catch-all rule added later silently republishes the whole app. Belt and
+braces: do both.
+
+`clientIp()` reads `cf-connecting-ip` first, so the per-IP throttle sees the
+real client through a Cloudflare Tunnel. No `trust proxy` setting needed.
+
+### Cloudflare Tunnel
+
+`cloudflared` runs on the app server as a token (dashboard-managed) tunnel, so
+its ingress config is in Cloudflare Zero Trust, not on disk. Add a Public
+Hostname routing to `HTTP → localhost:<SERVICE_PUBLIC_PORT>`.
+
+> **DNS caution.** A hostname under `sdcautomation.com` means a record in the
+> zone that carries the Proofpoint MX and a six-sender SPF record. The zone is
+> on Namecheap nameservers pointing at WP Engine, *not* Cloudflare, so the
+> tunnel cannot write its own CNAME — it has to be added on Namecheap by
+> whoever holds that access. Do **not** migrate the zone to Cloudflare to make
+> this convenient; that is how a website change takes company email down.
+
 ## Website integration
 
 Point the SDC website at:
 
 ```
-https://<scheduler-host>/service-request.html
+https://<public-hostname>/service-request.html
 ```
 
-Link or iframe it. Or build a form against the API directly:
+Plain link, new tab — not an iframe (file uploads in a cross-origin frame are
+rough on mobile, and the site runs full-page caching with GTM tracking).
+
+Or build a form against the API directly:
 
 - `GET  /api/public/service-options` — the dropdown vocabulary (use this rather
   than hardcoding, so the two can't drift)
