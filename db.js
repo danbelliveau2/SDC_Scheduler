@@ -326,6 +326,11 @@ async function init() {
   // that predates this feature). Set to e.g. 'ETO PO 104448' by the sync, so the
   // shop can always tell an automated close from a human one.
   await pool.query(`ALTER TABLE shop_parts ADD COLUMN completed_source VARCHAR(64) NULL`).catch(() => {});
+  // Why the sync declined to auto-complete a fully-received row, e.g. 'receipt
+  // predates part'. Persisted rather than inferred client-side from "received
+  // but still open", which would also match a row someone just un-ticked and a
+  // row this sync has not reached yet. NULL = no hold.
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_hold_reason VARCHAR(64) NULL`).catch(() => {});
   await pool.query(`ALTER TABLE shop_parts ADD INDEX idx_shop_parts_eto_po (eto_po)`).catch(() => {});
 
   // v9.0: "Vendor PO Track" — every PO sent to an outside vendor. Status derived

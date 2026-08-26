@@ -69,6 +69,7 @@ module.exports = function createRouter(deps) {
         updates.eto_received_qty = null;
         updates.eto_po_qty = null;
         updates.eto_received_on = null;
+        updates.eto_hold_reason = null;
         updates.eto_synced_at = null;
       }
       const setClause = Object.keys(updates).map(k => `${_bt(k)} = ?`).join(', ');

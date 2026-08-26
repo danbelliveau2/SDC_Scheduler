@@ -9550,6 +9550,13 @@ function renderShopPartsPage() {
     }
     const full = need > 0 && Number(rcvd) >= need;
     const on = r.eto_received_on ? ` on ${escapeHtml(r.eto_received_on)}` : '';
+    // Held = fully received, but the sync declined to close the row (the receipt
+    // predates the part). Without its own state this rendered a green tick on a
+    // row that was still open, which reads as a contradiction.
+    const hold = String(r.eto_hold_reason ?? '').trim();
+    if (hold) {
+      return `<span class="sp-eto is-held" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}, but NOT auto-completed: ${escapeHtml(hold)}. Tick the box by hand if this receipt really is for this part.">PO ${escapeHtml(po)} ${rcvd}/${need} held</span>`;
+    }
     const cls = full ? 'is-received' : 'is-partial';
     const mark = full ? ' ✓' : '';
     return `<span class="sp-eto ${cls}" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}">PO ${escapeHtml(po)} ${rcvd}/${need}${mark}</span>`;
