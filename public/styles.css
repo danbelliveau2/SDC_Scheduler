@@ -537,6 +537,29 @@ body {
   color: #0c5fa3;
   border-color: #1574c4;
 }
+/* STATUS COLUMN fed by SDC Projects Reports — a fixed-width cell on every
+   row (sits in the empty middle of the row, before the buttons) so statuses
+   line up as a real column. Green Active, gray anything else, dash unknown. */
+.projects-row-statuscell {
+  flex: 0 0 140px;
+  display: flex;
+  justify-content: flex-start;
+}
+.projects-row-status {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+.projects-row-status.is-active   { background: #dcfce7; color: #15803d; }
+.projects-row-status.is-inactive { background: #fef9c3; color: #a16207; border: 1px solid #fde047; }
+.projects-row-status.is-unknown  { color: var(--border-strong, #cbd5e1); padding-left: 2px; }
 
 /* ---------- Project tab bar (open schedules) ---------- */
 /* ==========================================================================
@@ -11387,6 +11410,104 @@ td.sales-suppressed {
 /* Calendar drag-to-pan — grab cursor like the schedule Gantt. */
 .pdash-fintl-scroll { cursor: grab; }
 .pdash-fintl-scroll.panning { cursor: grabbing; user-select: none; }
+
+/* Key Dates milestone-picker chips (Projects page calendar). */
+.kd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.kd-chip {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted, #64748b);
+  background: var(--surface, #fff);
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 999px;
+  padding: 4px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.kd-chip:hover { border-color: var(--sdc-blue, #1574c4); color: var(--sdc-blue, #1574c4); }
+.kd-chip.is-on {
+  background: var(--sdc-blue, #1574c4);
+  border-color: var(--sdc-blue, #1574c4);
+  color: #fff;
+}
+/* Key Dates lives OUTSIDE the max-width projects list — full page width. */
+#projects-keydates { padding: 0 24px 30vh; }
+.kd-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted, #64748b);
+}
+.kd-range input[type="month"] {
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: var(--fs-sm);
+  font-family: inherit;
+}
+/* Two-pane layout: names in a FIXED left column (outside the scroll box, so
+   panning never slides diamonds underneath them), tracks scroll on the right.
+   Row heights are set inline on BOTH sides so they stay row-aligned. */
+.kd-body { display: flex; align-items: flex-start; }
+.kd-names { flex: 0 0 280px; display: flex; flex-direction: column; gap: 4px; padding-right: 10px; }
+.kd-name {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  font-weight: var(--fw-bold);
+  font-size: var(--fs-md);
+  color: var(--text, #1f2937);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+  line-height: 30px;
+  border: 1px solid transparent;
+  padding: 0 2px;
+}
+.kd-name.kd-projlink { cursor: pointer; }
+.kd-name.kd-projlink:hover { color: var(--sdc-blue, #1574c4); text-decoration: underline; }
+.kd-name-head {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #64748b);
+  line-height: 24px;
+}
+.kd-scroll { flex: 1; min-width: 0; }
+.kd-trackrow {
+  position: relative;
+  box-sizing: border-box;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 6px;
+}
+.kd-trackrow-head { background: transparent; border-color: transparent; }
+.kd-trackrow.has-lanes .pdash-fintl-ms { transform: translateX(-50%); }
+/* Month-start lines ON the grid: the base gridline paints BEHIND the white
+   row cards (z-index 0), so in Key Dates lift it above them and make it a
+   visible dotted line. Diamonds (z-index 1, later in DOM) still win. */
+.kd-scroll .pdash-fintl-gridline {
+  z-index: 1;
+  top: 0;
+  border-left: 2px dotted rgba(100, 116, 139, 0.45);
+}
+/* Two-layer axis: year on top, plain month names ("Aug") underneath. */
+.kd-year {
+  position: absolute;
+  top: 2px;
+  padding-left: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+}
+.kd-trackrow-head .kd-month { top: auto; bottom: 3px; }
 .inv-chk {
   width: 17px;
   height: 17px;

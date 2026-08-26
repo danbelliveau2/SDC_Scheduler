@@ -7828,6 +7828,40 @@ function _pdashFinMonthControls(from, to) {
 // Selected-projects persistence reuses the old sdcDashboardProjects
 // localStorage key so users keep their picks across the upgrade.
 // ──────────────────────────────────────────────────────────────────────
+// ── SDC Projects Reports (ETC Planner) job status ──────────────────────────
+// The Reports app is the hub for project status. We pull its job list once at
+// boot (via the existing /api/planner/jobs proxy) and key status by job
+// number, so a job marked anything-but-Active over there automatically drops
+// out of Departments / Invoicing here — no double entry. When the planner
+// isn't configured (local dev) the map stays null and nothing is filtered.
+let _plannerStatusMap = null;
+async function loadPlannerStatuses() {
+  try {
+    const r = await fetch('/api/planner/jobs');
+    if (!r.ok) { _plannerStatusMap = null; return; }
+    const b = await r.json().catch(() => ({}));
+    const map = {};
+    for (const j of (Array.isArray(b.jobs) ? b.jobs : [])) {
+      const st = j.status || j.jobStatus || '';
+      if (j.jobId != null && st) map[String(j.jobId)] = String(st);
+    }
+    _plannerStatusMap = Object.keys(map).length ? map : null;
+  } catch (_) { _plannerStatusMap = null; }
+}
+function projectPlannerStatus(p) {
+  if (!_plannerStatusMap) return null;
+  const rec = state.projectsIndex && state.projectsIndex[p];
+  let job = rec && rec.job_number ? String(rec.job_number) : '';
+  if (!job) { const m = String(p || '').match(/^\s*(\d{3,})/); job = m ? m[1] : ''; }
+  return job ? (_plannerStatusMap[job] || null) : null;
+}
+// Inactive = the Reports app KNOWS this job and says it's not Active.
+// Unknown jobs (no job number, or not in the Reports app) are left alone.
+function projectIsInactive(p) {
+  const st = projectPlannerStatus(p);
+  return !!st && st.toLowerCase() !== 'active';
+}
+
 function _deptSelectedProjects() {
   // null = never picked (default to ALL) vs [] = explicitly "None".
   let selected;
@@ -7838,6 +7872,7 @@ function _deptSelectedProjects() {
     .filter(p => p && p.trim().length > 0)
     .filter(p => !isTemplateProject(p))
     .filter(p => projectWorkspace(p) !== 'Sales')
+    .filter(p => !projectIsInactive(p))
     .sort();
   if (selected === null) {
     // Default = EVERY active project. The overview is a department-wide
@@ -8068,6 +8103,8 @@ function renderDeptProjectRollup() {
   const root = document.getElementById('dept-project-rollup');
   if (!root) return;
 
+  // Sales + inactive (per SDC Projects Reports status) schedules are
+  // already excluded inside _deptSelectedProjects.
   const { selected, allProjects } = _deptSelectedProjects();
   // ± Variance toggle — OFF (default): milestones show just their projected/
   // actual date and done-state, clean and compact. ON: baseline comparison
@@ -11308,14 +11345,21 @@ function renderProjectsPage() {
     const isFav = favSet.has(p);
     const isTmpl = isTemplateProject(p);
     const favBtn = `<button class="projects-row-favbtn${isFav ? ' is-fav' : ''}" data-action="toggle-fav" data-project="${escapeHtml(p)}" type="button" title="${isFav ? 'Unfavorite' : 'Add to favorites'}">${isFav ? '★' : '☆'}</button>`;
-    const isSalesProject = !isTmpl && projectWorkspace(p) === 'Sales';
-    const promoteBtn = isSalesProject
-      ? `<button class="projects-row-promotebtn" data-action="promote" data-project="${escapeHtml(p)}" type="button" title="Promote this sales schedule to a detailed project.">→ Project</button>`
-      : '';
+    // No per-row buttons for moving/promoting — both live in the
+    // RIGHT-CLICK menu only (Dan: no buttons cluttering the rows).
+    // STATUS COLUMN from SDC Projects Reports (the hub). Every non-template
+    // row gets the fixed-width cell so it reads as a real column; jobs the
+    // Reports app doesn't know show a faint dash. Display-only here — the
+    // exclusion from Departments/Invoicing is automatic (app flow, never
+    // hand-edited).
+    const pStatus = isTmpl ? null : projectPlannerStatus(p);
+    const statusChip = isTmpl ? '' : `<span class="projects-row-statuscell">${pStatus
+      ? `<span class="projects-row-status ${pStatus.toLowerCase() === 'active' ? 'is-active' : 'is-inactive'}" title="Status from SDC Projects Reports — non-Active jobs are left out of Departments and Invoicing.">${escapeHtml(pStatus)}</span>`
+      : `<span class="projects-row-status is-unknown" title="No status — this schedule isn't linked to a job in SDC Projects Reports.">—</span>`}</span>`;
     const openBtn = `<button class="projects-row-openbtn${isOpen ? ' is-open' : ''}" data-action="open-project" data-project="${escapeHtml(p)}" type="button">OPEN</button>`;
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
       <span class="projects-row-name">${escapeHtml(p)}</span>
-      ${promoteBtn}
+      ${statusChip}
       ${openBtn}
       ${favBtn}
     </div>`;
@@ -11381,6 +11425,14 @@ function renderProjectsPage() {
     </div>
     ${WORKSPACES.map(workspaceSection).join('')}
   `;
+  // Key Dates calendar renders into a SIBLING of the (max-width-capped)
+  // projects list so it can use the full page width.
+  if (!document.getElementById('projects-keydates')) {
+    const kd = document.createElement('div');
+    kd.id = 'projects-keydates';
+    root.parentElement.appendChild(kd);
+  }
+  try { renderProjectsKeyDates(); } catch (_) {}
 
   // Search input — filter rows in real-time without a full re-render
   const searchInput = root.querySelector('.projects-search-input');
@@ -11412,13 +11464,6 @@ function renderProjectsPage() {
     row.addEventListener('click', (e) => {
       // Star button intercept — toggles favorite, doesn't open the project.
       if (e.target.closest('[data-action="toggle-fav"]')) return;
-      // Promote button intercept — opens the sales → detailed promote modal.
-      if (e.target.closest('[data-action="promote"]')) {
-        e.stopPropagation();
-        const p = e.target.closest('[data-action="promote"]').dataset.project;
-        if (p) openPromoteModal(p);
-        return;
-      }
       // OPEN button or anywhere on the row opens the project.
       if (e.target.closest('[data-action="open-project"]')) e.stopPropagation();
       const p = row.dataset.project;
@@ -11460,6 +11505,277 @@ function renderProjectsPage() {
       if (p) toggleFavoriteProject(p);
     });
   });
+}
+
+// ── Key Dates calendar (Projects page, below the project list) ─────────────
+// The Monday-meeting view: pick which key milestone(s) to look at and see
+// them across EVERY active project on one timeline — same calendar language
+// as the Invoicing financial-milestones view (month header, today line,
+// green done / red late / blue upcoming diamonds, drag-to-pan). One row per
+// project, and per machine on multi-machine projects. Rows sort soonest-first.
+const KEYDATES_ANCHORS = [
+  { key: 'receipt_of_po',     short: 'PO' },
+  { key: 'mech_release_1',    short: 'Mech 1' },
+  { key: 'parts_panel_ready', short: 'Panel Ready' },
+  { key: 'machine_power_up',  short: 'Power-Up' },
+  { key: 'fat',               short: 'FAT' },
+  { key: 'ship_machine',      short: 'Ship' },
+  { key: 'sat',               short: 'SAT' },
+];
+function _keyDatesSelected() {
+  try {
+    const a = JSON.parse(localStorage.getItem('sdcKeyDatesAnchors') || 'null');
+    if (Array.isArray(a) && a.length) return a.filter(k => KEYDATES_ANCHORS.some(x => x.key === k));
+  } catch (_) {}
+  return ['mech_release_1'];
+}
+function _keyDatesRange() {
+  // From/To months, like the Invoicing calendar. Defaults: this month → +2.
+  const d = new Date();
+  const ym = (dt) => dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0');
+  const from = localStorage.getItem('sdcKeyDatesFrom') || ym(d);
+  const d2 = new Date(d); d2.setMonth(d2.getMonth() + 2);
+  const to = localStorage.getItem('sdcKeyDatesTo') || ym(d2);
+  return { from, to };
+}
+function renderProjectsKeyDates() {
+  const root = document.getElementById('projects-keydates');
+  if (!root) return;
+  const sel = new Set(_keyDatesSelected());
+  const shortOf = Object.fromEntries(KEYDATES_ANCHORS.map(a => [a.key, a.short]));
+  // Same pool as the money views: no templates, no Sales, no inactive jobs.
+  const { allProjects } = _deptSelectedProjects();
+  const todayIso = todayISO();
+  const todayMs = Date.parse(todayIso + 'T00:00:00');
+  const { from, to } = _keyDatesRange();
+
+  // One row per project·machine holding that row's selected milestones that
+  // fall INSIDE the chosen month range. Rows with nothing in range drop out.
+  const rows = [];
+  for (const p of allProjects) {
+    const byMach = {};
+    for (const t of state.tasks) {
+      if (t.project !== p) continue;
+      const k = inferredAnchorKey(t);
+      if (!k || !sel.has(k)) continue;
+      const date = t.start_date || t.end_date;
+      if (!date) continue;
+      const m = date.slice(0, 7);
+      if ((from && m < from) || (to && m > to)) continue;
+      (byMach[t.machine || ''] ||= []).push({ k, date, done: (Number(t.progress) || 0) >= 100, name: t.name });
+    }
+    for (const m of Object.keys(byMach).sort()) {
+      const events = byMach[m].sort((a, b) => a.date.localeCompare(b.date));
+      rows.push({ label: p + (m ? ' · ' + m : ''), project: p, events });
+    }
+  }
+  rows.sort((a, b) => a.events[0].date.localeCompare(b.events[0].date));
+
+  const chips = KEYDATES_ANCHORS.map(a =>
+    `<button type="button" class="kd-chip${sel.has(a.key) ? ' is-on' : ''}" data-kd-anchor="${a.key}">${a.short}</button>`
+  ).join('');
+  const rangeHtml = `<span class="kd-range">
+    From <input type="month" data-kd-from value="${escapeHtml(from)}" />
+    To <input type="month" data-kd-to value="${escapeHtml(to)}" />
+  </span>`;
+
+  let bodyHtml;
+  if (!rows.length) {
+    bodyHtml = '<div class="pdash-empty-block">No milestones of the selected type in this month range.</div>';
+  } else {
+    // Window = EXACTLY the chosen months: 1st of From through the last day
+    // of To — no padding, so the axis reads Aug 1 → Oct 31, never "Nov 2".
+    const dayMs = 86400000;
+    const winStartMs = new Date(Number(from.slice(0, 4)), Number(from.slice(5, 7)) - 1, 1).getTime();
+    const winEndMs = new Date(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 1).getTime(); // = end of To's last day
+    const span = Math.max(dayMs, winEndMs - winStartMs);
+    const pctOf = (ms) => ((ms - winStartMs) / span) * 100;
+    let monthTicksHtml = '', monthLinesHtml = '';
+    {
+      const d = new Date(winStartMs);
+      let first = true;
+      while (d.getTime() < winEndMs) {
+        const frac = (d.getTime() - winStartMs) / span;
+        // Months say just "Aug" — the YEAR gets its own layer above (Dan:
+        // "Aug '26" read like August 26th).
+        monthTicksHtml += `<div class="pdash-fintl-month kd-month" style="left:${(frac * 100).toFixed(2)}%">${d.toLocaleString('en-US', { month: 'short' })}</div>`;
+        if (first || d.getMonth() === 0) {
+          monthTicksHtml += `<div class="kd-year" style="left:${(frac * 100).toFixed(2)}%">${d.getFullYear()}</div>`;
+        }
+        first = false;
+        monthLinesHtml += `<div class="pdash-fintl-gridline" style="left:${(frac * 100).toFixed(2)}%"></div>`;
+        d.setMonth(d.getMonth() + 1);
+      }
+      // Closing boundary line at the very end of the To month (no label).
+      monthLinesHtml += `<div class="pdash-fintl-gridline" style="left:100%"></div>`;
+    }
+    const monthsSpan = Math.max(1, span / (30.4 * dayMs));
+    // Scroll-wheel zoom: px per month, remembered. Labels now carry a date,
+    // so lanes budget ~115px per label.
+    const pxMonth = Math.max(40, Math.min(400, Number(localStorage.getItem('sdcKeyDatesPxMonth')) || 120));
+    const laneGapPct = Math.min(30, (115 / (monthsSpan * pxMonth)) * 100);
+    // Names live OUTSIDE the scroll pane (left column never covers diamonds);
+    // each name cell gets the exact same height as its track row.
+    const HEAD_H = 42; // two layers: year on top, months underneath
+    let namesHtml = `<div class="kd-name kd-name-head" style="height:${HEAD_H}px">Project</div>`;
+    let tracksHtml = `<div class="kd-trackrow kd-trackrow-head" style="height:${HEAD_H}px">${monthTicksHtml}</div>`;
+    for (const r of rows) {
+      const laneLastPct = [];
+      let laneCount = 1;
+      const placed = r.events.map(ev => {
+        const ms = Date.parse(ev.date + 'T00:00:00');
+        const pct = pctOf(ms);
+        let lane = laneLastPct.findIndex(x => pct - x >= laneGapPct);
+        if (lane === -1) { lane = laneLastPct.length; laneLastPct.push(-999); }
+        laneLastPct[lane] = pct;
+        laneCount = Math.max(laneCount, lane + 1);
+        const cls = ev.done ? 'is-paid' : (ms < todayMs ? 'is-overdue' : 'is-upcoming');
+        const status = ev.done ? 'Complete' : (ms < todayMs ? 'LATE' : 'Upcoming');
+        return { ev, pct, lane, cls, status };
+      });
+      const diamonds = placed.map(({ ev, pct, lane, cls, status }) => {
+        const laneTop = laneCount > 1 ? `top:${4 + lane * 24}px;` : '';
+        // Label carries the DATE (MM/DD) — the month lines alone are too
+        // coarse to read a date off the axis.
+        const mmdd = ev.date.slice(5, 10).replace('-', '/');
+        return `<div class="pdash-fintl-ms ${cls}" style="left:${pct}%;${laneTop}"
+            title="${escapeHtml((shortOf[ev.k] || ev.name) + ' · ' + fmtDate(ev.date) + ' · ' + status)}">
+          <span class="pdash-fintl-lbl">${escapeHtml((shortOf[ev.k] || ev.k) + ' · ' + mmdd)}</span>
+          <span class="pdash-fintl-di"></span>
+        </div>`;
+      }).join('');
+      const h = laneCount > 1 ? 8 + laneCount * 24 : 32;
+      namesHtml += `<div class="kd-name kd-projlink" style="height:${h}px" data-project="${escapeHtml(r.project)}" title="${escapeHtml(r.label)} — open this project">${escapeHtml(r.label)}</div>`;
+      tracksHtml += `<div class="kd-trackrow${laneCount > 1 ? ' has-lanes' : ''}" style="height:${h}px">${diamonds}</div>`;
+    }
+    const todayFrac = (todayMs - winStartMs) / span;
+    const todayHtml = (todayFrac >= 0 && todayFrac <= 1)
+      ? `<div class="pdash-fintl-today" style="left:${(todayFrac * 100).toFixed(2)}%;"><span>Today</span></div>` : '';
+    const minW = Math.round(monthsSpan * pxMonth);
+    bodyHtml = `<div class="kd-body">
+      <div class="kd-names">${namesHtml}</div>
+      <div class="pdash-fintl-scroll kd-scroll" data-months="${monthsSpan.toFixed(3)}">
+        <div class="pdash-fintl" style="min-width:max(100%,${minW}px)">
+          ${monthLinesHtml}
+          ${todayHtml}
+          ${tracksHtml}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  root.innerHTML = `
+    <div class="pdash-section" style="margin-top:26px;">
+      <div class="pdash-section-head">
+        <h2>📅 Key Dates</h2>
+        <span class="pdash-section-sub">pick the milestones + month range — soonest first · green done · red late</span>
+      </div>
+      <div class="kd-chips">${chips}${rangeHtml}</div>
+      ${bodyHtml}
+    </div>`;
+
+  // Month-range inputs.
+  root.querySelector('[data-kd-from]')?.addEventListener('change', (e) => {
+    if (e.target.value) localStorage.setItem('sdcKeyDatesFrom', e.target.value);
+    renderProjectsKeyDates();
+  });
+  root.querySelector('[data-kd-to]')?.addEventListener('change', (e) => {
+    if (e.target.value) localStorage.setItem('sdcKeyDatesTo', e.target.value);
+    renderProjectsKeyDates();
+  });
+
+  // Chip toggles — at least one always stays on.
+  root.querySelectorAll('.kd-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const cur = new Set(_keyDatesSelected());
+      const k = chip.dataset.kdAnchor;
+      if (cur.has(k)) { if (cur.size > 1) cur.delete(k); } else cur.add(k);
+      try { localStorage.setItem('sdcKeyDatesAnchors', JSON.stringify([...cur])); } catch (_) {}
+      renderProjectsKeyDates();
+    });
+  });
+  // Project name click → jump to that schedule.
+  root.querySelectorAll('.kd-projlink').forEach(el => {
+    el.addEventListener('click', () => {
+      const p = el.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      saveProjectTabs();
+      setView('schedule');
+    });
+  });
+  // Drag-to-pan, same feel as the other calendars.
+  const box = root.querySelector('.pdash-fintl-scroll');
+  if (box) {
+    // Keep the CURRENT month (and year) label fully visible while panning:
+    // the label under the left edge slides along with the viewport until the
+    // next month's line pushes it out — so "Aug" never sits half-clipped.
+    const syncAxisLabels = () => {
+      const sc = box.scrollLeft;
+      for (const cls of ['kd-month', 'kd-year']) {
+        const labels = [...box.querySelectorAll('.' + cls)];
+        labels.forEach((el, i) => {
+          if (el._baseX == null) el._baseX = el.offsetLeft;
+          const nextX = labels[i + 1] ? (labels[i + 1]._baseX ?? labels[i + 1].offsetLeft) : Infinity;
+          const maxShift = Math.max(0, nextX - el._baseX - el.offsetWidth - 10);
+          const shift = Math.min(Math.max(0, sc + 4 - el._baseX), maxShift);
+          el.style.transform = shift > 0 ? `translateX(${shift}px)` : '';
+        });
+      }
+    };
+    box.addEventListener('scroll', syncAxisLabels, { passive: true });
+    syncAxisLabels();
+    // Scroll-wheel ZOOM — changes the px-per-month scale, keeping the date
+    // under the cursor pinned in place. Remembered across renders.
+    box.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      // Zoom from the CURRENT effective scale (fit-to-width when zoomed all
+      // the way out), so the first wheel tick always visibly zooms.
+      const months = Number(box.dataset.months) || 1;
+      const cur = box.scrollWidth / months;
+      const next = Math.max(40, Math.min(800, Math.round(cur * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
+      if (Math.abs(next - cur) < 1) return;
+      const rect = box.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const frac = (box.scrollLeft + cx) / box.scrollWidth;
+      try { localStorage.setItem('sdcKeyDatesPxMonth', String(next)); } catch (_) {}
+      renderProjectsKeyDates();
+      const nbox = document.querySelector('#projects-keydates .kd-scroll');
+      if (nbox) nbox.scrollLeft = Math.max(0, frac * nbox.scrollWidth - cx);
+    }, { passive: false });
+    box.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || e.target.closest('input, select, button, .pdash-fintl-projlink')) return;
+      const startX = e.clientX, startLeft = box.scrollLeft;
+      const page = document.getElementById('projects-page') || root.closest('.view');
+      const startTop = page ? page.scrollTop : 0;
+      let panning = false;
+      const onMove = (ev) => {
+        const dx = ev.clientX - startX, dy = ev.clientY - (e.clientY);
+        if (!panning && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+          panning = true; box.classList.add('panning');
+          try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+        }
+        if (panning) {
+          ev.preventDefault();
+          box.scrollLeft = startLeft - dx;
+          if (page) page.scrollTop = startTop - dy;
+        }
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        box.classList.remove('panning');
+        if (panning) {
+          const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+          box.addEventListener('click', swallow, { capture: true, once: true });
+        }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  }
 }
 
 // Favorites page — list of starred projects. Click to open like the Projects page.
@@ -12909,6 +13225,25 @@ function showProjectTabMenu(x, y, project) {
   items.push({ label: 'Duplicate to new project…',          onClick: () => duplicateProject(project) });
   items.push({ label: 'Merge another project into this…',   onClick: () => mergeAnotherProjectInto(project, x, y) });
   items.push({ label: isTemplate ? 'Unmark as template' : 'Mark as template ★', onClick: () => toggleTemplate(project) });
+  // 2c) Move between directories (Active / Sales / Closed) — right-click
+  // only, one entry per directory it's NOT currently in (Dan: no buttons
+  // cluttering every row for something 99% of projects never need).
+  // Sales schedules also get the full promote-to-detailed-project path here
+  // (the old "→ Project" row button, now menu-only).
+  const curWs = projectWorkspace(project);
+  if (curWs === 'Sales' && !isTemplate) {
+    items.push({ label: '🚀 Promote to detailed project…', onClick: () => openPromoteModal(project) });
+  }
+  for (const ws of WORKSPACES.filter(w => w !== curWs)) {
+    items.push({
+      label: `📁 Move to ${ws === 'Active' ? 'Active Projects' : ws}`,
+      onClick: () => {
+        setProjectWorkspace(project, ws);
+        showToast(`${project} moved to ${ws === 'Active' ? 'Active Projects' : ws}`, { kind: 'success' });
+        if (state.view === 'projects') renderProjectsPage();
+      },
+    });
+  }
   // 2b) Ownership — PM + Debug lead, picked from the active team. Shared
   //     server-side (settings.project_leads); the Departments page filters
   //     its timeline by PM and shows the per-PM dashboard from these.
@@ -24798,6 +25133,17 @@ async function loadTasks() {
   // whenever tasks (re)load while it's on screen (incl. the boot case where
   // the view restores BEFORE the first task load lands).
   if (state.view === 'invoicing') { try { renderInvoicingPage(); } catch (_) {} }
+  // Pull SDC Projects Reports statuses once per boot (fire-and-forget) —
+  // when they land, inactive jobs drop out of the money views.
+  if (_plannerStatusMap === null && !loadTasks._plannerTried) {
+    loadTasks._plannerTried = true;
+    loadPlannerStatuses().then(() => {
+      if (!_plannerStatusMap) return;
+      if (state.view === 'invoicing') { try { renderInvoicingPage(); } catch (_) {} }
+      else if (state.view === 'team') { try { renderTeam(); } catch (_) {} }
+      else if (state.view === 'projects') { try { renderProjectsPage(); } catch (_) {} }
+    });
+  }
   // Phase 2 (Abhi port): refresh 💬 badge counts for the active project after
   // every render so newly-loaded rows pick up their comment counts and saves
   // don't leave stale badges behind. Wrapped in typeof check — comments-ui.js
