@@ -11517,6 +11517,9 @@ const KEYDATES_ANCHORS = [
   { key: 'receipt_of_po',     short: 'PO' },
   { key: 'mech_release_1',    short: 'Mech 1' },
   { key: 'parts_panel_ready', short: 'Panel Ready' },
+  // Build Start is DERIVED, not a schedule row: the first day any machine
+  // builder (discipline 'build') is assigned to work on that machine.
+  { key: 'build_start',       short: 'Build Start' },
   { key: 'machine_power_up',  short: 'Power-Up' },
   { key: 'fat',               short: 'FAT' },
   { key: 'ship_machine',      short: 'Ship' },
@@ -11551,18 +11554,43 @@ function renderProjectsKeyDates() {
 
   // One row per project·machine holding that row's selected milestones that
   // fall INSIDE the chosen month range. Rows with nothing in range drop out.
+  const wantBuild = sel.has('build_start');
+  const builders = wantBuild
+    ? new Set((state.team || []).filter(tm => tm.discipline === 'build').map(tm => tm.name))
+    : null;
+  const isBuilderTask = (t) => {
+    if (!t.assignee) return false;
+    return String(t.assignee).split(',').some(n => builders.has(n.trim()));
+  };
+  const inRange = (date) => {
+    const m = date.slice(0, 7);
+    return !((from && m < from) || (to && m > to));
+  };
   const rows = [];
   for (const p of allProjects) {
     const byMach = {};
+    const buildMin = {}; // machine → earliest builder-assigned task
     for (const t of state.tasks) {
       if (t.project !== p) continue;
-      const k = inferredAnchorKey(t);
-      if (!k || !sel.has(k)) continue;
       const date = t.start_date || t.end_date;
       if (!date) continue;
-      const m = date.slice(0, 7);
-      if ((from && m < from) || (to && m > to)) continue;
+      // Derived Build Start: earliest start of ANY builder-assigned task.
+      if (wantBuild && t.start_date && isBuilderTask(t)) {
+        const mk = t.machine || '';
+        if (!buildMin[mk] || t.start_date < buildMin[mk].date) {
+          buildMin[mk] = { date: t.start_date, done: (Number(t.progress) || 0) > 0, name: t.name, who: t.assignee };
+        }
+      }
+      const k = inferredAnchorKey(t);
+      if (!k || !sel.has(k)) continue;
+      if (!inRange(date)) continue;
       (byMach[t.machine || ''] ||= []).push({ k, date, done: (Number(t.progress) || 0) >= 100, name: t.name });
+    }
+    for (const mk of Object.keys(buildMin)) {
+      const b = buildMin[mk];
+      if (!inRange(b.date)) continue;
+      (byMach[mk] ||= []).push({ k: 'build_start', date: b.date, done: b.done,
+        name: `Build Start — ${b.who} starts "${b.name}"` });
     }
     for (const m of Object.keys(byMach).sort()) {
       const events = byMach[m].sort((a, b) => a.date.localeCompare(b.date));
@@ -11610,9 +11638,10 @@ function renderProjectsKeyDates() {
       monthLinesHtml += `<div class="pdash-fintl-gridline" style="left:100%"></div>`;
     }
     const monthsSpan = Math.max(1, span / (30.4 * dayMs));
-    // Scroll-wheel zoom: px per month, remembered. Labels now carry a date,
-    // so lanes budget ~115px per label.
-    const pxMonth = Math.max(40, Math.min(400, Number(localStorage.getItem('sdcKeyDatesPxMonth')) || 120));
+    // Labels carry a date, so lanes budget ~115px per label at the fixed
+    // ~120px/month floor scale. (No wheel-zoom — the wheel scrolls the PAGE;
+    // sideways navigation is drag-to-pan + the scrollbar.)
+    const pxMonth = 120;
     const laneGapPct = Math.min(30, (115 / (monthsSpan * pxMonth)) * 100);
     // Names live OUTSIDE the scroll pane (left column never covers diamonds);
     // each name cell gets the exact same height as its track row.
@@ -11638,8 +11667,9 @@ function renderProjectsKeyDates() {
         // Label carries the DATE (MM/DD) — the month lines alone are too
         // coarse to read a date off the axis.
         const mmdd = ev.date.slice(5, 10).replace('-', '/');
+        const tipName = ev.k === 'build_start' ? ev.name : (shortOf[ev.k] || ev.name);
         return `<div class="pdash-fintl-ms ${cls}" style="left:${pct}%;${laneTop}"
-            title="${escapeHtml((shortOf[ev.k] || ev.name) + ' · ' + fmtDate(ev.date) + ' · ' + status)}">
+            title="${escapeHtml(tipName + ' · ' + fmtDate(ev.date) + ' · ' + status)}">
           <span class="pdash-fintl-lbl">${escapeHtml((shortOf[ev.k] || ev.k) + ' · ' + mmdd)}</span>
           <span class="pdash-fintl-di"></span>
         </div>`;
@@ -11727,24 +11757,9 @@ function renderProjectsKeyDates() {
     };
     box.addEventListener('scroll', syncAxisLabels, { passive: true });
     syncAxisLabels();
-    // Scroll-wheel ZOOM — changes the px-per-month scale, keeping the date
-    // under the cursor pinned in place. Remembered across renders.
-    box.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      // Zoom from the CURRENT effective scale (fit-to-width when zoomed all
-      // the way out), so the first wheel tick always visibly zooms.
-      const months = Number(box.dataset.months) || 1;
-      const cur = box.scrollWidth / months;
-      const next = Math.max(40, Math.min(800, Math.round(cur * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
-      if (Math.abs(next - cur) < 1) return;
-      const rect = box.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const frac = (box.scrollLeft + cx) / box.scrollWidth;
-      try { localStorage.setItem('sdcKeyDatesPxMonth', String(next)); } catch (_) {}
-      renderProjectsKeyDates();
-      const nbox = document.querySelector('#projects-keydates .kd-scroll');
-      if (nbox) nbox.scrollLeft = Math.max(0, frac * nbox.scrollWidth - cx);
-    }, { passive: false });
+    // NO wheel handling here — the mouse wheel scrolls the whole page like
+    // anywhere else (Dan: zoom-on-scroll made the page impossible to scroll
+    // when the calendar fills the screen). Sideways = drag-to-pan.
     box.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || e.target.closest('input, select, button, .pdash-fintl-projlink')) return;
       const startX = e.clientX, startLeft = box.scrollLeft;

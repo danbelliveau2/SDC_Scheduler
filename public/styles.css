@@ -11478,7 +11478,12 @@ td.sales-suppressed {
   color: var(--text-muted, #64748b);
   line-height: 24px;
 }
-.kd-scroll { flex: 1; min-width: 0; }
+/* The track pane must NEVER scroll vertically on its own — the base
+   .pdash-fintl-scroll rule caps height at 62vh, which let the grid stop
+   short of the name column. Full height, sideways scroll only. */
+/* Double-class selector so this BEATS the base .pdash-fintl-scroll rule
+   (max-height: 62vh; overflow: auto) that lives later in this file. */
+.pdash-fintl-scroll.kd-scroll { flex: 1; min-width: 0; max-height: none; overflow-x: auto; overflow-y: hidden; }
 .kd-trackrow {
   position: relative;
   box-sizing: border-box;
@@ -11487,7 +11492,12 @@ td.sales-suppressed {
   border-radius: 6px;
 }
 .kd-trackrow-head { background: transparent; border-color: transparent; }
-.kd-trackrow.has-lanes .pdash-fintl-ms { transform: translateX(-50%); }
+/* The DIAMOND sits ON its date (base CSS centers the whole diamond+label
+   group on the date, which pushed the glyph visibly left of the real day —
+   an 08/28 diamond rendered behind an 08/26 Today line). -6px = half the
+   11px diamond, so the glyph centers on the date and the label runs right. */
+.kd-trackrow .pdash-fintl-ms { transform: translate(-6px, -50%); }
+.kd-trackrow.has-lanes .pdash-fintl-ms { transform: translateX(-6px); }
 /* Month-start lines ON the grid: the base gridline paints BEHIND the white
    row cards (z-index 0), so in Key Dates lift it above them and make it a
    visible dotted line. Diamonds (z-index 1, later in DOM) still win. */
