@@ -222,13 +222,24 @@
     padding: 14px 16px; margin: 20px 0 0; font-size: 14px; color: var(--navy);
   }
   .urgent-note strong { font-weight: 700; }
+  /* The number is the point of this panel for someone with a stopped line, so
+     it reads as the action rather than as body copy. Navy on Light Blue rather
+     than Primary Blue, which is too close to the panel to carry an underline. */
+  .urgent-note a {
+    color: var(--navy); font-weight: 700; text-decoration: underline;
+    text-underline-offset: 2px; white-space: nowrap;
+  }
+  .urgent-note a:hover { color: #000; }
 
   /* Footer - S08: SDC address + contact line. */
   footer { background: var(--navy); color: #9fb3c8; }
   footer .wrap { padding-top: 24px; padding-bottom: 28px; font-size: 13px; }
   footer .co { color: #fff; font-weight: 600; }
   footer a { color: var(--blue-light); text-decoration: none; }
-  footer a:hover { text-decoration: underline; }
+  footer a:hover, footer a:focus-visible { text-decoration: underline; }
+  /* Keep the number on one line so a tap target is never split across a
+     wrap on a narrow screen. */
+  footer a[href^="tel:"] { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -364,7 +375,7 @@
 
     <p class="urgent-note">
       <strong>Machine down right now?</strong> Submit this so it is tracked, then call us on
-      440-564-5200. A phone call is faster than any form.
+      <a href="tel:+14405645200">440-564-5200</a>. A phone call is faster than any form.
     </p>
   </form>
 </main>
@@ -372,8 +383,12 @@
 <footer>
   <div class="wrap">
     <span class="co">Steven Douglas Corp.</span><br>
-    7750 Discovery Lane, Concord Twp, OH 44077<br>
-    440-564-5200 &nbsp;&middot;&nbsp; <a href="https://sdcautomation.com">sdcautomation.com</a>
+    <!-- Google's documented Maps URL form, so it opens the native app on a
+         phone and the web map on a desktop rather than a search page. -->
+    <a href="https://www.google.com/maps/search/?api=1&amp;query=7750%20Discovery%20Lane%2C%20Concord%20Twp%2C%20OH%2044077"
+       target="_blank" rel="noopener noreferrer">7750 Discovery Lane, Concord Twp, OH 44077</a><br>
+    <a href="tel:+14405645200">440-564-5200</a> &nbsp;&middot;&nbsp;
+    <a href="https://sdcautomation.com" target="_blank" rel="noopener noreferrer">sdcautomation.com</a>
   </div>
 </footer>
 
