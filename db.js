@@ -293,6 +293,41 @@ async function init() {
   `);
   await pool.query(`ALTER TABLE shop_parts ADD INDEX idx_shop_parts_job (job)`).catch(() => {});
 
+  // ── ETO receiving link (2026-08-26) ────────────────────────────────────────
+  // Most parts on this page are FABRICATED in the SDC shop and have no PO at all
+  // — measured 58 of 61 rows when this was built. A minority are farmed out
+  // (outside machining, anodizing) and arrive on a vendor PO, and for those the
+  // ETO receipt IS the completion event, so ticking Done by hand is duplicate
+  // data entry.
+  //
+  // `eto_po` is therefore deliberately NULLable and opt-in: a PM entering a PO
+  // number is the explicit statement "this one is bought, not made". Nothing
+  // automatic touches a row with a NULL eto_po, so a shop-made part can never be
+  // auto-completed by a coincidence.
+  //
+  // Keying on the PO (not the part number alone) is what makes this safe. Part
+  // numbers repeat across orders: 1147-FB-003 was received on PO 104448 on
+  // 2026-04-21, and a NEW row for that same part number was created 2026-08-26
+  // for a re-order. Matching on part number alone would have marked the new row
+  // complete off the April receipt. Naming the PO excludes it structurally.
+  //
+  // The eto_* columns below are a CACHE of ETO's answer, refreshed by
+  // etoDb.syncShopPartReceipts on the existing 30-min ETO cron. ETO stays the
+  // system of record; nothing here is ever written back to it.
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_po VARCHAR(32) NULL`).catch(() => {});
+  // Received/ordered qty summed across every line for this part on that PO — a
+  // single shop part routinely spans several lines (1147-FB-003 is two lines of
+  // qty 1 against a shop qty of 2, so per-line matching would never complete).
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_received_qty INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_po_qty INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_received_on VARCHAR(32) NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_synced_at DATETIME NULL`).catch(() => {});
+  // Audit: how a row got completed. NULL = a person ticked the box (every row
+  // that predates this feature). Set to e.g. 'ETO PO 104448' by the sync, so the
+  // shop can always tell an automated close from a human one.
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN completed_source VARCHAR(64) NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD INDEX idx_shop_parts_eto_po (eto_po)`).catch(() => {});
+
   // v9.0: "Vendor PO Track" — every PO sent to an outside vendor. Status derived
   // client-side from complete/partial + ETA (PO Date + Lead Time weeks).
   await pool.query(`

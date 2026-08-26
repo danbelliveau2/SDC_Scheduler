@@ -9383,6 +9383,11 @@ const SHOP_COLS = [
   { key: 'new_mod',           label: 'New/MOD',            type: 'mod',  w: '140px' },
   { key: 'location',          label: 'Location/Machinist', type: 'text', w: '120px' },
   { key: 'out_for_finishing', label: 'Out for Finishing',  type: 'text', w: '120px' },
+  // Opt-in link to a Total ETO purchase order. Filling this in is how a PM says
+  // "this part is bought/farmed out, not made here" — which is what lets the ETO
+  // sync auto-complete it on receipt. Left blank on shop-fabricated parts (the
+  // large majority), and nothing automatic touches those.
+  { key: 'eto_po',            label: 'ETO PO #',           type: 'text', w: '90px'  },
   { key: 'comments',          label: 'Comments',           type: 'text', w: '150px' },
   { key: 'engineer',          label: 'Engineer',           type: 'text', w: '100px' },
   { key: 'pm',                label: 'PM',                 type: 'pm',   w: '110px' },
@@ -9529,6 +9534,27 @@ function renderShopPartsPage() {
   // the legacy rank. Everything else stays editable here.
   const detailFields = (r) => SHOP_COLS.filter(c => !['qty', 'part_complete', 'rank'].includes(c.key)).map(c => detailInput(r, c)).join('');
 
+  // ETO receiving badge. Only rows with a PO linked show anything at all.
+  //   grey  = linked, but no line for this part on that PO (usually a typo'd PO)
+  //   amber = on the PO, not yet fully received
+  //   green = received; if the row is also complete, the sync is what closed it
+  // Deliberately read-only: the way to change it is to fix the PO or receive the
+  // goods in ETO, which is the system of record.
+  const etoBadge = (r) => {
+    const po = String(r.eto_po ?? '').trim();
+    if (!po) return '';
+    const rcvd = r.eto_received_qty;
+    const need = Number(r.qty) > 0 ? Number(r.qty) : Number(r.eto_po_qty) || 0;
+    if (rcvd == null) {
+      return `<span class="sp-eto is-missing" title="PO ${escapeHtml(po)}: no line for ${escapeHtml(r.part_no || 'this part')} on that PO — check the PO number">PO ${escapeHtml(po)} ?</span>`;
+    }
+    const full = need > 0 && Number(rcvd) >= need;
+    const on = r.eto_received_on ? ` on ${escapeHtml(r.eto_received_on)}` : '';
+    const cls = full ? 'is-received' : 'is-partial';
+    const mark = full ? ' ✓' : '';
+    return `<span class="sp-eto ${cls}" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}">PO ${escapeHtml(po)} ${rcvd}/${need}${mark}</span>`;
+  };
+
   // Priority select (1 hot / 2 due / 3 low), color-coded inline.
   const priSel = (r) => { const p = _shopPri(r); return `<span class="sp-pri pri-${p}" data-pri="${r.id}" title="Priority ${p} — click to change">${p}</span>`; };
   const partHeader = `<div class="sp-list-head"><span>Pri</span><span>Job</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span></span></div>`;
@@ -9552,7 +9578,8 @@ function renderShopPartsPage() {
         <span class="sp-pncell" data-toggle="${r.id}" title="${isMod ? 'MOD' : 'New part'} · ${escapeHtml(pn)} — click to edit">${escapeHtml(pn)}</span>
         <span class="sp-namecell" data-toggle="${r.id}" title="${escapeHtml(r.description || '')}">${escapeHtml(r.description || '')}</span>
         <span class="sp-duecell${overdue ? ' is-late' : ''}">${due ? escapeHtml(_shopFmtDue(due)) : ''}</span>
-        <label class="sp-done" title="Mark complete → moves to Complete"><input type="checkbox" data-id="${r.id}" data-field="part_complete" ${done ? 'checked' : ''}/></label>
+        ${etoBadge(r)}
+        <label class="sp-done" title="${r.completed_source ? 'Completed automatically by ' + escapeHtml(r.completed_source) : 'Mark complete → moves to Complete'}"><input type="checkbox" data-id="${r.id}" data-field="part_complete" ${done ? 'checked' : ''}/></label>
       </div>
       <div class="sp-card-details" data-details="${r.id}" hidden><div class="sp-fields">${detailFields(r)}</div><button class="sp-del" data-id="${r.id}" type="button">Delete part</button></div>
     </div>`;

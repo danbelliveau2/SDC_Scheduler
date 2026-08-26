@@ -10250,6 +10250,20 @@ td.sales-suppressed {
 .sp-pncell { flex: none; font-weight: var(--fw-bold); font-size: var(--fs-md); color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .sp-duecell { flex: none; font-size: var(--fs-md); color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sp-duecell.is-late { color: var(--sdc-dark, #061d39); font-weight: var(--fw-bold); }
+
+/* ETO receiving badge (Parts in Shop). Only shown on rows linked to an ETO PO —
+   the shop-fabricated majority have no PO and render nothing here. Colours use
+   the same tokens as the rest of the page so it reads as status, not decoration. */
+.sp-eto {
+  flex: none; font-size: var(--fs-sm); font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  padding: 1px 6px; border-radius: 10px; border: 1px solid transparent;
+  cursor: default;
+}
+.sp-eto.is-received { color: #14532d; background: #dcfce7; border-color: #86efac; }
+.sp-eto.is-partial  { color: #78350f; background: #fef3c7; border-color: #fcd34d; }
+.sp-eto.is-missing  { color: var(--text-muted, #64748b); background: var(--surface-2, #f1f5f9); border-color: var(--border, #cbd5e1); }
+.sp-proj-card .sp-eto { font-size: var(--fs-xs); }
 /* Priority — gradient of SDC blue: 1 darkest (hot) → 3 lightest (low). */
 .sp-pri { flex: none; display: inline-block; min-width: 18px; text-align: center; border: 1px solid transparent; font-weight: var(--fw-bold); font-size: var(--fs-md); border-radius: 6px; padding: 2px 5px; cursor: pointer; }
 .sp-pri.pri-1 { background: var(--sdc-dark, #061d39); color: #fff; }
