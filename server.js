@@ -333,6 +333,9 @@ app.use(require('./routes/tasks')(    { ...routeDeps }));
 app.use(require('./routes/team')(     { ...routeDeps }));
 app.use(require('./routes/settings')( { ...routeDeps }));
 app.use(require('./routes/shopParts')({ ...routeDeps }));
+// Manufacturing — ETO's in-house task queue joined to this scheduler's build
+// dates. Read-only; sits next to shopParts because it serves the same audience.
+app.use(require('./routes/manufacturing')({ ...routeDeps }));
 app.use(require('./routes/vendorPos')({ ...routeDeps }));
 app.use(require('./routes/financials')({ ...routeDeps }));
 app.use(require('./routes/eto')(      { ...routeDeps }));
