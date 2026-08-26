@@ -49,6 +49,7 @@ All optional — the module works without any of these, degrading sensibly.
 | `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | *(unset)* | Cloudflare Turnstile on the public form. Unset = no-op, leaving only the honeypot and per-IP throttle. **Set before go-live** — the form this replaces was spammed via its public URL. |
 | `SERVICE_UPLOAD_DIR` | `<app>/uploads/service` | Where attachments land. Must be writable and **backed up** — it is customer data the DB dump does not contain. |
 | `SERVICE_MAX_FILE_MB` | `25` | Per-file upload cap. |
+| `SERVICE_THANKYOU_URL` | *(unset)* | Redirect target after a successful submission, e.g. `https://sdcautomation.com/thank-you-service-request-sdc/` — lands the customer back on the SDC site so the submission registers as a GA4 conversion. The Service Request Number is appended as `?sr=`. Unset = the form's own inline success screen. **Do not enable until that page echoes `?sr=`, or the customer loses their request number.** |
 | `SERVICE_INTAKE_EMAIL` | *(unset)* | Address notified when a website request arrives. Unset = no intake alert. |
 | `SERVICE_PUBLIC_RATE_MAX` | `8` | Max public submissions per IP per hour. |
 | `TEAMS_WEBHOOK_URL` | *(unset)* | Incoming Webhook for Work Order cards. Unset = email only. |

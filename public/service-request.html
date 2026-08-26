@@ -438,9 +438,18 @@ function renderOptions(o) {
   // It PRESELECTS rather than locks: someone who clicked the wrong button, or
   // who does not know whether SDC built their machine, must still be able to
   // change it rather than be trapped in the wrong form.
+  //
+  // NOTHING is preselected without that parameter. Monica settled on ONE
+  // combined form for both SDC and third-party equipment, so the website now
+  // has a single button and nobody has told us the answer before they arrive.
+  // Defaulting to 'sdc' in that world silently answers the question FOR every
+  // non-SDC customer — and this field decides whether a serial number is
+  // demanded, whether there is a build history to look up, and whether SDC
+  // warranty applies. A wrong default here is a wrong Service Log entry, so
+  // the customer answers it themselves.
   const wanted = new URLSearchParams(location.search).get('machine');
-  const pick = (wanted === 'non_sdc' || wanted === 'sdc') ? wanted : 'sdc';
-  const chosen = document.querySelector(`#machineTypeRow input[value="${pick}"]`);
+  const pick = (wanted === 'non_sdc' || wanted === 'sdc') ? wanted : null;
+  const chosen = pick && document.querySelector(`#machineTypeRow input[value="${pick}"]`);
   if (chosen) chosen.checked = true;
   document.querySelectorAll('#machineTypeRow input').forEach(r =>
     r.addEventListener('change', applyMachineType));
@@ -485,6 +494,18 @@ function applyMachineType() {
   const input  = document.getElementById('machine_serial');
   const hint   = document.getElementById('serialHint');
   if (!label || !input) return;
+  // Unanswered. Nothing is preselected any more, so this is the state the page
+  // opens in — do not mark the serial required before the customer has told us
+  // whose machine it is, because for a third-party machine it never will be.
+  const answered = document.querySelector('#machineTypeRow input:checked');
+  if (!answered) {
+    label.textContent = 'Machine Serial # / Job # / make & model';
+    label.classList.remove('req');
+    input.required = false;
+    input.placeholder = '';
+    hint.textContent = 'Answer the question above and this will ask for the right thing.';
+    return;
+  }
   if (nonSdc) {
     label.textContent = 'Machine make / model';
     label.classList.remove('req');
@@ -527,17 +548,26 @@ document.getElementById('form').addEventListener('submit', async (e) => {
 
   // Mirrors the server's rule exactly (routes/service.js): the serial is
   // required only for an SDC machine.
-  const isNonSdc = !!document.querySelector('#machineTypeRow input[value="non_sdc"]:checked');
+  // Demand the serial only when the customer has actually said it is an SDC
+  // machine. Keyed on 'sdc' being checked rather than on 'non_sdc' being
+  // unchecked, because those stopped meaning the same thing once the field
+  // gained an unanswered state: reporting a missing serial alongside "tell us
+  // whose machine this is" asks for something they cannot know yet, and for a
+  // third-party machine will never have.
+  const isSdc = !!document.querySelector('#machineTypeRow input[value="sdc"]:checked');
   const required = [
     ['company_name',    'Company Name'],
     ['requestor_name',  'Your Name'],
     ['requestor_email', 'Your Email'],
     ['requestor_phone', 'Your Phone Number'],
-    ...(isNonSdc ? [] : [['machine_serial', 'SDC Machine Serial # / Project Job #']]),
+    ...(isSdc ? [['machine_serial', 'SDC Machine Serial # / Project Job #']] : []),
     ['service_details', 'Service Details'],
   ];
   const fd = new FormData(form);
   const missing = required.filter(([n]) => !String(fd.get(n) || '').trim()).map(([, l]) => l);
+  // Radio groups are absent from FormData entirely until something is picked,
+  // so they are checked by name rather than through the list above.
+  if (!fd.get('machine_type')) missing.push('Is this an SDC machine?');
   if (!fd.get('urgency')) missing.push('Urgency');
   if (missing.length) return showError('Please complete: ' + missing.join(', ') + '.');
 
@@ -558,6 +588,28 @@ document.getElementById('form').addEventListener('submit', async (e) => {
     const res  = await fetch('/api/public/service-requests', { method: 'POST', body: fd });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Something went wrong submitting your request.');
+
+    // Hand the customer back to sdcautomation.com so the submission registers
+    // as a GA4 conversion on the site's own thank-you page, which cannot happen
+    // while this form ends on its own screen. The Service Request Number goes
+    // along as ?sr= so the page can show it — the customer must not lose the
+    // identifier they will quote on the phone just because we redirected.
+    //
+    // Server-controlled and off unless SERVICE_THANKYOU_URL is set: with it
+    // unset the inline success below is unchanged, which is the safe default
+    // until the thank-you page is confirmed to echo the parameter.
+    if (OPTS.thankYouUrl) {
+      try {
+        const url = new URL(OPTS.thankYouUrl);
+        if (data.request_no) url.searchParams.set('sr', data.request_no);
+        window.location.replace(url.toString());
+        return;
+      } catch (_) {
+        // A malformed URL in config must not swallow a successful submission —
+        // fall through to the inline screen so the customer still gets a number.
+      }
+    }
+
     document.getElementById('doneNum').textContent = data.request_no || '—';
     form.style.display = 'none';
     document.getElementById('done').style.display = 'block';

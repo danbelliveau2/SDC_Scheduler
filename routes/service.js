@@ -443,6 +443,19 @@ module.exports = function createRouter(deps) {
       maxFileMb: Math.round(MAX_FILE_BYTES / 1024 / 1024),
       maxFiles: MAX_FILES,
       turnstileSiteKey: TURNSTILE_SITE_KEY || null,
+      // Where to send the customer after a successful submission. The website
+      // developer built sdcautomation.com/thank-you-service-request-sdc/ so the
+      // customer lands back on the SDC site and the submission registers as a
+      // GA4 conversion — which cannot happen while this form ends on its own
+      // inline screen.
+      //
+      // Env-gated and unset by default ON PURPOSE. Redirecting takes the
+      // customer away from the Service Request Number, which is the identifier
+      // they quote on the phone. Do not switch this on until either the
+      // thank-you page echoes the ?sr= parameter this sends, or the customer
+      // confirmation email is live — otherwise they leave with no record of
+      // their own request.
+      thankYouUrl: process.env.SERVICE_THANKYOU_URL || null,
     });
   });
 
