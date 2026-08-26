@@ -45,6 +45,48 @@ const WARRANTY    = new Set(['warranty', 'non_warranty', 'unknown']);
 // at all (an SDC machine has one; a third-party machine does not).
 const MACHINE_TYPES = new Set(['sdc', 'non_sdc']);
 
+// ── Bot protection (R2 §1, and a real operational problem) ───────────────────
+// The button this form replaces pointed at a public Smartsheet form that was
+// scraped and spammed hard enough to put junk in the Service log (flagged by
+// Service in June 2026). The new URL is just as public and just as crawlable,
+// so the honeypot and per-IP throttle below are the floor, not the ceiling.
+//
+// Cloudflare Turnstile is the ceiling: the app is already published through a
+// Cloudflare Tunnel, it is free, and it is invisible to virtually every real
+// user (no puzzles). It is env-gated — with TURNSTILE_SECRET_KEY unset the
+// whole thing is a no-op and the form behaves exactly as before, so turning it
+// on is a config change rather than a deploy.
+const TURNSTILE_SECRET   = process.env.TURNSTILE_SECRET_KEY || '';
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY   || '';
+
+/**
+ * Verify a Turnstile token with Cloudflare. Returns { ok, reason }.
+ *
+ * Fails CLOSED on a bad/absent token, but fails OPEN if Cloudflare itself is
+ * unreachable: a customer with a machine down must not be blocked from asking
+ * for help because a third-party verification endpoint is having a bad day.
+ * That is a deliberate trade — spam is recoverable, a lost service call is not.
+ */
+async function verifyTurnstile(token, ip) {
+  if (!TURNSTILE_SECRET) return { ok: true, reason: 'disabled' };
+  if (!token) return { ok: false, reason: 'missing' };
+  try {
+    const body = new URLSearchParams({ secret: TURNSTILE_SECRET, response: token });
+    if (ip && ip !== 'unknown') body.set('remoteip', ip);
+    const res = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await res.json();
+    return data.success ? { ok: true } : { ok: false, reason: (data['error-codes'] || []).join(',') || 'rejected' };
+  } catch (e) {
+    console.warn('[service] Turnstile verification unreachable — allowing submission:', e.message);
+    return { ok: true, reason: 'verify_unreachable' };
+  }
+}
+
 // Fields a CUSTOMER may set. Kept separate from the internal list below so a
 // crafted public payload can never reach `quote_sent`, `current_status`, or any
 // other internal management field.
@@ -400,6 +442,7 @@ module.exports = function createRouter(deps) {
       ],
       maxFileMb: Math.round(MAX_FILE_BYTES / 1024 / 1024),
       maxFiles: MAX_FILES,
+      turnstileSiteKey: TURNSTILE_SITE_KEY || null,
     });
   });
 
@@ -437,6 +480,13 @@ module.exports = function createRouter(deps) {
       // number so a bot cannot distinguish rejection from success, but store
       // nothing.
       if (b.website) { cleanupFiles(); return res.json({ ok: true, request_no: 'SR-0000-0000' }); }
+
+      const ts = await verifyTurnstile(b['cf-turnstile-response'], ip);
+      if (!ts.ok) {
+        cleanupFiles();
+        console.warn(`[service] Turnstile rejected a submission from ${ip}: ${ts.reason}`);
+        return res.status(400).json({ error: 'We could not verify that you are a person. Please reload the page and try again.' });
+      }
 
       // The serial / job number is required ONLY for an SDC-built machine.
       // Somebody else's equipment has no SDC serial and no SDC job number, so
