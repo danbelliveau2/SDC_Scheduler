@@ -595,7 +595,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
   // send it as each so an SDC coordinator can search on either. For a non-SDC
   // machine the value is a make/model, NOT a job number, so mirroring it into
   // job_number would put junk in a column people search and filter on.
-  if (!isNonSdc) fd.set('job_number', fd.get('machine_serial'));
+  if (isSdc) fd.set('job_number', fd.get('machine_serial'));
 
   btn.disabled = true;
   btn.textContent = 'Submitting…';
