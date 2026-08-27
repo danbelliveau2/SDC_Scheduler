@@ -1735,11 +1735,24 @@ module.exports = function createRouter(deps) {
       }
       const conn = await pool.getConnection();
       await conn.beginTransaction();
+      let archivedFinancials = 0;
       try {
         for (const r of rows) {
           await conn.query('UPDATE tasks SET anchor_key = NULL WHERE id = ?', [r.id]);
           await conn.query('DELETE FROM tasks WHERE id = ?', [r.id]);
         }
+        // This machine's payment milestones go with it. Archived, not deleted:
+        // the Project Release panel renders a block only per machine that
+        // exists in tasks, so leaving them behind made them unreachable there
+        // while the Invoicing page kept listing them under "No trigger"
+        // forever. Archiving drops them from every active view and keeps any
+        // sent/paid history readable via ?include_archived=1.
+        const [fin] = await conn.query(
+          `UPDATE project_financials SET archived_at = NOW(), archived_reason = ?
+            WHERE project = ? AND machine = ? AND archived_at IS NULL`,
+          ['machine-deleted:' + machine, project, machine]
+        );
+        archivedFinancials = fin.affectedRows || 0;
         await conn.commit();
       } catch (err) {
         await conn.rollback();
@@ -1750,7 +1763,7 @@ module.exports = function createRouter(deps) {
       for (const r of rows) {
         await logHistory(r.id, r.project, 'delete', null, r, null, ['machine_deleted:' + machine]);
       }
-      return res.json({ ok: true, deleted: rows.length });
+      return res.json({ ok: true, deleted: rows.length, archivedFinancials });
     } catch (err) {
       return res.status(500).json({ error: String(err.message || err) });
     }

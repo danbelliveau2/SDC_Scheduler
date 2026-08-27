@@ -12842,7 +12842,13 @@ async function deleteMachineFromProject(project, machine) {
       saveMachinesSubset();
     }
     await loadTasks();
-    showToast(`Deleted machine "${machine}" — removed ${body?.deleted ?? taskCount} tasks.`, { kind: 'success' });
+    // The server archived this machine's payment milestones with it — re-read
+    // them so Invoicing / the Gantt overlay drop the rows now instead of
+    // holding the pre-delete cache until the next page load.
+    try { await loadFinancialsForProject(project); } catch (_) {}
+    try { refreshFinancialsButtonState(); } catch (_) {}
+    const finNote = body?.archivedFinancials ? ` and ${body.archivedFinancials} payment milestone${body.archivedFinancials === 1 ? '' : 's'}` : '';
+    showToast(`Deleted machine "${machine}" — removed ${body?.deleted ?? taskCount} tasks${finNote}.`, { kind: 'success' });
   } catch (err) {
     showToast('Failed to delete machine: ' + (err.message || err), { kind: 'error' });
   }

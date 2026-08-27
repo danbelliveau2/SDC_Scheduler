@@ -130,6 +130,30 @@ async function init() {
   await pool.query(`ALTER TABLE project_financials ADD COLUMN terms_days INT`).catch(() => {});
   await pool.query(`UPDATE project_financials SET sent = 1 WHERE paid = 1 AND sent = 0`).catch(() => {});
 
+  // Archive state for a milestone whose machine is no longer in the schedule.
+  // A milestone is scoped to a machine by name, so deleting machine "Storage
+  // Racks" (or retagging its last task) left its milestones behind: the
+  // Project Release panel only renders a block per machine that EXISTS in
+  // tasks, so nobody could see or delete them there, while the Invoicing page
+  // lists every row for the project — they sat under "No trigger" forever.
+  // Archiving instead of deleting keeps sent/paid history readable
+  // (?include_archived=1) while removing the row from every active view.
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN archived_at DATETIME`).catch(() => {});
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN archived_reason VARCHAR(255)`).catch(() => {});
+  // One-time cleanup of the orphans already in the table. Conservative on
+  // purpose: only rows that name a machine, whose (project, machine) pair has
+  // NO tasks, in a project that still HAS tasks (so a mid-import or empty
+  // project is never touched). Nothing is deleted, and legitimate rows —
+  // machine-less ones and every machine still in the schedule — are untouched.
+  await pool.query(`
+    UPDATE project_financials f
+       SET f.archived_at = NOW(), f.archived_reason = 'orphan-machine'
+     WHERE f.archived_at IS NULL
+       AND f.machine IS NOT NULL AND f.machine <> ''
+       AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project = f.project AND t.machine = f.machine)
+       AND EXISTS     (SELECT 1 FROM tasks t WHERE t.project = f.project)
+  `).catch(() => {});
+
   // Seed claims — "this scope's milestones have already been initialized".
   // Without it, "the scope has no rows" was the only signal for "never
   // seeded", so deleting a machine's milestones looked exactly like a fresh
