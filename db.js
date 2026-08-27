@@ -130,6 +130,30 @@ async function init() {
   await pool.query(`ALTER TABLE project_financials ADD COLUMN terms_days INT`).catch(() => {});
   await pool.query(`UPDATE project_financials SET sent = 1 WHERE paid = 1 AND sent = 0`).catch(() => {});
 
+  // Seed claims — "this scope's milestones have already been initialized".
+  // Without it, "the scope has no rows" was the only signal for "never
+  // seeded", so deleting a machine's milestones looked exactly like a fresh
+  // project and the next Project Release open re-created every row the user
+  // had just deleted. One row per (project, machine); machine '' = the
+  // project-level default/release seed. The UNIQUE key is what makes the
+  // claim atomic, so two concurrent opens can never both seed.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS project_financials_seed (
+      id         INT AUTO_INCREMENT PRIMARY KEY,
+      project    VARCHAR(255) NOT NULL,
+      machine    VARCHAR(32)  NOT NULL DEFAULT '',
+      claimed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_fin_seed (project, machine)
+    )
+  `);
+  // Backfill: any scope that already HAS milestones counts as initialized, so
+  // existing projects can't be re-seeded after a deletion either.
+  await pool.query(`
+    INSERT IGNORE INTO project_financials_seed (project, machine)
+    SELECT project, COALESCE(machine, '') FROM project_financials
+    GROUP BY project, COALESCE(machine, '')
+  `).catch(() => {});
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
       id          INT AUTO_INCREMENT PRIMARY KEY,

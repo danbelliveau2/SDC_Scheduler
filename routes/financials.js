@@ -73,12 +73,51 @@ module.exports = function createRouter(deps) {
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
+  // Atomic "may I initialize this scope's milestones?" claim.
+  //
+  // Seeding used to be gated on "the scope has no rows", which cannot tell a
+  // brand-new project apart from one where the user just deleted the rows —
+  // so every Project Release open re-created the deleted milestones. The claim
+  // row is the durable answer instead: the first caller for a (project,
+  // machine) scope gets allowed:true, everyone after gets allowed:false, and
+  // a scope that already has rows is claimed WITHOUT being offered for
+  // seeding. INSERT IGNORE + affectedRows makes it safe under concurrent
+  // opens and idempotent under repeated submissions.
+  //
+  // machine: '' (or omitted) = the project-level default/release seed.
+  router.post('/api/financials/claim-seed', requireRole('editor'), async (req, res) => {
+    try {
+      const project = (req.body.project || '').toString().trim();
+      if (!project) return res.status(400).json({ error: 'project required' });
+      const machine = (req.body.machine || '').toString().trim();
+      const [claim] = await pool.query(
+        'INSERT IGNORE INTO project_financials_seed (project, machine) VALUES (?, ?)',
+        [project, machine]
+      );
+      // Someone already claimed this scope — never seed again.
+      if (!claim.affectedRows) return res.json({ ok: true, allowed: false, reason: 'already-claimed' });
+      // First claim, but the scope already holds rows (pre-existing project):
+      // the claim is what we wanted; seeding on top would duplicate them.
+      const [[existing]] = machine
+        ? await pool.query('SELECT COUNT(*) AS n FROM project_financials WHERE project = ? AND machine = ?', [project, machine])
+        : await pool.query('SELECT COUNT(*) AS n FROM project_financials WHERE project = ?', [project]);
+      if (existing.n > 0) return res.json({ ok: true, allowed: false, reason: 'has-rows' });
+      res.json({ ok: true, allowed: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   router.post('/api/financials/seed', requireRole('editor'), async (req, res) => {
     try {
       const project = (req.body.project || '').toString().trim();
       if (!project) return res.status(400).json({ error: 'project required' });
       const [[existingFin]] = await pool.query('SELECT COUNT(*) AS n FROM project_financials WHERE project = ?', [project]);
       if (existingFin.n > 0) return res.json({ ok: true, seeded: 0 });
+      // Same claim gate as claim-seed: once a project's milestones have been
+      // initialized, an empty grid means "the user emptied it", not "seed me".
+      const [claim] = await pool.query(
+        'INSERT IGNORE INTO project_financials_seed (project, machine) VALUES (?, \'\')', [project]
+      );
+      if (!claim.affectedRows) return res.json({ ok: true, seeded: 0, reason: 'already-claimed' });
       const [[defRow]] = await pool.query("SELECT value FROM settings WHERE `key` = 'default_financial_milestones'");
       let defaults = [];
       try { defaults = JSON.parse(defRow?.value || '[]'); } catch { defaults = []; }

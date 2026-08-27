@@ -586,6 +586,9 @@ module.exports = function createRouter(deps) {
       if (updates.name && updates.name !== existing.name) {
         await pool.query('UPDATE tasks SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
+        // Seed claims follow the rename, or the renamed project looks
+        // never-initialized and its milestones get re-seeded.
+        await pool.query('UPDATE IGNORE project_financials_seed SET project = ? WHERE project = ?', [updates.name, existing.name]).catch(() => {});
         await pool.query('UPDATE task_history SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE task_comments SET project = ? WHERE project = ?', [updates.name, existing.name]);
         // Meeting notes, quote, and estimate blobs live in `settings` keyed by
@@ -626,6 +629,7 @@ module.exports = function createRouter(deps) {
       if (!existing) return res.status(404).json({ error: 'not found' });
       await pool.query('DELETE FROM tasks WHERE project = ?', [existing.name]);
       await pool.query('DELETE FROM project_financials WHERE project = ?', [existing.name]);
+      await pool.query('DELETE FROM project_financials_seed WHERE project = ?', [existing.name]).catch(() => {});
       await pool.query('DELETE FROM projects WHERE id = ?', [id]);
       res.json({ ok: true });
       notifyClients('projects_changed');
@@ -1153,6 +1157,7 @@ module.exports = function createRouter(deps) {
       if (mode === 'replace') {
         await pool.query('DELETE FROM tasks WHERE project = ?', [projectName]);
         await pool.query('DELETE FROM project_financials WHERE project = ?', [projectName]);
+        await pool.query('DELETE FROM project_financials_seed WHERE project = ?', [projectName]).catch(() => {});
       }
 
       const lineToId = {};

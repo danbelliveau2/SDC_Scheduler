@@ -390,6 +390,23 @@ const api = {
         return await r.json();
       } catch (err) { state._financialsApiBroken = true; return { ok: false }; }
     },
+    // "May I initialize this scope's milestones?" — one durable claim per
+    // (project, machine) on the server. Returns false once a scope has been
+    // initialized, so an empty grid the user emptied themselves is never
+    // mistaken for a scope that was never seeded. Fails CLOSED (no seeding)
+    // when the endpoint isn't reachable — re-creating deleted rows is worse
+    // than an un-seeded grid the user can fill in.
+    claimSeed: async (project, machine) => {
+      try {
+        const r = await fetch('/api/financials/claim-seed', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ project, machine: machine || '' }),
+        });
+        if (!r.ok) return false;
+        const data = await r.json();
+        return !!data.allowed;
+      } catch (err) { return false; }
+    },
   },
   notes: {
     // Throws on a failed load (network/5xx) so callers can tell "load failed"
@@ -7931,9 +7948,13 @@ function invoiceStatus(f, project) {
     });
   } else if (f.sync_to_anchor) {
     hasTrigger = true;
+    // Machine-less rows belong to the base machine — same rule as the grid
+    // (_finBaseMachine), so an anchor on a project like 1153 (machines
+    // 'DS 2' / 'DS 3' / 'M1') resolves to the machine the row displays under.
+    const finBase = _finBaseMachine(_finProjectMachines(project));
     const t = state.tasks.find(x => x.project === project
       && inferredAnchorKey(x) === f.sync_to_anchor
-      && (!x.machine || (x.machine || 'M1') === (f.machine || 'M1')));
+      && (!x.machine || (x.machine || finBase) === (f.machine || finBase)));
     ready = !!t && (Number(t.progress) || 0) >= 100;
   }
   // PAST DUE WINS — a date in the past means "should have been invoiced",
@@ -17821,9 +17842,32 @@ async function _deleteFinancialMilestone(project, id) {
 // Optional `machine` (e.g. 'M1'/'M2') filters to that machine's rows and tags
 // new rows with it — per-machine payment terms on multi-machine projects.
 // Rows with no machine value count as M1 (legacy single-machine data).
+// A milestone row with no `machine` belongs to the project's BASE machine.
+// Which machine that is has to be decided ONCE and used by every reader and
+// writer. It wasn't: this grid filtered NULL rows as 'M1' while
+// _seedMachineFinancials treated them as machines[0]. On 1153, whose machines
+// sort as ['DS 2', 'DS 3', 'M1'], the seeder therefore saw "M1 has no rows of
+// its own", copied the base set into machine 'M1' — and this grid then matched
+// BOTH the NULL originals and the new 'M1' copies, which is exactly the
+// duplicated block of milestones that was reported. Deleting the copies just
+// put the seeder back to "M1 has no rows" on the next open, so they came
+// straight back. Prefer a machine literally named M1 (the base on every
+// normal project, and where the legacy NULL rows have always displayed),
+// otherwise the first machine.
+function _finBaseMachine(machines) {
+  const list = (machines || []).filter(Boolean).map(String);
+  if (!list.length) return 'M1';
+  return list.includes('M1') ? 'M1' : list[0];
+}
+function _finProjectMachines(project) {
+  return Array.from(new Set(
+    (state.tasks || []).filter(t => t.project === project && t.machine).map(t => String(t.machine))
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
 async function mountFinancialsEditor(container, project, machine) {
   if (!container || !project) return;
-  const machineMatches = (r) => !machine || (r.machine || 'M1') === machine;
+  const base = _finBaseMachine(_finProjectMachines(project));
+  const machineMatches = (r) => !machine || (r.machine || base) === machine;
   const renderGrid = async (opts = {}) => {
     let rows;
     try { rows = state.financials[project] || await loadFinancialsForProject(project); }
@@ -17946,11 +17990,19 @@ async function mountFinancialsEditor(container, project, machine) {
 // soon as the machine has any rows of its own.
 async function _seedMachineFinancials(project, machine, baseMachine) {
   let rows = [];
-  try { rows = state.financials[project] || await loadFinancialsForProject(project); } catch (_) {}
+  try { rows = await loadFinancialsForProject(project); } catch (_) {}
   rows = rows || [];
-  if (rows.some(r => (r.machine || baseMachine) === machine)) return;
-  const base = rows.filter(r => (r.machine || baseMachine) === baseMachine);
+  // NULL machine = the base machine, resolved the same way the grid resolves
+  // it (see _finBaseMachine) — not the caller's guess.
+  const home = _finBaseMachine(_finProjectMachines(project));
+  if (machine === home) return;                                    // the base set IS this machine's set
+  if (rows.some(r => (r.machine || home) === machine)) return;     // already has its own rows
+  const base = rows.filter(r => (r.machine || home) === (baseMachine || home));
   if (!base.length) return;
+  // Durable one-time claim: an empty machine that was seeded before and then
+  // emptied by the user must stay empty. Without this the "no rows" test above
+  // re-created the deleted milestones on every Project Release open.
+  if (!(await api.financials.claimSeed(project, machine))) return;
   for (const r of base) {
     try {
       await api.financials.create({
@@ -17968,9 +18020,12 @@ async function _seedMachineFinancials(project, machine, baseMachine) {
 // release "fill out" the grid the first time.
 async function _seedFinancialsFromRelease(project, rel) {
   let existing = [];
-  try { existing = state.financials[project] || await loadFinancialsForProject(project); } catch (_) {}
+  try { existing = await loadFinancialsForProject(project); } catch (_) {}
   if (existing && existing.length) return;
   if (!rel || !rel.milestones || !rel.milestones.length) return;
+  // One-time claim (see _seedMachineFinancials) — a project whose milestones
+  // the user deleted must not be re-filled from the release document.
+  if (!(await api.financials.claimSeed(project, ''))) return;
   for (const m of rel.milestones) {
     try {
       await api.financials.create({
@@ -18572,8 +18627,12 @@ async function openProjectReleaseModal(project) {
     try { await _seedFinancialsFromRelease(project, release); } catch (_) {}
     for (const c of overlay.querySelectorAll('[data-fin-machine]')) {
       const m = c.dataset.finMachine || null;
-      if (multiMachine && m && m !== machines[0]) {
-        try { await _seedMachineFinancials(project, m, machines[0]); } catch (_) {}
+      // Base machine for MILESTONES is where the legacy machine-less rows
+      // live (_finBaseMachine) — not necessarily machines[0], which is just
+      // the alphabetically-first machine and owns the release FIELDS.
+      const finBase = _finBaseMachine(machines);
+      if (multiMachine && m && m !== finBase) {
+        try { await _seedMachineFinancials(project, m, finBase); } catch (_) {}
       }
       try { await mountFinancialsEditor(c, project, multiMachine ? m : undefined); } catch (_) {}
     }
