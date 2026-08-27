@@ -338,3 +338,56 @@
   font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--success); font-weight: var(--fw-bold); margin-bottom: 8px;
 }
+
+/* ── Availability panel in the Work Order form ────────────────────────────── */
+/* Shown while choosing who to reserve and for how long. It is an aid, never a
+   gate: every state here is still assignable, including over-booked. Colours
+   reuse the existing status tokens so "over" reads the same as it does on the
+   Departments board. */
+.svc-avail {
+  border: 1px solid var(--border-mid); border-radius: 7px;
+  background: var(--surface-alt); padding: 9px 11px;
+}
+.svc-avail-msg { color: var(--text-muted); font-size: var(--fs-md); }
+.svc-avail-head {
+  font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted); font-weight: var(--fw-bold); margin-bottom: 7px;
+}
+.svc-avail-head .svc-sub { text-transform: none; letter-spacing: 0; margin-left: 6px; }
+.svc-avail-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.svc-avail-pill {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 3px 9px; border-radius: 11px; cursor: pointer;
+  border: 1px solid var(--border-mid); background: var(--surface);
+  color: var(--text); font: var(--fw-semibold) var(--fs-sm) var(--font-ui);
+  white-space: nowrap;
+}
+.svc-avail-pill em { font-style: normal; font-weight: var(--fw-normal); color: var(--text-muted); }
+.svc-avail-pill:hover { background: var(--row-hover); }
+.svc-avail-pill.is-chosen { border-color: var(--sdc-primary); box-shadow: 0 0 0 2px rgba(21,116,196,0.16); }
+.svc-avail-ok   { background: var(--success-bg); border-color: var(--success); }
+.svc-avail-ok em   { color: var(--success); }
+.svc-avail-warn { background: var(--warning-bg); border-color: var(--warning); }
+.svc-avail-warn em { color: var(--warning); }
+.svc-avail-bad  { background: var(--danger-bg);  border-color: var(--danger); }
+.svc-avail-bad em  { color: var(--danger); }
+/* Inline caution when the person already chosen is over-booked. Deliberately a
+   note and not a blocker — a machine-down call outranks a tidy calendar. */
+.svc-avail-note {
+  margin-top: 8px; padding: 6px 9px; border-radius: 5px;
+  background: var(--warning-bg); border: 1px solid var(--warning);
+  color: var(--warning); font-size: var(--fs-sm); font-weight: var(--fw-semibold);
+}
+
+/* Multi-day Work Order marker — a reservation, not a single visit. */
+.svc-pill-span {
+  background: #eff6ff; border-color: var(--sdc-blue-light); color: var(--sdc-primary);
+}
+
+/* A multi-day Work Order's date is a RANGE, and a range does not fit the column
+   width table-layout: fixed hands out — it ellipsised down to the start date,
+   which reads as a one-day visit and hides exactly the fact this column now
+   exists to show. Stack it on two lines instead of fighting the table engine:
+   fits any width, and "through <date>" is unambiguous where a dash was not. */
+.svc-table td.svc-col-date { white-space: normal; }
+.svc-table td.svc-col-date .svc-sub { display: block; margin-top: 1px; }

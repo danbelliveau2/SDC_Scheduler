@@ -103,12 +103,13 @@ const CUSTOMER_FIELDS = [
 const INTERNAL_FIELDS = [
   ...CUSTOMER_FIELDS,
   'quote_sent', 'quote_sent_at', 'po_received', 'po_received_at',
+  'po_number', 'po_amount',
   'service_complete', 'service_complete_date', 'resource_assigned',
   'current_status', 'information_needed',
 ];
 
 const WO_FIELDS = [
-  'task_date', 'employee_name', 'employee_email', 'location_type',
+  'task_date', 'end_date', 'employee_name', 'employee_email', 'location_type',
   'task_description', 'ppe_requirements', 'onsite_address',
   'sdc_contact_name', 'sdc_contact_email', 'sdc_contact_phone',
   'budgeted_hours', 'status',
@@ -211,6 +212,12 @@ const who = (req) => (req.authUser && req.authUser.name) || req.user || 'system'
 
 function coerce(field, value) {
   if (BOOL_FIELDS.has(field)) return value ? 1 : 0;
+  if (field === 'po_amount') {
+    if (value === '' || value == null) return null;
+    // Tolerate what a human pastes out of a PO: "$172,000.00".
+    const n = Number(String(value).replace(/[$,\s]/g, ''));
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
   if (field === 'budgeted_hours' || field === 'hours_actual') {
     if (value === '' || value == null) return null;
     const n = Number(value);
@@ -224,6 +231,41 @@ function coerce(field, value) {
     return value == null ? null : String(value).trim().slice(0, 20000) || null;
   }
   return trim(value);
+}
+
+// ── Date math for multi-day Work Orders ──────────────────────────────────────
+// Deliberately local to this module rather than imported from the scheduling
+// engine in server.js: a Work Order is a fixed reservation (its task is written
+// with dates_locked = 1), so it must never acquire the engine's cascading
+// behaviour by accident. All it needs is an honest inclusive business-day count.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Inclusive business-day count between two YYYY-MM-DD dates. Weekends only —
+ *  SDC has no shared holiday calendar in this database, and inventing one here
+ *  would silently disagree with every other duration in the app. */
+function businessDaysInclusive(startIso, endIso) {
+  const s = new Date(startIso + 'T00:00:00');
+  const e = new Date(endIso + 'T00:00:00');
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime()) || e < s) return 1;
+  let n = 0;
+  for (const d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) n++;
+  }
+  // A WO booked on a single weekend day is still a real day of someone's life.
+  return n || 1;
+}
+
+/** Validates a Work Order's date pair against the row it will become.
+ *  `patch` is the incoming update; `existing` may be null on create. */
+function validateWoDates(patch, existing) {
+  const start = 'task_date' in patch ? patch.task_date : (existing && existing.task_date);
+  const end   = 'end_date'  in patch ? patch.end_date  : (existing && existing.end_date);
+  if (start && !ISO_DATE.test(start)) return 'Task date must be a real date.';
+  if (end   && !ISO_DATE.test(end))   return 'End date must be a real date.';
+  if (end && !start) return 'A Work Order with an end date needs a start date.';
+  if (start && end && end < start) return 'End date cannot be before the task date.';
+  return null;
 }
 
 // Validates the closed-vocabulary fields. Returns an error string or null.
@@ -336,6 +378,14 @@ module.exports = function createRouter(deps) {
     return wo || null;
   }
 
+  // " on 2026-09-14" / " from 2026-09-14 through 2026-09-25" — one phrasing for
+  // the audit log so a reader can tell a visit from a multi-week reservation.
+  const woWhen = (wo) => {
+    if (!wo || !wo.task_date) return '';
+    if (wo.end_date && wo.end_date > wo.task_date) return ` from ${wo.task_date} through ${wo.end_date}`;
+    return ` on ${wo.task_date}`;
+  };
+
   // ── Scheduler linkage (R2 §7) ──────────────────────────────────────────────
   // A Work Order creates a real row in `tasks`, which is the whole point: the
   // Service assignment shows up in the employee's existing Scheduler workload
@@ -357,26 +407,37 @@ module.exports = function createRouter(deps) {
     return 'Service';
   }
 
+  // How much of a person a Work Order consumes per day. A single-day visit is a
+  // whole day (100). A multi-day booking is deliberately NOT reduced pro-rata:
+  // reserving an engineer for a two-week machine move means they are unavailable
+  // for those two weeks, not 10%-available on each of them. This is the number
+  // the capacity view and the Departments board both read.
+  const WO_ALLOCATION = 100;
+
   async function syncWorkOrderTask(wo) {
     try {
       const project = await resolveServiceProject(wo.job_number);
       const name = `Service ${wo.wo_no}: ${String(wo.task_description || wo.company_name || 'Service visit').slice(0, 120)}`;
-      const dur = 1;
+      // end_date is optional and inclusive; absent means a single-day WO, which
+      // is exactly the old behaviour for every row written before this existed.
+      const start = wo.task_date || null;
+      const end   = (wo.end_date && start && wo.end_date >= start) ? wo.end_date : start;
+      const dur   = (start && end) ? businessDaysInclusive(start, end) : 1;
       if (wo.task_id) {
         await pool.query(
           `UPDATE tasks SET name = ?, project = ?, assignee = ?, start_date = ?, end_date = ?,
-                            duration_days = ?, dates_locked = 1
+                            duration_days = ?, allocation = ?, dates_locked = 1
              WHERE id = ?`,
-          [name, project, wo.employee_name || null, wo.task_date || null, wo.task_date || null, dur, wo.task_id]
+          [name, project, wo.employee_name || null, start, end, dur, WO_ALLOCATION, wo.task_id]
         );
         return wo.task_id;
       }
       const [[m]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE project = ?', [project]);
       const [r] = await pool.query(
         `INSERT INTO tasks (name, project, department, assignee, start_date, end_date, duration_days,
-                            progress, notes, sort_order, dates_locked)
-         VALUES (?, ?, 'service', ?, ?, ?, ?, 0, ?, ?, 1)`,
-        [name, project, wo.employee_name || null, wo.task_date || null, wo.task_date || null, dur,
+                            allocation, progress, notes, sort_order, dates_locked)
+         VALUES (?, ?, 'service', ?, ?, ?, ?, ?, 0, ?, ?, 1)`,
+        [name, project, wo.employee_name || null, start, end, dur, WO_ALLOCATION,
          `Service Work Order ${wo.wo_no} (${wo.request_no}) — ${wo.company_name || ''}`.trim(), (m.m || 0) + 1]
       );
       await pool.query('UPDATE service_work_orders SET task_id = ? WHERE id = ?', [r.insertId, wo.id]);
@@ -824,6 +885,141 @@ module.exports = function createRouter(deps) {
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
 
+  // ── Resource availability (Monica / Patrick, Aug 2026) ─────────────────────
+  // "It would be nice to be able to reserve the service engineering or
+  // technician resources when I have scheduled service projects."
+  //
+  // Reserving someone is only meaningful if you can see who is free BEFORE you
+  // commit them, so this answers exactly that question for one date window.
+  //
+  // Source of truth is `tasks` — the same rows the Gantt, the Departments board
+  // and the over-allocation shading read. There is no separate service capacity
+  // model, which is what keeps a service booking and an ETO booking able to
+  // collide in the first place. The per-day arithmetic below intentionally
+  // mirrors computeOverloadRegions() in public/app.js: sum each task's
+  // allocation across every day it spans, and treat >100 on any single day as
+  // over-allocated. If that rule ever changes, these two must change together.
+  //
+  //   GET /api/service/availability?start=&end=[&discipline=][&exclude_wo=]
+  //
+  // discipline defaults to every schedulable person rather than just Service:
+  // a controls engineer gets sent on service calls, and hiding them here would
+  // quietly re-create the separate-roster problem §7 exists to prevent.
+  router.get('/api/service/availability', async (req, res) => {
+    try {
+      const q = req.query || {};
+      const start = trim(q.start), end = trim(q.end);
+      if (!start || !ISO_DATE.test(start)) return res.status(400).json({ error: 'start must be YYYY-MM-DD.' });
+      if (!end   || !ISO_DATE.test(end))   return res.status(400).json({ error: 'end must be YYYY-MM-DD.' });
+      if (end < start) return res.status(400).json({ error: 'end cannot be before start.' });
+      // A window is a planning horizon, not a data export. 370 days is a year
+      // plus slack, and stops a typo'd year from walking the whole task table.
+      if (businessDaysInclusive(start, end) > 370) {
+        return res.status(400).json({ error: 'Window is too long — pick a year or less.' });
+      }
+
+      // The task the caller is already editing must not be reported as a
+      // conflict with itself, or every WO edit looks like a double-booking.
+      let excludeTaskId = null;
+      if (q.exclude_wo) {
+        const [[w]] = await pool.query('SELECT task_id FROM service_work_orders WHERE id = ?', [Number(q.exclude_wo)]);
+        excludeTaskId = w ? w.task_id : null;
+      }
+
+      const discFilter = trim(q.discipline);
+      const people = (await pool.query(`
+        SELECT t.id, t.name, t.discipline, u.email
+          FROM team_members t
+          LEFT JOIN users u ON u.name = t.name AND u.active = 1
+         WHERE t.active = 1 ${discFilter ? 'AND t.discipline = ?' : ''}
+         ORDER BY (t.discipline = 'service') DESC, t.discipline, t.sort_order, t.name`,
+        discFilter ? [discFilter] : []))[0]
+        // Roster placeholders ("ME Placeholder", "Builder 2") are headcount
+        // stand-ins, not people you can put on a plane to a customer site.
+        .filter(p => !/placeholder|^(me|ce|builder|wireman)\s*\d*$/i.test(String(p.name || '').trim()));
+      if (!people.length) return res.json({ start, end, business_days: businessDaysInclusive(start, end), people: [] });
+
+      // Every open, dated task for these people that OVERLAPS the window.
+      // Template projects are excluded: they are shapes, not commitments.
+      const names = people.map(p => p.name);
+      const [rows] = await pool.query(`
+        SELECT tk.id, tk.name, tk.project, tk.assignee, tk.start_date, tk.end_date,
+               tk.allocation, tk.department
+          FROM tasks tk
+          LEFT JOIN projects pr ON pr.name = tk.project
+         WHERE tk.assignee IN (?)
+           AND tk.is_milestone = 0
+           AND COALESCE(tk.progress, 0) < 100
+           AND tk.start_date IS NOT NULL AND tk.end_date IS NOT NULL
+           AND tk.start_date <= ? AND tk.end_date >= ?
+           AND COALESCE(pr.is_template, 0) = 0
+           ${excludeTaskId ? 'AND tk.id <> ?' : ''}`,
+        excludeTaskId ? [names, end, start, excludeTaskId] : [names, end, start]);
+
+      // Business days in the window, as YYYY-MM-DD keys.
+      const windowDays = [];
+      for (const d = new Date(start + 'T00:00:00'); d <= new Date(end + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+        const wd = d.getDay();
+        if (wd !== 0 && wd !== 6) windowDays.push(d.toISOString().slice(0, 10));
+      }
+      const totalDays = windowDays.length || 1;
+
+      const byPerson = new Map(names.map(n => [n, []]));
+      for (const r of rows) (byPerson.get(r.assignee) || []).push(r);
+
+      const out = people.map(p => {
+        const mine = byPerson.get(p.name) || [];
+        const perDay = new Map();
+        for (const t of mine) {
+          // Default 90 matches the tasks.allocation column default and the
+          // client's own fallback — an unset allocation is nearly-full-time.
+          const a = t.allocation == null ? 90 : Number(t.allocation) || 0;
+          if (a <= 0) continue;
+          for (const day of windowDays) {
+            if (day >= t.start_date && day <= t.end_date) perDay.set(day, (perDay.get(day) || 0) + a);
+          }
+        }
+        let peak = 0, busy = 0, sum = 0;
+        for (const day of windowDays) {
+          const v = perDay.get(day) || 0;
+          if (v > peak) peak = v;
+          if (v > 0) busy++;
+          sum += v;
+        }
+        const avg = Math.round(sum / totalDays);
+        return {
+          name: p.name,
+          email: p.email || null,
+          discipline: p.discipline,
+          peak_pct: peak,
+          avg_pct: avg,
+          busy_days: busy,
+          free_days: totalDays - busy,
+          // 'over' is a hard conflict on at least one day; 'partial' is
+          // committed but not full; 'free' is genuinely open all window.
+          status: peak > 100 ? 'over' : (busy === 0 ? 'free' : 'partial'),
+          conflicts: mine
+            .map(t => ({
+              task_id: t.id, name: t.name, project: t.project,
+              start_date: t.start_date, end_date: t.end_date,
+              allocation: t.allocation == null ? 90 : Number(t.allocation),
+              is_service: t.department === 'service',
+            }))
+            .sort((a, b) => (a.start_date < b.start_date ? -1 : 1))
+            .slice(0, 25),
+        };
+      });
+
+      // Most-available first — the order a coordinator actually reads in.
+      const rank = { free: 0, partial: 1, over: 2 };
+      out.sort((a, b) => (rank[a.status] - rank[b.status]) || (a.avg_pct - b.avg_pct) || a.name.localeCompare(b.name));
+      res.json({ start, end, business_days: totalDays, people: out });
+    } catch (e) {
+      console.error('[service] availability failed:', e.message);
+      res.status(503).json({ error: e.message });
+    }
+  });
+
   // ── Work Orders (§6, §13) ──────────────────────────────────────────────────
   router.get('/api/service/work-orders', async (req, res) => {
     try {
@@ -886,6 +1082,10 @@ module.exports = function createRouter(deps) {
       const b = req.body || {};
       if (!String(b.employee_name || '').trim()) return res.status(400).json({ error: 'Required Employee is required.' });
       if (b.location_type && !LOCATIONS.has(b.location_type)) return res.status(400).json({ error: 'Invalid remote/on-site value.' });
+      const dateErr = validateWoDates(
+        { ...('task_date' in b ? { task_date: trim(b.task_date) } : {}),
+          ...('end_date'  in b ? { end_date:  trim(b.end_date)  } : {}) }, null);
+      if (dateErr) return res.status(400).json({ error: dateErr });
 
       const cols = ['service_request_id', 'wo_no', 'created_by'];
       const vals = [requestId, null, who(req)];
@@ -929,7 +1129,7 @@ module.exports = function createRouter(deps) {
       await pool.query('UPDATE service_requests SET resource_assigned = ? WHERE id = ?', [names.n || null, requestId]);
 
       await logService(requestId, 'work_order_created',
-        `${wo.wo_no} created for ${wo.employee_name}${wo.task_date ? ` on ${wo.task_date}` : ''}.`, who(req), woId);
+        `${wo.wo_no} created for ${wo.employee_name}${woWhen(wo)}.`, who(req), woId);
 
       const fresh = await woWithParent(woId);
       res.json(fresh);
@@ -970,6 +1170,9 @@ module.exports = function createRouter(deps) {
       const updates = {};
       for (const f of WO_FIELDS) if (f in req.body) updates[f] = coerce(f, req.body[f]);
       if (!Object.keys(updates).length) return res.json(existing);
+
+      const dateErr = validateWoDates(updates, existing);
+      if (dateErr) return res.status(400).json({ error: dateErr });
 
       // A WO moved to a NEW future date is owed a fresh day-before reminder —
       // clearing the stamp is what re-arms the sweep. (serviceNotify's dedupe

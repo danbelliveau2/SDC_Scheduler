@@ -371,18 +371,20 @@ function drawWorkOrderTable(body) {
       </colgroup>
       <thead>
         <tr>
-          <th>Work Order</th><th>Date</th><th>Employee</th><th>Customer</th>
+          <th>Work Order</th><th class="svc-col-date">Date</th><th>Employee</th><th>Customer</th>
           <th>Task</th><th>Site</th><th title="Budgeted hours">Hrs</th><th>Status</th><th>Report</th>
         </tr>
       </thead>
       <tbody>
         ${rows.map(w => {
-          const overdue = w.status === 'open' && w.task_date && w.task_date < today();
+          const overdue = woOverdue(w);
           return `
           <tr data-request="${w.service_request_id}" data-wo="${w.id}"
               class="${w.urgency === 'machine_down' && w.status === 'open' ? 'svc-row-down' : ''}">
             <td class="svc-mono">${esc(w.wo_no)}</td>
-            <td class="${overdue ? 'svc-overdue' : ''}">${fmtDate(w.task_date)}${overdue ? ' <span title="Task date has passed and the Work Order is still open">!</span>' : ''}</td>
+            <td class="svc-col-date ${overdue ? 'svc-overdue' : ''}">${fmtDate(w.task_date)}${overdue ? ' <span title="The last day has passed and this Work Order is still open">!</span>' : ''}${
+              w.end_date && w.task_date && w.end_date > w.task_date
+                ? `<div class="svc-sub">through ${fmtDate(w.end_date)}</div>` : ''}</td>
             <td>${esc(w.employee_name) || '—'}</td>
             <td>${esc(w.company_name) || '—'}<div class="svc-sub">${esc(w.request_no)}</div></td>
             <td class="svc-detail-cell">${esc(String(w.task_description || '').slice(0, 200))}</td>
@@ -474,7 +476,8 @@ function drawDrawer(focusWoId) {
           <label><input type="checkbox" data-log="quote_sent" ${r.quote_sent ? 'checked' : ''}>
                  Service Quote Sent ${r.quote_sent_at ? `<em>${fmtDate(r.quote_sent_at)}</em>` : ''}</label>
           <label><input type="checkbox" data-log="po_received" ${r.po_received ? 'checked' : ''}>
-                 PO Received ${r.po_received_at ? `<em>${fmtDate(r.po_received_at)}</em>` : ''}</label>
+                 PO Received ${r.po_received_at ? `<em>${fmtDate(r.po_received_at)}</em>` : ''}
+                 ${r.po_amount != null ? `<em>${esc(money(r.po_amount))}</em>` : ''}</label>
           <label><input type="checkbox" data-log="service_complete" ${r.service_complete ? 'checked' : ''}>
                  Service Complete ${r.service_complete_date ? `<em>${fmtDate(r.service_complete_date)}</em>` : ''}</label>
         </div>
@@ -489,6 +492,12 @@ function drawDrawer(focusWoId) {
           </label>
           <label>Service Complete Date
             <input type="date" data-log="service_complete_date" value="${esc(fmtDate(r.service_complete_date) === '—' ? '' : fmtDate(r.service_complete_date))}">
+          </label>
+          <label>Customer PO #
+            <input type="text" data-log="po_number" value="${esc(r.po_number || '')}" placeholder="e.g. 4500123456">
+          </label>
+          <label>PO Value
+            <input type="text" inputmode="decimal" data-log="po_amount" value="${esc(r.po_amount != null ? r.po_amount : '')}" placeholder="172000.00">
           </label>
           <label class="svc-span">Information Needed
             <textarea data-log="information_needed" rows="2">${esc(r.information_needed || '')}</textarea>
@@ -533,15 +542,40 @@ function drawAttachments(list) {
     </a>`).join('')}</div></div>`;
 }
 
+// A Work Order's date as one string: a single day, or an inclusive range for a
+// multi-day reservation (a machine move books someone for weeks, not a day).
+// Whole dollars. Service PO values are quoted and discussed in whole dollars,
+// and cents on a $172,000 figure are noise in a status list.
+function money(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+function woSpan(w) {
+  if (!w.task_date) return '—';
+  if (w.end_date && w.end_date > w.task_date) return `${fmtDate(w.task_date)} – ${fmtDate(w.end_date)}`;
+  return fmtDate(w.task_date);
+}
+
+// "Overdue" for a multi-day WO means the LAST day has passed, not the first —
+// an engineer three days into a two-week move is not late.
+function woOverdue(w) {
+  const last = w.end_date && w.task_date && w.end_date > w.task_date ? w.end_date : w.task_date;
+  return w.status === 'open' && !!last && last < today();
+}
+
 function drawWorkOrders(list) {
   if (!list.length) return '<div class="svc-sub">No Work Orders yet. Create one to assign an employee and a date.</div>';
   return list.map(w => {
-    const overdue = w.status === 'open' && w.task_date && w.task_date < today();
+    const overdue = woOverdue(w);
+    const multi = w.end_date && w.task_date && w.end_date > w.task_date;
     return `
     <div class="svc-wo ${w.status === 'complete' ? 'is-complete' : ''}" data-wo="${w.id}">
       <div class="svc-wo-head">
         <span class="svc-mono">${esc(w.wo_no)}</span>
-        <span class="${overdue ? 'svc-overdue' : ''}">${fmtDate(w.task_date)}</span>
+        <span class="${overdue ? 'svc-overdue' : ''}">${woSpan(w)}</span>
+        ${multi ? '<span class="svc-pill svc-pill-span">reserved</span>' : ''}
         <strong>${esc(w.employee_name) || '—'}</strong>
         <span class="svc-sub">${w.location_type === 'onsite' ? 'On-site' : w.location_type === 'remote' ? 'Remote' : ''}</span>
         <span class="svc-sub">${w.budgeted_hours != null ? `${w.budgeted_hours} h budgeted` : ''}</span>
@@ -743,14 +777,18 @@ function openWorkOrderForm(request, existing) {
         · carried onto this Work Order automatically.</div>
     </div>
     <div class="svc-form-grid">
-      <label>Task Date<input name="task_date" type="date" value="${esc(w.task_date || '')}"></label>
-      <label>Required Employee
+      <label>Task Date<input name="task_date" type="date" id="svcWoStart" value="${esc(w.task_date || '')}"></label>
+      <label>Through <span class="svc-sub">(leave blank for a one-day visit)</span>
+        <input name="end_date" type="date" id="svcWoEnd" value="${esc(w.end_date || '')}">
+      </label>
+      <label class="svc-span">Required Employee
         <select name="employee_name" id="svcWoEmp">
           <option value="">—</option>
           ${_svc.employees.map(e => `<option value="${esc(e.name)}" data-email="${esc(e.email || '')}"
               ${w.employee_name === e.name ? 'selected' : ''}>${esc(e.name)}${e.discipline === 'service' ? ' (Service)' : ''}</option>`).join('')}
         </select>
       </label>
+      <div class="svc-span" id="svcAvail"></div>
       <label>Employee Email<input name="employee_email" id="svcWoEmail" value="${esc(w.employee_email || '')}"
              placeholder="auto-filled from their account"></label>
       <label>On-site / Remote
@@ -775,6 +813,10 @@ function openWorkOrderForm(request, existing) {
     </label>`}`,
     async (data) => {
       if (!String(data.employee_name || '').trim()) throw new Error('Choose the required employee.');
+      if (data.end_date && !data.task_date) throw new Error('A Work Order with an end date needs a task date.');
+      if (data.task_date && data.end_date && data.end_date < data.task_date) {
+        throw new Error('The end date cannot be before the task date.');
+      }
       if (isEdit) {
         await api(`/api/service/work-orders/${w.id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
@@ -801,7 +843,84 @@ function openWorkOrderForm(request, existing) {
     const box = document.getElementById('svcWoEmail');
     if (box && email) box.value = email;
     else if (box && !email) box.placeholder = 'No account email on file — add one under Users';
+    renderAvailability();
   });
+
+  // ── Live availability for the chosen window (Monica: "reserve the service
+  // engineering or technician resources"). Reserving someone is only a real
+  // decision if you can see who is free before you commit them, so this reads
+  // the same `tasks` rows the Gantt does and shows the answer in the form.
+  const startEl = document.getElementById('svcWoStart');
+  const endEl   = document.getElementById('svcWoEnd');
+  let availSeq = 0;   // guards against a slow response overwriting a newer one
+
+  async function renderAvailability() {
+    const panel = document.getElementById('svcAvail');
+    if (!panel) return;
+    const start = startEl && startEl.value;
+    const end   = (endEl && endEl.value) || start;
+    if (!start) { panel.innerHTML = ''; return; }
+    if (end < start) {
+      panel.innerHTML = `<div class="svc-avail svc-avail-msg">End date is before the task date.</div>`;
+      return;
+    }
+    const seq = ++availSeq;
+    panel.innerHTML = `<div class="svc-avail svc-avail-msg">Checking who is free…</div>`;
+    let data;
+    try {
+      const qs = new URLSearchParams({ start, end });
+      if (isEdit && w.id) qs.set('exclude_wo', String(w.id));
+      data = await api(`/api/service/availability?${qs}`);
+    } catch (e) {
+      // Availability is an aid, never a gate — a coordinator with a machine
+      // down must still be able to raise the Work Order.
+      if (seq === availSeq) {
+        panel.innerHTML = `<div class="svc-avail svc-avail-msg">Could not check availability (${esc(e.message)}). You can still save.</div>`;
+      }
+      return;
+    }
+    if (seq !== availSeq) return;
+
+    const chosen = (document.getElementById('svcWoEmp') || {}).value || '';
+    const days = data.business_days;
+    const span = end > start ? `${fmtDate(start)} – ${fmtDate(end)}` : fmtDate(start);
+    const tone = { free: 'ok', partial: 'warn', over: 'bad' };
+    const label = (p) => p.status === 'free' ? 'free'
+      : p.status === 'over' ? `over-booked (${p.peak_pct}% peak)`
+      : `${p.busy_days}/${days} d booked`;
+
+    // Service people first and most-available first (the server already sorts
+    // by availability); cap the list so the form stays a form.
+    const svc = data.people.filter(p => p.discipline === 'service');
+    const rest = data.people.filter(p => p.discipline !== 'service');
+    const show = [...svc, ...rest.filter(p => p.status === 'free').slice(0, 6)];
+
+    const pill = (p) => `<button type="button" class="svc-avail-pill svc-avail-${tone[p.status]}${p.name === chosen ? ' is-chosen' : ''}"
+        data-pick="${esc(p.name)}"
+        title="${esc(p.name)} — ${esc(label(p))}${p.conflicts.length ? '\n' + p.conflicts.slice(0, 6).map(c => `${c.start_date}–${c.end_date}  ${c.project || ''}: ${c.name}`).join('\n') : ''}">
+        ${esc(p.name)} <em>${esc(label(p))}</em></button>`;
+
+    panel.innerHTML = `
+      <div class="svc-avail">
+        <div class="svc-avail-head">Availability · ${esc(span)} <span class="svc-sub">${days} business day${days === 1 ? '' : 's'}</span></div>
+        <div class="svc-avail-pills">${show.map(pill).join('') || '<span class="svc-sub">No active roster members found.</span>'}</div>
+        ${chosen && data.people.find(p => p.name === chosen && p.status === 'over')
+          ? `<div class="svc-avail-note">${esc(chosen)} is already over-booked in this window — you can still assign them, but check the conflicts first.</div>`
+          : ''}
+      </div>`;
+
+    // Clicking a name assigns it: the point of the panel is to pick from it.
+    panel.querySelectorAll('[data-pick]').forEach(btn => btn.addEventListener('click', () => {
+      const s2 = document.getElementById('svcWoEmp');
+      if (!s2) return;
+      s2.value = btn.dataset.pick;
+      s2.dispatchEvent(new Event('change'));
+    }));
+  }
+
+  if (startEl) startEl.addEventListener('change', renderAvailability);
+  if (endEl)   endEl.addEventListener('change', renderAvailability);
+  renderAvailability();
 }
 
 // Service Report (§11) — opens prepopulated. Everything above the editable

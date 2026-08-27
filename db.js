@@ -382,6 +382,13 @@ async function init() {
   await pool.query(`ALTER TABLE projects ADD COLUMN est_start_date DATE`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD COLUMN complete_date DATE`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD COLUMN planner_synced_at DATETIME`).catch(() => {});
+  // Contract value + customer PO number on the project itself. Distinct from
+  // project_financials, which models *billing milestones*: a service or T&M job
+  // has a single PO / not-to-exceed figure that is not a milestone and has no
+  // due date, and forcing it into a 100%-milestone row misreports the billing
+  // schedule. DECIMAL(12,2) — money is never a float here.
+  await pool.query(`ALTER TABLE projects ADD COLUMN contract_value DECIMAL(12,2)`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN po_number VARCHAR(64)`).catch(() => {});
   // Clean up duplicate (po, job) rows left by syncs that overlapped before the
   // sync serializer existed. Conservatively deletes only the higher-id copy and
   // only when it carries NO PM-entered data — so manual edits are never lost; a
@@ -513,6 +520,21 @@ async function init() {
   ]) {
     await pool.query(`ALTER TABLE service_work_orders ADD INDEX ${idx} (${col})`).catch(() => {});
   }
+
+  // Multi-day Work Orders. The original model assumed one visit = one day, which
+  // is true for break-fix but false for the work Service actually plans around:
+  // a machine move or a large addition books an engineer for weeks. end_date is
+  // the INCLUSIVE last day; NULL means a single-day WO (so every pre-existing
+  // row keeps its exact meaning and no backfill is required). task_date remains
+  // the start and the only date the day-before reminder fires against.
+  await pool.query(`ALTER TABLE service_work_orders ADD COLUMN end_date VARCHAR(32)`).catch(() => {});
+
+  // Service PO tracking. `po_received` was a bare checkbox, which cannot answer
+  // "how much service work do we have on the books" — the question a $172k
+  // service PO immediately raises. Amount is nullable: a warranty call has a PO
+  // of nothing, and 0.00 would be a lie.
+  await pool.query(`ALTER TABLE service_requests ADD COLUMN po_number VARCHAR(64)`).catch(() => {});
+  await pool.query(`ALTER TABLE service_requests ADD COLUMN po_amount DECIMAL(12,2)`).catch(() => {});
 
   // Attachments (R2 §16). Files live on disk under SERVICE_UPLOAD_DIR; this
   // table is the metadata plus the association that keeps them reachable

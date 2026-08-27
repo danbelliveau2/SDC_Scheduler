@@ -556,11 +556,29 @@ module.exports = function createRouter(deps) {
       const [[existing]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
       if (!existing) return res.status(404).json({ error: 'not found' });
 
-      const allowed = ['name', 'status', 'is_template', 'job_number', 'hours_job_id', 'workspace'];
+      // contract_value / po_number carry the job's single PO figure. They are
+      // NOT a project_financials milestone: a service or T&M job has one PO
+      // value with no due date and no billing percentage, and modelling it as a
+      // 100% milestone would put a phantom payment on the financial schedule.
+      const allowed = ['name', 'status', 'is_template', 'job_number', 'hours_job_id', 'workspace',
+                       'contract_value', 'po_number'];
+      const MONEY = new Set(['contract_value']);
       const updates = {};
       for (const k of allowed) {
         if (req.body[k] !== undefined) {
-          updates[k] = k === 'is_template' ? (req.body[k] ? 1 : 0) : req.body[k];
+          if (k === 'is_template') { updates[k] = req.body[k] ? 1 : 0; continue; }
+          if (MONEY.has(k)) {
+            const raw = req.body[k];
+            if (raw === '' || raw === null) { updates[k] = null; continue; }
+            // Accept what a human pastes out of a PO: "$172,000.00".
+            const n = Number(String(raw).replace(/[$,\s]/g, ''));
+            if (!Number.isFinite(n) || n < 0) {
+              return res.status(400).json({ error: `${k} must be a positive amount.` });
+            }
+            updates[k] = n;
+            continue;
+          }
+          updates[k] = req.body[k];
         }
       }
       if (Object.keys(updates).length === 0) return res.json(existing);
