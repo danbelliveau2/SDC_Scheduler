@@ -385,12 +385,13 @@ function drawRequestTable(body) {
     btn.addEventListener('click', (e) => { e.stopPropagation(); deleteRequest(btn); }));
 }
 
-// Delete is admin-only server-side (requireRole('admin')). Hiding the button
-// for everyone else is presentation, not the guard — the endpoint still refuses.
+// Delete needs editor or admin server-side (requireRole('editor')). Hiding the
+// button from viewers is presentation, not the guard — the endpoint still refuses.
 function canDeleteRequests() {
   const a = window.sdcAuth;
   if (!a || !a.authEnabled) return true;      // auth off — the server won't refuse either
-  return !!(a.user && a.user.role === 'admin');
+  const role = a.user && a.user.role;
+  return role === 'editor' || role === 'admin';
 }
 
 const TRASH_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +

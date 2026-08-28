@@ -800,10 +800,15 @@ module.exports = function createRouter(deps) {
     }
   });
 
-  // Admin-only: a Service Request is a business record, not a scratch row. The
-  // FK cascade takes the work orders, attachments, reports and history with it;
-  // the files on disk and any linked schedule tasks are cleaned up explicitly
-  // since neither is reachable by the DB cascade.
+  // Editor and above. A Service Request is still a business record rather than
+  // a scratch row, but the people who log and run them are editors, and an
+  // admin-only delete left them unable to clear a mis-keyed request — the same
+  // reasoning that already makes the Work Order delete below editor-level. The
+  // confirmation dialog, not the role, is what stops an accidental delete.
+  //
+  // The FK cascade takes the work orders, attachments, reports and history with
+  // it; the files on disk and any linked schedule tasks are cleaned up
+  // explicitly since neither is reachable by the DB cascade.
   //
   // Dependent-record audit (all five are accounted for, no orphans):
   //   service_work_orders  FK ON DELETE CASCADE   — goes with the parent
@@ -817,7 +822,7 @@ module.exports = function createRouter(deps) {
   // deleting it after the parent would leave orphan audit rows behind if that
   // second statement failed. The task ids and the on-disk filenames are read
   // before the cascade removes the rows that point at them.
-  router.delete('/api/service/requests/:id', requireRole('admin'), async (req, res) => {
+  router.delete('/api/service/requests/:id', requireRole('editor'), async (req, res) => {
     try {
       const id = Number(req.params.id);
       if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid request id.' });
