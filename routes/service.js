@@ -804,18 +804,41 @@ module.exports = function createRouter(deps) {
   // FK cascade takes the work orders, attachments, reports and history with it;
   // the files on disk and any linked schedule tasks are cleaned up explicitly
   // since neither is reachable by the DB cascade.
+  //
+  // Dependent-record audit (all five are accounted for, no orphans):
+  //   service_work_orders  FK ON DELETE CASCADE   — goes with the parent
+  //   service_attachments  FK ON DELETE CASCADE   — rows cascade, FILES do not
+  //   service_reports      FK ON DELETE CASCADE   — goes with the parent
+  //   service_history      no FK                  — deleted explicitly, FIRST
+  //   tasks (schedule)     no FK, reached via service_work_orders.task_id
+  //                                               — ids read BEFORE the cascade
+  //
+  // Order matters. History goes first: it is the only child with no FK, so
+  // deleting it after the parent would leave orphan audit rows behind if that
+  // second statement failed. The task ids and the on-disk filenames are read
+  // before the cascade removes the rows that point at them.
   router.delete('/api/service/requests/:id', requireRole('admin'), async (req, res) => {
     try {
       const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid request id.' });
+
+      // 404 rather than a silent ok — the client removes the row on success, so
+      // "deleted something that was never there" must not read as success.
+      const [[exists]] = await pool.query('SELECT request_no FROM service_requests WHERE id = ?', [id]);
+      if (!exists) return res.status(404).json({ error: 'Service request not found.' });
+
       const [files] = await pool.query('SELECT stored_name FROM service_attachments WHERE service_request_id = ?', [id]);
       const [tasks] = await pool.query('SELECT task_id FROM service_work_orders WHERE service_request_id = ? AND task_id IS NOT NULL', [id]);
+      await pool.query('DELETE FROM service_history WHERE service_request_id = ?', [id]);
       await pool.query('DELETE FROM service_requests WHERE id = ?', [id]);
-      await pool.query('DELETE FROM service_history WHERE service_request_id = ?', [id]).catch(() => {});
       for (const t of tasks) await pool.query('DELETE FROM tasks WHERE id = ?', [t.task_id]).catch(() => {});
       for (const f of files) { try { fs.unlinkSync(path.join(UPLOAD_DIR, f.stored_name)); } catch (_) {} }
-      res.json({ ok: true });
+      res.json({ ok: true, request_no: exists.request_no });
       notifyClients();
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+      console.error('[service] delete request failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // ── Attachments (§16) ──────────────────────────────────────────────────────
