@@ -2362,7 +2362,15 @@ function renderTable() {
         const checkBtn = !isBacklog
           ? `<span class="name-cell-pills"><button type="button" class="name-milestone-check ${isDone ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${isDone ? 'Mark not complete' : 'Mark complete'}">${isDone ? '✓' : ''}</button></span>`
           : '';
-        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}`;
+        // Machine identity wins over the generic anchor green on the pill:
+        // on a multi-machine project the pill IS the machine label, so it
+        // carries that machine's stable color (see machineAccentStyle). The
+        // done/not-done signal stays where it always was — the ✓ box on the
+        // right — plus a ✓ glyph inside the pill so recoloring doesn't cost
+        // us the completion cue. Shared anchors (no machine) keep the green.
+        const hasMachineAccent = !!(t.machine && !isBacklog && shouldShowMachineVisuals());
+        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}${hasMachineAccent ? ' is-machine' : ''}`;
+        const chipDone = hasMachineAccent && isDone ? '<span class="anchor-done-check">✓</span>' : '';
         // Multi-machine: prepend the M1/M2/M3 pill on anchor rows too, so
         // M2.FAT visually reads as "M2" before the green FAT chip. Hidden
         // on single-machine projects + when the M view-pill is off.
@@ -2372,7 +2380,7 @@ function renderTable() {
           machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="background:${c.hex};color:${c.text};border-color:${c.hex};">${escapeHtml(t.machine)}</span> `;
         }
         const tdCls = checkBtn ? 'has-pills' : '';
-        return `<td data-col="name" class="${tdCls}">${machineChip}<span class="${chipCls}">${escapeHtml(t.name || '')}</span>${checkBtn}</td>`;
+        return `<td data-col="name" class="${tdCls}">${machineChip}<span class="${chipCls}">${chipDone}${escapeHtml(t.name || '')}</span>${checkBtn}</td>`;
       }
       return cellHtml(t, k);
     }).join('');
@@ -2382,8 +2390,13 @@ function renderTable() {
     // groupBottom only — they read as one continuous spine block.
     const groupTop    = opts.groupTop    !== false;
     const groupBottom = opts.groupBottom !== false;
-    const cls = `depth-1 anchor-row${isDone && !isBacklog ? ' is-done' : ''}${isBacklog ? ' backlog-row' : ''}${!groupTop ? ' no-top-border' : ''}${!groupBottom ? ' no-bottom-border' : ''}`;
-    return `<tr data-id="${t.id}" class="${cls}" data-anchor-key="${escapeHtml(inferredAnchorKey(t) || '')}">${cells}</tr>`;
+    // Row-level machine cue: a colored left rail, machine-tinted spine rules
+    // and a barely-there row wash. Deliberately weak — the pill stays the
+    // loudest element; this just ties the boundary row to its machine.
+    const rowAccent = (t.machine && !isBacklog && shouldShowMachineVisuals())
+      ? machineAccentStyle(t.project, t.machine) : '';
+    const cls = `depth-1 anchor-row${isDone && !isBacklog ? ' is-done' : ''}${isBacklog ? ' backlog-row' : ''}${!groupTop ? ' no-top-border' : ''}${!groupBottom ? ' no-bottom-border' : ''}${rowAccent ? ' has-machine-accent' : ''}`;
+    return `<tr data-id="${t.id}" class="${cls}" data-anchor-key="${escapeHtml(inferredAnchorKey(t) || '')}"${rowAccent ? ` style="${rowAccent}"` : ''}>${cells}</tr>`;
   };
   const candidates = filtered
     .map(t => [t, inferredAnchorKey(t)])
@@ -13353,9 +13366,20 @@ const MACHINE_PALETTE = [
 // color. M1→SDC Blue, M2→SDC Yellow, M3→SDC Green, etc.
 function defaultMachineColor(machine) {
   if (!machine) return MACHINE_PALETTE[0];
-  const m = String(machine).match(/^M(\d+)$/i);
-  const idx = m ? (Number(m[1]) - 1) % MACHINE_PALETTE.length : 0;
-  return MACHINE_PALETTE[Math.max(0, idx)];
+  const raw = String(machine).trim();
+  // "M1" / "M2" / … — the common case. Straight index into the palette so the
+  // cycle reads in order down the machine selector.
+  const m = raw.match(/^M\s*(\d+)$/i);
+  if (m) return MACHINE_PALETTE[Math.max(0, (Number(m[1]) - 1) % MACHINE_PALETTE.length)];
+  // Anything else ("DS 2", "Chamber A", …) used to fall through to slot 0,
+  // which handed EVERY oddly-named machine on a project the identical color.
+  // Hash the name instead: still fully deterministic (same name → same color
+  // on every render and after reload), but distinct per machine. Trailing
+  // digits are folded in first so "DS 2" and "DS 3" can't collide.
+  const tail = raw.match(/(\d+)\s*$/);
+  let h = tail ? Number(tail[1]) * 7 : 0;
+  for (let i = 0; i < raw.length; i++) h = (h * 31 + raw.charCodeAt(i)) >>> 0;
+  return MACHINE_PALETTE[h % MACHINE_PALETTE.length];
 }
 function getMachineColor(project, machine) {
   if (!project || !machine) return defaultMachineColor(machine);
@@ -13368,6 +13392,37 @@ function getMachineColor(project, machine) {
   }
   return defaultMachineColor(machine);
 }
+// ── Machine color derivatives ────────────────────────────────────────────────
+// Everything below is derived DETERMINISTICALLY from getMachineColor(), so a
+// machine keeps the same identity across renders, reloads and views. Used by
+// the anchor/milestone pills and their row accents so "which machine is this
+// line?" is answerable at a glance without re-reading the M chip.
+function hexToRgbTriplet(hex) {
+  const h = String(hex || '').replace('#', '');
+  if (h.length !== 6) return [21, 116, 196];
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+// Darken (pct < 0) or lighten (pct > 0) a hex by a percentage of the channel
+// range. Used for the pill's 1px separation border — a shade of the machine
+// color rather than a generic gray, so the border reads as part of the pill.
+function shadeHex(hex, pct) {
+  const [r, g, b] = hexToRgbTriplet(hex);
+  const f = (c) => {
+    const v = pct < 0 ? c * (1 + pct) : c + (255 - c) * pct;
+    return Math.max(0, Math.min(255, Math.round(v)));
+  };
+  return '#' + [f(r), f(g), f(b)].map(c => c.toString(16).padStart(2, '0')).join('');
+}
+// The full CSS custom-property bundle for one machine: pill fill, pill text,
+// pill border, and the very light row tint. Callers drop this straight into a
+// style="" attribute.
+function machineAccentStyle(project, machine) {
+  const c = getMachineColor(project, machine);
+  const [r, g, b] = hexToRgbTriplet(c.hex);
+  return `--mach:${c.hex};--mach-text:${c.text};--mach-border:${shadeHex(c.hex, -0.28)};`
+       + `--mach-soft:rgba(${r},${g},${b},0.07);--mach-rule:rgba(${r},${g},${b},0.55);`;
+}
+
 function pickContrastText(hex) {
   const h = String(hex).replace('#', '');
   if (h.length !== 6) return '#ffffff';

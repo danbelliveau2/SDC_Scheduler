@@ -47,6 +47,18 @@
   --text: #061d39;
   --text-muted: #64748b;
   --row-hover: #eef5fb;
+  /* v12.10: ONE height for every in-row control — the machine badge (M1/M2),
+     the anchor/milestone pill, the % pill and the milestone check. Derived
+     from --row-h so a control always leaves clear space between itself and
+     the row's grid lines instead of being squeezed against them, and so all
+     four line up at exactly the same height no matter what the user (or
+     fit-to-screen) sets --row-h to. Clamped: readable at the compact floor,
+     and it stops growing before it looks chunky in a tall row.
+     NOTE the row box itself is deliberately untouched — the Gantt aligns
+     row-by-row with the grid, so buying space by making rows taller would
+     desync every bar. All of the breathing room here comes from inside the
+     existing row box. */
+  --ctl-h: clamp(14px, calc(var(--row-h, 44px) - 12px), 18px);
   --success: #5a9600;           /* green — saved, under-budget, on-time */
   --success-bg: #f0f9e8;
   --warning: #d97706;           /* amber — caution states */
@@ -1011,15 +1023,33 @@ body.machine-clone-mode #tasks-tbody input[type="checkbox"] {
    vs M2 "Builder 1"). Color cycles by machine name so each machine gets
    a stable, distinct accent. */
 .name-machine-chip {
-  display: inline-block;
+  /* v12.10: inline-flex + the shared --ctl-h so every badge is the SAME box
+     and is centered in it, rather than each one being sized by its own text.
+     min-width keeps M1..M9 identical in width (M10 grows); the extra
+     margin-right stops the badge from crowding the task name in the long
+     repeated blocks (Install Shop / Install Engineer / Teardown). */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--ctl-h, 18px);
+  min-width: 24px;
+  box-sizing: border-box;
   padding: 0 6px;
-  margin-right: 4px;
+  margin-right: 6px;
   border-radius: 4px;
   font-size: var(--fs-xs);
   font-weight: var(--fw-bold);
   font-family: var(--font-mono);
   letter-spacing: 0.02em;
+  line-height: 1;
+  /* `vertical-align: middle` is defined as baseline + half the PARENT's
+     x-height, which is not the line box's centre — it left the badge sitting
+     ~1.2px low against the task name, the asymmetry you see as the badge
+     "hugging" the row's bottom edge. Correct in `ex` (half the parent's own
+     x-height) so it stays exact as --row-h scales the name's font clamp,
+     rather than at one hand-tuned pixel value. */
   vertical-align: middle;
+  transform: translateY(-0.18ex);
   background: #e0e7ff;
   color: #3730a3;
   border: 1px solid #c7d2fe;
@@ -1034,11 +1064,21 @@ body.machine-clone-mode #tasks-tbody input[type="checkbox"] {
 .name-machine-chip[data-machine="M6"] { background: #ffe4e6; color: #9f1239; border-color: #fda4af; }
 
 .clone-pred-chip {
-  display: inline-block;
+  /* Shares --ctl-h with the badge / pill / % pill / check. On an anchor row
+     paintClonePredChip() finds no .name-cell-main and appends the chip
+     straight into the name TD, so an intrinsically-sized chip is measured
+     against the TD's content box — at a compact --row-h it outgrew the box
+     and pushed the row ~0.7px taller than its neighbours, which is enough to
+     walk the Gantt out of alignment below it. A fixed box can't overflow. */
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h, 18px);
+  box-sizing: border-box;
+  line-height: 1;
   position: relative;
   z-index: 20;
   margin-left: 8px;
-  padding: 1px 8px;
+  padding: 0 8px;
   border-radius: 10px;
   background: #ffffff;
   border: 1.5px solid var(--sdc-primary, #1574c4);
@@ -4261,7 +4301,13 @@ td {
   overflow: hidden;
   text-overflow: ellipsis;
   height: var(--row-h, 44px);
-  line-height: calc(var(--row-h, 44px) - 10px);
+  /* The oversized line-height IS the vertical centering for cell text. It
+     used to be a bare subtraction, which goes to nothing (or negative) once
+     fit-to-screen squeezes --row-h on a long schedule — descenders clipped
+     and text crowded the borders. Floored at 12px so the text keeps a legible
+     line box at any row height. */
+  line-height: clamp(12px, calc(var(--row-h, 44px) - 10px), 34px);
+  vertical-align: middle;
 }
 th {
   white-space: normal;
@@ -4539,39 +4585,117 @@ tbody tr.anchor-row td {
      even at the row-h floor. Net: 2px-thick borders, uniform row height. */
   border-top: 2px solid var(--anchor-text, #0f172a);
   border-bottom: 2px solid var(--anchor-text, #0f172a);
-  padding-top: 0;
-  padding-bottom: 0;
+  /* v12.10: was 0/0, which put the pill flush against the 2px spine rules —
+     the "squeezed between grid lines" look, worst in the Ship Machine / FAT /
+     SAT stacks where 6-8 of these rows sit back to back. 2px of breathing
+     room each side. The TD is border-box with an explicit height, so this
+     costs ZERO row height — critical, because the Gantt aligns row-by-row
+     with the grid. */
+  padding-top: 2px;
+  padding-bottom: 2px;
+  /* Separation between consecutive machine milestone rows, and between a
+     milestone block and the tasks around it. A 1px inner halo just inside
+     each spine rule reads as a thicker, more deliberate divider without
+     consuming a single pixel of layout (box-shadow doesn't affect geometry,
+     so bar alignment is untouched). */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85),
+              inset 0 -1px 0 rgba(255, 255, 255, 0.85);
 }
 .anchor-name-chip {
   /* v4.32: no vertical padding + scaled font + tight line-height so the
-     chip's vertical footprint matches plain text in normal rows. */
-  display: inline-block;
-  padding: 0 8px;
-  border-radius: 3px;
+     chip's vertical footprint matches plain text in normal rows.
+     v12.9: the pill was reading as a faint tint and machine boundaries got
+     lost in the grid. Now: solid fill, heavier weight, a shade-of-itself
+     border, and real horizontal padding so it reads as a LABEL. Vertical
+     padding stays at 1px and line-height at 1.1 — the chip's box still fits
+     inside the zero-padding anchor TD, so row height is unchanged. */
+  /* v12.10: was padding-boxed, so its height floated with the font clamp and
+     it ended up pressed against the row's 2px spine rules. Now it's the same
+     --ctl-h box as every other in-row control, flex-centered, so it sits with
+     clear space above and below no matter the row height. */
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h, 18px);
+  box-sizing: border-box;
+  padding: 0 10px;
+  transform: translateY(-0.18ex);   /* same baseline correction as the badge */
+  border-radius: 999px;
   background: var(--anchor-fill, #befa4f);
   color: var(--anchor-text, #0f172a);
-  font-weight: var(--fw-bold);
+  border: 1px solid rgba(15, 23, 42, 0.22);
+  font-weight: var(--fw-extrabold, 800);
   font-size: clamp(9px, calc(var(--row-h, 26px) * 0.42), 13px);
   line-height: 1.1;
   letter-spacing: 0.02em;
   vertical-align: middle;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.22);
+}
+
+/* ── Machine-identified pills ───────────────────────────────────────────────
+   On multi-machine projects the anchor pill carries the MACHINE's color
+   instead of the shared anchor green, so M1's spine rows never get confused
+   with M2's. The color comes from getMachineColor() — the same deterministic
+   default cycle (M1 = SDC Blue, M2 = SDC Yellow, M3 = SDC Green, …) plus any
+   per-project override the user picked, persisted in localStorage. Same
+   machine, same color, every render and every reload.
+
+   IMPORTANT: machine color means MACHINE ONLY. Schedule status lives in the
+   ✓ box, the % progress pill and the red/blue drift chips — none of which
+   this touches. Text color is computed by YIQ contrast (pickContrastText) so
+   both the light SDC yellows and the dark navy stay readable. */
+.anchor-name-chip.is-machine {
+  background: var(--mach, #1574c4);
+  color: var(--mach-text, #ffffff);
+  border-color: var(--mach-border, rgba(15, 23, 42, 0.35));
+}
+/* Machine pills replace the green done-state, so the completion signal moves
+   inside the pill as a leading ✓ (the row's ✓ box still shows it too). */
+.anchor-name-chip.is-machine .anchor-done-check {
+  color: inherit;
+  margin-right: 4px;
+  opacity: 0.9;
+}
+/* Row-level cue: colored left rail, machine-tinted spine rules, faint wash.
+   All deliberately quieter than the pill. */
+tbody tr.anchor-row.has-machine-accent td {
+  background: var(--mach-soft, transparent);
+  border-top-color: var(--mach-rule, var(--anchor-text, #0f172a));
+  border-bottom-color: var(--mach-rule, var(--anchor-text, #0f172a));
+}
+tbody tr.anchor-row.has-machine-accent td:first-child {
+  /* Re-declares the halo from tr.anchor-row td — box-shadow doesn't merge
+     across rules, so the rail has to carry it or the first cell loses it. */
+  box-shadow: inset 3px 0 0 0 var(--mach, #1574c4),
+              inset 0 1px 0 rgba(255, 255, 255, 0.85),
+              inset 0 -1px 0 rgba(255, 255, 255, 0.85);
+}
+/* Selected / hovered anchor rows: keep the pill legible by leaving its own
+   fill alone — only the row wash gives way to the hover/selection color. */
+tbody tr.anchor-row.has-machine-accent:hover td {
+  background: color-mix(in srgb, var(--mach-soft, transparent) 55%, var(--row-hover, #eef2f7));
 }
 
 /* Completed anchor (progress >= 100%) — richer forest green + bold checkmark.
    The default anchor chip's lime green = "scheduled / upcoming"; this darker
    solid green clearly reads as "hit, done, behind us". Applied to the chip in
    the grid AND a matching solid diamond in the Gantt (.bar.milestone-done). */
-tbody tr.anchor-row.is-done .anchor-name-chip {
+tbody tr.anchor-row.is-done .anchor-name-chip:not(.is-machine) {
   background: #74C415;            /* solid emerald — pops against the lime "scheduled" green */
-  color: #f0fdf4;
+  /* v12.9: was #f0fdf4 (near-white) on #74C415 — a 2.08:1 contrast ratio, well
+     under the 4.5:1 AA floor, which is why the completed pills read as a
+     smudge. Same near-black the SDC Green swatch pairs with elsewhere: 7.96:1. */
+  color: #0c1f00;
   box-shadow: 0 1px 2px rgba(20, 83, 45, 0.35);
 }
 .anchor-done-check {
   display: inline-block;
   margin-right: 2px;
   font-weight: var(--fw-extrabold);
-  color: #f0fdf4;
+  color: inherit;
 }
 
 /* Note: completed REGULAR tasks deliberately leave the name black. The green
@@ -4925,9 +5049,12 @@ body.hide-pct-pill .th-label-task  { right: 62px; }
      is-ontrack = 1–99% AND on or ahead of schedule (green)
      is-done    = 100% (emerald, white text) */
 .name-edit-pill {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   padding: 0 4px;
-  height: 16px;
+  height: var(--ctl-h, 18px);
   border-radius: 3px;
   font-size: var(--fs-xs);
   font-weight: var(--fw-bold);
@@ -4938,9 +5065,8 @@ body.hide-pct-pill .th-label-task  { right: 62px; }
      dead margins on every row on every screen. */
   min-width: 28px;
   text-align: center;
-  line-height: 14px;
+  line-height: 1;
   border: 1px solid;
-  box-sizing: border-box;
 }
 /* % complete pill colors — driven by CSS custom properties so the Setup page's
    color picker can update them live without re-rendering. Text is always black
@@ -5008,7 +5134,7 @@ body.hide-pct-pill .th-label-task  { right: 62px; }
   align-items: center;
   justify-content: center;
   min-width: 28px; /* matches .name-edit-pill so the slots line up */
-  height: 16px;
+  height: var(--ctl-h, 18px);
   padding: 0 4px;
   box-sizing: border-box;
   border: 1px solid #cbd5e1;
