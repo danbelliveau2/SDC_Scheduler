@@ -1064,11 +1064,21 @@ body.machine-clone-mode #tasks-tbody input[type="checkbox"] {
 .name-machine-chip[data-machine="M6"] { background: #ffe4e6; color: #9f1239; border-color: #fda4af; }
 
 .clone-pred-chip {
-  display: inline-block;
+  /* Shares --ctl-h with the badge / pill / % pill / check. On an anchor row
+     paintClonePredChip() finds no .name-cell-main and appends the chip
+     straight into the name TD, so an intrinsically-sized chip is measured
+     against the TD's content box — at a compact --row-h it outgrew the box
+     and pushed the row ~0.7px taller than its neighbours, which is enough to
+     walk the Gantt out of alignment below it. A fixed box can't overflow. */
+  display: inline-flex;
+  align-items: center;
+  height: var(--ctl-h, 18px);
+  box-sizing: border-box;
+  line-height: 1;
   position: relative;
   z-index: 20;
   margin-left: 8px;
-  padding: 1px 8px;
+  padding: 0 8px;
   border-radius: 10px;
   background: #ffffff;
   border: 1.5px solid var(--sdc-primary, #1574c4);
