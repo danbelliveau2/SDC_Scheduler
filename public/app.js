@@ -9417,6 +9417,7 @@ const SHOP_COLS = [
 ];
 let _shopPartsState = null;
 let _shopAddOpen = false; // the add form is collapsed by default
+let _shopSearchT = 0;     // debounce handle for the search box
 function _shopState() {
   if (_shopPartsState) return _shopPartsState;
   let s = { filter: 'open', search: '', view: 'list', fPri: 'all', fPm: 'all', fEng: 'all', fDue: '', dashRange: 7 };
@@ -9439,35 +9440,97 @@ function _shopDonut(pct, size = 76) {
     <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.24}" font-weight="800" fill="#1f2937" style="font-family:'Montserrat',sans-serif">${pct == null ? '—' : pct + '%'}</text>
   </svg>`;
 }
+// In-flight writes, keyed `id:field`. A repeated click on the same field while
+// its save is still in the air is dropped rather than queued behind it, so the
+// server never sees two writes racing for one column.
+const _shopSaving = new Set();
+
+// Every shop-part write goes through here: one in-flight guard, one place that
+// turns a non-OK response into a thrown Error. api.shopParts.update resolves
+// with the parsed body whatever the status, so a 403 or 503 used to look
+// exactly like a success and the caller reported "saved".
+async function _shopSave(id, patch) {
+  const key = `${id}:${Object.keys(patch).join(',')}`;
+  if (_shopSaving.has(key)) throw new Error('A save for this field is already in progress.');
+  _shopSaving.add(key);
+  try {
+    const upd = await api.shopParts.update(id, patch);
+    if (!upd || upd.error) throw new Error((upd && upd.error) || 'Save failed.');
+    return upd;
+  } finally {
+    _shopSaving.delete(key);
+  }
+}
+
 // Set a part's priority (1/2/3) from the click popup.
 async function _shopSetPri(id, val) {
   const r = (state.shopParts || []).find(x => x.id === id);
   if (!r) return;
+  const prev = r.priority;
   r.priority = String(val);
   renderShopPartsPage();
   try {
-    const upd = await api.shopParts.update(id, { priority: String(val) });
-    if (upd) Object.assign(r, upd);
-  } catch (_) {}
+    const upd = await _shopSave(id, { priority: String(val) });
+    Object.assign(r, upd);
+    renderShopPartsPage();
+  } catch (err) {
+    // Priority drives which section a row lands in, so a failed save that left
+    // the optimistic value on screen moved the part to the hot list and kept it
+    // there until the next reload.
+    r.priority = prev;
+    renderShopPartsPage();
+    showToast(`Could not set priority: ${err.message}`, { kind: 'error' });
+  }
 }
 // Qty +/- stepper — updates in place without a full re-render (keeps scroll/pos).
+// querySelectorAll, not querySelector: a priority-1 part is on screen twice
+// (pinned + full list) and both copies have to show the same number.
 async function _shopBumpQty(id, d) {
   const r = (state.shopParts || []).find(x => x.id === id);
   if (!r) return;
-  const next = Math.max(0, (Number(r.qty) || 0) + d);
+  const prev = Number(r.qty) || 0;
+  const next = Math.max(0, prev + d);
+  const paint = (v) => document.querySelectorAll(`.sp-qty-inp[data-id="${id}"]`).forEach(i => { i.value = v; });
   r.qty = next;
-  const inp = document.querySelector(`.sp-qty-inp[data-id="${id}"]`);
-  if (inp) inp.value = next;
+  paint(next);
   try {
-    const upd = await api.shopParts.update(id, { qty: next });
-    if (upd) Object.assign(r, upd);
-  } catch (_) {}
+    const upd = await _shopSave(id, { qty: next });
+    if (upd) { Object.assign(r, upd); paint(r.qty); }
+  } catch (err) {
+    r.qty = prev; paint(prev);          // the save failed — don't leave a lie on screen
+    showToast(`Could not save quantity: ${err.message}`, { kind: 'error' });
+  }
 }
 function _saveShopState() { try { localStorage.setItem('sdcShopPartsState', JSON.stringify(_shopPartsState)); } catch (_) {} }
 
+// null = last load succeeded. A failed load used to set shopParts to [] and
+// render "No parts to show" — a database outage was indistinguishable from an
+// empty shop, and the only way to retry was a full page reload.
+let _shopLoadError = null;
+let _shopLoading = false;
+
 async function loadShopParts() {
-  try { state.shopParts = await api.shopParts.list(); }
-  catch (_) { state.shopParts = []; }
+  if (_shopLoading) return;                 // keep refresh idempotent under bursts
+  _shopLoading = true;
+  if (!Array.isArray(state.shopParts)) renderShopPartsPage();   // paint the skeleton
+  try {
+    const rows = await api.shopParts.list();
+    if (!Array.isArray(rows)) throw new Error((rows && rows.error) || 'Unexpected response.');
+    state.shopParts = rows;
+    _shopLoadError = null;
+  } catch (e) {
+    _shopLoadError = e.message || 'Could not reach the server.';
+    if (!Array.isArray(state.shopParts)) state.shopParts = [];  // keep any rows already on screen
+  } finally {
+    _shopLoading = false;
+  }
+  // Don't tear the page out from under someone who is mid-edit. A save from
+  // another tab arrives as shop_parts:updated → loadShopParts → a full
+  // innerHTML rebuild, which would discard whatever they had typed but not yet
+  // committed. state is already up to date; the next render picks it up.
+  const ae = document.activeElement;
+  if (ae && ae.closest && ae.closest('#shop-parts-page') &&
+      /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'checkbox') return;
   renderShopPartsPage();
 }
 
@@ -9517,15 +9580,25 @@ async function _shopReorder(id, dir, scope) {
   a.sort_order = bo; b.sort_order = ao;
   renderShopPartsPage();
   try {
-    await api.shopParts.update(a.id, { sort_order: a.sort_order });
-    await api.shopParts.update(b.id, { sort_order: b.sort_order });
-  } catch (_) {}
+    await _shopSave(a.id, { sort_order: a.sort_order });
+    await _shopSave(b.id, { sort_order: b.sort_order });
+  } catch (err) {
+    // Half a swap is worse than none — put both back the way they were.
+    a.sort_order = ao; b.sort_order = bo;
+    renderShopPartsPage();
+    showToast(`Could not reorder: ${err.message}`, { kind: 'error' });
+  }
 }
 
 function renderShopPartsPage() {
   const root = document.getElementById('shop-parts-page');
   if (!root) return;
   const st = _shopState();
+  if (!Array.isArray(state.shopParts) && _shopLoading) {
+    root.innerHTML = `<div class="shop-parts-head"><div class="sp-head-top"><h1 class="projects-page-title">Parts in Shop</h1></div></div>
+      <p class="sp-empty sp-loading">Loading parts…</p>`;
+    return;
+  }
   const all = Array.isArray(state.shopParts) ? state.shopParts : [];
   const rows = _shopDisplayedRows(all, st);
   const openCount = all.filter(r => !r.part_complete).length;
@@ -9561,13 +9634,18 @@ function renderShopPartsPage() {
   //   green = received; if the row is also complete, the sync is what closed it
   // Deliberately read-only: the way to change it is to fix the PO or receive the
   // goods in ETO, which is the system of record.
+  // ALWAYS returns exactly one grid child, empty span included. The row is a
+  // CSS grid with a fixed track list, so a conditionally-omitted cell shifts
+  // every later cell one track left and pushes the last one onto an implicit
+  // second row — which is what put the "complete" checkbox underneath the Pri
+  // column and squeezed the PO badge into the 38px checkbox track.
   const etoBadge = (r) => {
     const po = String(r.eto_po ?? '').trim();
-    if (!po) return '';
+    if (!po) return '<span class="sp-eto-cell"></span>';
     const rcvd = r.eto_received_qty;
     const need = Number(r.qty) > 0 ? Number(r.qty) : Number(r.eto_po_qty) || 0;
     if (rcvd == null) {
-      return `<span class="sp-eto is-missing" title="PO ${escapeHtml(po)}: no line for ${escapeHtml(r.part_no || 'this part')} on that PO — check the PO number">PO ${escapeHtml(po)} ?</span>`;
+      return `<span class="sp-eto-cell"><span class="sp-eto is-missing" title="PO ${escapeHtml(po)}: no line for ${escapeHtml(r.part_no || 'this part')} on that PO — check the PO number">PO ${escapeHtml(po)} ?</span></span>`;
     }
     const full = need > 0 && Number(rcvd) >= need;
     const on = r.eto_received_on ? ` on ${escapeHtml(r.eto_received_on)}` : '';
@@ -9576,16 +9654,18 @@ function renderShopPartsPage() {
     // row that was still open, which reads as a contradiction.
     const hold = String(r.eto_hold_reason ?? '').trim();
     if (hold) {
-      return `<span class="sp-eto is-held" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}, but NOT auto-completed: ${escapeHtml(hold)}. Tick the box by hand if this receipt really is for this part.">PO ${escapeHtml(po)} ${rcvd}/${need} held</span>`;
+      return `<span class="sp-eto-cell"><span class="sp-eto is-held" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}, but NOT auto-completed: ${escapeHtml(hold)}. Tick the box by hand if this receipt really is for this part.">PO ${escapeHtml(po)} ${rcvd}/${need} held</span></span>`;
     }
     const cls = full ? 'is-received' : 'is-partial';
     const mark = full ? ' ✓' : '';
-    return `<span class="sp-eto ${cls}" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}">PO ${escapeHtml(po)} ${rcvd}/${need}${mark}</span>`;
+    return `<span class="sp-eto-cell"><span class="sp-eto ${cls}" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}">PO ${escapeHtml(po)} ${rcvd}/${need}${mark}</span></span>`;
   };
 
   // Priority select (1 hot / 2 due / 3 low), color-coded inline.
   const priSel = (r) => { const p = _shopPri(r); return `<span class="sp-pri pri-${p}" data-pri="${r.id}" title="Priority ${p} — click to change">${p}</span>`; };
-  const partHeader = `<div class="sp-list-head"><span>Pri</span><span>Job</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span></span></div>`;
+  // Header must carry one cell per row cell, in the same order, or the labels
+  // sit over the wrong columns.
+  const partHeader = `<div class="sp-list-head"><span>Pri</span><span>Job</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span>PO</span><span class="sp-done-head" title="Mark the part complete">Done</span></div>`;
 
   // One row: Priority · [Job] · Qty(stepper) · PartNo — Description · Type · Due ·
   // [PM] · ✓complete. Click the name to expand the full editor.
@@ -9613,23 +9693,38 @@ function renderShopPartsPage() {
     </div>`;
   };
 
-  // Priority-1 (hot) open parts — the "work on these now" list.
-  const pri1 = _shopDisplayedRows(all, { filter: 'open' }).filter(r => _shopPri(r) === 1);
-  const topHtml = pri1.length
+  // Priority-1 (hot) parts — the "work on these now" shortcut. These rows are
+  // deliberately shown TWICE: pinned here and again in the full list below.
+  // That is a pinned view of the same records, not duplicate data, so the
+  // heading says so.
+  //
+  // It is now derived from `rows` — the same filtered set the main list uses —
+  // rather than from an independent query. Previously it ignored the active
+  // search and the PM/Eng/Due filters, so searching for one part still listed
+  // every hot part above it, and the two sections could contradict each other.
+  // When the user has already narrowed to Priority 1 the pinned copy would be a
+  // character-for-character repeat of the list below, so it is dropped.
+  const pri1 = st.fPri === '1' ? [] : rows.filter(r => _shopPri(r) === 1);
+  const showTop = pri1.length > 0;
+  const topHtml = showTop
     ? `<div class="sp-flat">${partHeader}${pri1.map(r => partRow(r, true)).join('')}</div>`
-    : '<p class="sp-empty">No priority-1 parts right now.</p>';
+    : '<p class="sp-empty">No priority-1 parts match the current filters.</p>';
 
   // Main area — List (flat) or Cards (by project).
   let mainHtml;
   if (rows.length === 0) {
-    mainHtml = '<p class="sp-empty">No parts to show.</p>';
+    // Tell the two apart: nothing in the shop at all vs. nothing matching.
+    const narrowed = st.search || st.fPri !== 'all' || st.fPm !== 'all' || st.fEng !== 'all' || st.fDue || st.filter !== 'all';
+    mainHtml = all.length && narrowed
+      ? '<p class="sp-empty">No parts match these filters. <button class="sp-linkbtn" data-action="clear-filters" type="button">Clear filters</button></p>'
+      : '<p class="sp-empty">No parts in the shop yet. Use ＋ Add part to log one.</p>';
   } else if (st.view === 'cards') {
     const groups = {};
     rows.forEach(r => { const k = (r.job && r.job.trim()) ? r.job : 'Not assigned'; (groups[k] = groups[k] || []).push(r); });
     mainHtml = `<div class="sp-proj-grid">${Object.keys(groups).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(job =>
       `<section class="sp-proj-card">
         <header class="sp-proj-head"><span class="sp-proj-name">${escapeHtml(job)}</span><span class="sp-group-count">${groups[job].length}</span></header>
-        <div class="sp-proj-body"><div class="sp-prow-line sp-card-colhead"><span>Pri</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span></span></div>${groups[job].map(r => partRow(r, false)).join('')}</div>
+        <div class="sp-proj-body"><div class="sp-prow-line sp-card-colhead"><span>Pri</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span>PO</span><span class="sp-done-head" title="Mark the part complete">Done</span></div>${groups[job].map(r => partRow(r, false)).join('')}</div>
       </section>`).join('')}</div>`;
   } else {
     mainHtml = `<div class="sp-flat">${partHeader}${rows.map(r => partRow(r, true)).join('')}</div>`;
@@ -9746,13 +9841,21 @@ function renderShopPartsPage() {
         <span class="sp-legend-pri">Priority: <i class="sp-pri pri-1">1</i> hot · <i class="sp-pri pri-2">2</i> · <i class="sp-pri pri-3">3</i> low</span>
       </div>
     </div>
+    ${_shopLoadError ? `<div class="sp-error" role="alert">
+      <span>Could not load parts: ${escapeHtml(_shopLoadError)}${all.length ? ' Showing the last data that loaded.' : ''}</span>
+      <button class="sp-linkbtn" data-action="retry-load" type="button">Retry</button>
+    </div>` : ''}
     ${dashHtml}
-    <section class="sp-section sp-top">
-      <header class="sp-section-head">🔴 Priority 1 parts</header>
+    ${st.fPri === '1' ? '' : `<section class="sp-section sp-top">
+      <header class="sp-section-head">🔴 Priority 1 parts
+        <span class="sp-section-note">pinned shortcut — the same ${pri1.length} part${pri1.length === 1 ? '' : 's'}, also listed in ${st.view === 'cards' ? 'By project' : 'All parts'} below</span>
+      </header>
       ${topHtml}
-    </section>
+    </section>`}
     <section class="sp-section sp-projects">
-      <header class="sp-section-head">${st.view === 'cards' ? 'By project' : 'All parts'}</header>
+      <header class="sp-section-head">${st.view === 'cards' ? 'By project' : 'All parts'}
+        <span class="sp-section-note">${rows.length} of ${all.length} part${all.length === 1 ? '' : 's'}</span>
+      </header>
       ${mainHtml}
     </section>
     ${pmList}${modList}${jobList}`;
@@ -9781,6 +9884,13 @@ function renderShopPartsPage() {
       state.shopParts.push(created); f.reset(); _shopAddOpen = true; renderShopPartsPage(); const pn = document.querySelector('.sp-add-pn'); if (pn) pn.focus();
     }
   });
+  const retryBtn = root.querySelector('[data-action="retry-load"]');
+  if (retryBtn) retryBtn.addEventListener('click', () => loadShopParts());
+  const clearBtn = root.querySelector('[data-action="clear-filters"]');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    Object.assign(st, { search: '', fPri: 'all', fPm: 'all', fEng: 'all', fDue: '', filter: 'all' });
+    _saveShopState(); renderShopPartsPage();
+  });
   // Toggle the collapsible add form
   const addToggle = root.querySelector('[data-action="toggle-add"]');
   if (addToggle) addToggle.addEventListener('click', () => {
@@ -9796,10 +9906,19 @@ function renderShopPartsPage() {
   const dashRangeEl = root.querySelector('.sp-dash-range');
   if (dashRangeEl) dashRangeEl.addEventListener('change', () => { st.dashRange = Number(dashRangeEl.value); _saveShopState(); renderShopPartsPage(); });
   const searchEl = root.querySelector('.sp-search');
+  // Debounced: every keystroke used to rebuild the whole page — dashboards,
+  // donut, both lists — and then force the caret to the END of the box, so
+  // correcting a typo mid-string was impossible. Now one render per pause, and
+  // the caret goes back where it actually was.
   searchEl.addEventListener('input', () => {
-    st.search = searchEl.value; _saveShopState(); renderShopPartsPage();
-    const s2 = document.querySelector('.sp-search');
-    if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); }
+    const val = searchEl.value;
+    const caret = searchEl.selectionStart;
+    clearTimeout(_shopSearchT);
+    _shopSearchT = setTimeout(() => {
+      st.search = val; _saveShopState(); renderShopPartsPage();
+      const s2 = document.querySelector('.sp-search');
+      if (s2) { s2.focus(); try { s2.setSelectionRange(caret, caret); } catch (_) {} }
+    }, 150);
   });
   // Priority — click the number, pick from a popup (no inline arrows).
   root.querySelectorAll('.sp-pri[data-pri]').forEach(el => el.addEventListener('click', (e) => {
@@ -9811,9 +9930,14 @@ function renderShopPartsPage() {
       { label: '3 · Low', onClick: () => _shopSetPri(id, 3) },
     ]);
   }));
-  // Expand/collapse a row to edit its full details
+  // Expand/collapse a row to edit its full details.
+  //
+  // Scoped to the clicked row. A priority-1 part is rendered in BOTH sections
+  // with the same data-id, so a document-wide lookup always found the pinned
+  // copy first — clicking a hot part in "All parts" silently expanded the row
+  // at the top of the page instead of the one under the pointer.
   root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
-    const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
+    const d = b.closest('.sp-prow')?.querySelector('[data-details]');
     if (d) d.hidden = !d.hidden;
   }));
   // Field edits (delegated). Bound ONCE — root persists across re-renders, so
@@ -9822,14 +9946,32 @@ function renderShopPartsPage() {
     const el = e.target.closest('[data-id][data-field]');
     if (!el) return;
     const id = Number(el.dataset.id), field = el.dataset.field;
+    const row = state.shopParts.find(r => r.id === id);
     let val;
     if (el.type === 'checkbox') val = el.checked ? 1 : 0;
     else if (el.type === 'number') val = el.value === '' ? null : Number(el.value);
     else val = el.value;
+    const prev = row ? row[field] : undefined;
     let updated;
-    try { updated = await api.shopParts.update(id, { [field]: val }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); return; }
-    const row = state.shopParts.find(r => r.id === id);
-    if (row && updated) Object.assign(row, updated);
+    // _shopSave throws on a non-OK body. The old code awaited the raw helper,
+    // which resolves with {error:…} for a 403/503 just as it resolves with the
+    // row for a 200 — so a refused save was assigned onto the row and the tick
+    // stayed on screen until the next reload, having never reached the database.
+    try {
+      updated = await _shopSave(id, { [field]: val });
+    } catch (err) {
+      if (el.type === 'checkbox') el.checked = !!prev;
+      else el.value = prev == null ? '' : prev;
+      showToast(`Could not save ${field.replace(/_/g, ' ')}: ${err.message}`, { kind: 'error' });
+      return;
+    }
+    if (row) Object.assign(row, updated);
+    // Keep every on-screen copy of this row in step — a priority-1 part is
+    // rendered in both the pinned section and the full list.
+    if (el.type === 'checkbox') {
+      document.querySelectorAll(`input[type="checkbox"][data-id="${id}"][data-field="${field}"]`)
+        .forEach(c => { c.checked = !!updated[field]; });
+    }
     if (field === 'part_complete' || field === 'priority' || field === 'job') renderShopPartsPage();
   }); }
   // Delete

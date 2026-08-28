@@ -10046,6 +10046,15 @@ td.sales-suppressed {
 .sp-chip.sp-muted { background: transparent; color: var(--text-muted, #64748b); border: 1px solid var(--border, #e2e8f0); }
 .sp-chip.sp-due.is-late { background: #E3F0FA; color: #0D47A1; }
 .sp-done { display: flex; align-items: center; gap: 5px; flex: none; font-size: var(--fs-sm); color: var(--text-muted, #64748b); cursor: pointer; }
+/* Done owns the last Shop Parts column: a comfortable click target that fills
+   the track it already has, so it costs no extra row height. */
+#shop-parts-page .sp-prow-line .sp-done {
+  justify-content: center; min-height: 26px; border-radius: 6px;
+}
+#shop-parts-page .sp-prow-line .sp-done:hover { background: var(--surface-alt, #f1f5f9); }
+#shop-parts-page .sp-prow-line .sp-done input { cursor: pointer; margin: 0; width: 15px; height: 15px; }
+#shop-parts-page .sp-prow-line .sp-done:has(input:focus-visible) { outline: 2px solid var(--sdc-primary, #1574c4); outline-offset: 1px; }
+#shop-parts-page .sp-done-head { text-align: center; }
 /* Expanded detail editor */
 .sp-card-details { border-top: 1px solid var(--border, #e2e8f0); padding: 12px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 3%, white); }
 .sp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px 12px; }
@@ -10128,6 +10137,30 @@ td.sales-suppressed {
 
 /* Sections (Top 10 + By project) */
 .sp-section { margin-top: 16px; }
+/* A quiet note beside a section heading — says what the section IS, so the
+   priority-1 list reads as a pinned shortcut rather than duplicated records. */
+.sp-section-note {
+  font-size: var(--fs-xs); font-weight: var(--fw-normal); font-style: italic;
+  color: var(--text-muted, #64748b); text-transform: none; letter-spacing: 0;
+}
+/* Load failure — distinct from the empty state, and retryable in place. */
+.sp-error {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-top: 12px; padding: 9px 12px; border-radius: 8px;
+  background: var(--danger-bg, #fef2f2); border: 1px solid var(--danger, #dc2626);
+  color: var(--danger, #dc2626); font-size: var(--fs-md); font-weight: var(--fw-semibold);
+}
+.sp-linkbtn {
+  background: none; border: 0; padding: 0 2px; cursor: pointer; font: inherit;
+  color: var(--sdc-primary, #1574c4); text-decoration: underline;
+}
+.sp-linkbtn:hover { color: var(--sdc-primary-hover, #0f5c9e); }
+.sp-linkbtn:focus-visible { outline: 2px solid var(--sdc-primary, #1574c4); outline-offset: 2px; }
+.sp-error .sp-linkbtn { color: inherit; }
+.sp-loading { font-style: normal; }
+/* Row hover — the flat list had none, so there was nothing tying a wide row's
+   Part No. to the checkbox at the far right of the same line. */
+#shop-parts-page .sp-flat .sp-prow:hover .sp-prow-line { background: var(--surface-alt, #f8fafc); }
 .sp-section-head { font-size: var(--fs-base); font-weight: var(--fw-bold); color: var(--sdc-dark, #061d39); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
 /* Top 10 — responsive grid of compact rows with a rank badge. */
 /* Top 10 — one straight vertical list, 1→10. */
@@ -10248,6 +10281,8 @@ td.sales-suppressed {
 /* Card row grid (no Job column — the card header is the job). Fixed columns so
    Part No. / Description line up straight down within the card. */
 .sp-prow-line { display: grid; grid-template-columns: 18px 26px 90px minmax(0, 1fr) 54px 20px; align-items: center; gap: 5px; padding: 4px 8px; }
+/* Shop Parts card view: same seven cells as the flat list minus Job. */
+#shop-parts-page .sp-prow-line { grid-template-columns: 18px 26px 90px minmax(0, 1fr) 54px 104px 24px; min-height: 30px; }
 .sp-qty { flex: none; font-weight: var(--fw-bold); font-size: var(--fs-md); color: var(--text, #334155); min-width: 26px; text-align: right; }
 .sp-jobcell { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--sdc-dark, #061d39); background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, white); padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
 .sp-namecell { flex: 1; min-width: 0; font-size: var(--fs-md); color: var(--text-muted, #64748b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
@@ -10273,8 +10308,20 @@ td.sales-suppressed {
    must not read as either done (green) or still-waiting (amber). */
 .sp-eto.is-held     { color: #1e3a8a; background: #dbeafe; border-color: #93c5fd; }
 .sp-proj-card .sp-eto { font-size: var(--fs-xs); }
+/* The badge's grid cell. Always present — even with no PO — so the cell count
+   is constant and the Done checkbox cannot wrap onto a second line. */
+.sp-eto-cell { display: flex; align-items: center; min-width: 0; }
+.sp-eto-cell .sp-eto { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 /* Priority — gradient of SDC blue: 1 darkest (hot) → 3 lightest (low). */
 .sp-pri { flex: none; display: inline-block; min-width: 18px; text-align: center; border: 1px solid transparent; font-weight: var(--fw-bold); font-size: var(--fs-md); border-radius: 6px; padding: 2px 5px; cursor: pointer; }
+/* In a Shop Parts row the pill is a fixed box, so 1/2/3 line up down the
+   column instead of each sizing to its own glyph. */
+#shop-parts-page .sp-prow-line .sp-pri {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; min-width: 26px; height: 22px; box-sizing: border-box; padding: 0;
+}
+#shop-parts-page .sp-prow-line .sp-pri:hover { box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 25%, transparent); }
+#shop-parts-page .sp-prow-line .sp-pri:focus-visible { outline: 2px solid var(--sdc-primary, #1574c4); outline-offset: 1px; }
 .sp-pri.pri-1 { background: var(--sdc-dark, #061d39); color: #fff; }
 .sp-pri.pri-2 { background: var(--sdc-primary, #1574c4); color: #fff; }
 .sp-pri.pri-3 { background: var(--sdc-blue-light, #aacee8); color: var(--sdc-dark, #061d39); }
@@ -10288,7 +10335,29 @@ td.sales-suppressed {
 .sp-pmcell { flex: none; font-size: var(--fs-sm); color: var(--text-muted, #64748b); white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
 /* Flat list view — aligned columns so PN / Description start at the same x on
    every row (Job column wide enough for "1145 / 1146"). Header labels each one. */
+/* overflow-x auto (not hidden): below ~820px the fixed tracks no longer fit,
+   and scrolling the list beats crushing Part No. and Description. overflow-y
+   stays hidden so the border radius still clips and no vertical scrollbox is
+   introduced — the page keeps its own scrolling. */
 .sp-flat { display: flex; flex-direction: column; border: 1px solid var(--border, #e2e8f0); border-radius: 10px; overflow: hidden; background: var(--surface, #fff); }
+#shop-parts-page .sp-flat { overflow-x: auto; overflow-y: hidden; }
+#shop-parts-page .sp-flat > * { min-width: 812px; }
+/* Eight tracks, one per cell the row emits:
+   Pri · Job · Qty · Part No. · Description · Due · PO · Done
+   The PO track is sized for the longest badge ("PO 106482 2/2 held") so the
+   number is never clipped, and Done is wide enough to be a comfortable target.
+   Every row is its own grid container, so all tracks must be fixed or fr —
+   max-content would resolve differently per row and break the alignment. */
+#shop-parts-page .sp-flat .sp-prow-line,
+#shop-parts-page .sp-list-head {
+  display: grid;
+  grid-template-columns: 46px 96px 74px 152px minmax(0, 1fr) 92px 150px 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 10px;
+  min-height: 34px;
+}
+/* The pre-existing shape, kept for the Vendor PO page which reuses .sp-flat. */
 .sp-flat .sp-prow-line,
 .sp-list-head {
   display: grid;
