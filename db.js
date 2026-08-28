@@ -191,6 +191,26 @@ async function init() {
     )
   `);
 
+  // job_number is the join key to Total ETO and to every other SDC app
+  // (etoDb.js, routes/manufacturing.js, routes/integration.js, hours, service).
+  // Nothing enforced that it identifies ONE project, and backfillProjects
+  // assigns it from the numeric prefix of the project NAME — so naming a tab
+  // "1101_Steris_Test" quietly created a second project 1101. Consumers then
+  // look a job up and take whichever row the database hands back first, which
+  // is not a stable answer: the manufacturing queue was reading its build
+  // window off a randomly-chosen one of three candidates.
+  //
+  // Templates are exempt. A template is a copy of a schedule and may legitimately
+  // carry the job number it was copied from, so the index is functional: it keys
+  // on NULL for templates, and on NULL for blank job numbers, and MySQL permits
+  // duplicate NULLs. Needs MySQL 8.0.13+ for the expression; verified on 9.7.
+  //
+  // This CANNOT be created while duplicates exist, and the fix is a human
+  // decision about which project owns the number — so a failure here is
+  // reported in detail and never throws. Once the data is clean the index
+  // appears on the next boot and the whole class of bug is gone.
+  await ensureJobNumberUnique(pool);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS task_history (
       id             INT AUTO_INCREMENT PRIMARY KEY,
@@ -710,6 +730,47 @@ async function seedDefaults(pool) {
       'INSERT IGNORE INTO settings (`key`, value) VALUES (?, ?)',
       [k, JSON.stringify(v)]
     );
+  }
+}
+
+/**
+ * Add the unique index on projects.job_number, or explain precisely why it
+ * cannot be added yet. Never throws — a schema constraint that cannot be
+ * applied must not stop the server from booting.
+ */
+async function ensureJobNumberUnique(pool) {
+  try {
+    const [[existing]] = await pool.query(
+      `SELECT COUNT(*) AS n FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = 'projects'
+          AND index_name = 'uq_projects_job_number'`);
+    if (existing && existing.n > 0) return;   // already applied
+
+    const [dupes] = await pool.query(
+      `SELECT job_number, COUNT(*) AS n, GROUP_CONCAT(name SEPARATOR ' | ') AS projects
+         FROM projects
+        WHERE (is_template IS NULL OR is_template = 0)
+          AND job_number IS NOT NULL AND job_number <> ''
+        GROUP BY job_number HAVING COUNT(*) > 1
+        ORDER BY n DESC`);
+
+    if (dupes.length) {
+      console.warn(
+        `[schema] projects.job_number is NOT unique — ${dupes.length} job number(s) claimed by more than one project. ` +
+        'Every lookup by job number on these is picking an arbitrary row. Clear them ' +
+        '(set job_number = NULL on the projects that do not own the number) and the ' +
+        'unique index applies itself on the next boot:');
+      for (const d of dupes) console.warn(`[schema]   job ${d.job_number} → ${d.n} projects: ${d.projects}`);
+      return;
+    }
+
+    await pool.query(
+      `ALTER TABLE projects ADD UNIQUE KEY uq_projects_job_number
+       ((CASE WHEN is_template = 1 THEN NULL ELSE NULLIF(job_number, '') END))`);
+    console.log('[schema] projects.job_number is now unique across non-template projects.');
+  } catch (e) {
+    // Includes the MySQL < 8.0.13 case, where functional indexes do not exist.
+    console.warn('[schema] could not apply the projects.job_number unique index:', e.message);
   }
 }
 
