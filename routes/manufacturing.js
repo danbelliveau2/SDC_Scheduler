@@ -117,39 +117,107 @@ module.exports = function createRouter(deps) {
     }
 
     // ── Build context per job, from this scheduler ──────────────────────────
-    // One query per job in the queue. Jobs come from BOTH sources, so a job
-    // that only has SDC-PO work still gets its build dates.
+    // Jobs come from BOTH sources, so a job that only has SDC-PO work still
+    // gets its build dates.
+    //
+    // THREE queries total, not one per project. This used to run one span query
+    // and one ship query for every project in the queue: 1 + 2N round trips,
+    // 33 of them for the 16 jobs live on 2026-08-27, each with its own latency.
+    // Grouping by project is the same answer in a fixed three trips.
     const jobs = [...new Set(
       [...psResult.rows, ...poResult.rows].map(t => String(t.ProjectID))
     )];
     const schedules = new Map();
+    // Jobs whose job_number maps to more than one project — disclosed rather
+    // than silently resolved, because the build window drives every flag on the
+    // page and the right answer is to fix the duplicate project.
+    const ambiguousJobs = [];
     if (jobs.length) {
       try {
         const [projects] = await pool.query(
-          `SELECT name, job_number, status FROM projects
+          `SELECT id, name, job_number, status FROM projects
            WHERE job_number IN (?) AND (is_template IS NULL OR is_template = 0)`,
           [jobs]
         );
-        for (const p of projects) {
-          const [[span]] = await pool.query(
-            `SELECT MIN(start_date) AS build_start, MAX(end_date) AS build_end
+
+        // tasks.project is the project NAME, so both aggregates group by it.
+        const names = projects.map(p => p.name);
+        const spans = new Map();
+        const ships = new Map();
+        if (names.length) {
+          const [spanRows] = await pool.query(
+            `SELECT project, MIN(start_date) AS build_start, MAX(end_date) AS build_end
              FROM tasks
-             WHERE project = ? AND department = 'shop'
-               AND start_date IS NOT NULL AND start_date != ''`,
-            [p.name]
+             WHERE project IN (?) AND department = 'shop'
+               AND start_date IS NOT NULL AND start_date != ''
+             GROUP BY project`,
+            [names]
           );
-          const [[ship]] = await pool.query(
-            `SELECT MIN(start_date) AS ship_date FROM tasks
-             WHERE project = ? AND anchor_key = 'ship_machine'
-               AND start_date IS NOT NULL AND start_date != ''`,
-            [p.name]
+          for (const r of spanRows) spans.set(r.project, r);
+          const [shipRows] = await pool.query(
+            `SELECT project, MIN(start_date) AS ship_date
+             FROM tasks
+             WHERE project IN (?) AND anchor_key = 'ship_machine'
+               AND start_date IS NOT NULL AND start_date != ''
+             GROUP BY project`,
+            [names]
           );
-          schedules.set(String(p.job_number), {
+          for (const r of shipRows) ships.set(r.project, r);
+        }
+
+        // A job_number is NOT unique in `projects` — 1101 has three rows and
+        // 1153 has two (measured 2026-08-27), typically an old schedule kept
+        // beside its revision. The previous code did `schedules.set(job, …)`
+        // inside an unordered loop, so whichever row MySQL happened to return
+        // last won. That silently picked a build window at random, and the
+        // build window is what decides "overdue" and "build started, part not"
+        // — the two loudest signals on this page.
+        //
+        // Resolve it deterministically instead: the project carrying the most
+        // shop tasks is the one that actually holds the build; ties go to an
+        // active project, then to the newest row. No job numbers are named
+        // here — this is a rule, not a patch for 1101.
+        const byJob = new Map();
+        for (const p of projects) {
+          const key = String(p.job_number);
+          if (!byJob.has(key)) byJob.set(key, []);
+          byJob.get(key).push(p);
+        }
+        const [taskCounts] = names.length
+          ? await pool.query(
+              `SELECT project, COUNT(*) AS n FROM tasks
+               WHERE project IN (?) AND department = 'shop' GROUP BY project`,
+              [names]
+            )
+          : [[]];
+        const shopTaskCount = new Map(taskCounts.map(r => [r.project, Number(r.n)]));
+
+        for (const [job, candidates] of byJob) {
+          candidates.sort((a, b) =>
+            (shopTaskCount.get(b.name) || 0) - (shopTaskCount.get(a.name) || 0) ||
+            (b.status === 'active' ? 1 : 0) - (a.status === 'active' ? 1 : 0) ||
+            b.id - a.id);
+          const p = candidates[0];
+          if (candidates.length > 1) {
+            ambiguousJobs.push({
+              job,
+              chosen: p.name,
+              others: candidates.slice(1).map(c => c.name),
+            });
+          }
+          const span = spans.get(p.name);
+          const ship = ships.get(p.name);
+          schedules.set(job, {
             project: p.name,
             status: p.status,
             build_start: span && span.build_start ? isoDay(span.build_start) : null,
             build_end: span && span.build_end ? isoDay(span.build_end) : null,
             ship_date: ship && ship.ship_date ? isoDay(ship.ship_date) : null,
+            // Present only when it matters, so the UI can say the dates below
+            // were picked from several candidate projects.
+            ambiguous: candidates.length > 1
+              ? { chosen: p.name, others: candidates.slice(1).map(c => c.name) }
+              : null,
           });
         }
       } catch (e) {
@@ -213,6 +281,9 @@ module.exports = function createRouter(deps) {
       });
       return {
         source: 'process-schedule',
+        // Stable, source-side primary key. ETO holds several lines for the same
+        // part on the same job, so job+part does not identify a row.
+        row_id: t.ProcessScheduleDetailID == null ? null : `ps-${t.ProcessScheduleDetailID}`,
         job,
         item_id: t.ItemID == null ? null : Number(t.ItemID),
         section: t.SpecID == null ? null : Number(t.SpecID),
@@ -279,6 +350,7 @@ module.exports = function createRouter(deps) {
       });
       poRows.push({
         source: 'sdc-po',
+        row_id: t.PurchaseDetailID == null ? null : `po-${t.PurchaseDetailID}`,
         job,
         item_id: itemId,
         section: t.SpecID == null ? null : Number(t.SpecID),
@@ -345,7 +417,12 @@ module.exports = function createRouter(deps) {
         no_eto_due_date: rows.filter(r => r.flags.includes('no-eto-due-date')).length,
         // Jobs in the queue with no scheduler project to date them against.
         jobs_without_schedule: jobs.filter(j => !schedules.has(j)).length,
+        // Jobs whose job_number matches more than one project here. The build
+        // dates shown for these were picked from several candidates, so the
+        // page can say so rather than presenting a guess as fact.
+        jobs_ambiguous_project: ambiguousJobs.length,
       },
+      ambiguous_jobs: ambiguousJobs,
       by_source: [
         { source: 'process-schedule', label: 'Process schedule', count: psRows.length },
         { source: 'sdc-po', label: 'SDC purchase order', count: poRows.length },

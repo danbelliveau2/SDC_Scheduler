@@ -13529,6 +13529,13 @@ textarea:focus-visible,
 /* A job with shop work and no project here cannot be judged late at all — that
    is a gap in the data, not a neutral state, so it does not render as muted. */
 .mfg-job-sched.is-missing { color: #7c2d12; background: #ffedd5; border-radius: 5px; padding: 1px 7px; }
+/* This job number matches more than one project here, so the build dates beside
+   it were chosen. Quieter than is-missing — the dates are usable, just not
+   unambiguous. */
+.mfg-job-sched.is-ambiguous {
+  color: #78350f; background: #fef3c7; border: 1px solid #fcd34d;
+  border-radius: 5px; padding: 0 6px; font-size: var(--fs-xs); cursor: help;
+}
 .mfg-job-count { margin-left: auto; font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
 
 /* Description takes the remainder; everything else is sized to its content. */
@@ -13540,8 +13547,17 @@ textarea:focus-visible,
      description's width and truncated it. */
   /* Ref went 96px -> 116px when it started carrying a PS/PO tag alongside the
      number ("PO 106403"): at 96px the six-digit PO numbers clipped. Taken out
-     of Description's 2fr remainder rather than off another fixed column. */
-  grid-template-columns: 116px 152px minmax(160px, 2fr) 76px 62px 92px 96px 104px 152px;
+     of Description's 2fr remainder rather than off another fixed column.
+     Open went 96px -> 140px: its value is "73d ago · none delivered", which
+     needed ~144px and was being truncated on 61 of the 62 live rows — the
+     "none delivered" / "not started" half, the part that says the work has not
+     been touched, was the half being cut off.
+     Flags went 152px -> 204px and the badge count is capped at two plus a +N
+     chip (see _mfgRowBadges): three badges is a common combination and four
+     occurs, so the lane wrapped and the row grew to 40px and then 56px against
+     23px for a plain row. Both widths come out of Description's 2fr
+     remainder. */
+  grid-template-columns: 116px 152px minmax(160px, 2fr) 76px 62px 92px 148px 104px 204px;
   gap: 10px; align-items: center; padding: 6px 12px;
 }
 .mfg-list-head { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .03em;
@@ -13583,12 +13599,16 @@ textarea:focus-visible,
    among the chips where it would read as another filter. */
 .mfg-srcfail { display: block; margin: 0 0 8px; }
 .mfg-c-owner { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
-.mfg-c-flags { display: flex; gap: 4px; flex-wrap: wrap; white-space: normal; overflow: visible; }
+/* nowrap keeps every row the same height; the lane above is sized for the
+   three-badge case, and a rare fourth badge scrolls rather than growing the row. */
+.mfg-c-flags { display: flex; gap: 4px; flex-wrap: nowrap; white-space: normal; overflow: hidden; }
 
 .mfg-badge { font-size: 10px; font-weight: var(--fw-bold, 700); letter-spacing: .02em;
   padding: 1px 6px; border-radius: 4px; border: 1px solid transparent; white-space: nowrap; cursor: default; }
 .mfg-badge.is-critical { background: #dc2626; border-color: #dc2626; color: #fff; }
 .mfg-badge.is-late     { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+/* "+2" — the flags that did not fit. Neutral so it never outranks a real one. */
+.mfg-badge.is-more { background: var(--surface-2, #f1f5f9); border-color: var(--border, #cbd5e1); color: var(--text-muted, #64748b); cursor: help; }
 .mfg-badge.is-soon     { background: #fef3c7; border-color: #fcd34d; color: #78350f; }
 .mfg-badge.is-stalled  { background: #ffedd5; border-color: #fdba74; color: #7c2d12; }
 .mfg-badge.is-active   { background: #dcfce7; border-color: #86efac; color: #14532d; }
@@ -13600,12 +13620,47 @@ textarea:focus-visible,
 .mfg-error-hint { font-size: var(--fs-sm); opacity: .85; margin-bottom: 10px; }
 .mfg-foot { margin-top: 8px; font-size: var(--fs-xs); color: var(--text-muted, #94a3b8); max-width: 80ch; }
 
-/* Narrow screens: the grid collapses rather than forcing the page to scroll
-   sideways — the shop opens this on tablets. */
-@media (max-width: 1100px) {
+/* Narrow screens: the grid collapses into a card rather than forcing the page
+   to scroll sideways — the shop opens this on tablets.
+ *
+ * The breakpoint is 1360px, not 1100px. It measures the VIEWPORT, but the row
+ * lives inside the app's fixed sidebar plus page padding, so the content area
+ * is ~130px narrower than the viewport. The nine desktop lanes need ~1220px
+ * once Open and Flags are wide enough not to truncate, so below ~1360px of
+ * viewport the wide grid was in force inside a box too small for it.
+ *
+ * Every value carries its column name. The old collapse hid .mfg-list-head and
+ * dropped the values into a bare 1fr 1fr grid, which produced an unlabelled
+ * two-column soup: a naked date, a naked "—", and "12 of 12" with nothing to
+ * say what any of them were. Labels come from data-l on each cell (set in
+ * app.js) so the header text and the card text can never disagree. */
+@media (max-width: 1360px) {
   .mfg-list-head { display: none; }
-  .mfg-row { grid-template-columns: 1fr 1fr; gap: 2px 10px; padding: 9px 12px; }
-  .mfg-row > span { white-space: normal; }
-  .mfg-c-desc { grid-column: 1 / -1; }
-  .mfg-c-flags { grid-column: 1 / -1; margin-top: 3px; }
+  .mfg-row {
+    /* Three pair-columns, not two: the six labelled values fit in two lines
+       instead of three, which keeps a 62-row queue scannable instead of
+       turning it into a page of tall cards. */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px 14px; padding: 9px 12px; align-items: start;
+  }
+  .mfg-row > span { white-space: normal; overflow: visible; }
+  /* Identity first, full width and unmissable. */
+  .mfg-c-part { grid-column: 1 / -1; font-size: var(--fs-lg); }
+  .mfg-c-desc { grid-column: 1 / -1; color: var(--text-muted, #64748b); }
+  .mfg-c-flags { grid-column: 1 / -1; margin-top: 4px; }
+  /* The remaining cells become labelled key/value pairs. */
+  .mfg-row > span[data-l]:not(.mfg-c-part):not(.mfg-c-desc)::before {
+    content: attr(data-l);
+    display: block;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--text-muted, #94a3b8); font-weight: var(--fw-bold, 700);
+    line-height: 1.4;
+  }
+  /* An empty cell would collapse to just its label, which reads as a fault. */
+  .mfg-row > span[data-l]:empty { display: none; }
+  .mfg-row > span[data-l] { line-height: 1.3; }
+}
+/* Phones: three pair-columns stop fitting, so fall back to two. */
+@media (max-width: 700px) {
+  .mfg-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

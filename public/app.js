@@ -25560,12 +25560,30 @@ function _mfgFmtDays(n) {
   return n > 0 ? n + 'd ago' : 'in ' + Math.abs(n) + 'd';
 }
 
+// At most MFG_BADGE_MAX badges inline, then a +N chip carrying the rest in its
+// tooltip. MFG_FLAG_ORDER is severity-ordered, so the two shown are always the
+// two that matter most.
+//
+// The lane is a fixed width, and a row that needed four badges used to wrap it
+// onto three lines — a 56px row against 23px for a plain one, which broke the
+// row rhythm exactly on the rows most worth scanning. Capping keeps every row
+// the same height without silently dropping a flag.
+const MFG_BADGE_MAX = 2;
+
 function _mfgRowBadges(r) {
   const flags = Array.isArray(r.flags) ? r.flags : [];
-  return MFG_FLAG_ORDER.filter(f => flags.includes(f)).map(f => {
+  const present = MFG_FLAG_ORDER.filter(f => flags.includes(f));
+  const shown = present.slice(0, MFG_BADGE_MAX);
+  const rest = present.slice(MFG_BADGE_MAX);
+  let html = shown.map(f => {
     const m = MFG_FLAGS[f];
     return '<span class="mfg-badge ' + m.cls + '" title="' + m.tip + '">' + m.label + '</span>';
   }).join('');
+  if (rest.length) {
+    const tip = rest.map(f => MFG_FLAGS[f].label + ' — ' + MFG_FLAGS[f].tip).join(' · ');
+    html += '<span class="mfg-badge is-more" title="' + escapeHtml(tip) + '">+' + rest.length + '</span>';
+  }
+  return html;
 }
 
 function renderManufacturingPage() {
@@ -25597,28 +25615,43 @@ function renderManufacturingPage() {
     f === 'build-started-part-not' || f === 'overdue' || f === 'due-soon' || f === 'stalled');
   const attentionRows = sourceRows.filter(needsAttention);
   // Fall back to everything when the attention list is empty, so the filter can
-  // never leave the page looking blank while work is outstanding.
+  // never leave the page looking blank while work is outstanding. The fallback
+  // is FLAGGED — the chip used to stay lit while the page quietly showed
+  // everything, which reads as "all of this needs attention".
+  const attentionFellBack = _mfgFilter === 'attention' && !attentionRows.length && sourceRows.length > 0;
   const shown = (_mfgFilter === 'attention' && attentionRows.length) ? attentionRows : sourceRows;
 
-  // Tiles appear only when non-zero: a row of zeros trains people to ignore the
-  // strip, which defeats the point of having one.
+  // Counted over the rows ACTUALLY ON SCREEN, not the server's whole-queue
+  // totals. With the source filter on, the tiles described rows the list was
+  // not showing: filtering to Process schedules left 10 rows under tiles
+  // reading 28 / 18 / 43 / 9, which are the counts for all 62.
+  const countFlag = (f) => sourceRows.filter(r => (r.flags || []).includes(f)).length;
   const tile = (n, label, cls, tip) => !n ? '' :
     '<div class="mfg-tile ' + cls + '" title="' + tip + '"><div class="mfg-tile-n">' + n + '</div><div class="mfg-tile-l">' + label + '</div></div>';
   const tiles = [
-    tile(t.build_started_part_not, 'build started,<br>part not', 'is-critical', 'The build that consumes these parts is already underway and the part has never been worked on. This is the signal ETO cannot produce.'),
-    tile(t.overdue, 'overdue', 'is-late', 'Past the required date — ETO&apos;s, or derived from the build start where ETO has none.'),
-    tile(t.due_soon, 'due within<br>14 days', 'is-soon', 'Required within the next 14 days.'),
-    tile(t.stalled, 'stalled<br>30+ days', 'is-stalled', 'Opened more than 30 days ago with no work logged.'),
-    tile(t.active_now, 'being worked<br>right now', 'is-active', 'Someone is clocked onto these in ETO right now.'),
-    tile(t.no_eto_due_date, 'no due date<br>in ETO', 'is-nodate', 'ETO has no required date for these, so the date shown is derived from the job&apos;s build start in this schedule.'),
+    tile(countFlag('build-started-part-not'), 'build started,<br>part not', 'is-critical', 'The build that consumes these parts is already underway and the part has never been worked on. This is the signal ETO cannot produce.'),
+    tile(countFlag('overdue'), 'overdue', 'is-late', 'Past the required date — ETO&apos;s, or derived from the build start where ETO has none.'),
+    tile(countFlag('due-soon'), 'due within<br>14 days', 'is-soon', 'Required within the next 14 days.'),
+    tile(countFlag('stalled'), 'stalled<br>30+ days', 'is-stalled', 'Opened more than 30 days ago with no work logged.'),
+    tile(sourceRows.filter(r => r.active_now).length, 'being worked<br>right now', 'is-active', 'Someone is clocked onto these in ETO right now.'),
+    tile(countFlag('no-eto-due-date'), 'no due date<br>in ETO', 'is-nodate', 'ETO has no required date for these, so the date shown is derived from the job&apos;s build start in this schedule.'),
   ].filter(Boolean).join('');
 
   // '—' is the bucket for rows with no ETO process at all, which is every
   // sdc-po row. Dropped from the chips rather than rendered as a nameless
   // process: the source chips already account for those rows, and a chip
   // reading "— 46" would look like a data fault.
-  const byProcess = (d.by_process || []).filter(p => p.process && p.process !== '—').map(p =>
-    '<span class="mfg-proc-chip">' + escapeHtml(p.process) + ' <b>' + p.count + '</b></span>').join('');
+  // Recomputed from sourceRows for the same reason as the tiles: d.by_process
+  // covers the whole queue, so selecting "SDC POs" — every one of which has a
+  // null process — still listed "Machining 10 · Welding 1", process-schedule
+  // counts for rows that were no longer on screen.
+  const procCounts = new Map();
+  for (const r of sourceRows) {
+    if (!r.process || r.process === '—') continue;
+    procCounts.set(r.process, (procCounts.get(r.process) || 0) + 1);
+  }
+  const byProcess = [...procCounts.entries()].sort((a, b) => b[1] - a[1]).map(([process, count]) =>
+    '<span class="mfg-proc-chip">' + escapeHtml(process) + ' <b>' + count + '</b></span>').join('');
 
   // Group by job. Row order already arrives most-urgent-first from the server,
   // so first appearance orders the jobs by their worst part.
@@ -25634,6 +25667,9 @@ function renderManufacturingPage() {
     const sched = sc
       ? '<span class="mfg-job-sched">build ' + escapeHtml(sc.build_start || '—') + ' → ' + escapeHtml(sc.build_end || '—')
         + (sc.ship_date ? ' · ship ' + escapeHtml(sc.ship_date) : '') + '</span>'
+        + (sc.ambiguous ? '<span class="mfg-job-sched is-ambiguous" title="'
+            + escapeHtml('This job number matches ' + (sc.ambiguous.others.length + 1) + ' projects here. Dates are from "' + sc.ambiguous.chosen + '" (the one with the most shop tasks). Also: ' + sc.ambiguous.others.join(', ') + '.')
+            + '">from ' + escapeHtml(sc.ambiguous.chosen) + '</span>' : '')
       // Deliberately loud: a job with shop work and no project here means nobody
       // can tell whether its parts are late.
       : '<span class="mfg-job-sched is-missing" title="This job has in-house tasks but no project in this scheduler, so there are no build dates to judge its parts against.">no project here — cannot date these parts</span>';
@@ -25658,17 +25694,17 @@ function renderManufacturingPage() {
       const unknown = (tip) => '<i class="mfg-unknown" title="' + tip + '">—</i>';
       return '<div class="mfg-row' + (flags.includes('build-started-part-not') ? ' is-critical' : '')
           + (isPo ? ' is-po-row' : '') + '">'
-        + '<span class="mfg-c-ps">' + ref + '</span>'
-        + '<span class="mfg-c-part" title="' + escapeHtml(r.part_no || '') + '">' + escapeHtml(r.part_no || '') + '</span>'
-        + '<span class="mfg-c-desc" title="' + escapeHtml(r.description || '') + '">' + escapeHtml(r.description || '') + '</span>'
-        + '<span class="mfg-c-proc">' + (r.process ? escapeHtml(r.process)
+        + '<span class="mfg-c-ps" data-l="Ref">' + ref + '</span>'
+        + '<span class="mfg-c-part" data-l="Part No." title="' + escapeHtml(r.part_no || '') + '">' + escapeHtml(r.part_no || '') + '</span>'
+        + '<span class="mfg-c-desc" data-l="Description" title="' + escapeHtml(r.description || '') + '">' + escapeHtml(r.description || '') + '</span>'
+        + '<span class="mfg-c-proc" data-l="Process">' + (r.process ? escapeHtml(r.process)
             : unknown('This is an SDC purchase order, not a process schedule, so ETO records no process for it.')) + '</span>'
-        + '<span class="mfg-c-qty" title="Quantity still to make">' + (r.qty_remaining == null ? '—' : r.qty_remaining) + (r.qty ? ' <i>of ' + r.qty + '</i>' : '') + '</span>'
-        + '<span class="mfg-c-due' + (flags.includes('overdue') ? ' is-late' : '') + '">' + escapeHtml(r.due || '—')
+        + '<span class="mfg-c-qty" data-l="Qty" title="Quantity still to make">' + (r.qty_remaining == null ? '—' : r.qty_remaining) + (r.qty ? ' <i>of ' + r.qty + '</i>' : '') + '</span>'
+        + '<span class="mfg-c-due' + (flags.includes('overdue') ? ' is-late' : '') + '" data-l="Needed">' + escapeHtml(r.due || '—')
           + (r.due_from === 'build-start' ? '<i class="mfg-derived" title="Derived from this job&apos;s build start — ETO has no required date for this ' + (isPo ? 'PO line' : 'schedule') + '.">&#8962;</i>' : '') + '</span>'
-        + '<span class="mfg-c-age" title="' + escapeHtml(ageTip) + '">' + _mfgFmtDays(r.started_days)
+        + '<span class="mfg-c-age" data-l="Open" title="' + escapeHtml(ageTip) + '">' + _mfgFmtDays(r.started_days)
           + (r.never_started ? ' <i>· ' + (isPo ? 'none delivered' : 'not started') + '</i>' : '') + '</span>'
-        + '<span class="mfg-c-owner" title="Owner of the ETO process schedule — NOT an assigned machinist. ETO has no assignee on these rows.">'
+        + '<span class="mfg-c-owner" data-l="Owner" title="Owner of the ETO process schedule — NOT an assigned machinist. ETO has no assignee on these rows.">'
           + (r.owner ? escapeHtml(r.owner)
              : (isPo ? unknown('SDC purchase orders have no process-schedule owner in ETO.') : '—')) + '</span>'
         + '<span class="mfg-c-flags">' + _mfgRowBadges(r) + '</span>'
@@ -25688,7 +25724,9 @@ function renderManufacturingPage() {
 
   const stamp = d.generated_at ? new Date(d.generated_at).toLocaleTimeString() : '';
   const filterBtn = (key, label, n) =>
-    '<button type="button" class="mfg-chip' + (_mfgFilter === key ? ' is-on' : '') + '" data-mfg-filter="' + key + '">'
+    '<button type="button" class="mfg-chip'
+    + ((_mfgFilter === key && !(key === 'attention' && attentionFellBack)) ? ' is-on' : '')
+    + '" data-mfg-filter="' + key + '">'
     + label + (n == null ? '' : ' <b>' + n + '</b>') + '</button>';
   const sourceBtn = (key, label, n) =>
     '<button type="button" class="mfg-chip is-src' + (_mfgSource === key ? ' is-on' : '') + '" data-mfg-source="' + key + '">'
@@ -25705,6 +25743,10 @@ function renderManufacturingPage() {
              : '<div class="mfg-allclear">Nothing needs attention — no overdue, stalled, or build-blocking parts.</div>')
     + (srcErrors.length ? '<div class="mfg-warn mfg-srcfail" title="One source of in-house work could not be read, so this queue is incomplete — it is not that there is less to make.">'
         + 'Incomplete queue — ' + escapeHtml(srcErrors.join(' ')) + '</div>' : '')
+    + (attentionFellBack ? '<div class="mfg-warn" title="Nothing in this selection carries an attention flag, so the full list is shown instead of an empty page.">'
+        + 'Nothing needs attention in this selection — showing all ' + sourceRows.length + ' open.</div>' : '')
+    + (d.ambiguous_jobs && d.ambiguous_jobs.length ? '<div class="mfg-warn" title="' + escapeHtml(d.ambiguous_jobs.map(a => a.job + ': using ' + a.chosen + ' (also ' + a.others.join(', ') + ')').join(' · ')) + '">'
+        + d.ambiguous_jobs.length + ' job(s) match more than one project here — build dates came from the project with the most shop tasks</div>' : '')
     + '<div class="mfg-toolbar">'
       + filterBtn('attention', 'Needs attention', attentionRows.length)
       + filterBtn('all', 'All open', sourceRows.length)
