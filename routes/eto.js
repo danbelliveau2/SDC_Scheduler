@@ -134,7 +134,20 @@ module.exports = function createRouter(deps) {
     try {
       const result = await etoDb.syncVendorPOs(pool, scope);
       ops.recordEtoSync(result);
-      res.json({ ok: true, ...result });
+      // Shop part receipts ride along with the manual "Sync now", same as they do
+      // on the 30-min cron, so a PM who just entered a PO number can see the
+      // received status without waiting for the next tick. Non-fatal: a failure
+      // here must not turn a successful PO sync into an error response.
+      let shopParts = null;
+      try {
+        if (typeof etoDb.syncShopPartReceipts === 'function') {
+          shopParts = await etoDb.syncShopPartReceipts(pool);
+          if (shopParts.completed) io.emit('shop_parts:updated');
+        }
+      } catch (e) {
+        console.warn('[eto] shop part receipt sync failed:', e.message);
+      }
+      res.json({ ok: true, ...result, shopParts });
       if (result.created || result.updated) io.emit('vendor_pos:updated');
     } catch (e) {
       console.error('[eto] vendor PO sync failed:', e.message);

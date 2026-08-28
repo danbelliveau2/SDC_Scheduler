@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
-  <link rel="stylesheet" href="service-ui.css?v=20260825-1" />
+  <link rel="stylesheet" href="service-ui.css?v=20260827-1" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -119,6 +119,15 @@
         </svg>
       </span>
       <span class="app-sidebar-label">Shop Parts</span>
+    </button>
+    <button class="app-sidebar-icon" data-view="manufacturing" type="button" title="Manufacturing — Total ETO's in-house task queue (what the shop has to MAKE), ranked against this schedule's build dates.">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <!-- Milling/cutting tool over stock — reads as "make it here". -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 3h6v6l-3 3-3-3z"/><path d="M12 12v5"/><path d="M4 20h16"/><path d="M7 17h10"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label">Mfg Tasks</span>
     </button>
     <button class="app-sidebar-icon" data-view="vendor-pos" type="button" title="Vendor PO Track — POs sent to outside vendors: PO, job, vendor, lead time, ship/tracking, status.">
       <span class="app-sidebar-glyph app-sidebar-glyph-svg">
@@ -691,6 +700,13 @@
       <div id="shop-parts-page" class="shop-parts-page"></div>
     </section>
 
+    <!-- Manufacturing — Total ETO's in-house task queue, joined to this
+         schedule's build dates. Read-only; body built by
+         renderManufacturingPage() in app.js. -->
+    <section id="view-manufacturing" class="view">
+      <div id="manufacturing-page" class="mfg-page"></div>
+    </section>
+
     <!-- Vendor PO Track — POs out to outside vendors. Body built by
          renderVendorPOsPage() in app.js. -->
     <section id="view-vendor-pos" class="view">
@@ -1053,7 +1069,7 @@
   <!-- Service module (Service Log replacement). Self-contained page; app.js
        calls window.renderServicePage() from setView('service'). Loaded after
        app.js so showToast / showConfirmDialog exist by the time it runs. -->
-  <script src="service-ui.js?v=20260825-1"></script>
+  <script src="service-ui.js?v=20260827-1"></script>
   <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
        broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
   <script src="realtime-ui.js?v=20260601-166"></script>

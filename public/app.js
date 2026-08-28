@@ -390,6 +390,23 @@ const api = {
         return await r.json();
       } catch (err) { state._financialsApiBroken = true; return { ok: false }; }
     },
+    // "May I initialize this scope's milestones?" — one durable claim per
+    // (project, machine) on the server. Returns false once a scope has been
+    // initialized, so an empty grid the user emptied themselves is never
+    // mistaken for a scope that was never seeded. Fails CLOSED (no seeding)
+    // when the endpoint isn't reachable — re-creating deleted rows is worse
+    // than an un-seeded grid the user can fill in.
+    claimSeed: async (project, machine) => {
+      try {
+        const r = await fetch('/api/financials/claim-seed', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ project, machine: machine || '' }),
+        });
+        if (!r.ok) return false;
+        const data = await r.json();
+        return !!data.allowed;
+      } catch (err) { return false; }
+    },
   },
   notes: {
     // Throws on a failed load (network/5xx) so callers can tell "load failed"
@@ -7931,9 +7948,13 @@ function invoiceStatus(f, project) {
     });
   } else if (f.sync_to_anchor) {
     hasTrigger = true;
+    // Machine-less rows belong to the base machine — same rule as the grid
+    // (_finBaseMachine), so an anchor on a project like 1153 (machines
+    // 'DS 2' / 'DS 3' / 'M1') resolves to the machine the row displays under.
+    const finBase = _finBaseMachine(_finProjectMachines(project));
     const t = state.tasks.find(x => x.project === project
       && inferredAnchorKey(x) === f.sync_to_anchor
-      && (!x.machine || (x.machine || 'M1') === (f.machine || 'M1')));
+      && (!x.machine || (x.machine || finBase) === (f.machine || finBase)));
     ready = !!t && (Number(t.progress) || 0) >= 100;
   }
   // PAST DUE WINS — a date in the past means "should have been invoiced",
@@ -9383,6 +9404,11 @@ const SHOP_COLS = [
   { key: 'new_mod',           label: 'New/MOD',            type: 'mod',  w: '140px' },
   { key: 'location',          label: 'Location/Machinist', type: 'text', w: '120px' },
   { key: 'out_for_finishing', label: 'Out for Finishing',  type: 'text', w: '120px' },
+  // Opt-in link to a Total ETO purchase order. Filling this in is how a PM says
+  // "this part is bought/farmed out, not made here" — which is what lets the ETO
+  // sync auto-complete it on receipt. Left blank on shop-fabricated parts (the
+  // large majority), and nothing automatic touches those.
+  { key: 'eto_po',            label: 'ETO PO #',           type: 'text', w: '90px'  },
   { key: 'comments',          label: 'Comments',           type: 'text', w: '150px' },
   { key: 'engineer',          label: 'Engineer',           type: 'text', w: '100px' },
   { key: 'pm',                label: 'PM',                 type: 'pm',   w: '110px' },
@@ -9391,6 +9417,7 @@ const SHOP_COLS = [
 ];
 let _shopPartsState = null;
 let _shopAddOpen = false; // the add form is collapsed by default
+let _shopSearchT = 0;     // debounce handle for the search box
 function _shopState() {
   if (_shopPartsState) return _shopPartsState;
   let s = { filter: 'open', search: '', view: 'list', fPri: 'all', fPm: 'all', fEng: 'all', fDue: '', dashRange: 7 };
@@ -9413,35 +9440,97 @@ function _shopDonut(pct, size = 76) {
     <text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" font-size="${size * 0.24}" font-weight="800" fill="#1f2937" style="font-family:'Montserrat',sans-serif">${pct == null ? '—' : pct + '%'}</text>
   </svg>`;
 }
+// In-flight writes, keyed `id:field`. A repeated click on the same field while
+// its save is still in the air is dropped rather than queued behind it, so the
+// server never sees two writes racing for one column.
+const _shopSaving = new Set();
+
+// Every shop-part write goes through here: one in-flight guard, one place that
+// turns a non-OK response into a thrown Error. api.shopParts.update resolves
+// with the parsed body whatever the status, so a 403 or 503 used to look
+// exactly like a success and the caller reported "saved".
+async function _shopSave(id, patch) {
+  const key = `${id}:${Object.keys(patch).join(',')}`;
+  if (_shopSaving.has(key)) throw new Error('A save for this field is already in progress.');
+  _shopSaving.add(key);
+  try {
+    const upd = await api.shopParts.update(id, patch);
+    if (!upd || upd.error) throw new Error((upd && upd.error) || 'Save failed.');
+    return upd;
+  } finally {
+    _shopSaving.delete(key);
+  }
+}
+
 // Set a part's priority (1/2/3) from the click popup.
 async function _shopSetPri(id, val) {
   const r = (state.shopParts || []).find(x => x.id === id);
   if (!r) return;
+  const prev = r.priority;
   r.priority = String(val);
   renderShopPartsPage();
   try {
-    const upd = await api.shopParts.update(id, { priority: String(val) });
-    if (upd) Object.assign(r, upd);
-  } catch (_) {}
+    const upd = await _shopSave(id, { priority: String(val) });
+    Object.assign(r, upd);
+    renderShopPartsPage();
+  } catch (err) {
+    // Priority drives which section a row lands in, so a failed save that left
+    // the optimistic value on screen moved the part to the hot list and kept it
+    // there until the next reload.
+    r.priority = prev;
+    renderShopPartsPage();
+    showToast(`Could not set priority: ${err.message}`, { kind: 'error' });
+  }
 }
 // Qty +/- stepper — updates in place without a full re-render (keeps scroll/pos).
+// querySelectorAll, not querySelector: a priority-1 part is on screen twice
+// (pinned + full list) and both copies have to show the same number.
 async function _shopBumpQty(id, d) {
   const r = (state.shopParts || []).find(x => x.id === id);
   if (!r) return;
-  const next = Math.max(0, (Number(r.qty) || 0) + d);
+  const prev = Number(r.qty) || 0;
+  const next = Math.max(0, prev + d);
+  const paint = (v) => document.querySelectorAll(`.sp-qty-inp[data-id="${id}"]`).forEach(i => { i.value = v; });
   r.qty = next;
-  const inp = document.querySelector(`.sp-qty-inp[data-id="${id}"]`);
-  if (inp) inp.value = next;
+  paint(next);
   try {
-    const upd = await api.shopParts.update(id, { qty: next });
-    if (upd) Object.assign(r, upd);
-  } catch (_) {}
+    const upd = await _shopSave(id, { qty: next });
+    if (upd) { Object.assign(r, upd); paint(r.qty); }
+  } catch (err) {
+    r.qty = prev; paint(prev);          // the save failed — don't leave a lie on screen
+    showToast(`Could not save quantity: ${err.message}`, { kind: 'error' });
+  }
 }
 function _saveShopState() { try { localStorage.setItem('sdcShopPartsState', JSON.stringify(_shopPartsState)); } catch (_) {} }
 
+// null = last load succeeded. A failed load used to set shopParts to [] and
+// render "No parts to show" — a database outage was indistinguishable from an
+// empty shop, and the only way to retry was a full page reload.
+let _shopLoadError = null;
+let _shopLoading = false;
+
 async function loadShopParts() {
-  try { state.shopParts = await api.shopParts.list(); }
-  catch (_) { state.shopParts = []; }
+  if (_shopLoading) return;                 // keep refresh idempotent under bursts
+  _shopLoading = true;
+  if (!Array.isArray(state.shopParts)) renderShopPartsPage();   // paint the skeleton
+  try {
+    const rows = await api.shopParts.list();
+    if (!Array.isArray(rows)) throw new Error((rows && rows.error) || 'Unexpected response.');
+    state.shopParts = rows;
+    _shopLoadError = null;
+  } catch (e) {
+    _shopLoadError = e.message || 'Could not reach the server.';
+    if (!Array.isArray(state.shopParts)) state.shopParts = [];  // keep any rows already on screen
+  } finally {
+    _shopLoading = false;
+  }
+  // Don't tear the page out from under someone who is mid-edit. A save from
+  // another tab arrives as shop_parts:updated → loadShopParts → a full
+  // innerHTML rebuild, which would discard whatever they had typed but not yet
+  // committed. state is already up to date; the next render picks it up.
+  const ae = document.activeElement;
+  if (ae && ae.closest && ae.closest('#shop-parts-page') &&
+      /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && ae.type !== 'checkbox') return;
   renderShopPartsPage();
 }
 
@@ -9491,15 +9580,25 @@ async function _shopReorder(id, dir, scope) {
   a.sort_order = bo; b.sort_order = ao;
   renderShopPartsPage();
   try {
-    await api.shopParts.update(a.id, { sort_order: a.sort_order });
-    await api.shopParts.update(b.id, { sort_order: b.sort_order });
-  } catch (_) {}
+    await _shopSave(a.id, { sort_order: a.sort_order });
+    await _shopSave(b.id, { sort_order: b.sort_order });
+  } catch (err) {
+    // Half a swap is worse than none — put both back the way they were.
+    a.sort_order = ao; b.sort_order = bo;
+    renderShopPartsPage();
+    showToast(`Could not reorder: ${err.message}`, { kind: 'error' });
+  }
 }
 
 function renderShopPartsPage() {
   const root = document.getElementById('shop-parts-page');
   if (!root) return;
   const st = _shopState();
+  if (!Array.isArray(state.shopParts) && _shopLoading) {
+    root.innerHTML = `<div class="shop-parts-head"><div class="sp-head-top"><h1 class="projects-page-title">Parts in Shop</h1></div></div>
+      <p class="sp-empty sp-loading">Loading parts…</p>`;
+    return;
+  }
   const all = Array.isArray(state.shopParts) ? state.shopParts : [];
   const rows = _shopDisplayedRows(all, st);
   const openCount = all.filter(r => !r.part_complete).length;
@@ -9529,9 +9628,44 @@ function renderShopPartsPage() {
   // the legacy rank. Everything else stays editable here.
   const detailFields = (r) => SHOP_COLS.filter(c => !['qty', 'part_complete', 'rank'].includes(c.key)).map(c => detailInput(r, c)).join('');
 
+  // ETO receiving badge. Only rows with a PO linked show anything at all.
+  //   grey  = linked, but no line for this part on that PO (usually a typo'd PO)
+  //   amber = on the PO, not yet fully received
+  //   green = received; if the row is also complete, the sync is what closed it
+  // Deliberately read-only: the way to change it is to fix the PO or receive the
+  // goods in ETO, which is the system of record.
+  // ALWAYS returns exactly one grid child, empty span included. The row is a
+  // CSS grid with a fixed track list, so a conditionally-omitted cell shifts
+  // every later cell one track left and pushes the last one onto an implicit
+  // second row — which is what put the "complete" checkbox underneath the Pri
+  // column and squeezed the PO badge into the 38px checkbox track.
+  const etoBadge = (r) => {
+    const po = String(r.eto_po ?? '').trim();
+    if (!po) return '<span class="sp-eto-cell"></span>';
+    const rcvd = r.eto_received_qty;
+    const need = Number(r.qty) > 0 ? Number(r.qty) : Number(r.eto_po_qty) || 0;
+    if (rcvd == null) {
+      return `<span class="sp-eto-cell"><span class="sp-eto is-missing" title="PO ${escapeHtml(po)}: no line for ${escapeHtml(r.part_no || 'this part')} on that PO — check the PO number">PO ${escapeHtml(po)} ?</span></span>`;
+    }
+    const full = need > 0 && Number(rcvd) >= need;
+    const on = r.eto_received_on ? ` on ${escapeHtml(r.eto_received_on)}` : '';
+    // Held = fully received, but the sync declined to close the row (the receipt
+    // predates the part). Without its own state this rendered a green tick on a
+    // row that was still open, which reads as a contradiction.
+    const hold = String(r.eto_hold_reason ?? '').trim();
+    if (hold) {
+      return `<span class="sp-eto-cell"><span class="sp-eto is-held" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}, but NOT auto-completed: ${escapeHtml(hold)}. Tick the box by hand if this receipt really is for this part.">PO ${escapeHtml(po)} ${rcvd}/${need} held</span></span>`;
+    }
+    const cls = full ? 'is-received' : 'is-partial';
+    const mark = full ? ' ✓' : '';
+    return `<span class="sp-eto-cell"><span class="sp-eto ${cls}" title="ETO PO ${escapeHtml(po)} — received ${rcvd}/${need}${on}">PO ${escapeHtml(po)} ${rcvd}/${need}${mark}</span></span>`;
+  };
+
   // Priority select (1 hot / 2 due / 3 low), color-coded inline.
   const priSel = (r) => { const p = _shopPri(r); return `<span class="sp-pri pri-${p}" data-pri="${r.id}" title="Priority ${p} — click to change">${p}</span>`; };
-  const partHeader = `<div class="sp-list-head"><span>Pri</span><span>Job</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span></span></div>`;
+  // Header must carry one cell per row cell, in the same order, or the labels
+  // sit over the wrong columns.
+  const partHeader = `<div class="sp-list-head"><span>Pri</span><span>Job</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span>PO</span><span class="sp-done-head" title="Mark the part complete">Done</span></div>`;
 
   // One row: Priority · [Job] · Qty(stepper) · PartNo — Description · Type · Due ·
   // [PM] · ✓complete. Click the name to expand the full editor.
@@ -9552,29 +9686,45 @@ function renderShopPartsPage() {
         <span class="sp-pncell" data-toggle="${r.id}" title="${isMod ? 'MOD' : 'New part'} · ${escapeHtml(pn)} — click to edit">${escapeHtml(pn)}</span>
         <span class="sp-namecell" data-toggle="${r.id}" title="${escapeHtml(r.description || '')}">${escapeHtml(r.description || '')}</span>
         <span class="sp-duecell${overdue ? ' is-late' : ''}">${due ? escapeHtml(_shopFmtDue(due)) : ''}</span>
-        <label class="sp-done" title="Mark complete → moves to Complete"><input type="checkbox" data-id="${r.id}" data-field="part_complete" ${done ? 'checked' : ''}/></label>
+        ${etoBadge(r)}
+        <label class="sp-done" title="${r.completed_source ? 'Completed automatically by ' + escapeHtml(r.completed_source) : 'Mark complete → moves to Complete'}"><input type="checkbox" data-id="${r.id}" data-field="part_complete" ${done ? 'checked' : ''}/></label>
       </div>
       <div class="sp-card-details" data-details="${r.id}" hidden><div class="sp-fields">${detailFields(r)}</div><button class="sp-del" data-id="${r.id}" type="button">Delete part</button></div>
     </div>`;
   };
 
-  // Priority-1 (hot) open parts — the "work on these now" list.
-  const pri1 = _shopDisplayedRows(all, { filter: 'open' }).filter(r => _shopPri(r) === 1);
-  const topHtml = pri1.length
+  // Priority-1 (hot) parts — the "work on these now" shortcut. These rows are
+  // deliberately shown TWICE: pinned here and again in the full list below.
+  // That is a pinned view of the same records, not duplicate data, so the
+  // heading says so.
+  //
+  // It is now derived from `rows` — the same filtered set the main list uses —
+  // rather than from an independent query. Previously it ignored the active
+  // search and the PM/Eng/Due filters, so searching for one part still listed
+  // every hot part above it, and the two sections could contradict each other.
+  // When the user has already narrowed to Priority 1 the pinned copy would be a
+  // character-for-character repeat of the list below, so it is dropped.
+  const pri1 = st.fPri === '1' ? [] : rows.filter(r => _shopPri(r) === 1);
+  const showTop = pri1.length > 0;
+  const topHtml = showTop
     ? `<div class="sp-flat">${partHeader}${pri1.map(r => partRow(r, true)).join('')}</div>`
-    : '<p class="sp-empty">No priority-1 parts right now.</p>';
+    : '<p class="sp-empty">No priority-1 parts match the current filters.</p>';
 
   // Main area — List (flat) or Cards (by project).
   let mainHtml;
   if (rows.length === 0) {
-    mainHtml = '<p class="sp-empty">No parts to show.</p>';
+    // Tell the two apart: nothing in the shop at all vs. nothing matching.
+    const narrowed = st.search || st.fPri !== 'all' || st.fPm !== 'all' || st.fEng !== 'all' || st.fDue || st.filter !== 'all';
+    mainHtml = all.length && narrowed
+      ? '<p class="sp-empty">No parts match these filters. <button class="sp-linkbtn" data-action="clear-filters" type="button">Clear filters</button></p>'
+      : '<p class="sp-empty">No parts in the shop yet. Use ＋ Add part to log one.</p>';
   } else if (st.view === 'cards') {
     const groups = {};
     rows.forEach(r => { const k = (r.job && r.job.trim()) ? r.job : 'Not assigned'; (groups[k] = groups[k] || []).push(r); });
     mainHtml = `<div class="sp-proj-grid">${Object.keys(groups).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map(job =>
       `<section class="sp-proj-card">
         <header class="sp-proj-head"><span class="sp-proj-name">${escapeHtml(job)}</span><span class="sp-group-count">${groups[job].length}</span></header>
-        <div class="sp-proj-body"><div class="sp-prow-line sp-card-colhead"><span>Pri</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span></span></div>${groups[job].map(r => partRow(r, false)).join('')}</div>
+        <div class="sp-proj-body"><div class="sp-prow-line sp-card-colhead"><span>Pri</span><span>Qty</span><span>Part No.</span><span>Description</span><span>Due</span><span>PO</span><span class="sp-done-head" title="Mark the part complete">Done</span></div>${groups[job].map(r => partRow(r, false)).join('')}</div>
       </section>`).join('')}</div>`;
   } else {
     mainHtml = `<div class="sp-flat">${partHeader}${rows.map(r => partRow(r, true)).join('')}</div>`;
@@ -9691,13 +9841,21 @@ function renderShopPartsPage() {
         <span class="sp-legend-pri">Priority: <i class="sp-pri pri-1">1</i> hot · <i class="sp-pri pri-2">2</i> · <i class="sp-pri pri-3">3</i> low</span>
       </div>
     </div>
+    ${_shopLoadError ? `<div class="sp-error" role="alert">
+      <span>Could not load parts: ${escapeHtml(_shopLoadError)}${all.length ? ' Showing the last data that loaded.' : ''}</span>
+      <button class="sp-linkbtn" data-action="retry-load" type="button">Retry</button>
+    </div>` : ''}
     ${dashHtml}
-    <section class="sp-section sp-top">
-      <header class="sp-section-head">🔴 Priority 1 parts</header>
+    ${st.fPri === '1' ? '' : `<section class="sp-section sp-top">
+      <header class="sp-section-head">🔴 Priority 1 parts
+        <span class="sp-section-note">pinned shortcut — the same ${pri1.length} part${pri1.length === 1 ? '' : 's'}, also listed in ${st.view === 'cards' ? 'By project' : 'All parts'} below</span>
+      </header>
       ${topHtml}
-    </section>
+    </section>`}
     <section class="sp-section sp-projects">
-      <header class="sp-section-head">${st.view === 'cards' ? 'By project' : 'All parts'}</header>
+      <header class="sp-section-head">${st.view === 'cards' ? 'By project' : 'All parts'}
+        <span class="sp-section-note">${rows.length} of ${all.length} part${all.length === 1 ? '' : 's'}</span>
+      </header>
       ${mainHtml}
     </section>
     ${pmList}${modList}${jobList}`;
@@ -9726,6 +9884,13 @@ function renderShopPartsPage() {
       state.shopParts.push(created); f.reset(); _shopAddOpen = true; renderShopPartsPage(); const pn = document.querySelector('.sp-add-pn'); if (pn) pn.focus();
     }
   });
+  const retryBtn = root.querySelector('[data-action="retry-load"]');
+  if (retryBtn) retryBtn.addEventListener('click', () => loadShopParts());
+  const clearBtn = root.querySelector('[data-action="clear-filters"]');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    Object.assign(st, { search: '', fPri: 'all', fPm: 'all', fEng: 'all', fDue: '', filter: 'all' });
+    _saveShopState(); renderShopPartsPage();
+  });
   // Toggle the collapsible add form
   const addToggle = root.querySelector('[data-action="toggle-add"]');
   if (addToggle) addToggle.addEventListener('click', () => {
@@ -9741,10 +9906,19 @@ function renderShopPartsPage() {
   const dashRangeEl = root.querySelector('.sp-dash-range');
   if (dashRangeEl) dashRangeEl.addEventListener('change', () => { st.dashRange = Number(dashRangeEl.value); _saveShopState(); renderShopPartsPage(); });
   const searchEl = root.querySelector('.sp-search');
+  // Debounced: every keystroke used to rebuild the whole page — dashboards,
+  // donut, both lists — and then force the caret to the END of the box, so
+  // correcting a typo mid-string was impossible. Now one render per pause, and
+  // the caret goes back where it actually was.
   searchEl.addEventListener('input', () => {
-    st.search = searchEl.value; _saveShopState(); renderShopPartsPage();
-    const s2 = document.querySelector('.sp-search');
-    if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); }
+    const val = searchEl.value;
+    const caret = searchEl.selectionStart;
+    clearTimeout(_shopSearchT);
+    _shopSearchT = setTimeout(() => {
+      st.search = val; _saveShopState(); renderShopPartsPage();
+      const s2 = document.querySelector('.sp-search');
+      if (s2) { s2.focus(); try { s2.setSelectionRange(caret, caret); } catch (_) {} }
+    }, 150);
   });
   // Priority — click the number, pick from a popup (no inline arrows).
   root.querySelectorAll('.sp-pri[data-pri]').forEach(el => el.addEventListener('click', (e) => {
@@ -9756,9 +9930,14 @@ function renderShopPartsPage() {
       { label: '3 · Low', onClick: () => _shopSetPri(id, 3) },
     ]);
   }));
-  // Expand/collapse a row to edit its full details
+  // Expand/collapse a row to edit its full details.
+  //
+  // Scoped to the clicked row. A priority-1 part is rendered in BOTH sections
+  // with the same data-id, so a document-wide lookup always found the pinned
+  // copy first — clicking a hot part in "All parts" silently expanded the row
+  // at the top of the page instead of the one under the pointer.
   root.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => {
-    const d = root.querySelector(`[data-details="${b.dataset.toggle}"]`);
+    const d = b.closest('.sp-prow')?.querySelector('[data-details]');
     if (d) d.hidden = !d.hidden;
   }));
   // Field edits (delegated). Bound ONCE — root persists across re-renders, so
@@ -9767,14 +9946,32 @@ function renderShopPartsPage() {
     const el = e.target.closest('[data-id][data-field]');
     if (!el) return;
     const id = Number(el.dataset.id), field = el.dataset.field;
+    const row = state.shopParts.find(r => r.id === id);
     let val;
     if (el.type === 'checkbox') val = el.checked ? 1 : 0;
     else if (el.type === 'number') val = el.value === '' ? null : Number(el.value);
     else val = el.value;
+    const prev = row ? row[field] : undefined;
     let updated;
-    try { updated = await api.shopParts.update(id, { [field]: val }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); return; }
-    const row = state.shopParts.find(r => r.id === id);
-    if (row && updated) Object.assign(row, updated);
+    // _shopSave throws on a non-OK body. The old code awaited the raw helper,
+    // which resolves with {error:…} for a 403/503 just as it resolves with the
+    // row for a 200 — so a refused save was assigned onto the row and the tick
+    // stayed on screen until the next reload, having never reached the database.
+    try {
+      updated = await _shopSave(id, { [field]: val });
+    } catch (err) {
+      if (el.type === 'checkbox') el.checked = !!prev;
+      else el.value = prev == null ? '' : prev;
+      showToast(`Could not save ${field.replace(/_/g, ' ')}: ${err.message}`, { kind: 'error' });
+      return;
+    }
+    if (row) Object.assign(row, updated);
+    // Keep every on-screen copy of this row in step — a priority-1 part is
+    // rendered in both the pinned section and the full list.
+    if (el.type === 'checkbox') {
+      document.querySelectorAll(`input[type="checkbox"][data-id="${id}"][data-field="${field}"]`)
+        .forEach(c => { c.checked = !!updated[field]; });
+    }
     if (field === 'part_complete' || field === 'priority' || field === 'job') renderShopPartsPage();
   }); }
   // Delete
@@ -11044,21 +11241,33 @@ async function _loadJhpHours() {
   }).filter(g => g.series[0].value || g.series[1].value);
   const fnChart = _jhBarChart(chartTitle, fnGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 900);
 
-  // ── Chart 2: Billing Group — driven by hoursType filter ──────────────────
-  const BG_ORDER = ['Engineering', 'Shop', 'Manufacturing'];
+  // ── Chart 2: Section Group — driven by hoursType filter ──────────────────
+  // Subtotals are keyed on the Reports App's section GROUP since 2026-08-26,
+  // when hours moved from Power BI to Paylocity + the Reports App DB. Power BI's
+  // old "Billing Group" (Engineering / Shop / Manufacturing) has no equivalent
+  // there; these six are what SECTIONS actually carries. The data key is still
+  // called `billing` so this page did not need rewriting — only the values moved.
+  //
+  // Anything the data has but this list does not is APPENDED rather than dropped:
+  // a hard-coded order that silently hides a group is how hours go missing from a
+  // total without anyone noticing.
+  const BG_ORDER_BASE = ['Management', 'Mechanical Engineering', 'Controls Engineering',
+                         'General Engineering', 'Engineering', 'Shop', 'Manufacturing'];
+  const BG_ORDER = [...BG_ORDER_BASE, ...Object.keys(bgTotals).filter(k => !BG_ORDER_BASE.includes(k)).sort()];
   const bgGroups = BG_ORDER.filter(bg => bgTotals[bg]).map(bg => ({
     fn: _gl(bg), label: _gl(bg), sectionLabel: null,
     series: [{ value: isEtc ? bgTotals[bg].etc : bgTotals[bg].quoted }, { value: bgTotals[bg].actual }],
   }));
-  const bgChartTitle = isEtc ? 'ETC and Actual by Billing Group' : 'Quoted and Actual by Billing Group';
+  const bgChartTitle = isEtc ? 'ETC and Actual by Group' : 'Quoted and Actual by Group';
   const bgChart = _jhBarChart(bgChartTitle, bgGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 600, 900);
 
-  // billing group cards
-  const BG_CARD_ORDER = ['Engineering', 'Shop', 'Manufacturing'];
+  // group cards — only for groups present in the data, so a job with no shop
+  // hours does not show an empty SHOP card implying zero work booked.
+  const BG_CARD_ORDER = BG_ORDER.filter(bg => bgTotals[bg]);
   const bgCards = BG_CARD_ORDER.map(bg => {
     const t = bgTotals[bg] || { quoted: 0, actual: 0, etc: 0 };
     const diff = t.quoted - t.actual;
-    return `<div class="hours-bg-card" data-tip="${escapeHtml(JSON.stringify({ fn: bg, group: 'Billing Group', section: '', q: t.quoted, a: t.actual, e: t.etc||0, d: diff }))}" data-tip-row="Billing">
+    return `<div class="hours-bg-card" data-tip="${escapeHtml(JSON.stringify({ fn: bg, group: 'Group', section: '', q: t.quoted, a: t.actual, e: t.etc||0, d: diff }))}" data-tip-row="Group">
       <div class="hours-bg-name">${bg.toUpperCase()}</div>
       <div class="hours-bg-nums">
         <span class="hours-col-q">${fmt(t.quoted)}</span>
@@ -12775,7 +12984,13 @@ async function deleteMachineFromProject(project, machine) {
       saveMachinesSubset();
     }
     await loadTasks();
-    showToast(`Deleted machine "${machine}" — removed ${body?.deleted ?? taskCount} tasks.`, { kind: 'success' });
+    // The server archived this machine's payment milestones with it — re-read
+    // them so Invoicing / the Gantt overlay drop the rows now instead of
+    // holding the pre-delete cache until the next page load.
+    try { await loadFinancialsForProject(project); } catch (_) {}
+    try { refreshFinancialsButtonState(); } catch (_) {}
+    const finNote = body?.archivedFinancials ? ` and ${body.archivedFinancials} payment milestone${body.archivedFinancials === 1 ? '' : 's'}` : '';
+    showToast(`Deleted machine "${machine}" — removed ${body?.deleted ?? taskCount} tasks${finNote}.`, { kind: 'success' });
   } catch (err) {
     showToast('Failed to delete machine: ' + (err.message || err), { kind: 'error' });
   }
@@ -15680,7 +15895,8 @@ function renderScheduleProcurement() {
 }
 // ── Per-project Job Hours drawer ─────────────────────────────────────────────
 // Collapsible panel below Procurement. Shows Quoted / Actual / Diff per
-// function, grouped by billing group, pulled from the Power BI semantic model.
+// function, grouped by section group, from Paylocity punches via the Reports App
+// (sdc-etc-planner). NOT Power BI — see SDC_Scheduler/lib/hoursApi.js for why.
 // Only visible when PBI_USER+PBI_PASS are configured and the project has a job number.
 
 // Hard client-side ceiling for a Power BI hours fetch. The server already times
@@ -17774,9 +17990,32 @@ async function _deleteFinancialMilestone(project, id) {
 // Optional `machine` (e.g. 'M1'/'M2') filters to that machine's rows and tags
 // new rows with it — per-machine payment terms on multi-machine projects.
 // Rows with no machine value count as M1 (legacy single-machine data).
+// A milestone row with no `machine` belongs to the project's BASE machine.
+// Which machine that is has to be decided ONCE and used by every reader and
+// writer. It wasn't: this grid filtered NULL rows as 'M1' while
+// _seedMachineFinancials treated them as machines[0]. On 1153, whose machines
+// sort as ['DS 2', 'DS 3', 'M1'], the seeder therefore saw "M1 has no rows of
+// its own", copied the base set into machine 'M1' — and this grid then matched
+// BOTH the NULL originals and the new 'M1' copies, which is exactly the
+// duplicated block of milestones that was reported. Deleting the copies just
+// put the seeder back to "M1 has no rows" on the next open, so they came
+// straight back. Prefer a machine literally named M1 (the base on every
+// normal project, and where the legacy NULL rows have always displayed),
+// otherwise the first machine.
+function _finBaseMachine(machines) {
+  const list = (machines || []).filter(Boolean).map(String);
+  if (!list.length) return 'M1';
+  return list.includes('M1') ? 'M1' : list[0];
+}
+function _finProjectMachines(project) {
+  return Array.from(new Set(
+    (state.tasks || []).filter(t => t.project === project && t.machine).map(t => String(t.machine))
+  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
 async function mountFinancialsEditor(container, project, machine) {
   if (!container || !project) return;
-  const machineMatches = (r) => !machine || (r.machine || 'M1') === machine;
+  const base = _finBaseMachine(_finProjectMachines(project));
+  const machineMatches = (r) => !machine || (r.machine || base) === machine;
   const renderGrid = async (opts = {}) => {
     let rows;
     try { rows = state.financials[project] || await loadFinancialsForProject(project); }
@@ -17903,11 +18142,19 @@ async function mountFinancialsEditor(container, project, machine) {
 // soon as the machine has any rows of its own.
 async function _seedMachineFinancials(project, machine, baseMachine) {
   let rows = [];
-  try { rows = state.financials[project] || await loadFinancialsForProject(project); } catch (_) {}
+  try { rows = await loadFinancialsForProject(project); } catch (_) {}
   rows = rows || [];
-  if (rows.some(r => (r.machine || baseMachine) === machine)) return;
-  const base = rows.filter(r => (r.machine || baseMachine) === baseMachine);
+  // NULL machine = the base machine, resolved the same way the grid resolves
+  // it (see _finBaseMachine) — not the caller's guess.
+  const home = _finBaseMachine(_finProjectMachines(project));
+  if (machine === home) return;                                    // the base set IS this machine's set
+  if (rows.some(r => (r.machine || home) === machine)) return;     // already has its own rows
+  const base = rows.filter(r => (r.machine || home) === (baseMachine || home));
   if (!base.length) return;
+  // Durable one-time claim: an empty machine that was seeded before and then
+  // emptied by the user must stay empty. Without this the "no rows" test above
+  // re-created the deleted milestones on every Project Release open.
+  if (!(await api.financials.claimSeed(project, machine))) return;
   for (const r of base) {
     try {
       await api.financials.create({
@@ -17925,9 +18172,12 @@ async function _seedMachineFinancials(project, machine, baseMachine) {
 // release "fill out" the grid the first time.
 async function _seedFinancialsFromRelease(project, rel) {
   let existing = [];
-  try { existing = state.financials[project] || await loadFinancialsForProject(project); } catch (_) {}
+  try { existing = await loadFinancialsForProject(project); } catch (_) {}
   if (existing && existing.length) return;
   if (!rel || !rel.milestones || !rel.milestones.length) return;
+  // One-time claim (see _seedMachineFinancials) — a project whose milestones
+  // the user deleted must not be re-filled from the release document.
+  if (!(await api.financials.claimSeed(project, ''))) return;
   for (const m of rel.milestones) {
     try {
       await api.financials.create({
@@ -18529,8 +18779,12 @@ async function openProjectReleaseModal(project) {
     try { await _seedFinancialsFromRelease(project, release); } catch (_) {}
     for (const c of overlay.querySelectorAll('[data-fin-machine]')) {
       const m = c.dataset.finMachine || null;
-      if (multiMachine && m && m !== machines[0]) {
-        try { await _seedMachineFinancials(project, m, machines[0]); } catch (_) {}
+      // Base machine for MILESTONES is where the legacy machine-less rows
+      // live (_finBaseMachine) — not necessarily machines[0], which is just
+      // the alphabetically-first machine and owns the release FIELDS.
+      const finBase = _finBaseMachine(machines);
+      if (multiMachine && m && m !== finBase) {
+        try { await _seedMachineFinancials(project, m, finBase); } catch (_) {}
       }
       try { await mountFinancialsEditor(c, project, multiMachine ? m : undefined); } catch (_) {}
     }
@@ -25230,7 +25484,295 @@ async function loadTeam() {
 
 // ---------- Wiring ----------
 // Views that are simple scrollable containers — save/restore their scroll position.
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'team', 'invoicing', 'service'];
+// ═══════════════════════════════════════════════════════════════════════════
+// Manufacturing — Total ETO's in-house task queue (what the shop has to MAKE)
+//
+// Read-only. Pat already has this list inside ETO, so this page is NOT a copy of
+// that grid — it exists for the one thing ETO cannot say: whether a part is
+// LATE. A due date on an ETO process schedule is optional and mostly skipped
+// (set on 100 of 229 active schedules), while this app knows every job's build
+// window. So the server derives a due date from the build start where ETO has
+// none, and the page leads with what needs attention rather than a flat table.
+//
+// Four of the columns in ETO's own grid are deliberately absent: Actual Hours,
+// Required Hours, Extended and Total Costs are populated on ZERO of the 119
+// in-house rows ever written, so they would render as columns of 0 and read as
+// broken data. See routes/manufacturing.js.
+//
+// TWO SOURCES, ONE QUEUE. The shop is asked to make things two ways: an ETO
+// process schedule, or a purchase order raised against "Steven Douglas Corp."
+// (which is not a purchase — it is us making something, booked as a PO). Both
+// are merged into this one ranked list, because "what do we owe, most urgent
+// first" does not care which ETO screen the work was entered on. Showing only
+// process schedules under-reported the queue by roughly 4x: 11 parts against 41
+// open SDC-PO parts, overlapping on 1.
+//
+// The Ref column carries a PS/PO tag rather than this page growing a tenth
+// column — description needs the width more, and a row's reference number is
+// exactly where someone looks to know which ETO screen to open.
+//
+// A `sdc-po` row genuinely has NO shop-floor progress data: no punch-ins, no
+// process, no owner, no issued qty. Those cells show as unknown rather than as
+// zero (`has_progress_data` on the row says which), because rendering an
+// unknown as an idle 0 is what would make this page lie.
+// ═══════════════════════════════════════════════════════════════════════════
+let _mfgData = null;
+let _mfgFilter = 'attention'; // 'attention' | 'all'
+let _mfgSource = 'all';       // 'all' | 'process-schedule' | 'sdc-po'
+let _mfgLoading = false;
+
+const MFG_FLAGS = {
+  // Order matters — badges render in this order, most serious first.
+  'build-started-part-not': { label: 'BUILD STARTED', cls: 'is-critical', tip: 'The build that needs this part has already started, and the part has never been worked on. ETO cannot flag this — it has no build dates.' },
+  'overdue':                { label: 'OVERDUE',       cls: 'is-late',     tip: 'Past its required date.' },
+  'due-soon':               { label: 'DUE SOON',      cls: 'is-soon',     tip: 'Required within 14 days.' },
+  'stalled':                { label: 'STALLED',       cls: 'is-stalled',  tip: 'Opened more than 30 days ago with no work logged against it.' },
+  'active-now':             { label: 'ON IT NOW',     cls: 'is-active',   tip: 'Someone is clocked onto this right now.' },
+  'no-eto-due-date':        { label: 'NO ETO DATE',   cls: 'is-nodate',   tip: 'No required date in ETO — the date shown is derived from this job&apos;s build start.' },
+};
+const MFG_FLAG_ORDER = Object.keys(MFG_FLAGS);
+
+async function loadManufacturing() {
+  const root = document.getElementById('manufacturing-page');
+  if (!root) return;
+  if (_mfgLoading) return;
+  _mfgLoading = true;
+  if (!_mfgData) root.innerHTML = '<div class="mfg-empty">Loading the shop queue…</div>';
+  try {
+    const res = await fetch('/api/manufacturing/in-house');
+    const body = await res.json();
+    if (!res.ok) throw new Error(body && body.error ? body.error : 'HTTP ' + res.status);
+    _mfgData = body;
+    renderManufacturingPage();
+  } catch (e) {
+    // An unreachable ETO must NOT render as an empty queue — "nothing to make"
+    // and "we could not ask" look identical and only one of them is safe.
+    root.innerHTML = '<div class="mfg-error"><strong>Could not load the manufacturing queue.</strong>'
+      + '<div class="mfg-error-detail">' + escapeHtml(e.message || String(e)) + '</div>'
+      + '<div class="mfg-error-hint">This page reads Total ETO live. Nothing is cached, so this is a connection problem rather than stale data.</div>'
+      + '<button type="button" class="mfg-btn" data-mfg-reload="1">Try again</button></div>';
+  } finally {
+    _mfgLoading = false;
+  }
+}
+
+function _mfgFmtDays(n) {
+  if (n === null || n === undefined) return '—';
+  if (n === 0) return 'today';
+  return n > 0 ? n + 'd ago' : 'in ' + Math.abs(n) + 'd';
+}
+
+// At most MFG_BADGE_MAX badges inline, then a +N chip carrying the rest in its
+// tooltip. MFG_FLAG_ORDER is severity-ordered, so the two shown are always the
+// two that matter most.
+//
+// The lane is a fixed width, and a row that needed four badges used to wrap it
+// onto three lines — a 56px row against 23px for a plain one, which broke the
+// row rhythm exactly on the rows most worth scanning. Capping keeps every row
+// the same height without silently dropping a flag.
+const MFG_BADGE_MAX = 2;
+
+function _mfgRowBadges(r) {
+  const flags = Array.isArray(r.flags) ? r.flags : [];
+  const present = MFG_FLAG_ORDER.filter(f => flags.includes(f));
+  const shown = present.slice(0, MFG_BADGE_MAX);
+  const rest = present.slice(MFG_BADGE_MAX);
+  let html = shown.map(f => {
+    const m = MFG_FLAGS[f];
+    return '<span class="mfg-badge ' + m.cls + '" title="' + m.tip + '">' + m.label + '</span>';
+  }).join('');
+  if (rest.length) {
+    const tip = rest.map(f => MFG_FLAGS[f].label + ' — ' + MFG_FLAGS[f].tip).join(' · ');
+    html += '<span class="mfg-badge is-more" title="' + escapeHtml(tip) + '">+' + rest.length + '</span>';
+  }
+  return html;
+}
+
+function renderManufacturingPage() {
+  const root = document.getElementById('manufacturing-page');
+  if (!root || !_mfgData) return;
+  const d = _mfgData;
+  const t = d.totals || {};
+  const rows = Array.isArray(d.rows) ? d.rows : [];
+
+  if (!rows.length) {
+    root.innerHTML = '<div class="mfg-head"><div><h1>Manufacturing</h1></div></div>'
+      + '<div class="mfg-empty">Nothing outstanding — every in-house task and SDC purchase order in Total ETO is complete.</div>';
+    return;
+  }
+
+  // A source whose query failed contributes 0 rows. Say so loudly: a short
+  // queue and a partial queue look identical, and only one of them means the
+  // shop has less to do.
+  const srcErrors = [
+    d.sources && d.sources.process_schedule && d.sources.process_schedule.error,
+    d.sources && d.sources.sdc_po && d.sources.sdc_po.error,
+  ].filter(Boolean);
+
+  // Source filter is applied FIRST so the attention counts below describe the
+  // list actually on screen.
+  const sourceRows = _mfgSource === 'all' ? rows : rows.filter(r => r.source === _mfgSource);
+
+  const needsAttention = (r) => (r.flags || []).some(f =>
+    f === 'build-started-part-not' || f === 'overdue' || f === 'due-soon' || f === 'stalled');
+  const attentionRows = sourceRows.filter(needsAttention);
+  // Fall back to everything when the attention list is empty, so the filter can
+  // never leave the page looking blank while work is outstanding. The fallback
+  // is FLAGGED — the chip used to stay lit while the page quietly showed
+  // everything, which reads as "all of this needs attention".
+  const attentionFellBack = _mfgFilter === 'attention' && !attentionRows.length && sourceRows.length > 0;
+  const shown = (_mfgFilter === 'attention' && attentionRows.length) ? attentionRows : sourceRows;
+
+  // Counted over the rows ACTUALLY ON SCREEN, not the server's whole-queue
+  // totals. With the source filter on, the tiles described rows the list was
+  // not showing: filtering to Process schedules left 10 rows under tiles
+  // reading 28 / 18 / 43 / 9, which are the counts for all 62.
+  const countFlag = (f) => sourceRows.filter(r => (r.flags || []).includes(f)).length;
+  const tile = (n, label, cls, tip) => !n ? '' :
+    '<div class="mfg-tile ' + cls + '" title="' + tip + '"><div class="mfg-tile-n">' + n + '</div><div class="mfg-tile-l">' + label + '</div></div>';
+  const tiles = [
+    tile(countFlag('build-started-part-not'), 'build started,<br>part not', 'is-critical', 'The build that consumes these parts is already underway and the part has never been worked on. This is the signal ETO cannot produce.'),
+    tile(countFlag('overdue'), 'overdue', 'is-late', 'Past the required date — ETO&apos;s, or derived from the build start where ETO has none.'),
+    tile(countFlag('due-soon'), 'due within<br>14 days', 'is-soon', 'Required within the next 14 days.'),
+    tile(countFlag('stalled'), 'stalled<br>30+ days', 'is-stalled', 'Opened more than 30 days ago with no work logged.'),
+    tile(sourceRows.filter(r => r.active_now).length, 'being worked<br>right now', 'is-active', 'Someone is clocked onto these in ETO right now.'),
+    tile(countFlag('no-eto-due-date'), 'no due date<br>in ETO', 'is-nodate', 'ETO has no required date for these, so the date shown is derived from the job&apos;s build start in this schedule.'),
+  ].filter(Boolean).join('');
+
+  // '—' is the bucket for rows with no ETO process at all, which is every
+  // sdc-po row. Dropped from the chips rather than rendered as a nameless
+  // process: the source chips already account for those rows, and a chip
+  // reading "— 46" would look like a data fault.
+  // Recomputed from sourceRows for the same reason as the tiles: d.by_process
+  // covers the whole queue, so selecting "SDC POs" — every one of which has a
+  // null process — still listed "Machining 10 · Welding 1", process-schedule
+  // counts for rows that were no longer on screen.
+  const procCounts = new Map();
+  for (const r of sourceRows) {
+    if (!r.process || r.process === '—') continue;
+    procCounts.set(r.process, (procCounts.get(r.process) || 0) + 1);
+  }
+  const byProcess = [...procCounts.entries()].sort((a, b) => b[1] - a[1]).map(([process, count]) =>
+    '<span class="mfg-proc-chip">' + escapeHtml(process) + ' <b>' + count + '</b></span>').join('');
+
+  // Group by job. Row order already arrives most-urgent-first from the server,
+  // so first appearance orders the jobs by their worst part.
+  const jobs = [];
+  const jobMap = new Map();
+  for (const r of shown) {
+    if (!jobMap.has(r.job)) { jobMap.set(r.job, { job: r.job, schedule: r.schedule, rows: [] }); jobs.push(jobMap.get(r.job)); }
+    jobMap.get(r.job).rows.push(r);
+  }
+
+  const jobBlocks = jobs.map(j => {
+    const sc = j.schedule;
+    const sched = sc
+      ? '<span class="mfg-job-sched">build ' + escapeHtml(sc.build_start || '—') + ' → ' + escapeHtml(sc.build_end || '—')
+        + (sc.ship_date ? ' · ship ' + escapeHtml(sc.ship_date) : '') + '</span>'
+        + (sc.ambiguous ? '<span class="mfg-job-sched is-ambiguous" title="'
+            + escapeHtml('This job number matches ' + (sc.ambiguous.others.length + 1) + ' projects here. Dates are from "' + sc.ambiguous.chosen + '" (the one with the most shop tasks). Also: ' + sc.ambiguous.others.join(', ') + '.')
+            + '">from ' + escapeHtml(sc.ambiguous.chosen) + '</span>' : '')
+      // Deliberately loud: a job with shop work and no project here means nobody
+      // can tell whether its parts are late.
+      : '<span class="mfg-job-sched is-missing" title="This job has in-house tasks but no project in this scheduler, so there are no build dates to judge its parts against.">no project here — cannot date these parts</span>';
+    const rowsHtml = j.rows.map(r => {
+      const flags = r.flags || [];
+      const isPo = r.source === 'sdc-po';
+      // Same shape of sentence for both sources, but the nouns have to change:
+      // a process schedule is "worked on", a PO line is "delivered". Saying
+      // "never worked on" about a PO line would describe punch data that does
+      // not exist for it.
+      const openedWord = isPo ? 'PO raised' : 'Opened';
+      const ageTip = openedWord + ' ' + _mfgFmtDays(r.started_days)
+        + (r.never_started
+            ? (isPo ? ', nothing delivered yet' : ', never worked on')
+            : (isPo ? ', last received ' + _mfgFmtDays(r.last_worked_days)
+                    : ', last worked ' + _mfgFmtDays(r.last_worked_days)));
+      const ref = isPo
+        ? '<b class="mfg-src is-po" title="A purchase order raised against Steven Douglas Corp. — this is our own shop making the part, not a vendor buy.">PO</b> ' + escapeHtml(r.po_number || '')
+        : '<b class="mfg-src is-ps" title="ETO process schedule number.">PS</b> ' + escapeHtml(r.ps_number || '');
+      // Unknown, not empty. An sdc-po line carries no ETO process and no owner,
+      // so both read as an explicit dash with the reason on hover.
+      const unknown = (tip) => '<i class="mfg-unknown" title="' + tip + '">—</i>';
+      return '<div class="mfg-row' + (flags.includes('build-started-part-not') ? ' is-critical' : '')
+          + (isPo ? ' is-po-row' : '') + '">'
+        + '<span class="mfg-c-ps" data-l="Ref">' + ref + '</span>'
+        + '<span class="mfg-c-part" data-l="Part No." title="' + escapeHtml(r.part_no || '') + '">' + escapeHtml(r.part_no || '') + '</span>'
+        + '<span class="mfg-c-desc" data-l="Description" title="' + escapeHtml(r.description || '') + '">' + escapeHtml(r.description || '') + '</span>'
+        + '<span class="mfg-c-proc" data-l="Process">' + (r.process ? escapeHtml(r.process)
+            : unknown('This is an SDC purchase order, not a process schedule, so ETO records no process for it.')) + '</span>'
+        + '<span class="mfg-c-qty" data-l="Qty" title="Quantity still to make">' + (r.qty_remaining == null ? '—' : r.qty_remaining) + (r.qty ? ' <i>of ' + r.qty + '</i>' : '') + '</span>'
+        + '<span class="mfg-c-due' + (flags.includes('overdue') ? ' is-late' : '') + '" data-l="Needed">' + escapeHtml(r.due || '—')
+          + (r.due_from === 'build-start' ? '<i class="mfg-derived" title="Derived from this job&apos;s build start — ETO has no required date for this ' + (isPo ? 'PO line' : 'schedule') + '.">&#8962;</i>' : '') + '</span>'
+        + '<span class="mfg-c-age" data-l="Open" title="' + escapeHtml(ageTip) + '">' + _mfgFmtDays(r.started_days)
+          + (r.never_started ? ' <i>· ' + (isPo ? 'none delivered' : 'not started') + '</i>' : '') + '</span>'
+        + '<span class="mfg-c-owner" data-l="Owner" title="Owner of the ETO process schedule — NOT an assigned machinist. ETO has no assignee on these rows.">'
+          + (r.owner ? escapeHtml(r.owner)
+             : (isPo ? unknown('SDC purchase orders have no process-schedule owner in ETO.') : '—')) + '</span>'
+        + '<span class="mfg-c-flags">' + _mfgRowBadges(r) + '</span>'
+        + '</div>';
+    }).join('');
+    return '<div class="mfg-job">'
+      + '<div class="mfg-job-head">'
+        + '<span class="mfg-job-no">' + escapeHtml(j.job) + '</span>'
+        + '<span class="mfg-job-name">' + escapeHtml((sc && sc.project) || '') + '</span>'
+        + sched
+        + '<span class="mfg-job-count">' + j.rows.length + ' part' + (j.rows.length === 1 ? '' : 's') + '</span>'
+      + '</div>'
+      + '<div class="mfg-list-head"><span title="ETO process schedule (PS) or SDC purchase order (PO) number.">Ref</span><span>Part No.</span><span>Description</span><span>Process</span><span>Qty</span><span>Needed</span><span>Open</span><span>Owner</span><span></span></div>'
+      + rowsHtml
+      + '</div>';
+  }).join('');
+
+  const stamp = d.generated_at ? new Date(d.generated_at).toLocaleTimeString() : '';
+  const filterBtn = (key, label, n) =>
+    '<button type="button" class="mfg-chip'
+    + ((_mfgFilter === key && !(key === 'attention' && attentionFellBack)) ? ' is-on' : '')
+    + '" data-mfg-filter="' + key + '">'
+    + label + (n == null ? '' : ' <b>' + n + '</b>') + '</button>';
+  const sourceBtn = (key, label, n) =>
+    '<button type="button" class="mfg-chip is-src' + (_mfgSource === key ? ' is-on' : '') + '" data-mfg-source="' + key + '">'
+    + label + (n == null ? '' : ' <b>' + n + '</b>') + '</button>';
+
+  root.innerHTML = '<div class="mfg-head">'
+      + '<div><h1>Manufacturing</h1>'
+      + '<div class="mfg-sub">Everything the shop has to make, from Total ETO — process schedules and purchase orders raised against Steven Douglas Corp. — ranked against this schedule&apos;s build dates.</div></div>'
+      + '<div class="mfg-head-right">'
+        + '<span class="mfg-stamp" title="This page reads Total ETO live on every visit; nothing is cached.">read live at ' + escapeHtml(stamp) + '</span>'
+        + '<button type="button" class="mfg-btn" data-mfg-reload="1">Refresh</button>'
+      + '</div></div>'
+    + (tiles ? '<div class="mfg-tiles">' + tiles + '</div>'
+             : '<div class="mfg-allclear">Nothing needs attention — no overdue, stalled, or build-blocking parts.</div>')
+    + (srcErrors.length ? '<div class="mfg-warn mfg-srcfail" title="One source of in-house work could not be read, so this queue is incomplete — it is not that there is less to make.">'
+        + 'Incomplete queue — ' + escapeHtml(srcErrors.join(' ')) + '</div>' : '')
+    + (attentionFellBack ? '<div class="mfg-warn" title="Nothing in this selection carries an attention flag, so the full list is shown instead of an empty page.">'
+        + 'Nothing needs attention in this selection — showing all ' + sourceRows.length + ' open.</div>' : '')
+    + (d.ambiguous_jobs && d.ambiguous_jobs.length ? '<div class="mfg-warn" title="' + escapeHtml(d.ambiguous_jobs.map(a => a.job + ': using ' + a.chosen + ' (also ' + a.others.join(', ') + ')').join(' · ')) + '">'
+        + d.ambiguous_jobs.length + ' job(s) match more than one project here — build dates came from the project with the most shop tasks</div>' : '')
+    + '<div class="mfg-toolbar">'
+      + filterBtn('attention', 'Needs attention', attentionRows.length)
+      + filterBtn('all', 'All open', sourceRows.length)
+      + '<span class="mfg-srcs">' + sourceBtn('all', 'Both sources', rows.length)
+        + sourceBtn('process-schedule', 'Process schedules', t.process_schedule)
+        + sourceBtn('sdc-po', 'SDC POs', t.sdc_po) + '</span>'
+      + '<span class="mfg-procs">' + byProcess + '</span>'
+      + (t.jobs_without_schedule ? '<span class="mfg-warn" title="These jobs have in-house tasks but no project in this scheduler, so their parts cannot be judged late. SDC POs land on internal job numbers (8000xxx) that will never have one.">' + t.jobs_without_schedule + ' job(s) with no project here</span>' : '')
+    + '</div>'
+    + jobBlocks
+    + '<div class="mfg-foot">Hours and cost columns from ETO&apos;s own grid are omitted on purpose — they are empty on every in-house task ever recorded, so they would only ever show 0.</div>';
+
+  root.querySelectorAll('[data-mfg-filter]').forEach(b => b.onclick = () => {
+    _mfgFilter = b.getAttribute('data-mfg-filter');
+    renderManufacturingPage();
+  });
+  root.querySelectorAll('[data-mfg-source]').forEach(b => b.onclick = () => {
+    _mfgSource = b.getAttribute('data-mfg-source');
+    renderManufacturingPage();
+  });
+  root.querySelectorAll('[data-mfg-reload]').forEach(b => b.onclick = () => { _mfgData = null; loadManufacturing(); });
+}
+
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'manufacturing', 'team', 'invoicing', 'service'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -25293,6 +25835,13 @@ function setView(view) {
     // it fresh when the data actually changes, so a plain nav here shouldn't
     // re-fetch the whole table every time.
     if (Array.isArray(state.shopParts)) renderShopPartsPage(); else loadShopParts();
+    _restoreScrollPos(view);
+  }
+  else if (view === 'manufacturing') {
+    // Read-only mirror of ETO's queue, so unlike shop-parts there is no realtime
+    // channel to keep it fresh — refetch on nav, and let the page's own cache
+    // note say how old the data is.
+    loadManufacturing();
     _restoreScrollPos(view);
   }
   else if (view === 'vendor-pos') {

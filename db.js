@@ -134,6 +134,54 @@ async function init() {
   await pool.query(`ALTER TABLE project_financials MODIFY COLUMN sort_order DOUBLE DEFAULT 0`).catch(() => {});
   await pool.query(`UPDATE project_financials SET sent = 1 WHERE paid = 1 AND sent = 0`).catch(() => {});
 
+  // Archive state for a milestone whose machine is no longer in the schedule.
+  // A milestone is scoped to a machine by name, so deleting machine "Storage
+  // Racks" (or retagging its last task) left its milestones behind: the
+  // Project Release panel only renders a block per machine that EXISTS in
+  // tasks, so nobody could see or delete them there, while the Invoicing page
+  // lists every row for the project — they sat under "No trigger" forever.
+  // Archiving instead of deleting keeps sent/paid history readable
+  // (?include_archived=1) while removing the row from every active view.
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN archived_at DATETIME`).catch(() => {});
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN archived_reason VARCHAR(255)`).catch(() => {});
+  // One-time cleanup of the orphans already in the table. Conservative on
+  // purpose: only rows that name a machine, whose (project, machine) pair has
+  // NO tasks, in a project that still HAS tasks (so a mid-import or empty
+  // project is never touched). Nothing is deleted, and legitimate rows —
+  // machine-less ones and every machine still in the schedule — are untouched.
+  await pool.query(`
+    UPDATE project_financials f
+       SET f.archived_at = NOW(), f.archived_reason = 'orphan-machine'
+     WHERE f.archived_at IS NULL
+       AND f.machine IS NOT NULL AND f.machine <> ''
+       AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project = f.project AND t.machine = f.machine)
+       AND EXISTS     (SELECT 1 FROM tasks t WHERE t.project = f.project)
+  `).catch(() => {});
+
+  // Seed claims — "this scope's milestones have already been initialized".
+  // Without it, "the scope has no rows" was the only signal for "never
+  // seeded", so deleting a machine's milestones looked exactly like a fresh
+  // project and the next Project Release open re-created every row the user
+  // had just deleted. One row per (project, machine); machine '' = the
+  // project-level default/release seed. The UNIQUE key is what makes the
+  // claim atomic, so two concurrent opens can never both seed.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS project_financials_seed (
+      id         INT AUTO_INCREMENT PRIMARY KEY,
+      project    VARCHAR(255) NOT NULL,
+      machine    VARCHAR(32)  NOT NULL DEFAULT '',
+      claimed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_fin_seed (project, machine)
+    )
+  `);
+  // Backfill: any scope that already HAS milestones counts as initialized, so
+  // existing projects can't be re-seeded after a deletion either.
+  await pool.query(`
+    INSERT IGNORE INTO project_financials_seed (project, machine)
+    SELECT project, COALESCE(machine, '') FROM project_financials
+    GROUP BY project, COALESCE(machine, '')
+  `).catch(() => {});
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS projects (
       id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -146,6 +194,26 @@ async function init() {
       UNIQUE KEY uq_projects_name (name)
     )
   `);
+
+  // job_number is the join key to Total ETO and to every other SDC app
+  // (etoDb.js, routes/manufacturing.js, routes/integration.js, hours, service).
+  // Nothing enforced that it identifies ONE project, and backfillProjects
+  // assigns it from the numeric prefix of the project NAME — so naming a tab
+  // "1101_Steris_Test" quietly created a second project 1101. Consumers then
+  // look a job up and take whichever row the database hands back first, which
+  // is not a stable answer: the manufacturing queue was reading its build
+  // window off a randomly-chosen one of three candidates.
+  //
+  // Templates are exempt. A template is a copy of a schedule and may legitimately
+  // carry the job number it was copied from, so the index is functional: it keys
+  // on NULL for templates, and on NULL for blank job numbers, and MySQL permits
+  // duplicate NULLs. Needs MySQL 8.0.13+ for the expression; verified on 9.7.
+  //
+  // This CANNOT be created while duplicates exist, and the fix is a human
+  // decision about which project owns the number — so a failure here is
+  // reported in detail and never throws. Once the data is clean the index
+  // appears on the next boot and the whole class of bug is gone.
+  await ensureJobNumberUnique(pool);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS task_history (
@@ -297,6 +365,46 @@ async function init() {
   `);
   await pool.query(`ALTER TABLE shop_parts ADD INDEX idx_shop_parts_job (job)`).catch(() => {});
 
+  // ── ETO receiving link (2026-08-26) ────────────────────────────────────────
+  // Most parts on this page are FABRICATED in the SDC shop and have no PO at all
+  // — measured 58 of 61 rows when this was built. A minority are farmed out
+  // (outside machining, anodizing) and arrive on a vendor PO, and for those the
+  // ETO receipt IS the completion event, so ticking Done by hand is duplicate
+  // data entry.
+  //
+  // `eto_po` is therefore deliberately NULLable and opt-in: a PM entering a PO
+  // number is the explicit statement "this one is bought, not made". Nothing
+  // automatic touches a row with a NULL eto_po, so a shop-made part can never be
+  // auto-completed by a coincidence.
+  //
+  // Keying on the PO (not the part number alone) is what makes this safe. Part
+  // numbers repeat across orders: 1147-FB-003 was received on PO 104448 on
+  // 2026-04-21, and a NEW row for that same part number was created 2026-08-26
+  // for a re-order. Matching on part number alone would have marked the new row
+  // complete off the April receipt. Naming the PO excludes it structurally.
+  //
+  // The eto_* columns below are a CACHE of ETO's answer, refreshed by
+  // etoDb.syncShopPartReceipts on the existing 30-min ETO cron. ETO stays the
+  // system of record; nothing here is ever written back to it.
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_po VARCHAR(32) NULL`).catch(() => {});
+  // Received/ordered qty summed across every line for this part on that PO — a
+  // single shop part routinely spans several lines (1147-FB-003 is two lines of
+  // qty 1 against a shop qty of 2, so per-line matching would never complete).
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_received_qty INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_po_qty INT NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_received_on VARCHAR(32) NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_synced_at DATETIME NULL`).catch(() => {});
+  // Audit: how a row got completed. NULL = a person ticked the box (every row
+  // that predates this feature). Set to e.g. 'ETO PO 104448' by the sync, so the
+  // shop can always tell an automated close from a human one.
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN completed_source VARCHAR(64) NULL`).catch(() => {});
+  // Why the sync declined to auto-complete a fully-received row, e.g. 'receipt
+  // predates part'. Persisted rather than inferred client-side from "received
+  // but still open", which would also match a row someone just un-ticked and a
+  // row this sync has not reached yet. NULL = no hold.
+  await pool.query(`ALTER TABLE shop_parts ADD COLUMN eto_hold_reason VARCHAR(64) NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE shop_parts ADD INDEX idx_shop_parts_eto_po (eto_po)`).catch(() => {});
+
   // v9.0: "Vendor PO Track" — every PO sent to an outside vendor. Status derived
   // client-side from complete/partial + ETA (PO Date + Lead Time weeks).
   await pool.query(`
@@ -346,6 +454,13 @@ async function init() {
   await pool.query(`ALTER TABLE projects ADD COLUMN est_start_date DATE`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD COLUMN complete_date DATE`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD COLUMN planner_synced_at DATETIME`).catch(() => {});
+  // Contract value + customer PO number on the project itself. Distinct from
+  // project_financials, which models *billing milestones*: a service or T&M job
+  // has a single PO / not-to-exceed figure that is not a milestone and has no
+  // due date, and forcing it into a 100%-milestone row misreports the billing
+  // schedule. DECIMAL(12,2) — money is never a float here.
+  await pool.query(`ALTER TABLE projects ADD COLUMN contract_value DECIMAL(12,2)`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN po_number VARCHAR(64)`).catch(() => {});
   // Clean up duplicate (po, job) rows left by syncs that overlapped before the
   // sync serializer existed. Conservatively deletes only the higher-id copy and
   // only when it carries NO PM-entered data — so manual edits are never lost; a
@@ -478,6 +593,21 @@ async function init() {
     await pool.query(`ALTER TABLE service_work_orders ADD INDEX ${idx} (${col})`).catch(() => {});
   }
 
+  // Multi-day Work Orders. The original model assumed one visit = one day, which
+  // is true for break-fix but false for the work Service actually plans around:
+  // a machine move or a large addition books an engineer for weeks. end_date is
+  // the INCLUSIVE last day; NULL means a single-day WO (so every pre-existing
+  // row keeps its exact meaning and no backfill is required). task_date remains
+  // the start and the only date the day-before reminder fires against.
+  await pool.query(`ALTER TABLE service_work_orders ADD COLUMN end_date VARCHAR(32)`).catch(() => {});
+
+  // Service PO tracking. `po_received` was a bare checkbox, which cannot answer
+  // "how much service work do we have on the books" — the question a $172k
+  // service PO immediately raises. Amount is nullable: a warranty call has a PO
+  // of nothing, and 0.00 would be a lie.
+  await pool.query(`ALTER TABLE service_requests ADD COLUMN po_number VARCHAR(64)`).catch(() => {});
+  await pool.query(`ALTER TABLE service_requests ADD COLUMN po_amount DECIMAL(12,2)`).catch(() => {});
+
   // Attachments (R2 §16). Files live on disk under SERVICE_UPLOAD_DIR; this
   // table is the metadata plus the association that keeps them reachable
   // from the Service Log detail — explicitly NOT "temporary browser state".
@@ -604,6 +734,47 @@ async function seedDefaults(pool) {
       'INSERT IGNORE INTO settings (`key`, value) VALUES (?, ?)',
       [k, JSON.stringify(v)]
     );
+  }
+}
+
+/**
+ * Add the unique index on projects.job_number, or explain precisely why it
+ * cannot be added yet. Never throws — a schema constraint that cannot be
+ * applied must not stop the server from booting.
+ */
+async function ensureJobNumberUnique(pool) {
+  try {
+    const [[existing]] = await pool.query(
+      `SELECT COUNT(*) AS n FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = 'projects'
+          AND index_name = 'uq_projects_job_number'`);
+    if (existing && existing.n > 0) return;   // already applied
+
+    const [dupes] = await pool.query(
+      `SELECT job_number, COUNT(*) AS n, GROUP_CONCAT(name SEPARATOR ' | ') AS projects
+         FROM projects
+        WHERE (is_template IS NULL OR is_template = 0)
+          AND job_number IS NOT NULL AND job_number <> ''
+        GROUP BY job_number HAVING COUNT(*) > 1
+        ORDER BY n DESC`);
+
+    if (dupes.length) {
+      console.warn(
+        `[schema] projects.job_number is NOT unique — ${dupes.length} job number(s) claimed by more than one project. ` +
+        'Every lookup by job number on these is picking an arbitrary row. Clear them ' +
+        '(set job_number = NULL on the projects that do not own the number) and the ' +
+        'unique index applies itself on the next boot:');
+      for (const d of dupes) console.warn(`[schema]   job ${d.job_number} → ${d.n} projects: ${d.projects}`);
+      return;
+    }
+
+    await pool.query(
+      `ALTER TABLE projects ADD UNIQUE KEY uq_projects_job_number
+       ((CASE WHEN is_template = 1 THEN NULL ELSE NULLIF(job_number, '') END))`);
+    console.log('[schema] projects.job_number is now unique across non-template projects.');
+  } catch (e) {
+    // Includes the MySQL < 8.0.13 case, where functional indexes do not exist.
+    console.warn('[schema] could not apply the projects.job_number unique index:', e.message);
   }
 }
 

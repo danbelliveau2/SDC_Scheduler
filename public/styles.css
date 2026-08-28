@@ -63,6 +63,12 @@
   --shadow-modal:   0 20px 52px rgba(6,29,57,0.20), 0 4px 12px rgba(6,29,57,0.08);
   --shadow-lifted:  0 4px 14px rgba(6,29,57,0.11);
 
+  /* Stacking tiers — one number for every floating menu/popover so a page
+     control (the schedule footer sat at 902) can never render over an open
+     context menu. Anything above this tier is a full-screen overlay only:
+     side panels 9000-9100, the Job Hours tooltip 9999, auth 10000. */
+  --z-popover: 9500;
+
   /* Radius system */
   --radius-xs:   4px;
   --radius-sm:   6px;
@@ -833,7 +839,7 @@ body {
 }
 .machine-color-popup {
   position: fixed;
-  z-index: 400;
+  z-index: var(--z-popover);
   background: white;
   border: 1px solid var(--border-strong, #cbd5e1);
   border-radius: 8px;
@@ -1308,7 +1314,7 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 /* The picker that opens when you click the + project button. */
 .project-add-picker {
   position: fixed;
-  z-index: 200;
+  z-index: var(--z-popover);
   background: #fff;
   border: 1px solid #cdd8e7;
   border-radius: 12px;
@@ -2089,7 +2095,7 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .filters-popover {
   position: fixed;
-  z-index: 250;
+  z-index: var(--z-popover);
   background: white;
   color: var(--text);
   border: 1px solid var(--border-strong);
@@ -2294,7 +2300,7 @@ body.customer-view .customer-view-flatten.is-active {
 }
 .revision-popover {
   position: fixed;
-  z-index: 250;
+  z-index: var(--z-popover);
   background: white;
   color: var(--text);
   border: 1px solid var(--border-strong);
@@ -3067,7 +3073,7 @@ body.customer-view .customer-view-flatten.is-active {
   color: #000;
 }
 /* Column picker popover */
-.proc-col-pop { position:absolute; top:calc(100% + 4px); left:0; z-index:500; background:#fff; border:1px solid #c8d0da; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.14); padding:10px 12px; min-width:160px; }
+.proc-col-pop { position:absolute; top:calc(100% + 4px); left:0; z-index: var(--z-popover); background:#fff; border:1px solid #c8d0da; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.14); padding:10px 12px; min-width:160px; }
 .proc-col-check { display:flex; align-items:center; gap:7px; padding:4px 2px; font-size:var(--fs-sm); color:#1e293b; cursor:pointer; white-space:nowrap; }
 .proc-col-check:hover { color:#1574c4; }
 .proc-col-check input { cursor:pointer; accent-color:#1574c4; }
@@ -3425,10 +3431,20 @@ main {
    sets flex:1 + min-height:0; without an explicit overflow:auto, any
    content past the visible viewport gets clipped. (Bug Dan hit: Build /
    Wire department cards were cut off at the bottom of the page.) */
+/* This list is an OPT-IN, and forgetting a view is silent: main is
+   overflow:hidden, .view.active only sets flex:1 + min-height:0, so a view left
+   off simply has its content clipped at the height of the box with no scrollbar
+   and no way to reach the rest. #view-manufacturing was off it while
+   _SCROLL_VIEWS in app.js — the list that saves and restores scroll position —
+   already included it, so the JS believed the page scrolled and the CSS never
+   let it: 11,573px of queue inside a 1,034px box, unreachable past the first
+   screen. (#view-team and #view-invoicing carry the same two properties in
+   their own rules further down.) Add new scrolling views HERE. */
 #view-dashboard.active,
 #view-shop-parts.active,
 #view-vendor-pos.active,
 #view-procurement.active,
+#view-manufacturing.active,
 #view-projects.active,
 #view-favorites.active,
 #view-recents.active {
@@ -3485,7 +3501,7 @@ body[data-view="setup"] #btn-add { display: none; }
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   padding: 8px 12px;
-  z-index: 50;
+  z-index: var(--z-popover);
   min-width: 200px;
   box-shadow: 0 6px 16px rgba(0,0,0,0.18);
 }
@@ -5233,9 +5249,9 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 /* Right-click context menu */
 .context-menu {
   position: fixed;
-  /* Topmost, always — 200 buried it under modal overlays (950+), so
-     right-click inside the release window looked like it did nothing. */
-  z-index: 10500;
+  /* Popover tier (9500) — above modal overlays (950+), so right-click
+     inside the release window actually shows the menu. */
+  z-index: var(--z-popover);
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -5354,7 +5370,7 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
    cancel. */
 .confirm-popup {
   position: fixed;
-  z-index: 300;
+  z-index: var(--z-popover);
   background: white;
   border: 1px solid var(--border-strong, #cbd5e1);
   border-radius: 8px;
@@ -5413,7 +5429,7 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
    row: label / input / Cancel / Save. */
 .arrow-lag-edit {
   position: fixed;
-  z-index: 300;
+  z-index: var(--z-popover);
   background: white;
   border: 1px solid var(--border-strong, #cbd5e1);
   border-radius: 6px;
@@ -6024,7 +6040,7 @@ body.customer-view .schedule-footer { display: none; }
 .notes-cell-date { font-size: var(--fs-md); color: var(--text-muted, #64748b); white-space: nowrap; }
 .notes-edit-hint { font-size: var(--fs-sm); color: #0D47A1; background: #fffbeb; border: 1px solid #fde68a; border-radius: 5px; padding: 4px 8px; }
 /* Predecessor-date confirm pill — small rounded in-app popover next to the cell */
-.pred-confirm-pop { position: fixed; z-index: 1100; width: 260px; background: #fff; border: 1px solid var(--border, #cbd5e1); border-radius: 10px; box-shadow: 0 8px 24px rgba(15,23,42,0.18); padding: 10px 12px; font-size: 12.5px; color: var(--text, #1e293b); }
+.pred-confirm-pop { position: fixed; z-index: var(--z-popover); width: 260px; background: #fff; border: 1px solid var(--border, #cbd5e1); border-radius: 10px; box-shadow: 0 8px 24px rgba(15,23,42,0.18); padding: 10px 12px; font-size: 12.5px; color: var(--text, #1e293b); }
 .pred-confirm-pop .pcp-msg { line-height: 1.4; margin-bottom: 8px; }
 .pred-confirm-pop .pcp-btns { display: flex; justify-content: flex-end; gap: 6px; }
 .pred-confirm-pop .pcp-no { border: 1px solid var(--border, #cbd5e1); background: #fff; color: var(--text-muted, #64748b); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
@@ -9930,7 +9946,7 @@ td.sales-suppressed {
 .jhp-sel-pill-x          { cursor: pointer; opacity: 0.75; font-size: 15px; line-height: 1; padding: 0 2px; flex-shrink: 0; }
 .jhp-sel-pill-x:hover    { opacity: 1; }
 .jhp-dd-caret            { font-size: 10px; color: var(--text-muted); flex-shrink: 0; align-self: center; }
-.jhp-dd-panel            { position: absolute; top: calc(100% + 4px); left: 0; z-index: 200; background: #1e2330; border: 1px solid #3a4260; border-radius: 4px; min-width: 340px; max-height: 420px; display: flex; flex-direction: column; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
+.jhp-dd-panel            { position: absolute; top: calc(100% + 4px); left: 0; z-index: var(--z-popover); background: #1e2330; border: 1px solid #3a4260; border-radius: 4px; min-width: 340px; max-height: 420px; display: flex; flex-direction: column; box-shadow: 0 6px 24px rgba(0,0,0,.4); }
 .jhp-dd-search-wrap      { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid #3a4260; flex-shrink: 0; }
 .jhp-dd-search-icon      { font-size: 12px; color: #8899bb; }
 .jhp-dd-search           { flex: 1; background: transparent; border: none; outline: none; color: #c8d8f0; font-size: 13px; }
@@ -10054,6 +10070,15 @@ td.sales-suppressed {
 .sp-chip.sp-muted { background: transparent; color: var(--text-muted, #64748b); border: 1px solid var(--border, #e2e8f0); }
 .sp-chip.sp-due.is-late { background: #E3F0FA; color: #0D47A1; }
 .sp-done { display: flex; align-items: center; gap: 5px; flex: none; font-size: var(--fs-sm); color: var(--text-muted, #64748b); cursor: pointer; }
+/* Done owns the last Shop Parts column: a comfortable click target that fills
+   the track it already has, so it costs no extra row height. */
+#shop-parts-page .sp-prow-line .sp-done {
+  justify-content: center; min-height: 26px; border-radius: 6px;
+}
+#shop-parts-page .sp-prow-line .sp-done:hover { background: var(--surface-alt, #f1f5f9); }
+#shop-parts-page .sp-prow-line .sp-done input { cursor: pointer; margin: 0; width: 15px; height: 15px; }
+#shop-parts-page .sp-prow-line .sp-done:has(input:focus-visible) { outline: 2px solid var(--sdc-primary, #1574c4); outline-offset: 1px; }
+#shop-parts-page .sp-done-head { text-align: center; }
 /* Expanded detail editor */
 .sp-card-details { border-top: 1px solid var(--border, #e2e8f0); padding: 12px; background: color-mix(in srgb, var(--sdc-primary, #1574c4) 3%, white); }
 .sp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px 12px; }
@@ -10136,6 +10161,30 @@ td.sales-suppressed {
 
 /* Sections (Top 10 + By project) */
 .sp-section { margin-top: 16px; }
+/* A quiet note beside a section heading — says what the section IS, so the
+   priority-1 list reads as a pinned shortcut rather than duplicated records. */
+.sp-section-note {
+  font-size: var(--fs-xs); font-weight: var(--fw-normal); font-style: italic;
+  color: var(--text-muted, #64748b); text-transform: none; letter-spacing: 0;
+}
+/* Load failure — distinct from the empty state, and retryable in place. */
+.sp-error {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-top: 12px; padding: 9px 12px; border-radius: 8px;
+  background: var(--danger-bg, #fef2f2); border: 1px solid var(--danger, #dc2626);
+  color: var(--danger, #dc2626); font-size: var(--fs-md); font-weight: var(--fw-semibold);
+}
+.sp-linkbtn {
+  background: none; border: 0; padding: 0 2px; cursor: pointer; font: inherit;
+  color: var(--sdc-primary, #1574c4); text-decoration: underline;
+}
+.sp-linkbtn:hover { color: var(--sdc-primary-hover, #0f5c9e); }
+.sp-linkbtn:focus-visible { outline: 2px solid var(--sdc-primary, #1574c4); outline-offset: 2px; }
+.sp-error .sp-linkbtn { color: inherit; }
+.sp-loading { font-style: normal; }
+/* Row hover — the flat list had none, so there was nothing tying a wide row's
+   Part No. to the checkbox at the far right of the same line. */
+#shop-parts-page .sp-flat .sp-prow:hover .sp-prow-line { background: var(--surface-alt, #f8fafc); }
 .sp-section-head { font-size: var(--fs-base); font-weight: var(--fw-bold); color: var(--sdc-dark, #061d39); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
 /* Top 10 — responsive grid of compact rows with a rank badge. */
 /* Top 10 — one straight vertical list, 1→10. */
@@ -10256,6 +10305,8 @@ td.sales-suppressed {
 /* Card row grid (no Job column — the card header is the job). Fixed columns so
    Part No. / Description line up straight down within the card. */
 .sp-prow-line { display: grid; grid-template-columns: 18px 26px 90px minmax(0, 1fr) 54px 20px; align-items: center; gap: 5px; padding: 4px 8px; }
+/* Shop Parts card view: same seven cells as the flat list minus Job. */
+#shop-parts-page .sp-prow-line { grid-template-columns: 18px 26px 90px minmax(0, 1fr) 54px 104px 24px; min-height: 30px; }
 .sp-qty { flex: none; font-weight: var(--fw-bold); font-size: var(--fs-md); color: var(--text, #334155); min-width: 26px; text-align: right; }
 .sp-jobcell { flex: none; font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--sdc-dark, #061d39); background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, white); padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
 .sp-namecell { flex: 1; min-width: 0; font-size: var(--fs-md); color: var(--text-muted, #64748b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
@@ -10264,8 +10315,37 @@ td.sales-suppressed {
 .sp-pncell { flex: none; font-weight: var(--fw-bold); font-size: var(--fs-md); color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .sp-duecell { flex: none; font-size: var(--fs-md); color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .sp-duecell.is-late { color: var(--sdc-dark, #061d39); font-weight: var(--fw-bold); }
+
+/* ETO receiving badge (Parts in Shop). Only shown on rows linked to an ETO PO —
+   the shop-fabricated majority have no PO and render nothing here. Colours use
+   the same tokens as the rest of the page so it reads as status, not decoration. */
+.sp-eto {
+  flex: none; font-size: var(--fs-sm); font-weight: var(--fw-bold);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  padding: 1px 6px; border-radius: 10px; border: 1px solid transparent;
+  cursor: default;
+}
+.sp-eto.is-received { color: #14532d; background: #dcfce7; border-color: #86efac; }
+.sp-eto.is-partial  { color: #78350f; background: #fef3c7; border-color: #fcd34d; }
+.sp-eto.is-missing  { color: var(--text-muted, #64748b); background: var(--surface-2, #f1f5f9); border-color: var(--border, #cbd5e1); }
+/* Received, but held back from auto-completing — needs a human decision, so it
+   must not read as either done (green) or still-waiting (amber). */
+.sp-eto.is-held     { color: #1e3a8a; background: #dbeafe; border-color: #93c5fd; }
+.sp-proj-card .sp-eto { font-size: var(--fs-xs); }
+/* The badge's grid cell. Always present — even with no PO — so the cell count
+   is constant and the Done checkbox cannot wrap onto a second line. */
+.sp-eto-cell { display: flex; align-items: center; min-width: 0; }
+.sp-eto-cell .sp-eto { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 /* Priority — gradient of SDC blue: 1 darkest (hot) → 3 lightest (low). */
 .sp-pri { flex: none; display: inline-block; min-width: 18px; text-align: center; border: 1px solid transparent; font-weight: var(--fw-bold); font-size: var(--fs-md); border-radius: 6px; padding: 2px 5px; cursor: pointer; }
+/* In a Shop Parts row the pill is a fixed box, so 1/2/3 line up down the
+   column instead of each sizing to its own glyph. */
+#shop-parts-page .sp-prow-line .sp-pri {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; min-width: 26px; height: 22px; box-sizing: border-box; padding: 0;
+}
+#shop-parts-page .sp-prow-line .sp-pri:hover { box-shadow: 0 0 0 2px color-mix(in srgb, var(--sdc-primary, #1574c4) 25%, transparent); }
+#shop-parts-page .sp-prow-line .sp-pri:focus-visible { outline: 2px solid var(--sdc-primary, #1574c4); outline-offset: 1px; }
 .sp-pri.pri-1 { background: var(--sdc-dark, #061d39); color: #fff; }
 .sp-pri.pri-2 { background: var(--sdc-primary, #1574c4); color: #fff; }
 .sp-pri.pri-3 { background: var(--sdc-blue-light, #aacee8); color: var(--sdc-dark, #061d39); }
@@ -10279,7 +10359,29 @@ td.sales-suppressed {
 .sp-pmcell { flex: none; font-size: var(--fs-sm); color: var(--text-muted, #64748b); white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
 /* Flat list view — aligned columns so PN / Description start at the same x on
    every row (Job column wide enough for "1145 / 1146"). Header labels each one. */
+/* overflow-x auto (not hidden): below ~820px the fixed tracks no longer fit,
+   and scrolling the list beats crushing Part No. and Description. overflow-y
+   stays hidden so the border radius still clips and no vertical scrollbox is
+   introduced — the page keeps its own scrolling. */
 .sp-flat { display: flex; flex-direction: column; border: 1px solid var(--border, #e2e8f0); border-radius: 10px; overflow: hidden; background: var(--surface, #fff); }
+#shop-parts-page .sp-flat { overflow-x: auto; overflow-y: hidden; }
+#shop-parts-page .sp-flat > * { min-width: 812px; }
+/* Eight tracks, one per cell the row emits:
+   Pri · Job · Qty · Part No. · Description · Due · PO · Done
+   The PO track is sized for the longest badge ("PO 106482 2/2 held") so the
+   number is never clipped, and Done is wide enough to be a comfortable target.
+   Every row is its own grid container, so all tracks must be fixed or fr —
+   max-content would resolve differently per row and break the alignment. */
+#shop-parts-page .sp-flat .sp-prow-line,
+#shop-parts-page .sp-list-head {
+  display: grid;
+  grid-template-columns: 46px 96px 74px 152px minmax(0, 1fr) 92px 150px 44px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 10px;
+  min-height: 34px;
+}
+/* The pre-existing shape, kept for the Vendor PO page which reuses .sp-flat. */
 .sp-flat .sp-prow-line,
 .sp-list-head {
   display: grid;
@@ -11068,7 +11170,7 @@ td.sales-suppressed {
   min-width: 200px;
   max-height: 240px;
   overflow-y: auto;
-  z-index: 9100;
+  z-index: var(--z-popover);
   padding: 4px;
 }
 .sdc-mention-item {
@@ -12768,6 +12870,9 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-popover);
   border: 1px solid var(--border-mid, #dce5ef);
+  /* Same tier for every popover in the group — the ones that set their own
+     z-index above use the token too, so the whole tier stays in sync. */
+  z-index: var(--z-popover);
 }
 .context-menu { padding: 4px; }
 
@@ -12954,7 +13059,7 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
 .hff-btn:hover      { background: var(--row-hover); }
 .hff-btn.open       { border-color: var(--sdc-primary,#1574c4); background: #e8f1fb; color: var(--sdc-primary,#1574c4); }
 .hff-arrow          { font-size: 9px; opacity: .7; }
-.hff-dropdown       { position: absolute; top: calc(100% + 4px); left: 0; z-index: 200; background: var(--surface); border: 1px solid var(--border-mid); border-radius: var(--radius-md); box-shadow: 0 4px 16px rgba(0,0,0,.14); min-width: 260px; max-height: 360px; display: flex; flex-direction: column; }
+.hff-dropdown       { position: absolute; top: calc(100% + 4px); left: 0; z-index: var(--z-popover); background: var(--surface); border: 1px solid var(--border-mid); border-radius: var(--radius-md); box-shadow: 0 4px 16px rgba(0,0,0,.14); min-width: 260px; max-height: 360px; display: flex; flex-direction: column; }
 .hff-search         { padding: 8px 10px 6px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .hff-search-input   { width: 100%; padding: 4px 8px; border: 1px solid var(--border-mid); border-radius: var(--radius-sm); font-size: 12px; background: var(--surface-alt); color: var(--text); }
 .hff-tree           { overflow-y: auto; padding: 4px 0; flex: 1; }
@@ -13397,4 +13502,207 @@ textarea:focus-visible,
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ── Manufacturing page ────────────────────────────────────────────────────
+   ETO's in-house task queue, ranked by urgency this schedule can see. Colours
+   reuse the same semantic palette as the Parts in Shop badges so "late" looks
+   the same on both shop-facing pages. Column widths follow the house rule:
+   Description takes the remainder, numeric and single-word columns stay narrow. */
+/* The page owns its padding and nothing else. Horizontal scrolling belongs to
+   .mfg-job (the wide table) alone — the view above clips its own x axis, so a
+   stray wide child can never turn the whole Scheduler into a sideways scroll. */
+.mfg-page { padding: 18px 22px 40px; max-width: 100%; }
+
+.mfg-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.mfg-head h1 { margin: 0; font-size: var(--fs-2xl, 22px); color: var(--sdc-dark, #061d39); }
+.mfg-sub { margin-top: 3px; font-size: var(--fs-sm); color: var(--text-muted, #64748b); max-width: 70ch; }
+.mfg-head-right { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.mfg-stamp { font-size: var(--fs-xs); color: var(--text-muted, #64748b); }
+.mfg-btn { font: inherit; font-size: var(--fs-sm); padding: 4px 12px; border-radius: 6px;
+  border: 1px solid var(--border, #cbd5e1); background: #fff; color: var(--sdc-dark, #061d39); cursor: pointer; }
+.mfg-btn:hover { background: var(--surface-2, #f1f5f9); }
+
+/* Attention tiles — rendered only when non-zero (see renderManufacturingPage). */
+.mfg-tiles { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; max-width: 100%; }
+/* min-width keeps the tiles a consistent size; flex-basis:auto + shrink lets a
+   narrow container pull them in rather than overflow. They wrap before they
+   shrink much, which is the intended order. */
+.mfg-tile { min-width: 104px; flex: 0 1 auto; padding: 9px 13px; border-radius: 8px; border: 1px solid transparent; cursor: default; }
+.mfg-tile-n { font-size: 24px; font-weight: var(--fw-bold, 700); line-height: 1.05; font-variant-numeric: tabular-nums; }
+.mfg-tile-l { font-size: var(--fs-xs); line-height: 1.25; text-transform: uppercase; letter-spacing: .02em; opacity: .85; }
+.mfg-tile.is-critical { background: #fee2e2; border-color: #fca5a5; color: #7f1d1d; }
+.mfg-tile.is-late     { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.mfg-tile.is-soon     { background: #fef3c7; border-color: #fcd34d; color: #78350f; }
+.mfg-tile.is-stalled  { background: #ffedd5; border-color: #fdba74; color: #7c2d12; }
+.mfg-tile.is-active   { background: #dcfce7; border-color: #86efac; color: #14532d; }
+.mfg-tile.is-nodate   { background: var(--surface-2, #f1f5f9); border-color: var(--border, #cbd5e1); color: var(--text-muted, #64748b); }
+.mfg-allclear { padding: 10px 14px; margin-bottom: 14px; border-radius: 8px;
+  background: #dcfce7; border: 1px solid #86efac; color: #14532d; font-size: var(--fs-md); }
+
+/* align-items: flex-start, not center: once the toolbar wraps, centring
+   stretches nothing but does make short chips sit oddly against a tall wrapped
+   warning. */
+.mfg-toolbar { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; max-width: 100%; }
+.mfg-chip { font: inherit; font-size: var(--fs-sm); padding: 3px 11px; border-radius: 999px;
+  border: 1px solid var(--border, #cbd5e1); background: #fff; color: var(--sdc-dark, #061d39); cursor: pointer; }
+.mfg-chip.is-on { background: var(--sdc-dark, #061d39); border-color: var(--sdc-dark, #061d39); color: #fff; }
+/* The process chips are a flex container INSIDE the flex toolbar. Without
+   flex-wrap they were a single unbreakable line, and a flex item's default
+   min-width:auto meant the toolbar could not shrink it either — so a job mix
+   with several ETO processes pushed the whole toolbar wider than the page.
+   The toolbar wraps; this has to wrap with it. */
+.mfg-procs { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; min-width: 0; }
+.mfg-proc-chip { font-size: var(--fs-xs); color: var(--text-muted, #64748b);
+  background: var(--surface-2, #f1f5f9); border-radius: 999px; padding: 3px 9px; }
+/* A banner states a fact that can be long. It wraps its own text and never
+   sets the width of whatever contains it. */
+.mfg-warn { font-size: var(--fs-xs); color: #7c2d12; background: #ffedd5;
+  border: 1px solid #fdba74; border-radius: 6px; padding: 3px 9px;
+  max-width: 100%; min-width: 0; }
+.mfg-srcs { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+
+.mfg-job { margin-bottom: 18px; border: 1px solid var(--border, #e2e8f0); border-radius: 9px; overflow-x: auto; background: #fff; }
+.mfg-job-head { display: flex; align-items: baseline; gap: 12px; padding: 8px 12px;
+  background: var(--surface-2, #f6f8fb); border-bottom: 1px solid var(--border, #e2e8f0); flex-wrap: wrap; }
+.mfg-job-no { font-weight: var(--fw-bold, 700); font-size: var(--fs-lg); color: var(--sdc-dark, #061d39); font-variant-numeric: tabular-nums; }
+.mfg-job-name { font-size: var(--fs-md); color: var(--sdc-dark, #061d39); }
+.mfg-job-sched { font-size: var(--fs-sm); color: var(--text-muted, #64748b); font-variant-numeric: tabular-nums; }
+/* A job with shop work and no project here cannot be judged late at all — that
+   is a gap in the data, not a neutral state, so it does not render as muted. */
+.mfg-job-sched.is-missing { color: #7c2d12; background: #ffedd5; border-radius: 5px; padding: 1px 7px; }
+/* This job number matches more than one project here, so the build dates beside
+   it were chosen. Quieter than is-missing — the dates are usable, just not
+   unambiguous. */
+.mfg-job-sched.is-ambiguous {
+  color: #78350f; background: #fef3c7; border: 1px solid #fcd34d;
+  border-radius: 5px; padding: 0 6px; font-size: var(--fs-xs); cursor: help;
+}
+.mfg-job-count { margin-left: auto; font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
+
+/* Description takes the remainder; everything else is sized to its content. */
+.mfg-list-head, .mfg-row {
+  display: grid;
+  /* Fixed lanes deliberately kept lean so the whole row fits a ~1150px content
+     area without clipping; Description takes the remainder (house rule). The
+     badge lane is fixed rather than `auto` — as `auto` a four-flag row stole the
+     description's width and truncated it. */
+  /* Ref went 96px -> 116px when it started carrying a PS/PO tag alongside the
+     number ("PO 106403"): at 96px the six-digit PO numbers clipped. Taken out
+     of Description's 2fr remainder rather than off another fixed column.
+     Open went 96px -> 140px: its value is "73d ago · none delivered", which
+     needed ~144px and was being truncated on 61 of the 62 live rows — the
+     "none delivered" / "not started" half, the part that says the work has not
+     been touched, was the half being cut off.
+     Flags went 152px -> 204px and the badge count is capped at two plus a +N
+     chip (see _mfgRowBadges): three badges is a common combination and four
+     occurs, so the lane wrapped and the row grew to 40px and then 56px against
+     23px for a plain row. Both widths come out of Description's 2fr
+     remainder. */
+  grid-template-columns: 116px 152px minmax(160px, 2fr) 76px 62px 92px 148px 104px 204px;
+  gap: 10px; align-items: center; padding: 6px 12px;
+}
+.mfg-list-head { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .03em;
+  color: var(--text-muted, #64748b); border-bottom: 1px solid var(--border, #eef2f7); }
+.mfg-row { font-size: var(--fs-md); border-bottom: 1px solid var(--border, #f1f5f9); }
+.mfg-row:last-child { border-bottom: 0; }
+.mfg-row:hover { background: var(--surface-2, #f8fafc); }
+.mfg-row.is-critical { background: #fff5f5; box-shadow: inset 3px 0 0 #dc2626; }
+
+.mfg-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mfg-c-ps    { font-variant-numeric: tabular-nums; color: var(--text-muted, #64748b); }
+.mfg-c-part  { font-weight: var(--fw-bold, 700); color: var(--sdc-dark, #061d39); direction: ltr; }
+.mfg-c-desc  { color: var(--sdc-dark, #061d39); }
+.mfg-c-proc  { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
+.mfg-c-qty, .mfg-c-due, .mfg-c-age { font-variant-numeric: tabular-nums; }
+.mfg-c-qty i, .mfg-c-age i { font-style: normal; color: var(--text-muted, #94a3b8); font-size: var(--fs-sm); }
+.mfg-c-due.is-late { color: #991b1b; font-weight: var(--fw-bold, 700); }
+.mfg-derived { font-style: normal; color: var(--text-muted, #94a3b8); margin-left: 3px; cursor: help; }
+
+/* Source tag in the Ref column. Two sources of in-house work share this queue
+   (ETO process schedule vs a PO raised against Steven Douglas Corp.), and which
+   one a row came from decides which ETO screen you open and which columns are
+   even knowable — so it is labelled per row rather than only in the filters.
+   A tag, not a row-wide tint: .mfg-row.is-critical already owns the row's
+   background and left bar, and a second row-level treatment would fight it. */
+.mfg-src { display: inline-block; font-size: 9px; font-weight: var(--fw-bold, 700);
+  letter-spacing: .04em; padding: 1px 4px; border-radius: 3px; margin-right: 3px; cursor: help; }
+.mfg-src.is-ps { background: #e0e7ff; color: #3730a3; }
+.mfg-src.is-po { background: #fef3c7; color: #92400e; }
+
+/* A cell that is genuinely unknown for this row's source, as opposed to zero or
+   blank. Carries its reason on hover — see the note in app.js. */
+.mfg-unknown { font-style: normal; color: var(--text-muted, #94a3b8); cursor: help; }
+
+.mfg-srcs { display: inline-flex; gap: 4px; align-items: center; }
+
+/* One source failing leaves a queue that looks short rather than broken, so the
+   disclosure gets its own full-width line above the toolbar instead of sitting
+   among the chips where it would read as another filter. */
+.mfg-srcfail { display: block; margin: 0 0 8px; }
+.mfg-c-owner { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
+/* nowrap keeps every row the same height; the lane above is sized for the
+   three-badge case, and a rare fourth badge scrolls rather than growing the row. */
+.mfg-c-flags { display: flex; gap: 4px; flex-wrap: nowrap; white-space: normal; overflow: hidden; }
+
+.mfg-badge { font-size: 10px; font-weight: var(--fw-bold, 700); letter-spacing: .02em;
+  padding: 1px 6px; border-radius: 4px; border: 1px solid transparent; white-space: nowrap; cursor: default; }
+.mfg-badge.is-critical { background: #dc2626; border-color: #dc2626; color: #fff; }
+.mfg-badge.is-late     { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+/* "+2" — the flags that did not fit. Neutral so it never outranks a real one. */
+.mfg-badge.is-more { background: var(--surface-2, #f1f5f9); border-color: var(--border, #cbd5e1); color: var(--text-muted, #64748b); cursor: help; }
+.mfg-badge.is-soon     { background: #fef3c7; border-color: #fcd34d; color: #78350f; }
+.mfg-badge.is-stalled  { background: #ffedd5; border-color: #fdba74; color: #7c2d12; }
+.mfg-badge.is-active   { background: #dcfce7; border-color: #86efac; color: #14532d; }
+.mfg-badge.is-nodate   { background: var(--surface-2, #f1f5f9); border-color: var(--border, #cbd5e1); color: var(--text-muted, #64748b); }
+
+.mfg-empty { padding: 28px; text-align: center; color: var(--text-muted, #64748b); font-size: var(--fs-md); }
+.mfg-error { padding: 18px; border-radius: 9px; background: #fee2e2; border: 1px solid #fca5a5; color: #7f1d1d; max-width: 70ch; }
+.mfg-error-detail { margin: 6px 0; font-family: ui-monospace, Consolas, monospace; font-size: var(--fs-sm); }
+.mfg-error-hint { font-size: var(--fs-sm); opacity: .85; margin-bottom: 10px; }
+.mfg-foot { margin-top: 8px; font-size: var(--fs-xs); color: var(--text-muted, #94a3b8); max-width: 80ch; }
+
+/* Narrow screens: the grid collapses into a card rather than forcing the page
+   to scroll sideways — the shop opens this on tablets.
+ *
+ * The breakpoint is 1360px, not 1100px. It measures the VIEWPORT, but the row
+ * lives inside the app's fixed sidebar plus page padding, so the content area
+ * is ~130px narrower than the viewport. The nine desktop lanes need ~1220px
+ * once Open and Flags are wide enough not to truncate, so below ~1360px of
+ * viewport the wide grid was in force inside a box too small for it.
+ *
+ * Every value carries its column name. The old collapse hid .mfg-list-head and
+ * dropped the values into a bare 1fr 1fr grid, which produced an unlabelled
+ * two-column soup: a naked date, a naked "—", and "12 of 12" with nothing to
+ * say what any of them were. Labels come from data-l on each cell (set in
+ * app.js) so the header text and the card text can never disagree. */
+@media (max-width: 1360px) {
+  .mfg-list-head { display: none; }
+  .mfg-row {
+    /* Three pair-columns, not two: the six labelled values fit in two lines
+       instead of three, which keeps a 62-row queue scannable instead of
+       turning it into a page of tall cards. */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px 14px; padding: 9px 12px; align-items: start;
+  }
+  .mfg-row > span { white-space: normal; overflow: visible; }
+  /* Identity first, full width and unmissable. */
+  .mfg-c-part { grid-column: 1 / -1; font-size: var(--fs-lg); }
+  .mfg-c-desc { grid-column: 1 / -1; color: var(--text-muted, #64748b); }
+  .mfg-c-flags { grid-column: 1 / -1; margin-top: 4px; }
+  /* The remaining cells become labelled key/value pairs. */
+  .mfg-row > span[data-l]:not(.mfg-c-part):not(.mfg-c-desc)::before {
+    content: attr(data-l);
+    display: block;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--text-muted, #94a3b8); font-weight: var(--fw-bold, 700);
+    line-height: 1.4;
+  }
+  /* An empty cell would collapse to just its label, which reads as a fault. */
+  .mfg-row > span[data-l]:empty { display: none; }
+  .mfg-row > span[data-l] { line-height: 1.3; }
+}
+/* Phones: three pair-columns stop fitting, so fall back to two. */
+@media (max-width: 700px) {
+  .mfg-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

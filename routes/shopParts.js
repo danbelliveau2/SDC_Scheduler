@@ -2,7 +2,12 @@
 const { Router } = require('express');
 
 // NOTE: `rank` is a reserved word in MySQL 8 — backtick every dynamic column.
-const SHOP_PART_FIELDS = ['rank', 'job', 'qty', 'part_no', 'description', 'shop_release', 'new_mod', 'location', 'out_for_finishing', 'priority', 'comments', 'engineer', 'pm', 'added_to_bom', 'part_complete', 'sort_order'];
+// `eto_po` is the opt-in link to a Total ETO purchase order. When set, the ETO
+// sync (etoDb.syncShopPartReceipts, on the 30-min ETO cron) fills the read-only
+// eto_received_* cache and can auto-tick part_complete once the PO is received.
+// The eto_received_*/eto_synced_at/completed_source columns are deliberately NOT
+// in this list: they are owned by the sync, not editable by a client.
+const SHOP_PART_FIELDS = ['rank', 'job', 'qty', 'part_no', 'description', 'shop_release', 'new_mod', 'location', 'out_for_finishing', 'priority', 'comments', 'engineer', 'pm', 'added_to_bom', 'part_complete', 'sort_order', 'eto_po'];
 const _shopBool = (f) => f === 'added_to_bom' || f === 'part_complete';
 const _bt = (c) => `\`${c}\``; // backtick a column name
 
@@ -46,8 +51,26 @@ module.exports = function createRouter(deps) {
       }
       if (Object.keys(updates).length === 0) return res.json(existing);
       if ('part_complete' in updates) {
-        if (updates.part_complete && !existing.part_complete) updates.completed_on = new Date().toISOString();
-        else if (!updates.part_complete) updates.completed_on = null;
+        if (updates.part_complete && !existing.part_complete) {
+          updates.completed_on = new Date().toISOString();
+          // A person ticking the box owns the completion. NULL completed_source
+          // means "closed by a human" — that is what every row predating the ETO
+          // link has, and it must overwrite any stale 'ETO PO …' attribution.
+          updates.completed_source = null;
+        } else if (!updates.part_complete) {
+          updates.completed_on = null;
+          updates.completed_source = null;
+        }
+      }
+      // Re-pointing a row at a different PO invalidates the cached answer. Clear
+      // it rather than leave the previous PO's received qty on screen until the
+      // next sync tick, which would read as though the new PO were received.
+      if ('eto_po' in updates && String(updates.eto_po ?? '') !== String(existing.eto_po ?? '')) {
+        updates.eto_received_qty = null;
+        updates.eto_po_qty = null;
+        updates.eto_received_on = null;
+        updates.eto_hold_reason = null;
+        updates.eto_synced_at = null;
       }
       const setClause = Object.keys(updates).map(k => `${_bt(k)} = ?`).join(', ');
       await pool.query(`UPDATE shop_parts SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);

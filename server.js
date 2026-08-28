@@ -126,6 +126,39 @@ try {
   console.error('[service] module failed to initialize:', e.message);
 }
 
+// ─── Public intake listener (separate port, tunnel-facing) ─────────────────
+// The customer form has to be reachable from the internet; the rest of this
+// app must not be. Publishing the MAIN port would not do — express.static()
+// above is mounted ABOVE the global auth guard, so the whole Scheduler
+// frontend (index.html, app.js, every module's UI) would be served to anyone
+// who asked. Path-allowlisting it at the tunnel would work, but that lives in
+// Cloudflare's dashboard where nothing records it and one later catch-all rule
+// silently republishes everything.
+//
+// So: a second listener that CONTAINS only the form. There is no allowlist to
+// misconfigure because there is nothing else on the port to reach. It mounts
+// service-request.html (which has no local asset dependencies — Montserrat and
+// Turnstile both load cross-origin) plus publicRouter's two endpoints, and
+// 404s everything else.
+//
+// Unset SERVICE_PUBLIC_PORT and this does not listen at all, which is the
+// right default for a dev box and for any deploy that is not tunnelled.
+const PUBLIC_PORT = Number(process.env.SERVICE_PUBLIC_PORT || 0);
+if (PUBLIC_PORT && _serviceRouters) {
+  const pub = express();
+  pub.disable('x-powered-by');
+  pub.use(compression());
+  // '/' as well as the filename: the tunnel hostname's bare root is what
+  // someone gets when they trim the URL, and a 404 there reads as "SDC's
+  // service form is broken".
+  pub.get(['/', '/service-request.html'], (_req, res) =>
+    res.sendFile(path.join(__dirname, 'public', 'service-request.html')));
+  pub.use(_serviceRouters.publicRouter);
+  pub.use((_req, res) => res.status(404).type('text/plain').send('Not found'));
+  pub.listen(PUBLIC_PORT, () =>
+    console.log(`[service] public intake listening on :${PUBLIC_PORT} (form + 2 endpoints only)`));
+}
+
 // Public capability probe — no auth needed, frontend uses this to show/hide the Job Hours drawer
 app.get('/api/hours/status', (_req, res) => res.json({ enabled: hoursApi.ENABLED }));
 
@@ -333,6 +366,9 @@ app.use(require('./routes/tasks')(    { ...routeDeps }));
 app.use(require('./routes/team')(     { ...routeDeps }));
 app.use(require('./routes/settings')( { ...routeDeps }));
 app.use(require('./routes/shopParts')({ ...routeDeps }));
+// Manufacturing — ETO's in-house task queue joined to this scheduler's build
+// dates. Read-only; sits next to shopParts because it serves the same audience.
+app.use(require('./routes/manufacturing')({ ...routeDeps }));
 app.use(require('./routes/vendorPos')({ ...routeDeps }));
 app.use(require('./routes/financials')({ ...routeDeps }));
 app.use(require('./routes/eto')(      { ...routeDeps }));

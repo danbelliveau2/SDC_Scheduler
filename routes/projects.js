@@ -556,11 +556,29 @@ module.exports = function createRouter(deps) {
       const [[existing]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
       if (!existing) return res.status(404).json({ error: 'not found' });
 
-      const allowed = ['name', 'status', 'is_template', 'job_number', 'hours_job_id', 'workspace'];
+      // contract_value / po_number carry the job's single PO figure. They are
+      // NOT a project_financials milestone: a service or T&M job has one PO
+      // value with no due date and no billing percentage, and modelling it as a
+      // 100% milestone would put a phantom payment on the financial schedule.
+      const allowed = ['name', 'status', 'is_template', 'job_number', 'hours_job_id', 'workspace',
+                       'contract_value', 'po_number'];
+      const MONEY = new Set(['contract_value']);
       const updates = {};
       for (const k of allowed) {
         if (req.body[k] !== undefined) {
-          updates[k] = k === 'is_template' ? (req.body[k] ? 1 : 0) : req.body[k];
+          if (k === 'is_template') { updates[k] = req.body[k] ? 1 : 0; continue; }
+          if (MONEY.has(k)) {
+            const raw = req.body[k];
+            if (raw === '' || raw === null) { updates[k] = null; continue; }
+            // Accept what a human pastes out of a PO: "$172,000.00".
+            const n = Number(String(raw).replace(/[$,\s]/g, ''));
+            if (!Number.isFinite(n) || n < 0) {
+              return res.status(400).json({ error: `${k} must be a positive amount.` });
+            }
+            updates[k] = n;
+            continue;
+          }
+          updates[k] = req.body[k];
         }
       }
       if (Object.keys(updates).length === 0) return res.json(existing);
@@ -568,6 +586,9 @@ module.exports = function createRouter(deps) {
       if (updates.name && updates.name !== existing.name) {
         await pool.query('UPDATE tasks SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE project_financials SET project = ? WHERE project = ?', [updates.name, existing.name]);
+        // Seed claims follow the rename, or the renamed project looks
+        // never-initialized and its milestones get re-seeded.
+        await pool.query('UPDATE IGNORE project_financials_seed SET project = ? WHERE project = ?', [updates.name, existing.name]).catch(() => {});
         await pool.query('UPDATE task_history SET project = ? WHERE project = ?', [updates.name, existing.name]);
         await pool.query('UPDATE task_comments SET project = ? WHERE project = ?', [updates.name, existing.name]);
         // Meeting notes, quote, and estimate blobs live in `settings` keyed by
@@ -608,6 +629,7 @@ module.exports = function createRouter(deps) {
       if (!existing) return res.status(404).json({ error: 'not found' });
       await pool.query('DELETE FROM tasks WHERE project = ?', [existing.name]);
       await pool.query('DELETE FROM project_financials WHERE project = ?', [existing.name]);
+      await pool.query('DELETE FROM project_financials_seed WHERE project = ?', [existing.name]).catch(() => {});
       await pool.query('DELETE FROM projects WHERE id = ?', [id]);
       res.json({ ok: true });
       notifyClients('projects_changed');
@@ -1135,6 +1157,7 @@ module.exports = function createRouter(deps) {
       if (mode === 'replace') {
         await pool.query('DELETE FROM tasks WHERE project = ?', [projectName]);
         await pool.query('DELETE FROM project_financials WHERE project = ?', [projectName]);
+        await pool.query('DELETE FROM project_financials_seed WHERE project = ?', [projectName]).catch(() => {});
       }
 
       const lineToId = {};
@@ -1712,11 +1735,24 @@ module.exports = function createRouter(deps) {
       }
       const conn = await pool.getConnection();
       await conn.beginTransaction();
+      let archivedFinancials = 0;
       try {
         for (const r of rows) {
           await conn.query('UPDATE tasks SET anchor_key = NULL WHERE id = ?', [r.id]);
           await conn.query('DELETE FROM tasks WHERE id = ?', [r.id]);
         }
+        // This machine's payment milestones go with it. Archived, not deleted:
+        // the Project Release panel renders a block only per machine that
+        // exists in tasks, so leaving them behind made them unreachable there
+        // while the Invoicing page kept listing them under "No trigger"
+        // forever. Archiving drops them from every active view and keeps any
+        // sent/paid history readable via ?include_archived=1.
+        const [fin] = await conn.query(
+          `UPDATE project_financials SET archived_at = NOW(), archived_reason = ?
+            WHERE project = ? AND machine = ? AND archived_at IS NULL`,
+          ['machine-deleted:' + machine, project, machine]
+        );
+        archivedFinancials = fin.affectedRows || 0;
         await conn.commit();
       } catch (err) {
         await conn.rollback();
@@ -1727,7 +1763,7 @@ module.exports = function createRouter(deps) {
       for (const r of rows) {
         await logHistory(r.id, r.project, 'delete', null, r, null, ['machine_deleted:' + machine]);
       }
-      return res.json({ ok: true, deleted: rows.length });
+      return res.json({ ok: true, deleted: rows.length, archivedFinancials });
     } catch (err) {
       return res.status(500).json({ error: String(err.message || err) });
     }

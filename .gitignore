@@ -3,6 +3,10 @@ node_modules/
 
 # Runtime cache / generated files
 pbi_cache.json
+# Hours cache. Renamed from .pbi-cache on 2026-08-26 when hours moved off Power
+# BI; the old name is kept ignored so a stale directory on an existing server
+# does not suddenly show up as untracked.
+.hours-cache/
 .pbi-cache/
 .push-pending
 .update-conflict

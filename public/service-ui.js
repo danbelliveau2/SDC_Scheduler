@@ -117,12 +117,18 @@ function statusPill(r) {
   return `<span class="svc-pill">${esc(r.current_status || 'new')}</span>`;
 }
 
-// The three checkboxes as a compact glyph strip — a coordinator scanning the
-// log wants "where is this one up to" at a glance, not three columns (§20).
-function progressStrip(r) {
-  const step = (on, label) =>
-    `<span class="svc-step ${on ? 'on' : ''}" title="${esc(label)}">${on ? '✓' : '·'}</span>`;
-  return `<span class="svc-steps">${step(r.quote_sent, 'Quote sent')}${step(r.po_received, 'PO received')}${step(r.service_complete, 'Service complete')}</span>`;
+// One cell per workflow step. Read-only indicators — the three flags are set
+// from the request drawer, which stays the single place that writes them.
+//
+// Each step carries its own colour (quote = blue, PO = amber, complete =
+// green) so a glance down the row says how far along the request is. The
+// colour is never the only signal: the tick/dot glyph, the tooltip and the
+// column header all still say which step this is and whether it is done.
+const STEP_TONES = { quote_sent: 'svc-step-quote', po_received: 'svc-step-po', service_complete: 'svc-step-done' };
+
+function stepCell(on, label, field) {
+  const state = `${esc(label)}: ${on ? 'yes' : 'not yet'}`;
+  return `<td class="svc-step-cell"><span class="svc-step ${STEP_TONES[field]} ${on ? 'on' : ''}" title="${state}" aria-label="${state}">${on ? '✓' : '·'}</span></td>`;
 }
 
 // ── Data loading ─────────────────────────────────────────────────────────────
@@ -319,38 +325,114 @@ function drawRequestTable(body) {
     return;
   }
   body.innerHTML = `
-    <table class="svc-table">
+    <div class="svc-table-scroll">
+    <table class="svc-table svc-table-requests">
       <colgroup>
-        <col style="width:118px"><col style="width:60px"><col style="width:190px">
-        <col style="width:auto"><col style="width:110px"><col style="width:96px">
-        <col style="width:130px"><col style="width:88px"><col style="width:70px"><col style="width:96px">
+        <col style="width:108px"><col style="width:56px"><col style="width:44px"><col style="width:76px">
+        <col style="width:200px"><col style="width:auto"><col style="width:104px"><col style="width:110px">
+        <col style="width:120px"><col style="width:108px"><col style="width:58px"><col style="width:88px">
+        <col style="width:56px">
       </colgroup>
       <thead>
         <tr>
-          <th>Request #</th><th title="Quote sent · PO received · Service complete">Steps</th>
-          <th>Company</th><th>Details</th><th>Job / Serial</th><th>Urgency</th>
-          <th>Assigned</th><th>Status</th><th title="Work orders (open / total)">WOs</th><th>Received</th>
+          <th>Request #</th>
+          <th class="svc-step-cell" title="Quote sent">Quote</th>
+          <th class="svc-step-cell" title="PO received">PO</th>
+          <th class="svc-step-cell" title="Service complete">Complete</th>
+          <th>Company</th><th>Details</th><th>Job / Serial</th>
+          <th class="svc-cell-center">Urgency</th>
+          <th>Assigned</th>
+          <th class="svc-cell-center">Status</th>
+          <th class="svc-num" title="Work orders (open / total)">WOs</th><th>Received</th>
+          <th class="svc-cell-center">Actions</th>
         </tr>
       </thead>
       <tbody>
         ${rows.map(r => `
           <tr data-id="${r.id}" class="${r.urgency === 'machine_down' && !r.service_complete ? 'svc-row-down' : ''}">
             <td class="svc-mono">${esc(r.request_no)}${r.attachment_count ? ` <span class="svc-clip" title="${r.attachment_count} attachment(s)">📎</span>` : ''}</td>
-            <td>${progressStrip(r)}</td>
-            <td>${esc(r.company_name) || '—'}<div class="svc-sub">${esc(r.requestor_name) || ''}</div></td>
+            ${stepCell(r.quote_sent, 'Quote sent', 'quote_sent')}
+            ${stepCell(r.po_received, 'PO received', 'po_received')}
+            ${stepCell(r.service_complete, 'Service complete', 'service_complete')}
+            <td class="svc-company" title="${esc(r.company_name) || ''}">
+              <span class="svc-company-name">${esc(r.company_name) || '—'}</span>
+              ${r.requestor_name ? `<span class="svc-sub">${esc(r.requestor_name)}</span>` : ''}
+            </td>
             <td class="svc-detail-cell">${esc(String(r.service_details || '').slice(0, 220))}</td>
             <td>${esc(r.machine_serial || r.job_number) || '—'}${
               r.machine_type === 'non_sdc' ? ' <span class="svc-pill svc-nonsdc" title="Not an SDC-built machine — no build history or SDC warranty">non-SDC</span>' : ''}</td>
-            <td>${urgencyPill(r.urgency)}</td>
+            <td class="svc-cell-center">${urgencyPill(r.urgency)}</td>
             <td>${esc(r.assigned_employees || r.resource_assigned) || '<span class="svc-sub">unassigned</span>'}</td>
-            <td>${statusPill(r)}</td>
+            <td class="svc-cell-center">${statusPill(r)}</td>
             <td class="svc-num">${r.wo_count ? `${r.wo_open}/${r.wo_count}` : '—'}</td>
             <td class="svc-sub">${fmtDate(r.created_at)}</td>
+            <td class="svc-cell-center svc-actions-cell">${canDeleteRequests() ? `
+              <button type="button" class="svc-icon-btn svc-icon-danger" data-del="${r.id}"
+                      title="Delete Service Request ${esc(r.request_no)}"
+                      aria-label="Delete Service Request ${esc(r.request_no)}">${TRASH_SVG}</button>` : ''}</td>
           </tr>`).join('')}
       </tbody>
-    </table>`;
+    </table>
+    </div>`;
   body.querySelectorAll('tbody tr').forEach(tr =>
-    tr.addEventListener('click', () => openServiceRequest(Number(tr.dataset.id))));
+    tr.addEventListener('click', (e) => {
+      // The delete button lives inside a clickable row — a click there must not
+      // also open the drawer behind the confirmation dialog.
+      if (e.target.closest('.svc-actions-cell')) return;
+      openServiceRequest(Number(tr.dataset.id));
+    }));
+  body.querySelectorAll('button[data-del]').forEach(btn =>
+    btn.addEventListener('click', (e) => { e.stopPropagation(); deleteRequest(btn); }));
+}
+
+// Delete needs editor or admin server-side (requireRole('editor')). Hiding the
+// button from viewers is presentation, not the guard — the endpoint still refuses.
+function canDeleteRequests() {
+  const a = window.sdcAuth;
+  if (!a || !a.authEnabled) return true;      // auth off — the server won't refuse either
+  const role = a.user && a.user.role;
+  return role === 'editor' || role === 'admin';
+}
+
+const TRASH_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +
+  '<path fill="currentColor" d="M6.5 1a.5.5 0 0 0-.5.5V2H3a.75.75 0 0 0 0 1.5h.36l.63 9.02A2 2 0 0 0 5.98 14.4h4.04a2 2 0 0 0 1.99-1.88l.63-9.02H13A.75.75 0 0 0 13 2h-3v-.5a.5.5 0 0 0-.5-.5h-3Zm-1.13 2.5h5.26l-.62 8.92a.5.5 0 0 1-.5.48H5.98a.5.5 0 0 1-.5-.48L4.87 3.5h.5ZM6.75 5a.6.6 0 0 0-.6.6v5a.6.6 0 0 0 1.2 0v-5a.6.6 0 0 0-.6-.6Zm2.5 0a.6.6 0 0 0-.6.6v5a.6.6 0 0 0 1.2 0v-5a.6.6 0 0 0-.6-.6Z"/></svg>';
+
+// Deleting a request takes its work orders, attachments, reports, history and
+// linked schedule tasks with it (see routes/service.js). The dialog names the
+// request so nobody deletes the wrong row, and the row only leaves the table
+// once the server has confirmed — a failed delete leaves it exactly where it was.
+async function deleteRequest(btn) {
+  if (btn.disabled) return;                        // already in flight
+  const id = Number(btn.dataset.del);
+  const row = _svc.requests.find(r => r.id === id);
+  if (!row) return;
+
+  const ok = await confirmDialog(
+    `Delete Service Request ${row.request_no}?
+${row.company_name || 'No company on file'}
+
+` +
+    'This action will permanently remove this service request, along with its work orders, ' +
+    'attachments, reports and history. It cannot be undone.',
+    { title: 'Delete Service Request', okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
+  if (!ok) return;
+
+  btn.disabled = true;
+  btn.classList.add('is-busy');
+  try {
+    await api(`/api/service/requests/${id}`, { method: 'DELETE' });
+    _svc.requests = _svc.requests.filter(r => r.id !== id);
+    const tr = btn.closest('tr');
+    if (tr) tr.remove();
+    if (!_svc.requests.length) drawBody();         // fall back to the empty state
+    try { _svc.summary = await api('/api/service/summary'); drawTabs(); } catch (_) {}
+    toast(`Service Request ${row.request_no} deleted.`, 'success');
+  } catch (e) {
+    // The row stays. Re-enable so the user can retry once the cause is fixed.
+    btn.disabled = false;
+    btn.classList.remove('is-busy');
+    toast(`Could not delete ${row.request_no}: ${e.message}`, 'error');
+  }
 }
 
 function drawWorkOrderTable(body) {
@@ -363,7 +445,8 @@ function drawWorkOrderTable(body) {
     return;
   }
   body.innerHTML = `
-    <table class="svc-table">
+    <div class="svc-table-scroll">
+    <table class="svc-table svc-table-wos">
       <colgroup>
         <col style="width:150px"><col style="width:106px"><col style="width:150px">
         <col style="width:170px"><col style="width:auto"><col style="width:78px">
@@ -371,18 +454,20 @@ function drawWorkOrderTable(body) {
       </colgroup>
       <thead>
         <tr>
-          <th>Work Order</th><th>Date</th><th>Employee</th><th>Customer</th>
+          <th>Work Order</th><th class="svc-col-date">Date</th><th>Employee</th><th>Customer</th>
           <th>Task</th><th>Site</th><th title="Budgeted hours">Hrs</th><th>Status</th><th>Report</th>
         </tr>
       </thead>
       <tbody>
         ${rows.map(w => {
-          const overdue = w.status === 'open' && w.task_date && w.task_date < today();
+          const overdue = woOverdue(w);
           return `
           <tr data-request="${w.service_request_id}" data-wo="${w.id}"
               class="${w.urgency === 'machine_down' && w.status === 'open' ? 'svc-row-down' : ''}">
             <td class="svc-mono">${esc(w.wo_no)}</td>
-            <td class="${overdue ? 'svc-overdue' : ''}">${fmtDate(w.task_date)}${overdue ? ' <span title="Task date has passed and the Work Order is still open">!</span>' : ''}</td>
+            <td class="svc-col-date ${overdue ? 'svc-overdue' : ''}">${fmtDate(w.task_date)}${overdue ? ' <span title="The last day has passed and this Work Order is still open">!</span>' : ''}${
+              w.end_date && w.task_date && w.end_date > w.task_date
+                ? `<div class="svc-sub">through ${fmtDate(w.end_date)}</div>` : ''}</td>
             <td>${esc(w.employee_name) || '—'}</td>
             <td>${esc(w.company_name) || '—'}<div class="svc-sub">${esc(w.request_no)}</div></td>
             <td class="svc-detail-cell">${esc(String(w.task_description || '').slice(0, 200))}</td>
@@ -397,7 +482,8 @@ function drawWorkOrderTable(body) {
           </tr>`;
         }).join('')}
       </tbody>
-    </table>`;
+    </table>
+    </div>`;
   body.querySelectorAll('tbody tr').forEach(tr =>
     tr.addEventListener('click', () => openServiceRequest(Number(tr.dataset.request), Number(tr.dataset.wo))));
 }
@@ -471,11 +557,12 @@ function drawDrawer(focusWoId) {
       <section class="svc-sec">
         <h3>Service Log status</h3>
         <div class="svc-checks">
-          <label><input type="checkbox" data-log="quote_sent" ${r.quote_sent ? 'checked' : ''}>
+          <label class="svc-step-quote"><input type="checkbox" data-log="quote_sent" ${r.quote_sent ? 'checked' : ''}>
                  Service Quote Sent ${r.quote_sent_at ? `<em>${fmtDate(r.quote_sent_at)}</em>` : ''}</label>
-          <label><input type="checkbox" data-log="po_received" ${r.po_received ? 'checked' : ''}>
-                 PO Received ${r.po_received_at ? `<em>${fmtDate(r.po_received_at)}</em>` : ''}</label>
-          <label><input type="checkbox" data-log="service_complete" ${r.service_complete ? 'checked' : ''}>
+          <label class="svc-step-po"><input type="checkbox" data-log="po_received" ${r.po_received ? 'checked' : ''}>
+                 PO Received ${r.po_received_at ? `<em>${fmtDate(r.po_received_at)}</em>` : ''}
+                 ${r.po_amount != null ? `<em>${esc(money(r.po_amount))}</em>` : ''}</label>
+          <label class="svc-step-done"><input type="checkbox" data-log="service_complete" ${r.service_complete ? 'checked' : ''}>
                  Service Complete ${r.service_complete_date ? `<em>${fmtDate(r.service_complete_date)}</em>` : ''}</label>
         </div>
         <div class="svc-log-grid">
@@ -489,6 +576,12 @@ function drawDrawer(focusWoId) {
           </label>
           <label>Service Complete Date
             <input type="date" data-log="service_complete_date" value="${esc(fmtDate(r.service_complete_date) === '—' ? '' : fmtDate(r.service_complete_date))}">
+          </label>
+          <label>Customer PO #
+            <input type="text" data-log="po_number" value="${esc(r.po_number || '')}" placeholder="e.g. 4500123456">
+          </label>
+          <label>PO Value
+            <input type="text" inputmode="decimal" data-log="po_amount" value="${esc(r.po_amount != null ? r.po_amount : '')}" placeholder="172000.00">
           </label>
           <label class="svc-span">Information Needed
             <textarea data-log="information_needed" rows="2">${esc(r.information_needed || '')}</textarea>
@@ -533,15 +626,40 @@ function drawAttachments(list) {
     </a>`).join('')}</div></div>`;
 }
 
+// A Work Order's date as one string: a single day, or an inclusive range for a
+// multi-day reservation (a machine move books someone for weeks, not a day).
+// Whole dollars. Service PO values are quoted and discussed in whole dollars,
+// and cents on a $172,000 figure are noise in a status list.
+function money(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+function woSpan(w) {
+  if (!w.task_date) return '—';
+  if (w.end_date && w.end_date > w.task_date) return `${fmtDate(w.task_date)} – ${fmtDate(w.end_date)}`;
+  return fmtDate(w.task_date);
+}
+
+// "Overdue" for a multi-day WO means the LAST day has passed, not the first —
+// an engineer three days into a two-week move is not late.
+function woOverdue(w) {
+  const last = w.end_date && w.task_date && w.end_date > w.task_date ? w.end_date : w.task_date;
+  return w.status === 'open' && !!last && last < today();
+}
+
 function drawWorkOrders(list) {
   if (!list.length) return '<div class="svc-sub">No Work Orders yet. Create one to assign an employee and a date.</div>';
   return list.map(w => {
-    const overdue = w.status === 'open' && w.task_date && w.task_date < today();
+    const overdue = woOverdue(w);
+    const multi = w.end_date && w.task_date && w.end_date > w.task_date;
     return `
     <div class="svc-wo ${w.status === 'complete' ? 'is-complete' : ''}" data-wo="${w.id}">
       <div class="svc-wo-head">
         <span class="svc-mono">${esc(w.wo_no)}</span>
-        <span class="${overdue ? 'svc-overdue' : ''}">${fmtDate(w.task_date)}</span>
+        <span class="${overdue ? 'svc-overdue' : ''}">${woSpan(w)}</span>
+        ${multi ? '<span class="svc-pill svc-pill-span">reserved</span>' : ''}
         <strong>${esc(w.employee_name) || '—'}</strong>
         <span class="svc-sub">${w.location_type === 'onsite' ? 'On-site' : w.location_type === 'remote' ? 'Remote' : ''}</span>
         <span class="svc-sub">${w.budgeted_hours != null ? `${w.budgeted_hours} h budgeted` : ''}</span>
@@ -743,14 +861,18 @@ function openWorkOrderForm(request, existing) {
         · carried onto this Work Order automatically.</div>
     </div>
     <div class="svc-form-grid">
-      <label>Task Date<input name="task_date" type="date" value="${esc(w.task_date || '')}"></label>
-      <label>Required Employee
+      <label>Task Date<input name="task_date" type="date" id="svcWoStart" value="${esc(w.task_date || '')}"></label>
+      <label>Through <span class="svc-sub">(leave blank for a one-day visit)</span>
+        <input name="end_date" type="date" id="svcWoEnd" value="${esc(w.end_date || '')}">
+      </label>
+      <label class="svc-span">Required Employee
         <select name="employee_name" id="svcWoEmp">
           <option value="">—</option>
           ${_svc.employees.map(e => `<option value="${esc(e.name)}" data-email="${esc(e.email || '')}"
               ${w.employee_name === e.name ? 'selected' : ''}>${esc(e.name)}${e.discipline === 'service' ? ' (Service)' : ''}</option>`).join('')}
         </select>
       </label>
+      <div class="svc-span" id="svcAvail"></div>
       <label>Employee Email<input name="employee_email" id="svcWoEmail" value="${esc(w.employee_email || '')}"
              placeholder="auto-filled from their account"></label>
       <label>On-site / Remote
@@ -775,6 +897,10 @@ function openWorkOrderForm(request, existing) {
     </label>`}`,
     async (data) => {
       if (!String(data.employee_name || '').trim()) throw new Error('Choose the required employee.');
+      if (data.end_date && !data.task_date) throw new Error('A Work Order with an end date needs a task date.');
+      if (data.task_date && data.end_date && data.end_date < data.task_date) {
+        throw new Error('The end date cannot be before the task date.');
+      }
       if (isEdit) {
         await api(`/api/service/work-orders/${w.id}`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
@@ -801,7 +927,84 @@ function openWorkOrderForm(request, existing) {
     const box = document.getElementById('svcWoEmail');
     if (box && email) box.value = email;
     else if (box && !email) box.placeholder = 'No account email on file — add one under Users';
+    renderAvailability();
   });
+
+  // ── Live availability for the chosen window (Monica: "reserve the service
+  // engineering or technician resources"). Reserving someone is only a real
+  // decision if you can see who is free before you commit them, so this reads
+  // the same `tasks` rows the Gantt does and shows the answer in the form.
+  const startEl = document.getElementById('svcWoStart');
+  const endEl   = document.getElementById('svcWoEnd');
+  let availSeq = 0;   // guards against a slow response overwriting a newer one
+
+  async function renderAvailability() {
+    const panel = document.getElementById('svcAvail');
+    if (!panel) return;
+    const start = startEl && startEl.value;
+    const end   = (endEl && endEl.value) || start;
+    if (!start) { panel.innerHTML = ''; return; }
+    if (end < start) {
+      panel.innerHTML = `<div class="svc-avail svc-avail-msg">End date is before the task date.</div>`;
+      return;
+    }
+    const seq = ++availSeq;
+    panel.innerHTML = `<div class="svc-avail svc-avail-msg">Checking who is free…</div>`;
+    let data;
+    try {
+      const qs = new URLSearchParams({ start, end });
+      if (isEdit && w.id) qs.set('exclude_wo', String(w.id));
+      data = await api(`/api/service/availability?${qs}`);
+    } catch (e) {
+      // Availability is an aid, never a gate — a coordinator with a machine
+      // down must still be able to raise the Work Order.
+      if (seq === availSeq) {
+        panel.innerHTML = `<div class="svc-avail svc-avail-msg">Could not check availability (${esc(e.message)}). You can still save.</div>`;
+      }
+      return;
+    }
+    if (seq !== availSeq) return;
+
+    const chosen = (document.getElementById('svcWoEmp') || {}).value || '';
+    const days = data.business_days;
+    const span = end > start ? `${fmtDate(start)} – ${fmtDate(end)}` : fmtDate(start);
+    const tone = { free: 'ok', partial: 'warn', over: 'bad' };
+    const label = (p) => p.status === 'free' ? 'free'
+      : p.status === 'over' ? `over-booked (${p.peak_pct}% peak)`
+      : `${p.busy_days}/${days} d booked`;
+
+    // Service people first and most-available first (the server already sorts
+    // by availability); cap the list so the form stays a form.
+    const svc = data.people.filter(p => p.discipline === 'service');
+    const rest = data.people.filter(p => p.discipline !== 'service');
+    const show = [...svc, ...rest.filter(p => p.status === 'free').slice(0, 6)];
+
+    const pill = (p) => `<button type="button" class="svc-avail-pill svc-avail-${tone[p.status]}${p.name === chosen ? ' is-chosen' : ''}"
+        data-pick="${esc(p.name)}"
+        title="${esc(p.name)} — ${esc(label(p))}${p.conflicts.length ? '\n' + p.conflicts.slice(0, 6).map(c => `${c.start_date}–${c.end_date}  ${c.project || ''}: ${c.name}`).join('\n') : ''}">
+        ${esc(p.name)} <em>${esc(label(p))}</em></button>`;
+
+    panel.innerHTML = `
+      <div class="svc-avail">
+        <div class="svc-avail-head">Availability · ${esc(span)} <span class="svc-sub">${days} business day${days === 1 ? '' : 's'}</span></div>
+        <div class="svc-avail-pills">${show.map(pill).join('') || '<span class="svc-sub">No active roster members found.</span>'}</div>
+        ${chosen && data.people.find(p => p.name === chosen && p.status === 'over')
+          ? `<div class="svc-avail-note">${esc(chosen)} is already over-booked in this window — you can still assign them, but check the conflicts first.</div>`
+          : ''}
+      </div>`;
+
+    // Clicking a name assigns it: the point of the panel is to pick from it.
+    panel.querySelectorAll('[data-pick]').forEach(btn => btn.addEventListener('click', () => {
+      const s2 = document.getElementById('svcWoEmp');
+      if (!s2) return;
+      s2.value = btn.dataset.pick;
+      s2.dispatchEvent(new Event('change'));
+    }));
+  }
+
+  if (startEl) startEl.addEventListener('change', renderAvailability);
+  if (endEl)   endEl.addEventListener('change', renderAvailability);
+  renderAvailability();
 }
 
 // Service Report (§11) — opens prepopulated. Everything above the editable
