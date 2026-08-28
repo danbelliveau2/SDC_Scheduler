@@ -5233,7 +5233,9 @@ tr[data-id]:hover .col-line .row-drag { opacity: 1; }
 /* Right-click context menu */
 .context-menu {
   position: fixed;
-  z-index: 200;
+  /* Topmost, always — 200 buried it under modal overlays (950+), so
+     right-click inside the release window looked like it did nothing. */
+  z-index: 10500;
   background: #fff;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -9211,6 +9213,18 @@ body.share-link-view .app-scale-ctl.share-floating {
    %, Description, Trigger (predecessor), Date, Sent.
    Description takes the remainder so long names like
    "Acceptance at Customer (SAT)" never clip. */
+.financials-table col.col-idx     { width: 34px;  }
+/* Breathing room so the button doesn't crowd the table's bottom border. */
+.fin-embed-add { margin-top: 12px; }
+/* Row-number handle — right-click it to add a line below / delete the line. */
+.financials-table .fin-idx {
+  text-align: center;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  color: var(--text-muted, #94a3b8);
+  cursor: context-menu;
+  user-select: none;
+}
 .financials-table col.col-percent { width: 60px;  }
 .financials-table col.col-name    { width: auto;  }
 .financials-table col.col-trigger { width: 140px; }

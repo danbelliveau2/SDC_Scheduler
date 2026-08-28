@@ -17789,29 +17789,29 @@ async function mountFinancialsEditor(container, project, machine) {
     container.innerHTML = `
       <div class="financials-table-wrap">
         <table class="financials-table">
-          <colgroup><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /><col class="col-actions" /></colgroup>
+          <colgroup><col class="col-idx" /><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /></colgroup>
           <thead><tr>
+            <th class="fin-idx" title="Right-click a number to add a line below it or delete that line.">#</th>
             <th class="num">%</th>
             <th>Description</th>
             <th title="Predecessor — task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag ('FAT +1w'). Blank = set the Date manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
             <th>Date</th>
             <th class="paid" title="Check when the invoice has been sent.">Sent</th>
-            <th class="fin-actions"><span class="sr-only">Delete</span></th>
           </tr></thead>
           <tbody>
             ${rows.length === 0
               ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
-              : rows.map(r => {
+              : rows.map((r, i) => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
               return `<tr data-id="${r.id}" title="Right-click to add a milestone">
+                <td class="fin-idx" title="Right-click: add a line below / delete this line">${i + 1}</td>
                 <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                 <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                 <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                 <td><input type="date" data-field="due_date" value="${dateValue}" ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} /></td>
                 <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
-                <td class="fin-actions"><button type="button" class="fin-row-del" data-del="${r.id}" aria-label="Delete this milestone" title="Delete this milestone">🗑</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -17832,24 +17832,25 @@ async function mountFinancialsEditor(container, project, machine) {
       if (state.showFinancials) renderGantt();
       try { refreshFinancialsButtonState(); } catch (_) {}
     };
-    container.querySelectorAll('.fin-row-del').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        removeRow(Number(btn.dataset.del));
-      });
-    });
+    // Add DIRECTLY BELOW the clicked row (sort_order = clicked + 0.5), not
+    // appended at the end — releases don't always have exactly 4 milestones,
+    // and inserting mid-list keeps the payment order readable.
+    const addBelow = async (afterId) => {
+      const after = (state.financials[project] || []).find(r => r.id === afterId);
+      const created = await api.financials.create({ project, name: '', machine: machine || null });
+      if (after && created && created.id != null) {
+        try { await api.financials.update(created.id, { sort_order: (Number(after.sort_order) || 0) + 0.5 }); } catch (_) {}
+      }
+      await loadFinancialsForProject(project);
+      await renderGrid({ focusId: created && created.id });
+      if (state.showFinancials) renderGantt();
+    };
     container.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
       tr.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         showContextMenu(e.clientX, e.clientY, [
-          { label: '+ Add milestone below', onClick: async () => {
-              await api.financials.create({ project, name: '', machine: machine || null });
-              await loadFinancialsForProject(project);
-              await renderGrid({ focusLastNameInput: true });
-              if (state.showFinancials) renderGantt();
-          }},
+          { label: '+ Add milestone below', onClick: () => addBelow(id) },
           { separator: true },
           { label: 'Delete this milestone…', danger: true, onClick: () => removeRow(id) },
         ]);
@@ -17885,7 +17886,10 @@ async function mountFinancialsEditor(container, project, machine) {
         if (state.showFinancials) renderGantt();
       } finally { btn.disabled = false; }
     });
-    if (opts.focusLastNameInput) {
+    if (opts.focusId) {
+      const inp = container.querySelector(`tbody tr[data-id="${opts.focusId}"] input[data-field="name"]`);
+      if (inp) { inp.focus(); inp.select(); }
+    } else if (opts.focusLastNameInput) {
       const last = container.querySelector('tbody tr:last-child input[data-field="name"]');
       if (last) { last.focus(); last.select(); }
     }
@@ -20136,32 +20140,33 @@ function openFinancialsModal(project) {
       <div class="financials-table-wrap">
         <table class="financials-table">
           <colgroup>
+            <col class="col-idx" />
             <col class="col-percent" />
             <col class="col-name" />
             <col class="col-trigger" />
             <col class="col-date" />
             <col class="col-paid" />
-            <col class="col-actions" />
           </colgroup>
           <thead>
             <tr>
+              <th class="fin-idx" title="Right-click a number to add a line below it or delete that line.">#</th>
               <th class="num">%</th>
               <th>Description</th>
               <th title="Predecessor — same syntax as the task Predecessors column. Accepts a task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag (e.g. 'FAT +1w', '12 +3d'). Blank = no automatic date; fill in the Date column manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
               <th>Date</th>
               <th class="paid" title="Check when the invoice has been sent. The Gantt line goes from dashed to solid.">Sent</th>
-              <th class="fin-actions"><span class="sr-only">Delete</span></th>
             </tr>
           </thead>
           <tbody>
             ${rows.length === 0
               ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
-              : rows.map(r => {
+              : rows.map((r, i) => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
               const dateDisabled = !!derived;
               return `
                 <tr data-id="${r.id}" title="Right-click to add a milestone">
+                  <td class="fin-idx" title="Right-click: add a line below / delete this line">${i + 1}</td>
                   <td class="num"><input type="number" min="0" step="any" data-field="percent" value="${r.percent ?? ''}" /></td>
                   <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                   <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
@@ -20170,7 +20175,6 @@ function openFinancialsModal(project) {
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
                   </td>
                   <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
-                  <td class="fin-actions"><button type="button" class="fin-row-del" data-del="${r.id}" aria-label="Delete this milestone" title="Delete this milestone">🗑</button></td>
                 </tr>
               `;
             }).join('')}
@@ -20207,13 +20211,6 @@ function openFinancialsModal(project) {
       if (state.showFinancials) renderGantt();
       try { refreshFinancialsButtonState(); } catch (_) {}
     };
-    modal.querySelectorAll('.fin-row-del').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        removeRow(Number(btn.dataset.del));
-      });
-    });
     modal.querySelectorAll('tbody tr[data-id]').forEach(tr => {
       const id = Number(tr.dataset.id);
       // Right-click any row → context menu with Add / Delete. Replaces
@@ -20222,7 +20219,12 @@ function openFinancialsModal(project) {
         e.preventDefault();
         const items = [
           { label: '+ Add milestone below', onClick: async () => {
-              await api.financials.create({ project, name: '' });
+              // Insert directly below the clicked row, not at the end.
+              const after = (state.financials[project] || []).find(r => r.id === id);
+              const created = await api.financials.create({ project, name: '' });
+              if (after && created && created.id != null) {
+                try { await api.financials.update(created.id, { sort_order: (Number(after.sort_order) || 0) + 0.5 }); } catch (_) {}
+              }
               await loadFinancialsForProject(project);
               await render({ focusLastNameInput: true });
               if (state.showFinancials) renderGantt();
