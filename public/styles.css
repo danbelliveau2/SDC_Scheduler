@@ -1019,6 +1019,7 @@ body.machine-clone-mode #tasks-tbody input[type="checkbox"] {
   font-weight: var(--fw-bold);
   font-family: var(--font-mono);
   letter-spacing: 0.02em;
+  line-height: 1.1;
   vertical-align: middle;
   background: #e0e7ff;
   color: #3730a3;
@@ -4544,34 +4545,87 @@ tbody tr.anchor-row td {
 }
 .anchor-name-chip {
   /* v4.32: no vertical padding + scaled font + tight line-height so the
-     chip's vertical footprint matches plain text in normal rows. */
+     chip's vertical footprint matches plain text in normal rows.
+     v12.9: the pill was reading as a faint tint and machine boundaries got
+     lost in the grid. Now: solid fill, heavier weight, a shade-of-itself
+     border, and real horizontal padding so it reads as a LABEL. Vertical
+     padding stays at 1px and line-height at 1.1 — the chip's box still fits
+     inside the zero-padding anchor TD, so row height is unchanged. */
   display: inline-block;
-  padding: 0 8px;
-  border-radius: 3px;
+  padding: 1px 10px;
+  border-radius: 999px;
   background: var(--anchor-fill, #befa4f);
   color: var(--anchor-text, #0f172a);
-  font-weight: var(--fw-bold);
+  border: 1px solid rgba(15, 23, 42, 0.22);
+  font-weight: var(--fw-extrabold, 800);
   font-size: clamp(9px, calc(var(--row-h, 26px) * 0.42), 13px);
   line-height: 1.1;
   letter-spacing: 0.02em;
   vertical-align: middle;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.22);
+}
+
+/* ── Machine-identified pills ───────────────────────────────────────────────
+   On multi-machine projects the anchor pill carries the MACHINE's color
+   instead of the shared anchor green, so M1's spine rows never get confused
+   with M2's. The color comes from getMachineColor() — the same deterministic
+   default cycle (M1 = SDC Blue, M2 = SDC Yellow, M3 = SDC Green, …) plus any
+   per-project override the user picked, persisted in localStorage. Same
+   machine, same color, every render and every reload.
+
+   IMPORTANT: machine color means MACHINE ONLY. Schedule status lives in the
+   ✓ box, the % progress pill and the red/blue drift chips — none of which
+   this touches. Text color is computed by YIQ contrast (pickContrastText) so
+   both the light SDC yellows and the dark navy stay readable. */
+.anchor-name-chip.is-machine {
+  background: var(--mach, #1574c4);
+  color: var(--mach-text, #ffffff);
+  border-color: var(--mach-border, rgba(15, 23, 42, 0.35));
+}
+/* Machine pills replace the green done-state, so the completion signal moves
+   inside the pill as a leading ✓ (the row's ✓ box still shows it too). */
+.anchor-name-chip.is-machine .anchor-done-check {
+  color: inherit;
+  margin-right: 4px;
+  opacity: 0.9;
+}
+/* Row-level cue: colored left rail, machine-tinted spine rules, faint wash.
+   All deliberately quieter than the pill. */
+tbody tr.anchor-row.has-machine-accent td {
+  background: var(--mach-soft, transparent);
+  border-top-color: var(--mach-rule, var(--anchor-text, #0f172a));
+  border-bottom-color: var(--mach-rule, var(--anchor-text, #0f172a));
+}
+tbody tr.anchor-row.has-machine-accent td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--mach, #1574c4);
+}
+/* Selected / hovered anchor rows: keep the pill legible by leaving its own
+   fill alone — only the row wash gives way to the hover/selection color. */
+tbody tr.anchor-row.has-machine-accent:hover td {
+  background: color-mix(in srgb, var(--mach-soft, transparent) 55%, var(--row-hover, #eef2f7));
 }
 
 /* Completed anchor (progress >= 100%) — richer forest green + bold checkmark.
    The default anchor chip's lime green = "scheduled / upcoming"; this darker
    solid green clearly reads as "hit, done, behind us". Applied to the chip in
    the grid AND a matching solid diamond in the Gantt (.bar.milestone-done). */
-tbody tr.anchor-row.is-done .anchor-name-chip {
+tbody tr.anchor-row.is-done .anchor-name-chip:not(.is-machine) {
   background: #74C415;            /* solid emerald — pops against the lime "scheduled" green */
-  color: #f0fdf4;
+  /* v12.9: was #f0fdf4 (near-white) on #74C415 — a 2.08:1 contrast ratio, well
+     under the 4.5:1 AA floor, which is why the completed pills read as a
+     smudge. Same near-black the SDC Green swatch pairs with elsewhere: 7.96:1. */
+  color: #0c1f00;
   box-shadow: 0 1px 2px rgba(20, 83, 45, 0.35);
 }
 .anchor-done-check {
   display: inline-block;
   margin-right: 2px;
   font-weight: var(--fw-extrabold);
-  color: #f0fdf4;
+  color: inherit;
 }
 
 /* Note: completed REGULAR tasks deliberately leave the name black. The green
