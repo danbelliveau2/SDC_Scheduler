@@ -11433,7 +11433,8 @@ td.sales-suppressed {
 }
 .inv-item:last-child { border-bottom: none; }
 .inv-item-main { min-width: 0; display: flex; flex-direction: column; }
-.inv-item-proj { color: var(--text-muted, #64748b); font-size: var(--fs-2xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inv-item-proj { color: var(--text-muted, #64748b); font-size: var(--fs-2xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.inv-item-proj:hover { color: var(--sdc-blue, #1574c4); text-decoration: underline; }
 .inv-item-name { font-weight: var(--fw-semibold); color: var(--text, #1f2937); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inv-mach { font-size: var(--fs-2xs); background: var(--surface-alt, #f1f5f9); border: 1px solid var(--border-strong, #cbd5e1); border-radius: 4px; padding: 0 4px; }
 .inv-item-amt { font-variant-numeric: tabular-nums; font-weight: var(--fw-bold); white-space: nowrap; }

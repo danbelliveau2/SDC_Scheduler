@@ -7968,6 +7968,14 @@ function invoiceStatus(f, project) {
 // The five status cards + their line items, with Sent / Paid actions.
 // Per-card expand/collapse survives re-renders within the session.
 const _invCardOpen = {};
+// Open/closed state of the No-trigger card's per-PM groups and the Key
+// Milestones per-PM strips — survives the re-renders that fire as each
+// project's financials load.
+const _invPmOpen = {};
+const _stripPmOpen = {};
+// Projects with a financials fetch currently in flight (see the lazy loader
+// in renderDeptProjectRollup / renderDashboard).
+const _finLoading = new Set();
 function renderInvoiceBuckets(selectedProjects) {
   const root = document.getElementById('invoicing-buckets');
   if (!root) return;
@@ -8050,8 +8058,11 @@ function renderInvoiceBuckets(selectedProjects) {
         (byPm[pm] = byPm[pm] || []).push(row);
       }
       const pms = Object.keys(byPm).sort((a, b) => (a === '') - (b === '') || a.localeCompare(b));
+      // Re-renders happen while per-project financials stream in — without
+      // remembering the open state, a group snapped shut the moment the next
+      // load landed (Nick: "can only expand IF you have a project open").
       items = pms.map(pm => `
-        <details class="inv-pm-group">
+        <details class="inv-pm-group" data-pm="${escapeHtml(pm)}"${_invPmOpen[pm] ? ' open' : ''}>
           <summary class="inv-group-pm">👤 ${pm ? escapeHtml(pm) : 'No PM assigned'} <span class="inv-group-count">${byPm[pm].length}</span></summary>
           ${byPm[pm].sort((a, b) => a.project.localeCompare(b.project)).map(r => itemHtml(r)).join('')}
         </details>
@@ -8072,6 +8083,10 @@ function renderInvoiceBuckets(selectedProjects) {
       <div class="inv-card-list">${items || '<div class="inv-empty">Nothing here 🎉</div>'}</div>
     </div>`;
   }).join('')}</div>`;
+  // Remember each PM group's open state across re-renders.
+  root.querySelectorAll('.inv-pm-group').forEach(d => {
+    d.addEventListener('toggle', () => { _invPmOpen[d.dataset.pm] = d.open; });
+  });
   // Card collapse/expand — Paid starts collapsed (glanceable, not important).
   root.querySelectorAll('.inv-card-head').forEach(h => {
     h.addEventListener('click', () => {
@@ -8096,6 +8111,19 @@ function renderInvoiceBuckets(selectedProjects) {
       } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); el.disabled = false; }
     };
     root.addEventListener('click', (e) => {
+      // Click a job number → jump into that schedule (open or not).
+      const projEl = e.target.closest('.inv-item-proj');
+      if (projEl) {
+        const p = projEl.title || projEl.textContent;
+        if (p) {
+          if (!state.openProjects.includes(p)) state.openProjects.push(p);
+          state.filters.project = p;
+          state.activeWorkspace = projectWorkspace(p);
+          saveProjectTabs();
+          setView('schedule');
+        }
+        return;
+      }
       const btn = e.target.closest('.inv-act');
       if (!btn) return;
       const patch = btn.dataset.invUnsend ? { sent: 0, sent_at: null }
@@ -8141,15 +8169,19 @@ function renderDeptProjectRollup() {
   const pool = state.tasks.filter(t => selected.includes(t.project) && !isBacklogTask(t));
   const milestoneTasks = pool.filter(t => t.is_milestone || t.anchor_key);
 
-  // Kick off lazy financial loads for any project that hasn't been
-  // fetched yet — re-render when each resolves.
+  // Kick off lazy financial loads for any project that hasn't been fetched
+  // yet. In-flight tracking + ONE re-render when the batch drains — the old
+  // per-load re-render re-entered this loop and re-kicked every still-missing
+  // project, an exponential fetch storm that pegged the page for minutes.
   for (const p of selected) {
-    if (!state.financials[p]) {
-      loadFinancialsForProject(p).then(() => {
-        if (state.view === 'invoicing') {
+    if (!state.financials[p] && !_finLoading.has(p)) {
+      _finLoading.add(p);
+      loadFinancialsForProject(p).catch(() => {}).finally(() => {
+        _finLoading.delete(p);
+        if (_finLoading.size === 0 && state.view === 'invoicing') {
           try { renderDeptProjectRollup(); } catch (_) {}
         }
-      }).catch(() => {});
+      });
     }
   }
   const financials = selected.flatMap(p =>
@@ -8447,7 +8479,7 @@ function renderDeptProjectRollup() {
         }
         const pms = Object.keys(byPm).sort((a, b) => (a === '') - (b === '') || a.localeCompare(b));
         return pms.map(pm => `
-          <details class="pdash-pm-group">
+          <details class="pdash-pm-group" data-pm="${escapeHtml(pm)}"${_stripPmOpen[pm] ? ' open' : ''}>
             <summary class="pdash-pm-head">👤 ${pm ? escapeHtml(pm) : 'No PM assigned'} <span class="pdash-pm-count">${byPm[pm].length} project${byPm[pm].length === 1 ? '' : 's'}</span></summary>
             <div class="pdash-milestones${localStorage.getItem('sdcDeptShowVariance') === '1' ? '' : ' is-compact'}">
               ${byPm[pm].map(p => milestoneStripForProject(p)).join('')}
@@ -8559,6 +8591,11 @@ function renderDeptProjectRollup() {
   });
   // Click a milestone tile or a financial row → jump to that project on
   // the schedule view.
+  // Remember each PM strip-group's open state across re-renders (same fix
+  // as the No-trigger card — loads streaming in kept snapping them shut).
+  root.querySelectorAll('.pdash-pm-group').forEach(d => {
+    d.addEventListener('toggle', () => { _stripPmOpen[d.dataset.pm] = d.open; });
+  });
   root.querySelectorAll('.pdash-mile-item, .pdash-fin-row, .pdash-fintl-projlink').forEach(el => {
     el.addEventListener('click', () => {
       const p = el.dataset.project || el.closest('[data-project]')?.dataset.project;
@@ -8662,11 +8699,13 @@ function renderDashboard() {
   // cached for this render. The next render after the fetches resolve
   // will paint the financial dots and section.
   for (const p of selected) {
-    if (!state.financials[p]) {
-      loadFinancialsForProject(p).then(() => {
-        // Only re-render if the dashboard is still the active view.
-        if (state.view === 'dashboard') renderDashboard();
-      }).catch(() => {});
+    if (!state.financials[p] && !_finLoading.has(p)) {
+      _finLoading.add(p);
+      loadFinancialsForProject(p).catch(() => {}).finally(() => {
+        _finLoading.delete(p);
+        // Re-render ONCE when the batch drains (see rollup loader).
+        if (_finLoading.size === 0 && state.view === 'dashboard') renderDashboard();
+      });
     }
   }
   // Flat list of financial rows across the selection. Each row carries
