@@ -173,10 +173,22 @@ module.exports = function createRouter(deps) {
         // build window is what decides "overdue" and "build started, part not"
         // — the two loudest signals on this page.
         //
-        // Resolve it deterministically instead: the project carrying the most
-        // shop tasks is the one that actually holds the build; ties go to an
-        // active project, then to the newest row. No job numbers are named
-        // here — this is a rule, not a patch for 1101.
+        // Resolve it deterministically instead, ranking on evidence that the
+        // schedule is REAL WORK rather than on how big it is:
+        //
+        //   1. tasks with progress on them — a schedule somebody is running
+        //   2. shop tasks — of two worked schedules, the one holding the build
+        //   3. active status, then the newest row
+        //
+        // Progress has to come first. Sizing on shop tasks alone picks wrong on
+        // job 1101, where a sandbox copy ("1101_Steris_Test", 149 tasks, 34 of
+        // them shop) is LARGER than either real schedule and has zero progress
+        // on any task, while the live one has 83 tasks progressed. Test copies
+        // get built out and then abandoned, so they are big and idle — exactly
+        // the shape "most tasks" rewards.
+        //
+        // No job numbers are named here: this is a rule about worked vs
+        // abandoned schedules, not a patch for 1101.
         const byJob = new Map();
         for (const p of projects) {
           const key = String(p.job_number);
@@ -185,15 +197,19 @@ module.exports = function createRouter(deps) {
         }
         const [taskCounts] = names.length
           ? await pool.query(
-              `SELECT project, COUNT(*) AS n FROM tasks
-               WHERE project IN (?) AND department = 'shop' GROUP BY project`,
+              `SELECT project,
+                      SUM(department = 'shop') AS shop_n,
+                      SUM(progress > 0) AS progressed_n
+                 FROM tasks WHERE project IN (?) GROUP BY project`,
               [names]
             )
           : [[]];
-        const shopTaskCount = new Map(taskCounts.map(r => [r.project, Number(r.n)]));
+        const shopTaskCount = new Map(taskCounts.map(r => [r.project, Number(r.shop_n) || 0]));
+        const progressedCount = new Map(taskCounts.map(r => [r.project, Number(r.progressed_n) || 0]));
 
         for (const [job, candidates] of byJob) {
           candidates.sort((a, b) =>
+            (progressedCount.get(b.name) || 0) - (progressedCount.get(a.name) || 0) ||
             (shopTaskCount.get(b.name) || 0) - (shopTaskCount.get(a.name) || 0) ||
             (b.status === 'active' ? 1 : 0) - (a.status === 'active' ? 1 : 0) ||
             b.id - a.id);
