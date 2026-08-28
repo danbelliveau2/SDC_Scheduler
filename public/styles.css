@@ -3431,10 +3431,20 @@ main {
    sets flex:1 + min-height:0; without an explicit overflow:auto, any
    content past the visible viewport gets clipped. (Bug Dan hit: Build /
    Wire department cards were cut off at the bottom of the page.) */
+/* This list is an OPT-IN, and forgetting a view is silent: main is
+   overflow:hidden, .view.active only sets flex:1 + min-height:0, so a view left
+   off simply has its content clipped at the height of the box with no scrollbar
+   and no way to reach the rest. #view-manufacturing was off it while
+   _SCROLL_VIEWS in app.js — the list that saves and restores scroll position —
+   already included it, so the JS believed the page scrolled and the CSS never
+   let it: 11,573px of queue inside a 1,034px box, unreachable past the first
+   screen. (#view-team and #view-invoicing carry the same two properties in
+   their own rules further down.) Add new scrolling views HERE. */
 #view-dashboard.active,
 #view-shop-parts.active,
 #view-vendor-pos.active,
 #view-procurement.active,
+#view-manufacturing.active,
 #view-projects.active,
 #view-favorites.active,
 #view-recents.active {
@@ -13485,7 +13495,10 @@ textarea:focus-visible,
    reuse the same semantic palette as the Parts in Shop badges so "late" looks
    the same on both shop-facing pages. Column widths follow the house rule:
    Description takes the remainder, numeric and single-word columns stay narrow. */
-.mfg-page { padding: 18px 22px 40px; }
+/* The page owns its padding and nothing else. Horizontal scrolling belongs to
+   .mfg-job (the wide table) alone — the view above clips its own x axis, so a
+   stray wide child can never turn the whole Scheduler into a sideways scroll. */
+.mfg-page { padding: 18px 22px 40px; max-width: 100%; }
 
 .mfg-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .mfg-head h1 { margin: 0; font-size: var(--fs-2xl, 22px); color: var(--sdc-dark, #061d39); }
@@ -13497,8 +13510,11 @@ textarea:focus-visible,
 .mfg-btn:hover { background: var(--surface-2, #f1f5f9); }
 
 /* Attention tiles — rendered only when non-zero (see renderManufacturingPage). */
-.mfg-tiles { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
-.mfg-tile { min-width: 104px; padding: 9px 13px; border-radius: 8px; border: 1px solid transparent; cursor: default; }
+.mfg-tiles { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; max-width: 100%; }
+/* min-width keeps the tiles a consistent size; flex-basis:auto + shrink lets a
+   narrow container pull them in rather than overflow. They wrap before they
+   shrink much, which is the intended order. */
+.mfg-tile { min-width: 104px; flex: 0 1 auto; padding: 9px 13px; border-radius: 8px; border: 1px solid transparent; cursor: default; }
 .mfg-tile-n { font-size: 24px; font-weight: var(--fw-bold, 700); line-height: 1.05; font-variant-numeric: tabular-nums; }
 .mfg-tile-l { font-size: var(--fs-xs); line-height: 1.25; text-transform: uppercase; letter-spacing: .02em; opacity: .85; }
 .mfg-tile.is-critical { background: #fee2e2; border-color: #fca5a5; color: #7f1d1d; }
@@ -13510,15 +13526,27 @@ textarea:focus-visible,
 .mfg-allclear { padding: 10px 14px; margin-bottom: 14px; border-radius: 8px;
   background: #dcfce7; border: 1px solid #86efac; color: #14532d; font-size: var(--fs-md); }
 
-.mfg-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+/* align-items: flex-start, not center: once the toolbar wraps, centring
+   stretches nothing but does make short chips sit oddly against a tall wrapped
+   warning. */
+.mfg-toolbar { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; max-width: 100%; }
 .mfg-chip { font: inherit; font-size: var(--fs-sm); padding: 3px 11px; border-radius: 999px;
   border: 1px solid var(--border, #cbd5e1); background: #fff; color: var(--sdc-dark, #061d39); cursor: pointer; }
 .mfg-chip.is-on { background: var(--sdc-dark, #061d39); border-color: var(--sdc-dark, #061d39); color: #fff; }
-.mfg-procs { display: flex; gap: 6px; margin-left: 6px; }
+/* The process chips are a flex container INSIDE the flex toolbar. Without
+   flex-wrap they were a single unbreakable line, and a flex item's default
+   min-width:auto meant the toolbar could not shrink it either — so a job mix
+   with several ETO processes pushed the whole toolbar wider than the page.
+   The toolbar wraps; this has to wrap with it. */
+.mfg-procs { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; min-width: 0; }
 .mfg-proc-chip { font-size: var(--fs-xs); color: var(--text-muted, #64748b);
   background: var(--surface-2, #f1f5f9); border-radius: 999px; padding: 3px 9px; }
+/* A banner states a fact that can be long. It wraps its own text and never
+   sets the width of whatever contains it. */
 .mfg-warn { font-size: var(--fs-xs); color: #7c2d12; background: #ffedd5;
-  border: 1px solid #fdba74; border-radius: 6px; padding: 3px 9px; }
+  border: 1px solid #fdba74; border-radius: 6px; padding: 3px 9px;
+  max-width: 100%; min-width: 0; }
+.mfg-srcs { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
 
 .mfg-job { margin-bottom: 18px; border: 1px solid var(--border, #e2e8f0); border-radius: 9px; overflow-x: auto; background: #fff; }
 .mfg-job-head { display: flex; align-items: baseline; gap: 12px; padding: 8px 12px;
