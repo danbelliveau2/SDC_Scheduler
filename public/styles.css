@@ -10564,6 +10564,19 @@ td.sales-suppressed {
   border-radius: 8px;
   padding: 3px;
 }
+/* Fit + ⌂ Default were btn-ghost = white-on-white → completely invisible on
+   this toolbar (Dan: "I don't see the button"). Blue outline, always legible. */
+#resources-zoom-fit, #resources-view-default {
+  background: #fff;
+  color: var(--sdc-blue, #1574c4);
+  border: 1.5px solid var(--sdc-blue, #1574c4);
+  border-radius: 6px;
+  font-weight: var(--fw-bold);
+  white-space: nowrap;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+#resources-zoom-fit:hover, #resources-view-default:hover { background: #eaf3fb; }
 .discipline-tab {
   padding: 6px 14px;
   background: transparent;

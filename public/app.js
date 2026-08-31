@@ -24057,7 +24057,7 @@ function renderResources() {
   const scrollKey = `${state.resources.discipline}|${state.resources.project}`;
   const todayDefaultLeft = () => {
     const track = Math.max(0, body.clientWidth - NAME_COL_W);
-    return Math.max(0, _todayOffsetPx - track * 0.25);
+    return Math.max(0, _todayOffsetPx - track * 0.20); // Today ~1/5 in (Dan)
   };
   const store = _resViewRead();
   if (state.resources.lastScrollKey === '__preserve_center__') {
