@@ -10642,6 +10642,28 @@ td.sales-suppressed {
   display: flex;
   flex-direction: column;
   min-width: calc(var(--name-col-w) + var(--tl-width));
+  position: relative; /* anchors the Today line */
+}
+/* Dashed Today line — same look as the Schedule Gantt's. z-index 1 keeps it
+   under the sticky name column (z 2) so it never draws over the names. */
+.resources-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 2px dashed #1574c4;
+  z-index: 1;
+  pointer-events: none;
+}
+.resources-today span {
+  position: sticky;
+  top: 0;
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1574c4;
+  white-space: nowrap;
 }
 /* Status filter — single dropdown ("⌕ All statuses ▾") with checkboxes
    for each bucket. Click to expand, check / uncheck to toggle which

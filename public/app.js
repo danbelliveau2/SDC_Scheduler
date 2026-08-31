@@ -23511,7 +23511,11 @@ function renderResources() {
     });
   }
   if (discWrap) {
-    const visible = boardVisibleDisciplines();
+    // Resource timeline shows ONLY the teams that get assigned schedule work
+    // (Dan: PMs and Growth never get assigned tasks — don't offer the tabs).
+    // The SDC Team roster board below still shows every card.
+    const RES_TIMELINE_DISCIPLINES = new Set(['mech', 'controls', 'build', 'wire', 'service']);
+    const visible = boardVisibleDisciplines().filter(d => RES_TIMELINE_DISCIPLINES.has(d.key));
     // setFocusedMember() can point state.resources.discipline at a department
     // that's hidden from this page. Snap back to the first visible tab so we
     // never render a strip with no active tab filtering to an invisible dept.
@@ -23675,6 +23679,21 @@ function renderResources() {
   if (zf && !zf.dataset.bound) {
     zf.dataset.bound = '1';
     zf.addEventListener('click', () => { fitResourcesZoom(); });
+  }
+  // ⌂ Default — back to the standard framing: zoom 5/10, rows 4/10, Today
+  // ~¼ in from the left. Also clears this view's remembered scroll.
+  const zd = document.getElementById('resources-view-default');
+  if (zd && !zd.dataset.bound) {
+    zd.dataset.bound = '1';
+    zd.addEventListener('click', () => {
+      state.resources.zoomPercent = friendlyToZoom(5);
+      state.resources.barHeight = friendlyResRowToPx(4);
+      const s = _resViewRead();
+      if (s.scrolls) delete s.scrolls[`${state.resources.discipline}|${state.resources.project}`];
+      _resViewWrite(s);
+      state.resources.lastScrollKey = '__force_default__';
+      renderResources();
+    });
   }
   const zoomPctEl = document.getElementById('resources-zoom-percent');
   if (zoomPctEl) {
@@ -23949,6 +23968,10 @@ function renderResources() {
         <div class="resources-track" style="width:${tlWidth}px">${overloadHtml}${bars}${loadHtml}</div>
       </div>`;
   }
+  // Dashed TODAY line spanning the whole timeline, same look as the
+  // Schedule's — the anchor point for the default framing (today ~¼ in).
+  const _todayOffsetPx = ((_today - minDate) / 86400000) * pxPerDay;
+  html += `<div class="resources-today" style="left:${Math.round(NAME_COL_W + _todayOffsetPx)}px"><span>Today</span></div>`;
   html += `</div>`;
   body.innerHTML = html;
 
@@ -24027,22 +24050,51 @@ function renderResources() {
 
   setupResourcesPan();
 
-  // After rendering, scroll horizontally so the first plotted task sits ~40px from the
-  // left edge instead of leaving the user staring at 180 days of empty padding. This
-  // remembers a per-discipline scroll position so re-renders (zoom, filter, edits) don't
-  // jump them back to "first task" unexpectedly — only fresh switches do.
-  const firstTaskOffsetDays = (firstTaskDate - minDate) / 86400000;
-  const desiredLeft = Math.max(0, firstTaskOffsetDays * pxPerDay - 40);
+  // ── View memory + default framing (Dan, 2026-08-31) ──
+  // Default view = TODAY line sitting ~¼ in from the left (a little past,
+  // mostly future). Zoom / row height / scroll are remembered per user, so
+  // schedule ↔ departments round-trips land exactly where you left off.
   const scrollKey = `${state.resources.discipline}|${state.resources.project}`;
-  // Sentinel set by the zoom handlers — they preserve center themselves
-  // and don't want the auto-jump-to-first-task to fire over the top of
-  // their already-restored scroll position.
+  const todayDefaultLeft = () => {
+    const track = Math.max(0, body.clientWidth - NAME_COL_W);
+    return Math.max(0, _todayOffsetPx - track * 0.25);
+  };
+  const store = _resViewRead();
   if (state.resources.lastScrollKey === '__preserve_center__') {
-    state.resources.lastScrollKey = scrollKey; // restore the real key
+    // Zoom handlers restore their own center — don't fight them.
+    state.resources.lastScrollKey = scrollKey;
+  } else if (state.resources.lastScrollKey === '__force_default__') {
+    state.resources.lastScrollKey = scrollKey;
+    body.scrollLeft = todayDefaultLeft();
   } else if (state.resources.lastScrollKey !== scrollKey) {
     state.resources.lastScrollKey = scrollKey;
-    body.scrollLeft = desiredLeft;
+    const saved = store.scrolls && store.scrolls[scrollKey];
+    body.scrollLeft = (saved != null) ? saved : todayDefaultLeft();
   }
+  // Persist zoom + row height every render; scroll position on scroll.
+  store.zoom = state.resources.zoomPercent;
+  store.row = state.resources.barHeight;
+  _resViewWrite(store);
+  if (!body.dataset.scrollSaveBound) {
+    body.dataset.scrollSaveBound = '1';
+    let t = null;
+    body.addEventListener('scroll', () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const s = _resViewRead();
+        (s.scrolls ||= {})[`${state.resources.discipline}|${state.resources.project}`] = body.scrollLeft;
+        _resViewWrite(s);
+      }, 250);
+    }, { passive: true });
+  }
+}
+
+// Resource-view memory: { zoom, row, scrolls: { 'discipline|project': px } }.
+function _resViewRead() {
+  try { return JSON.parse(localStorage.getItem('sdcResView') || '{}') || {}; } catch (_) { return {}; }
+}
+function _resViewWrite(v) {
+  try { localStorage.setItem('sdcResView', JSON.stringify(v)); } catch (_) {}
 }
 
 // Popup launched on EVERY resource-bar click — placeholder rows or real-person rows.
@@ -25911,13 +25963,17 @@ function setView(view) {
   // leaving a schedule for any other page (Projects, Departments, …) correctly
   // clears the highlight instead of leaving a stale lime border on the last tab.
   try { renderProjectTabs(); } catch (_) {}
+  // Machine pill strip only belongs on a multi-machine SCHEDULE — re-render
+  // on every view switch so it hides itself on Invoicing/Departments/etc.
+  // (it was lingering there because nothing re-invoked it).
+  try { renderMachineSubTabs(); } catch (_) {}
   if (view === 'setup') renderSetup();
   else if (view === 'team') {
-    // Land on a consistent default each time the Departments page opens:
-    // Gantt zoom 5/10, row height 4/10. (Mid-session zooming still sticks —
-    // this only resets on navigation TO the page.)
-    state.resources.zoomPercent = friendlyToZoom(5);
-    state.resources.barHeight = friendlyResRowToPx(4);
+    // Restore the user's saved zoom/row (Dan: "left off in exactly the same
+    // state") — first-ever visit gets the defaults (zoom 5/10, row 4/10).
+    const rv = _resViewRead();
+    state.resources.zoomPercent = rv.zoom || friendlyToZoom(5);
+    state.resources.barHeight = rv.row || friendlyResRowToPx(4);
     renderTeam();
     // Come back to the SAME spot on the page — schedule ↔ departments
     // round-trips shouldn't restart you at the top.

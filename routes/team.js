@@ -48,9 +48,78 @@ function normEtcName(name) {
   return parts.join('');
 }
 
+// ── PULL-sync: the Reports app's Employee roster is the MASTER for the 7
+// delivery teams (Dan, 2026-08-31: "I want our list to be pulling directly
+// from there — if that list ever changes, ours changes accordingly").
+// Direction summary: existence/active/grouping flow ETC → board here; board
+// edits still write straight through (writeThroughToEtc above), so both
+// stay in step whichever side changes first.
+//   * ETC person on a shared team, missing here      → created
+//   * discipline/active drifted                      → aligned to ETC
+//   * board row on a shared card, not in ETC roster  → deactivated (never
+//     deleted — task assignments + history stay intact)
+// Placeholders and the 5 Scheduler-local disciplines are untouched.
+// Fail-soft: planner not configured (local dev) → no-op.
+async function syncTeamFromPlanner(pool, io) {
+  if (!planner.CONFIGURED) return { ok: false, reason: 'ETC Planner not configured' };
+  const employees = await planner.getEmployees();
+  const [team] = await pool.query('SELECT * FROM team_members');
+  const byKey = new Map(team.map(t => [normEtcName(t.name), t]));
+  const isPh = (n) => /placeholder/i.test(n || '');
+  let created = 0, updated = 0, deactivated = 0;
+  const seen = new Set();
+  for (const e of employees) {
+    if (isPh(e.name) || !e.name) continue;
+    const disc = e.discipline;
+    if (!SHARED_TEAM_DISCIPLINES.has(disc)) continue;
+    const key = normEtcName(e.name);
+    seen.add(key);
+    const row = byKey.get(key);
+    if (!row) {
+      if (!e.active) continue;
+      const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order),0) AS m FROM team_members WHERE discipline = ?', [disc]);
+      await pool.query('INSERT INTO team_members (name, discipline, sort_order, active) VALUES (?, ?, ?, 1)', [e.name, disc, maxRow.m + 1]);
+      created++;
+    } else {
+      const wantActive = e.active ? 1 : 0;
+      // Only shared-card rows follow ETC's grouping — a linked back-office
+      // person keeps their Scheduler-local card.
+      const wantDisc = SHARED_TEAM_DISCIPLINES.has(row.discipline) ? disc : row.discipline;
+      if ((row.active ? 1 : 0) !== wantActive || row.discipline !== wantDisc) {
+        await pool.query('UPDATE team_members SET active = ?, discipline = ? WHERE id = ?', [wantActive, wantDisc, row.id]);
+        updated++;
+      }
+    }
+  }
+  for (const t of team) {
+    if (!SHARED_TEAM_DISCIPLINES.has(t.discipline) || isPh(t.name) || !t.active) continue;
+    if (!seen.has(normEtcName(t.name))) {
+      await pool.query('UPDATE team_members SET active = 0 WHERE id = ?', [t.id]);
+      deactivated++;
+    }
+  }
+  if ((created || updated || deactivated) && io) io.emit('team:updated');
+  return { ok: true, created, updated, deactivated };
+}
+
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole } = deps;
   const router = Router();
+
+  // Roster pull-sync: once shortly after boot, then every 30 minutes (same
+  // rhythm as the other ETC/ETO syncs), plus on demand below.
+  if (planner.CONFIGURED) {
+    const run = () => syncTeamFromPlanner(pool, io)
+      .then(r => { if (r.ok && (r.created || r.updated || r.deactivated)) console.log('[team] roster sync:', JSON.stringify(r)); })
+      .catch(e => console.error('[team] roster sync failed:', e.message));
+    setTimeout(run, 20 * 1000);
+    setInterval(run, 30 * 60 * 1000);
+  }
+
+  router.post('/api/team/sync-etc', requireRole('editor'), async (_req, res) => {
+    try { res.json(await syncTeamFromPlanner(pool, io)); }
+    catch (e) { res.status(503).json({ ok: false, error: e.message }); }
+  });
 
   router.get('/api/team', async (req, res) => {
     try {
