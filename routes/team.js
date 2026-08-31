@@ -80,26 +80,27 @@ async function syncTeamFromPlanner(pool, io) {
       const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order),0) AS m FROM team_members WHERE discipline = ?', [disc]);
       await pool.query('INSERT INTO team_members (name, discipline, sort_order, active) VALUES (?, ?, ?, 1)', [e.name, disc, maxRow.m + 1]);
       created++;
-    } else {
-      const wantActive = e.active ? 1 : 0;
-      // Only shared-card rows follow ETC's grouping — a linked back-office
-      // person keeps their Scheduler-local card.
+    } else if (e.active) {
+      // ADDITIVE-ONLY (see incident note below): align grouping and turn
+      // people ON, never off. Only shared-card rows follow ETC's grouping —
+      // a linked back-office person keeps their Scheduler-local card.
       const wantDisc = SHARED_TEAM_DISCIPLINES.has(row.discipline) ? disc : row.discipline;
-      if ((row.active ? 1 : 0) !== wantActive || row.discipline !== wantDisc) {
-        await pool.query('UPDATE team_members SET active = ?, discipline = ? WHERE id = ?', [wantActive, wantDisc, row.id]);
+      if (!row.active || row.discipline !== wantDisc) {
+        await pool.query('UPDATE team_members SET active = 1, discipline = ? WHERE id = ?', [wantDisc, row.id]);
         updated++;
       }
     }
   }
-  for (const t of team) {
-    if (!SHARED_TEAM_DISCIPLINES.has(t.discipline) || isPh(t.name) || !t.active) continue;
-    if (!seen.has(normEtcName(t.name))) {
-      await pool.query('UPDATE team_members SET active = 0 WHERE id = ?', [t.id]);
-      deactivated++;
-    }
-  }
-  if ((created || updated || deactivated) && io) io.emit('team:updated');
-  return { ok: true, created, updated, deactivated };
+  // DEACTIVATION IS DISABLED (2026-08-31 incident): the planner feed's
+  // `discipline` field turned out NOT to carry the team codes for most
+  // employees, so `seen` was nearly empty and the first production run
+  // deactivated almost the entire board (mech 16→1, service 5→0, …).
+  // Until the feed's field mapping is confirmed with Abhi, this sync is
+  // ADDITIVE-ONLY: it creates missing people and aligns active→true, and
+  // NEVER turns anyone off. Removals stay manual (or ETC marks them
+  // inactive, which flows through the update branch above).
+  if ((created || updated) && io) io.emit('team:updated');
+  return { ok: true, created, updated, deactivated: 0, seenShared: seen.size };
 }
 
 module.exports = function createRouter(deps) {
