@@ -10628,7 +10628,9 @@ td.sales-suppressed {
   font-weight: var(--fw-semibold);
 }
 .resources-body {
-  max-height: 60vh;
+  /* Grow to the whole team — no inner 60vh scroll box (Dan: "the team has
+     more people, the window gets bigger; you gotta see the whole team"). */
+  max-height: none;
   overflow: auto;
   padding: 4px 0 12px;
   background: var(--surface);
@@ -10752,7 +10754,10 @@ td.sales-suppressed {
   top: 0;
   background: #ffffff;
   border-bottom: 1px solid #e0e0e0;
-  z-index: 2;
+  /* Above the rows' sticky name cells (z 2) and every bar/line — rows were
+     painting OVER the date axis when scrolled (Dan: "people shown above the
+     dates"). */
+  z-index: 5;
   /* min-height (not fixed height) so the header grows when the inline
      SVG renders an extra row of weekday letters at high zoom. */
   min-height: 38px;
@@ -10964,27 +10969,28 @@ td.sales-suppressed {
 }
 .res-bar-priority-input::-webkit-inner-spin-button,
 .res-bar-priority-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-/* Over-allocated bar in the resources view — emphasize with a red outline. */
+/* Over-allocated bar — a bolder RED outline on the bars in the collision
+   (Dan: outline that portion in a bit bolder red; it had drifted to blue). */
 .res-bar.over-allocated {
-  outline: 2px solid #1574C4;
+  outline: 2.5px solid #dc2626;
   outline-offset: -2px;
 }
 .res-bar.over-allocated .res-bar-priority {
-  background: #E3F0FA;
+  background: #fee2e2;
   color: #991b1b;
-  border-color: #BBDEF7;
+  border-color: #fca5a5;
 }
-/* Bars assigned at less than 100% allocation get a soft diagonal hatch overlay so the
-   reduced load is readable even when the percentage text is clipped off the end. */
-.res-bar.low-alloc {
-  background-image:
-    repeating-linear-gradient(
-      135deg,
-      transparent 0,
-      transparent 5px,
-      rgba(255,255,255,0.45) 5px,
-      rgba(255,255,255,0.45) 7px
-    );
+/* Bars are PLAIN SOLID project color (Dan: the low-alloc hatch made
+   everything look dashed/not-started). Progress fills the bar from the left
+   as work happens — a subtle darker tint. */
+.res-bar-progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(6, 29, 57, 0.14);
+  pointer-events: none;
+  border-radius: inherit;
 }
 
 /* Done bars — mirror the main Schedule's drawDoneHashOverlay treatment:
@@ -11020,7 +11026,7 @@ td.sales-suppressed {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--fs-xs);
+  font-size: 9px; /* smaller so the % fits tight windows (Dan) */
   font-weight: var(--fw-bold);
   letter-spacing: 0.02em;
   border-radius: 3px;
@@ -11049,28 +11055,40 @@ td.sales-suppressed {
   border-color: #86efac;
   color: #166534;
 }
-.res-load-seg.load-over {
-  background: #E3F0FA;
-  border-color: #BBDEF7;
-  color: #0D47A1;
+/* Allocation gradient bar — one continuous strip per person along the row
+   bottom, split from the task lanes by a dotted line. Green = capacity,
+   deeper red = more over-allocated. Deliberately flat + full-width so it can
+   never read as a task bar. */
+.res-alloc-strip {
+  position: absolute;
+  left: 0;
+  /* No base fill — only OVERBOOKED spans paint (Dan: too much color). */
+  border-top: 1px dashed #94a3b8; /* separator from the task lanes */
+  padding-top: 1px;
+  z-index: 1;
+  pointer-events: auto;
+}
+.res-alloc-seg {
+  position: absolute;
+  top: 1px;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-/* Overload stripe — sits behind the bars (z-index lower), spans full row height. */
-.res-overload {
-  position: absolute;
-  top: 0;
-  background: repeating-linear-gradient(
-    45deg,
-    rgba(220, 38, 38, 0.18) 0,
-    rgba(220, 38, 38, 0.18) 6px,
-    rgba(220, 38, 38, 0.32) 6px,
-    rgba(220, 38, 38, 0.32) 12px
-  );
-  border-left: 1px solid rgba(220, 38, 38, 0.55);
-  border-right: 1px solid rgba(220, 38, 38, 0.55);
-  pointer-events: none;
-  z-index: 0;
-}
+/* (The top-of-row overload strip is gone — over-allocation now reads as the
+   bolder red outline on the colliding bars + the red-only strip below.) */
+/* Status reads on the bar's thick LEFT EDGE now that the bar body carries
+   the project color (inline). Done keeps its lime-hash rule below. */
+.res-bar.status-zero    { border-left: 4px solid #94a3b8; }
+.res-bar.status-behind  { border-left: 4px solid #dc2626; }
+.res-bar.status-ontrack { border-left: 4px solid #16a34a; }
 .resources-row.has-overload .resources-name { color: #0D47A1; }
 .resources-row.has-overload .resources-name::before {
   content: '⚠ ';
@@ -11688,6 +11706,18 @@ td.sales-suppressed {
 /* Calendar drag-to-pan — grab cursor like the schedule Gantt. */
 .pdash-fintl-scroll { cursor: grab; }
 .pdash-fintl-scroll.panning { cursor: grabbing; user-select: none; }
+
+/* ⛶ Expand — the resource calendar takes over the whole window: nothing
+   else on screen, its own scrolling. Esc or the button exits. */
+.resources-section.res-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9600;
+  background: var(--surface, #fff);
+  overflow: auto;
+  padding: 6px 14px 20px;
+}
+body.res-fullscreen-lock { overflow: hidden; }
 
 /* Key Dates milestone-picker chips (Projects page calendar). */
 .kd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }

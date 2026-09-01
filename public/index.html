@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260831-187" />
+  <link rel="stylesheet" href="styles.css?v=20260901-199" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
@@ -576,6 +576,9 @@
             <label class="toolbar-toggle inverted" title="Filter the timeline to projects owned by one PM (set the PM by right-clicking a project tab on the Schedule).">
               <select id="resources-pm"><option value="">All PMs</option></select>
             </label>
+            <label class="toolbar-toggle inverted" title="Look at one person's timeline by itself.">
+              <select id="resources-person"><option value="">All people</option></select>
+            </label>
             <div class="view-bracket resources-status-bracket" id="resources-status-filters" title="Show / hide tasks by status — click to toggle each.">
               <button type="button" class="view-bracket-icon" data-status="zero">Not started</button>
               <button type="button" class="view-bracket-icon" data-status="behind">Behind</button>
@@ -589,6 +592,8 @@
             </div>
             <button id="resources-zoom-fit" class="btn-ghost btn-tight" type="button">Fit</button>
             <button id="resources-view-default" class="btn-ghost btn-tight" type="button" title="Back to the default view — zoom 5/10, rows 4/10, Today about ⅕ in from the left.">⌂ Default</button>
+            <button id="resources-expand" class="btn-ghost btn-tight" type="button" title="Fill this window with the resource calendar (Esc to exit).">⛶ Expand</button>
+            <button id="resources-popout" class="btn-ghost btn-tight" type="button" title="Open the resource calendar in its OWN browser tab — nothing else on the page.">↗ Pop out</button>
             <div class="zoom-controls" title="Row height — drag the bar height up/down so rows mirror the Schedule grid.">
               <button id="resources-row-shrink" class="btn-icon" type="button" title="Shorter rows">▾</button>
               <span class="zoom-display"><span id="resources-row-height">16px</span><span class="zoom-mode">row</span></span>
@@ -1061,7 +1066,7 @@
   <script src="auth-ui.js?v=20260821-share2"></script>
   <script src="phases.js?v=20260601-168"></script>
   <script src="release-notes.js?v=20260819-192"></script>
-  <script src="app.js?v=20260831-188"></script>
+  <script src="app.js?v=20260901-200"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

@@ -16492,7 +16492,7 @@ function newTaskInline() {
     // of as an untagged shared row.
     const subset = state.filters.machinesSubset || [];
     const machine = (subset.length === 1) ? subset[0] : null;
-    const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project, machine });
+    const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project, machine, assignee: defaultPlaceholderForNewTask({ phase_group: g, department: d, sub_department: s }) || null });
     await loadTasks();
     const tr = document.querySelector(`tr[data-id="${created.id}"]`);
     if (!tr) return;
@@ -16880,6 +16880,35 @@ function setTaskMachineInline(taskId, x, y) {
   showContextMenu(x, y, items);
 }
 
+// Default PLACEHOLDER for a new duration row, from its section (Dan: every
+// duration line should start with the right placeholder assigned):
+//   10 Engineering/Mech → ME · 10 Engineering/Controls → CE ·
+//   10 Shop/Build → Build · 10 Shop/Wire → Wire ·
+//   40 Testing: engineering side → CE, shop side → Build ·
+//   50 Teardown & Install → Wire ·
+//   task named HMI / Robot / Vision (anywhere) → CE.
+// Returns the placeholder's team_members name, or null (milestones, anchors,
+// procurement, sections with no obvious owner — those stay unassigned).
+function defaultPlaceholderForNewTask(t) {
+  if (t.is_milestone || t.is_action) return null;
+  let disc = null;
+  if (/\b(hmi|robot|vision)\b/i.test(String(t.name || ''))) disc = 'controls';
+  else if (t.phase_group === 'design_build') {
+    if (t.department === 'engineering') {
+      disc = t.sub_department === 'mech' ? 'mech' : t.sub_department === 'controls' ? 'controls' : null;
+    } else if (t.department === 'shop') {
+      disc = t.sub_department === 'wire' ? 'wire' : t.sub_department === 'build' ? 'build' : null;
+    }
+  } else if (t.phase_group === 'machine_testing') {
+    disc = t.department === 'shop' ? 'build' : 'controls';
+  } else if (t.phase_group === 'teardown_install') {
+    disc = 'wire';
+  }
+  if (!disc) return null;
+  const ph = (state.team || []).find(m => m.discipline === disc && m.active !== 0 && isPlaceholder(m.name));
+  return ph ? ph.name : null;
+}
+
 // Create a new row directly below the given task. Inherits section info
 // verbatim — phase_group, department, sub_department (including null
 // for anchors and rows that live above section 10). sort_order is set
@@ -16905,6 +16934,12 @@ async function createTaskBelow(taskId, asAction) {
     payload.is_action = 1;
     payload.duration_days = 0;
     payload.is_milestone = 1;
+  } else {
+    // Duration rows start with their section's PLACEHOLDER assigned (Dan) —
+    // a real person replaces it later; nothing manual ever gets overwritten
+    // because this only applies at creation.
+    const ph = defaultPlaceholderForNewTask(payload);
+    if (ph) payload.assignee = ph;
   }
   let created;
   try { created = await api.create(payload); } catch (e) { showAlertDialog({ title: 'Add failed', message: e.message }); return; }
@@ -17018,7 +17053,7 @@ async function createTaskInSection(g, d, s) {
   // Viewing exactly one machine → the new row belongs to that machine.
   const subset = state.filters.machinesSubset || [];
   const machine = subset.length === 1 ? subset[0] : null;
-  const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project, machine });
+  const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project, machine, assignee: defaultPlaceholderForNewTask({ phase_group: g, department: d, sub_department: s }) || null });
   await loadTasks();
   const tr = document.querySelector(`tr[data-id="${created.id}"]`);
   if (!tr) return;
@@ -22684,13 +22719,26 @@ function getResourcesPxPerDay() {
 }
 
 function projectColorFor(projectName) {
-  // Hash project name to a stable HSL color. Works for arbitrary project counts without
-  // a hard-coded palette.
   if (!projectName) return { fill: '#cbd5e1', stroke: '#475569', text: '#0f172a' };
-  let hash = 0;
-  for (let i = 0; i < projectName.length; i++) hash = (hash * 31 + projectName.charCodeAt(i)) >>> 0;
-  const hue = hash % 360;
-  return { fill: `hsl(${hue} 70% 78%)`, stroke: `hsl(${hue} 55% 38%)`, text: `hsl(${hue} 60% 22%)` };
+  // Golden-angle hue assignment over the SORTED global project list: the
+  // same machine/project gets the SAME color everywhere (every person,
+  // every discipline), and neighboring projects land ~137° apart so no two
+  // look alike (raw name-hashing kept dealing near-identical hues — Dan:
+  // "a lot of very similar colors"). Muted palette per Dan.
+  if (!projectColorFor._idx || projectColorFor._n !== uniqueValues('project').length) {
+    const all = uniqueValues('project').filter(Boolean).sort();
+    projectColorFor._idx = new Map(all.map((p, i) => [p, i]));
+    projectColorFor._n = all.length;
+  }
+  const i = projectColorFor._idx.get(projectName);
+  let hue;
+  if (i != null) hue = Math.round(i * 137.508) % 360;
+  else { // project not in the task pool (rare) — fall back to the old hash
+    let hash = 0;
+    for (let k = 0; k < projectName.length; k++) hash = (hash * 31 + projectName.charCodeAt(k)) >>> 0;
+    hue = hash % 360;
+  }
+  return { fill: `hsl(${hue} 42% 84%)`, stroke: `hsl(${hue} 32% 48%)`, text: `hsl(${hue} 40% 24%)` };
 }
 
 // Bucket a task into one of four schedule-status buckets:
@@ -22844,6 +22892,49 @@ function assignTaskLanes(tasks) {
     lastEndByLane[lane] = new Date(t.end_date);
     return { task: t, lane };
   });
+}
+
+// Resource rows: one lane per PROJECT (Dan: "the tasks should be in a row per
+// project" — same-project tasks are sequential by nature, so they read as one
+// clean line). Lane order = that person's project queue (min task priority,
+// earliest start as tie-break), so the top lane is what they work first. If
+// two tasks in the SAME project genuinely overlap, that project briefly gets
+// a sub-lane. Each item carries projPri + firstOfProject so the render can
+// show ONE priority pill per project instead of a confusing pill per task.
+function assignProjectLanes(tasks) {
+  const byProj = new Map();
+  for (const t of [...tasks].sort((a, b) => new Date(a.start_date) - new Date(b.start_date))) {
+    const key = t.project || '';
+    if (!byProj.has(key)) byProj.set(key, []);
+    byProj.get(key).push(t);
+  }
+  const projs = [...byProj.values()].map(list => ({
+    list,
+    pri: Math.min(...list.map(t => (t.priority == null ? 1 : t.priority))),
+    start: Math.min(...list.map(t => +new Date(t.start_date))),
+  })).sort((a, b) => a.pri - b.pri || a.start - b.start);
+  const placed = [];
+  let lane = 0;
+  let queuePos = 0;
+  for (const p of projs) {
+    queuePos++; // the pill shows QUEUE POSITION (1, 2, 3 down the lanes) —
+                // raw task priorities default to 1 everywhere, which printed
+                // an unhelpful wall of "1"s.
+    const subLast = [];
+    let maxSub = 0;
+    let first = true;
+    for (const t of p.list) {
+      const s = +new Date(t.start_date);
+      let sub = 0;
+      while (sub < subLast.length && subLast[sub] >= s) sub++;
+      subLast[sub] = +new Date(t.end_date);
+      maxSub = Math.max(maxSub, sub);
+      placed.push({ task: t, lane: lane + sub, projPri: queuePos, firstOfProject: first });
+      first = false;
+    }
+    lane += maxSub + 1;
+  }
+  return placed;
 }
 
 // ---------- Team dashboard ----------
@@ -23498,6 +23589,9 @@ function renderResources() {
   const body = document.getElementById('resources-body');
   const empty = document.getElementById('resources-empty');
   if (!body) return;
+  // Captured BEFORE innerHTML replacement wipes it — same-view re-renders
+  // restore this so background data loads never move the viewport.
+  const _prevScrollLeft = body.scrollLeft;
 
   // Discipline tabs
   const discWrap = document.getElementById('resources-disciplines');
@@ -23578,6 +23672,24 @@ function renderResources() {
     const wrap = pmSel.closest('label');
     if (wrap) wrap.style.display = pmNames.length ? '' : 'none';
   }
+  // ── Person filter ── look at ONE person's timeline by itself (Dan).
+  const personSel = document.getElementById('resources-person');
+  if (personSel && !personSel.dataset.bound) {
+    personSel.dataset.bound = '1';
+    personSel.addEventListener('change', () => {
+      state.resources.person = personSel.value;
+      renderResources();
+    });
+  }
+  if (personSel) {
+    const discMembers = state.team
+      .filter(mm => mm.discipline === state.resources.discipline && mm.active !== 0 && !isPlaceholder(mm.name))
+      .map(mm => mm.name).sort((a, b) => a.localeCompare(b));
+    if (state.resources.person && !discMembers.includes(state.resources.person)) state.resources.person = '';
+    personSel.innerHTML = '<option value="">All people</option>' +
+      discMembers.map(n => `<option value="${escapeHtml(n)}" ${state.resources.person === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+  }
+
   const pmDash = document.getElementById('resources-pm-dash');
   if (pmDash) {
     if (!pmDash.dataset.bound) {
@@ -23680,17 +23792,44 @@ function renderResources() {
     zf.dataset.bound = '1';
     zf.addEventListener('click', () => { fitResourcesZoom(); });
   }
+  // ⛶ Expand — pop the resource calendar out to fill the whole window
+  // (its own scrolling, nothing else on screen). Esc or the button exits.
+  const zx = document.getElementById('resources-expand');
+  if (zx && !zx.dataset.bound) {
+    zx.dataset.bound = '1';
+    const setLabel = () => {
+      const on = document.querySelector('.resources-section')?.classList.contains('res-fullscreen');
+      zx.textContent = on ? '✕ Exit full screen' : '⛶ Expand';
+    };
+    const toggle = (force) => {
+      const sec = document.querySelector('.resources-section');
+      if (!sec) return;
+      const on = force != null ? force : !sec.classList.contains('res-fullscreen');
+      sec.classList.toggle('res-fullscreen', on);
+      document.body.classList.toggle('res-fullscreen-lock', on);
+      setLabel();
+      renderResources(); // widths change — re-lay the timeline
+    };
+    zx.addEventListener('click', () => toggle());
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && document.querySelector('.resources-section.res-fullscreen')) toggle(false);
+    });
+  }
+  // ↗ Pop out — the resource calendar in its OWN browser tab (Dan). The new
+  // tab boots with ?resview=1, which lands on Departments and auto-expands.
+  const zp = document.getElementById('resources-popout');
+  if (zp && !zp.dataset.bound) {
+    zp.dataset.bound = '1';
+    zp.addEventListener('click', () => window.open(location.pathname + '?resview=1', '_blank'));
+  }
   // ⌂ Default — back to the standard framing: zoom 5/10, rows 4/10, Today
-  // ~¼ in from the left. Also clears this view's remembered scroll.
+  // ~⅕ in from the left.
   const zd = document.getElementById('resources-view-default');
   if (zd && !zd.dataset.bound) {
     zd.dataset.bound = '1';
     zd.addEventListener('click', () => {
       state.resources.zoomPercent = friendlyToZoom(5);
       state.resources.barHeight = friendlyResRowToPx(4);
-      const s = _resViewRead();
-      if (s.scrolls) delete s.scrolls[`${state.resources.discipline}|${state.resources.project}`];
-      _resViewWrite(s);
       state.resources.lastScrollKey = '__force_default__';
       renderResources();
     });
@@ -23747,6 +23886,16 @@ function renderResources() {
     });
   if (state.resources.focusMemberId != null) {
     members = members.filter(m => m.id === state.resources.focusMemberId);
+  }
+  // Person dropdown — one person's timeline by itself.
+  if (state.resources.person) {
+    members = members.filter(m => m.name === state.resources.person);
+  }
+  // Mech + Controls managers don't take task work (Dan) — off the timeline.
+  // They stay on the roster board and in every dropdown. Build/Wire/Service
+  // supervisors sometimes do the work, so those stay.
+  if (state.resources.discipline === 'mech' || state.resources.discipline === 'controls') {
+    members = members.filter(m => !m.is_lead);
   }
 
   // Empty state — no members in this discipline OR no tasks anywhere yet
@@ -23815,84 +23964,53 @@ function renderResources() {
         <div class="resources-axis" style="width:${tlWidth}px">${dateTicks}</div>
       </div>`;
 
-  // Thin strip under the bars showing the running daily total per segment.
-  // Scales with BAR_H so very small rows actually look small.
-  const STRIP_H = Math.max(6, Math.round(BAR_H * 0.6));
-  const STRIP_GAP = Math.max(1, Math.round(BAR_H * 0.1));
+  // Allocation strip = OVERBOOKED SPANS ONLY (Dan: the full green/red
+  // gradient was too much color — "let's just show when people are
+  // overbooked"). Red deepens the worse it gets; healthy rows stay clean.
+  const STRIP_H = 8;
+  const STRIP_GAP = 4;
+  const allocColor = (t) => {
+    const over = Math.min(200, Math.max(0, t - 100));
+    const l = 70 - (over / 200) * 32;                  // 70% → 38% lightness
+    return `hsl(0 74% ${l}%)`;
+  };
 
   for (const m of members) {
     const ph = isPlaceholder(m.name);
     const tasks = resourcesTasksFor(m.name);
-    const placed = assignTaskLanes(tasks);
+    const placed = assignProjectLanes(tasks);
     const lanes = placed.length === 0 ? 1 : (Math.max(...placed.map(p => p.lane)) + 1);
-    // Reserve room for the load strip below the bars (only when there are tasks AND
-    // this is a real person — placeholders don't get a load strip at all).
-    const stripExtra = (!ph && tasks.length > 0) ? STRIP_H + STRIP_GAP : 0;
-    const rowH = ROW_PAD * 2 + lanes * BAR_H + (lanes - 1) * LANE_GAP + stripExtra;
 
-    // Overload regions = contiguous spans of days where the sum of allocations across all
-    // overlapping (non-milestone) tasks exceeds 100%. Two 50% tasks overlapping is fine —
-    // the day reads 100% and stays clean. Two 100% tasks reads 200% and gets a red stripe.
-    // Placeholders are role-stand-ins (managers' eyes look at the workload SHAPE, not a
-    // capacity warning) — skip overload entirely on those rows.
+    // Overload spans still drive the ⚠ red name; placeholders skip capacity.
     const overload = ph ? [] : computeOverloadRegions(tasks, minDate);
     const peakLoad = overload.length === 0 ? null : Math.max(...overload.map(r => r.peak));
-    // Day-offset → readable date for tooltips, so hovering answers "over-
-    // allocated FROM when TO when" instead of making the user squint at the
-    // axis (Dan's ask).
     const dayToStr = (d) => fmtDate(new Date(minDate.getTime() + d * 86400000).toISOString().slice(0, 10));
-    const overloadHtml = overload.map(r => {
-      const x = r.startDay * pxPerDay;
-      const w = Math.max(2, (r.endDay - r.startDay + 1) * pxPerDay);
-      return `<div class="res-overload" style="left:${x}px;width:${w}px;height:${rowH}px" title="${escapeHtml(`Over-allocated ${dayToStr(r.startDay)} – ${dayToStr(r.endDay)} — peak ${r.peak}%`)}"></div>`;
-    }).join('');
+    const loadSegs = ph ? [] : computeLoadSegments(tasks, minDate).filter(s => s.total > 100);
+    const stripExtra = (!ph && loadSegs.length > 0) ? STRIP_H + STRIP_GAP : 0;
+    const rowH = ROW_PAD * 2 + lanes * BAR_H + (lanes - 1) * LANE_GAP + stripExtra;
 
-    // Load segments — one pill per contiguous span of equal total allocation. Sits below
-    // the bars in a 12px strip so users can see "50%, then 100% during the overlap" without
-    // having to mentally add up the pieces. Pills color-code: under/full/over 100%.
-    // Placeholders skip the rolled-up load strip — each task bar now shows its own
-    // duration + allocation %, so the summed "135%" strip was redundant noise.
-    const loadSegs = ph ? [] : computeLoadSegments(tasks, minDate);
-    const loadHtml = loadSegs.map(s => {
-      const x = s.startDay * pxPerDay;
-      const w = Math.max(2, (s.endDay - s.startDay + 1) * pxPerDay);
-      // Color thresholds (per Dan's spec):
-      //   > 100 → over-allocated  (red)
-      //   85 ≤ t ≤ 100 → good     (green)  ← sweet spot for engineers
-      //   < 85         → under-allocated  (yellow)
-      let cls = 'load-under';
-      if (s.total > 100)      cls = 'load-over';
-      else if (s.total >= 85) cls = 'load-good';
-      const dayLabel = s.startDay === s.endDay ? '' : ` (${s.endDay - s.startDay + 1}d)`;
-      const segTip = `${s.total > 100 ? 'OVER-ALLOCATED — ' : ''}${s.total}% total · ${dayToStr(s.startDay)} – ${dayToStr(s.endDay)}${dayLabel}`;
-      return `
-        <div class="res-load-seg ${cls}" style="left:${x}px;width:${w}px;height:${STRIP_H}px;bottom:${Math.max(0, ROW_PAD - 2)}px"
-             title="${escapeHtml(segTip)}">${s.total}%</div>`;
-    }).join('');
+    const loadHtml = (!ph && loadSegs.length > 0)
+      ? `<div class="res-alloc-strip" style="width:${tlWidth}px;height:${STRIP_H}px;bottom:${Math.max(0, ROW_PAD - 3)}px">
+          ${loadSegs.map(s => {
+            const x = s.startDay * pxPerDay;
+            const w = Math.max(2, (s.endDay - s.startDay + 1) * pxPerDay);
+            const dayLabel = s.startDay === s.endDay ? '' : ` (${s.endDay - s.startDay + 1}d)`;
+            const segTip = `OVER-ALLOCATED — ${s.total}% · ${dayToStr(s.startDay)} – ${dayToStr(s.endDay)}${dayLabel}`;
+            // The % rides ON the red span, centered, shrinking with the span
+            // width so it never spills outside (unreadably tiny at far zoom
+            // is fine — zoom in and it's there. Dan).
+            const lbl = `${s.total}%`;
+            const fs = Math.min(8, Math.floor(w / (lbl.length * 0.72)));
+            const lblHtml = fs >= 4 ? `<span style="font-size:${fs}px">${lbl}</span>` : '';
+            return `<div class="res-alloc-seg" style="left:${x}px;width:${w}px;background:${allocColor(s.total)}" title="${escapeHtml(segTip)}">${lblHtml}</div>`;
+          }).join('')}
+        </div>`
+      : '';
 
-    // A task only NEEDS a priority when it overlaps in time with another task for
-    // the same person — that's the only case where the system has to pick which to
-    // do first. Compute the overlap set here so the per-bar code below can decide
-    // whether to render the priority pill.
-    const overlapIds = new Set();
-    for (let i = 0; i < tasks.length; i++) {
-      const a = tasks[i];
-      if (a.is_milestone) continue;
-      const aS = new Date(a.start_date).getTime();
-      const aE = new Date(a.end_date).getTime();
-      for (let j = i + 1; j < tasks.length; j++) {
-        const b = tasks[j];
-        if (b.is_milestone) continue;
-        const bS = new Date(b.start_date).getTime();
-        const bE = new Date(b.end_date).getTime();
-        if (aS <= bE && bS <= aE) {
-          overlapIds.add(a.id);
-          overlapIds.add(b.id);
-        }
-      }
-    }
-
-    const bars = placed.map(({ task, lane }) => {
+    // (The old per-task overlap scan is gone — priority pills are per
+    // PROJECT lane now, one per project on its first bar.)
+    const multiProject = new Set(tasks.map(t => t.project || '')).size > 1;
+    const bars = placed.map(({ task, lane, projPri, firstOfProject }) => {
       const startOffset = (new Date(task.start_date) - minDate) / 86400000;
       const dur = Math.max(1, Math.round((new Date(task.end_date) - new Date(task.start_date)) / 86400000) + 1);
       const x = startOffset * pxPerDay;
@@ -23907,8 +24025,10 @@ function renderResources() {
       // allocation has its own load strip below; duration IS the bar length.
       const jobNum = (String(task.project || '').match(/^\s*(\d{3,})/) || [])[1] || '';
       const projShort = jobNum || task.project || '';
-      const barLabel = projShort ? `${projShort} - ${task.name}` : task.name;
-      const lowAllocClass = (alloc != null && alloc < 100) ? ' low-alloc' : '';
+      // Allocation rides ON the bar when there's room (Dan) — the summed
+      // strip below only appears for over-allocation now.
+      const allocTag = (alloc != null && alloc !== 100) ? ` · ${alloc}%` : '';
+      const barLabel = (projShort ? `${projShort} - ${task.name}` : task.name) + allocTag;
       const overClass = state.overAllocatedTaskIds.has(task.id) ? ' over-allocated' : '';
       // Bar color reflects SCHEDULE STATUS — same scheme as the % complete pill
       // in the grid, just blown up to a full bar so you can scan the team page
@@ -23922,19 +24042,21 @@ function renderResources() {
       let statusClass = 'status-zero';
       if (pct >= 100) statusClass = 'status-done';
       else if (pct > 0) statusClass = drift < 0 ? 'status-behind' : 'status-ontrack';
+      // PROJECT color is the bar's body (Dan: "each project has a color" —
+      // even a sliver identifies its project by color + the legend below).
+      // STATUS stays readable as the thick left edge. Done bars keep their
+      // lime-hash treatment untouched.
+      const pc = projectColorFor(task.project);
+      const projFill = statusClass === 'status-done' ? ''
+        : `background-color:${pc.fill};color:${pc.text};border-color:${pc.stroke};`;
       const pri = task.priority == null ? 1 : task.priority;
-      // Priority pill rules:
-      //   - Placeholders never show one — placeholders are role-stand-ins, not
-      //     workload-ranked.
-      //   - Real people only show one on tasks that OVERLAP another of their tasks.
-      //     A solo task at a unique date span doesn't need a priority — it's the
-      //     only thing competing for that day, automatically #1.
-      const showPriPill = !ph && overlapIds.has(task.id);
-      // Tiny bars are ALL pill — the pill's tooltip must carry the full task
-      // story too, or hovering a couple-day task tells you nothing but
-      // "Priority 1" (Dan's complaint: "it just says one").
+      // Priority is PROJECT-based now (Dan): one pill per project lane, on
+      // that project's first bar, showing the project's place in this
+      // person's queue. No more dueling 1-2-3s on neighboring bars. Only
+      // shown when the person juggles 2+ projects; placeholders never.
+      const showPriPill = !ph && firstOfProject && projPri != null && multiProject;
       const priPill = showPriPill
-        ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="${escapeHtml(`Priority ${pri} — click to change.\n${tip}`)}">${pri}</span>`
+        ? `<span class="res-bar-priority" data-task-id="${task.id}" data-priority="${pri}" title="${escapeHtml(`Project priority ${projPri} in ${m.name}'s queue — click to change.\n${tip}`)}">${projPri}</span>`
         : '';
       // Label stays INSIDE the bar, always (outside labels overlapped
       // neighboring bars — unreadable). Degrade by width, per Dan's spec:
@@ -23945,10 +24067,15 @@ function renderResources() {
       const labelShown = innerW >= barLabel.length * 6 ? barLabel
                        : innerW >= String(projShort).length * 6 ? String(projShort)
                        : '';
+      // Progress fills the bar from the left (Dan: bars are plain solid and
+      // "get filled as you start it") — skip on done bars (lime hash owns those).
+      const progFill = (statusClass !== 'status-done' && pct > 0)
+        ? `<span class="res-bar-progress" style="width:${pct}%"></span>` : '';
       return `
-        <div class="res-bar ${statusClass}${lowAllocClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;"
+        <div class="res-bar ${statusClass}${overClass}" style="left:${x}px;top:${y}px;width:${w}px;height:${BAR_H}px;${projFill}"
              title="${escapeHtml(tip)}"
              data-task-id="${task.id}">
+          ${progFill}
           ${priPill}
           ${labelShown ? `<span class="res-bar-label">${escapeHtml(labelShown)}</span>` : ''}
         </div>`;
@@ -23958,14 +24085,16 @@ function renderResources() {
     // over-allocated (>100%). The previous "X tasks · Yd" meta line under the
     // name was getting cut off at tight row heights — dropped per user request,
     // the bars to the right convey the same info visually.
-    const peakInline = peakLoad != null
-      ? ` <span class="res-overload-pill">peak ${peakLoad}%</span>` : '';
+    // Peak pill removed (Dan: "peak 400% isn't realistic") — over-allocation
+    // reads from the red name + the deep-red spans on the allocation bar.
+    const peakInline = '';
+    void peakLoad;
     html += `
       <div class="resources-row${peakLoad != null ? ' has-overload' : ''}${ph ? ' is-placeholder' : ''}" style="height:${rowH}px">
         <div class="resources-name-cell">
           <span class="resources-name">${escapeHtml(m.name)}${peakInline}</span>
         </div>
-        <div class="resources-track" style="width:${tlWidth}px">${overloadHtml}${bars}${loadHtml}</div>
+        <div class="resources-track" style="width:${tlWidth}px">${bars}${loadHtml}</div>
       </div>`;
   }
   // Dashed TODAY line spanning the whole timeline, same look as the
@@ -23990,14 +24119,22 @@ function renderResources() {
   // Second legend row — what the load strip / allocation colors mean (separate
   // axis from task status above: this is how booked the person is).
   const allocItems = [
-    { bg: '#fef3c7', bd: '#fcd34d', label: 'Under 85%' },
-    { bg: '#dcfce7', bd: '#86efac', label: 'Full 85–100%' },
-    { bg: '#fee2e2', bd: '#fca5a5', label: 'Over 100%' },
-  ].map(({ bg, bd, label }) =>
-    `<span class="legend-item"><span class="legend-swatch" style="background:${bg};border:1px solid ${bd};width:14px;height:14px;display:inline-block;border-radius:3px;vertical-align:middle"></span>${escapeHtml(label)}</span>`
+    { bg: 'hsl(0 74% 66%)', label: 'Over-allocated' },
+    { bg: 'hsl(0 74% 40%)', label: 'Way over' },
+  ].map(({ bg, label }) =>
+    `<span class="legend-item"><span class="legend-swatch" style="background:${bg};width:14px;height:14px;display:inline-block;border-radius:3px;vertical-align:middle"></span>${escapeHtml(label)}</span>`
   ).join('');
+  // Project color legend — each project's hash color + job number, so even a
+  // sliver of a bar is identifiable at a glance (Dan's ask).
+  const _legendProjects = [...new Set(allTasks.map(t => t.project).filter(Boolean))].sort();
+  const projItems = _legendProjects.slice(0, 20).map(p => {
+    const c = projectColorFor(p);
+    const short = (String(p).match(/^\s*(\d{3,})/) || [])[1] || String(p).slice(0, 12);
+    return `<span class="legend-item" title="${escapeHtml(p)}"><span class="legend-swatch" style="background:${c.fill};border:1px solid ${c.stroke};width:14px;height:14px;display:inline-block;border-radius:3px;vertical-align:middle"></span>${escapeHtml(short)}</span>`;
+  }).join('') + (_legendProjects.length > 20 ? `<span class="legend-item">+${_legendProjects.length - 20} more</span>` : '');
   legend.innerHTML =
-    `<div class="legend-row"><strong class="legend-title">Task</strong>${statusItems}</div>` +
+    `<div class="legend-row"><strong class="legend-title">Projects</strong>${projItems}</div>` +
+    `<div class="legend-row"><strong class="legend-title">Status</strong>${statusItems}</div>` +
     `<div class="legend-row"><strong class="legend-title">Allocation</strong>${allocItems}</div>`;
 
   // Click a priority pill → dropdown of every position 1..N in this person's
@@ -24050,51 +24187,39 @@ function renderResources() {
 
   setupResourcesPan();
 
-  // ── View memory + default framing (Dan, 2026-08-31) ──
-  // Default view = TODAY line sitting ~¼ in from the left (a little past,
-  // mostly future). Zoom / row height / scroll are remembered per user, so
-  // schedule ↔ departments round-trips land exactly where you left off.
+  // ── Default framing ── TODAY sits ~⅕ in from the left (a little past,
+  // mostly future). Every navigation to this page and every fresh
+  // discipline/project switch lands here; mid-session zoom/pan sticks
+  // until you leave (Dan: "come back → right back to this default view").
   const scrollKey = `${state.resources.discipline}|${state.resources.project}`;
   const todayDefaultLeft = () => {
     const track = Math.max(0, body.clientWidth - NAME_COL_W);
-    return Math.max(0, _todayOffsetPx - track * 0.20); // Today ~1/5 in (Dan)
+    return Math.max(0, _todayOffsetPx - track * 0.20);
   };
-  const store = _resViewRead();
   if (state.resources.lastScrollKey === '__preserve_center__') {
     // Zoom handlers restore their own center — don't fight them.
     state.resources.lastScrollKey = scrollKey;
-  } else if (state.resources.lastScrollKey === '__force_default__') {
-    state.resources.lastScrollKey = scrollKey;
-    body.scrollLeft = todayDefaultLeft();
   } else if (state.resources.lastScrollKey !== scrollKey) {
     state.resources.lastScrollKey = scrollKey;
-    const saved = store.scrolls && store.scrolls[scrollKey];
-    body.scrollLeft = (saved != null) ? saved : todayDefaultLeft();
+    body.scrollLeft = todayDefaultLeft();
+  } else {
+    // Same view re-rendering (data landed, socket update, filter change):
+    // innerHTML replacement resets scrollLeft, so restore the viewport — by
+    // the DATE at its left edge, not raw pixels. The timeline's start moves
+    // when data loads (empty boot render anchors near today; the full render
+    // anchors at the oldest task − 180d), so a pixel restore threw first
+    // loads a year into the past (Dan's screenshot).
+    const prev = (body.dataset.win || '').split(',');
+    const pw = Number(prev[0]), pp = Number(prev[1]);
+    if (pw && pp) {
+      const leftEdgeDateMs = pw + (_prevScrollLeft / pp) * 86400000;
+      body.scrollLeft = Math.max(0, ((leftEdgeDateMs - minDate.getTime()) / 86400000) * pxPerDay);
+    } else {
+      body.scrollLeft = todayDefaultLeft();
+    }
   }
-  // Persist zoom + row height every render; scroll position on scroll.
-  store.zoom = state.resources.zoomPercent;
-  store.row = state.resources.barHeight;
-  _resViewWrite(store);
-  if (!body.dataset.scrollSaveBound) {
-    body.dataset.scrollSaveBound = '1';
-    let t = null;
-    body.addEventListener('scroll', () => {
-      clearTimeout(t);
-      t = setTimeout(() => {
-        const s = _resViewRead();
-        (s.scrolls ||= {})[`${state.resources.discipline}|${state.resources.project}`] = body.scrollLeft;
-        _resViewWrite(s);
-      }, 250);
-    }, { passive: true });
-  }
-}
-
-// Resource-view memory: { zoom, row, scrolls: { 'discipline|project': px } }.
-function _resViewRead() {
-  try { return JSON.parse(localStorage.getItem('sdcResView') || '{}') || {}; } catch (_) { return {}; }
-}
-function _resViewWrite(v) {
-  try { localStorage.setItem('sdcResView', JSON.stringify(v)); } catch (_) {}
+  // Remember this render's window so the next re-render can anchor by date.
+  body.dataset.win = minDate.getTime() + ',' + pxPerDay;
 }
 
 // Popup launched on EVERY resource-bar click — placeholder rows or real-person rows.
@@ -24234,8 +24359,13 @@ function buildResourceDateTicks(minDate, maxDate, pxPerDay, _mode) {
         parts.push(`<text class="sdc-weekday-letter" x="${xd + pxPerDay / 2}" y="${weekLetterY}" text-anchor="middle" fill="#94a3b8" style="font-family:'Montserrat',sans-serif;font-size:var(--fs-xs);font-weight:var(--fw-semibold)">${letters5[j]}</text>`);
       }
     }
-    const monthName  = cursor.toLocaleString('en-US', { month: 'long' });
-    const monthShort = cursor.toLocaleString('en-US', { month: 'short' });
+    // YEAR rides with the month label (Dan: without it, a view scrolled into
+    // last year read as this year). January always shows it; the first
+    // visible month of the window shows it too so the year is never a guess.
+    const yr = ` '${String(cursor.getFullYear()).slice(2)}`;
+    const withYear = monthLabels.length === 0 || cursor.getMonth() === 0;
+    const monthName  = cursor.toLocaleString('en-US', { month: 'long' }) + (withYear ? yr : '');
+    const monthShort = cursor.toLocaleString('en-US', { month: 'short' }) + (withYear ? yr : '');
     if (monthName !== lastMonthLabel) {
       if (monthLabels.length) monthLabels[monthLabels.length - 1].endX = x;
       monthLabels.push({ startX: x, endX: tlWidth, label: monthName, short: monthShort });
@@ -24316,7 +24446,11 @@ function setupResourcesPan() {
 
     const startX = e.clientX, startY = e.clientY;
     const startScrollLeft = body.scrollLeft;
-    const startScrollTop  = body.scrollTop;
+    // Vertical drag scrolls the PAGE (the timeline grows full-height now, so
+    // the body itself has no vertical scroll — without this, up/down dragging
+    // did nothing and you had to leave the grid to scroll the page. Dan).
+    const page = document.querySelector('.resources-section.res-fullscreen') || document.getElementById('view-team');
+    const startPageTop = page ? page.scrollTop : 0;
     let panning = false;
 
     const onMove = (ev) => {
@@ -24329,7 +24463,7 @@ function setupResourcesPan() {
       if (panning) {
         ev.preventDefault();
         body.scrollLeft = startScrollLeft - dx;
-        body.scrollTop  = startScrollTop  - dy;
+        if (page) page.scrollTop = startPageTop - dy;
       }
     };
     const onUp = () => {
@@ -24370,7 +24504,12 @@ function fitResourcesZoom() {
   // the +/- buttons can step from.
   const rawPct = (desiredPxPerDay / 20) * 100;
   state.resources.zoomPercent = Math.max(ZOOM_FRIENDLY_MIN_PCT, Math.min(ZOOM_FRIENDLY_MAX_PCT, rawPct));
+  // Fit means FIT: scroll to where the tasks actually start, not the empty
+  // 180-day pad (Dan: "there's a ton of room left over on either side").
+  state.resources.lastScrollKey = '__preserve_center__';
   renderResources();
+  const newBody = document.getElementById('resources-body');
+  if (newBody) newBody.scrollLeft = Math.max(0, 180 * getResourcesPxPerDay() - 8);
 }
 
 // ---------- Setup view ----------
@@ -25969,11 +26108,12 @@ function setView(view) {
   try { renderMachineSubTabs(); } catch (_) {}
   if (view === 'setup') renderSetup();
   else if (view === 'team') {
-    // Restore the user's saved zoom/row (Dan: "left off in exactly the same
-    // state") — first-ever visit gets the defaults (zoom 5/10, row 4/10).
-    const rv = _resViewRead();
-    state.resources.zoomPercent = rv.zoom || friendlyToZoom(5);
-    state.resources.barHeight = rv.row || friendlyResRowToPx(4);
+    // ALWAYS land on the default view (Dan reversed the earlier ask: "if you
+    // leave the page and come back, it should be right back to this default
+    // view"). Mid-session zoom/pan still sticks; only navigating here resets.
+    state.resources.zoomPercent = friendlyToZoom(5);
+    state.resources.barHeight = friendlyResRowToPx(4);
+    state.resources.lastScrollKey = '__force_default__';
     renderTeam();
     // Come back to the SAME spot on the page — schedule ↔ departments
     // round-trips shouldn't restart you at the top.
@@ -28779,9 +28919,26 @@ async function init() {
   // Restore the last-open view after a reload. Schedule is the default so it
   // needs no restore; the password-gated Departments view is skipped unless
   // this browser session already unlocked it.
+  // Popped-out resource calendar (?resview=1, from the ↗ Pop out button):
+  // boot straight into Departments and auto-expand the calendar to fill the
+  // tab — nothing else on the page.
+  try {
+    if (new URLSearchParams(location.search).get('resview') === '1') {
+      sessionStorage.setItem('sdcTeamAuth', '1');
+      setView('team');
+      const sec = document.querySelector('.resources-section');
+      if (sec) {
+        sec.classList.add('res-fullscreen');
+        document.body.classList.add('res-fullscreen-lock');
+        const zx = document.getElementById('resources-expand');
+        if (zx) zx.textContent = '✕ Exit full screen';
+      }
+    }
+  } catch (_) {}
   try {
     const savedView = localStorage.getItem('sdcActiveView');
-    if (savedView && savedView !== 'schedule') {
+    const isResPop = new URLSearchParams(location.search).get('resview') === '1';
+    if (!isResPop && savedView && savedView !== 'schedule') {
       if (!document.getElementById(`view-${savedView}`)) {
         // Saved view no longer exists (e.g. procurement page was removed). Reset.
         localStorage.removeItem('sdcActiveView');
