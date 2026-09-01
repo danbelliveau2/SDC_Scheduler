@@ -59,6 +59,26 @@ const MACHINE_TYPES = new Set(['sdc', 'non_sdc']);
 const TURNSTILE_SECRET   = process.env.TURNSTILE_SECRET_KEY || '';
 const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY   || '';
 
+// ── Trusted integration key (the sdcautomation.com form) ─────────────────────
+// The website's Gravity Form posts server-to-server via a small WordPress
+// plugin, so it cannot pass the checks written for a browser: there is no
+// Turnstile token to produce, and every submission arrives from one WP Engine
+// IP that a per-IP throttle would mistake for a flood.
+//
+// A shared secret in X-SDC-Intake-Key identifies those posts. Unset = the
+// header is simply never valid and the endpoint behaves exactly as before, so
+// switching this on is a config change rather than a deploy.
+const INTAKE_KEY = process.env.SERVICE_INTAKE_KEY || '';
+
+/** Constant-time compare that tolerates unequal lengths. */
+function keyMatches(presented, expected) {
+  if (!expected || !presented) return false;
+  const a = Buffer.from(String(presented));
+  const b = Buffer.from(String(expected));
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 /**
  * Verify a Turnstile token with Cloudflare. Returns { ok, reason }.
  *
@@ -459,15 +479,22 @@ module.exports = function createRouter(deps) {
   // so without one a single script could fill the Service Log. In-memory on
   // purpose: it needs no schema, and a restart clearing it is an acceptable
   // failure mode for what is a spam speed-bump, not a security control.
-  const _rateHits = new Map(); // ip → number[] (ms timestamps)
+  const _rateHits = new Map(); // key → number[] (ms timestamps)
   const RATE_WINDOW_MS = 60 * 60 * 1000;
   const RATE_MAX = Number(process.env.SERVICE_PUBLIC_RATE_MAX || 8);
-  function rateLimited(ip) {
+  // The website integration is ONE caller for the whole site, so it cannot
+  // share the per-IP allowance: 8/hour is a sensible ceiling for one customer
+  // at one keyboard and a guaranteed outage for a busy day's worth of them
+  // arriving from a single WP Engine address. It is still bounded — a leaked
+  // key should not be able to fill the Service Log unopposed.
+  const INTAKE_RATE_MAX = Number(process.env.SERVICE_INTAKE_RATE_MAX || 300);
+  function rateLimited(key, max) {
     const now = Date.now();
-    const hits = (_rateHits.get(ip) || []).filter(t => now - t < RATE_WINDOW_MS);
-    if (hits.length >= RATE_MAX) { _rateHits.set(ip, hits); return true; }
+    const limit = max || RATE_MAX;
+    const hits = (_rateHits.get(key) || []).filter(t => now - t < RATE_WINDOW_MS);
+    if (hits.length >= limit) { _rateHits.set(key, hits); return true; }
     hits.push(now);
-    _rateHits.set(ip, hits);
+    _rateHits.set(key, hits);
     if (_rateHits.size > 5000) _rateHits.clear(); // crude bound; see note above
     return false;
   }
@@ -544,7 +571,19 @@ module.exports = function createRouter(deps) {
     };
     try {
       const ip = clientIp(req);
-      if (rateLimited(ip)) {
+
+      // Who is calling? A presented-but-wrong key is refused outright — it is
+      // either a misconfigured integration or someone probing, and both should
+      // hear about it rather than be quietly downgraded to the public path.
+      const presentedKey = req.get('X-SDC-Intake-Key') || '';
+      const trusted = keyMatches(presentedKey, INTAKE_KEY);
+      if (presentedKey && !trusted) {
+        cleanupFiles();
+        console.warn(`[service] intake key rejected from ${ip}`);
+        return res.status(401).json({ error: 'Invalid intake key.' });
+      }
+
+      if (rateLimited(trusted ? 'integration' : ip, trusted ? INTAKE_RATE_MAX : RATE_MAX)) {
         cleanupFiles();
         return res.status(429).json({ error: 'Too many requests from this location. Please call SDC directly if this is urgent.' });
       }
@@ -555,7 +594,11 @@ module.exports = function createRouter(deps) {
       // nothing.
       if (b.website) { cleanupFiles(); return res.json({ ok: true, request_no: 'SR-0000-0000' }); }
 
-      const ts = await verifyTurnstile(b['cf-turnstile-response'], ip);
+      // A server-to-server post has no browser and therefore no Turnstile token.
+      // The shared secret is what vouches for it; Gravity Forms' own anti-spam
+      // does the job Turnstile does on our hosted form.
+      const ts = trusted ? { ok: true, reason: 'trusted-integration' }
+                         : await verifyTurnstile(b['cf-turnstile-response'], ip);
       if (!ts.ok) {
         cleanupFiles();
         console.warn(`[service] Turnstile rejected a submission from ${ip}: ${ts.reason}`);
@@ -578,22 +621,69 @@ module.exports = function createRouter(deps) {
         ['service_details', 'Service Details'],
       ];
       const missing = required.filter(([f]) => !String(b[f] || '').trim()).map(([, label]) => label);
-      if (missing.length) {
-        cleanupFiles();
-        return res.status(400).json({ error: `Please complete: ${missing.join(', ')}.` });
-      }
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(b.requestor_email).trim())) {
-        cleanupFiles();
-        return res.status(400).json({ error: 'Please enter a valid email address.' });
-      }
+      const badEmail = !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(b.requestor_email || '').trim());
       const vocabErr = validateVocab(b);
-      if (vocabErr) { cleanupFiles(); return res.status(400).json({ error: vocabErr }); }
+
+      // TWO CALLERS, TWO ANSWERS TO A BAD PAYLOAD.
+      //
+      // On our own hosted form a 400 is the right answer: the customer is still
+      // sitting there and can correct the field and resubmit.
+      //
+      // The website integration is the opposite. Gravity Forms accepts, stores
+      // and shows the success screen BEFORE its plugin posts here, so by the
+      // time a 400 arrives the customer has been told their request went
+      // through. Rejecting would mean a request that exists on the website, and
+      // in the backstop email, but never in the Scheduler — silently missing
+      // from the system of record, which is the one failure this whole
+      // integration exists to prevent.
+      //
+      // So a trusted post is ACCEPTED and its problems are recorded on the row
+      // for the Service team to chase, rather than refused. An unusable value
+      // is dropped instead of stored, so nothing invalid reaches the database.
+      const intakeIssues = [];
+      if (trusted) {
+        if (missing.length) intakeIssues.push(`Missing from the website submission: ${missing.join(', ')}.`);
+        if (badEmail) intakeIssues.push(`Email address as submitted looks invalid: "${String(b.requestor_email || '').trim() || '(blank)'}".`);
+        if (vocabErr) {
+          // Drop only the offending value, keep the rest of the request.
+          for (const [f, set] of [['urgency', URGENCIES], ['department_needed', DEPARTMENTS],
+                                  ['location_type', LOCATIONS], ['warranty', WARRANTY],
+                                  ['machine_type', MACHINE_TYPES]]) {
+            if (b[f] != null && b[f] !== '' && !set.has(b[f])) {
+              intakeIssues.push(`Unrecognised ${f.replace(/_/g, ' ')} "${String(b[f]).slice(0, 40)}" — cleared, please set it by hand.`);
+              delete b[f];
+            }
+          }
+        }
+      } else {
+        if (missing.length) {
+          cleanupFiles();
+          return res.status(400).json({ error: `Please complete: ${missing.join(', ')}.` });
+        }
+        if (badEmail) {
+          cleanupFiles();
+          return res.status(400).json({ error: 'Please enter a valid email address.' });
+        }
+        if (vocabErr) { cleanupFiles(); return res.status(400).json({ error: vocabErr }); }
+      }
 
       const created = await createRequest(b, { source: 'website', createdBy: trim(b.requestor_name) });
       const n = await attachFiles(created.id, req.files, trim(b.requestor_name));
       await logService(created.id, 'request_created',
         `Submitted from the website by ${trim(b.requestor_name) || 'a customer'}${n ? ` with ${n} attachment(s)` : ''}.`,
         trim(b.requestor_name) || 'customer');
+
+      // Anything wrong with an accepted submission goes ON the record, so the
+      // row itself says what needs chasing rather than it living in a log file.
+      if (intakeIssues.length) {
+        const note = `Accepted with problems: ${intakeIssues.join(' ')}`;
+        await pool.query(
+          `UPDATE service_requests
+              SET information_needed = TRIM(CONCAT(COALESCE(information_needed, ''), ' ', ?))
+            WHERE id = ?`, [note, created.id]).catch(() => {});
+        await logService(created.id, 'intake_warning', note, 'website integration');
+        console.warn(`[service] ${created.request_no} accepted with problems: ${intakeIssues.join(' ')}`);
+      }
 
       res.json({ ok: true, request_no: created.request_no });
       notifyClients();
