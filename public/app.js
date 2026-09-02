@@ -1043,7 +1043,7 @@ function computeDisciplineCapacity(discKey, members) {
     // staffed for real yet. Either would inflate the "X hrs scheduled"
     // reading on every discipline.
     if (isTemplateProject(t.project)) continue;
-    if (projectWorkspace(t.project) === 'Sales') continue;
+    if (projectWorkOff(t.project)) continue;
     if (!t.assignee || !memberNames.has(t.assignee)) continue;
     const dur = Number(t.duration_days);
     if (!dur || dur <= 0) continue;
@@ -1727,7 +1727,7 @@ function applyFilters(tasks, opts = {}) {
     // (If the user explicitly opens a template or Sales project tab,
     // we DO show its tasks — that branch hits the `project` check above.)
     if (!project && t.project &&
-        (isTemplateProject(t.project) || projectWorkspace(t.project) === 'Sales')) {
+        (isTemplateProject(t.project) || projectWorkOff(t.project))) {
       return false;
     }
     // Personal mode: hide anchor milestones entirely — this view is "one
@@ -6351,7 +6351,7 @@ function zoomToFitPersonal() {
   const tasks = (state.tasks || []).filter(t => {
     if (!t.project) return false;
     if (isTemplateProject(t.project)) return false;
-    if (projectWorkspace(t.project) === 'Sales') return false;
+    if (projectWorkOff(t.project)) return false;
     if (!t.start_date || !t.end_date) return false;
     const a = (t.assignee || '').trim().toLowerCase();
     const direct = a === memberNameLower;
@@ -7522,8 +7522,17 @@ function isTemplateProject(p) {
 // Fixed list of workspaces for v4.7. Order here is also the display order in
 // the picker. Adding a new workspace just means dropping its name into this
 // array — assignments live in state.projectWorkspaces keyed by project name.
-const WORKSPACES = ['Active', 'Sales', 'Closed'];
+const WORKSPACES = ['Active', 'Sales', 'On Hold', 'Closed'];
 const DEFAULT_WORKSPACE = 'Active';
+
+// Sales (pre-quote) and On Hold (paused — e.g. 1152) projects are excluded
+// from every WORK view: resource timeline, Departments rollups, Invoicing,
+// Key Dates, workload aggregates. They stay on the Projects page and their
+// schedules stay fully editable. Right-click a project → "Move to On Hold".
+function projectWorkOff(p) {
+  const ws = projectWorkspace(p);
+  return ws === 'Sales' || ws === 'On Hold';
+}
 
 // Get the workspace a project belongs to. Falls back to the default for any
 // project that hasn't been explicitly assigned (i.e. everything from before
@@ -7901,7 +7910,7 @@ function _deptSelectedProjects() {
   const allProjects = uniqueValues('project')
     .filter(p => p && p.trim().length > 0)
     .filter(p => !isTemplateProject(p))
-    .filter(p => projectWorkspace(p) !== 'Sales')
+    .filter(p => !projectWorkOff(p))
     .filter(p => !projectIsInactive(p))
     .sort();
   if (selected === null) {
@@ -7989,6 +7998,9 @@ const _stripPmOpen = {};
 // Projects with a financials fetch currently in flight (see the lazy loader
 // in renderDeptProjectRollup / renderDashboard).
 const _finLoading = new Set();
+// Financial-milestones calendar viewport memory (per From/To range) — drags
+// survive the streaming-load re-renders; a range change resets to default.
+let _fintlView = { key: null, left: null };
 function renderInvoiceBuckets(selectedProjects) {
   const root = document.getElementById('invoicing-buckets');
   if (!root) return;
@@ -8006,12 +8018,14 @@ function renderInvoiceBuckets(selectedProjects) {
   const CARDS = [
     // Past due is TWO portions in one card: not-sent up top, then a dotted
     // divider, then sent-but-not-paid (payment terms elapsed).
-    { key: 'pastdue',   title: 'Past due',           sub: 'not sent · below the line: sent, not paid', tone: 'inv-red', chk: 'Sent' },
-    { key: 'ready',     title: 'Ready to invoice',   sub: 'schedule trigger met',             tone: 'inv-green', chk: 'Sent' },
-    { key: 'sent',      title: 'Sent',               sub: 'awaiting payment — Net days editable', tone: 'inv-blue', chk: 'Paid' },
+    { key: 'pastdue',   title: 'Past due',           sub: 'not sent · below the line: sent, not paid', tone: 'inv-red', chk: 'Sent', dateLbl: 'Due' },
+    { key: 'ready',     title: 'Ready to invoice',   sub: 'schedule trigger met',             tone: 'inv-green', chk: 'Sent', dateLbl: 'Due' },
+    // Sent card's date column shows WHEN IT WENT OUT (Dan) — due lives in
+    // the tooltip.
+    { key: 'sent',      title: 'Sent',               sub: 'awaiting payment — Net days editable', tone: 'inv-blue', chk: 'Paid', dateLbl: 'Sent' },
     // No 'paid' card — Dan: paid is history, not something to watch. Undo a
     // paid flag from the project's financial milestones editor if needed.
-    { key: 'notrigger', title: 'No trigger',         sub: 'not tied to the schedule — each PM should fix theirs', tone: 'inv-gray', chk: 'Sent' },
+    { key: 'notrigger', title: 'No trigger',         sub: 'not tied to the schedule — each PM should fix theirs', tone: 'inv-gray', chk: 'Sent', dateLbl: 'Due' },
   ];
   const fmtAmt = (f) => {
     const parts = [];
@@ -8022,10 +8036,15 @@ function renderInvoiceBuckets(selectedProjects) {
   const itemHtml = ({ f, project, status }) => {
     const due = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || null;
     const isSentSide = status === 'sent' || status === 'pastpay';
-    // Date column is always the DUE date (header says "Due"); when the
-    // invoice went out lives in the tooltip.
-    const when = due ? fmtDate(due) : '—';
-    const whenTitle = isSentSide && f.sent_at ? `Sent ${fmtDate(f.sent_at)}` : 'Due date';
+    // Sent card shows the SENT date (Dan); everything else shows the due
+    // date. The other date always rides in the tooltip. Legacy rows marked
+    // sent before the date was recorded show "—" rather than lying.
+    const when = status === 'sent'
+      ? (f.sent_at ? fmtDate(f.sent_at) : '—')
+      : (due ? fmtDate(due) : '—');
+    const whenTitle = status === 'sent'
+      ? (f.sent_at ? (due ? `Due ${fmtDate(due)}` : 'Sent date') : `Sent date not recorded${due ? ` — due ${fmtDate(due)}` : ''}`)
+      : (isSentSide && f.sent_at ? `Sent ${fmtDate(f.sent_at)}` : 'Due date');
     const machine = f.machine ? ` <span class="inv-mach">${escapeHtml(f.machine)}</span>` : '';
     // BLANK checkbox — checking it is the action (Sent for unsent items,
     // Paid for sent ones). The column header on the card says which.
@@ -8087,7 +8106,7 @@ function renderInvoiceBuckets(selectedProjects) {
     // Column header row — Due says when it was owed; the checkbox column is
     // a BLANK box you check, so "Sent" reads as the action, not already-done.
     const listHead = count ? `<div class="inv-list-head">
-      <span>Milestone</span><span class="inv-h-amt">Amt</span><span class="inv-h-due">Due</span><span class="inv-h-chk">${c.chk}</span>
+      <span>Milestone</span><span class="inv-h-amt">Amt</span><span class="inv-h-due">${c.dateLbl}</span><span class="inv-h-chk">${c.chk}</span>
     </div>` : '';
     return `<div class="inv-card ${c.tone}${open ? '' : ' is-collapsed'}" data-inv-card="${c.key}">
       <div class="inv-card-head" title="Click to ${open ? 'collapse' : 'expand'}"><span class="inv-card-title">${c.title}</span><span class="inv-card-count">${count}</span></div>
@@ -8337,8 +8356,11 @@ function renderDeptProjectRollup() {
   })();
   const _storedFrom = localStorage.getItem('sdcDashboardFinMonthFrom');
   const _storedTo   = localStorage.getItem('sdcDashboardFinMonthTo');
-  const finMonthFrom = _storedFrom == null ? _currentMonth : (_storedFrom === 'any' ? '' : _storedFrom);
-  const finMonthTo   = _storedTo   == null ? _currentMonth : (_storedTo   === 'any' ? '' : _storedTo);
+  // Default = NO month filter (Dan): all months on the timeline at roughly
+  // one-month-per-screen scale, scrolled to the current month — drag to see
+  // the rest. Setting From/To switches to "fit exactly that range".
+  const finMonthFrom = (_storedFrom == null || _storedFrom === 'any') ? '' : _storedFrom;
+  const finMonthTo   = (_storedTo   == null || _storedTo   === 'any') ? '' : _storedTo;
   const financialsTableHtml = (() => {
     if (selected.length === 0) {
       return '<div class="pdash-empty-block">Pick at least one project to see financial milestones.</div>';
@@ -8367,13 +8389,16 @@ function renderDeptProjectRollup() {
     //    payment event as a DIAMOND at its date with "% · abbrev" on it.
     //    Status colors match the Key Milestones legend: green paid,
     //    red past-due, light blue future.
-    const NAME_W = 280; // same name column as the Key Milestones strips
+    // Narrower name column (Dan: the divider sat way off to the right of the
+    // names) — names ellipsize on one line, full name in the tooltip.
+    const NAME_W = 200;
     const dayMs = 86400000;
     let winStartMs = Math.min(...rows.map(r => Date.parse(r.due_date + 'T00:00:00')), todayMs);
     let winEndMs   = Math.max(...rows.map(r => Date.parse(r.due_date + 'T00:00:00')), todayMs);
     winStartMs -= 12 * dayMs;
     winEndMs   += 12 * dayMs;
     const span = Math.max(dayMs, winEndMs - winStartMs);
+    const hasRange = !!(finMonthFrom || finMonthTo);
     const pctOf = (ms) => ((ms - winStartMs) / span) * 100;
 
     // Month header labels (inside the header track) + faint grid lines that
@@ -8402,7 +8427,12 @@ function renderDeptProjectRollup() {
     // scale minW uses) and place each item in the FIRST lane whose previous
     // item is far enough left — up to 3 lanes, and the row grows to fit.
     const _monthsSpanForLanes = Math.max(1, span / (30.4 * dayMs));
-    const laneGapPct = Math.min(30, (100 / (_monthsSpanForLanes * 120)) * 100);
+    // Scale: with an explicit From/To range, fit it to the page (~120px/month
+    // floor). Default (no range): ONE MONTH fills ~72% of the page and you
+    // drag to the rest (Dan) — so compute px-per-month from the live width.
+    const _rollupW = (document.getElementById('dept-project-rollup')?.clientWidth) || 1200;
+    const pxMonth = hasRange ? 120 : Math.max(320, Math.round((_rollupW - NAME_W - 60) * 0.72));
+    const laneGapPct = Math.min(30, (100 / (_monthsSpanForLanes * pxMonth)) * 100);
     const rowsHtml = Object.keys(byProject).map(p => {
       const sorted = byProject[p].slice().sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
       // Multi-machine project → tag every diamond with its machine (blank
@@ -8460,14 +8490,15 @@ function renderDeptProjectRollup() {
       ? `<div class="pdash-fintl-today" style="left:${trackCalc(todayFrac)};"><span>Today</span></div>`
       : '';
 
-    // Long date ranges get a REAL scale instead of squishing: ~120px per
-    // month minimum, inside a horizontally scrollable wrapper. Short ranges
-    // still fit the container width (min-width never shrinks below 100%).
     const monthsSpan = Math.max(1, span / (30.4 * dayMs));
-    const minW = Math.round(NAME_OFF + monthsSpan * 120);
+    const minW = Math.round(NAME_OFF + monthsSpan * pxMonth);
+    // Where the current month's 1st sits (fraction of the window) — the
+    // default view scrolls here so "now" fills the page.
+    const _cm = new Date(); _cm.setDate(1); _cm.setHours(0, 0, 0, 0);
+    const curMonthFrac = Math.max(0, Math.min(1, (_cm.getTime() - winStartMs) / span));
     return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
-      <div class="pdash-fintl-scroll">
-      <div class="pdash-fintl" style="min-width:max(100%,${minW}px)">
+      <div class="pdash-fintl-scroll" data-curmonth-frac="${curMonthFrac.toFixed(5)}" data-range-key="${escapeHtml(finMonthFrom + '|' + finMonthTo)}">
+      <div class="pdash-fintl" style="min-width:max(100%,${minW}px);--fintl-name-w:${NAME_W}px">
         ${monthLinesHtml}
         ${todayHtml}
         <div class="pdash-fintl-row pdash-fintl-head">
@@ -8626,6 +8657,30 @@ function renderDeptProjectRollup() {
   // page). 4px threshold keeps plain clicks (project links, inputs) working.
   const finScroll = root.querySelector('.pdash-fintl-scroll');
   if (finScroll) {
+    // Land on the CURRENT month (default view), remember drags across the
+    // re-renders that fire while financials stream in, and reset the spot
+    // whenever the From/To range changes.
+    const rangeKey = finScroll.dataset.rangeKey || '';
+    if (_fintlView.key === rangeKey && _fintlView.left != null) {
+      finScroll.scrollLeft = _fintlView.left;
+    } else {
+      const frac = Number(finScroll.dataset.curmonthFrac) || 0;
+      const inner = finScroll.firstElementChild;
+      const W = inner ? (inner.scrollWidth || inner.offsetWidth) : 0;
+      // Track x of a fraction = NAME_OFF + (W - NAME_OFF) * frac (see
+      // trackCalc in the compose); scroll so that x sits at the track edge.
+      const NAME_OFF = 212; // NAME_W 200 + 12px grid gap
+      finScroll.scrollLeft = Math.max(0, (W - NAME_OFF) * frac - 2);
+      _fintlView = { key: rangeKey, left: finScroll.scrollLeft };
+    }
+    if (!finScroll.dataset.scrollBound) {
+      finScroll.dataset.scrollBound = '1';
+      let t = null;
+      finScroll.addEventListener('scroll', () => {
+        clearTimeout(t);
+        t = setTimeout(() => { _fintlView = { key: finScroll.dataset.rangeKey || '', left: finScroll.scrollLeft }; }, 200);
+      }, { passive: true });
+    }
     finScroll.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       if (e.target.closest('input, select, button, .pdash-fintl-projlink')) return;
@@ -8682,7 +8737,7 @@ function renderDashboard() {
   const allProjects = uniqueValues('project')
     .filter(p => p && p.trim().length > 0)
     .filter(p => !isTemplateProject(p))
-    .filter(p => projectWorkspace(p) !== 'Sales')
+    .filter(p => !projectWorkOff(p))
     .sort();
   // Default to currently-open projects when nothing's persisted yet.
   if (selected.length === 0) {
@@ -9071,7 +9126,7 @@ function renderDashboard() {
         (Number(t.progress) || 0) < 100 &&
         t.start_date && t.end_date &&
         !isTemplateProject(t.project) &&
-        projectWorkspace(t.project) !== 'Sales' &&
+        !projectWorkOff(t.project) &&
         selected.includes(t.project)
       ).filter(t => {
         const eMs = new Date(t.end_date + 'T00:00:00').getTime();
@@ -11632,7 +11687,9 @@ function renderProjectsPage() {
     let nonTemplates = projects.filter(p => !isTemplateProject(p));
     if (searchQ) nonTemplates = nonTemplates.filter(p => p.toLowerCase().includes(searchQ));
     const isExpanded = !!expanded[ws];
-    const allowsNew = ws !== 'Closed';
+    // New schedules start in Active or Sales — On Hold/Closed are places
+    // projects get MOVED to (right-click → Move to …), not born in.
+    const allowsNew = ws === 'Active' || ws === 'Sales';
     const wsTmpl = templates.length === 1 ? templates[0]
       : templates.find(t => !/duplicate/i.test(t)) || templates[0] || null;
     // Generic label — the dialog itself offers this workspace's templates,
@@ -16402,7 +16459,7 @@ function renderPersonalAssignments() {
   const mine = (state.tasks || []).filter(t => {
     if (!t.project) return false;
     if (isTemplateProject(t.project)) return false;
-    if (projectWorkspace(t.project) === 'Sales') return false;
+    if (projectWorkOff(t.project)) return false;
     if (inferredAnchorKey(t)) return false;
     if (isBacklogTask(t))     return false;
     const a = (t.assignee || '').trim().toLowerCase();
@@ -22799,7 +22856,7 @@ function resourcesTasksFor(memberName) {
     t.assignee === memberName &&
     t.start_date && t.end_date &&
     !isTemplateProject(t.project) &&
-    projectWorkspace(t.project) !== 'Sales' &&
+    !projectWorkOff(t.project) &&
     (!projFilter || t.project === projFilter) &&
     (!pmFilter || projectLead(t.project, 'pm') === pmFilter) &&
     sf[_resTaskStatus(t)] !== false
@@ -23651,7 +23708,7 @@ function renderResources() {
   const pmProjects = {};
   for (const [proj, rec] of Object.entries(leadsMap)) {
     if (!rec || !rec.pm) continue;
-    if (isTemplateProject(proj) || projectWorkspace(proj) === 'Sales') continue;
+    if (isTemplateProject(proj) || projectWorkOff(proj)) continue;
     (pmProjects[rec.pm] = pmProjects[rec.pm] || []).push(proj);
   }
   const pmNames = Object.keys(pmProjects).sort((a, b) => a.localeCompare(b));

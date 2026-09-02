@@ -4358,24 +4358,17 @@ tbody tr:hover { background: var(--row-hover); }
    the override is injected as a <style id="col-font-overrides"> at runtime, so
    there's no global font rule here. Columns with no override use the defaults. */
 .col-allocation { width: 52px; text-align: right; font-variant-numeric: tabular-nums; padding-left: 4px; padding-right: 6px; }
-/* Comments column — free-text, MULTI-LINE. pre-wrap honors typed line breaks
-   (Enter in the editor) and wraps long text; the fixed row height clips
-   whatever doesn't fit (raise the row height to see more lines). Full content
-   stays accessible via the title tooltip set in cellHtml. line-height and
-   vertical-align are overridden from the base td rules — the giant
-   row-height line-height would put line 2 off-screen, and middle-align
-   clips top AND bottom when content overflows. */
+/* Comments column — ONE LINE, always (Dan: long comments were stretching
+   rows hundreds of px tall and wrecking the grid ↔ Gantt row alignment).
+   Long text ellipsizes; the full comment is in the hover tooltip and in the
+   click-to-edit textarea. */
 .col-notes {
   color: var(--text-muted);
   font-style: italic;
-  white-space: pre-wrap;
+  white-space: nowrap;
   overflow: hidden;
-  overflow-wrap: break-word;
+  text-overflow: ellipsis;
   max-width: 320px;
-  line-height: 1.3;
-  vertical-align: top;
-  padding-top: 3px;
-  padding-bottom: 3px;
 }
 /* Comments editor — a textarea OVERLAY floating above the cell so the row
    itself never changes height (grid ↔ Gantt row alignment stays intact).
@@ -12165,7 +12158,9 @@ body.res-fullscreen-lock { overflow: hidden; }
 .pdash-fintl-projlink:hover { color: var(--sdc-blue, #1574c4); text-decoration: underline; }
 .pdash-fintl-row {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  /* Name column width set by the calendar's compose (--fintl-name-w on
+     .pdash-fintl) — 200px there, so the divider hugs the names. */
+  grid-template-columns: var(--fintl-name-w, 280px) 1fr;
   gap: 12px;
   align-items: center;
   background: var(--surface, #fff);
