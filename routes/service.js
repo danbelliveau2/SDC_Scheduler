@@ -725,8 +725,9 @@ module.exports = function createRouter(deps) {
       const where = [];
       const args  = [];
 
-      if (q.view === 'open')      where.push('r.service_complete = 0');
-      if (q.view === 'completed') where.push('r.service_complete = 1');
+      if (q.view === 'open')       where.push('r.service_complete = 0');
+      if (q.view === 'completed')  where.push('r.service_complete = 1');
+      if (q.view === 'unassigned') where.push('NOT EXISTS (SELECT 1 FROM service_work_orders w WHERE w.service_request_id = r.id)');
 
       for (const [param, col] of [
         ['status', 'r.current_status'], ['urgency', 'r.urgency'],
@@ -1554,6 +1555,8 @@ module.exports = function createRouter(deps) {
           (SELECT COUNT(*) FROM service_requests WHERE service_complete = 0)                 AS open,
           (SELECT COUNT(*) FROM service_requests WHERE service_complete = 1)                 AS completed,
           (SELECT COUNT(*) FROM service_requests WHERE service_complete = 0 AND urgency = 'machine_down') AS machine_down,
+          (SELECT COUNT(*) FROM service_requests r WHERE NOT EXISTS (
+             SELECT 1 FROM service_work_orders w WHERE w.service_request_id = r.id))          AS unassigned,
           (SELECT COUNT(*) FROM service_work_orders)                                         AS work_orders,
           (SELECT COUNT(*) FROM service_work_orders WHERE status = 'open')                   AS work_orders_open,
           (SELECT COUNT(*) FROM service_work_orders WHERE status = 'open' AND task_date >= ?) AS scheduled,

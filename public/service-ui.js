@@ -55,6 +55,7 @@ const _WO_VIEWS = new Set(['work-orders', 'mine', 'scheduled']);
 const VIEWS = [
   { key: 'log',         label: 'Service Log',     hint: 'Every Service request.' },
   { key: 'open',        label: 'Open Service',    hint: 'Requests that are not complete.' },
+  { key: 'unassigned',  label: 'Unassigned',      hint: 'Requests with no Work Order created yet.' },
   { key: 'work-orders', label: 'Work Orders',     hint: 'All internal Work Orders.' },
   { key: 'mine',        label: 'My Service Work', hint: 'Work Orders assigned to you.' },
   { key: 'scheduled',   label: 'Scheduled',       hint: 'Future Work Orders.' },
@@ -140,7 +141,7 @@ function buildQuery() {
     if (f.employee) q.set('employee', f.employee);
     if (f.location) q.set('location', f.location);
   } else {
-    if (_svc.view === 'open' || _svc.view === 'completed') q.set('view', _svc.view);
+    if (_svc.view === 'open' || _svc.view === 'completed' || _svc.view === 'unassigned') q.set('view', _svc.view);
     for (const k of ['search', 'urgency', 'status', 'department', 'location', 'warranty', 'employee', 'machine_type']) {
       if (f[k]) q.set(k === 'search' ? 'search' : k, f[k]);
     }
@@ -236,7 +237,7 @@ async function renderServicePage() {
 function drawTabs() {
   const s = _svc.summary;
   const counts = {
-    log: s.total, open: s.open, 'work-orders': s.work_orders,
+    log: s.total, open: s.open, unassigned: s.unassigned, 'work-orders': s.work_orders,
     mine: s.mine, scheduled: s.scheduled, completed: s.completed,
   };
   document.getElementById('svcTabs').innerHTML = VIEWS.map(v => `
@@ -320,7 +321,9 @@ function drawRequestTable(body) {
   const rows = _svc.requests;
   if (!rows.length) {
     body.innerHTML = `<div class="svc-empty">
-      ${_svc.view === 'completed' ? 'No completed Service requests yet.' : 'No Service requests match.'}
+      ${_svc.view === 'completed'  ? 'No completed Service requests yet.'
+      : _svc.view === 'unassigned' ? 'Nothing unassigned — every open request has a Work Order.'
+      : 'No Service requests match.'}
     </div>`;
     return;
   }
