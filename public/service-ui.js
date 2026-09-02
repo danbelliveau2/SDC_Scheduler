@@ -863,37 +863,64 @@ function openWorkOrderForm(request, existing) {
       <div class="svc-sub">Job / Machine: ${esc(request.machine_serial || request.job_number) || '—'}
         · carried onto this Work Order automatically.</div>
     </div>
-    <div class="svc-form-grid">
-      <label>Task Date<input name="task_date" type="date" id="svcWoStart" value="${esc(w.task_date || '')}"></label>
-      <label>Through <span class="svc-sub">(leave blank for a one-day visit)</span>
-        <input name="end_date" type="date" id="svcWoEnd" value="${esc(w.end_date || '')}">
-      </label>
-      <label class="svc-span">Required Employee
-        <select name="employee_name" id="svcWoEmp">
-          <option value="">—</option>
-          ${_svc.employees.map(e => `<option value="${esc(e.name)}" data-email="${esc(e.email || '')}"
-              ${w.employee_name === e.name ? 'selected' : ''}>${esc(e.name)}${e.discipline === 'service' ? ' (Service)' : ''}</option>`).join('')}
-        </select>
-      </label>
-      <div class="svc-span" id="svcAvail"></div>
-      <label>Employee Email<input name="employee_email" id="svcWoEmail" value="${esc(w.employee_email || '')}"
-             placeholder="auto-filled from their account"></label>
-      <label>On-site / Remote
-        <select name="location_type">
-          <option value="">—</option>
-          <option value="remote" ${w.location_type === 'remote' ? 'selected' : ''}>Remote</option>
-          <option value="onsite" ${w.location_type === 'onsite' ? 'selected' : ''}>On-site</option>
-        </select>
-      </label>
-      <label>Budgeted Hours<input name="budgeted_hours" type="number" step="0.5" min="0" value="${esc(w.budgeted_hours ?? '')}"></label>
-      <label>PPE Requirements<input name="ppe_requirements" value="${esc(w.ppe_requirements || request.ppe_requirements || '')}"></label>
-      <label class="svc-span">On-site Location Address<input name="onsite_address" value="${esc(w.onsite_address || request.onsite_address || '')}"></label>
-      <label class="svc-span">Task Description
-        <textarea name="task_description" rows="4">${esc(w.task_description || request.service_details || '')}</textarea>
-      </label>
-      <label>SDC Remote Support — Name<input name="sdc_contact_name" value="${esc(w.sdc_contact_name || '')}"></label>
-      <label>SDC Remote Support — Email<input name="sdc_contact_email" type="email" value="${esc(w.sdc_contact_email || '')}"></label>
-      <label>SDC Remote Support — Phone<input name="sdc_contact_phone" value="${esc(w.sdc_contact_phone || '')}"></label>
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">Schedule &amp; Who</h4>
+      <div class="svc-form-section-hint">When this happens, and who's doing it — pick a date first to see who's actually free.</div>
+      <div class="svc-form-grid">
+        <label>Task Date
+          <input name="task_date" type="date" id="svcWoStart" value="${esc(w.task_date || '')}"></label>
+        <label>Through
+          <input name="end_date" type="date" id="svcWoEnd" value="${esc(w.end_date || '')}">
+          <span class="svc-sub">(leave blank for a one-day visit)</span>
+        </label>
+        <label class="svc-span">Required Employee
+          <select name="employee_name" id="svcWoEmp">
+            <option value="">—</option>
+            ${_svc.employees.map(e => `<option value="${esc(e.name)}" data-email="${esc(e.email || '')}"
+                ${w.employee_name === e.name ? 'selected' : ''}>${esc(e.name)}${e.discipline === 'service' ? ' (Service)' : ''}</option>`).join('')}
+          </select>
+        </label>
+        <div class="svc-span" id="svcAvail"></div>
+        <label>Employee Email<input name="employee_email" id="svcWoEmail" value="${esc(w.employee_email || '')}"
+               placeholder="auto-filled from their account"></label>
+      </div>
+    </div>
+
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">Where &amp; Effort</h4>
+      <div class="svc-form-section-hint">Remote or on-site, roughly how many hours it's budgeted for, and any PPE the visit needs.</div>
+      <div class="svc-form-grid">
+        <label>On-site / Remote
+          <select name="location_type">
+            <option value="">—</option>
+            <option value="remote" ${w.location_type === 'remote' ? 'selected' : ''}>Remote</option>
+            <option value="onsite" ${w.location_type === 'onsite' ? 'selected' : ''}>On-site</option>
+          </select>
+        </label>
+        <label>Budgeted Hours<input name="budgeted_hours" type="number" step="0.5" min="0" value="${esc(w.budgeted_hours ?? '')}"></label>
+        <label>PPE Requirements<input name="ppe_requirements" value="${esc(w.ppe_requirements || request.ppe_requirements || '')}"></label>
+        <label class="svc-span">On-site Location Address<input name="onsite_address" value="${esc(w.onsite_address || request.onsite_address || '')}"></label>
+      </div>
+    </div>
+
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">Work Details</h4>
+      <div class="svc-form-section-hint">What the assigned employee will actually see as the task description — pre-filled from the request, edit as needed.</div>
+      <div class="svc-form-grid">
+        <label class="svc-span">Task Description
+          <textarea name="task_description" rows="4">${esc(w.task_description || request.service_details || '')}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">SDC Remote Support Contact</h4>
+      <div class="svc-form-section-hint">Who the customer can reach at SDC if they need remote help during this visit — optional.</div>
+      <div class="svc-form-grid">
+        <label>Name<input name="sdc_contact_name" value="${esc(w.sdc_contact_name || '')}"></label>
+        <label>Email<input name="sdc_contact_email" type="email" value="${esc(w.sdc_contact_email || '')}"></label>
+        <label>Phone<input name="sdc_contact_phone" value="${esc(w.sdc_contact_phone || '')}"></label>
+      </div>
     </div>
     ${isEdit ? '' : `<label class="svc-inline-check">
       <input type="checkbox" name="notify" checked> Email the Work Order to the employee now
@@ -1091,6 +1118,22 @@ async function openServiceWorkOrder(woId) {
 window.renderServicePage    = renderServicePage;
 window.openServiceRequest   = openServiceRequest;
 window.openServiceWorkOrder = openServiceWorkOrder;
+
+// Native <input type="date"> hides its calendar behind a small icon that's
+// easy to miss. Opening the picker on CLICK (not focus) makes it obvious the
+// calendar is there the moment someone reaches for it with a mouse, while
+// keyboard navigation (tabbing between fields) is untouched — showPicker()
+// never fires from a focusin, only from an actual click, so tab-focus flow
+// through the form still lands on each field normally. Delegated on document
+// (not per-input) so this covers every date field in the Service module,
+// including ones inside a modal() dialog appended to document.body after
+// this listener is wired.
+document.addEventListener('click', (e) => {
+  const el = e.target;
+  if (el && el.matches && el.matches('input[type="date"]') && typeof el.showPicker === 'function') {
+    try { el.showPicker(); } catch (_) { /* unsupported, or blocked — the field still works normally */ }
+  }
+});
 
 // Honour the deep link once the page has booted.
 window.addEventListener('DOMContentLoaded', () => {
