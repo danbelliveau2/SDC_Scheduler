@@ -4033,7 +4033,14 @@ function renderGantt() {
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
       id: String(t.id),
-      name: t.name,
+      // frappe-gantt (vendored via CDN, see index.html) builds its .bar-label
+      // <text> element with `innerHTML: this.task.name` internally — raw, with
+      // no escaping of its own. A task named e.g. "<img src=x onerror=...>"
+      // would execute for every viewer. escapeHtml here renders as literal
+      // decoded text on screen (same mechanism every other innerHTML render in
+      // this file relies on) since the real '<' never reaches the fragment
+      // parser as markup.
+      name: escapeHtml(t.name),
       start: t.start_date,
       end: t.end_date,
       // Backlog rows: progress derived from today's position; everything
