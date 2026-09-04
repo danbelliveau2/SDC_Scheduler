@@ -13,6 +13,21 @@ function logSaveError(action, taskId, req, err) {
   console.error(`[tasks] ${action} #${taskId} failed (user=${req.user || 'anonymous'}): ${err.message}`);
 }
 
+// Every free-text task field (name, notes, assignee, project, …) is stored
+// verbatim and later re-rendered client-side. Most render paths in app.js
+// HTML-escape on the way out, but at least one doesn't (frappe-gantt builds
+// its .bar-label with innerHTML: task.name internally, no escaping of its
+// own) — so a task named "<img src=x onerror=...>" runs for every viewer.
+// Stripping markup here, at the one place ALL task writes pass through
+// (POST create + PUT update), closes that regardless of which render path
+// a future field ends up on. Strips complete tags, then any stray angle
+// bracket left behind (an unclosed/malformed tag), so nothing can later be
+// recombined into markup by a bug elsewhere.
+function stripTags(v) {
+  if (typeof v !== 'string') return v;
+  return v.replace(/<[^>]*>/g, '').replace(/[<>]/g, '');
+}
+
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole, cascadeSchedule, logHistory, emailSvc } = deps;
   const router = Router();
@@ -134,7 +149,7 @@ module.exports = function createRouter(deps) {
 
     // ── Phase 1: the create itself ────────────────────────────────────────────
     try {
-      const { name } = req.body;
+      const name = stripTags(req.body.name);
       if (!name) return res.status(400).json({ error: 'name required' });
 
       const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks');
@@ -159,25 +174,25 @@ module.exports = function createRouter(deps) {
       const cols = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'is_action', 'machine', 'client_ref'];
       const values = [
         name,
-        req.body.project || null,
-        req.body.phase || null,
-        req.body.phase_group || null,
-        req.body.department || null,
-        req.body.sub_department || null,
-        req.body.assignee || null,
+        stripTags(req.body.project) || null,
+        stripTags(req.body.phase) || null,
+        stripTags(req.body.phase_group) || null,
+        stripTags(req.body.department) || null,
+        stripTags(req.body.sub_department) || null,
+        stripTags(req.body.assignee) || null,
         req.body.start_date ? String(req.body.start_date).slice(0, 10) : null,
         req.body.end_date ? String(req.body.end_date).slice(0, 10) : null,
         req.body.duration_days ?? null,
-        req.body.predecessors || null,
+        stripTags(req.body.predecessors) || null,
         req.body.is_milestone ? 1 : 0,
         req.body.progress || 0,
         req.body.allocation == null ? 90 : Math.max(0, Math.min(100, Number(req.body.allocation) || 0)),
         nextPriority,
-        req.body.notes || null,
+        stripTags(req.body.notes) || null,
         insertSortOrder,
-        req.body.anchor_key || null,
+        stripTags(req.body.anchor_key) || null,
         req.body.is_action ? 1 : 0,
-        req.body.machine || null,
+        stripTags(req.body.machine) || null,
         clientRef,
       ];
       const placeholders = cols.map(() => '?').join(', ');
@@ -280,7 +295,7 @@ module.exports = function createRouter(deps) {
               updates[f] = n;
             }
             else if (DATE_FIELDS.has(f)) updates[f] = req.body[f] ? String(req.body[f]).slice(0, 10) : null;
-            else updates[f] = req.body[f] === '' ? null : req.body[f];
+            else updates[f] = req.body[f] === '' ? null : stripTags(req.body[f]);
           }
         }
         if ('progress' in updates && !('completed_on' in updates)) {
