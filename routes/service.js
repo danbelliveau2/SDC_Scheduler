@@ -44,6 +44,11 @@ const WARRANTY    = new Set(['warranty', 'non_warranty', 'unknown']);
 // Whose machine is it. Drives whether a serial / job number can be demanded
 // at all (an SDC machine has one; a third-party machine does not).
 const MACHINE_TYPES = new Set(['sdc', 'non_sdc']);
+// Quote outcomes. 'superseded' is the one that earns its place: it is what
+// keeps a revised quote's predecessor on the record at its real value instead
+// of being overwritten, which is the whole reason quotes are rows rather than
+// a single field on the request.
+const QUOTE_STATUSES = new Set(['sent', 'accepted', 'declined', 'superseded']);
 
 // ── Bot protection (R2 §1, and a real operational problem) ───────────────────
 // The button this form replaces pointed at a public Smartsheet form that was
@@ -134,6 +139,11 @@ const WO_FIELDS = [
   'sdc_contact_name', 'sdc_contact_email', 'sdc_contact_phone',
   'budgeted_hours', 'status',
 ];
+
+// A quote is internal-only. It is deliberately absent from CUSTOMER_FIELDS, so
+// no crafted public payload can reach it — same guard that already keeps
+// quote_sent and current_status off the intake form.
+const QUOTE_FIELDS = ['quote_no', 'amount', 'sent_date', 'status', 'notes'];
 
 const REPORT_FIELDS = [
   'work_performed', 'findings', 'parts_used', 'hours_actual',
@@ -244,6 +254,10 @@ const FIELD_LABELS = {
   information_needed: 'Information needed',
 };
 
+const QUOTE_STATUS_LABELS = {
+  sent: 'Sent', accepted: 'Accepted', declined: 'Declined', superseded: 'Superseded',
+};
+
 // Display text for the closed vocabularies. Deliberately a separate map from the
 // Sets at the top of the file: those gate what may be STORED and must stay the
 // authority on that; this only decides how a stored value is spelled out.
@@ -255,6 +269,22 @@ const VALUE_LABELS = {
   machine_type: { sdc: 'SDC machine', non_sdc: 'Non-SDC machine' },
 };
 
+/** Did a write actually change anything? Compares loosely on purpose: an
+ *  UPDATE payload arrives coerced (a Number for money) while the stored row may
+ *  come back as a string or a DECIMAL, and "4200" vs 4200 is not a change any
+ *  human wants to read in a history list. NULL and '' are the same absence. */
+function changed(field, before, after) {
+  const norm = (v) => {
+    if (v == null || v === '') return '';
+    if (field === 'amount' || field === 'po_amount' || field === 'budgeted_hours') {
+      const n = Number(v);
+      return Number.isFinite(n) ? String(n) : String(v);
+    }
+    return String(v);
+  };
+  return norm(before) !== norm(after);
+}
+
 /** One field value, rendered for a history line. Long free text (service
  *  details runs to 20k chars) is clipped hard: the audit line records THAT the
  *  text changed and roughly how, and logService caps the whole detail at 2000
@@ -263,13 +293,19 @@ function auditVal(field, v) {
   if (v == null || v === '') return '(empty)';
   const mapped = VALUE_LABELS[field] && VALUE_LABELS[field][v];
   if (mapped) return `"${mapped}"`;
+  if (field === 'amount' || field === 'po_amount') {
+    const n = Number(v);
+    if (Number.isFinite(n)) {
+      return `"${n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}"`;
+    }
+  }
   const s = String(v).replace(/\s+/g, ' ').trim();
   return s.length > 80 ? `"${s.slice(0, 80)}…"` : `"${s}"`;
 }
 
 function coerce(field, value) {
   if (BOOL_FIELDS.has(field)) return value ? 1 : 0;
-  if (field === 'po_amount') {
+  if (field === 'amount' || field === 'po_amount') {
     if (value === '' || value == null) return null;
     // Tolerate what a human pastes out of a PO: "$172,000.00".
     const n = Number(String(value).replace(/[$,\s]/g, ''));
@@ -338,6 +374,18 @@ function validateVocab(body) {
   return null;
 }
 
+/** Quote payload gate. Separate from validateVocab because a quote is its own
+ *  record with its own required field — a quote without a number identifies
+ *  nothing and cannot be looked up in ETO, which is the entire point of it. */
+function validateQuote(body, existing) {
+  const no = 'quote_no' in body ? body.quote_no : (existing && existing.quote_no);
+  if (!no || !String(no).trim()) return 'A quote needs a quote number.';
+  if (body.status != null && body.status !== '' && !QUOTE_STATUSES.has(body.status)) return 'Invalid quote status.';
+  if (body.sent_date != null && body.sent_date !== '' && !ISO_DATE.test(body.sent_date)) return 'Quote sent date must be a real date.';
+  if (body.amount != null && body.amount !== '' && coerce('amount', body.amount) == null) return 'Quote value must be a number.';
+  return null;
+}
+
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole, emailSvc } = deps;
   const router = Router();
@@ -387,9 +435,22 @@ module.exports = function createRouter(deps) {
     for (const f of CUSTOMER_FIELDS) {
       if (f in payload) { cols.push(f); vals.push(coerce(f, payload[f])); }
     }
-    // A website request lands as 'new'; an internally-logged one too — the
-    // Service team moves it from there. No invented pipeline (§17).
-    cols.push('current_status'); vals.push(trim(payload.current_status) || 'new');
+    // Every new request lands as 'new' — website or internal. The Service team
+    // moves it from there. No invented pipeline (§17).
+    //
+    // This deliberately does NOT read payload.current_status. createRequest is
+    // shared by the PUBLIC intake and the internal create, and honouring the
+    // payload here let a crafted public submission choose its own status —
+    // straight past the CUSTOMER_FIELDS allowlist and directly contradicting
+    // the guarantee documented on that list ("a crafted public payload can
+    // never reach quote_sent, current_status, or any other internal management
+    // field"). A spam post could land pre-marked 'complete' and drop out of the
+    // Open Service view unseen.
+    //
+    // Nothing is lost internally: the internal POST applies current_status
+    // immediately afterwards through its INTERNAL_FIELDS update, which is the
+    // path that is actually allowed to set it.
+    cols.push('current_status'); vals.push('new');
 
     for (let attempt = 0; attempt < 5; attempt++) {
       vals[0] = await nextRequestNo(pool);
@@ -442,6 +503,52 @@ module.exports = function createRouter(deps) {
     if (wo.end_date && wo.end_date > wo.task_date) return ` from ${wo.task_date} through ${wo.end_date}`;
     return ` on ${wo.task_date}`;
   };
+
+  // ── Quotes ─────────────────────────────────────────────────────────────────
+  // "The active quote" is what the Service Log list column shows, and it is not
+  // simply the newest row: once a quote is ACCEPTED that is the one that governs
+  // the job, even if someone later logs a revision for reference. Falling back
+  // to the newest by sent date keeps the common case (quote, requote, requote)
+  // showing the current ask.
+  const ACTIVE_QUOTE_ORDER =
+    `ORDER BY (status = 'accepted') DESC, sent_date IS NULL, sent_date DESC, id DESC`;
+
+  async function listQuotes(requestId) {
+    const [rows] = await pool.query(
+      `SELECT * FROM service_quotes WHERE service_request_id = ?
+        ${ACTIVE_QUOTE_ORDER}`, [requestId]);
+    return rows;
+  }
+
+  /**
+   * Keep service_requests.quote_sent / quote_sent_at in step with the quote list.
+   *
+   * Precedent, not invention: the Work Order create path already does exactly
+   * this for `resource_assigned` ("a coordinator should not have to maintain it
+   * by hand once a WO exists"). Same reasoning — once real quotes are on the
+   * record, hand-ticking a checkbox that says the same thing is a second place
+   * to forget.
+   *
+   * It only ever turns the flag ON. A coordinator who quoted verbally can still
+   * tick the box with no quote rows, and nothing here will untick it; deleting
+   * the last quote leaves the flag alone rather than silently retracting a fact
+   * somebody asserted by hand.
+   */
+  async function syncQuoteFlag(requestId) {
+    try {
+      const [[q]] = await pool.query(
+        `SELECT sent_date FROM service_quotes
+          WHERE service_request_id = ? AND sent_date IS NOT NULL AND sent_date <> ''
+          ${ACTIVE_QUOTE_ORDER} LIMIT 1`, [requestId]);
+      if (!q) return;
+      await pool.query(
+        'UPDATE service_requests SET quote_sent = 1, quote_sent_at = ? WHERE id = ?',
+        [q.sent_date, requestId]);
+    } catch (e) { console.warn('[service] quote flag sync failed (non-fatal):', e.message); }
+  }
+
+  const quoteLabel = (q) =>
+    `${q.quote_no}${q.amount != null ? ` (${Number(q.amount).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })})` : ''}`;
 
   // ── Scheduler linkage (R2 §7) ──────────────────────────────────────────────
   // A Work Order creates a real row in `tasks`, which is the whole point: the
@@ -781,9 +888,11 @@ module.exports = function createRouter(deps) {
       // has in hand when someone calls (§15).
       if (q.search) {
         where.push(`(r.request_no LIKE ? OR r.company_name LIKE ? OR r.requestor_name LIKE ?
-                     OR r.machine_serial LIKE ? OR r.job_number LIKE ? OR r.service_details LIKE ?)`);
+                     OR r.machine_serial LIKE ? OR r.job_number LIKE ? OR r.service_details LIKE ?
+                     OR EXISTS (SELECT 1 FROM service_quotes q
+                                 WHERE q.service_request_id = r.id AND q.quote_no LIKE ?))`);
         const like = `%${String(q.search).slice(0, 100)}%`;
-        args.push(like, like, like, like, like, like);
+        args.push(like, like, like, like, like, like, like);
       }
       // Employee filter has to reach through the work orders — "show me every
       // request Nick is on" is a WO-level fact, not a request-level one.
@@ -798,7 +907,17 @@ module.exports = function createRouter(deps) {
                (SELECT COUNT(*) FROM service_work_orders w WHERE w.service_request_id = r.id AND w.status = 'open') AS wo_open,
                (SELECT COUNT(*) FROM service_attachments a WHERE a.service_request_id = r.id) AS attachment_count,
                (SELECT GROUP_CONCAT(DISTINCT w.employee_name SEPARATOR ', ')
-                  FROM service_work_orders w WHERE w.service_request_id = r.id) AS assigned_employees
+                  FROM service_work_orders w WHERE w.service_request_id = r.id) AS assigned_employees,
+               (SELECT q.quote_no FROM service_quotes q WHERE q.service_request_id = r.id
+                 ORDER BY (q.status = 'accepted') DESC, q.sent_date IS NULL, q.sent_date DESC, q.id DESC
+                 LIMIT 1) AS quote_no,
+               (SELECT q.amount FROM service_quotes q WHERE q.service_request_id = r.id
+                 ORDER BY (q.status = 'accepted') DESC, q.sent_date IS NULL, q.sent_date DESC, q.id DESC
+                 LIMIT 1) AS quote_amount,
+               (SELECT q.status FROM service_quotes q WHERE q.service_request_id = r.id
+                 ORDER BY (q.status = 'accepted') DESC, q.sent_date IS NULL, q.sent_date DESC, q.id DESC
+                 LIMIT 1) AS quote_status,
+               (SELECT COUNT(*) FROM service_quotes q WHERE q.service_request_id = r.id) AS quote_count
           FROM service_requests r
          ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
          ORDER BY r.service_complete ASC,
@@ -829,7 +948,9 @@ module.exports = function createRouter(deps) {
       const [history] = await pool.query(
         'SELECT * FROM service_history WHERE service_request_id = ? ORDER BY changed_at DESC, id DESC LIMIT 500', [id]);
 
-      res.json({ request, workOrders, attachments, history });
+      const quotes = await listQuotes(id);
+
+      res.json({ request, workOrders, attachments, history, quotes });
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
 
@@ -921,7 +1042,7 @@ module.exports = function createRouter(deps) {
       const otherFields = Object.keys(updates).filter(k =>
         !['quote_sent', 'po_received', 'service_complete', 'resource_assigned', 'current_status',
           'quote_sent_at', 'po_received_at', 'service_complete_date'].includes(k)
-        && String(updates[k] == null ? '' : updates[k]) !== String(existing[k] == null ? '' : existing[k]));
+        && changed(k, existing[k], updates[k]));
       if (otherFields.length) {
         audit.push(['request_updated',
           `Updated ${otherFields.map(k =>
@@ -952,6 +1073,7 @@ module.exports = function createRouter(deps) {
   //   service_work_orders  FK ON DELETE CASCADE   — goes with the parent
   //   service_attachments  FK ON DELETE CASCADE   — rows cascade, FILES do not
   //   service_reports      FK ON DELETE CASCADE   — goes with the parent
+  //   service_quotes       FK ON DELETE CASCADE   — goes with the parent
   //   service_history      no FK                  — deleted explicitly, FIRST
   //   tasks (schedule)     no FK, reached via service_work_orders.task_id
   //                                               — ids read BEFORE the cascade
@@ -980,6 +1102,107 @@ module.exports = function createRouter(deps) {
       notifyClients();
     } catch (e) {
       console.error('[service] delete request failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Quote CRUD ─────────────────────────────────────────────────────────────
+  // Editor and above, like every other write in this module. Quotes are never
+  // reachable from the public intake router at all — it mounts only the two
+  // create endpoints, so there is no path from a customer payload to here.
+  router.post('/api/service/requests/:id/quotes', requireRole('editor'), async (req, res) => {
+    try {
+      const requestId = Number(req.params.id);
+      const [[parent]] = await pool.query('SELECT id FROM service_requests WHERE id = ?', [requestId]);
+      if (!parent) return res.status(404).json({ error: 'Service request not found.' });
+
+      const err = validateQuote(req.body || {}, null);
+      if (err) return res.status(400).json({ error: err });
+
+      const cols = ['service_request_id', 'created_by'];
+      const vals = [requestId, who(req)];
+      for (const f of QUOTE_FIELDS) {
+        if (f in req.body) { cols.push(f); vals.push(coerce(f, req.body[f])); }
+      }
+      const [r] = await pool.query(
+        `INSERT INTO service_quotes (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, vals);
+
+      const [[quote]] = await pool.query('SELECT * FROM service_quotes WHERE id = ?', [r.insertId]);
+      await syncQuoteFlag(requestId);
+      await logService(requestId, 'quote_added',
+        `Quote ${quoteLabel(quote)} logged${quote.sent_date ? `, sent ${quote.sent_date}` : ''}.`, who(req));
+
+      res.json(quote);
+      notifyClients();
+    } catch (e) {
+      console.error('[service] create quote failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.put('/api/service/quotes/:id', requireRole('editor'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const [[existing]] = await pool.query('SELECT * FROM service_quotes WHERE id = ?', [id]);
+      if (!existing) return res.status(404).json({ error: 'Quote not found.' });
+
+      const err = validateQuote(req.body || {}, existing);
+      if (err) return res.status(400).json({ error: err });
+
+      const updates = {};
+      for (const f of QUOTE_FIELDS) if (f in req.body) updates[f] = coerce(f, req.body[f]);
+      if (!Object.keys(updates).length) return res.json(existing);
+
+      await pool.query(
+        `UPDATE service_quotes SET ${Object.keys(updates).map(k => `${k} = ?`).join(', ')} WHERE id = ?`,
+        [...Object.values(updates), id]);
+
+      const [[quote]] = await pool.query('SELECT * FROM service_quotes WHERE id = ?', [id]);
+      await syncQuoteFlag(existing.service_request_id);
+
+      // Name the outcome change specifically — "declined" and "accepted" are the
+      // two facts anyone reading this log later actually cares about.
+      if ('status' in updates && updates.status !== existing.status) {
+        await logService(existing.service_request_id, 'quote_status_changed',
+          `Quote ${quote.quote_no}: ${QUOTE_STATUS_LABELS[existing.status] || existing.status || '—'} → ${QUOTE_STATUS_LABELS[quote.status] || quote.status}.`,
+          who(req));
+      }
+      // Only fields that genuinely differ. The edit modal posts every field
+      // every time, so without this an edit that touched one value logs a line
+      // claiming all five changed — each one "X → X".
+      const QUOTE_LABELS = { quote_no: 'number', sent_date: 'sent date', amount: 'value', notes: 'notes' };
+      const other = Object.keys(updates)
+        .filter(k => k !== 'status' && changed(k, existing[k], quote[k]));
+      if (other.length) {
+        await logService(existing.service_request_id, 'quote_updated',
+          `Quote ${quote.quote_no} updated: ${other.map(k =>
+            `${QUOTE_LABELS[k] || k}: ${auditVal(k, existing[k])} → ${auditVal(k, quote[k])}`).join('; ')}.`,
+          who(req));
+      }
+
+      res.json(quote);
+      notifyClients();
+    } catch (e) {
+      console.error('[service] update quote failed:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.delete('/api/service/quotes/:id', requireRole('editor'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const [[existing]] = await pool.query('SELECT * FROM service_quotes WHERE id = ?', [id]);
+      if (!existing) return res.status(404).json({ error: 'Quote not found.' });
+
+      await pool.query('DELETE FROM service_quotes WHERE id = ?', [id]);
+      // Deliberately NOT re-deriving quote_sent downward — see syncQuoteFlag.
+      await logService(existing.service_request_id, 'quote_deleted',
+        `Quote ${quoteLabel(existing)} deleted.`, who(req));
+
+      res.json({ ok: true });
+      notifyClients();
+    } catch (e) {
+      console.error('[service] delete quote failed:', e.message);
       res.status(500).json({ error: e.message });
     }
   });

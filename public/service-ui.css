@@ -357,6 +357,54 @@
 /* Push the toggle to the right-hand end of the heading, away from the title. */
 .svc-sec h3 #svcEditCust { margin-left: auto; }
 
+/* ── Quotes ───────────────────────────────────────────────────────────────── */
+/* table-layout: fixed + the colgroup in drawQuotes is what makes the widths
+   actually hold. Without fixed, the browser redistributes by content and a
+   long quote number starves the columns that only ever hold a date or a pill. */
+.svc-quote-table {
+  width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--fs-md);
+}
+.svc-quote-table th {
+  text-align: left; padding: 0 8px 5px 0; font-size: var(--fs-2xs);
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);
+  font-weight: var(--fw-bold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.svc-quote-table td {
+  padding: 5px 8px 5px 0; border-top: 1px solid var(--border);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.svc-quote-table .svc-num { text-align: right; padding-right: 14px; }
+/* A superseded or declined quote stays on the record — that is the point of
+   keeping quotes as rows — but it should not compete with the live one. */
+.svc-quote-table tr.is-dim td { opacity: 0.55; }
+.svc-quote-table tr.is-dim .svc-mono { text-decoration: line-through; }
+
+.svc-q-sent       { background: #eff6ff; border-color: var(--sdc-blue-light); color: var(--sdc-primary); }
+.svc-q-accepted   { background: #dcfce7; border-color: #86efac; color: #166534; }
+.svc-q-declined   { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.svc-q-superseded { background: var(--surface-alt); border-color: var(--border-mid); color: var(--text-muted); }
+
+/* Icon-only row actions. Tiny column (64px) holding two glyphs, per the
+   column-width rule — a full .svc-btn would not fit and does not need to. */
+.svc-linkbtn {
+  background: none; border: 0; cursor: pointer; padding: 2px 4px;
+  color: var(--text-muted); font-size: var(--fs-md); line-height: 1; border-radius: 4px;
+}
+.svc-linkbtn:hover { background: var(--row-hover); color: var(--text); }
+.svc-linkbtn.svc-danger:hover { background: #fee2e2; color: #991b1b; }
+.svc-quote-actions { white-space: nowrap; }
+
+/* Read-only rendering for viewers. */
+.svc-quote-ro { display: flex; flex-wrap: wrap; gap: 10px; }
+.svc-quote-ro > span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Service Log table's Quote # cell: number over value, same stacked shape the
+   Company cell uses for company-over-requestor. */
+.svc-quote-cell { line-height: 1.25; }
+.svc-quote-cell .svc-quote-no { display: block; overflow: hidden; text-overflow: ellipsis; }
+.svc-quote-cell .svc-quote-no.is-accepted { color: #166534; font-weight: var(--fw-bold); }
+.svc-quote-cell .svc-sub { display: block; font-size: var(--fs-2xs); }
+
 /* ── Work Order cards ─────────────────────────────────────────────────────── */
 .svc-wo {
   border: 1px solid var(--border-mid); border-radius: 7px;

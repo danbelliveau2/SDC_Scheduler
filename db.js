@@ -631,6 +631,48 @@ async function init() {
   `);
   await pool.query(`ALTER TABLE service_attachments ADD INDEX idx_svc_att_request (service_request_id)`).catch(() => {});
 
+  // Service quotes. The Service Log has always been able to record THAT a
+  // quote went out (service_requests.quote_sent + quote_sent_at) but never
+  // WHICH one, what it was worth, or whether the customer took it. R2 §5
+  // documents that an automated ETO Service quote/order link is not currently
+  // possible, so this is the manual stand-in for it — and a repeatable one,
+  // because a service job is routinely requoted (there is an entire urgency,
+  // 'quote_mod', for "need modification quoted").
+  //
+  // quote_no is TYPED, not generated. Unlike wo_no — which this app owns and
+  // auto-numbers — a quote number is issued by ETO, so this column records an
+  // external identifier rather than minting one. That is also why it carries a
+  // plain index and no UNIQUE key: we do not control the namespace, and
+  // refusing to store a number because it looks like one we have already seen
+  // would be this app overruling the system of record.
+  //
+  // status is a closed vocabulary gated in routes/service.js. 'superseded' is
+  // what makes the revision chain readable: the old quote stays on the record
+  // with its real value instead of being overwritten by its replacement.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS service_quotes (
+      id                  INT AUTO_INCREMENT PRIMARY KEY,
+      service_request_id  INT NOT NULL,
+      quote_no            VARCHAR(64) NOT NULL,
+      amount              DECIMAL(12,2),
+      sent_date           VARCHAR(32),
+      status              VARCHAR(32) DEFAULT 'sent',
+      notes               TEXT,
+      created_by          VARCHAR(255),
+      created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at          DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_svc_quote_request FOREIGN KEY (service_request_id)
+        REFERENCES service_requests(id) ON DELETE CASCADE
+    )
+  `);
+  for (const [col, idx] of [
+    ['service_request_id', 'idx_svc_quote_request'],
+    ['quote_no',           'idx_svc_quote_no'],
+    ['status',             'idx_svc_quote_status'],
+  ]) {
+    await pool.query(`ALTER TABLE service_quotes ADD INDEX ${idx} (${col})`).catch(() => {});
+  }
+
   // Service Report (R2 §11). Generated — prepopulated — the moment an
   // employee marks their Work Order complete, so nothing already known from
   // the request / log / WO has to be re-typed.

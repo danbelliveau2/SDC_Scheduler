@@ -77,6 +77,14 @@ const DEPARTMENTS = { mechanical: 'Mechanical Eng', controls: 'Controls Eng', sh
 const WARRANTY    = { warranty: 'Warranty', non_warranty: 'Not warranty', unknown: 'Unknown' };
 const MACHINE_TYPES = { sdc: 'SDC machine', non_sdc: 'Non-SDC machine' };
 const LOCATIONS   = { remote: 'Remote', onsite: 'On-site' };
+const QUOTE_STATUSES = {
+  sent:       { label: 'Sent',       cls: 'svc-q-sent' },
+  accepted:   { label: 'Accepted',   cls: 'svc-q-accepted' },
+  declined:   { label: 'Declined',   cls: 'svc-q-declined' },
+  superseded: { label: 'Superseded', cls: 'svc-q-superseded' },
+};
+const QUOTE_STATUS_LABELS = Object.fromEntries(
+  Object.entries(QUOTE_STATUSES).map(([k, v]) => [k, v.label]));
 // Plain label map for the urgency <select>. URGENCY above carries a pill class
 // alongside the label, which a normal option list has no use for.
 const URGENCY_LABELS = Object.fromEntries(Object.entries(URGENCY).map(([k, v]) => [k, v.label]));
@@ -339,7 +347,8 @@ function drawRequestTable(body) {
     <table class="svc-table svc-table-requests">
       <colgroup>
         <col style="width:108px"><col style="width:56px"><col style="width:44px"><col style="width:76px">
-        <col style="width:200px"><col style="width:auto"><col style="width:104px"><col style="width:110px">
+        <col style="width:200px"><col style="width:auto"><col style="width:104px"><col style="width:100px">
+        <col style="width:110px">
         <col style="width:120px"><col style="width:108px"><col style="width:58px"><col style="width:88px">
         <col style="width:56px">
       </colgroup>
@@ -350,6 +359,7 @@ function drawRequestTable(body) {
           <th class="svc-step-cell" title="PO received">PO</th>
           <th class="svc-step-cell" title="Service complete">Complete</th>
           <th>Company</th><th>Details</th><th>Job / Serial</th>
+          <th title="Active quote — the accepted one, or the most recent">Quote #</th>
           <th class="svc-cell-center">Urgency</th>
           <th>Assigned</th>
           <th class="svc-cell-center">Status</th>
@@ -371,6 +381,14 @@ function drawRequestTable(body) {
             <td class="svc-detail-cell">${esc(String(r.service_details || '').slice(0, 220))}</td>
             <td>${esc(r.machine_serial || r.job_number) || '—'}${
               r.machine_type === 'non_sdc' ? ' <span class="svc-pill svc-nonsdc" title="Not an SDC-built machine — no build history or SDC warranty">non-SDC</span>' : ''}</td>
+            <td class="svc-quote-cell" title="${r.quote_no
+              ? esc(`${r.quote_no}${r.quote_amount != null ? ' — ' + money(r.quote_amount) : ''}`)
+                + esc(r.quote_status ? ` (${QUOTE_STATUS_LABELS[r.quote_status] || r.quote_status})` : '')
+                + esc(Number(r.quote_count) > 1 ? ` · ${r.quote_count} quotes on this request` : '')
+              : 'No quote logged'}">
+              ${r.quote_no ? `<span class="svc-mono svc-quote-no ${r.quote_status === 'accepted' ? 'is-accepted' : ''}">${esc(r.quote_no)}</span>` : '—'}
+              ${r.quote_amount != null ? `<span class="svc-sub">${esc(money(r.quote_amount))}</span>` : ''}
+            </td>
             <td class="svc-cell-center">${urgencyPill(r.urgency)}</td>
             <td>${esc(r.assigned_employees || r.resource_assigned) || '<span class="svc-sub">unassigned</span>'}</td>
             <td class="svc-cell-center">${statusPill(r)}</td>
@@ -737,6 +755,15 @@ function drawDrawer(focusWoId) {
       </section>
 
       <section class="svc-sec">
+        <h3>Quotes
+          ${canEditService()
+            ? '<button type="button" class="svc-btn svc-btn-primary svc-btn-sm" id="svcAddQuote">+ Add Quote</button>'
+            : ''}
+        </h3>
+        ${drawQuotes(d.quotes)}
+      </section>
+
+      <section class="svc-sec">
         <h3>Work Orders <button type="button" class="svc-btn svc-btn-primary svc-btn-sm" id="svcAddWo">+ Create Work Order</button></h3>
         <div id="svcWoList">${drawWorkOrders(d.workOrders)}</div>
       </section>
@@ -755,6 +782,10 @@ function drawDrawer(focusWoId) {
 
   document.getElementById('svcClose').addEventListener('click', closeDrawer);
   document.getElementById('svcAddWo').addEventListener('click', () => openWorkOrderForm(r));
+
+  const addQuote = document.getElementById('svcAddQuote');
+  if (addQuote) addQuote.addEventListener('click', () => openQuoteForm(r));
+  wireQuoteButtons(r, d.quotes);
 
   // Toggling only swaps the rendering — there is nothing to save on the way out,
   // because each field already committed on change. Clicking "Done" blurs the
@@ -808,6 +839,53 @@ function woSpan(w) {
 function woOverdue(w) {
   const last = w.end_date && w.task_date && w.end_date > w.task_date ? w.end_date : w.task_date;
   return w.status === 'open' && !!last && last < today();
+}
+
+// Quotes render as a compact TABLE rather than the card layout the Work Orders
+// use. A WO card carries a description, a PPE line, delivery state and five
+// actions; a quote is four short values. CLAUDE.md's grid rule applies —
+// table-layout: fixed + colgroup, the quote number takes the remainder, and
+// the money / date / status columns are sized for exactly what they hold.
+function drawQuotes(list) {
+  if (!canEditService()) {
+    // Viewers get the same facts without controls that would only bounce off
+    // requireRole('editor') on the server.
+    if (!list || !list.length) return '<div class="svc-sub">No quotes logged.</div>';
+    return `<div class="svc-quote-ro">${list.map(q =>
+      `<span><strong>${esc(q.quote_no)}</strong> ${q.amount != null ? esc(money(q.amount)) : ''}
+       ${quoteStatusPill(q.status)}</span>`).join('')}</div>`;
+  }
+  if (!list || !list.length) {
+    return '<div class="svc-sub">No quotes logged yet. Add one to record the number, its value and where it landed.</div>';
+  }
+  return `
+    <table class="svc-quote-table">
+      <colgroup><col style="width:auto"><col style="width:96px"><col style="width:112px">
+                <col style="width:104px"><col style="width:64px"></colgroup>
+      <thead>
+        <tr><th>Quote #</th><th class="svc-num">Value</th><th>Sent</th>
+            <th class="svc-cell-center">Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        ${list.map(q => `
+          <tr data-quote="${q.id}" class="${q.status === 'superseded' || q.status === 'declined' ? 'is-dim' : ''}">
+            <td class="svc-mono" title="${esc(q.notes || '')}">${esc(q.quote_no)}${
+              q.notes ? ' <span class="svc-clip" title="' + esc(q.notes) + '">🗒</span>' : ''}</td>
+            <td class="svc-num">${q.amount != null ? esc(money(q.amount)) : '—'}</td>
+            <td>${fmtDate(q.sent_date)}</td>
+            <td class="svc-cell-center">${quoteStatusPill(q.status)}</td>
+            <td class="svc-cell-center svc-quote-actions">
+              <button type="button" class="svc-linkbtn" data-qact="edit" data-quote="${q.id}" title="Edit quote">✎</button>
+              <button type="button" class="svc-linkbtn svc-danger" data-qact="delete" data-quote="${q.id}" title="Delete quote">×</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function quoteStatusPill(status) {
+  const meta = QUOTE_STATUSES[status] || { label: status || '—', cls: '' };
+  return `<span class="svc-pill ${meta.cls}">${esc(meta.label)}</span>`;
 }
 
 function drawWorkOrders(list) {
@@ -872,6 +950,74 @@ function wireLogFields(requestId) {
       }
     });
   });
+}
+
+function wireQuoteButtons(request, quotes) {
+  const drawer = document.getElementById('svcDrawer');
+  drawer.querySelectorAll('[data-qact]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.quote);
+      const quote = (quotes || []).find(q => q.id === id);
+      if (!quote) return;
+
+      if (btn.dataset.qact === 'edit') return openQuoteForm(request, quote);
+
+      const ok = await confirmDialog(
+        `Delete quote ${quote.quote_no}?
+
+` +
+        'This removes it from the quote history for this request. It cannot be undone.',
+        { title: 'Delete quote', okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
+      if (!ok) return;
+      try {
+        await api(`/api/service/quotes/${id}`, { method: 'DELETE' });
+        await refreshDrawer(request.id);
+        await loadService(); drawTabs(); drawBody();
+        toast(`Quote ${quote.quote_no} deleted.`, 'success');
+      } catch (err) { toast(`Could not delete quote: ${err.message}`, 'error'); }
+    });
+  });
+}
+
+// Add / edit one quote. Same modal() helper and .svc-form-grid the Work Order
+// form uses, so the two internal forms in this drawer look like one thing.
+function openQuoteForm(request, existing) {
+  const q = existing || {};
+  const isEdit = !!existing;
+  modal(isEdit ? `Edit quote ${q.quote_no}` : 'Add quote', `
+    <div class="svc-form-grid">
+      <label class="svc-span">Quote #
+        <input name="quote_no" type="text" required value="${esc(q.quote_no || '')}"
+               placeholder="e.g. Q-1043 — the number from ETO">
+      </label>
+      <label>Value
+        <input name="amount" type="text" inputmode="decimal" value="${esc(q.amount != null ? q.amount : '')}"
+               placeholder="4200.00">
+      </label>
+      <label>Date sent
+        <input name="sent_date" type="date" value="${esc(q.sent_date ? String(q.sent_date).slice(0, 10) : today())}">
+      </label>
+      <label>Status
+        <select name="status">
+          ${Object.entries(QUOTE_STATUS_LABELS).map(([v, label]) =>
+            `<option value="${v}"${(q.status || 'sent') === v ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="svc-span">Notes
+        <textarea name="notes" rows="2" placeholder="What this quote covers, or why it was revised.">${esc(q.notes || '')}</textarea>
+      </label>
+    </div>`, async (data) => {
+    if (!String(data.quote_no || '').trim()) throw new Error('A quote needs a quote number.');
+    await api(isEdit ? `/api/service/quotes/${q.id}` : `/api/service/requests/${request.id}/quotes`, {
+      method: isEdit ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    await refreshDrawer(request.id);
+    await loadService(); drawTabs(); drawBody();
+    toast(isEdit ? `Quote ${data.quote_no} updated.` : `Quote ${data.quote_no} added.`, 'success');
+  }, isEdit ? 'Save quote' : 'Add quote');
 }
 
 function wireWorkOrderButtons(request) {
