@@ -460,6 +460,17 @@
 .svc-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
 @media (max-width: 720px) { .svc-form-grid, .svc-log-grid { grid-template-columns: 1fr; } }
 
+/* Groups a long form into labeled, visually separated blocks within the same
+   scrollable modal body — an alternative to a multi-step wizard that keeps
+   the existing "collect every [name] field and submit once" modal() pattern
+   intact (see openWorkOrderForm). */
+.svc-form-section + .svc-form-section { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border-mid); }
+.svc-form-section-title {
+  margin: 0 0 9px; font-size: var(--fs-sm); font-weight: var(--fw-bold);
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted, var(--text));
+}
+.svc-form-section-hint { margin: -6px 0 9px; font-size: var(--fs-sm); color: var(--text-muted, var(--text)); font-weight: normal; text-transform: none; letter-spacing: 0; }
+
 .svc-inline-check {
   display: flex !important; flex-direction: row !important; align-items: center; gap: 8px;
   margin-top: 12px; text-transform: none !important; letter-spacing: 0 !important;
