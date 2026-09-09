@@ -230,6 +230,43 @@ const nowStamp = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const trim = (v, n = 255) => (v == null ? null : String(v).trim().slice(0, n) || null);
 const who = (req) => (req.authUser && req.authUser.name) || req.user || 'system';
 
+// History is read by the Service coordinator, not by us, so an audit line says
+// "Department needed" and "Machine down" rather than `department_needed` and
+// `machine_down`. The other lines in this handler are already written that way
+// ("Service Quote Sent checked"); these labels keep the new ones consistent.
+const FIELD_LABELS = {
+  company_name: 'Company', requestor_name: 'Requestor', requestor_email: 'Email',
+  requestor_phone: 'Phone', machine_type: 'Machine', machine_serial: 'Machine serial',
+  job_number: 'Job #', urgency: 'Urgency', service_details: 'Service details',
+  location_type: 'Remote / on-site', department_needed: 'Department needed',
+  warranty: 'Warranty', ppe_requirements: 'PPE', additional_comments: 'Additional comments',
+  onsite_address: 'On-site address', po_number: 'Customer PO #', po_amount: 'PO value',
+  information_needed: 'Information needed',
+};
+
+// Display text for the closed vocabularies. Deliberately a separate map from the
+// Sets at the top of the file: those gate what may be STORED and must stay the
+// authority on that; this only decides how a stored value is spelled out.
+const VALUE_LABELS = {
+  urgency: { machine_down: 'Machine down', urgent_running: 'Urgent', schedule: 'Schedule', quote_mod: 'Quote mod' },
+  department_needed: { mechanical: 'Mechanical Eng', controls: 'Controls Eng', shop: 'Shop', all: 'All' },
+  location_type: { remote: 'Remote', onsite: 'On-site' },
+  warranty: { warranty: 'Warranty', non_warranty: 'Not warranty', unknown: 'Unknown' },
+  machine_type: { sdc: 'SDC machine', non_sdc: 'Non-SDC machine' },
+};
+
+/** One field value, rendered for a history line. Long free text (service
+ *  details runs to 20k chars) is clipped hard: the audit line records THAT the
+ *  text changed and roughly how, and logService caps the whole detail at 2000
+ *  chars anyway — a full diff belongs somewhere other than a history list. */
+function auditVal(field, v) {
+  if (v == null || v === '') return '(empty)';
+  const mapped = VALUE_LABELS[field] && VALUE_LABELS[field][v];
+  if (mapped) return `"${mapped}"`;
+  const s = String(v).replace(/\s+/g, ' ').trim();
+  return s.length > 80 ? `"${s.slice(0, 80)}…"` : `"${s}"`;
+}
+
 function coerce(field, value) {
   if (BOOL_FIELDS.has(field)) return value ? 1 : 0;
   if (field === 'po_amount') {
@@ -875,10 +912,21 @@ module.exports = function createRouter(deps) {
         audit.push(['resource_assigned', `Resource assigned: ${updates.resource_assigned || '(cleared)'}.`]);
       if ('current_status' in updates && updates.current_status !== existing.current_status)
         audit.push(['status_changed', `Status: ${existing.current_status || '—'} → ${updates.current_status || '—'}.`]);
+      // The remaining fields are the customer's own account of the job — what
+      // machine, which department, what actually happened. Now that the UI lets
+      // an editor correct those, a bare list of field NAMES is not an audit
+      // trail: it says something changed without saying what it used to be, so
+      // nobody can tell an internal correction from what the customer submitted.
+      // Record old → new, and only for fields that genuinely differ.
       const otherFields = Object.keys(updates).filter(k =>
         !['quote_sent', 'po_received', 'service_complete', 'resource_assigned', 'current_status',
-          'quote_sent_at', 'po_received_at', 'service_complete_date'].includes(k));
-      if (otherFields.length) audit.push(['request_updated', `Updated: ${otherFields.join(', ')}.`]);
+          'quote_sent_at', 'po_received_at', 'service_complete_date'].includes(k)
+        && String(updates[k] == null ? '' : updates[k]) !== String(existing[k] == null ? '' : existing[k]));
+      if (otherFields.length) {
+        audit.push(['request_updated',
+          `Updated ${otherFields.map(k =>
+            `${FIELD_LABELS[k] || k}: ${auditVal(k, existing[k])} → ${auditVal(k, updates[k])}`).join('; ')}.`]);
+      }
       for (const [action, detail] of audit) await logService(id, action, detail, who(req));
 
       const [[row]] = await pool.query('SELECT * FROM service_requests WHERE id = ?', [id]);

@@ -314,19 +314,48 @@
   font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-muted); font-weight: var(--fw-bold);
 }
-.svc-log-grid input, .svc-log-grid textarea,
+.svc-log-grid input, .svc-log-grid select, .svc-log-grid textarea,
 .svc-form-grid input, .svc-form-grid select, .svc-form-grid textarea {
   padding: 6px 9px; border: 1px solid var(--border-strong); border-radius: 5px;
   background: var(--surface); color: var(--text);
   font: var(--fw-normal) var(--fs-md) var(--font-ui);
   text-transform: none; letter-spacing: 0;
 }
-.svc-log-grid input:focus, .svc-log-grid textarea:focus,
+.svc-log-grid input:focus, .svc-log-grid select:focus, .svc-log-grid textarea:focus,
 .svc-form-grid input:focus, .svc-form-grid select:focus, .svc-form-grid textarea:focus {
   outline: none; border-color: var(--sdc-primary);
 }
 .svc-log-grid textarea, .svc-form-grid textarea { resize: vertical; }
+/* Selects and text inputs share grid rows in the Customer request block, and a
+   select is intrinsically ~3px taller than an input at the same font and
+   padding — enough to read as a broken row. Pin BOTH to one height rather than
+   nudging the select, so neither can drift from the other.
+   Scoped to .svc-log-grid on purpose: .svc-form-grid has the same mismatch, but
+   that is pre-existing and its date/number inputs are not part of this change. */
+.svc-log-grid input, .svc-log-grid select { height: 30px; }
 .svc-span { grid-column: 1 / -1; }
+
+/* A one-line caveat under a section heading (e.g. "this came from the
+   website"). Sits between the <h3> and the fields it qualifies. */
+.svc-sec-note { margin: -4px 0 9px; }
+
+/* Edit mode on the Customer request section. The customer's own account of the
+   fault is read-only by default; when an editor deliberately opens it for
+   correction the section is tinted and rules off, so it is obvious at a glance
+   which block is live and that this is not the normal resting state. */
+.svc-sec.is-editing {
+  /* A bordered, tinted panel rather than an edge accent: pulled flush to the
+     drawer wall the left rule just reads as drawer chrome, and a 4% tint is
+     invisible. Inset and outlined, the section clearly lifts off the page. */
+  border: 1px solid color-mix(in srgb, var(--sdc-primary) 32%, transparent);
+  border-left: 3px solid var(--sdc-primary);
+  background: color-mix(in srgb, var(--sdc-primary) 7%, transparent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+}
+/* Push the toggle to the right-hand end of the heading, away from the title. */
+.svc-sec h3 #svcEditCust { margin-left: auto; }
 
 /* ── Work Order cards ─────────────────────────────────────────────────────── */
 .svc-wo {
