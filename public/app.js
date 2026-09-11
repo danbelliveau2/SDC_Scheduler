@@ -8184,9 +8184,18 @@ function renderDeptProjectRollup() {
   const root = document.getElementById('dept-project-rollup');
   if (!root) return;
 
-  // Sales + inactive (per SDC Projects Reports status) schedules are
+  // Sales/On-Hold + inactive (per SDC Projects Reports status) schedules are
   // already excluded inside _deptSelectedProjects.
-  const { selected, allProjects } = _deptSelectedProjects();
+  const _sel = _deptSelectedProjects();
+  const allProjects = _sel.allProjects;
+  // COMPLETED JOBS auto-move (Dan): a project whose financial milestones are
+  // ALL PAID is done invoicing — it drops out of the cards/calendar/strips
+  // and lands in the collapsed "Completed Jobs" section at the bottom.
+  const completedJobs = _sel.selected.filter(p => {
+    const rows = state.financials[p];
+    return Array.isArray(rows) && rows.length > 0 && rows.every(r => r.paid);
+  });
+  const selected = _sel.selected.filter(p => !completedJobs.includes(p));
   // ± Variance toggle — OFF (default): milestones show just their projected/
   // actual date and done-state, clean and compact. ON: baseline comparison
   // appears — strike-through original dates + trending/final slip chips.
@@ -8580,6 +8589,16 @@ function renderDeptProjectRollup() {
       </div>
       ${milestoneStripsHtml}
     </section>
+
+    ${completedJobs.length ? `
+    <section class="pdash-section">
+      <details class="pdash-pm-group inv-completed-jobs">
+        <summary class="pdash-pm-head">✓ Completed Jobs <span class="pdash-pm-count">${completedJobs.length} — every financial milestone paid</span></summary>
+        <div class="inv-completed-list">
+          ${completedJobs.sort().map(p => `<div class="inv-completed-row pdash-fintl-projlink" data-project="${escapeHtml(p)}" title="${escapeHtml(p)} — open this project">${escapeHtml(p)}</div>`).join('')}
+        </div>
+      </details>
+    </section>` : ''}
   `;
 
   // ── Wire handlers ──
@@ -18214,18 +18233,17 @@ async function mountFinancialsEditor(container, project, machine) {
     container.innerHTML = `
       <div class="financials-table-wrap">
         <table class="financials-table">
-          <colgroup><col class="col-idx" /><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /><col class="col-paid" /></colgroup>
+          <colgroup><col class="col-idx" /><col class="col-percent" /><col class="col-name" /><col class="col-trigger" /><col class="col-date" /></colgroup>
           <thead><tr>
             <th class="fin-idx" title="Right-click a number to add a line below it or delete that line.">#</th>
             <th class="num">%</th>
             <th>Description</th>
             <th title="Predecessor — task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag ('FAT +1w'). Blank = set the Date manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
             <th>Date</th>
-            <th class="paid" title="Check when the invoice has been sent.">Sent</th>
           </tr></thead>
           <tbody>
             ${rows.length === 0
-              ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
               : rows.map((r, i) => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
@@ -18236,7 +18254,6 @@ async function mountFinancialsEditor(container, project, machine) {
                 <td><input type="text" data-field="name" value="${escapeHtml(r.name || '')}" placeholder="e.g. Receipt of PO" /></td>
                 <td><input type="text" data-field="predecessors" value="${escapeHtml(finPredDisplay(r.predecessors) || '')}" placeholder="line #  ·  PO / FAT / Ship" /></td>
                 <td><input type="date" data-field="due_date" value="${dateValue}" ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} /></td>
-                <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -20585,7 +20602,6 @@ function openFinancialsModal(project) {
             <col class="col-name" />
             <col class="col-trigger" />
             <col class="col-date" />
-            <col class="col-paid" />
           </colgroup>
           <thead>
             <tr>
@@ -20594,12 +20610,11 @@ function openFinancialsModal(project) {
               <th>Description</th>
               <th title="Predecessor — same syntax as the task Predecessors column. Accepts a task line number (e.g. 12), an anchor alias (PO, Power-Up, FAT, Ship), or either with a lag (e.g. 'FAT +1w', '12 +3d'). Blank = no automatic date; fill in the Date column manually."><div class="th-stacked">Trigger<small>(predecessor)</small></div></th>
               <th>Date</th>
-              <th class="paid" title="Check when the invoice has been sent. The Gantt line goes from dashed to solid.">Sent</th>
             </tr>
           </thead>
           <tbody>
             ${rows.length === 0
-              ? `<tr class="financials-empty"><td colspan="6">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
+              ? `<tr class="financials-empty"><td colspan="5">No financial milestones yet. Click “+ Add milestone” below to create one.</td></tr>`
               : rows.map((r, i) => {
               const derived = computeFinancialTriggerDate(r.predecessors, project);
               const dateValue = derived || r.due_date || '';
@@ -20614,7 +20629,6 @@ function openFinancialsModal(project) {
                     <input type="date" data-field="due_date" value="${dateValue}"
                       ${dateDisabled ? 'disabled title="Auto-derived from the Trigger — clear Trigger to set manually"' : ''} />
                   </td>
-                  <td class="paid"><input type="checkbox" data-field="sent" ${r.sent ? 'checked' : ''} /></td>
                 </tr>
               `;
             }).join('')}
@@ -28992,15 +29006,32 @@ async function init() {
       }
     }
   } catch (_) {}
+  // OPENING the app (a brand-new browser tab) lands on the Projects LIST —
+  // pick a job and go in from there. It used to open the All-projects
+  // schedule, which builds every task in the company into one grid + Gantt
+  // and hangs weaker machines (Dan, 2026-09-11).
+  // A refresh inside the SAME tab is NOT "opening the app" — it restores the
+  // view you were on, so F5 mid-work never kicks you out of a schedule.
+  // (Open tabs / active project already live in sessionStorage for exactly
+  //  this reason: a fresh tab restores no project, which IS the heavy
+  //  All-projects case.) Must stay SYNCHRONOUS — after loadTasks() resolves
+  // the 2000-row grid has already been built and the guard is pointless.
   try {
-    const savedView = localStorage.getItem('sdcActiveView');
     const isResPop = new URLSearchParams(location.search).get('resview') === '1';
-    if (!isResPop && savedView && savedView !== 'schedule') {
-      if (!document.getElementById(`view-${savedView}`)) {
+    const isShare = !!(window.sdcAuth && window.sdcAuth.shareMode);
+    const freshTab = !sessionStorage.getItem('sdcBooted');
+    sessionStorage.setItem('sdcBooted', '1');
+    const savedView = localStorage.getItem('sdcActiveView');
+    const wantView = freshTab ? 'projects' : savedView;
+    if (!isResPop && !isShare && wantView && wantView !== state.view) {
+      if (!document.getElementById(`view-${wantView}`)) {
         // Saved view no longer exists (e.g. procurement page was removed). Reset.
         localStorage.removeItem('sdcActiveView');
-      } else if (!(savedView === 'team' && !sessionStorage.getItem('sdcTeamAuth'))) {
-        setView(savedView);
+      } else if (!(wantView === 'team' && !sessionStorage.getItem('sdcTeamAuth'))) {
+        setView(wantView);
+        // Personal-mode restore below reads this: the user didn't choose
+        // Projects, boot did.
+        if (freshTab) state._bootForcedProjects = true;
       }
     }
   } catch (_) {}
@@ -29013,9 +29044,13 @@ async function init() {
       const shareProject = (state.tasks.find(t => t.project) || {}).project || '';
       state.openProjects = shareProject ? [shareProject] : [];
       state.filters.project = shareProject;
-      state.view = 'schedule';
-      document.body.dataset.view = 'schedule';
+      // setView (not a hand-assigned state.view) — it also moves the .active
+      // class onto #view-schedule. The hand-set version only worked because
+      // index.html ships #view-schedule active; now that boot can legitimately
+      // activate #view-projects, a customer would otherwise be shown the
+      // internal project LIST with their schedule painted into a hidden node.
       document.body.classList.add('share-link-view');
+      setView('schedule');
       render();
       // enterCustomerView measures the settled layout — at boot the first
       // attempt can land before the grid/Gantt exist and silently no-op, so
@@ -29066,9 +29101,18 @@ async function init() {
   // but only when the user was last on the schedule; a restored Procurement /
   // Vendor PO / Shop Parts view should stay where the user left it.
   loadTeam().then(() => {
-    if (_actionsPageState.personId != null && state.view === 'schedule') {
-      routePersonalMode(_actionsPageState.personId);
+    const pid = _actionsPageState.personId;
+    if (pid == null) return;
+    if (state._bootForcedProjects) {
+      // Fresh tab: boot parked us on Projects. A signed-in person still gets
+      // their personal view — but only if that person still exists;
+      // routePersonalMode's not-found branch falls back to a bare
+      // setView('schedule') with no filters, i.e. the all-projects render
+      // we just avoided.
+      if ((state.team || []).some(m => m.id === pid)) routePersonalMode(pid);
+      return;
     }
+    if (state.view === 'schedule') routePersonalMode(pid);
   });
   // Phase 2 (Abhi port): boot the comments UI once. It attaches a
   // MutationObserver to #tasks-tbody and re-injects 💬 badges after every

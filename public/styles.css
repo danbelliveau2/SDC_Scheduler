@@ -11700,6 +11700,19 @@ td.sales-suppressed {
 .pdash-fintl-scroll { cursor: grab; }
 .pdash-fintl-scroll.panning { cursor: grabbing; user-select: none; }
 
+/* Completed Jobs (Invoicing) — fully-paid projects, collapsed at the bottom. */
+.inv-completed-list { display: flex; flex-direction: column; gap: 2px; padding: 6px 4px; }
+.inv-completed-row {
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-md);
+  color: var(--text-muted, #64748b);
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.inv-completed-row::before { content: '✓ '; color: #16a34a; font-weight: 800; }
+.inv-completed-row:hover { background: var(--row-hover, #f1f5f9); color: var(--sdc-blue, #1574c4); }
+
 /* ⛶ Expand — the resource calendar takes over the whole window: nothing
    else on screen, its own scrolling. Esc or the button exits. */
 .resources-section.res-fullscreen {
