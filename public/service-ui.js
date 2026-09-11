@@ -45,6 +45,12 @@ const _svc = {
   summary: {},
   employees: [],
   detail: null,          // { request, workOrders, attachments, history }
+  // Customer request fields are read-only until an editor explicitly turns
+  // editing on. They are the customer's own account of the fault — a different
+  // kind of record from the Service Log status fields below them, which are
+  // ours to maintain and stay editable at all times. Resets every time the
+  // drawer opens, so nobody leaves a request sitting in edit mode.
+  editCustomer: false,
   filters: { search: '', urgency: '', status: '', department: '', location: '', warranty: '', employee: '', machine_type: '' },
   loading: false,
 };
@@ -55,6 +61,7 @@ const _WO_VIEWS = new Set(['work-orders', 'mine', 'scheduled']);
 const VIEWS = [
   { key: 'log',         label: 'Service Log',     hint: 'Every Service request.' },
   { key: 'open',        label: 'Open Service',    hint: 'Requests that are not complete.' },
+  { key: 'unassigned',  label: 'Unassigned',      hint: 'Requests with no Work Order created yet.' },
   { key: 'work-orders', label: 'Work Orders',     hint: 'All internal Work Orders.' },
   { key: 'mine',        label: 'My Service Work', hint: 'Work Orders assigned to you.' },
   { key: 'scheduled',   label: 'Scheduled',       hint: 'Future Work Orders.' },
@@ -70,6 +77,18 @@ const URGENCY = {
 const DEPARTMENTS = { mechanical: 'Mechanical Eng', controls: 'Controls Eng', shop: 'Shop', all: 'All' };
 const WARRANTY    = { warranty: 'Warranty', non_warranty: 'Not warranty', unknown: 'Unknown' };
 const MACHINE_TYPES = { sdc: 'SDC machine', non_sdc: 'Non-SDC machine' };
+const LOCATIONS   = { remote: 'Remote', onsite: 'On-site' };
+const QUOTE_STATUSES = {
+  sent:       { label: 'Sent',       cls: 'svc-q-sent' },
+  accepted:   { label: 'Accepted',   cls: 'svc-q-accepted' },
+  declined:   { label: 'Declined',   cls: 'svc-q-declined' },
+  superseded: { label: 'Superseded', cls: 'svc-q-superseded' },
+};
+const QUOTE_STATUS_LABELS = Object.fromEntries(
+  Object.entries(QUOTE_STATUSES).map(([k, v]) => [k, v.label]));
+// Plain label map for the urgency <select>. URGENCY above carries a pill class
+// alongside the label, which a normal option list has no use for.
+const URGENCY_LABELS = Object.fromEntries(Object.entries(URGENCY).map(([k, v]) => [k, v.label]));
 
 // Free-text operational status (§17) — a starting vocabulary the coordinator
 // can override by typing. Deliberately NOT enforced server-side: §17 says not
@@ -140,7 +159,7 @@ function buildQuery() {
     if (f.employee) q.set('employee', f.employee);
     if (f.location) q.set('location', f.location);
   } else {
-    if (_svc.view === 'open' || _svc.view === 'completed') q.set('view', _svc.view);
+    if (_svc.view === 'open' || _svc.view === 'completed' || _svc.view === 'unassigned') q.set('view', _svc.view);
     for (const k of ['search', 'urgency', 'status', 'department', 'location', 'warranty', 'employee', 'machine_type']) {
       if (f[k]) q.set(k === 'search' ? 'search' : k, f[k]);
     }
@@ -236,7 +255,7 @@ async function renderServicePage() {
 function drawTabs() {
   const s = _svc.summary;
   const counts = {
-    log: s.total, open: s.open, 'work-orders': s.work_orders,
+    log: s.total, open: s.open, unassigned: s.unassigned, 'work-orders': s.work_orders,
     mine: s.mine, scheduled: s.scheduled, completed: s.completed,
   };
   document.getElementById('svcTabs').innerHTML = VIEWS.map(v => `
@@ -320,7 +339,9 @@ function drawRequestTable(body) {
   const rows = _svc.requests;
   if (!rows.length) {
     body.innerHTML = `<div class="svc-empty">
-      ${_svc.view === 'completed' ? 'No completed Service requests yet.' : 'No Service requests match.'}
+      ${_svc.view === 'completed'  ? 'No completed Service requests yet.'
+      : _svc.view === 'unassigned' ? 'Nothing unassigned — every open request has a Work Order.'
+      : 'No Service requests match.'}
     </div>`;
     return;
   }
@@ -329,7 +350,8 @@ function drawRequestTable(body) {
     <table class="svc-table svc-table-requests">
       <colgroup>
         <col style="width:108px"><col style="width:56px"><col style="width:44px"><col style="width:76px">
-        <col style="width:200px"><col style="width:auto"><col style="width:104px"><col style="width:110px">
+        <col style="width:200px"><col style="width:auto"><col style="width:104px"><col style="width:100px">
+        <col style="width:110px">
         <col style="width:120px"><col style="width:108px"><col style="width:58px"><col style="width:88px">
         <col style="width:56px">
       </colgroup>
@@ -340,6 +362,7 @@ function drawRequestTable(body) {
           <th class="svc-step-cell" title="PO received">PO</th>
           <th class="svc-step-cell" title="Service complete">Complete</th>
           <th>Company</th><th>Details</th><th>Job / Serial</th>
+          <th title="Active quote — the accepted one, or the most recent">Quote #</th>
           <th class="svc-cell-center">Urgency</th>
           <th>Assigned</th>
           <th class="svc-cell-center">Status</th>
@@ -361,12 +384,20 @@ function drawRequestTable(body) {
             <td class="svc-detail-cell">${esc(String(r.service_details || '').slice(0, 220))}</td>
             <td>${esc(r.machine_serial || r.job_number) || '—'}${
               r.machine_type === 'non_sdc' ? ' <span class="svc-pill svc-nonsdc" title="Not an SDC-built machine — no build history or SDC warranty">non-SDC</span>' : ''}</td>
+            <td class="svc-quote-cell" title="${r.quote_no
+              ? esc(`${r.quote_no}${r.quote_amount != null ? ' — ' + money(r.quote_amount) : ''}`)
+                + esc(r.quote_status ? ` (${QUOTE_STATUS_LABELS[r.quote_status] || r.quote_status})` : '')
+                + esc(Number(r.quote_count) > 1 ? ` · ${r.quote_count} quotes on this request` : '')
+              : 'No quote logged'}">
+              ${r.quote_no ? `<span class="svc-mono svc-quote-no ${r.quote_status === 'accepted' ? 'is-accepted' : ''}">${esc(r.quote_no)}</span>` : '—'}
+              ${r.quote_amount != null ? `<span class="svc-sub">${esc(money(r.quote_amount))}</span>` : ''}
+            </td>
             <td class="svc-cell-center">${urgencyPill(r.urgency)}</td>
             <td>${esc(r.assigned_employees || r.resource_assigned) || '<span class="svc-sub">unassigned</span>'}</td>
             <td class="svc-cell-center">${statusPill(r)}</td>
             <td class="svc-num">${r.wo_count ? `${r.wo_open}/${r.wo_count}` : '—'}</td>
             <td class="svc-sub">${fmtDate(r.created_at)}</td>
-            <td class="svc-cell-center svc-actions-cell">${canDeleteRequests() ? `
+            <td class="svc-cell-center svc-actions-cell">${canEditService() ? `
               <button type="button" class="svc-icon-btn svc-icon-danger" data-del="${r.id}"
                       title="Delete Service Request ${esc(r.request_no)}"
                       aria-label="Delete Service Request ${esc(r.request_no)}">${TRASH_SVG}</button>` : ''}</td>
@@ -385,9 +416,14 @@ function drawRequestTable(body) {
     btn.addEventListener('click', (e) => { e.stopPropagation(); deleteRequest(btn); }));
 }
 
-// Delete needs editor or admin server-side (requireRole('editor')). Hiding the
-// button from viewers is presentation, not the guard — the endpoint still refuses.
-function canDeleteRequests() {
+// Every write in routes/service.js is requireRole('editor') — creating, editing,
+// deleting a request, and everything to do with Work Orders. So one predicate
+// answers "may this person change Service data at all", and the delete button
+// and the editable drawer fields share it.
+//
+// Hiding a control from a viewer is presentation, not the guard — the endpoint
+// still refuses. This exists so a viewer isn't shown inputs that will bounce.
+function canEditService() {
   const a = window.sdcAuth;
   if (!a || !a.authEnabled) return true;      // auth off — the server won't refuse either
   const role = a.user && a.user.role;
@@ -495,6 +531,7 @@ async function openServiceRequest(id, focusWoId) {
   const drawer = document.getElementById('svcDrawer');
   const scrim  = document.getElementById('svcScrim');
   drawer.hidden = false; scrim.hidden = false;
+  _svc.editCustomer = false;           // every request opens read-only
   drawer.innerHTML = '<div class="svc-empty">Loading…</div>';
   try {
     _svc.detail = await api(`/api/service/requests/${id}`);
@@ -505,14 +542,147 @@ async function openServiceRequest(id, focusWoId) {
   }
 }
 
+// A save re-renders the whole drawer, which throws away the DOM node the user
+// was typing in. With one editable section that was survivable; with the
+// Customer request block editable too, tabbing through the form would drop
+// focus on every single field. So remember which data-log field held focus and
+// where the caret was, and put it back on the fresh node.
+//
+// Only used for keyboard-driven text entry — a checkbox or select the user
+// clicked has already given focus up in practice, and restoring it there is
+// harmless either way.
+function captureLogFocus() {
+  const el = document.activeElement;
+  if (!el || !el.dataset || !el.dataset.log) return null;
+  const snap = { field: el.dataset.log };
+  if (typeof el.selectionStart === 'number') {
+    snap.start = el.selectionStart;
+    snap.end = el.selectionEnd;
+    // `change` fires on blur, so the field focused here is the one the user has
+    // ALREADY tabbed into — and they may have typed in it while the previous
+    // field's PUT was still in flight. Those keystrokes are not on the server
+    // yet, so the re-render would silently eat them. Carry them across.
+    snap.value = el.value;
+  }
+  return snap;
+}
+
+function restoreLogFocus(snap) {
+  if (!snap) return;
+  const el = document.querySelector(`#svcDrawer [data-log="${snap.field}"]`);
+  if (!el) return;
+  try {
+    if (snap.value != null && el.value !== snap.value) el.value = snap.value;
+    el.focus({ preventScroll: true });
+    if (snap.start != null && typeof el.setSelectionRange === 'function') {
+      el.setSelectionRange(snap.start, snap.end);
+    }
+  } catch (_) { /* focus is a nicety, never worth throwing over */ }
+}
+
 async function refreshDrawer(id, focusWoId) {
+  const snap = captureLogFocus();
   try { _svc.detail = await api(`/api/service/requests/${id}`); drawDrawer(focusWoId); } catch (_) {}
+  restoreLogFocus(snap);
 }
 
 function closeDrawer() {
   document.getElementById('svcDrawer').hidden = true;
   document.getElementById('svcScrim').hidden = true;
   _svc.detail = null;
+  _svc.editCustomer = false;
+}
+
+// ── The Customer request block (§14) ─────────────────────────────────────────
+// Two renderings of the same fields. The read-only list is the default for
+// EVERYONE, including admins; an editor gets inputs only after switching the
+// section into edit mode with the toggle in its heading.
+//
+// Why a toggle rather than always-on inputs: these fields are the customer's
+// own account of the fault, not our operational record of it. The Service Log
+// status block below is ours to maintain and stays editable all the time.
+// Making both permanently editable erased that distinction and invited someone
+// to overwrite what the customer actually said while meaning to update a
+// status. Correcting a customer's words should take a deliberate act.
+//
+// The editable version deliberately emits the SAME `data-log` inputs the
+// Service Log status section below it uses, so wireLogFields() saves these with
+// no new code — the server's PUT already accepts every customer field
+// (INTERNAL_FIELDS spreads CUSTOMER_FIELDS in routes/service.js). It also uses
+// .svc-log-grid rather than the read-only .svc-fields, so an editable Customer
+// request block and the editable status block below look like one form instead
+// of two different widgets stacked.
+//
+// request_no, created_at and source are NOT here and must not be: they are the
+// stable identity of the record, not facts about the job that can be corrected.
+
+/** <option> list for a closed-vocabulary select. The blank stays available —
+ *  "not stated" is a real answer on a customer-filled form, and the server
+ *  accepts '' (validateVocab skips empties, coerce turns them into NULL). */
+function svcOptions(map, current) {
+  const cur = String(current == null ? '' : current);
+  return `<option value=""${cur === '' ? ' selected' : ''}>—</option>` +
+    Object.entries(map).map(([v, label]) =>
+      `<option value="${esc(v)}"${cur === v ? ' selected' : ''}>${esc(label)}</option>`).join('');
+}
+
+function drawCustomerFields(r) {
+  const ro = (label, value) =>
+    `<div class="svc-f"><span>${esc(label)}</span><strong>${esc(value == null || value === '' ? '—' : value)}</strong></div>`;
+
+  if (!canEditService() || !_svc.editCustomer) {
+    return `
+      <div class="svc-fields">
+        ${ro('Company', r.company_name)}
+        ${ro('Requestor', r.requestor_name)}
+        ${ro('Email', r.requestor_email)}
+        ${ro('Phone', r.requestor_phone)}
+        ${ro('Machine', MACHINE_TYPES[r.machine_type] || 'Not stated')}
+        ${ro(r.machine_type === 'non_sdc' ? 'Make / model' : 'Machine serial / Job #', r.machine_serial || r.job_number)}
+        ${ro('Department needed', DEPARTMENTS[r.department_needed] || r.department_needed)}
+        ${ro('Remote / on-site', LOCATIONS[r.location_type])}
+        ${ro('Warranty', WARRANTY[r.warranty] || r.warranty)}
+        ${ro('PPE', r.ppe_requirements)}
+        ${r.onsite_address ? ro('On-site address', r.onsite_address) : ''}
+      </div>
+      <div class="svc-longtext"><span>Service details</span><p>${esc(r.service_details) || '—'}</p></div>
+      ${r.additional_comments ? `<div class="svc-longtext"><span>Additional comments</span><p>${esc(r.additional_comments)}</p></div>` : ''}`;
+  }
+
+  const txt = (label, f, value, placeholder) =>
+    `<label>${esc(label)}
+       <input type="text" data-log="${f}" value="${esc(value == null ? '' : value)}"${placeholder ? ` placeholder="${esc(placeholder)}"` : ''}>
+     </label>`;
+  const sel = (label, f, map, value) =>
+    `<label>${esc(label)}
+       <select data-log="${f}">${svcOptions(map, value)}</select>
+     </label>`;
+  const area = (label, f, value, rows) =>
+    `<label class="svc-span">${esc(label)}
+       <textarea data-log="${f}" rows="${rows}">${esc(value == null ? '' : value)}</textarea>
+     </label>`;
+
+  // Serial and Job # are separate columns and both are shown, unlike the
+  // read-only view which collapses them to whichever one is filled. Someone
+  // correcting the record needs to see which of the two is actually empty.
+  return `
+    <div class="svc-log-grid" id="svcCustGrid">
+      ${txt('Company', 'company_name', r.company_name)}
+      ${txt('Requestor', 'requestor_name', r.requestor_name)}
+      ${txt('Email', 'requestor_email', r.requestor_email)}
+      ${txt('Phone', 'requestor_phone', r.requestor_phone)}
+      ${sel('Urgency', 'urgency', URGENCY_LABELS, r.urgency)}
+      ${sel('Machine', 'machine_type', MACHINE_TYPES, r.machine_type)}
+      ${txt(r.machine_type === 'non_sdc' ? 'Make / model' : 'Machine serial', 'machine_serial', r.machine_serial)}
+      ${txt('Job #', 'job_number', r.job_number)}
+      ${sel('Department needed', 'department_needed', DEPARTMENTS, r.department_needed)}
+      ${sel('Remote / on-site', 'location_type', LOCATIONS, r.location_type)}
+      ${sel('Warranty', 'warranty', WARRANTY, r.warranty)}
+      ${txt('PPE', 'ppe_requirements', r.ppe_requirements)}
+      ${area('On-site address', 'onsite_address', r.onsite_address, 2)}
+      ${area('Service details', 'service_details', r.service_details, 4)}
+      ${area('Additional comments', 'additional_comments', r.additional_comments, 2)}
+    </div>`;
 }
 
 function drawDrawer(focusWoId) {
@@ -520,9 +690,6 @@ function drawDrawer(focusWoId) {
   if (!d) return;
   const r = d.request;
   const drawer = document.getElementById('svcDrawer');
-
-  const field = (label, value) =>
-    `<div class="svc-f"><span>${esc(label)}</span><strong>${esc(value == null || value === '' ? '—' : value)}</strong></div>`;
 
   drawer.innerHTML = `
     <div class="svc-drawer-head">
@@ -535,22 +702,23 @@ function drawDrawer(focusWoId) {
 
     <div class="svc-drawer-body">
 
-      <section class="svc-sec">
-        <h3>Customer request</h3>
-        <div class="svc-fields">
-          ${field('Requestor', r.requestor_name)}
-          ${field('Email', r.requestor_email)}
-          ${field('Phone', r.requestor_phone)}
-          ${field('Machine', MACHINE_TYPES[r.machine_type] || 'Not stated')}
-          ${field(r.machine_type === 'non_sdc' ? 'Make / model' : 'Machine serial / Job #', r.machine_serial || r.job_number)}
-          ${field('Department needed', DEPARTMENTS[r.department_needed] || r.department_needed)}
-          ${field('Remote / on-site', r.location_type === 'onsite' ? 'On-site' : r.location_type === 'remote' ? 'Remote' : null)}
-          ${field('Warranty', WARRANTY[r.warranty] || r.warranty)}
-          ${field('PPE', r.ppe_requirements)}
-          ${r.onsite_address ? field('On-site address', r.onsite_address) : ''}
-        </div>
-        <div class="svc-longtext"><span>Service details</span><p>${esc(r.service_details) || '—'}</p></div>
-        ${r.additional_comments ? `<div class="svc-longtext"><span>Additional comments</span><p>${esc(r.additional_comments)}</p></div>` : ''}
+      <section class="svc-sec ${_svc.editCustomer && canEditService() ? 'is-editing' : ''}">
+        <h3>Customer request
+          ${canEditService() ? `
+            <button type="button" id="svcEditCust"
+                    class="svc-btn svc-btn-sm ${_svc.editCustomer ? 'svc-btn-primary' : 'svc-btn-ghost'}"
+                    aria-pressed="${_svc.editCustomer ? 'true' : 'false'}">
+              ${_svc.editCustomer ? 'Done' : 'Edit details'}
+            </button>` : ''}
+        </h3>
+        ${_svc.editCustomer && canEditService() ? `
+          <div class="svc-sub svc-sec-note">
+            ${r.source === 'website'
+              ? 'Submitted from the website — you are editing what the customer wrote.'
+              : 'Editing the request details.'}
+            Changes save as you leave each field and are recorded in History below.
+          </div>` : ''}
+        ${drawCustomerFields(r)}
         ${drawAttachments(d.attachments)}
       </section>
 
@@ -590,6 +758,15 @@ function drawDrawer(focusWoId) {
       </section>
 
       <section class="svc-sec">
+        <h3>Quotes
+          ${canEditService()
+            ? '<button type="button" class="svc-btn svc-btn-primary svc-btn-sm" id="svcAddQuote">+ Add Quote</button>'
+            : ''}
+        </h3>
+        ${drawQuotes(d.quotes)}
+      </section>
+
+      <section class="svc-sec">
         <h3>Work Orders <button type="button" class="svc-btn svc-btn-primary svc-btn-sm" id="svcAddWo">+ Create Work Order</button></h3>
         <div id="svcWoList">${drawWorkOrders(d.workOrders)}</div>
       </section>
@@ -608,6 +785,24 @@ function drawDrawer(focusWoId) {
 
   document.getElementById('svcClose').addEventListener('click', closeDrawer);
   document.getElementById('svcAddWo').addEventListener('click', () => openWorkOrderForm(r));
+
+  const addQuote = document.getElementById('svcAddQuote');
+  if (addQuote) addQuote.addEventListener('click', () => openQuoteForm(r));
+  wireQuoteButtons(r, d.quotes);
+
+  // Toggling only swaps the rendering — there is nothing to save on the way out,
+  // because each field already committed on change. Clicking "Done" blurs the
+  // field the user was in, so that field's own change handler fires first and
+  // its edit is never lost.
+  const editBtn = document.getElementById('svcEditCust');
+  if (editBtn) editBtn.addEventListener('click', () => {
+    _svc.editCustomer = !_svc.editCustomer;
+    drawDrawer(focusWoId);
+    if (_svc.editCustomer) {
+      const first = document.querySelector('#svcCustGrid [data-log]');
+      if (first) first.focus({ preventScroll: true });
+    }
+  });
   wireLogFields(r.id);
   wireWorkOrderButtons(r);
 
@@ -647,6 +842,53 @@ function woSpan(w) {
 function woOverdue(w) {
   const last = w.end_date && w.task_date && w.end_date > w.task_date ? w.end_date : w.task_date;
   return w.status === 'open' && !!last && last < today();
+}
+
+// Quotes render as a compact TABLE rather than the card layout the Work Orders
+// use. A WO card carries a description, a PPE line, delivery state and five
+// actions; a quote is four short values. CLAUDE.md's grid rule applies —
+// table-layout: fixed + colgroup, the quote number takes the remainder, and
+// the money / date / status columns are sized for exactly what they hold.
+function drawQuotes(list) {
+  if (!canEditService()) {
+    // Viewers get the same facts without controls that would only bounce off
+    // requireRole('editor') on the server.
+    if (!list || !list.length) return '<div class="svc-sub">No quotes logged.</div>';
+    return `<div class="svc-quote-ro">${list.map(q =>
+      `<span><strong>${esc(q.quote_no)}</strong> ${q.amount != null ? esc(money(q.amount)) : ''}
+       ${quoteStatusPill(q.status)}</span>`).join('')}</div>`;
+  }
+  if (!list || !list.length) {
+    return '<div class="svc-sub">No quotes logged yet. Add one to record the number, its value and where it landed.</div>';
+  }
+  return `
+    <table class="svc-quote-table">
+      <colgroup><col style="width:auto"><col style="width:96px"><col style="width:112px">
+                <col style="width:104px"><col style="width:64px"></colgroup>
+      <thead>
+        <tr><th>Quote #</th><th class="svc-num">Value</th><th>Sent</th>
+            <th class="svc-cell-center">Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        ${list.map(q => `
+          <tr data-quote="${q.id}" class="${q.status === 'superseded' || q.status === 'declined' ? 'is-dim' : ''}">
+            <td class="svc-mono" title="${esc(q.notes || '')}">${esc(q.quote_no)}${
+              q.notes ? ' <span class="svc-clip" title="' + esc(q.notes) + '">🗒</span>' : ''}</td>
+            <td class="svc-num">${q.amount != null ? esc(money(q.amount)) : '—'}</td>
+            <td>${fmtDate(q.sent_date)}</td>
+            <td class="svc-cell-center">${quoteStatusPill(q.status)}</td>
+            <td class="svc-cell-center svc-quote-actions">
+              <button type="button" class="svc-linkbtn" data-qact="edit" data-quote="${q.id}" title="Edit quote">✎</button>
+              <button type="button" class="svc-linkbtn svc-danger" data-qact="delete" data-quote="${q.id}" title="Delete quote">×</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function quoteStatusPill(status) {
+  const meta = QUOTE_STATUSES[status] || { label: status || '—', cls: '' };
+  return `<span class="svc-pill ${meta.cls}">${esc(meta.label)}</span>`;
 }
 
 function drawWorkOrders(list) {
@@ -711,6 +953,74 @@ function wireLogFields(requestId) {
       }
     });
   });
+}
+
+function wireQuoteButtons(request, quotes) {
+  const drawer = document.getElementById('svcDrawer');
+  drawer.querySelectorAll('[data-qact]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.quote);
+      const quote = (quotes || []).find(q => q.id === id);
+      if (!quote) return;
+
+      if (btn.dataset.qact === 'edit') return openQuoteForm(request, quote);
+
+      const ok = await confirmDialog(
+        `Delete quote ${quote.quote_no}?
+
+` +
+        'This removes it from the quote history for this request. It cannot be undone.',
+        { title: 'Delete quote', okLabel: 'Delete', cancelLabel: 'Cancel', danger: true });
+      if (!ok) return;
+      try {
+        await api(`/api/service/quotes/${id}`, { method: 'DELETE' });
+        await refreshDrawer(request.id);
+        await loadService(); drawTabs(); drawBody();
+        toast(`Quote ${quote.quote_no} deleted.`, 'success');
+      } catch (err) { toast(`Could not delete quote: ${err.message}`, 'error'); }
+    });
+  });
+}
+
+// Add / edit one quote. Same modal() helper and .svc-form-grid the Work Order
+// form uses, so the two internal forms in this drawer look like one thing.
+function openQuoteForm(request, existing) {
+  const q = existing || {};
+  const isEdit = !!existing;
+  modal(isEdit ? `Edit quote ${q.quote_no}` : 'Add quote', `
+    <div class="svc-form-grid">
+      <label class="svc-span">Quote #
+        <input name="quote_no" type="text" required value="${esc(q.quote_no || '')}"
+               placeholder="e.g. Q-1043 — the number from ETO">
+      </label>
+      <label>Value
+        <input name="amount" type="text" inputmode="decimal" value="${esc(q.amount != null ? q.amount : '')}"
+               placeholder="4200.00">
+      </label>
+      <label>Date sent
+        <input name="sent_date" type="date" value="${esc(q.sent_date ? String(q.sent_date).slice(0, 10) : today())}">
+      </label>
+      <label>Status
+        <select name="status">
+          ${Object.entries(QUOTE_STATUS_LABELS).map(([v, label]) =>
+            `<option value="${v}"${(q.status || 'sent') === v ? ' selected' : ''}>${esc(label)}</option>`).join('')}
+        </select>
+      </label>
+      <label class="svc-span">Notes
+        <textarea name="notes" rows="2" placeholder="What this quote covers, or why it was revised.">${esc(q.notes || '')}</textarea>
+      </label>
+    </div>`, async (data) => {
+    if (!String(data.quote_no || '').trim()) throw new Error('A quote needs a quote number.');
+    await api(isEdit ? `/api/service/quotes/${q.id}` : `/api/service/requests/${request.id}/quotes`, {
+      method: isEdit ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    await refreshDrawer(request.id);
+    await loadService(); drawTabs(); drawBody();
+    toast(isEdit ? `Quote ${data.quote_no} updated.` : `Quote ${data.quote_no} added.`, 'success');
+  }, isEdit ? 'Save quote' : 'Add quote');
 }
 
 function wireWorkOrderButtons(request) {
@@ -860,37 +1170,64 @@ function openWorkOrderForm(request, existing) {
       <div class="svc-sub">Job / Machine: ${esc(request.machine_serial || request.job_number) || '—'}
         · carried onto this Work Order automatically.</div>
     </div>
-    <div class="svc-form-grid">
-      <label>Task Date<input name="task_date" type="date" id="svcWoStart" value="${esc(w.task_date || '')}"></label>
-      <label>Through <span class="svc-sub">(leave blank for a one-day visit)</span>
-        <input name="end_date" type="date" id="svcWoEnd" value="${esc(w.end_date || '')}">
-      </label>
-      <label class="svc-span">Required Employee
-        <select name="employee_name" id="svcWoEmp">
-          <option value="">—</option>
-          ${_svc.employees.map(e => `<option value="${esc(e.name)}" data-email="${esc(e.email || '')}"
-              ${w.employee_name === e.name ? 'selected' : ''}>${esc(e.name)}${e.discipline === 'service' ? ' (Service)' : ''}</option>`).join('')}
-        </select>
-      </label>
-      <div class="svc-span" id="svcAvail"></div>
-      <label>Employee Email<input name="employee_email" id="svcWoEmail" value="${esc(w.employee_email || '')}"
-             placeholder="auto-filled from their account"></label>
-      <label>On-site / Remote
-        <select name="location_type">
-          <option value="">—</option>
-          <option value="remote" ${w.location_type === 'remote' ? 'selected' : ''}>Remote</option>
-          <option value="onsite" ${w.location_type === 'onsite' ? 'selected' : ''}>On-site</option>
-        </select>
-      </label>
-      <label>Budgeted Hours<input name="budgeted_hours" type="number" step="0.5" min="0" value="${esc(w.budgeted_hours ?? '')}"></label>
-      <label>PPE Requirements<input name="ppe_requirements" value="${esc(w.ppe_requirements || request.ppe_requirements || '')}"></label>
-      <label class="svc-span">On-site Location Address<input name="onsite_address" value="${esc(w.onsite_address || request.onsite_address || '')}"></label>
-      <label class="svc-span">Task Description
-        <textarea name="task_description" rows="4">${esc(w.task_description || request.service_details || '')}</textarea>
-      </label>
-      <label>SDC Remote Support — Name<input name="sdc_contact_name" value="${esc(w.sdc_contact_name || '')}"></label>
-      <label>SDC Remote Support — Email<input name="sdc_contact_email" type="email" value="${esc(w.sdc_contact_email || '')}"></label>
-      <label>SDC Remote Support — Phone<input name="sdc_contact_phone" value="${esc(w.sdc_contact_phone || '')}"></label>
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">Schedule &amp; Who</h4>
+      <div class="svc-form-section-hint">When this happens, and who's doing it — pick a date first to see who's actually free.</div>
+      <div class="svc-form-grid">
+        <label>Task Date
+          <input name="task_date" type="date" id="svcWoStart" value="${esc(w.task_date || '')}"></label>
+        <label>Through
+          <input name="end_date" type="date" id="svcWoEnd" value="${esc(w.end_date || '')}">
+          <span class="svc-sub">(leave blank for a one-day visit)</span>
+        </label>
+        <label class="svc-span">Required Employee
+          <select name="employee_name" id="svcWoEmp">
+            <option value="">—</option>
+            ${_svc.employees.map(e => `<option value="${esc(e.name)}" data-email="${esc(e.email || '')}"
+                ${w.employee_name === e.name ? 'selected' : ''}>${esc(e.name)}${e.discipline === 'service' ? ' (Service)' : ''}</option>`).join('')}
+          </select>
+        </label>
+        <div class="svc-span" id="svcAvail"></div>
+        <label>Employee Email<input name="employee_email" id="svcWoEmail" value="${esc(w.employee_email || '')}"
+               placeholder="auto-filled from their account"></label>
+      </div>
+    </div>
+
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">Where &amp; Effort</h4>
+      <div class="svc-form-section-hint">Remote or on-site, roughly how many hours it's budgeted for, and any PPE the visit needs.</div>
+      <div class="svc-form-grid">
+        <label>On-site / Remote
+          <select name="location_type">
+            <option value="">—</option>
+            <option value="remote" ${w.location_type === 'remote' ? 'selected' : ''}>Remote</option>
+            <option value="onsite" ${w.location_type === 'onsite' ? 'selected' : ''}>On-site</option>
+          </select>
+        </label>
+        <label>Budgeted Hours<input name="budgeted_hours" type="number" step="0.5" min="0" value="${esc(w.budgeted_hours ?? '')}"></label>
+        <label>PPE Requirements<input name="ppe_requirements" value="${esc(w.ppe_requirements || request.ppe_requirements || '')}"></label>
+        <label class="svc-span">On-site Location Address<input name="onsite_address" value="${esc(w.onsite_address || request.onsite_address || '')}"></label>
+      </div>
+    </div>
+
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">Work Details</h4>
+      <div class="svc-form-section-hint">What the assigned employee will actually see as the task description — pre-filled from the request, edit as needed.</div>
+      <div class="svc-form-grid">
+        <label class="svc-span">Task Description
+          <textarea name="task_description" rows="4">${esc(w.task_description || request.service_details || '')}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="svc-form-section">
+      <h4 class="svc-form-section-title">SDC Remote Support Contact</h4>
+      <div class="svc-form-section-hint">Who the customer can reach at SDC if they need remote help during this visit — optional.</div>
+      <div class="svc-form-grid">
+        <label>Name<input name="sdc_contact_name" value="${esc(w.sdc_contact_name || '')}"></label>
+        <label>Email<input name="sdc_contact_email" type="email" value="${esc(w.sdc_contact_email || '')}"></label>
+        <label>Phone<input name="sdc_contact_phone" value="${esc(w.sdc_contact_phone || '')}"></label>
+      </div>
     </div>
     ${isEdit ? '' : `<label class="svc-inline-check">
       <input type="checkbox" name="notify" checked> Email the Work Order to the employee now
@@ -1088,6 +1425,22 @@ async function openServiceWorkOrder(woId) {
 window.renderServicePage    = renderServicePage;
 window.openServiceRequest   = openServiceRequest;
 window.openServiceWorkOrder = openServiceWorkOrder;
+
+// Native <input type="date"> hides its calendar behind a small icon that's
+// easy to miss. Opening the picker on CLICK (not focus) makes it obvious the
+// calendar is there the moment someone reaches for it with a mouse, while
+// keyboard navigation (tabbing between fields) is untouched — showPicker()
+// never fires from a focusin, only from an actual click, so tab-focus flow
+// through the form still lands on each field normally. Delegated on document
+// (not per-input) so this covers every date field in the Service module,
+// including ones inside a modal() dialog appended to document.body after
+// this listener is wired.
+document.addEventListener('click', (e) => {
+  const el = e.target;
+  if (el && el.matches && el.matches('input[type="date"]') && typeof el.showPicker === 'function') {
+    try { el.showPicker(); } catch (_) { /* unsupported, or blocked — the field still works normally */ }
+  }
+});
 
 // Honour the deep link once the page has booted.
 window.addEventListener('DOMContentLoaded', () => {
