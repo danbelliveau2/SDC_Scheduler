@@ -14,6 +14,10 @@ pbi_cache.json
 # Local reference/scratch material
 abhi-reference/
 
+# Personal local dev stack (MySQL + Node containers). Machine-specific,
+# not shared infra — production is PM2 on SERVER-APP1, not Docker.
+docker-compose.local.yml
+
 # Built DXT extension artifacts (rebuild with `npx @anthropic-ai/dxt pack` — see mcp/README.md)
 *.dxt
 
