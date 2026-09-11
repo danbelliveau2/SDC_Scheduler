@@ -381,7 +381,7 @@ function drawRequestTable(body) {
               <span class="svc-company-name">${esc(r.company_name) || '—'}</span>
               ${r.requestor_name ? `<span class="svc-sub">${esc(r.requestor_name)}</span>` : ''}
             </td>
-            <td class="svc-detail-cell">${esc(String(r.service_details || '').slice(0, 220))}</td>
+            <td class="svc-detail-cell"><span class="svc-detail-clamp">${esc(String(r.service_details || '').slice(0, 220))}</span></td>
             <td>${esc(r.machine_serial || r.job_number) || '—'}${
               r.machine_type === 'non_sdc' ? ' <span class="svc-pill svc-nonsdc" title="Not an SDC-built machine — no build history or SDC warranty">non-SDC</span>' : ''}</td>
             <td class="svc-quote-cell" title="${r.quote_no
@@ -506,7 +506,7 @@ function drawWorkOrderTable(body) {
                 ? `<div class="svc-sub">through ${fmtDate(w.end_date)}</div>` : ''}</td>
             <td>${esc(w.employee_name) || '—'}</td>
             <td>${esc(w.company_name) || '—'}<div class="svc-sub">${esc(w.request_no)}</div></td>
-            <td class="svc-detail-cell">${esc(String(w.task_description || '').slice(0, 200))}</td>
+            <td class="svc-detail-cell"><span class="svc-detail-clamp">${esc(String(w.task_description || '').slice(0, 200))}</span></td>
             <td>${w.location_type === 'onsite' ? 'On-site' : w.location_type === 'remote' ? 'Remote' : '—'}</td>
             <td class="svc-num">${w.budgeted_hours != null ? w.budgeted_hours : '—'}</td>
             <td>${w.status === 'complete'

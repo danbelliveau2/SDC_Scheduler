@@ -133,11 +133,22 @@
 .svc-table tbody tr:hover { background: var(--row-hover); }
 
 /* The description column is the one that gets to wrap — it is the column
-   whose content actually varies in length. */
+   whose content actually varies in length.
+
+   The two-line clamp lives on an INNER span, never on the <td> itself.
+   `display: -webkit-box` on a table cell is blockified by the browser (it
+   computes to `flow-root`), which silently kills `-webkit-line-clamp` AND
+   drops the cell out of normal row sizing — the cell stays ~22px tall while
+   holding ~80px of text, so `overflow: hidden` guillotines the wrapped lines
+   mid-glyph. Only shows up once the text is long enough to wrap, which is why
+   short seed data looks fine and real customer descriptions do not. */
 .svc-detail-cell {
   white-space: normal !important; color: var(--text-muted);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   line-height: 1.35;
+}
+.svc-detail-clamp {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .svc-num { text-align: right; font-variant-numeric: tabular-nums; }
 .svc-table th.svc-num { text-align: right; }
