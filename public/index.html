@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260903-203" />
+  <link rel="stylesheet" href="styles.css?v=20260915-231" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
@@ -70,6 +70,17 @@
         </svg>
       </span>
       <span class="app-sidebar-label" style="white-space:nowrap;font-size:9px;letter-spacing:0">Departments</span>
+    </button>
+    <button class="app-sidebar-icon" data-view="exec-summary" type="button" title="Execution Summary — every active project&apos;s weekly goal: what we committed to, what we hit, what we missed and why, and what we&apos;re waiting on.">
+      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
+        <!-- Target + check: the weekly commitment and whether it landed. -->
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="12" r="8"/>
+          <circle cx="11" cy="12" r="3.4"/>
+          <polyline points="15.5,5.5 18.5,8.5 23,4"/>
+        </svg>
+      </span>
+      <span class="app-sidebar-label" style="white-space:nowrap;font-size:9px;letter-spacing:0">Execution</span>
     </button>
     <button class="app-sidebar-icon" data-view="invoicing" type="button" title="Invoicing — past due / ready to invoice / sent / paid across every project, plus the key-milestone strips and the payment calendar.">
       <span class="app-sidebar-glyph app-sidebar-glyph-svg">
@@ -427,6 +438,12 @@
              server-side (settings.project_leads); drives the Departments PM
              filter + dashboard. Populated by renderScheduleLeads(). -->
         <div class="schedule-leads" id="schedule-leads"></div>
+        <!-- ETO / Power BI job links. These used to sit in the TOP project
+             banner; they are internal plumbing, not header information, so
+             they live down here with the rest of the per-project tooling
+             (and the footer is hidden in customer / share view, so they can
+             never reach a customer PDF). Populated by renderProjectTabs(). -->
+        <span class="schedule-job-links" id="schedule-job-links"></span>
         <!-- Compact Procurement/Job Hours summary buttons — same toolbar-toggle-btn
              styling as Customer Link/Communication Plan/Project Release. Each whole
              button is its own drill-through straight into SDC Reports, pre-scoped to
@@ -549,6 +566,10 @@
          PM, and the payment calendar. Both money sections moved here FROM the
          Departments tab (which is people + resources only now). Body built by
          renderInvoicingPage() / renderDeptProjectRollup() in app.js. -->
+    <section id="view-exec-summary" class="view">
+      <div id="exec-summary-page" class="projects-page exec-summary-page"></div>
+    </section>
+
     <section id="view-invoicing" class="view">
       <div id="invoicing-buckets" class="dept-project-rollup" style="padding-bottom:0;"></div>
       <div id="dept-project-rollup" class="dept-project-rollup"></div>
@@ -1035,8 +1056,14 @@
        (per user feedback in v4.21) — flatten + sort-by-start is the one
        view tweak that still matters when you're presenting the schedule
        chronologically to a customer. -->
-  <button id="btn-customer-view-flatten" class="customer-view-flatten" type="button" title="Flatten the schedule for the customer view — hide sub-section headers and sort tasks within each section by start date so the schedule reads chronologically. Click again to restore the grouped layout.">≡ Flatten</button>
-  <button id="btn-customer-view-exit" class="customer-view-exit" type="button" title="Exit customer view and return to the full editing layout.">✕ Exit customer view</button>
+  <div class="customer-view-tools" id="customer-view-tools">
+    <button id="btn-customer-view-flatten" class="customer-view-flatten" type="button" title="Flatten the schedule for the customer view — hide sub-section headers and sort tasks within each section by start date so the schedule reads chronologically. Click again to restore the grouped layout.">≡ Flatten</button>
+    <button id="btn-customer-view-fit" class="customer-view-fit" type="button" title="Zoom the Gantt so the whole project fits the panel.">⛶ Fit</button>
+    <button id="btn-customer-view-grid" class="customer-view-grid" type="button" title="Toggle between the grid + Gantt layout and a dates-only grid. Whichever is showing is what prints.">▤ Grid only</button>
+    <button id="btn-customer-view-xls" class="customer-view-xls" type="button" title="Download these rows as an Excel workbook — the same tasks and dates you see, as data the customer can re-sort and re-plan with.">↓ Excel</button>
+    <button id="btn-customer-view-print" class="customer-view-print" type="button" title="Open the print dialog — choose “Save as PDF” as the destination to hand the customer a PDF of exactly this view.">⎙ Save as PDF</button>
+    <button id="btn-customer-view-exit" class="customer-view-exit" type="button" title="Exit customer view and return to the full editing layout.">✕ Exit customer view</button>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1066,7 +1093,7 @@
   <script src="auth-ui.js?v=20260821-share2"></script>
   <script src="phases.js?v=20260601-168"></script>
   <script src="release-notes.js?v=20260819-192"></script>
-  <script src="app.js?v=20260911-204"></script>
+  <script src="app.js?v=20260915-231"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

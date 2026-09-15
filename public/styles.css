@@ -1598,7 +1598,11 @@ body.customer-view .schedule-divider,
 body.customer-view #btn-add,
 body.customer-view #btn-add-action,
 body.customer-view .legend,
-body.customer-view #project-stats-popup {
+body.customer-view #project-stats-popup,
+/* The signed-in user pill (avatar + name) is position:fixed, so it does not
+   just sit on screen - it prints, landing in the middle of the schedule.
+   Nobody wants their own initials stamped on a customer PDF. */
+body.customer-view .sdc-auth-pill {
   display: none !important;
 }
 /* Hide the % pill / milestone checkbox / drift chips inside Task column
@@ -1667,11 +1671,41 @@ body.customer-view .schedule-gantt {
   flex: 1 1 auto;
   min-width: 0;
 }
+/* GRID ONLY. The generic gantt-hidden rules stretch the grid pane and the
+   table to 100% of the freed-up width, which in customer view means the
+   Task column balloons to ~1200px and Start/Finish to ~220px each - a page
+   of white space with the dates marooned in the middle. Here the table
+   sizes to its own content instead: Task as wide as the longest
+   description, the date columns as wide as "MM/DD/YY", nothing more.
+   Higher specificity than .schedule-split.gantt-hidden so it wins. */
+body.customer-view .schedule-split.gantt-hidden .schedule-grid {
+  width: auto !important;
+  flex: 0 0 auto !important;
+  max-width: 100%;
+}
+body.customer-view .schedule-split.gantt-hidden #tasks-table {
+  width: auto !important;
+}
+/* Section-header rows span the table via colspan, so with an auto-width
+   table they stop at the last real column instead of running off into
+   empty page - which is what made the PDF look unfinished on the right. */
 /* Section headers in customer view — make the click affordance more obvious
    since the customer-presenter may not realize the bars are clickable to
    toggle collapse. Bigger caret + clearer hover state. The collapse / expand
    behavior is the same as in normal view (toggles collapsedGroups on click),
    no JS changes required — the existing click handler still fires. */
+/* ALOC / DUR / %COM label the allocation, duration and %-complete bits of
+   the Task cell - all of which customer view hides. Leaving the labels up
+   there advertises columns with nothing under them. DESCRIPTION moves left
+   to sit over the task names instead of centered over the gap. */
+body.customer-view .th-label-alloc,
+body.customer-view .th-label-dur,
+body.customer-view .th-label-pct { display: none !important; }
+body.customer-view .th-label-desc {
+  left: 8px;
+  right: auto;
+  justify-content: flex-start;
+}
 body.customer-view tr.group-header .group-caret {
   font-size: var(--fs-base);
   font-weight: var(--fw-extrabold);
@@ -1693,16 +1727,24 @@ body.customer-view tr.group-header td {
    start together (same combined toggle the editing-view ≡ pill icon uses).
    When ACTIVE, the button fills with SDC lime so the user can see at a
    glance that the customer view is currently flattened. */
-.customer-view-exit,
-.customer-view-flatten {
-  display: none;
-}
-body.customer-view .customer-view-exit,
-body.customer-view .customer-view-flatten {
-  display: block;
+.customer-view-tools { display: none; }
+/* One fixed flex row in the top-right corner. Buttons size to their own
+   text and the gap keeps them apart - no hand-measured right: offsets to
+   drift out of sync when a label changes (that was the overlap bug). */
+body.customer-view .customer-view-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   position: fixed;
   top: 10px;
+  right: 12px;
   z-index: 1000;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: calc(100vw - 24px);
+}
+body.customer-view .customer-view-tools > button {
+  display: block;
   background: white;
   border: 2px solid var(--anchor-fill, #befa4f);
   border-radius: 6px;
@@ -1712,18 +1754,22 @@ body.customer-view .customer-view-flatten {
   font-weight: var(--fw-bold);
   color: var(--sdc-dark, #061d39);
   cursor: pointer;
+  white-space: nowrap;
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
 }
-body.customer-view .customer-view-exit { right: 12px; }
-/* Flatten sits to the LEFT of Exit so the eye still lands on Exit first
-   (it's the more destructive action — leaving the customer view). */
-body.customer-view .customer-view-flatten { right: 168px; }
-body.customer-view .customer-view-exit:hover,
-body.customer-view .customer-view-flatten:hover {
+body.customer-view .customer-view-tools > button:hover {
   background: var(--surface-alt, #f1f5f9);
 }
+/* Save as PDF is the reason most people open this view, so it gets the solid
+   fill and reads as the primary action rather than one more toggle. */
+body.customer-view .customer-view-print {
+  background: var(--anchor-fill, #befa4f) !important;
+  border-color: var(--anchor-fill, #befa4f) !important;
+}
+body.customer-view .customer-view-print:hover { filter: brightness(0.95); }
 /* Active state — solid SDC lime fill so the user knows flatten is on
    without having to scan the grid. */
+body.customer-view .customer-view-grid.is-active,
 body.customer-view .customer-view-flatten.is-active {
   background: var(--anchor-fill, #befa4f);
   color: var(--sdc-dark, #061d39);
@@ -1780,6 +1826,18 @@ body.customer-view .customer-view-flatten.is-active {
   }
   .schedule-grid  { flex: 0 0 auto !important; }
   .schedule-gantt { flex: 1 1 auto !important; min-width: 0 !important; }
+  /* Grid-only / Gantt-only must SURVIVE printing. The overflow-release rule
+     at the top of this block sets display:block !important on both panes,
+     which would otherwise resurrect the hidden pane on paper - a Grid only
+     customer PDF would come out with the Gantt back in it. Re-assert the
+     screen hide with the same weight. */
+  .schedule-split.gantt-hidden .schedule-gantt { display: none !important; }
+  .schedule-split.gantt-hidden .schedule-grid  { flex: 0 0 auto !important; width: auto !important; }
+  /* A content-width table pinned to the left edge leaves a lopsided void on
+     a landscape page. Centering it reads as a deliberate document. */
+  .schedule-split.gantt-hidden { justify-content: center !important; }
+  .schedule-split.gantt-hidden #tasks-table    { width: auto !important; }
+  .schedule-split.gantt-only .schedule-grid    { display: none !important; }
 
   /* 2. Drop the fixed sidebar and the body margin that reserves its 90px.
         position:fixed elements otherwise repeat on every printed page. */
@@ -1804,6 +1862,7 @@ body.customer-view .customer-view-flatten.is-active {
   .machine-clone-banner,
   #schedule-drawer-stack,
   .schedule-footer,
+  .customer-view-tools,
   .customer-view-exit,
   .customer-view-flatten,
   #sdc-toast,
@@ -1812,7 +1871,10 @@ body.customer-view .customer-view-flatten.is-active {
   #empty-state,
   #gantt-empty,
   #revision-popover,
-  #project-stats-popup {
+  #project-stats-popup,
+  .sdc-auth-pill,
+  .app-scale-ctl,
+  .sdc-presence-strip {
     display: none !important;
   }
 
@@ -1822,12 +1884,13 @@ body.customer-view .customer-view-flatten.is-active {
   #tasks-table thead { display: table-header-group !important; }
   #tasks-table tr { break-inside: avoid !important; page-break-inside: avoid !important; }
 
-  /* 5. Scale the Gantt SVG into the page. Needs the viewBox that
-        printGanttFit() installs — width:auto alone would keep the px width. */
+  /* 5. The Gantt SVG keeps its NATURAL pixel size on paper. printGanttFit()
+        sizes the panes to match and scales the whole grid+Gantt block as one
+        unit onto a single page, so the chart must not be independently
+        stretched or squeezed here - width:100% + height:auto was what
+        collapsed the chart into a thumbnail in the page corner. */
   .schedule-gantt svg, #gantt-container svg {
-    width: 100% !important;
-    height: auto !important;
-    max-width: 100% !important;
+    max-width: none !important;
   }
 }
 .schedule-project-meta {
@@ -6049,7 +6112,21 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 .schedule-footer .toolbar-toggle-btn.needs-attention:hover {
   background: #0D47A1;
 }
+/* ETO / Power BI job-link chips, moved out of the top project banner. Left
+   edge of the footer; the auto margin keeps the action buttons hard right. */
+.schedule-job-links {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+.schedule-job-links:empty { display: none; }
 body.customer-view .schedule-footer { display: none; }
+/* Notes / weekly-goal drawer is internal too - meeting notes and "what are
+   we getting done this week" have no business on a screen you are showing a
+   customer. Print already hid it; the screen did not. */
+body.customer-view #schedule-drawer-stack,
+body.customer-view .schedule-notes { display: none !important; }
 
 /* ── Bottom drawer stack — fixed overlay, doesn't push schedule content ──── */
 #schedule-drawer-stack { flex: 0 0 auto; display: flex; flex-direction: column; position: relative; z-index: 9; }
@@ -8213,6 +8290,7 @@ body[data-view="setup"] #btn-add { display: none; }
 /* ── Customer share-link mode ── the customer view with no way out and no
    internal chrome: the exit/flatten floaters, sidebar, and avatar are gone.
    What's left is exactly what a customer should see: the schedule. */
+body.share-link-view .customer-view-tools,
 body.share-link-view #btn-customer-view-exit,
 body.share-link-view #btn-customer-view-flatten,
 body.share-link-view .app-sidebar,
@@ -13906,3 +13984,283 @@ textarea:focus-visible,
 @media (max-width: 700px) {
   .mfg-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Cut lines stay visible but clearly "in flight" until they're pasted —
+   Excel's marching ants, minus the animation. A cut that never gets pasted
+   changes nothing, so the row must still read as live. */
+#tasks-table tbody tr.row-cut-pending > td {
+  opacity: 0.55;
+  border-top: 1px dashed var(--sdc-primary, #1574c4);
+  border-bottom: 1px dashed var(--sdc-primary, #1574c4);
+}
+
+/* ══ Weekly goals ═══════════════════════════════════════════════════════════
+   The goal bar sits ABOVE the Notes header inside #schedule-notes, so it stays
+   on screen whether or not the drawer is open. One line per row — this is a
+   banner, not a panel. */
+.weekly-goal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 12px 7px;
+  background: linear-gradient(180deg, #f4f9ff 0%, #eef5fd 100%);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  font-size: var(--fs-md);
+}
+.wg-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wg-label {
+  font-weight: var(--fw-extrabold);
+  font-size: var(--fs-sm);
+  color: var(--sdc-dark, #061d39);
+  white-space: nowrap;
+}
+.wg-label-prev { color: var(--text-muted, #64748b); font-weight: var(--fw-bold); }
+.wg-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-md);
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 6px;
+  background: #fff;
+}
+.wg-input:focus { outline: none; border-color: var(--sdc-blue, #1574c4); box-shadow: 0 0 0 2px rgba(21,116,196,0.15); }
+.wg-by { font-size: var(--fs-xs); color: var(--text-muted, #64748b); white-space: nowrap; }
+.wg-prev-text {
+  flex: 1 1 auto; min-width: 0;
+  color: var(--text-muted, #64748b);
+  font-style: italic;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wg-row-prev.needs-score { background: #fffbeb; margin: 0 -12px; padding: 3px 12px; border-radius: 4px; }
+
+/* Outcome chips — same vocabulary on the drawer and the summary page. */
+.wg-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  border-radius: 999px; padding: 1px 9px; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.wg-chip.is-hit     { background: #dcfce7; color: #15803d; border-color: #86efac; }
+.wg-chip.is-missed  { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+.wg-chip.is-waiting { background: #fef3c7; color: #a16207; border-color: #fcd34d; }
+.wg-chip.is-changed { background: #e0e7ff; color: #4338ca; border-color: #a5b4fc; }
+.wg-chip.is-none    { background: var(--surface-alt, #f1f5f9); color: var(--text-muted, #64748b); border-color: var(--border-strong, #cbd5e1); }
+
+.wg-scoreset { display: inline-flex; gap: 4px; flex: none; }
+.wg-score {
+  font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  border-radius: 999px; padding: 2px 10px; cursor: pointer;
+  background: #fff; border: 1px solid var(--border-strong, #cbd5e1); color: var(--text, #1f2937);
+  white-space: nowrap;
+}
+.wg-score.is-hit:hover     { background: #dcfce7; border-color: #16a34a; color: #15803d; }
+.wg-score.is-missed:hover  { background: #fee2e2; border-color: #dc2626; color: #b91c1c; }
+.wg-score.is-waiting:hover { background: #fef3c7; border-color: #d97706; color: #a16207; }
+.wg-score.is-changed:hover { background: #e0e7ff; border-color: #4f46e5; color: #4338ca; }
+.wg-mini {
+  font: inherit; font-size: var(--fs-xs); background: none; border: none;
+  color: var(--text-muted, #64748b); text-decoration: underline; cursor: pointer; padding: 0 2px;
+}
+.wg-mini:hover { color: var(--sdc-blue, #1574c4); }
+
+/* Reason / waiting-on sub-form. A reason is REQUIRED before an outcome commits. */
+.wg-form {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  background: #fff; border: 1px solid var(--sdc-blue, #1574c4);
+  border-radius: 6px; padding: 5px 8px;
+}
+.wg-form-title { font-size: var(--fs-sm); font-weight: var(--fw-extrabold); color: var(--sdc-dark, #061d39); white-space: nowrap; }
+.wg-seg { display: inline-flex; border: 1px solid var(--border-strong, #cbd5e1); border-radius: 6px; overflow: hidden; }
+.wg-segbtn {
+  font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  padding: 3px 10px; background: #fff; border: none; cursor: pointer; color: var(--text-muted, #64748b);
+}
+.wg-segbtn.is-on { background: var(--sdc-blue, #1574c4); color: #fff; }
+.wg-dept { font: inherit; font-size: var(--fs-sm); padding: 3px 6px; border: 1px solid var(--border-strong, #cbd5e1); border-radius: 6px; }
+.wg-detail { flex: 1 1 220px; min-width: 160px; font: inherit; font-size: var(--fs-sm); padding: 3px 8px; border: 1px solid var(--border-strong, #cbd5e1); border-radius: 6px; }
+.wg-save {
+  font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  background: var(--sdc-blue, #1574c4); color: #fff; border: none;
+  border-radius: 6px; padding: 4px 12px; cursor: pointer;
+}
+.wg-save:hover { filter: brightness(1.08); }
+
+/* Recap of previous weeks — collapsed by default. */
+.wg-hist-toggle {
+  align-self: flex-start; font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  background: none; border: none; color: var(--text-muted, #64748b); cursor: pointer; padding: 0;
+}
+.wg-hist-toggle:hover { color: var(--sdc-blue, #1574c4); }
+.wg-hist { display: flex; flex-direction: column; gap: 2px; padding: 2px 0 2px 10px; border-left: 2px solid var(--border, #e2e8f0); }
+.wg-hrow { display: grid; grid-template-columns: 110px minmax(0, 1fr) max-content; gap: 8px; align-items: center; font-size: var(--fs-sm); }
+.wg-hweek { color: var(--text-muted, #64748b); font-weight: var(--fw-bold); font-size: var(--fs-xs); white-space: nowrap; }
+.wg-htext { color: var(--text, #1f2937); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: italic; }
+
+/* ══ Execution Summary page ════════════════════════════════════════════════ */
+.exec-summary-page { max-width: 1400px; }
+.exec-weeknav { display: flex; gap: 6px; flex: none; }
+.exec-weeknav .btn-ghost {
+  background: #fff; color: var(--sdc-blue, #1574c4);
+  border: 1.5px solid var(--sdc-blue, #1574c4); border-radius: 6px;
+  font-weight: var(--fw-bold); padding: 4px 11px; cursor: pointer; white-space: nowrap;
+}
+.exec-weeknav .btn-ghost.is-on { background: var(--sdc-blue, #1574c4); color: #fff; }
+.exec-tally { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
+.exec-tally .wg-chip { font-size: var(--fs-md); padding: 3px 12px; }
+
+.exec-group { margin-top: 18px; border: 1px solid var(--border, #e2e8f0); border-radius: 8px; background: var(--surface, #fff); overflow: hidden; }
+.exec-group-head { display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; background: var(--surface-alt, #f1f5f9); border-bottom: 1px solid var(--border, #e2e8f0); flex-wrap: wrap; }
+.exec-group-head h3 { margin: 0; font-size: var(--fs-lg); color: var(--sdc-dark, #061d39); }
+.exec-group-n { font-size: var(--fs-sm); color: var(--text-muted, #64748b); font-weight: var(--fw-bold); }
+.exec-group-sub { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
+/* Waiting-on first: these are the ones someone in the room can clear today. */
+.exec-group.g-waiting { border-color: #fcd34d; }
+.exec-group.g-waiting .exec-group-head { background: #fffbeb; }
+.exec-group.g-missed  { border-color: #fca5a5; }
+.exec-group.g-missed .exec-group-head { background: #fef2f2; }
+
+.exec-head-row, .exec-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) 110px minmax(0, 2fr) 130px minmax(0, 1.6fr);
+  gap: 10px; align-items: center; padding: 5px 14px;
+}
+.exec-group.g-now .exec-head-row, .exec-group.g-now .exec-row { grid-template-columns: minmax(0, 1.1fr) 110px minmax(0, 3fr); }
+.exec-head-row {
+  font-size: var(--fs-xs); font-weight: var(--fw-extrabold); text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-muted, #64748b); border-bottom: 1px solid var(--border, #e2e8f0);
+}
+.exec-row { border-bottom: 1px solid var(--border, #eef2f6); cursor: pointer; font-size: var(--fs-md); }
+.exec-row:last-child { border-bottom: none; }
+.exec-row:hover { background: var(--row-hover, #f1f5f9); }
+.exec-proj { font-weight: var(--fw-bold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exec-pm { color: var(--text-muted, #64748b); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exec-goal { color: var(--text, #1f2937); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exec-why { color: var(--text-muted, #475569); font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.exec-missing-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; }
+.exec-missing {
+  font-size: var(--fs-sm); font-weight: var(--fw-semibold);
+  background: var(--surface-alt, #f1f5f9); border: 1px dashed var(--border-strong, #cbd5e1);
+  border-radius: 6px; padding: 3px 10px; cursor: pointer; white-space: nowrap;
+}
+.exec-missing em { color: var(--text-muted, #94a3b8); font-style: normal; font-size: var(--fs-xs); }
+.exec-missing:hover { border-color: var(--sdc-blue, #1574c4); color: var(--sdc-blue, #1574c4); }
+
+/* ── Execution Summary: phase + priority ──────────────────────────────────
+   Phase is derived from the schedule (latest phase with started work), so it
+   is read-only. Priority is a click-to-cycle human call. */
+.exec-controls { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; flex-wrap: wrap; }
+.exec-ctl-label { font-size: var(--fs-xs); font-weight: var(--fw-extrabold); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted, #64748b); }
+.exec-filter {
+  font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-bold);
+  background: #fff; color: var(--text-muted, #64748b);
+  border: 1px solid var(--border-strong, #cbd5e1); border-radius: 999px;
+  padding: 3px 12px; cursor: pointer; white-space: nowrap;
+}
+.exec-filter:hover { border-color: var(--sdc-blue, #1574c4); color: var(--sdc-blue, #1574c4); }
+.exec-filter.is-on { background: #fef3c7; border-color: #d97706; color: #a16207; }
+
+.exec-phase {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  border-radius: 5px; padding: 1px 8px; white-space: nowrap;
+  border: 1px solid transparent;
+}
+.exec-phase.ph-design  { background: #e0e7ff; color: #4338ca; border-color: #c7d2fe; }
+.exec-phase.ph-build   { background: #ffedd5; color: #9a3412; border-color: #fed7aa; }
+.exec-phase.ph-testing { background: #cffafe; color: #155e75; border-color: #a5f3fc; }
+.exec-phase.ph-install { background: #dcfce7; color: #15803d; border-color: #bbf7d0; }
+.exec-phase.ph-done    { background: var(--surface-alt, #f1f5f9); color: var(--text-muted, #64748b); border-color: var(--border-strong, #cbd5e1); }
+
+.exec-prio {
+  font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  border-radius: 999px; padding: 1px 10px; cursor: pointer; white-space: nowrap;
+  border: 1px solid transparent; justify-self: start;
+}
+.exec-prio.is-p-high   { background: #fee2e2; color: #b91c1c; border-color: #fca5a5; }
+.exec-prio.is-p-normal { background: var(--surface-alt, #f1f5f9); color: var(--text-muted, #64748b); border-color: var(--border-strong, #cbd5e1); }
+.exec-prio.is-p-low    { background: #fff; color: #94a3b8; border-color: #e2e8f0; }
+.exec-prio:hover { filter: brightness(0.96); }
+.exec-prio:disabled { opacity: 0.5; cursor: default; }
+
+/* Columns: Project | PM | Phase | Priority | Goal [| Result | Why] */
+.exec-head-row, .exec-row {
+  grid-template-columns: minmax(0, 1.1fr) 104px 82px 74px minmax(0, 1.8fr) 122px minmax(0, 1.5fr);
+}
+.exec-group.g-now .exec-head-row, .exec-group.g-now .exec-row {
+  grid-template-columns: minmax(0, 1.1fr) 104px 82px 74px minmax(0, 3fr);
+}
+/* The no-goal grid: same first four columns, nothing after. */
+.exec-head-row.is-missing, .exec-row.is-missing {
+  grid-template-columns: minmax(0, 1.4fr) 140px 90px 80px;
+}
+/* Phase-grouped sections take their accent from the phase itself. */
+.exec-group.ph-testing .exec-group-head { background: #ecfeff; }
+.exec-group.ph-install .exec-group-head { background: #f0fdf4; }
+.exec-group.ph-build   .exec-group-head { background: #fff7ed; }
+.exec-group.ph-design  .exec-group-head { background: #eef2ff; }
+
+/* Calendar week picker — pick a WEEK, not a day (Dan). */
+.exec-weekpick {
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  padding: 3px 8px;
+  border: 1.5px solid var(--sdc-blue, #1574c4);
+  border-radius: 6px;
+  color: var(--sdc-dark, #061d39);
+  background: #fff;
+  min-width: 150px;
+}
+.exec-weekpick:focus { outline: none; box-shadow: 0 0 0 2px rgba(21,116,196,0.18); }
+
+/* Sub-group divider inside a phase / result section (Then by: PM or Customer). */
+.exec-subhead {
+  grid-column: 1 / -1;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--sdc-dark, #061d39);
+  background: var(--surface-alt, #f1f5f9);
+  padding: 3px 14px;
+  border-top: 1px solid var(--border, #e2e8f0);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+}
+
+/* Sub-group header (Then by: PM / Customer). Deliberately louder than the
+   rows beneath it — as a quiet label it disappeared into the list. */
+.exec-subhead {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-extrabold);
+  color: var(--sdc-dark, #061d39);
+  background: #eaf3fb;
+  padding: 7px 14px 7px 12px;
+  margin-top: 10px;
+  border-top: 1px solid #bbdef7;
+  border-bottom: 1px solid #bbdef7;
+  border-left: 4px solid var(--sdc-blue, #1574c4);
+  letter-spacing: 0.01em;
+}
+.exec-subhead:first-child { margin-top: 0; }
+.exec-subhead-n {
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  color: var(--sdc-blue, #1574c4);
+  background: #fff;
+  border: 1px solid #bbdef7;
+  border-radius: 999px;
+  padding: 0 9px;
+}
+/* Member rows hang off a rail so it is obvious where a group starts and ends. */
+.exec-subhead ~ .exec-row { border-left: 4px solid #dbeafe; }
+.exec-subhead ~ .exec-row:hover { border-left-color: var(--sdc-blue, #1574c4); }
+/* Whatever the header already says, the column repeating it steps back. */
+#exec-summary-page[data-thenby="pm"] .exec-row .exec-pm { opacity: 0.4; }

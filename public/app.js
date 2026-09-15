@@ -5702,6 +5702,11 @@ function drawPenaltyClauseLine() {
     const svg = document.querySelector('#gantt-container .gantt');
     if (!svg) return;
     svg.querySelectorAll('.sdc-penalty-line').forEach(el => el.remove());
+    // Contract terms are an SDC-and-purchasing matter, not something to paint
+    // on the schedule you hand the customer. The remove() above runs first, so
+    // entering customer view also clears a line that is already drawn.
+    if (document.body.classList.contains('customer-view') ||
+        document.body.classList.contains('share-link-view')) return;
     if (!state.gantt || !state.gantt.gantt_start) return;
     const project = state.filters.project;
     if (!project) return;
@@ -6412,8 +6417,21 @@ function zoomToFit() {
   const bar = wrap && wrap.querySelector('.bar');
   if (bar) {
     const firstX = +bar.getAttribute('x');
+    const left = Math.max(0, firstX - LABEL_PAD_LEFT - EDGE_PAD);
     const scroller = getGanttScroller();
-    if (scroller) scroller.scrollLeft = Math.max(0, firstX - LABEL_PAD_LEFT - EDGE_PAD);
+    if (scroller) scroller.scrollLeft = left;
+    // Re-assert on the next frame. The chart canvas runs from a synthetic
+    // _pad_before bar to a _pad_after bar (months either side of the real
+    // work), so the fitted content sits THOUSANDS of px into the scroller --
+    // if anything re-renders or restores scroll after us (setPaneMode fires
+    // its own deferred fit, frappe restores its scroller on rebuild), the
+    // view lands in empty calendar and reads as "zoom to fit did nothing".
+    requestAnimationFrame(() => {
+      try {
+        const sc = getGanttScroller();
+        if (sc && Math.abs(sc.scrollLeft - left) > 2) sc.scrollLeft = left;
+      } catch (_) {}
+    });
   }
 }
 
@@ -12903,9 +12921,23 @@ function renderProjectTabs() {
       wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
-      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>${_etoBannerChipHtml(p)}${_pbiChipHtml(p)}`;
-      _wireEtoBannerChip(banner, p);
-      _wirePbiChip(banner, p);
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
+    }
+  }
+
+  // ETO / Power BI job links live in the FOOTER now, not the top banner.
+  // Same markup and wiring, different mount point: the footer is already
+  // hidden in customer view and share-link view, so a customer PDF can
+  // never pick them up.
+  const jobLinks = document.getElementById('schedule-job-links');
+  if (jobLinks) {
+    const jp = state.filters.project;
+    if (jp) {
+      jobLinks.innerHTML = _etoBannerChipHtml(jp) + _pbiChipHtml(jp);
+      _wireEtoBannerChip(jobLinks, jp);
+      _wirePbiChip(jobLinks, jp);
+    } else {
+      jobLinks.innerHTML = '';
     }
   }
 
@@ -15609,6 +15641,740 @@ function render(opts = {}) {
   try { _hoursCheckOnce(); renderScheduleHours(); } catch (_) {}
 }
 
+// ── Project phase + priority ──────────────────────────────────────────────
+// PHASE is DERIVED from the schedule, never typed: a project is in the latest
+// phase that has any STARTED work (Dan: "as soon as we start building or
+// wiring it is in the build phase; as soon as we start testing, testing").
+// Nobody maintains it, so it can never be stale or wrong-by-neglect.
+const PROJECT_PHASES = [
+  { key: 'design',  label: 'Design',   rank: 1, cls: 'ph-design' },
+  { key: 'build',   label: 'Build',    rank: 2, cls: 'ph-build' },
+  { key: 'testing', label: 'Testing',  rank: 3, cls: 'ph-testing' },
+  { key: 'install', label: 'Install',  rank: 4, cls: 'ph-install' },
+  { key: 'done',    label: 'Complete', rank: 0, cls: 'ph-done' },
+];
+const PROJ_PHASE_BY_KEY = Object.fromEntries(PROJECT_PHASES.map(p => [p.key, p]));
+
+function projectPhase(project) {
+  const ts = (state.tasks || []).filter(t => t.project === project && !t.is_action);
+  if (!ts.length) return 'design';
+  const started = (t) => (Number(t.progress) || 0) > 0;
+  const any = (f) => ts.some(t => f(t) && started(t));
+  // Walk back from the latest phase — the furthest-along started work wins.
+  if (any(t => t.phase_group === 'teardown_install')) {
+    const sat = ts.find(t => inferredAnchorKey(t) === 'sat');
+    if (sat && (Number(sat.progress) || 0) >= 100) return 'done';
+    return 'install';
+  }
+  if (any(t => t.phase_group === 'machine_testing')) return 'testing';
+  // Build = the SHOP side of section 10 (build + wire) has started.
+  if (any(t => t.phase_group === 'design_build' && t.department === 'shop')) return 'build';
+  return 'design';
+}
+
+// CUSTOMER is derived from the project name — SDC names jobs
+// "<job#>_<customer>_<machine>" (the same convention _etoJobFromName relies
+// on). It only counts as a customer when a separator actually follows it;
+// plenty of jobs are named for the machine alone ("1136_Reflectance"), and
+// guessing a customer out of those would be worse than admitting we do not
+// know. Those group under "—".
+function projectCustomer(project) {
+  let t = String(project || '').trim().replace(/^\s*\d{3,}\s*[-_ ]?\s*/, '');
+  if (!t) return '';
+  // Drop "(QTY 6)" style suffixes first, so a range like "(4 - 2)" can't be
+  // mistaken for the customer/machine separator.
+  t = t.replace(/\s*\([^)]*\)\s*/g, ' ').trim();
+  // Split on the separators SDC actually uses between customer and machine.
+  const m = t.split(/_|,| - |(?<=[a-z])-(?=[A-Z])/);
+  if (m.length < 2) return '';        // no separator → no customer in the name
+  const c = (m[0] || '').trim();
+  if (c.length < 2) return '';
+  // A customer is a short proper noun. Anything carrying a digit, or running
+  // longer than three words, is a machine description that happened to hold a
+  // separator — better to say "no customer" than to invent one.
+  if (/[0-9]/.test(c)) return '';
+  if (c.split(/\s+/).length > 3) return '';
+  return c;
+}
+
+// PRIORITY is a human call, stored per project in the notes blob (same place
+// as goals — editor-writable, no schema change). Deliberately three levels:
+// more than that and everything becomes priority 1 by week four.
+const PROJECT_PRIORITIES = [
+  { key: 'high',   label: 'High',   cls: 'is-p-high' },
+  { key: 'normal', label: 'Normal', cls: 'is-p-normal' },
+  { key: 'low',    label: 'Low',    cls: 'is-p-low' },
+];
+const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
+
+function projectPriority(project) {
+  const live = state.projectNotes && state.projectNotes[project];
+  if (live && live.priority) return live.priority;
+  const bulk = state.settings && state.settings['project_notes:' + project];
+  if (bulk && bulk.priority) return bulk.priority;
+  return 'normal';
+}
+// Read-modify-write against a FRESH server copy — the exec page edits projects
+// whose notes blob this browser has never loaded, and a blind save would wipe
+// their meetings.
+async function setProjectPriority(project, value) {
+  try {
+    const blob = (await api.notes.get(project)) || { sessions: [] };
+    if (!Array.isArray(blob.sessions)) blob.sessions = [];
+    blob.priority = value;
+    await api.notes.save(project, blob);
+    if (state.projectNotes[project]) state.projectNotes[project].priority = value;
+    const k = 'project_notes:' + project;
+    if (state.settings && state.settings[k]) state.settings[k].priority = value;
+    else if (state.settings) state.settings[k] = blob;
+  } catch (e) {
+    showToast('Could not save priority: ' + (e.message || e), { kind: 'error' });
+  }
+}
+
+// ── Execution Summary ─────────────────────────────────────────────────────
+// The Monday-meeting page: how did every active project do against last week's
+// goal, and what is committed for this one. Reads the goals straight out of the
+// project_notes blobs that already ship in the bulk settings payload, so it
+// costs no extra fetches.
+//
+// Deliberately ordered by what needs a decision: Waiting on (someone can
+// unblock it today) → Missed → Changed → Hit → never scored. The REASON column
+// is the point of the page; the tally is just an index into it.
+// Project-level only. No per-PM hit rate, ever — the moment one PM can compare
+// their number to another's, everyone starts setting goals they have already met.
+// The week being reviewed, stored as that week's MONDAY. Defaults to last
+// week — the Monday meeting looks backwards first. null means "not set yet",
+// resolved on first render so it always tracks the real calendar.
+let _execWeekKey = null;
+let _execGroupBy = 'result';   // 'result' | 'phase'
+let _execHighOnly = false;
+// Secondary ordering INSIDE each section: 'number' | 'pm' | 'customer'.
+let _execThenBy = 'number';
+
+function renderExecSummary() {
+  const root = document.getElementById('exec-summary-page');
+  if (!root) return;
+  const thisWk = weekKey();
+  if (!_execWeekKey) _execWeekKey = weekKeyPrev(thisWk);   // default: last week
+  const wk = _execWeekKey;
+  const isReview = wk < thisWk;
+  const isThisWeek = wk === thisWk;
+
+  // Same pool as the other status views: no templates, Sales, On Hold, or
+  // Reports-app-inactive jobs.
+  const { allProjects } = _deptSelectedProjects();
+  let rows = allProjects.map(p => ({
+    project: p,
+    pm: projectLead(p, 'pm') || '',
+    customer: projectCustomer(p),
+    phase: projectPhase(p),
+    priority: projectPriority(p),
+    goal: goalsForProject(p)[wk] || null,
+  }));
+  if (_execHighOnly) rows = rows.filter(r => r.priority === 'high');
+
+  // Overall order = later phase first (a machine in test outranks one in
+  // design), then priority, then name. Dan: "the later stages are always going
+  // to be the overall higher priority — but a design project can still be high."
+  // Project flow order (Design first, Complete last), then priority, then
+  // name — the same reading order as the phase sections.
+  const phaseOrd = (k) => PROJ_PHASE_BY_KEY[k].rank || 99;
+  const byOverall = (a, b) =>
+    (phaseOrd(a.phase) - phaseOrd(b.phase)) ||
+    bySub(a, b);
+  // Inside a section, the chosen "then by" key leads so matching rows sit
+  // together (that IS the grouping), then priority, then project number.
+  const subKey = (r) => {
+    if (_execThenBy === 'pm') return r.pm || '';
+    if (_execThenBy === 'customer') return r.customer || '';
+    return '';
+  };
+  // Blank keys (no PM, no customer in the name) sort to the END, not the top.
+  const bySub = (a, b) => {
+    const ka = subKey(a), kb = subKey(b);
+    if (ka !== kb) {
+      if (!ka) return 1;
+      if (!kb) return -1;
+      return ka.localeCompare(kb);
+    }
+    return (PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]) ||
+           a.project.localeCompare(b.project);
+  };
+  const byPriority = bySub;
+  // A visible divider each time the sub-group key changes.
+  const subLabel = (r) => {
+    if (_execThenBy === 'pm') return r.pm || 'No PM assigned';
+    if (_execThenBy === 'customer') return r.customer || 'No customer in the name';
+    return '';
+  };
+  // The header has to read louder than the rows under it, or the grouping
+  // disappears into the list (Dan: "the PM gets lost in here"). Big label,
+  // accent bar, a count, and the member rows hang off a left rail.
+  const subHeadHtml = (lbl, n) => {
+    const icon = _execThenBy === 'pm' ? '👤' : '🏢';
+    return `<div class="exec-subhead">${icon} ${escapeHtml(lbl)}<span class="exec-subhead-n">${n}</span></div>`;
+  };
+  // Count the CONTIGUOUS run under each header, not the key's total. The
+  // no-goal grid spans every phase, so one PM legitimately appears several
+  // times — showing their whole-list total on each was just wrong.
+  const runsOf = (list) => {
+    const runs = [];
+    for (const r of list) {
+      const lbl = subLabel(r);
+      if (!runs.length || runs[runs.length - 1].lbl !== lbl) runs.push({ lbl, items: [] });
+      runs[runs.length - 1].items.push(r);
+    }
+    return runs;
+  };
+  const withSubHeads = (list, showOutcome) => {
+    if (_execThenBy === 'number') return list.map(r => row(r, showOutcome)).join('');
+    return runsOf(list).map(run =>
+      subHeadHtml(run.lbl, run.items.length) + run.items.map(r => row(r, showOutcome)).join('')
+    ).join('');
+  };
+
+  const withGoal = rows.filter(r => r.goal && r.goal.text);
+  const noGoal = rows.filter(r => !(r.goal && r.goal.text)).sort(byOverall);
+
+  const outcomeOf = (r) => r.goal.outcome || null;
+  const counts = {
+    waiting: withGoal.filter(r => outcomeOf(r) === 'waiting').length,
+    missed:  withGoal.filter(r => outcomeOf(r) === 'missed').length,
+    changed: withGoal.filter(r => outcomeOf(r) === 'changed').length,
+    hit:     withGoal.filter(r => outcomeOf(r) === 'hit').length,
+    none:    withGoal.filter(r => !outcomeOf(r)).length,
+  };
+  const tally = isReview ? [
+    { n: counts.waiting, label: 'waiting on', cls: 'is-waiting' },
+    { n: counts.missed,  label: 'missed',     cls: 'is-missed' },
+    { n: counts.changed, label: 'changed',    cls: 'is-changed' },
+    { n: counts.hit,     label: 'hit',        cls: 'is-hit' },
+    { n: counts.none,    label: 'not scored', cls: 'is-none' },
+  ].filter(t => t.n) : [];
+
+  const phaseChip = (k) => {
+    const ph = PROJ_PHASE_BY_KEY[k];
+    return `<span class="exec-phase ${ph.cls}">${escapeHtml(ph.label)}</span>`;
+  };
+  // Priority cycles High → Normal → Low on click, right where you are looking
+  // at it during the meeting.
+  const prioChip = (r) => {
+    const pr = PROJECT_PRIORITIES.find(x => x.key === r.priority) || PROJECT_PRIORITIES[1];
+    return `<button type="button" class="exec-prio ${pr.cls}" data-prio-project="${escapeHtml(r.project)}" title="Click to change priority">${escapeHtml(pr.label)}</button>`;
+  };
+
+  const row = (r, showOutcome) => {
+    const g = r.goal;
+    const o = (showOutcome && g && g.outcome) ? GOAL_OUTCOMES[g.outcome] : null;
+    let why = '';
+    if (g && g.outcome === 'waiting') why = goalWaitingText(g.waiting);
+    else if (g && g.reason) why = g.reason;
+    return `<div class="exec-row" data-project="${escapeHtml(r.project)}">
+      <span class="exec-proj" title="${escapeHtml(r.project)}">${escapeHtml(r.project)}</span>
+      <span class="exec-pm">${escapeHtml(r.pm || '—')}</span>
+      ${phaseChip(r.phase)}
+      ${prioChip(r)}
+      <span class="exec-goal">${escapeHtml(g ? g.text : '')}</span>
+      ${showOutcome ? `<span class="exec-outcome"><span class="wg-chip ${o ? o.cls : 'is-none'}">${o ? o.icon + ' ' + escapeHtml(o.label) : 'not scored'}</span></span>` : ''}
+      ${showOutcome ? `<span class="exec-why">${escapeHtml(why)}</span>` : ''}
+    </div>`;
+  };
+
+  const headRow = (showOutcome) => `<div class="exec-head-row">
+      <span>Project</span><span>PM</span><span>Phase</span><span>Priority</span><span>Goal</span>
+      ${showOutcome ? '<span>Result</span><span>Why</span>' : ''}
+    </div>`;
+
+  const group = (title, list, cls, showOutcome, blurb) => {
+    if (!list.length) return '';
+    return `<section class="exec-group ${cls}">
+      <header class="exec-group-head">
+        <h3>${escapeHtml(title)} <span class="exec-group-n">${list.length}</span></h3>
+        ${blurb ? `<span class="exec-group-sub">${escapeHtml(blurb)}</span>` : ''}
+      </header>
+      ${headRow(showOutcome)}
+      ${withSubHeads(list, showOutcome)}
+    </section>`;
+  };
+
+  let body = '';
+  if (_execGroupBy === 'phase') {
+    // Later phases first — that IS the overall priority order.
+    // Phase sections run in PROJECT ORDER — Design → Build → Testing →
+    // Install → Complete — because that is how a machine actually moves
+    // through the shop (Dan). Priority still leads inside each section.
+    body = PROJECT_PHASES.slice().sort((a, b) => (a.rank || 99) - (b.rank || 99)).map(ph => {
+      const list = withGoal.filter(r => r.phase === ph.key).sort(byPriority);
+      return group(ph.label, list, 'g-phase ' + ph.cls, isReview, '');
+    }).join('');
+  } else if (isReview) {
+    const byOutcome = (o) => withGoal.filter(r => outcomeOf(r) === o).sort(byOverall);
+    body =
+      group('⏳ Waiting on', byOutcome('waiting'), 'g-waiting', true, 'Blocked — these are the ones someone in this room can clear today.') +
+      group('✗ Missed', byOutcome('missed'), 'g-missed', true, '') +
+      group('↻ Changed', byOutcome('changed'), 'g-changed', true, 'The plan moved for a reason — not a miss.') +
+      group('✓ Hit', byOutcome('hit'), 'g-hit', true, '') +
+      group('Not scored', byOutcome(null), 'g-none', true, 'Nobody has said how these landed yet.');
+  } else {
+    body = group('🎯 Committed this week', withGoal.slice().sort(byOverall), 'g-now', false, '');
+  }
+  if (!withGoal.length) {
+    body = `<div class="pdash-empty-block">${isReview ? `No goals were set for ${escapeHtml(weekLabel(wk))}.` : 'No goals set for this week yet.'}</div>`;
+  }
+
+  // Projects with nothing set — a GRID with the same columns, not a wall of
+  // chips (Dan). Sorted the same way, so the ones that matter are at the top.
+  const missingRow = (r) => `<div class="exec-row is-missing" data-project="${escapeHtml(r.project)}">
+      <span class="exec-proj" title="${escapeHtml(r.project)}">${escapeHtml(r.project)}</span>
+      <span class="exec-pm">${escapeHtml(r.pm || String.fromCharCode(8212))}</span>
+      ${phaseChip(r.phase)}
+      ${prioChip(r)}
+    </div>`;
+  const missingBody = (() => {
+    if (_execThenBy === 'number') return noGoal.map(missingRow).join('');
+    return runsOf(noGoal).map(run =>
+      subHeadHtml(run.lbl, run.items.length) + run.items.map(missingRow).join('')
+    ).join('');
+  })();
+  const missing = noGoal.length ? `<section class="exec-group g-missing">
+      <header class="exec-group-head">
+        <h3>No goal set <span class="exec-group-n">${noGoal.length}</span></h3>
+        <span class="exec-group-sub">Fill these in live — click a row to open the project.</span>
+      </header>
+      <div class="exec-head-row is-missing"><span>Project</span><span>PM</span><span>Phase</span><span>Priority</span></div>
+      ${missingBody}
+    </section>` : '';
+  root.innerHTML = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+      <div style="min-width:0;">
+        <h1 class="projects-page-title">Execution Summary</h1>
+        <div class="projects-page-sub">${escapeHtml(weekLabel(wk))} — ${withGoal.length} of ${rows.length} ${_execHighOnly ? 'high-priority ' : 'active '}projects set a goal</div>
+      </div>
+      <div class="exec-weeknav">
+        <button type="button" class="btn-ghost btn-tight" data-exec-week="prev" title="Previous week">‹</button>
+        <input type="week" class="exec-weekpick" data-exec-weekpick value="${escapeHtml(weekKeyToIsoWeek(wk))}"
+               title="Pick any calendar week" />
+        <button type="button" class="btn-ghost btn-tight" data-exec-week="next" title="Next week">›</button>
+        <button type="button" class="btn-ghost btn-tight ${isThisWeek ? 'is-on' : ''}" data-exec-week="now">This week</button>
+      </div>
+    </div>
+    <div class="exec-controls">
+      <span class="exec-ctl-label">Group by</span>
+      <span class="wg-seg">
+        <button type="button" class="wg-segbtn ${_execGroupBy === 'result' ? 'is-on' : ''}" data-exec-group="result">Result</button>
+        <button type="button" class="wg-segbtn ${_execGroupBy === 'phase' ? 'is-on' : ''}" data-exec-group="phase">Phase</button>
+      </span>
+      <span class="exec-ctl-label">Then by</span>
+      <span class="wg-seg">
+        <button type="button" class="wg-segbtn ${_execThenBy === 'number' ? 'is-on' : ''}" data-exec-then="number">Project #</button>
+        <button type="button" class="wg-segbtn ${_execThenBy === 'pm' ? 'is-on' : ''}" data-exec-then="pm">PM</button>
+        <button type="button" class="wg-segbtn ${_execThenBy === 'customer' ? 'is-on' : ''}" data-exec-then="customer">Customer</button>
+      </span>
+      <button type="button" class="exec-filter ${_execHighOnly ? 'is-on' : ''}" data-exec-high>★ High priority only</button>
+    </div>
+    ${tally.length ? `<div class="exec-tally">${tally.map(t => `<span class="wg-chip ${t.cls}">${t.n} ${escapeHtml(t.label)}</span>`).join('')}</div>` : ''}
+    ${body}
+    ${missing}
+  `;
+
+  // Lets the CSS mute whichever column the sub-headers already say — a PM
+  // name repeated on every row is what made the grouping vanish.
+  root.dataset.thenby = _execThenBy;
+  root.querySelectorAll('[data-exec-week]').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.execWeek;
+      if (k === 'now') _execWeekKey = weekKey();
+      else if (k === 'prev') _execWeekKey = weekKeyPrev(_execWeekKey);
+      else _execWeekKey = weekKeyNext(_execWeekKey);
+      renderExecSummary();
+    });
+  });
+  // Native week picker — pick any calendar week, not a specific day.
+  root.querySelector('[data-exec-weekpick]')?.addEventListener('change', (e) => {
+    const k = isoWeekToWeekKey(e.target.value);
+    if (k) { _execWeekKey = k; renderExecSummary(); }
+  });
+  root.querySelectorAll('[data-exec-group]').forEach(b => {
+    b.addEventListener('click', () => { _execGroupBy = b.dataset.execGroup; renderExecSummary(); });
+  });
+  root.querySelectorAll('[data-exec-then]').forEach(b => {
+    b.addEventListener('click', () => { _execThenBy = b.dataset.execThen; renderExecSummary(); });
+  });
+  root.querySelector('[data-exec-high]')?.addEventListener('click', () => {
+    _execHighOnly = !_execHighOnly;
+    renderExecSummary();
+  });
+  // Priority cycles in place; stopPropagation so it does not also open the job.
+  root.querySelectorAll('[data-prio-project]').forEach(b => {
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const p = b.dataset.prioProject;
+      // Cycle Normal → High → Low → Normal: promoting is the common move,
+      // so it should be ONE click from the default.
+      const CYCLE = { normal: 'high', high: 'low', low: 'normal' };
+      const next = CYCLE[projectPriority(p)] || 'high';
+      b.disabled = true;
+      await setProjectPriority(p, next);
+      renderExecSummary();
+    });
+  });
+  // Click a row to open that job.
+  root.querySelectorAll('.exec-row').forEach(elx => {
+    elx.addEventListener('click', () => {
+      const p = elx.dataset.project;
+      if (!p) return;
+      if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      state.filters.project = p;
+      state.activeWorkspace = projectWorkspace(p);
+      saveProjectTabs();
+      setView('schedule');
+    });
+  });
+}
+// ── Weekly goals ──────────────────────────────────────────────────────────
+// One sentence per project per week: "this is where we want to be by Friday."
+// A COMMITMENT a human writes and a human grades — the schedule never grades
+// it. (A goal the app could compute is a goal nobody needed to set; the value
+// is that a human chose THIS out of 200 open tasks.)
+//
+// Stored as a sibling of `sessions` inside the existing per-project notes blob,
+// so there is no new table, no new endpoint, and it rides the notes autosave +
+// the notes:updated broadcast for free.
+//   goals: { "2026-09-14": { text, setBy, setAt, outcome, reason, waiting, scoredBy, scoredAt } }
+// Key = that week's MONDAY in ISO form: sorts lexically, prints human, and
+// matches how people already talk ("week of the 14th"). Rollover needs no cron
+// and no migration — on Monday the key simply changes and last week freezes.
+const GOAL_OUTCOMES = {
+  hit:     { label: 'Hit',        icon: '✓', cls: 'is-hit' },
+  missed:  { label: 'Missed',     icon: '✗', cls: 'is-missed' },
+  waiting: { label: 'Waiting on', icon: '⏳', cls: 'is-waiting' },
+  changed: { label: 'Changed',    icon: '↻', cls: 'is-changed' },
+};
+// Who an internal blocker sits with. Reuses the notes department groups so the
+// vocabulary matches the rest of the app, plus the two non-delivery groups that
+// actually block jobs.
+// Lazy: NOTES_DEPT_GROUPS is defined further down the file, so evaluating this
+// at module load would hit its temporal dead zone.
+let _goalWaitDepts = null;
+function goalWaitDepts() {
+  if (!_goalWaitDepts) {
+    _goalWaitDepts = [
+      ...NOTES_DEPT_GROUPS.map(g => ({ key: g.key, label: g.label })),
+      { key: 'procurement', label: 'Procurement' },
+      { key: 'service',     label: 'Service Engineering' },
+    ];
+  }
+  return _goalWaitDepts;
+}
+
+// Format a LOCAL date as YYYY-MM-DD. Deliberately not toISOString(): that
+// converts to UTC first, so local midnight anywhere east of Greenwich comes
+// back as the PREVIOUS day and every week key would be off by one.
+function _ymdLocal(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function weekKey(d) {
+  const dt = d ? new Date(d) : new Date();
+  dt.setHours(0, 0, 0, 0);
+  // getDay(): 0=Sun … 6=Sat. Walk back to Monday (Sunday belongs to the week
+  // that is ENDING, i.e. back 6 days, not forward 1).
+  const dow = dt.getDay();
+  dt.setDate(dt.getDate() - (dow === 0 ? 6 : dow - 1));
+  return _ymdLocal(dt);
+}
+function weekKeyPrev(key) {
+  const d = new Date(key + 'T00:00:00');
+  d.setDate(d.getDate() - 7);
+  return _ymdLocal(d);
+}
+function weekKeyNext(key) {
+  const d = new Date(key + 'T00:00:00');
+  d.setDate(d.getDate() + 7);
+  return _ymdLocal(d);
+}
+// ISO week ("2026-W38") ↔ that week's Monday. Only used to talk to the
+// native <input type="week"> picker; the stored key is always the Monday.
+function _week1Monday(year) {
+  // ISO: week 1 is the week containing Jan 4.
+  const jan4 = new Date(year, 0, 4);
+  const dow = jan4.getDay() || 7;
+  const mon = new Date(jan4);
+  mon.setDate(jan4.getDate() - (dow - 1));
+  return mon;
+}
+function weekKeyToIsoWeek(key) {
+  const mon = new Date(key + 'T00:00:00');
+  // The Thursday of a week decides which ISO year it belongs to.
+  const thu = new Date(mon); thu.setDate(mon.getDate() + 3);
+  const year = thu.getFullYear();
+  const w = Math.round((mon - _week1Monday(year)) / 604800000) + 1;
+  return year + '-W' + String(w).padStart(2, '0');
+}
+function isoWeekToWeekKey(str) {
+  const m = /^(\d{4})-W(\d{1,2})$/.exec(str || '');
+  if (!m) return null;
+  const mon = _week1Monday(+m[1]);
+  mon.setDate(mon.getDate() + (+m[2] - 1) * 7);
+  return _ymdLocal(mon);
+}
+function weekLabel(key) {
+  try {
+    const d = new Date(key + 'T00:00:00');
+    return 'Week of ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch (_) { return key; }
+}
+// Read a project's goals map from wherever the freshest copy lives: the loaded
+// notes blob if this browser has it, otherwise the bulk settings payload that
+// already ships every project_notes:* blob on page load.
+function goalsForProject(project) {
+  if (!project) return {};
+  const live = state.projectNotes && state.projectNotes[project];
+  if (live && live.goals) return live.goals;
+  const bulk = state.settings && state.settings['project_notes:' + project];
+  if (bulk && bulk.goals) return bulk.goals;
+  return {};
+}
+function goalWaitingText(w) {
+  if (!w) return '';
+  const where = w.scope === 'internal'
+    ? ((goalWaitDepts().find(d => d.key === w.dept) || {}).label || 'Internal')
+    : 'External';
+  return where + (w.detail ? ' — ' + w.detail : '');
+}
+// One-line summary of a scored week, used by both the drawer and the summary page.
+function goalOutcomeText(g) {
+  if (!g || !g.outcome) return '';
+  const o = GOAL_OUTCOMES[g.outcome];
+  if (!o) return '';
+  if (g.outcome === 'waiting') return o.label + ': ' + goalWaitingText(g.waiting);
+  return o.label + (g.reason ? ' — ' + g.reason : '');
+}
+
+// Transient per-project UI state for the goal bar (which sub-form is open).
+const _goalUI = {};
+function _goalUIFor(p) { return (_goalUI[p] = _goalUI[p] || { pending: null, showHistory: false }); }
+
+function renderWeeklyGoalBar(project) {
+  const data = state.projectNotes[project];
+  if (!data) return '';
+  const goals = data.goals = data.goals || {};
+  const wk = weekKey();
+  const prevKey = weekKeyPrev(wk);
+  const cur = goals[wk] || null;
+  const prev = goals[prevKey] || null;
+  const ui = _goalUIFor(project);
+
+  // THIS week — forward-looking, always visible, even with Notes collapsed.
+  const curVal = cur && cur.text ? cur.text : '';
+  // Carry-forward on one keystroke: last week's goal is the grey placeholder.
+  const ph = (!curVal && prev && prev.text) ? prev.text : 'What are we getting done this week?';
+  const setLine = `<div class="wg-row wg-row-now">
+      <span class="wg-label" title="A weekly goal is a state change someone could confirm by Friday without asking anyone.">🎯 ${escapeHtml(weekLabel(wk))}</span>
+      <input class="wg-input" type="text" maxlength="140" data-wg-text
+             value="${escapeHtml(curVal)}" placeholder="${escapeHtml(ph)}" />
+      ${cur && cur.setBy ? `<span class="wg-by">— ${escapeHtml(cur.setBy)}</span>` : ''}
+    </div>`;
+
+  // LAST week — backward-looking tracker.
+  let prevLine = '';
+  if (prev && prev.text) {
+    if (prev.outcome) {
+      const o = GOAL_OUTCOMES[prev.outcome];
+      prevLine = `<div class="wg-row wg-row-prev">
+        <span class="wg-label wg-label-prev">${escapeHtml(weekLabel(prevKey))}</span>
+        <span class="wg-prev-text">“${escapeHtml(prev.text)}”</span>
+        <span class="wg-chip ${o.cls}">${o.icon} ${escapeHtml(goalOutcomeText(prev))}</span>
+        <button type="button" class="wg-mini" data-wg-rescore title="Change this result">edit</button>
+      </div>`;
+    } else {
+      const btns = Object.keys(GOAL_OUTCOMES).map(k =>
+        `<button type="button" class="wg-score ${GOAL_OUTCOMES[k].cls}" data-wg-score="${k}">${GOAL_OUTCOMES[k].icon} ${GOAL_OUTCOMES[k].label}</button>`
+      ).join('');
+      prevLine = `<div class="wg-row wg-row-prev needs-score">
+        <span class="wg-label wg-label-prev">${escapeHtml(weekLabel(prevKey))}</span>
+        <span class="wg-prev-text">“${escapeHtml(prev.text)}”</span>
+        <span class="wg-scoreset">${btns}</span>
+      </div>`;
+    }
+  }
+
+  // The sub-form that a Missed / Changed / Waiting click opens. Reason is
+  // REQUIRED — the outcome does not commit until it has one (Dan).
+  let form = '';
+  if (ui.pending) {
+    const k = ui.pending;
+    if (k === 'waiting') {
+      const scope = ui.waitScope || 'internal';
+      const deptOpts = goalWaitDepts().map(d =>
+        `<option value="${d.key}" ${ui.waitDept === d.key ? 'selected' : ''}>${escapeHtml(d.label)}</option>`
+      ).join('');
+      form = `<div class="wg-form">
+        <span class="wg-form-title">⏳ What are we waiting on?</span>
+        <span class="wg-seg">
+          <button type="button" class="wg-segbtn ${scope === 'internal' ? 'is-on' : ''}" data-wg-scope="internal">Internal</button>
+          <button type="button" class="wg-segbtn ${scope === 'external' ? 'is-on' : ''}" data-wg-scope="external">External</button>
+        </span>
+        ${scope === 'internal' ? `<select class="wg-dept" data-wg-dept>${deptOpts}</select>` : ''}
+        <input class="wg-detail" type="text" maxlength="160" data-wg-detail
+               placeholder="${scope === 'internal' ? 'Specifically what? e.g. panel drawings from CE' : 'Specifically what? e.g. customer sign-off on layout'}"
+               value="${escapeHtml(ui.waitDetail || '')}" />
+        <button type="button" class="wg-save" data-wg-commit>Save</button>
+        <button type="button" class="wg-mini" data-wg-cancel>Cancel</button>
+      </div>`;
+    } else {
+      const title = k === 'missed' ? '✗ Why did we miss it?' : '↻ What changed?';
+      form = `<div class="wg-form">
+        <span class="wg-form-title">${title}</span>
+        <input class="wg-detail wg-reason" type="text" maxlength="200" data-wg-reason
+               placeholder="Required — one line is enough"
+               value="${escapeHtml(ui.reason || '')}" />
+        <button type="button" class="wg-save" data-wg-commit>Save</button>
+        <button type="button" class="wg-mini" data-wg-cancel>Cancel</button>
+      </div>`;
+    }
+  }
+
+  // Recap — the last several weeks, collapsed by default.
+  let history = '';
+  const keys = Object.keys(goals).filter(k => k !== wk && goals[k] && goals[k].text).sort().reverse();
+  if (keys.length) {
+    const rows = keys.slice(0, 12).map(k => {
+      const g = goals[k];
+      const o = g.outcome ? GOAL_OUTCOMES[g.outcome] : null;
+      return `<div class="wg-hrow">
+        <span class="wg-hweek">${escapeHtml(weekLabel(k))}</span>
+        <span class="wg-htext">“${escapeHtml(g.text)}”</span>
+        <span class="wg-chip ${o ? o.cls : 'is-none'}">${o ? o.icon + ' ' + escapeHtml(goalOutcomeText(g)) : 'not scored'}</span>
+      </div>`;
+    }).join('');
+    history = `<button type="button" class="wg-hist-toggle" data-wg-hist>${ui.showHistory ? '▾' : '▸'} Last ${keys.length} week${keys.length === 1 ? '' : 's'}</button>
+      ${ui.showHistory ? `<div class="wg-hist">${rows}</div>` : ''}`;
+  }
+
+  return `<div class="weekly-goal" data-wg-project="${escapeHtml(project)}">${setLine}${prevLine}${form}${history}</div>`;
+}
+
+function _wireWeeklyGoal(el, project) {
+  const box = el.querySelector('.weekly-goal');
+  if (!box) return;
+  const data = state.projectNotes[project];
+  if (!data) return;
+  const goals = data.goals = data.goals || {};
+  const wk = weekKey();
+  const prevKey = weekKeyPrev(wk);
+  const ui = _goalUIFor(project);
+  const me = (window.sdcAuth && sdcAuth.user && (sdcAuth.user.name || sdcAuth.user.email)) || '';
+
+  // Set / edit THIS week's goal. Enter or blur commits; an empty box that was
+  // never filled stays empty (no phantom record).
+  const input = box.querySelector('[data-wg-text]');
+  if (input) {
+    const commit = () => {
+      const v = input.value.trim();
+      const existing = goals[wk];
+      if (!v && !existing) return;
+      if (existing && existing.text === v) return;
+      if (!v) { delete goals[wk]; }
+      else {
+        goals[wk] = Object.assign({}, existing || {}, {
+          text: v,
+          setBy: (existing && existing.setBy) || me,
+          setAt: (existing && existing.setAt) || new Date().toISOString(),
+        });
+      }
+      saveProjectNotes(project);
+      renderProjectNotes();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') { input.value = (goals[wk] && goals[wk].text) || ''; input.blur(); }
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  // Commit a scored outcome. Hit needs nothing; the rest need their detail.
+  const score = (outcome, extra) => {
+    const prev = goals[prevKey];
+    if (!prev) return;
+    goals[prevKey] = Object.assign({}, prev, extra || {}, {
+      outcome,
+      scoredBy: me,
+      scoredAt: new Date().toISOString(),
+    });
+    ui.pending = null; ui.reason = ''; ui.waitDetail = ''; ui.waitScope = null; ui.waitDept = null;
+    saveProjectNotes(project);
+    renderProjectNotes();
+  };
+
+  box.querySelectorAll('[data-wg-score]').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.wgScore;
+      if (k === 'hit') { score('hit', { reason: '', waiting: null }); return; }
+      // Missed / Changed / Waiting all require their detail before committing.
+      ui.pending = k;
+      ui.reason = ''; ui.waitDetail = ''; ui.waitScope = 'internal'; ui.waitDept = goalWaitDepts()[0].key;
+      renderProjectNotes();
+      setTimeout(() => document.querySelector('.weekly-goal [data-wg-reason], .weekly-goal [data-wg-detail]')?.focus(), 0);
+    });
+  });
+
+  // Re-open the scoring buttons on an already-scored week.
+  box.querySelector('[data-wg-rescore]')?.addEventListener('click', () => {
+    const prev = goals[prevKey];
+    if (!prev) return;
+    goals[prevKey] = Object.assign({}, prev, { outcome: null });
+    saveProjectNotes(project);
+    renderProjectNotes();
+  });
+
+  // Waiting-on sub-form: scope toggle + department.
+  box.querySelectorAll('[data-wg-scope]').forEach(b => {
+    b.addEventListener('click', () => {
+      ui.waitScope = b.dataset.wgScope;
+      const d = box.querySelector('[data-wg-detail]');
+      ui.waitDetail = d ? d.value : '';
+      renderProjectNotes();
+    });
+  });
+  box.querySelector('[data-wg-dept]')?.addEventListener('change', (e) => { ui.waitDept = e.target.value; });
+
+  // Commit the sub-form — blocked until the required text is there.
+  const commitForm = () => {
+    if (ui.pending === 'waiting') {
+      const detail = (box.querySelector('[data-wg-detail]')?.value || '').trim();
+      const scope = ui.waitScope || 'internal';
+      const dept = scope === 'internal' ? (box.querySelector('[data-wg-dept]')?.value || goalWaitDepts()[0].key) : null;
+      if (!detail) {
+        showToast('Say what specifically we are waiting on — that is the part someone can act on.', { kind: 'error' });
+        box.querySelector('[data-wg-detail]')?.focus();
+        return;
+      }
+      score('waiting', { waiting: { scope, dept, detail }, reason: '' });
+    } else {
+      const reason = (box.querySelector('[data-wg-reason]')?.value || '').trim();
+      if (!reason) {
+        showToast('A reason is required — it is the most useful thing on the summary page.', { kind: 'error' });
+        box.querySelector('[data-wg-reason]')?.focus();
+        return;
+      }
+      score(ui.pending, { reason, waiting: null });
+    }
+  };
+  box.querySelector('[data-wg-commit]')?.addEventListener('click', commitForm);
+  box.querySelectorAll('[data-wg-reason], [data-wg-detail]').forEach(inp => {
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitForm(); } });
+  });
+  box.querySelector('[data-wg-cancel]')?.addEventListener('click', () => {
+    ui.pending = null;
+    renderProjectNotes();
+  });
+  box.querySelector('[data-wg-hist]')?.addEventListener('click', () => {
+    ui.showHistory = !ui.showHistory;
+    renderProjectNotes();
+  });
+}
+
 // ── Project Notes ─────────────────────────────────────────────────────────────
 // A collapsible panel under the schedule: meeting "sessions" on the left
 // (dated, collapsible, free notes), and starred items promoted to "Key
@@ -15901,7 +16667,16 @@ function renderProjectNotes() {
     <span class="notes-count">${data.sessions.length} meeting${data.sessions.length === 1 ? '' : 's'} · ${starred.length} key</span>
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
-  if (collapsed) { el.innerHTML = bar; _wireNotes(el, project); layoutNotesPanel(); return; }
+  // The goal bar sits ABOVE the Notes header and stays visible even when the
+  // drawer is collapsed — that visibility IS the reminder (Dan).
+  const goalBar = (() => { try { return renderWeeklyGoalBar(project); } catch (_) { return ''; } })();
+  if (collapsed) {
+    el.innerHTML = goalBar + bar;
+    _wireNotes(el, project);
+    try { _wireWeeklyGoal(el, project); } catch (_) {}
+    layoutNotesPanel();
+    return;
+  }
   const anyExpanded = data.sessions.some(s => !s.collapsed);
   const collapseAllBtn = data.sessions.length
     ? `<button class="notes-collapse-all" data-action="collapse-all" type="button" title="${anyExpanded ? 'Collapse every meeting' : 'Expand every meeting'}">${anyExpanded ? 'Collapse all' : 'Expand all'}</button>`
@@ -15952,7 +16727,7 @@ function renderProjectNotes() {
       <button class="notes-kv ${_notesKeyView === 'cards' ? 'is-on' : ''}" data-keyview="cards" type="button">Cards</button>
       <button class="notes-kv ${_notesKeyView === 'list' ? 'is-on' : ''}" data-keyview="list" type="button">List</button>
     </span>` : '';
-  el.innerHTML = DRAWER_HANDLE('notes-body') + bar + `
+  el.innerHTML = DRAWER_HANDLE('notes-body') + goalBar + bar + `
     <div class="notes-body">
       <div class="notes-col notes-sessions">
         <div class="notes-col-head"><span>Meetings</span><span class="notes-col-head-actions">${collapseAllBtn}<button class="notes-new-session" data-action="new-session" type="button">+ New meeting</button></span></div>
@@ -15964,6 +16739,7 @@ function renderProjectNotes() {
       </div>
     </div>`;
   _wireNotes(el, project);
+  try { _wireWeeklyGoal(el, project); } catch (_) {}
   // Auto-size note textareas to their content.
   el.querySelectorAll('.notes-item-text').forEach(ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
   layoutNotesPanel();
@@ -16772,7 +17548,18 @@ function handleRowContextMenu(e) {
   const items = [
     { label: '＋ Add task below', onClick: () => createTaskBelow(id) },
     { label: '＋ Add action below', onClick: () => createTaskBelow(id, true) },
+    { separator: true },
+    { label: '⧉ Copy line', onClick: () => gridCopyRows([id], 'copy') },
+    { label: '✂ Cut line', onClick: () => gridCopyRows([id], 'cut') },
   ];
+  if (_gridClipboard && _gridClipboard.rows.length) {
+    const n = _gridClipboard.rows.length;
+    items.push({
+      label: `📋 Paste ${n === 1 ? 'line' : n + ' lines'} below`,
+      onClick: () => gridPasteBelow(id),
+    });
+  }
+  items.push({ separator: true });
   // Person-transition joins — show two back-to-back tasks as ONE line with
   // ONE person. Explicit via right-click; split undoes it.
   if (task && !task.is_milestone && !inferredAnchorKey(task) && !task.is_action) {
@@ -17033,6 +17820,123 @@ async function createTaskBelow(taskId, asAction) {
     newTr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     const nameCell = newTr.querySelector('td[data-col="name"]');
     if (nameCell) enterCellEdit(nameCell, created.id, 'name');
+  }
+}
+
+// ── Excel-style cut / copy / paste for schedule lines ──────────────────────
+// Dan: "they just want to be able to copy a line, paste it, cut it — more
+// like Excel." Works from the right-click menu AND Ctrl+C / Ctrl+X / Ctrl+V.
+//
+// What a "line" carries: the CONTENT (name, assignee, duration, dates,
+// allocation, notes, milestone/action flag, priority). What it deliberately
+// does NOT carry:
+//   • anchor_key   — anchors (Receipt of PO, FAT, Ship…) are ONE per project
+//                    per machine. Duplicating one corrupts the spine, the
+//                    milestone strips, and every financial trigger aimed at it.
+//   • predecessors — a pasted row lands somewhere new; inheriting the source
+//                    chain silently anchors it to the wrong upstream task
+//                    (the same call the Copy-to-another-machine path makes).
+//   • progress / completed_on / baselines — a pasted line is NEW work.
+// Section + machine come from WHERE YOU PASTE, not where you copied from —
+// paste-here should mean paste here.
+let _gridClipboard = null;   // { mode:'copy'|'cut', rows:[snapshot], sourceIds:[] }
+let _lastRowId = null;       // the row the keyboard shortcuts act on
+
+function _clipSnapshot(t) {
+  return {
+    name: t.name,
+    assignee: t.assignee,
+    start_date: t.start_date,
+    end_date: t.end_date,
+    duration_days: t.duration_days,
+    allocation: t.allocation,
+    notes: t.notes,
+    is_milestone: t.is_milestone,
+    is_action: t.is_action,
+    priority: t.priority,
+  };
+}
+
+function gridCopyRows(ids, mode) {
+  const rows = [];
+  const sourceIds = [];
+  for (const id of ids) {
+    const t = state.tasks.find(x => x.id === id);
+    if (!t) continue;
+    // Anchors can't be cut, for the same reason they can't be deleted.
+    if (mode === 'cut' && inferredAnchorKey(t)) {
+      showToast(`"${t.name}" is an anchor milestone — copy it instead of cutting.`, { kind: 'error' });
+      continue;
+    }
+    rows.push(_clipSnapshot(t));
+    sourceIds.push(id);
+  }
+  if (!rows.length) return;
+  _gridClipboard = { mode, rows, sourceIds };
+  // Mark cut rows so what's in flight is obvious (Excel's marching ants).
+  document.querySelectorAll('tr.row-cut-pending').forEach(tr => tr.classList.remove('row-cut-pending'));
+  if (mode === 'cut') {
+    for (const id of sourceIds) {
+      document.querySelector(`tr[data-id="${id}"]`)?.classList.add('row-cut-pending');
+    }
+  }
+  const what = rows.length === 1
+    ? `"${rows[0].name || 'line'}"`
+    : `${rows.length} lines`;
+  showToast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${what} — paste with Ctrl+V or right-click.`);
+}
+
+async function gridPasteBelow(targetId) {
+  if (!_gridClipboard || !_gridClipboard.rows.length) return;
+  const target = state.tasks.find(t => t.id === targetId);
+  if (!target) return;
+  const { mode, rows, sourceIds } = _gridClipboard;
+  const base = Number(target.sort_order) || 0;
+  const created = [];
+  try {
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      // Section + machine follow the PASTE TARGET; content follows the copy.
+      const payload = {
+        ...r,
+        project: state.filters.project || target.project || null,
+        phase_group: target.phase_group || null,
+        department: target.department || null,
+        sub_department: target.sub_department || null,
+        machine: target.machine || null,
+        predecessors: null,
+        progress: 0,
+        sort_order: base + 0.5 + i * 0.01,
+      };
+      const row = await api.create(payload);
+      if (row && row.id) created.push(row);
+    }
+  } catch (err) {
+    showToast('Paste failed: ' + (err.message || err), { kind: 'error' });
+  }
+  // A CUT only removes the originals once the paste actually landed —
+  // cut-then-never-paste leaves the schedule untouched, same as Excel.
+  if (mode === 'cut' && created.length) {
+    for (const id of sourceIds) {
+      try { await api.remove(id); } catch (_) {}
+    }
+    _gridClipboard = null;
+  }
+  // Undoable, one entry per pasted row (matches "Add task below").
+  for (const row of created) {
+    state.undoStack.push({
+      kind: 'create', taskId: row.id, payload: row,
+      description: `Paste "${row.name || 'line'}"`,
+    });
+  }
+  while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+  state.redoStack = [];
+  try { syncUndoButton(); syncRedoButton(); } catch (_) {}
+  try { await loadTasks(); } catch (_) {}
+  if (created.length) {
+    const tr = document.querySelector(`tr[data-id="${created[0].id}"]`);
+    if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    showToast(`Pasted ${created.length === 1 ? '1 line' : created.length + ' lines'}.`);
   }
 }
 
@@ -26128,7 +27032,7 @@ function renderManufacturingPage() {
   root.querySelectorAll('[data-mfg-reload]').forEach(b => b.onclick = () => { _mfgData = null; loadManufacturing(); });
 }
 
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'manufacturing', 'team', 'invoicing', 'service'];
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'manufacturing', 'team', 'invoicing', 'service', 'exec-summary'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -26191,6 +27095,13 @@ function setView(view) {
     _restoreScrollPos(view);
   }
   else if (view === 'invoicing') { renderInvoicingPage(); _restoreScrollPos(view); }
+  else if (view === 'exec-summary') {
+    // Goals live in other people's notes blobs — re-pull settings so the
+    // meeting is looking at what everyone actually typed.
+    renderExecSummary();
+    try { loadSettings().then(() => { if (state.view === 'exec-summary') renderExecSummary(); }); } catch (_) {}
+    _restoreScrollPos(view);
+  }
   else if (view === 'shop-parts') {
     // Reuse what's already loaded — shop_parts:updated (realtime-ui.js) keeps
     // it fresh when the data actually changes, so a plain nav here shouldn't
@@ -27482,9 +28393,22 @@ function showCustomerExportModal() {
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;"><input type="checkbox" class="cv-col-cb" data-col="duration"> Duration</label>
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;"><input type="checkbox" class="cv-col-cb" data-col="assignee"> Assigned To</label>
         </div>
+        <div style="font-size:11px;font-weight:700;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:.06em;">Layout</div>
+        <div class="cv-exp-layout" style="display:flex;gap:6px;">
+          <label class="cv-lay" style="flex:1;display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:6px 9px;">
+            <input type="radio" name="cv-exp-layout" value="both" checked> Grid + Gantt
+          </label>
+          <label class="cv-lay" style="flex:1;display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;cursor:pointer;border:1px solid var(--border);border-radius:6px;padding:6px 9px;">
+            <input type="radio" name="cv-exp-layout" value="grid"> Grid only
+          </label>
+        </div>
         <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;">
           <input type="checkbox" id="cv-exp-fit" checked>
           Auto-fit row height to fill screen
+        </label>
+        <label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer;">
+          <input type="checkbox" id="cv-exp-print" checked>
+          Open the print / Save-as-PDF dialog when ready
         </label>
         <div style="display:flex;gap:8px;justify-content:flex-end;">
           <button type="button" class="btn-secondary" id="cv-exp-cancel">Cancel</button>
@@ -27541,8 +28465,10 @@ function showCustomerExportModal() {
     const selectedIds = new Set([...checked].map(Number));
     const anchorCount = visible.filter(t => inferredAnchorKey(t)).length;
     const extraCols = [...modal.querySelectorAll('.cv-col-cb:checked')].map(cb => cb.dataset.col);
+    const layout = modal.querySelector('input[name="cv-exp-layout"]:checked')?.value || 'both';
+    const autoPrint = modal.querySelector('#cv-exp-print').checked;
     closeModal();
-    _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols);
+    _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols, layout, autoPrint);
   });
 }
 
@@ -27564,8 +28490,12 @@ function applyExportColumns(extraCols) {
   document.head.appendChild(style);
 }
 
-function _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols) {
+function _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols, layout, autoPrint) {
   state._exportOnlyIds = selectedIds;
+  // 'grid' = dates only (the list a customer can read without a chart);
+  // 'both' = grid + Gantt. enterCustomerView forces 'both' by default, so
+  // tell it which the user actually asked for.
+  state._exportLayout = layout === 'grid' ? 'grid' : 'both';
   enterCustomerView();
   applyExportColumns(extraCols);
   // Wait for enterCustomerView's two rAFs + setPaneMode render to settle
@@ -27591,8 +28521,31 @@ function _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols) {
         if (state.gantt) renderGantt();
       }, 60);
     }
-    setTimeout(() => showToast('Press Ctrl+P to save as PDF — rows are auto-fitted. Click "Exit customer view" when done.', { kind: 'info' }), 350);
+    // Open the print dialog for them — "Save as PDF" is the destination in
+    // every modern browser, so this IS the PDF export. Delayed past the
+    // fit-rows re-render above so the dialog previews the settled layout.
+    if (autoPrint) {
+      setTimeout(() => {
+        showToast('Choose "Save as PDF" as the destination. Click "Exit customer view" when you are done.', { kind: 'info' });
+        try { window.print(); } catch (_) {}
+      }, fitRows ? 700 : 450);
+    } else {
+      setTimeout(() => showToast('Press Ctrl+P to save as PDF — click "Exit customer view" when done.', { kind: 'info' }), 350);
+    }
   }, 200);
+}
+
+// Keep the Grid only / Grid + Gantt button labelled for what it will DO next,
+// and lit when the view is currently grid-only.
+function syncCustomerViewGridBtn() {
+  const btn = document.getElementById('btn-customer-view-grid');
+  if (!btn) return;
+  const gridOnly = state.layout && state.layout.showGantt === false;
+  btn.classList.toggle('is-active', !!gridOnly);
+  btn.textContent = gridOnly ? '▦ Grid + Gantt' : '▤ Grid only';
+  // Nothing to fit when the chart is hidden.
+  const fit = document.getElementById('btn-customer-view-fit');
+  if (fit) fit.hidden = !!gridOnly;
 }
 
 function enterCustomerView() {
@@ -27609,80 +28562,402 @@ function enterCustomerView() {
   // Apply class first so the body width / panel widths reflow to the
   // customer layout BEFORE zoomToFit measures the Gantt panel size.
   document.body.classList.add('customer-view');
-  // Force both panes so the customer sees grid + Gantt.
-  setPaneMode('both');
+  // Grid + Gantt by default; the Export dialog can ask for grid-only when the
+  // customer just wants the dates (Dan).
+  setPaneMode(state._exportLayout === 'grid' ? 'grid' : 'both');
   // Reflect the current flatten state on the floating button — flatten may
   // already be on (carried over from the editing view) and we want the
   // button to show as active immediately, not only after the user clicks it.
   syncCustomerViewFlattenBtn();
-  // Defer zoomToFit two animation frames so the CSS reflow + setPaneMode's
-  // re-render have settled; otherwise zoomToFit measures the pre-class
-  // panel size and the chart ends up too wide for the (now-smaller) panel.
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      try { zoomToFit(); } catch (_) {}
-    });
-  });
+  syncCustomerViewGridBtn();
+  // Defer zoomToFit past the CSS reflow AND past setPaneMode's own deferred
+  // fit. Two things go wrong if ours runs first: it measures the pre-class
+  // panel size (chart too wide for the now-smaller panel), and its scroll
+  // position gets overwritten by the later render. The chart canvas spans
+  // months of empty calendar either side of the real work, so a lost scroll
+  // is not a small nudge - the customer opens the view looking at blank
+  // weeks. Two frames for the reflow, then a beat to land last.
+  // A timer, not requestAnimationFrame: rAF only fires when the page is
+  // actually painting, so anything that leaves the tab idle (background tab,
+  // remote/embedded browser, a print dialog opening straight after) silently
+  // skips the fit and the customer view opens at the editing zoom, scrolled
+  // to blank calendar. A timeout always lands.
+  setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 160);
 }
 
-// Ctrl+P support. The Gantt <svg> carries a PIXEL width equal to the project
-// span (2400px+), so on paper the bars run straight off the right edge — the
-// @media print CSS can't fix that on its own, because width:100% on an svg
-// with no viewBox just stretches the viewport without rescaling the contents.
-// So: on beforeprint, stamp a viewBox matching the svg's current pixel box and
-// drop the width/height attributes; the browser then scales the whole chart
-// uniformly into whatever width the printed page gives it. afterprint puts the
-// original attributes back so the editing view is untouched.
+// ── Excel export ──────────────────────────────────────────────────────────
 //
-// This is the ONE piece of the old print pipeline worth keeping (the v3.6x
-// version also called zoomToFit() inside beforeprint, which triggered a full
-// synchronous renderGantt() and froze the print preview on big schedules —
-// see release-notes v3.62/v3.63). We deliberately do NO re-render here:
-// reading two attributes and writing three is cheap enough to run inline with
-// the print dialog opening.
-let _printSvgRestore = null;
+// Reads the RENDERED grid rather than rebuilding one from state. That keeps
+// it honest as a customer deliverable: whatever row selection, flatten
+// setting, collapsed sections and column choices are on screen are exactly
+// what lands in the workbook - no second walk of HIERARCHY to drift out of
+// sync with the real one (see the house rule about duplicating render logic).
+//
+// SheetJS community build has no cell styling, so hierarchy is carried by
+// indentation and section rows rather than bold/fill. Column widths it does
+// support, and those matter more for readability anyway.
+// Text as a human reads it off the screen: hidden spans (the section numbers
+// customer view suppresses) and pure affordances (the collapse caret) are
+// chrome, not content, and textContent happily returns both.
+function _visibleText(root) {
+  if (!root) return '';
+  let out = '';
+  root.childNodes.forEach(n => {
+    if (n.nodeType === 3) { out += n.nodeValue; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('group-caret')) return;
+    const cs = getComputedStyle(n);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    out += _visibleText(n);
+  });
+  return out;
+}
+
+function exportGridToExcel() {
+  if (typeof XLSX === 'undefined') {
+    showToast('The spreadsheet library did not load - check the connection and reload.', { kind: 'error' });
+    return;
+  }
+  const table = document.getElementById('tasks-table');
+  if (!table) return;
+
+  // Visible columns, in render order. Customer view hides columns with CSS,
+  // so ask the layout what actually shows rather than trusting a column list.
+  const heads = Array.from(table.querySelectorAll('thead tr:last-child th'))
+    .filter(th => th.getBoundingClientRect().width > 0);
+  if (!heads.length) return;
+  const cols = heads.map(th => th.dataset.col || '');
+  const labels = heads.map(th => {
+    // The Task header stacks several sub-labels (ALOC / DESCRIPTION / DUR /
+    // %COM) over one column; only the first is the column name.
+    const main = th.querySelector('.th-label-task');
+    const txt = (main ? main.textContent : th.textContent) || '';
+    return txt.trim().split(/\s{2,}|\n/)[0].trim();
+  });
+
+  // Dates go in as real dates, not text, so the customer can sort and
+  // subtract them instead of retyping the whole thing.
+  const DATE_COLS = { start: 'start_date', finish: 'end_date', completed: 'completed_on' };
+  const byId = {};
+  (state.tasks || []).forEach(t => { byId[String(t.id)] = t; });
+
+  const project = state.filters.project || 'Schedule';
+  const rows = [[project], [], labels];
+
+  table.querySelectorAll('tbody tr').forEach(tr => {
+    if (!tr.getClientRects().length) return;                 // hidden row
+    if (tr.classList.contains('group-header')) {
+      const label = _visibleText(tr.querySelector('.group-label') || tr).replace(/\s+/g, ' ').trim();
+      if (label) rows.push([label]);
+      return;
+    }
+    const task = byId[String(tr.dataset.id || '')];
+    const depth = (/depth-(\d+)/.exec(tr.className) || [])[1];
+    const indent = '  '.repeat(Math.max(0, (Number(depth) || 0) - 2));
+    const out = cols.map(key => {
+      const td = tr.querySelector('td[data-col="' + key + '"]');
+      if (!td) return '';
+      const iso = task && DATE_COLS[key] ? task[DATE_COLS[key]] : null;
+      if (iso && /^\d{4}-\d{2}-\d{2}/.test(iso)) return new Date(iso.slice(0, 10) + 'T00:00:00');
+      // In the Task cell the visible text is the task name; the alloc / dur /
+      // %-complete pills around it are editing affordances, not data.
+      const main = td.querySelector('.name-cell-main');
+      let v = _visibleText(main || td).replace(/\s+/g, ' ').trim();
+      if (key === 'name') v = indent + v;
+      return v;
+    });
+    if (out.some(v => v !== '')) rows.push(out);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(rows, { cellDates: true, dateNF: 'mm/dd/yy' });
+  // Excel column width is in characters; the rendered px / 7 is the
+  // conventional approximation and keeps the proportions people just saw.
+  ws['!cols'] = heads.map(th => ({ wch: Math.max(9, Math.round(th.getBoundingClientRect().width / 7)) }));
+  ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+  const wb = XLSX.utils.book_new();
+  // Sheet names cannot exceed 31 chars or contain : \\ / ? * [ ]
+  const sheet = project.replace(/[:\\/?*\[\]]/g, '-').slice(0, 31) || 'Schedule';
+  XLSX.utils.book_append_sheet(wb, ws, sheet);
+  const file = project.replace(/[^\w.-]+/g, '_') + ' schedule.xlsx';
+  try {
+    XLSX.writeFile(wb, file, { cellDates: true });
+    showToast('Exported ' + (rows.length - 3) + ' rows to ' + file, { kind: 'success' });
+  } catch (e) {
+    showToast('Excel export failed: ' + (e && e.message ? e.message : e), { kind: 'error' });
+  }
+}
+
+// ── Printing / Save-as-PDF ────────────────────────────────────────────────
+//
+// The rule: fit it on one page, or break cleanly to the second page. Never
+// chop content mid-page.
+//
+// GRID + GANTT is a table beside a single, atomic <svg>. An svg cannot break
+//   across pages, so this ONLY works as one page: lay the split out at its
+//   natural size and scale the whole block down as one unit. Grid rows and
+//   Gantt bars stay aligned because only the final scale factor changes.
+//
+// GRID ONLY is just a table, so it has both options. Try one page first
+//   (portrait - a task list is tall and narrow, and portrait gives it a
+//   third more vertical room than landscape). If that would shrink the text
+//   past legibility, leave it alone and let the table paginate properly,
+//   with the header row repeating on page two.
+//
+// The scaled block sets its own LAYOUT height to the scaled height. That is
+// what keeps this honest: the element occupies exactly the space it paints,
+// so there is no blank trailing page and - critically - no need to clip
+// anything. An earlier version clamped the container with overflow:hidden
+// and guessed the height; when the print layout came out taller than the
+// guess, the bottom third was simply cut off.
+//
+// Inline styles use !important because the @media print block uses
+// !important on the same properties to release the viewport lock.
+
+// Printable area in CSS px (96 per inch) at the 0.3in @page margin.
+const PRINT_LAND_W = (11 - 0.6) * 96;
+const PRINT_LAND_H = (8.5 - 0.6) * 96;
+const PRINT_PORT_W = (8.5 - 0.6) * 96;
+const PRINT_PORT_H = (11 - 0.6) * 96;
+// Below this, one-page grid output is too small to read - pagination wins.
+const PRINT_MIN_SCALE = 0.5;
+
+let _printRestore = null;
+
+// Swap the page orientation for this print only (grid-only goes portrait).
+function _printSetPage(orientation) {
+  const el = document.createElement('style');
+  el.id = 'sdc-print-page';
+  el.textContent = `@page { size: ${orientation}; margin: 0.3in; }`;
+  document.head.appendChild(el);
+  return el;
+}
+
+// Scale a block onto one page. The element keeps its natural WIDTH (so its
+// children lay out at full size) but takes the SCALED height as its layout
+// height - the transform shrinks the painted result to exactly that, so the
+// element occupies precisely the space it paints. Nothing to clip, and no
+// blank trailing page. translateX centers it; with transform-origin at the
+// top-left the translate lands before the scale, so the offset is page px.
+// Height of the chrome the print stylesheet KEEPS above the split. Only the
+// project-name banner survives (everything else - toolbar, tab bars - is
+// hidden in @media print), and it eats into the page the split can use.
+// Miss it and the block reserves a full page on its own, so the banner tips
+// the total onto a second, blank page.
+function _printChromeAbove() {
+  const el = document.querySelector('.schedule-project-banner');
+  if (!el) return 0;
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none' || cs.visibility === 'hidden') return 0;
+  return Math.ceil(el.getBoundingClientRect().height) || 0;
+}
+
+// Fit a block onto one page.
+//
+// This uses `zoom`, NOT `transform: scale()`. That distinction is the whole
+// reason the earlier versions of this printed across two and three pages:
+// a transform only changes what gets PAINTED, while the browser paginates on
+// the untouched layout size. So a schedule scaled to 60% still reserved its
+// full ~1300px of page flow, Chrome could not fit that under the banner, and
+// it pushed the block to page two and then fragmented it. No amount of
+// tuning the scale factor can fix that - the mechanism was wrong.
+//
+// `zoom` scales used values, so the element genuinely occupies the smaller
+// space and pagination sees it. Nothing to clip, nothing to guess.
+function _applyPrintScale(split, pageW, pageH) {
+  const set = (el, p, v) => el.style.setProperty(p, v, 'important');
+  // A few px of slack: landing exactly on the page boundary is a coin flip.
+  const avail = Math.max(120, pageH - _printChromeAbove() - 8);
+
+  // Measure at zoom 1 with the panes already pinned to their natural widths.
+  set(split, 'zoom', '1');
+  const box = split.getBoundingClientRect();
+  const natW = Math.ceil(box.width);
+  const natH = Math.ceil(box.height);
+  if (!natW || !natH) return 1;
+
+  const scale = Math.min(pageW / natW, avail / natH, 1);
+  set(split, 'zoom', String(scale));
+  // Centre it. Margins are in the zoomed coordinate space, so divide back out.
+  const dx = Math.max(0, (pageW - natW * scale) / 2);
+  set(split, 'margin-left', Math.round(dx / scale) + 'px');
+  return scale;
+}
 
 function printGanttFit() {
   try {
-    const svg = document.querySelector('#gantt-container .gantt');
-    if (!svg || _printSvgRestore) return;
-    // getBBox/attribute width — prefer the laid-out box, fall back to attrs.
-    const w = Number(svg.getAttribute('width')) || svg.clientWidth || 0;
-    const h = Number(svg.getAttribute('height')) || svg.clientHeight || 0;
-    if (!w || !h) return;                       // nothing measurable — leave it alone
-    _printSvgRestore = {
-      svg,
+    if (_printRestore) return;
+    const split = document.getElementById('schedule-split');
+    const grid  = document.getElementById('schedule-grid');
+    const pane  = document.getElementById('schedule-gantt');
+    const table = document.getElementById('tasks-table');
+    if (!split || !grid || !table) return;
+
+    const gridW = Math.ceil(table.scrollWidth || grid.scrollWidth || 0);
+    const gridH = Math.ceil(table.scrollHeight || grid.scrollHeight || 0);
+    if (!gridW || !gridH) return;
+
+    const gridOnly = split.classList.contains('gantt-hidden');
+    const svg = gridOnly ? null : document.querySelector('#gantt-container .gantt');
+
+    // Snapshot everything we are about to touch.
+    const nodes = [split, grid, pane].filter(Boolean);
+    _printRestore = {
+      nodes,
+      styles: nodes.map(el => el.getAttribute('style')),
+      svg: null, pageStyle: null,
+    };
+
+    const set = (el, p, v) => el.style.setProperty(p, v, 'important');
+    // Heights go to auto everywhere: let the real content decide how tall the
+    // block is instead of deriving it from declared attributes that overstate
+    // it. Whatever it comes to, zoom fits it to the page.
+    set(split, 'display', 'flex');
+    set(split, 'align-items', 'flex-start');
+    set(split, 'overflow', 'visible');
+    // On screen the split is a flex CHILD of #view-schedule and is locked to
+    // the viewport (flex:1 plus overflow:hidden). Measuring it in that state
+    // reports the visible panel height, not the height of the schedule - which
+    // is how the page fit came out far too generous and spilled onto page two.
+    // Release the lock before measuring; @media print does the same thing, so
+    // this only brings the measurement in line with what printing will do.
+    set(split, 'flex', '0 0 auto');
+    set(split, 'height', 'auto');
+    set(split, 'min-height', '0');
+    set(split, 'max-height', 'none');
+    set(grid, 'flex', '0 0 ' + gridW + 'px');
+    set(grid, 'width', gridW + 'px');
+    set(grid, 'height', 'auto');
+    set(grid, 'min-height', '0');
+    set(grid, 'max-height', 'none');
+    set(grid, 'overflow', 'visible');
+
+    if (gridOnly) {
+      set(split, 'width', gridW + 'px');
+      // Portrait: a task list is tall and narrow, and portrait gives it a
+      // third more vertical room than landscape.
+      _printRestore.pageStyle = _printSetPage('portrait');
+      const s = _applyPrintScale(split, PRINT_PORT_W, PRINT_PORT_H);
+      if (s < PRINT_MIN_SCALE) {
+        // Too long to fit legibly on one page. A table CAN break cleanly, so
+        // let it - header row repeating - rather than print it unreadable.
+        printGanttRestore();
+      }
+      return;
+    }
+
+    if (!svg) { _printRestore = null; return; }
+    const natW = Number(svg.getAttribute('width'))  || svg.clientWidth  || 0;
+    const svgH = Number(svg.getAttribute('height')) || svg.clientHeight || 0;
+    if (!natW || !svgH) { _printRestore = null; return; }
+
+    // Crop the empty calendar. The chart canvas runs from a synthetic
+    // _pad_before bar to a _pad_after bar - months of blank weeks either side
+    // of the real work - so printing the raw canvas spends most of the page
+    // width on nothing and squeezes the part anyone cares about. A viewBox
+    // over just the occupied span crops it with no re-render.
+    let x0 = Infinity, x1 = -Infinity;
+    svg.querySelectorAll('.bar-wrapper').forEach(w => {
+      if (/^_pad/.test(w.dataset.id || '')) return;
+      const bar = w.querySelector('.bar');
+      if (!bar) return;
+      const x = Number(bar.getAttribute('x')) || 0;
+      x0 = Math.min(x0, x);
+      x1 = Math.max(x1, x + (Number(bar.getAttribute('width')) || 0));
+    });
+    // Bar labels and date text overflow well past their bars - crop to those
+    // too, or the task names run off the edge of the page.
+    svg.querySelectorAll('.bar-wrapper text, .bar-wrapper .bar-label').forEach(t => {
+      try {
+        const bb = t.getBBox();
+        if (!bb || !bb.width) return;
+        x0 = Math.min(x0, bb.x);
+        x1 = Math.max(x1, bb.x + bb.width);
+      } catch (_) { /* getBBox throws on undrawn nodes */ }
+    });
+    const PAD = 14;
+    const cropOk = isFinite(x0) && isFinite(x1) && x1 > x0;
+    const cropX = cropOk ? Math.max(0, Math.floor(x0 - PAD)) : 0;
+    const svgW  = cropOk ? Math.min(natW - cropX, Math.ceil(x1 - cropX + PAD)) : natW;
+
+    _printRestore.svg = {
+      el: svg,
       width:   svg.getAttribute('width'),
       height:  svg.getAttribute('height'),
       viewBox: svg.getAttribute('viewBox'),
+      par:     svg.getAttribute('preserveAspectRatio'),
     };
-    if (!svg.getAttribute('viewBox')) svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
-    svg.removeAttribute('width');
-    svg.removeAttribute('height');
-  } catch (_) { /* swallow — printing must never throw */ }
+    if (cropOk) {
+      svg.setAttribute('viewBox', cropX + ' 0 ' + svgW + ' ' + svgH);
+      svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+      svg.setAttribute('width', String(svgW));
+      svg.setAttribute('height', String(svgH));
+    }
+
+
+    // The Gantt pane takes the cropped chart width; heights stay auto.
+    if (pane) {
+      set(pane, 'flex', '0 0 ' + svgW + 'px');
+      set(pane, 'width', svgW + 'px');
+      set(pane, 'height', 'auto');
+      set(pane, 'min-height', '0');
+      set(pane, 'max-height', 'none');
+      set(pane, 'overflow', 'visible');
+    }
+    set(split, 'width', (gridW + svgW) + 'px');
+    _applyPrintScale(split, PRINT_LAND_W, PRINT_LAND_H);
+  } catch (_) { /* swallow - printing must never throw */ }
 }
 
 function printGanttRestore() {
   try {
-    const r = _printSvgRestore;
-    _printSvgRestore = null;
-    if (!r || !r.svg) return;
-    if (r.width  != null) r.svg.setAttribute('width',  r.width);   else r.svg.removeAttribute('width');
-    if (r.height != null) r.svg.setAttribute('height', r.height);  else r.svg.removeAttribute('height');
-    if (r.viewBox != null) r.svg.setAttribute('viewBox', r.viewBox); else r.svg.removeAttribute('viewBox');
-    r.svg.removeAttribute('preserveAspectRatio');
+    const r = _printRestore;
+    _printRestore = null;
+    if (!r) return;
+    r.nodes.forEach((el, i) => {
+      const prev = r.styles[i];
+      if (prev == null) el.removeAttribute('style');
+      else el.setAttribute('style', prev);
+    });
+    if (r.pageStyle) r.pageStyle.remove();
+    if (r.svg) {
+      const live = document.querySelector('#gantt-container .gantt');
+      // Restore the snapshotted node AND whatever is on screen now: a
+      // re-render between beforeprint and afterprint swaps the <svg> out, and
+      // the crop would otherwise be stranded on the live chart.
+      [r.svg.el, live].forEach(el => {
+        if (!el) return;
+        const put = (k, v) => v == null ? el.removeAttribute(k) : el.setAttribute(k, v);
+        put('width', r.svg.width);
+        put('height', r.svg.height);
+        put('viewBox', r.svg.viewBox);
+        put('preserveAspectRatio', r.svg.par);
+      });
+    }
   } catch (_) { /* swallow */ }
 }
 
 window.addEventListener('beforeprint', printGanttFit);
 window.addEventListener('afterprint', printGanttRestore);
 
+let _cvFitTimer = null;
+window.addEventListener('resize', () => {
+  if (!document.body.classList.contains('customer-view')) return;
+  if (_printRestore) return;   // print layout is applied - do not re-render under it
+  clearTimeout(_cvFitTimer);
+  _cvFitTimer = setTimeout(() => {
+    if (!document.body.classList.contains('customer-view')) return;
+    if (_printRestore) return;
+    if (state.layout && state.layout.showGantt === false) return;   // grid-only: nothing to fit
+    try { zoomToFit(); } catch (_) { /* cosmetic - never break the view */ }
+  }, 180);
+});
+
 function exitCustomerView() {
   if (!document.body.classList.contains('customer-view')) return;
   document.body.classList.remove('customer-view');
-  // Clear export filter and any injected column overrides.
+  // Clear export filter, the chosen export layout, and any injected columns.
   state._exportOnlyIds = null;
+  state._exportLayout = null;
   document.getElementById('customer-export-cols')?.remove();
   // Restore pane mode (was forced to 'both' on entry).
   if (state._cvSavedPane) {
@@ -28286,8 +29561,31 @@ async function init() {
   }, { passive: false });
 
   document.addEventListener('keydown', (e) => {
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey && !e.metaKey) return;
     if (state.view !== 'schedule' && state.view !== 'actions') return;
+    // Ctrl+C / Ctrl+X / Ctrl+V on schedule LINES. Never hijack a real text
+    // copy: if the user is in a field or has text selected, that is a normal
+    // clipboard operation and the browser owns it.
+    const k = (e.key || '').toLowerCase();
+    if (k === 'c' || k === 'x' || k === 'v') {
+      const el = document.activeElement;
+      const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
+                            el.tagName === 'SELECT' || el.isContentEditable);
+      let hasTextSel = false;
+      try { const sel = window.getSelection(); hasTextSel = !!(sel && !sel.isCollapsed && String(sel).trim()); } catch (_) {}
+      if (typing || hasTextSel) return;
+      if (state.view !== 'schedule') return;
+      if (_lastRowId == null || !state.tasks.some(t => t.id === _lastRowId)) {
+        if (k !== 'v') showToast('Click a line first, then Ctrl+' + k.toUpperCase() + '.');
+        return;
+      }
+      e.preventDefault();
+      if (k === 'c') gridCopyRows([_lastRowId], 'copy');
+      else if (k === 'x') gridCopyRows([_lastRowId], 'cut');
+      else gridPasteBelow(_lastRowId);
+      return;
+    }
+    if (!e.ctrlKey) return;
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       setZoom(state.zoomPercent + 5);
@@ -28602,6 +29900,12 @@ async function init() {
     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
   }, true);
   tbodyEl.addEventListener('contextmenu', handleRowContextMenu);
+  // Remember the row the user last touched — Ctrl+C / X / V act on it.
+  // Capture phase, so it still registers when a cell handler stops propagation.
+  tbodyEl.addEventListener('mousedown', (e) => {
+    const tr = e.target.closest('tr[data-id]');
+    if (tr) _lastRowId = Number(tr.dataset.id);
+  }, true);
   setupGridPan();
   setupPagePan();
   setupRowCrossHighlight();
@@ -28913,6 +30217,49 @@ async function init() {
   }
   if (customerExitBtn) {
     customerExitBtn.addEventListener('click', exitCustomerView);
+  }
+  // Grid only / Grid + Gantt toggle, right in the view. Whatever is on
+  // screen is what prints, so this IS the layout choice for the PDF - the
+  // Export dialog just sets the starting point.
+  const customerGridBtn = document.getElementById('btn-customer-view-grid');
+  if (customerGridBtn) {
+    customerGridBtn.addEventListener('click', () => {
+      const gridOnly = state.layout && state.layout.showGantt === false;
+      state._exportLayout = gridOnly ? null : 'grid';
+      setPaneMode(gridOnly ? 'both' : 'grid');
+      syncCustomerViewGridBtn();
+      // Coming back to Both, re-fit against the settled panel width.
+      if (gridOnly) {
+        setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 160);
+      }
+    });
+  }
+  // Save as PDF - the browser print dialog with "Save as PDF" as the
+  // destination. beforeprint stamps the Gantt viewBox so the chart scales
+  // onto the page instead of running off the right edge.
+  // Explicit zoom-to-fit. The view re-fits itself on entry and on resize,
+  // but collapsing a section or flattening changes what's drawn, and there
+  // is no zoom control in this view to recover with.
+  // Excel export - the same rows that are on screen, as data the customer
+  // can re-sort and re-plan with.
+  const customerXlsBtn = document.getElementById('btn-customer-view-xls');
+  if (customerXlsBtn) {
+    customerXlsBtn.addEventListener('click', () => {
+      try { exportGridToExcel(); } catch (e) { showToast('Excel export failed.', { kind: 'error' }); }
+    });
+  }
+  const customerFitBtn = document.getElementById('btn-customer-view-fit');
+  if (customerFitBtn) {
+    customerFitBtn.addEventListener('click', () => {
+      try { zoomToFit(); } catch (_) {}
+    });
+  }
+  const customerPrintBtn = document.getElementById('btn-customer-view-print');
+  if (customerPrintBtn) {
+    customerPrintBtn.addEventListener('click', () => {
+      showToast('Choose "Save as PDF" as the destination in the print dialog.', { kind: 'info' });
+      setTimeout(() => { try { window.print(); } catch (_) {} }, 120);
+    });
   }
   // The Flatten button in customer view is a slim mirror of the toolbar's
   // ≡ View pill — both toggle flatten + sortByStart in lockstep (the same
