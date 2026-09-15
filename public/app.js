@@ -28596,6 +28596,20 @@ function enterCustomerView() {
 // SheetJS community build has no cell styling, so hierarchy is carried by
 // indentation and section rows rather than bold/fill. Column widths it does
 // support, and those matter more for readability anyway.
+// What a customer deliverable should be called when it lands in someone
+// else's downloads folder: the project, then today's date. Slashes are
+// illegal in filenames so the date is dashed, and only the characters a
+// filesystem actually rejects get stripped - the spaces and underscores in
+// an SDC job name are part of the name.
+function exportBaseName(project) {
+  const p = String(project || state.filters.project || 'Schedule').trim();
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  return (p + '_' + mm + '-' + dd + '-' + yy).replace(/[\\/:*?"<>|]+/g, '-').trim();
+}
+
 // Text as a human reads it off the screen: hidden spans (the section numbers
 // customer view suppresses) and pure affordances (the collapse caret) are
 // chrome, not content, and textContent happily returns both.
@@ -28678,7 +28692,7 @@ function exportGridToExcel() {
   // Sheet names cannot exceed 31 chars or contain : \\ / ? * [ ]
   const sheet = project.replace(/[:\\/?*\[\]]/g, '-').slice(0, 31) || 'Schedule';
   XLSX.utils.book_append_sheet(wb, ws, sheet);
-  const file = project.replace(/[^\w.-]+/g, '_') + ' schedule.xlsx';
+  const file = exportBaseName(project) + '.xlsx';
   try {
     XLSX.writeFile(wb, file, { cellDates: true });
     showToast('Exported ' + (rows.length - 3) + ' rows to ' + file, { kind: 'success' });
@@ -28936,6 +28950,29 @@ function printGanttRestore() {
   } catch (_) { /* swallow */ }
 }
 
+// Chrome (and every other browser) names the saved PDF after document.title,
+// so a customer export would otherwise land as "SDC Scheduler.pdf". Stamp the
+// real name on for the duration of the print and put the tab title back
+// afterwards. Kept in its own listener pair rather than folded into the
+// layout code, because that has early returns the title must not depend on.
+let _printTitleSave = null;
+function printSetTitle() {
+  try {
+    if (_printTitleSave != null) return;
+    _printTitleSave = document.title;
+    document.title = exportBaseName();
+  } catch (_) { /* swallow - printing must never throw */ }
+}
+function printRestoreTitle() {
+  try {
+    if (_printTitleSave == null) return;
+    document.title = _printTitleSave;
+    _printTitleSave = null;
+  } catch (_) { /* swallow */ }
+}
+
+window.addEventListener('beforeprint', printSetTitle);
+window.addEventListener('afterprint', printRestoreTitle);
 window.addEventListener('beforeprint', printGanttFit);
 window.addEventListener('afterprint', printGanttRestore);
 
