@@ -85,9 +85,17 @@ The `eto_*` tools appear only when the Total ETO bridge is configured.
 
 ## Notes
 
-- Run as its own process — it does **not** start with the main app.
-- It's deliberately not wired into the auto-deploy/PM2 flow; start it explicitly
-  where you want the DB reachable.
+- Runs as its own process — separate from the main app, but **is** PM2-managed
+  now (`sdc-mcp-db` in the SDC-Tools monorepo's `ecosystem.config.js`), same
+  as every other SDC service. This was NOT true before 2026-09-20: it used to
+  be started by hand and nothing supervised it, which is exactly how it ended
+  up silently down for an unknown stretch — see that commit's message for the
+  incident. Don't revert to running it as a bare `node` process; that's the
+  bug, not a fallback.
+- To (re)deploy code changes here: `git push` this repo (auto-updater picks it
+  up within ~2 min, same as the rest of SDC_Scheduler) and either wait for
+  PM2's own crash-restart or run `pm2 restart sdc-mcp-db` by hand for an
+  immediate pickup — pushing alone does not restart a running process.
 
 ---
 
