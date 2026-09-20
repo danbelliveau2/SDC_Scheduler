@@ -30,7 +30,7 @@ require('dotenv').config();                 // load .env before the pool is buil
 const express = require('express');
 const mysql = require('mysql2/promise');
 let etoDb = null;
-try { etoDb = require('../etoDb'); } catch (_) { /* ETO bridge optional */ }
+try { etoDb = require('../lib/etoDb'); } catch (_) { /* ETO bridge optional */ }
 
 // Dedicated pool so the MCP server targets the PRODUCTION database (sdc_scheduler)
 // regardless of which DB the app's .env (MYSQL_DATABASE) points at on this box —
