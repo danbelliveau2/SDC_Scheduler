@@ -57,6 +57,10 @@ Smartsheet Schedules/
 .env
 .env.local
 .env.*.local
+
+# Self-signed local TLS cert/key for the MCP server (mcp/sdc-db-server.mjs) —
+# generated per-server, never shared/committed, same treatment as .env.
+mcp/certs/
 azure-backup-*.json
 scripts/auto-pull.log
 

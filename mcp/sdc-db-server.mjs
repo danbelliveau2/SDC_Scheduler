@@ -16,11 +16,19 @@
  *   MCP_TOKEN   (required)  shared secret clients must present
  *   MCP_PORT    (default 4100)
  *   MCP_HOST    (default 0.0.0.0)
+ *   MCP_TLS_CERT, MCP_TLS_KEY (optional) — paths to a cert/key pair. When both
+ *     are set, the server speaks HTTPS on MCP_PORT instead of plain HTTP.
+ *     Needed because remote MCP clients (e.g. Claude's custom connector UI)
+ *     require an https:// URL — a self-signed cert trusted locally is enough,
+ *     no purchased/CA cert required. Falls back to HTTP if unset, unchanged
+ *     from prior behavior.
  *   plus the usual MYSQL_* and ETO_* vars (reused from the app).
  *
  * Run:  node mcp/sdc-db-server.mjs      (or: npm run mcp)
  */
 import { createRequire } from 'module';
+import fs from 'fs';
+import https from 'https';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -233,10 +241,21 @@ const methodNotAllowed = (_req, res) => res.status(405).json({ jsonrpc: '2.0', e
 app.get('/mcp', methodNotAllowed);
 app.delete('/mcp', methodNotAllowed);
 
-app.listen(MCP_PORT, MCP_HOST, () => {
-  console.log(`[mcp] SDC Scheduler DB MCP server (read-only) on http://${MCP_HOST}:${MCP_PORT}/mcp`);
+const TLS_CERT = process.env.MCP_TLS_CERT;
+const TLS_KEY  = process.env.MCP_TLS_KEY;
+const useTls = !!(TLS_CERT && TLS_KEY);
+
+const onListen = () => {
+  console.log(`[mcp] SDC Scheduler DB MCP server (read-only) on ${useTls ? 'https' : 'http'}://${MCP_HOST}:${MCP_PORT}/mcp`);
   console.log(`[mcp] Database: ${MCP_DB} · Auth: bearer token required · Total ETO bridge: ${etoDb && etoDb.CONFIGURED ? 'configured' : 'off'}.`);
-});
+};
+
+if (useTls) {
+  https.createServer({ cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) }, app)
+    .listen(MCP_PORT, MCP_HOST, onListen);
+} else {
+  app.listen(MCP_PORT, MCP_HOST, onListen);
+}
 
 process.on('uncaughtException', (e) => console.error('[mcp] uncaughtException:', e.message));
 process.on('unhandledRejection', (e) => console.error('[mcp] unhandledRejection:', e && e.message));
