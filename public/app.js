@@ -13357,7 +13357,10 @@ function renderMachineSubTabs() {
 }
 
 function wireMachineSubTabButtons() {
-  const bar = document.getElementById('machine-tab-bar');
+  // The pills live in the context row now. This still looked them up in the old
+  // standalone strip, which renderMachineSubTabs empties — so every handler was
+  // being attached to nothing and the machine pills did not respond to clicks.
+  const bar = document.getElementById('schedule-context-pills');
   if (!bar) return;
   // "All" — clear the subset.
   const allBtn = bar.querySelector('[data-machine-all]');
@@ -15971,7 +15974,21 @@ document.addEventListener('mousedown', (e) => {
   });
 });
 
+let _riskProjectSeen = null;
+function syncRiskStateToProject() {
+  const p = state.filters.project || '';
+  if (p === _riskProjectSeen) return;
+  _riskProjectSeen = p;
+  // Always land on the build. Risk mode is a place you go, never a place you
+  // arrive.
+  if (state.scheduleView) state.scheduleView.riskMode = false;
+  // And pick up the pill selection saved against THIS project.
+  try { state.filters.risksSubset = JSON.parse(localStorage.getItem('sdcRisksSubset:' + p) || '[]') || []; }
+  catch (_) { state.filters.risksSubset = []; }
+}
+
 function render(opts = {}) {
+  try { syncRiskStateToProject(); } catch (_) {}
   try { syncSalesModeUI(); } catch (_) {}
   try { fitScheduleToolbar(); } catch (_) {}
   renderProjectTabs();
@@ -16136,12 +16153,16 @@ let _execThenBy = 'number';
 // you pick a chance. It is an input, not a third multiplier: the score stays
 // chance x impact, because difficulty already expresses itself through the
 // chance you pick. Multiplying it in would count the same judgement twice.
+// Ten levels, because everything on this register is already a new or custom
+// station - "have we built it before" is not a question worth asking here.
+// The label is the number so the column stays narrow and sorts naturally;
+// the hint says what that level means for a station nobody has built yet.
 const RISK_DIFFICULTY = [
-  { v: 1, label: 'Proven',           hint: 'We have built this station before and it worked.' },
-  { v: 2, label: 'Familiar',         hint: 'A variant of something we have already made work.' },
-  { v: 3, label: 'New to us',        hint: 'Known technology, but a new application for us.' },
-  { v: 4, label: 'Hard',             hint: 'Needs development - tight tolerances, or a process we have not proven.' },
-  { v: 5, label: 'First of its kind', hint: 'Nobody has made this work yet, here or anywhere we know of.' },
+  { v: 1, label: '1 Low',        hint: 'Least complex of the stations on this register' },
+  { v: 2, label: '2 Fairly low', hint: 'Below average complexity for this job' },
+  { v: 3, label: '3 Moderate',   hint: 'Middle of the road for this job' },
+  { v: 4, label: '4 High',       hint: 'Above average complexity for this job' },
+  { v: 5, label: '5 Very high',  hint: 'Most complex of the stations on this register' },
 ];
 
 // 2. Given that difficulty, what is the chance it does not work to the level
@@ -16261,6 +16282,7 @@ function openRiskPlanModal(project) {
       // Impact used to be a 5-point scale; anything saved above 3 predates
       // that and is clamped rather than left scoring off the top of the matrix.
       if (Number(r.s) > 3) r.s = 3;
+      if (Number(r.diff) > 5) r.diff = 5;
       if (Number(r.l) > 5) r.l = 5;
       const score = (Number(r.l) || 0) * (Number(r.s) || 0);
       return Object.assign({}, r, { score, band: riskBand(score) });
@@ -16611,8 +16633,8 @@ const RISK_COLS = [
   { k: 'n',       label: '#',        min: 34,  share: 0,   sort: null },
   { k: 'title',   label: 'Risk',     min: 150, share: 3,   sort: 'title' },
   { k: 'cat',     label: 'Category', min: 92,  share: 1,   sort: 'cat' },
-  { k: 'diff',    label: 'Difficulty', min: 108, share: 1, sort: 'diff',
-    hint: 'How hard is this station to design and make work? The question you answer before Chance.' },
+  { k: 'diff',    label: 'Complexity', min: 112, share: 0.7, sort: 'diff',
+    hint: 'How complex is this station? 1 = low, 5 = very high. Everything here is new or custom, so the question is how complex THIS one is relative to the rest. Answer it before Chance.' },
   { k: 'l',       label: 'Chance',   min: 100, share: 1,   sort: 'l',
     hint: 'Chance it does not work to the level we need, in the time we have, and the schedule moves.' },
   { k: 's',       label: 'Impact',   min: 66,  share: 0.6, sort: 's',
@@ -29278,7 +29300,12 @@ function loadScheduleView() {
       //   'combined' — schedule rows AND action rows. Actions sort to the
       //                bottom of their sub-dep bucket.
       //   'actions'  — only action items (is_action = 1).
-      riskMode: !!saved.riskMode,
+      // riskMode is deliberately NOT restored. It is a place you go, not a
+      // setting: restoring it opened the app on a risk schedule — and, because
+      // the flag is global while risks are per project, on the risks of
+      // whichever project happened to be open last. The build is always the
+      // way in.
+      riskMode: false,
       riskOverlay: !!saved.riskOverlay,
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
         ? saved.actionsMode

@@ -16099,3 +16099,40 @@ tr.group-header.level-1[data-risk-first="1"] td {
   /* Back into the flow before it can collide with the controls either side. */
   .banner-center { position: static; transform: none; flex: 1 1 100%; order: -1; }
 }
+
+/* ── Context pills on a LIGHT ground ─────────────────────────────────────
+   .machine-tab / .machine-tab-label were written for .machine-tab-bar, which
+   is near-black — hence white text and a translucent-white fill. Moving them
+   into the project-name row put that styling on a light surface, where it is
+   all but invisible (reported from a multi-machine job). Restate the palette
+   for this ground; the dark bar keeps its own. */
+.schedule-context-pills .machine-tab-label {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+}
+.schedule-context-pills .machine-tab {
+  background: white;
+  color: var(--text);
+  border: 1px solid #c8d5e3;
+  font-weight: var(--fw-semibold);
+}
+.schedule-context-pills .machine-tab:hover {
+  background: #eef4fa;
+  border-color: #94a3b8;
+}
+.schedule-context-pills .machine-tab.is-active {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: white;
+  font-weight: var(--fw-bold);
+}
+.schedule-context-pills .machine-tab-action {
+  color: var(--sdc-primary, #1574c4);
+  border: 1px dashed #c8d5e3;
+  background: transparent;
+}
+.schedule-context-pills .machine-tab-action:hover {
+  border-color: var(--sdc-primary, #1574c4);
+  background: #f0f7fd;
+}
