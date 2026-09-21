@@ -445,6 +445,13 @@ async function init() {
   // gets READ-ONLY, project-scoped access to the customer view (no login).
   await pool.query(`ALTER TABLE projects ADD COLUMN share_token VARCHAR(64)`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD UNIQUE INDEX idx_projects_share_token (share_token)`).catch(() => {});
+  // Static customer snapshots: a SEPARATE random token from share_token — this
+  // one names a pre-rendered HTML file (lib/snapshotRender.js), not a live,
+  // authenticated API session. Kept as its own column so the two features can
+  // be generated, refreshed, and revoked independently of each other.
+  await pool.query(`ALTER TABLE projects ADD COLUMN snapshot_token VARCHAR(64)`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD UNIQUE INDEX idx_projects_snapshot_token (snapshot_token)`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN snapshot_updated_at DATETIME`).catch(() => {});
   // Snapshot pulled from the SDC ETC Planner when a project is created from its
   // job list. billable + the release/delivery estimate dates are captured once
   // at create time; live actuals-vs-execution are fetched on demand via

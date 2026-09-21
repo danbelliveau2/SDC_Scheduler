@@ -21,6 +21,7 @@ const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./lib/auth');
 const ops = require('./lib/ops'); // backups, health/status, crash logging
+const { snapshotPath } = require('./lib/snapshotRender'); // customer snapshot pages (both listeners below)
 const agent = require('./lib/agent'); // local-Ollama read-only assistant
 // Moved up from where it used to live (just above routeDeps) so the auth
 // router — mounted further up, before requireAuth — can also take it as a
@@ -159,6 +160,39 @@ if (PUBLIC_PORT && _serviceRouters) {
     console.log(`[service] public intake listening on :${PUBLIC_PORT} (form + 2 endpoints only)`));
 }
 
+// ─── Static customer snapshots — separate port, tunnel-facing ─────────────
+// Same reasoning as the service intake listener above, same fix: a customer
+// snapshot link is meant to be opened from outside the SDC network, and the
+// MAIN port must never be the thing that's exposed to do that — publishing
+// PORT would publish express.static(public/) too, which sits ABOVE the auth
+// guard and would serve the entire Scheduler frontend to anyone who asked.
+//
+// So: a second listener containing ONLY the snapshot route. Nothing else on
+// this port to misconfigure, no DB query per request, no auth logic at all —
+// a snapshot's safety already comes entirely from the token being an
+// unguessable 24-byte hex value, not from anything this listener does.
+//
+// Unset SNAPSHOT_PUBLIC_PORT and this does not listen at all, matching how
+// SERVICE_PUBLIC_PORT already defaults for a dev box or an untunnelled box.
+// The LAN-facing route on the main app (a few lines up) is untouched and
+// still works for internal previewing — this only adds the external path.
+const SNAPSHOT_PUBLIC_PORT = Number(process.env.SNAPSHOT_PUBLIC_PORT || 0);
+if (SNAPSHOT_PUBLIC_PORT) {
+  const snap = express();
+  snap.disable('x-powered-by');
+  snap.use(compression());
+  snap.get('/snapshot/:token', (req, res) => {
+    const file = snapshotPath(req.params.token);
+    if (!file || !fs.existsSync(file)) {
+      return res.status(404).type('text/plain').send('This snapshot link is no longer valid.');
+    }
+    res.sendFile(file);
+  });
+  snap.use((_req, res) => res.status(404).type('text/plain').send('Not found'));
+  snap.listen(SNAPSHOT_PUBLIC_PORT, () =>
+    console.log(`[snapshot] public listener on :${SNAPSHOT_PUBLIC_PORT} (snapshot pages only)`));
+}
+
 // Public capability probe — no auth needed, frontend uses this to show/hide the Job Hours drawer
 app.get('/api/hours/status', (_req, res) => res.json({ enabled: hoursApi.ENABLED }));
 
@@ -181,6 +215,28 @@ app.use(async (req, res, next) => {
     if (req.path === '/api/share/info') return res.json({ project: row.name });
     next();
   } catch (e) { res.status(503).json({ error: e.message }); }
+});
+
+// ─── Static customer snapshots (LAN/internal) ──────────────────────────────
+// Deliberately NOT behind requireAuth and NOT a DB query per request — this
+// serves a file that routes/projects.js's snapshot-link endpoints already
+// rendered to disk (lib/snapshotRender.js). Whether AUTH_ENABLED is on or off
+// makes no difference to this route at all, which is the point: a snapshot
+// link's safety never depends on the rest of the app's auth posture. The
+// token in the URL (an unguessable 24-byte hex value) is the only thing
+// gating access, same trust model as the live share link's token.
+//
+// This copy is reachable on the main port (LAN only, same as everything
+// else on this app) — handy for SDC staff previewing a snapshot before
+// sending the link out. The customer-facing, internet-reachable copy is the
+// separate SNAPSHOT_PUBLIC_PORT listener above; the two are independent and
+// both read from the same rendered files.
+app.get('/snapshot/:token', (req, res) => {
+  const file = snapshotPath(req.params.token);
+  if (!file || !fs.existsSync(file)) {
+    return res.status(404).type('text/plain').send('This snapshot link is no longer valid.');
+  }
+  res.sendFile(file);
 });
 
 // Global auth guard — every /api/* request below this line goes through it.
