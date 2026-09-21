@@ -104,16 +104,23 @@ function _renderSaveButton() {
   b.style.transition = 'background .2s,color .2s';
   const n = SaveTracker.failures.length;
   if (n > 0) {
+    b.hidden = false;
     b.disabled = false;
     b.textContent = `💾 Save now (${n})`;
     b.style.background = '#b3261e'; b.style.color = '#fff'; b.style.fontWeight = '700';
     b.title = `${n} edit${n > 1 ? 's' : ''} didn't save — click to retry.`;
   } else if (SaveTracker.inFlight > 0) {
+    b.hidden = false;
     b.disabled = true;
     b.textContent = '💾 Saving…';
     b.style.background = ''; b.style.color = ''; b.style.fontWeight = '';
     b.title = 'Saving your latest edit…';
   } else {
+    // Idle. "Saved" every second of every day is not information - it is the
+    // expected state, and it was just taking up room in the toolbar. Hide it
+    // and let the two states that DO mean something (saving, and the red
+    // "N edits did not save - click to retry") be the only times it appears.
+    b.hidden = true;
     b.disabled = false;
     b.textContent = '💾 Saved';
     b.style.background = ''; b.style.color = ''; b.style.fontWeight = '';
@@ -583,7 +590,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false, riskMode: false, riskOverlay: false },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -741,26 +748,30 @@ function seedCollapsedSections() {
 let lineByTaskId = {};
 let taskIdByLine = {};
 
-function predDisplay(predString) {
+// `maps` swaps in a different numbering space - a mitigation schedule
+// numbers its own lines from 1, so its predecessors read against that.
+function predDisplay(predString, maps) {
+  const byId = (maps && maps.byId) || lineByTaskId;
   if (!predString) return '';
   return String(predString).split(',').map(s => {
     const m = s.trim().match(/^(\d+)(.*)$/);
     if (!m) return s.trim().toUpperCase();
     const id = Number(m[1]);
-    const line = lineByTaskId[id];
+    const line = byId[id];
     // If we don't know the line, render nothing for this entry instead of
     // "?id" — a question mark in the predecessor column is just noise.
     if (line == null) return '';
     return (line + m[2]).toUpperCase();
   }).filter(Boolean).join(', ');
 }
-function predParse(displayString) {
+function predParse(displayString, maps) {
+  const byLine = (maps && maps.byLine) || taskIdByLine;
   if (!displayString) return '';
   return String(displayString).split(',').map(s => {
     const m = s.trim().match(/^(\d+)(.*)$/);
     if (!m) return s.trim().toUpperCase();
     const line = Number(m[1]);
-    const id = taskIdByLine[line];
+    const id = byLine[line];
     return ((id != null ? id : line) + m[2]).toUpperCase();
   }).join(', ');
 }
@@ -920,6 +931,17 @@ function buildCanonicalTaskOrder() {
       for (const s of satAnchors) order.push(s.id);
     }
   }
+  // Risk-mitigation lines are ordinary tasks under a section the walk above
+  // does not visit, and applyFilters keeps them out of the grid by default.
+  // They still need canonical line numbers: the mitigation schedule shows
+  // them in its line column, and a predecessor typed into one has to resolve
+  // against the same map every other row uses.
+  const seen = new Set(order);
+  state.tasks
+    .filter(t => t.phase_group === RISK_GROUP && !seen.has(t.id))
+    .sort((a, b) => String(a.sub_department || '').localeCompare(String(b.sub_department || ''))
+      || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
+    .forEach(t => order.push(t.id));
   return order;
 }
 
@@ -988,6 +1010,10 @@ const VIEW_MODE_STEP_DAYS = { Day: 1, Week: 7, Month: 30 };
 // sync — adjust both together if you change the range.
 const ZOOM_MIN = 10;
 const ZOOM_MAX = 145;
+// Zoom-to-fit may go past the stepper ceiling. A short schedule (a risk with
+// three lines spanning a month) needs several times the build px-per-day to
+// fill the panel, and clamping fit to ZOOM_MAX left it filling about half.
+const ZOOM_FIT_MAX = 600;
 const ZOOM_STEP = 10;
 
 // 100% = 20 px/day (matches frappe-gantt's Week default of 140 / 7).
@@ -1669,6 +1695,24 @@ function applyFilters(tasks, opts = {}) {
   // for that path.
   const skipMachineSubset = !!opts.ignoreMachineSubset;
   const q = (search || '').trim().toLowerCase();
+  // Mitigation lines are real tasks under their own sections. Risk mode
+  // shows those and nothing else; outside it they are hidden unless the
+  // risk is flagged to sit on the real schedule alongside the build.
+  if (state.scheduleView && state.scheduleView.riskMode) {
+    // Risk mode is its own view of its own rows. Behind / Ahead / Hide done
+    // / assignee / search all belong to the build, and leaving them applied
+    // here silently emptied a risk schedule for reasons nothing on screen
+    // explained. Scope to the project and stop.
+    const pick = Array.isArray(state.filters.risksSubset) ? state.filters.risksSubset : [];
+    const subs = pick.length ? new Set(pick.map(riskSubDept)) : null;
+    return tasks.filter(t => t.phase_group === RISK_GROUP
+      && (!project || t.project === project)
+      && (!subs || subs.has(t.sub_department)));
+  }
+  {
+    const over = riskOverlaySubDepts();
+    tasks = tasks.filter(t => t.phase_group !== RISK_GROUP || over.has(t.sub_department));
+  }
   const qf = quick || {};
   const personal = isPersonalMode();
   const subset = Array.isArray(projectsSubset) ? projectsSubset : [];
@@ -2062,6 +2106,11 @@ function cellHtml(t, key) {
 // wins (mech/controls/general/build/wire); else the department's combined key
 // (eng-combined / shop-combined / procurement) drives the color.
 function rowColorKey(task) {
+  // Mitigation lines borrow the ENGINEERING palette from section 40 — the
+  // same blue the testing work carries on the build, with its dark label
+  // text. Their sub_department is "risk:<id>", which matches no palette, so
+  // without this they came out neutral grey with white lettering.
+  if (task.phase_group === RISK_GROUP) return 'risk';
   // Sub-department wins. The sub-depts named 'engineering' / 'shop' (section 50
   // INSTALL has them) share the combined eng/shop palette so they read like
   // section 40's dept-only engineering/shop.
@@ -2080,6 +2129,85 @@ function rowColorKey(task) {
   // rows the user added manually). Keeps the bar fill + label color consistent
   // with every other bar instead of falling through to frappe-gantt's default.
   return 'neutral';
+}
+
+// One section per risk, in the register order, each holding that risk\'s
+// mitigation lines. A risk with a schedule but no lines yet still renders
+// its header - the empty section is where you right-click to add the first
+// one, exactly as in the build.
+function _riskSectionRowsHtml(filtered, collapsedGroups, opts) {
+  const project = state.filters.project || '';
+  const cols = state.layout.columnOrder.length;
+  const risks = project ? riskPlan(project) : [];
+  // Overlay mode: the build is on screen and only the risks flagged On sched
+  // ride along, as their own sections under it.
+  const overlay = !!(opts && opts.overlay);
+  // The Risks pills pick which sections are on screen, and an empty pick means
+  // all of them. Both views read that one selection. On the build it is additionally
+  // gated by the Risk lines toggle; riskOverlaySubDepts returns an empty set
+  // when that is off, so nothing renders.
+  const sel = new Set(riskSelectedIds(project));
+  const withPlan = risks.filter(r => r.hasPlan && sel.has(r.id)
+    && (!overlay || (state.scheduleView && state.scheduleView.riskOverlay)));
+
+  if (overlay) {
+    if (!withPlan.length) return '';
+  } else if (!withPlan.length) {
+    return `<tr class="group-header level-1"><td colspan="${cols}">
+      <span class="group-label">No risk has a schedule yet</span>
+      <span class="risk-mode-hint">Documents → Risk Mitigation Plan → tick Schedule on a risk</span>
+    </td></tr>`;
+  }
+
+  const byRisk = {};
+  for (const t of filtered) (byRisk[t.sub_department] ||= []).push(t);
+  for (const k in byRisk) {
+    byRisk[k].sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  }
+
+  let html = '';
+  withPlan.forEach((r, i) => {
+    const sub = riskSubDept(r.id);
+    const path = groupPath(RISK_GROUP, null, sub);
+    const collapsed = collapsedGroups.has(path);
+    const label = `R${i + 1}  ${r.title || 'Untitled risk'}`;
+    html += headerRowHtml(1, label, path, collapsed, {
+      'section-key': 'risk',
+      'risk-id': r.id,
+      // The first one carries the divider between the build and the risk work.
+      'risk-first': i === 0 ? '1' : '',
+    });
+    if (collapsed) return;
+    for (const t of (byRisk[sub] || [])) {
+      html += inferredAnchorKey(t) ? '' : rowHtml(t, 2);
+    }
+    // Every risk gets its own add row, so there is never a question about
+    // which schedule the new line lands in.
+    html += `<tr class="risk-add-row" data-risk-add="${r.id}">
+      <td colspan="${cols}"><span class="risk-add-btn">＋ Add line</span></td>
+    </tr>`;
+  });
+  return html;
+}
+
+// Risks the user has chosen to show on the real schedule, as sub-department
+// keys so the row filter is a straight lookup.
+// The risks the pills currently select, as sub-department keys. An empty
+// selection means every risk that has a schedule — the same convention the
+// pills themselves use, and the machine pills before them.
+function riskSelectedIds(project) {
+  const withPlan = riskPlan(project || state.filters.project || '').filter(r => r.hasPlan);
+  const pick = Array.isArray(state.filters.risksSubset) ? state.filters.risksSubset : [];
+  if (!pick.length) return withPlan.map(r => r.id);
+  const on = new Set(pick);
+  return withPlan.filter(r => on.has(r.id)).map(r => r.id);
+}
+
+function riskOverlaySubDepts() {
+  if (!(state.scheduleView && state.scheduleView.riskOverlay)) return new Set();
+  const project = state.filters.project || '';
+  if (!project) return new Set();
+  return new Set(riskSelectedIds(project).map(riskSubDept));
 }
 
 function rowHtml(t, depth = 0) {
@@ -2440,7 +2568,13 @@ function renderTable() {
   // under a phase_group (cross-cutting like Perform FAT), under a department, or under a
   // sub-department. Machine Power-Up flows through the bucket walk like any other Wire
   // task — its anchor styling is applied by the row renderer below.
-  for (const group of HIERARCHY) {
+  // Risk mode swaps the hierarchy walk for one section per risk. Same grid,
+  // same rows, same headers, same Gantt - the only thing that changes is what
+  // a section means.
+  const riskMode = !!(state.scheduleView && state.scheduleView.riskMode);
+  if (riskMode) html += _riskSectionRowsHtml(filtered, collapsedGroups);
+
+  for (const group of (riskMode ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
@@ -2576,10 +2710,21 @@ function renderTable() {
   // No UNASSIGNED bucket and no orphan auto-promote. Orphans (tasks with no phase_group
   // and not an anchor) simply don't render — server-side dedupe handles cleanup.
 
+  // Risks flagged On sched ride along under the build, each as its own section,
+  // so you can see the mitigation work against the work it protects.
+  if (!riskMode) html += _riskSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
+
   tbody.innerHTML = html;
   if (state.layout) applyColumnVisibility();
 
   updateLineNumbersAndPreds();
+
+  tbody.querySelectorAll('[data-risk-add]').forEach(tr => {
+    tr.addEventListener('click', (e) => {
+      e.stopPropagation();
+      addRiskLine(state.filters.project || '', tr.dataset.riskAdd, null);
+    });
+  });
 
   tbody.querySelectorAll('tr.group-header').forEach(tr => {
     tr.addEventListener('click', () => {
@@ -3337,6 +3482,12 @@ function currentCellValue(task, col) {
         const line = lineByTaskId[task.duration_link_task_id];
         if (line) return `=${line}`;
       }
+      // The cell reads "—W" whenever duration_days is not a positive number.
+      // The editor has to say the same thing: it used to derive 0.5 from the
+      // start/finish span, so clicking an empty duration put a value in the
+      // box that nobody had entered.
+      const dd = task.duration_days;
+      if (!task.is_milestone && (dd == null || !(Number(dd) > 0))) return '';
       return durationLabel(task);
     }
     case 'pred':     return predDisplay(task.predecessors || '');
@@ -3541,7 +3692,9 @@ async function saveCellEdit(id, col, value, task) {
     }
     case 'pred': {
       const rawPred = (value || '').trim();
-      const parsedPred = predParse(rawPred);
+      // A mitigation row numbers its lines locally, so "2" there means that
+      // schedule's second line, not the project's.
+      const parsedPred = predParse(rawPred, riskLineMapFor(task));
       // Non-empty input that doesn't parse used to be dropped silently — tell
       // the user so a typo doesn't look like a successful save.
       if (rawPred && !parsedPred) showToast('Could not read that predecessor. Use e.g. "5FS" or "8FF -2w".', { kind: 'error' });
@@ -3734,8 +3887,11 @@ function parseDurationInput(s) {
 }
 
 // ---------- Column reorder (drag-and-drop) ----------
-function setupColumnReorder() {
-  const ths = document.querySelectorAll('#tasks-table thead th[data-col]');
+// `root` lets a cloned header (the risk-mitigation schedule) wire the same
+// drag-to-reorder. There is one column order, so reordering in either grid
+// reorders both.
+function setupColumnReorder(root) {
+  const ths = (root || document).querySelectorAll(root ? 'thead th[data-col]' : '#tasks-table thead th[data-col]');
   ths.forEach(th => {
     th.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/plain', th.dataset.col);
@@ -3778,6 +3934,10 @@ const HIERARCHY_COLOR_DEFAULTS = {
   mech:           { label: 'Mechanical Engineering', fill: '#cfdcef', text: '#1e3a8a' },
   controls:       { label: 'Controls Engineering',   fill: '#cfe6d2', text: '#14532d' },
   general:        { label: 'General Engineering',    fill: '#ddd0eb', text: '#581c87' },
+  // Risk mitigation. Purple because nothing else on a build is purple, so the
+  // mitigation work is unmistakable against the work it protects. Deeper and
+  // more saturated than General Engineering's lilac so the two never blur.
+  risk:           { label: 'Risk mitigation',        fill: '#cbb4e8', text: '#4c1d95' },
   build:          { label: 'Build',                  fill: '#f1d4ad', text: '#7c2d12' },
   wire:           { label: 'Wire',                   fill: '#fef08a', text: '#713f12' }, // clear yellow
   // Department-level (used directly in sections 40 / 50, and as the section-10 dept-row color).
@@ -3917,7 +4077,11 @@ function renderGantt() {
   // Tasks that don't belong to any current section (and aren't anchors) are also
   // dropped — those are leftovers from old data structures that the grid hides;
   // the Gantt should hide them too so no ghost bars appear.
-  const validSectionKeys = new Set(HIERARCHY.map(g => g.key));
+  // RISK is a real section here too — its rows are ordinary tasks and they
+  // need bars. Without it they were dropped as ''leftovers from an old data
+  // structure'' and the Gantt sat empty in risk mode even though every row
+  // had dates.
+  const validSectionKeys = new Set([...HIERARCHY.map(g => g.key), RISK_GROUP]);
   // v4.50: when NOT in sortByStart mode, use the GRID's canonical order
   // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
   // grid rows do — Receipt of PO at top, Backlog under it, section 10
@@ -4068,7 +4232,7 @@ function renderGantt() {
     const PAD_DAYS = 14;
     if (target > 0) {
       const requiredPxPerDay = target / (projectDays + PAD_DAYS);
-      state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (requiredPxPerDay / 20) * 100));
+      state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
     }
     state._lastFitProject = projectKey;
     state._fitOnNextRender = false;
@@ -4186,6 +4350,26 @@ function renderGantt() {
 // workDayOffset: count of business days (Mon-Fri) from ganttStart to
 // the given date. Used to re-anchor every X position so the weekend
 // columns collapse to zero.
+// Inverse of workDayOffset: the date sitting `wd` work days after ganttStart,
+// plus whatever sub-day fraction was left over. Deliberately walks with the
+// same loop and the same UTC day test workDayOffset uses, so
+//   workDayOffset(workDayOffsetToDate(n).dateStr) === Math.floor(n)
+// holds for any n. setZoom depends on that identity to keep the chart
+// anchored while the view mode flips underneath it.
+function workDayOffsetToDate(wd, ganttStart) {
+  const startMs = new Date(ganttStart).getTime();
+  const whole = Math.max(0, Math.floor(wd));
+  let count = 0;
+  let ms = startMs;
+  let guard = 0;
+  while (count < whole && guard++ < 100000) {
+    const dow = new Date(ms).getUTCDay();
+    if (dow !== 0 && dow !== 6) count++;
+    ms += 86400000;
+  }
+  return { dateStr: new Date(ms).toISOString().slice(0, 10), frac: wd - whole };
+}
+
 function workDayOffset(dateStr, ganttStart) {
   if (!dateStr || !ganttStart) return 0;
   const startMs = new Date(ganttStart).getTime();
@@ -4439,8 +4623,15 @@ function compressGanttToWorkDays() {
     if (maxRight > 0) {
       const newWidth = maxRight + pxPerWorkDay * 4;
       svg.setAttribute('width', String(newWidth));
-      // Update viewBox too if set
-      if (svg.viewBox && svg.viewBox.baseVal) {
+      // Update the viewBox too, but ONLY if the SVG actually has one.
+      // Reading svg.viewBox.baseVal on an SVG with no viewBox attribute hands
+      // back a zeroed rect, and assigning to it MATERIALISES viewBox="0 0 W 0"
+      // — a zero height that clips the whole chart, date header included. It
+      // went unnoticed for as long as it did because alignGanttToGrid grows the
+      // viewBox to the grid's height, and on a full build the grid is always
+      // taller than the chart. A short grid (a risk schedule with three lines)
+      // never triggers that growth, so the zero height survived to the screen.
+      if (svg.hasAttribute('viewBox') && svg.viewBox && svg.viewBox.baseVal) {
         svg.viewBox.baseVal.width = newWidth;
       }
     }
@@ -5095,6 +5286,13 @@ function drawBarMeta() {
 function renderProjectStatsPopup() {
   const split = document.getElementById('schedule-split');
   if (!split) return;
+  // In risk mode this box is about a project spine that is not on screen,
+  // and it floats over the chart. Take it down.
+  if (state.scheduleView && state.scheduleView.riskMode) {
+    const gone = split.querySelector('#project-stats-popup');
+    if (gone) gone.remove();
+    return;
+  }
   let popup = split.querySelector('#project-stats-popup');
   const project = state.filters.project;
   if (!project) {
@@ -5690,6 +5888,10 @@ function drawBaselineGhosts() {
 // and SOLID once the Sent checkbox is on (the `paid` DB field is reused for this
 // flag — name's legacy). A small label at the top names the milestone + percent.
 // Renders ON TOP of bars/arrows so it's always readable.
+// Set when a fit ran before the penalty marker existed, so the draw that
+// creates the marker knows to fit again. Cleared before that re-fit runs.
+let _fitAwaitingPenalty = false;
+
 // Short red vertical line at the penalty-clause start date — appears
 // only when the active project's quote has has_penalty_clause checked
 // AND penalty_clause_weeks set. Spans ~2 rows above and below the
@@ -5707,6 +5909,9 @@ function drawPenaltyClauseLine() {
     // entering customer view also clears a line that is already drawn.
     if (document.body.classList.contains('customer-view') ||
         document.body.classList.contains('share-link-view')) return;
+    // The penalty date belongs to the build. Drawn over the risk sections it
+    // means nothing and drags the chart out weeks past the last mitigation bar.
+    if (state.scheduleView && state.scheduleView.riskMode) return;
     if (!state.gantt || !state.gantt.gantt_start) return;
     const project = state.filters.project;
     if (!project) return;
@@ -5780,6 +5985,12 @@ function drawPenaltyClauseLine() {
 
       const layer = document.createElementNS(SVG_NS, 'g');
       layer.setAttribute('class', 'sdc-penalty-line');
+      // First marker of a fit that ran without one — fit again now that the
+      // chart is complete. Flag is cleared first so this cannot recurse.
+      if (_fitAwaitingPenalty) {
+        _fitAwaitingPenalty = false;
+        setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 0);
+      }
       layer.style.pointerEvents = 'none';
       svg.appendChild(layer);
       // Vertical red line.
@@ -5826,6 +6037,14 @@ function drawPenaltyClauseLine() {
 }
 
 function drawFinancialOverlay() {
+  // Payment milestones (MC 40%, FAT 20%) belong to the machine being sold,
+  // not to a risk plan. On the risk schedule they are noise drawn across
+  // work that has nothing to do with them.
+  if (state.scheduleView && state.scheduleView.riskMode) {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (svg) svg.querySelectorAll('.financial-marker').forEach(el => el.remove());
+    return;
+  }
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg) return;
   // Always clear so toggling off clears the overlay even when re-render is skipped.
@@ -6258,7 +6477,11 @@ function getGanttScroller() {
 }
 
 function setZoom(percent) {
-  const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, percent));
+  // Upper bound is the stepper ceiling, EXCEPT when zoom-to-fit has already
+  // put us above it - then the current zoom is the ceiling, so the first
+  // click of the stepper does not slam the chart back down to 145%.
+  const ceiling = Math.max(ZOOM_MAX, state.zoomPercent || 0);
+  const next = Math.max(ZOOM_MIN, Math.min(ceiling, percent));
   if (Math.abs(next - state.zoomPercent) < 0.01) return;
 
   // Capture the DATE under the viewport center BEFORE we re-render. We can't
@@ -6269,34 +6492,25 @@ function setZoom(percent) {
   // mode might map to "Nov 3" in Month mode after the rebuild, which is what
   // made the chart appear to jump way off to the side at the Week→Month
   // boundary. Converting to a date and back is mode-independent.
-  let centerDateMs = null;
+  let centerWorkDays = null;      // viewport centre, in work days from gantt_start
+  let oldStartForAnchor = null;   // the gantt_start it was measured against
   const oldScroller = getGanttScroller();
   const viewW = oldScroller ? oldScroller.clientWidth : 0;
   if (oldScroller && state.gantt?.gantt_start) {
     const oldCenterPx = oldScroller.scrollLeft + viewW / 2;
     const g = state.gantt;
-    const oldStartMs = new Date(g.gantt_start).getTime();
     const cw = g.options.column_width;
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
     if (pxPerDay > 0) {
-      // Work-day Gantt: pixel x maps to work-day index, not calendar
-      // day index. Convert by walking work days forward from gantt_start
-      // until we've accumulated the equivalent of oldCenterPx.
-      const workDaysFromStart = oldCenterPx / pxPerDay;
-      let count = 0;
-      let cursorMs = oldStartMs;
-      const targetIntegerWorkDays = Math.floor(workDaysFromStart);
-      while (count < targetIntegerWorkDays) {
-        cursorMs += 86400000;
-        const dow = new Date(cursorMs).getUTCDay();
-        if (dow !== 0 && dow !== 6) count++;
-      }
-      // Add the fractional part (within a single work day, no weekend
-      // crossing possible).
-      const fractionMs = (workDaysFromStart - targetIntegerWorkDays) * 86400000;
-      centerDateMs = cursorMs + fractionMs;
+      // Pixel x maps to a WORK-day index, not a calendar-day index. Convert
+      // through workDayOffsetToDate, the exact inverse of the workDayOffset
+      // the restore below uses — the two must share one walk or the round
+      // trip loses a fraction of a day on every single zoom step, always in
+      // the same direction, and the chart crawls away from where you were.
+      centerWorkDays = oldCenterPx / pxPerDay;
+      oldStartForAnchor = g.gantt_start;
     }
   }
 
@@ -6316,15 +6530,20 @@ function setZoom(percent) {
   // Week mode flip leaves the chart visually shifted by the weekend
   // compression delta.
   const newScroller = getGanttScroller();
-  if (newScroller && centerDateMs != null && state.gantt?.gantt_start) {
+  if (newScroller && centerWorkDays != null && state.gantt?.gantt_start) {
     const g = state.gantt;
     const cw = g.options.column_width;
     const mode = g.options.view_mode || 'Week';
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
     if (pxPerDay > 0) {
-      const dateStr = new Date(centerDateMs).toISOString().slice(0, 10);
-      const targetPx = workDayOffset(dateStr, g.gantt_start) * pxPerDay;
+      // The centre was captured in work days against the OLD gantt_start.
+      // Turn it into a real date with the inverse walk, then measure that date
+      // against the NEW gantt_start — mode-independent, and lossless, because
+      // workDayOffsetToDate and workDayOffset share one walk. The sub-day
+      // fraction rides along so a run of zoom steps cannot accumulate drift.
+      const anchor = workDayOffsetToDate(centerWorkDays, oldStartForAnchor);
+      const targetPx = (workDayOffset(anchor.dateStr, g.gantt_start) + anchor.frac) * pxPerDay;
       const center = Math.max(0, targetPx - viewW / 2);
       newScroller.scrollLeft = center;
       // Re-assert next frame: renderGantt defers its decoration pass to a rAF,
@@ -6371,7 +6590,7 @@ function zoomToFitPersonal() {
   const projectDays = Math.max(1, (maxEnd - minStart) / 86400000 + 1);
   const PAD_DAYS = 14;
   const requiredPxPerDay = target / (projectDays + PAD_DAYS);
-  state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (requiredPxPerDay / 20) * 100));
+  state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
   renderActionsPersonGantt();
 }
 
@@ -6405,10 +6624,57 @@ function zoomToFit() {
   const usableWidth = Math.max(50, target - LABEL_PAD_LEFT - LABEL_PAD_RIGHT - EDGE_PAD * 2);
 
   const requiredPxPerDay = usableWidth / workDaysSpan;
-  state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, (requiredPxPerDay / 20) * 100));
+  state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
   renderGantt();
 
-  // Scroll so the earliest task's bar sits LABEL_PAD_LEFT + EDGE_PAD
+  // The penalty-clause marker is drawn PAST the last task (PO + sold weeks),
+  // so a fit measured on tasks alone does not account for it. The old version
+  // only ever shrank, and only when the marker overhung the right edge - so
+  // whenever the fit happened to leave the marker short of the edge it just
+  // sat there with a band of dead chart to its right. Aim the END OF THE PILL
+  // at the right edge instead, growing or shrinking to get there.
+  //
+  // Two passes, because the label is TEXT: its pixel width does not scale with
+  // zoom, so one pass always over- or undershoots by roughly the label width.
+  // The second pass converges on it.
+  try {
+    const PEN_EDGE_PAD = 10;   // breathing room between the pill and the edge
+    for (let pass = 0; pass < 2; pass++) {
+      const pen = document.querySelector('#gantt-container .sdc-penalty-line');
+      if (!pen) break;
+      const bars = Array.from(document.querySelectorAll('#gantt-container .bar-wrapper'))
+        .filter(w => !/^_pad/.test(w.dataset.id || ''))
+        .map(w => w.querySelector('.bar'))
+        .filter(Boolean);
+      if (!bars.length) break;
+      const leftX = Math.min(...bars.map(b => Number(b.getAttribute('x')) || 0));
+      const penBox = pen.getBBox();
+      const needed = (penBox.x + penBox.width) - leftX;   // span the fit must cover
+      if (!(needed > 0)) break;
+      // NOT usableWidth. That figure holds back LABEL_PAD_RIGHT (120px) for
+      // task names overflowing past their bars — but the penalty pill IS the
+      // rightmost thing on the chart and its own width is already inside the
+      // bbox measured above, so reserving name-overflow room behind it just
+      // parks it 130px short of the edge. Measure against the panel itself,
+      // from the same origin the scroll below uses.
+      const penSpan = Math.max(120, target - LABEL_PAD_LEFT - EDGE_PAD - PEN_EDGE_PAD);
+      const next = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, state.zoomPercent * (penSpan / needed)));
+      if (Math.abs(next - state.zoomPercent) < 0.5) break;   // already there
+      state.zoomPercent = next;
+      renderGantt();
+    }
+  } catch (_) { /* cosmetic — never break the fit */ }
+
+  // If this project HAS a penalty clause but the marker is not on the chart
+  // yet, the quote is still in flight and this fit did not account for it.
+  // Ask the next draw to fit again.
+  try {
+    const proj = state.filters.project;
+    const drawn = !!document.querySelector('#gantt-container .sdc-penalty-line');
+    _fitAwaitingPenalty = !!proj && !drawn && !(proj in state.projectQuotes);
+  } catch (_) { _fitAwaitingPenalty = false; }
+
+  // Scroll so the earliest task`s bar sits LABEL_PAD_LEFT + EDGE_PAD
   // from the viewport's left edge — that's enough room for the date
   // label hanging off the leftmost anchor.
   const earliest = filtered.reduce((min, t) =>
@@ -10253,6 +10519,13 @@ function _etoJobFromName(name) {
   return m ? m[1] : '';
 }
 
+// _etoNameCache values: undefined = not looked up, a string = the ERP name
+// (empty if it has none), null = the ERP says no such job, ETO_DOWN = we could
+// not reach the ERP at all. That last one used to collapse into null, so a
+// connection failure rendered as "job not found" and sent people off to fix a
+// job number that was right all along.
+const ETO_DOWN = '__eto_unreachable__';
+
 function _etoBannerChipHtml(project) {
   if (!_etoAvailable) return '';
   const job = (state.projectsIndex && state.projectsIndex[project] && state.projectsIndex[project].job_number) || '';
@@ -10263,12 +10536,16 @@ function _etoBannerChipHtml(project) {
     }
     return `<button type="button" id="eto-link-chip" class="eto-chip eto-chip-unlinked" title="Link this schedule to a Total ETO job — turns on automatic vendor PO sync and live cost actuals for this project.">🔗 Link ETO job…</button>`;
   }
-  const known = _etoNameCache[job]; // undefined = not looked up yet
-  const bad = known === null;
-  const title = bad ? `Job ${job} was not found in Total ETO — click to fix the number.`
+  const known = _etoNameCache[job];
+  const bad  = known === null;        // the ERP answered: no such job
+  const down = known === ETO_DOWN;    // we never got an answer
+  const title = bad  ? `Job ${job} was not found in Total ETO — click to fix the number.`
+    : down ? `Linked to Total ETO job ${job}. Cannot reach Total ETO from here right now, so the job could not be confirmed — the link itself is unchanged.`
     : known ? `Linked to Total ETO job ${job} — ${known}. Vendor POs and cost actuals sync from the ERP. Click to change.`
     : `Linked to Total ETO job ${job}. Click to change.`;
-  return `<button type="button" id="eto-link-chip" class="eto-chip${bad ? ' eto-chip-bad' : ''}" title="${escapeHtml(title)}">ETO #${escapeHtml(job)}${bad ? ' ✗' : ''}</button>`;
+  const cls = bad ? ' eto-chip-bad' : down ? ' eto-chip-down' : '';
+  const mark = bad ? ' ✗' : down ? ' ⚠' : '';
+  return `<button type="button" id="eto-link-chip" class="eto-chip${cls}" title="${escapeHtml(title)}">ETO #${escapeHtml(job)}${mark}</button>`;
 }
 
 function _wireEtoBannerChip(banner, project) {
@@ -10278,9 +10555,15 @@ function _wireEtoBannerChip(banner, project) {
   // Lazy one-time validation: fetch the official ETO name for the tooltip.
   if (job && _etoNameCache[job] === undefined) {
     fetch(`/api/eto/project/${encodeURIComponent(job)}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(info => { _etoNameCache[job] = info ? (info.ProjectName || '') : null; try { renderProjectTabs(); } catch (_) {} })
-      .catch(() => {});
+      .then(r => {
+        if (r.ok) return r.json().then(info => (info && info.ProjectName) || '');
+        // 5xx means the ERP is unreachable from this machine (VPN, the
+        // untrusted-domain auth failure, ETO itself down). Only a 404 is the
+        // ERP actually telling us the job does not exist.
+        return r.status >= 500 ? ETO_DOWN : null;
+      })
+      .then(v => { _etoNameCache[job] = v; try { renderProjectTabs(); } catch (_) {} })
+      .catch(() => { _etoNameCache[job] = ETO_DOWN; try { renderProjectTabs(); } catch (_) {} });
   }
   const guess = chip.dataset.etoGuess;
   chip.addEventListener('click', () => guess ? _etoLinkSuggested(project, guess) : _etoLinkJobFlow(project));
@@ -12853,7 +13136,7 @@ function renderProjectTabs() {
   // visible; the banner placement reads correctly for grid-only and
   // gantt-only pane modes too). On the All-projects pseudo-tab we keep the
   // "Save all tasks as one project" rescue button alongside the label.
-  const banner = document.getElementById('schedule-project-banner');
+  const banner = document.getElementById('schedule-project-center');
   if (banner) {
     if (isPersonalMode()) {
       // Personal-mode banner is the .schedule-personal-banner above the
@@ -12925,21 +13208,10 @@ function renderProjectTabs() {
     }
   }
 
-  // ETO / Power BI job links live in the FOOTER now, not the top banner.
-  // Same markup and wiring, different mount point: the footer is already
-  // hidden in customer view and share-link view, so a customer PDF can
-  // never pick them up.
-  const jobLinks = document.getElementById('schedule-job-links');
-  if (jobLinks) {
-    const jp = state.filters.project;
-    if (jp) {
-      jobLinks.innerHTML = _etoBannerChipHtml(jp) + _pbiChipHtml(jp);
-      _wireEtoBannerChip(jobLinks, jp);
-      _wirePbiChip(jobLinks, jp);
-    } else {
-      jobLinks.innerHTML = '';
-    }
-  }
+  // The ETO and Power BI chips are gone. The ETO one only ever reported on
+  // plumbing nobody acts on from this screen, and Power BI is not the hours
+  // source any more. The one thing people actually used them to reach - this
+  // job in SDC Reports - is now the Job Details button in the toolbar.
 
   // Disable "+ Add task" while on All projects — the new task wouldn't have a project
   // to attach to. Tooltip explains why so the user knows to pick a project tab first.
@@ -12988,11 +13260,60 @@ function renderProjectTabs() {
 // Machine sub-tab strip — sits below the project tab strip and only shows
 // when the active project has multi-machine tasks (any task with machine !=
 // null). Pills: All · M1 · M2 · … · + (add new machine) · Duplicate.
+// One pill per risk that has a schedule, plus All. Empty subset = show them
+// all, which is the same convention the machine pills use.
+function renderRiskSubTabs(bar, project) {
+  const risks = riskPlan(project).filter(r => r.hasPlan);
+  if (!risks.length) { bar.hidden = true; bar.innerHTML = ''; return; }
+  if (!Array.isArray(state.filters.risksSubset)) {
+    try { state.filters.risksSubset = JSON.parse(localStorage.getItem('sdcRisksSubset:' + project) || '[]') || []; }
+    catch (_) { state.filters.risksSubset = []; }
+  }
+  const subset = state.filters.risksSubset;
+  const on = new Set(subset);
+  const all = subset.length === 0;
+  const pill = (label, active, attr, tip) =>
+    `<button type="button" class="machine-tab ${active ? 'is-active' : ''}" ${attr}${tip ? ` title="${escapeHtml(tip)}"` : ''}>${escapeHtml(label)}</button>`;
+  bar.innerHTML = `
+    <span class="machine-tab-label">Risks:</span>
+    ${pill('All', all, 'data-risk-all="1"')}
+    ${risks.map((r, i) => pill(
+      'R' + (i + 1) + ' ' + (r.title || 'Untitled'),
+      !all && on.has(r.id),
+      `data-risk-pill="${escapeHtml(r.id)}"`,
+      'Click to show or hide this risk on the schedule',
+    )).join('')}`;
+  bar.hidden = false;
+  bar.removeAttribute('hidden');
+
+  const apply = (next) => {
+    state.filters.risksSubset = next;
+    try { localStorage.setItem('sdcRisksSubset:' + project, JSON.stringify(next)); } catch (_) {}
+    render();
+  };
+  bar.querySelector('[data-risk-all]')?.addEventListener('click', () => apply([]));
+  bar.querySelectorAll('[data-risk-pill]').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = b.dataset.riskPill;
+      const cur = new Set(Array.isArray(state.filters.risksSubset) ? state.filters.risksSubset : []);
+      if (cur.has(id)) cur.delete(id); else cur.add(id);
+      apply([...cur]);
+    });
+  });
+}
+
 function renderMachineSubTabs() {
-  const bar = document.getElementById('machine-tab-bar');
+  // The pills live in the project-name row now. The old standalone strip is
+  // retired — it was a third band carrying a single line of controls.
+  const legacy = document.getElementById('machine-tab-bar');
+  if (legacy) { legacy.hidden = true; legacy.innerHTML = ''; }
+  const bar = document.getElementById('schedule-context-pills');
   if (!bar) return;
   const activeProject = state.filters.project;
   if (!activeProject || state.view !== 'schedule') { bar.hidden = true; bar.innerHTML = ''; return; }
+  // Risk mode puts its own pills in this strip. Same control, same feel as
+  // switching machines - pick which risks you want on screen.
+  if (state.scheduleView && state.scheduleView.riskMode) { renderRiskSubTabs(bar, activeProject); return; }
   // In clone mode, the orange banner takes over the top strip — hide the
   // sub-tab bar so the banner sits flush below the project tabs (no gray
   // gap). The user is focused on building the new machine, not switching
@@ -13704,11 +14025,46 @@ function showProjectTabMenu(x, y, project) {
     };
   };
   items.push({ separator: true });
+  // Customer drives the portal. It cannot be derived - the project name
+  // carries it only sometimes and the ETO bridge does not return it - so it
+  // is set here once and the portal picks it up.
+  items.push({
+    label: `🏢 Customer: ${projectCustomerName(project) || '—'}${projectCustomerName(project) && projectCustomerIsGuess(project) ? '  (from the name)' : ''}`,
+    onClick: async () => {
+      const known = [...new Set(_deptSelectedProjects().allProjects.map(p => projectCustomerName(p)).filter(Boolean))].sort();
+      const v = await showPromptDialog({
+        title: 'Customer',
+        message: `Who is ${project} for? This is what groups it on the Customer Portal.${known.length ? '\n\nAlready in use: ' + known.join(', ') : ''}`,
+        value: projectCustomerIsGuess(project) ? '' : projectCustomerName(project),
+        placeholder: projectCustomerName(project) || 'e.g. Haemonetics',
+      });
+      if (v != null) setProjectCustomer(project, v);
+    },
+  });
   items.push(leadItem('pm', '👤', 'PM'));
   items.push(leadItem('debug', '🛠', 'Debug lead'));
   // Live customer link — Smartsheet-style: a URL the customer keeps open,
   // always showing the LIVE customer view of this one project, read-only,
   // no login. Copy it, send it, revoke it when the project closes.
+  // Project paperwork. These were permanent footer buttons; they are opened
+  // a few times over a whole job, which is menu work, not strip work.
+  items.push({ separator: true });
+  // Customer export - pick the rows, extra columns and layout, then drop
+  // into customer view. Used a few times a job, so it lives here rather than
+  // holding a permanent toolbar slot. (Customer view itself is still one
+  // click away under View ▸ For Customer.)
+  items.push({ label: '📤 Customer export…', onClick: () => {
+    state.filters.project = project;
+    showCustomerExportModal();
+  } });
+  items.push({ label: '📄 Project Release…', onClick: () => {
+    state.filters.project = project;
+    if (isSalesView()) openQuoteCompareModal(project); else openProjectReleaseModal(project);
+  } });
+  items.push({ label: '📇 Communication Plan…', onClick: () => {
+    state.filters.project = project;
+    openCommPlanModal(project);
+  } });
   items.push({ separator: true });
   items.push({ label: '🔗 Copy live customer link', onClick: () => copyCustomerLink(project) });
   items.push({ label: '🔗 Revoke customer link…', onClick: async () => {
@@ -15638,7 +15994,9 @@ function render(opts = {}) {
   try { refreshFinancialsButtonState(); } catch (_) {}
   try { renderProjectNotes(); } catch (_) {}
   try { renderScheduleProcurement(); } catch (_) {}
-  try { _hoursCheckOnce(); renderScheduleHours(); } catch (_) {}
+  try { renderScheduleGoal(); } catch (_) {}
+  if (state.view === 'portal') { try { renderPortal(); } catch (_) {} }
+  try { syncRiskModeButtons(); } catch (_) {}
 }
 
 // ── Project phase + priority ──────────────────────────────────────────────
@@ -15752,6 +16110,1423 @@ let _execHighOnly = false;
 // Secondary ordering INSIDE each section: 'number' | 'pm' | 'customer'.
 let _execThenBy = 'number';
 
+// ═══ Risk Mitigation Plan ══════════════════════════════════════════════════
+//
+// The standard four steps, in order: identify the risks, assess each one for
+// likelihood and severity, let the score prioritise them, then mitigate the
+// ones that land in the red. The matrix is not decoration - it is the thing
+// that decides what gets a mitigation and what gets accepted, and it is what
+// a customer actually wants to see when they ask "what could go wrong".
+//
+// Stored per project in settings alongside leads and customers.
+
+// Both scales are anchored to the SCHEDULE, because that is what a risk
+// actually costs SDC. "Likelihood" on its own invites the question "likelihood
+// of what?" — the answer is: of this costing us schedule time. And severity is
+// how much schedule it costs. The soft-cap example: the risk is not that the
+// part is flimsy, it is that the station built to close it does not work, we
+// redesign, we wait for parts, and the date moves.
+//
+// Which is also why the main lever is TIMING. Rework found early is absorbed;
+// the same rework found late moves FAT. That is what the actions are for.
+// 1. How hard is this station to design and make work?
+//
+// The question that comes BEFORE chance. On a machine build the risky
+// stations are the difficult ones, so difficulty is what you reason FROM when
+// you pick a chance. It is an input, not a third multiplier: the score stays
+// chance x impact, because difficulty already expresses itself through the
+// chance you pick. Multiplying it in would count the same judgement twice.
+const RISK_DIFFICULTY = [
+  { v: 1, label: 'Proven',           hint: 'We have built this station before and it worked.' },
+  { v: 2, label: 'Familiar',         hint: 'A variant of something we have already made work.' },
+  { v: 3, label: 'New to us',        hint: 'Known technology, but a new application for us.' },
+  { v: 4, label: 'Hard',             hint: 'Needs development - tight tolerances, or a process we have not proven.' },
+  { v: 5, label: 'First of its kind', hint: 'Nobody has made this work yet, here or anywhere we know of.' },
+];
+
+// 2. Given that difficulty, what is the chance it does not work to the level
+//    we need, in the time we have, and the schedule moves because of it?
+//
+// The old labels asked "how likely" without ever saying likely to do WHAT, so
+// everyone scoring a risk answered a slightly different question.
+const RISK_LIKELIHOOD = [
+  { v: 1, label: 'Rare',           hint: 'It will work. We are confident it costs us no schedule time.' },
+  { v: 2, label: 'Unlikely',       hint: 'Probably works first time; any shortfall is absorbed without moving a date.' },
+  { v: 3, label: 'Possible',       hint: 'Even odds it falls short of what we need and costs us time.' },
+  { v: 4, label: 'Likely',         hint: 'Expect it to fall short and cost us time unless we act now.' },
+  { v: 5, label: 'Almost certain', hint: 'It is already not working well enough, and already costing us time.' },
+];
+// Plain time. "How much schedule does this cost us" is a number of days or
+// weeks, and everyone in the shop already thinks in those units.
+// Days, weeks, months. Anything finer is false precision — nobody scoring a
+// risk in a Monday meeting can tell "a week" from "weeks".
+const RISK_SEVERITY = [
+  { v: 1, label: 'Days',   hint: 'Days - absorbed inside the float we have.' },
+  { v: 2, label: 'Weeks',  hint: 'Weeks - an internal date slips.' },
+  { v: 3, label: 'Months', hint: 'Months - FAT moves, or we are into redesign.' },
+];
+// Score = likelihood × severity. The bands are the usual 5×5 split.
+// A machine build fails in a small number of recognisable ways. A free-text
+// category told nobody anything; these are the buckets SDC jobs actually
+// land in, and they make the register sortable and comparable across jobs.
+// Four, because these are the ones that actually threaten the FAT date.
+// Scope and spec collapse into Technical (we know the scope — the question is
+// whether the thing works), and install/site sits past the date we are
+// managing to.
+const RISK_CATEGORIES = ['Technical', 'Supply chain', 'Resource', 'Safety'];
+// Chance (1-5) x impact (1-3), so 15 is the worst a risk can score.
+function riskBand(score) {
+  if (score >= 12) return { key: 'critical', label: 'Very high' };
+  if (score >= 8)  return { key: 'high',     label: 'High' };
+  if (score >= 4)  return { key: 'medium',   label: 'Medium' };
+  return { key: 'low', label: 'Low' };
+}
+
+// Owners come from the team, so a mitigation line can land in that person's
+// own task list rather than being a name typed into a box nobody reads.
+function riskPeople() {
+  return (state.team || [])
+    .filter(m => m && m.name && m.active !== 0)
+    .filter(m => { try { return !isPlaceholder(m.name); } catch (_) { return true; } })
+    .map(m => m.name.trim())
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function _riskOwnerSel(val, attrs) {
+  const people = riskPeople();
+  const cur = (val || '').trim();
+  const opts = [''].concat(people.includes(cur) || !cur ? people : [cur].concat(people))
+    .map(n => `<option value="${escapeHtml(n)}" ${n === cur ? 'selected' : ''}>${escapeHtml(n || 'Unassigned')}</option>`).join('');
+  return `<select ${attrs}>${opts}</select>`;
+}
+
+function riskPlan(project) {
+  const map = (state.settings && state.settings.risk_plans) || {};
+  const rec = map[project];
+  return (rec && Array.isArray(rec.risks)) ? rec.risks : [];
+}
+
+async function saveRiskPlan(project, risks) {
+  state.settings = state.settings || {};
+  const map = state.settings.risk_plans = state.settings.risk_plans || {};
+  if (risks && risks.length) map[project] = { risks, updatedAt: new Date().toISOString() };
+  else delete map[project];
+  try { await api.putSetting('risk_plans', map); }
+  catch (e) { showToast('Could not save: ' + (e.message || e), { kind: 'error' }); }
+}
+
+function openRiskPlanModal(project) {
+  if (!project) return;
+  _riskProject = project;
+  let risks = riskPlan(project).map(r => Object.assign({}, r));
+
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay risk-overlay';
+  // Drag the corner to resize. People run this on a laptop and on a 32"
+  // monitor, and the grid reflows to whatever room it is given.
+  let savedSize = null;
+  try { savedSize = JSON.parse(localStorage.getItem('sdcRiskModalSize') || 'null'); } catch (_) {}
+  document.body.appendChild(ov);
+  const close = () => {
+    try { flushRisks(); } catch (_) {}
+    ov.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+
+  // Autosave, debounced. The register used to keep everything in memory until
+  // someone pressed Save plan, so closing the dialog with the X - or Escape,
+  // or by clicking the backdrop - silently dropped whatever had been typed.
+  let _riskSaveTimer = null;
+  const autosaveRisks = () => {
+    clearTimeout(_riskSaveTimer);
+    _riskSaveTimer = setTimeout(() => {
+      saveRiskPlan(project, risks.filter(r => (r.title || '').trim()))
+        .catch(() => {});
+    }, 600);
+  };
+  // A pending edit must not die with the dialog.
+  const flushRisks = () => {
+    if (!_riskSaveTimer) return;
+    clearTimeout(_riskSaveTimer);
+    _riskSaveTimer = null;
+    saveRiskPlan(project, risks.filter(r => (r.title || '').trim())).catch(() => {});
+  };
+
+  const draw = () => {
+    risks.forEach((r, i) => { r.id = r.id || ('r' + i + '_' + Date.now()); });
+    const scored = riskSortList(risks.map(r => {
+      // Impact used to be a 5-point scale; anything saved above 3 predates
+      // that and is clamped rather than left scoring off the top of the matrix.
+      if (Number(r.s) > 3) r.s = 3;
+      if (Number(r.l) > 5) r.l = 5;
+      const score = (Number(r.l) || 0) * (Number(r.s) || 0);
+      return Object.assign({}, r, { score, band: riskBand(score) });
+    }));
+
+    // Build the shell once. Redrawing it on every click is what made the
+    // dialog blink out and come back.
+    if (!ov._shell) {
+      ov._shell = true;
+      ov.innerHTML = `<div class="modal risk-modal">
+        <header class="risk-head">
+          <div>
+            <h2>Risk Mitigation Plan</h2>
+            <p>${escapeHtml(project)}</p>
+          </div>
+          <button type="button" class="btn-icon" data-risk-close>✕</button>
+        </header>
+        <div class="risk-body">
+          ${_riskStepsHtml()}
+          <div data-risk-matrix></div>
+          <div data-risk-reg></div>
+        </div>
+        <footer class="risk-foot">
+          <span class="risk-foot-gap"></span>
+          <button type="button" class="btn-primary" data-risk-save>Save plan</button>
+        </footer>
+      </div>`;
+    }
+    ov.querySelector('[data-risk-matrix]').innerHTML = _riskMatrixHtml(scored);
+    ov.querySelector('[data-risk-reg]').innerHTML = _riskTableHtml(scored);
+    const modalEl = ov.querySelector('.risk-modal');
+    if (modalEl && savedSize && savedSize.w && savedSize.h) {
+      // Clamp to the screen in front of you. A size saved on a laptop used to
+      // pin the dialog to laptop width on a 32" monitor, which is what made
+      // the register look permanently cramped.
+      modalEl.style.width = Math.min(savedSize.w, window.innerWidth - 30) + 'px';
+      modalEl.style.height = Math.min(savedSize.h, window.innerHeight - 30) + 'px';
+    }
+    if (modalEl && !modalEl._sizeWatch) {
+      modalEl._sizeWatch = true;
+      try {
+        new ResizeObserver(() => {
+          const w = Math.round(modalEl.offsetWidth), h = Math.round(modalEl.offsetHeight);
+          if (!w || !h) return;
+          savedSize = { w, h };
+          try { localStorage.setItem('sdcRiskModalSize', JSON.stringify(savedSize)); } catch (_) {}
+        }).observe(modalEl);
+      } catch (_) { /* no ResizeObserver — size just is not remembered */ }
+    }
+    ov.querySelector('[data-risk-close]').onclick = close;
+    const addRisk = () => {
+      const nid = 'new_' + Date.now();
+      risks.push({ id: nid, title: '', cat: '', diff: 3, l: 3, s: 2, mitigation: '', owner: '', show: false, hasPlan: false, actions: [] });
+      // A new risk arrives ready to fill in — every cell editable, no
+      // double-clicking your way through it field by field.
+      _riskEdit.add(nid);
+      draw();
+      const inp = ov.querySelector(`[data-rf="title"][data-rid="${nid}"]`);
+      if (inp) inp.focus();
+    };
+    ov.querySelectorAll('[data-risk-add]').forEach(b => { b.onclick = addRisk; });
+    ov.querySelector('[data-risk-save]').onclick = async () => {
+      await saveRiskPlan(project, risks.filter(r => (r.title || '').trim()));
+      showToast('Risk plan saved.', { kind: 'success' });
+      close();
+      if (state.view === 'portal') renderPortal();
+    };
+
+    // Auto-grow: the box is always tall enough to show every line of what
+    // is in it. Reset to auto first or it can only ever get taller.
+    const grow = (el) => {
+      if (!el || !el.matches('[data-rgrow]')) return;
+      el.style.height = 'auto';
+      el.style.height = (el.scrollHeight + 2) + 'px';
+    };
+    ov.querySelectorAll('[data-rgrow]').forEach(el => {
+      grow(el);
+      el.addEventListener('input', () => grow(el));
+    });
+
+    ov.querySelectorAll('[data-rf]').forEach(el => {
+      const handler = () => {
+        const r = risks.find(x => x.id === el.dataset.rid);
+        if (!r) return;
+        const f = el.dataset.rf;
+        // Read a checkbox by its CHECKED state. el.value on a checkbox is the
+        // string "on" whether it is ticked or not, so every box this handler
+        // touched became permanently truthy.
+        r[f] = el.type === 'checkbox' ? el.checked
+          : (f === 'l' || f === 's' || f === 'diff') ? (el.value === '' ? null : Number(el.value))
+          : el.value;
+        autosaveRisks();
+        // Only changes that restructure the grid redraw it; typing never does.
+        if (f === 'l' || f === 's' || f === 'hasPlan') draw();
+      };
+      el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', handler);
+      if (el.tagName === 'SELECT') el.addEventListener('change', handler);
+    });
+    // Drag a column heading onto another to move it. Order is remembered.
+    let dragKey = null;
+    ov.querySelectorAll('[data-rcol]').forEach(th => {
+      th.addEventListener('dragstart', (e) => {
+        dragKey = th.dataset.rcol;
+        try { e.dataTransfer.setData('text/plain', dragKey); e.dataTransfer.effectAllowed = 'move'; } catch (_) {}
+        th.classList.add('is-dragging');
+      });
+      th.addEventListener('dragend', () => th.classList.remove('is-dragging'));
+      th.addEventListener('dragover', (e) => { e.preventDefault(); th.classList.add('is-drop'); });
+      th.addEventListener('dragleave', () => th.classList.remove('is-drop'));
+      th.addEventListener('drop', (e) => {
+        e.preventDefault();
+        th.classList.remove('is-drop');
+        const from = dragKey, to = th.dataset.rcol;
+        if (!from || !to || from === to) return;
+        const order = _riskColOrder(RISK_COLS).map(c => c.k);
+        const fi = order.indexOf(from);
+        if (fi >= 0) order.splice(fi, 1);
+        const ti = order.indexOf(to);
+        order.splice(ti < 0 ? order.length : ti, 0, from);
+        try { localStorage.setItem('sdcRiskColOrder', JSON.stringify(order)); } catch (_) {}
+        draw();
+      });
+    });
+
+    const tightBtn = ov.querySelector('[data-rtight]');
+    if (tightBtn) tightBtn.onclick = () => { _riskTight = !_riskTight; draw(); };
+
+    // Drag the grip between two headings to resize that column. Widths are
+    // remembered, so a layout someone tuned for their monitor stays tuned.
+    ov.querySelectorAll('.rg [data-rgrip]').forEach(g => {
+      g.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const key = g.dataset.rgrip;
+        const th = g.closest('th');
+        const startX = e.clientX;
+        const startW = th.offsetWidth;
+        const col = RISK_COLS.find(c => c.k === key) || { min: 60 };
+        // Pin every column at the width it has RIGHT NOW, and switch the
+        // table off percentage sizing in the same breath. Waiting for the
+        // next draw was the bug: until then the table is still width:100%,
+        // so widening one column made the browser re-slice all the others.
+        const tbl = ov.querySelector('.rg');
+        ov.querySelectorAll('.rg thead th[data-rcol]').forEach(h => {
+          const k = h.dataset.rcol;
+          if (k === 'done') return;   // the spacer takes whatever is left
+          const w = Math.round(h.offsetWidth);
+          _riskWidths[k] = _riskWidths[k] || w;
+          const cel = ov.querySelector('col.rg-' + k);
+          if (cel) cel.style.width = _riskWidths[k] + 'px';
+        });
+        if (tbl) tbl.classList.add('is-pinned');
+        document.body.classList.add('resizing-col');
+        g.classList.add('resizing');
+        const move = (ev) => {
+          const w = Math.max(col.min, Math.round(startW + (ev.clientX - startX)));
+          _riskWidths[key] = w;
+          const cel = ov.querySelector(`col.rg-${key}`);
+          if (cel) { cel.style.width = w + 'px'; }
+        };
+        const up = () => {
+          document.body.classList.remove('resizing-col');
+          g.classList.remove('resizing');
+          document.removeEventListener('mousemove', move);
+          document.removeEventListener('mouseup', up);
+          try { localStorage.setItem('sdcRiskColWidths', JSON.stringify(_riskWidths)); } catch (_) {}
+        };
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
+      });
+      // The grip must not start a column-reorder drag.
+      g.addEventListener('dragstart', (e) => { e.preventDefault(); e.stopPropagation(); });
+    });
+
+    // Mitigation-schedule columns resize with the same handle as everything
+    // else. Widths are remembered so a layout stays put between risks.
+    ov.querySelectorAll('[data-rdone]').forEach(b => {
+      b.onclick = (e) => {
+        e.stopPropagation();
+        _riskEdit.delete(b.dataset.rdone);
+        draw();
+      };
+    });
+
+    ov.querySelectorAll('[data-rsort]').forEach(b => {
+      b.onclick = () => {
+        const k = b.dataset.rsort;
+        if (_riskSort === k) _riskDir = -_riskDir;
+        else { _riskSort = k; _riskDir = (k === 'score' || k === 'l' || k === 's' || k === 'diff') ? -1 : 1; }
+        draw();
+      };
+    });
+    // One click anywhere on the row opens it. Editing is right-click → Edit,
+    // so there is no double-click to wait for and no flash.
+    ov.querySelectorAll('[data-rrow]').forEach(tr => {
+      tr.addEventListener('click', (e) => {
+        if (e.target.closest('input, select, textarea, button, label, .rg-grip')) return;
+        const id = tr.dataset.rrow;
+        if (_riskOpen.has(id)) _riskOpen.delete(id); else _riskOpen.add(id);
+        draw();
+      });
+    });
+
+
+
+    // Right-click a risk to delete it — no permanent ✕ column for something
+    // that happens once in the life of a register.
+    ov.querySelectorAll('[data-rrow]').forEach(tr => {
+      tr.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const id = tr.dataset.rrow;
+        const r = risks.find(x => x.id === id);
+        showContextMenu(e.clientX, e.clientY, [
+          { label: _riskEdit.has(id) ? '✓ Done editing' : '✎ Edit risk', onClick: () => {
+            if (_riskEdit.has(id)) _riskEdit.delete(id); else _riskEdit.add(id);
+            draw();
+          } },
+          { separator: true },
+          { label: '＋ Add risk below', onClick: () => addRisk() },
+          { separator: true },
+          { label: '🗑 Delete risk', danger: true, onClick: () => {
+            risks = risks.filter(x => x.id !== id);
+            _riskEdit.delete(id);
+            draw();
+          } },
+        ]);
+      });
+    });
+    ov.querySelectorAll('[data-rtog]').forEach(b => {
+      b.onclick = () => {
+        const id = b.dataset.rtog;
+        if (_riskOpen.has(id)) _riskOpen.delete(id); else _riskOpen.add(id);
+        draw();
+      };
+    });
+    ov.querySelectorAll('[data-rdel]').forEach(b => {
+      b.onclick = () => { risks = risks.filter(x => x.id !== b.dataset.rdel); draw(); };
+    });
+
+    // Mitigation steps — the mini-schedule for one risk.
+    ov.querySelectorAll('[data-ropen]').forEach(b => {
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        // Save first: the section only exists once the risk is on record.
+        await saveRiskPlan(project, risks.filter(r => (r.title || '').trim()));
+        close();
+        openRiskSchedule(b.dataset.ropen);
+      };
+    });
+
+    ov.querySelectorAll('[data-raadd]').forEach(b => {
+      b.onclick = (e) => {
+        e.stopPropagation();
+        addRiskLine(_riskProject, b.dataset.raadd);
+      };
+    });
+
+  };
+  draw();
+}
+
+function _riskStepsHtml() {
+  const steps = [
+    ['1', 'Identify', 'List what could stop this machine shipping as sold.'],
+    ['2', 'Assess', 'Score each one: how likely, and how bad if it lands.'],
+    ['3', 'Prioritise', 'Likelihood × severity puts them in order for you.'],
+    ['4', 'Mitigate', 'Everything amber or red needs an action and an owner.'],
+  ];
+  return `<ol class="risk-steps">${steps.map(([n, t, d]) => `<li>
+    <span class="rs-n">${n}</span>
+    <span class="rs-t">${escapeHtml(t)}</span>
+    <span class="rs-d">${escapeHtml(d)}</span>
+  </li>`).join('')}</ol>`;
+}
+
+// Likelihood down the side, severity across - the orientation everyone draws
+// it in. Each cell lists the risks that land there, so the matrix reads as the
+// register rather than as a legend beside it.
+function _riskMatrixHtml(scored) {
+  const cellRisks = (l, sv) => scored.filter(r => Number(r.l) === l && Number(r.s) === sv);
+  const rows = RISK_LIKELIHOOD.slice().reverse().map(L => {
+    const cells = RISK_SEVERITY.map(S => {
+      const here = cellRisks(L.v, S.v);
+      const band = riskBand(L.v * S.v);
+      return `<td class="rm-cell rm-${band.key}" title="${escapeHtml(L.label + ' × ' + S.label + ' = ' + (L.v * S.v) + ' (' + band.label + ')')}">
+        ${here.map(r => `<span class="rm-dot" title="${escapeHtml(r.title || 'Untitled risk')}">${escapeHtml(_riskShort(r.title))}</span>`).join('')}
+      </td>`;
+    }).join('');
+    return `<tr><th class="rm-yl">${escapeHtml(L.label)}</th>${cells}</tr>`;
+  }).join('');
+  return `<section class="risk-matrix-wrap">
+    <h3 class="risk-h3">Risk matrix <span class="risk-note">how likely it is to cost us schedule time, against how much time it would cost</span></h3>
+    <div class="risk-matrix-scroll">
+      <table class="risk-matrix">
+        <tbody>
+          ${rows}
+          <tr><th class="rm-corner">Chance it costs<br>us time ↑<br>How much time →</th>${RISK_SEVERITY.map(S => `<th class="rm-xl">${escapeHtml(S.label)}</th>`).join('')}</tr>
+        </tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+function _riskShort(title) {
+  const t = String(title || '?').trim();
+  if (!t) return '?';
+  return t.length > 22 ? t.slice(0, 21) + '…' : t;
+}
+
+// One risk = one block, not a table row. The old nine-column grid gave the
+// risk itself about three characters of width, which made the most important
+// field on the page the least usable one. Here the risk owns a full-width
+// line, the scoring sits under it, and the mitigation plan only appears when
+// the score says it has to.
+// Collapsed to one line by default — the register is a list you scan, not a
+// wall of forms. Open a risk to score it and plan it.
+const _riskOpen = new Set();
+let _riskSort = 'score';
+let _riskDir = -1;            // -1 = biggest first, which is what score wants
+let _riskTight = false;       // Compress, same idea as the schedule toolbar
+const _riskEdit = new Set();  // rows in edit mode — every cell editable at once
+let _riskWidths = {};         // dragged column widths, keyed by column
+let _riskSgWidths = {};       // and the same for the mitigation schedule
+try { _riskSgWidths = JSON.parse(localStorage.getItem('sdcRiskSgWidths') || '{}') || {}; } catch (_) { _riskSgWidths = {}; }
+try { _riskWidths = JSON.parse(localStorage.getItem('sdcRiskColWidths') || '{}') || {}; } catch (_) { _riskWidths = {}; }       // Compress, same idea as the schedule toolbar
+
+// Column order is the user\u2019s, dragged by the heading and remembered.
+function _riskColOrder(cols) {
+  let order = null;
+  try { order = JSON.parse(localStorage.getItem('sdcRiskColOrder') || 'null'); } catch (_) {}
+  if (!Array.isArray(order)) return cols;
+  const byKey = {};
+  cols.forEach(c => { byKey[c.k] = c; });
+  const out = order.map(k => byKey[k]).filter(Boolean);
+  cols.forEach(c => { if (!out.includes(c)) out.push(c); });
+  return out;
+}            // -1 = biggest first, which is what score wants
+
+// The register is a grid: fixed columns, the description taking the width it
+// needs, small columns for the small values, and the header row doing the
+// sorting. House rule — every grid in this app works this way.
+// min = never narrower than this, so nothing is ever clipped.
+// share = how the leftover width is divided once every min is satisfied.
+// Minimums in the same range the schedule grid uses (COL_MIN_WIDTHS: 30-100),
+// so a column can actually be dragged down to something tight. The old floors
+// were twice that, which is why nothing would shrink.
+const RISK_COLS = [
+  { k: 'n',       label: '#',        min: 34,  share: 0,   sort: null },
+  { k: 'title',   label: 'Risk',     min: 150, share: 3,   sort: 'title' },
+  { k: 'cat',     label: 'Category', min: 92,  share: 1,   sort: 'cat' },
+  { k: 'diff',    label: 'Difficulty', min: 108, share: 1, sort: 'diff',
+    hint: 'How hard is this station to design and make work? The question you answer before Chance.' },
+  { k: 'l',       label: 'Chance',   min: 100, share: 1,   sort: 'l',
+    hint: 'Chance it does not work to the level we need, in the time we have, and the schedule moves.' },
+  { k: 's',       label: 'Impact',   min: 66,  share: 0.6, sort: 's',
+    hint: 'If it happens and we do nothing about it, how much schedule time does it cost?' },
+  { k: 'score',   label: 'Score',    min: 74,  share: 0.6, sort: 'score' },
+  { k: 'owner',   label: 'Owner',    min: 104, share: 1,   sort: 'owner' },
+  { k: 'plan',    label: 'Plan',     min: 150, share: 2.5, sort: null },
+  { k: 'sched',   label: 'Schedule', min: 78,  share: 0,   sort: 'date' },
+  { k: 'show',    label: 'Portal',   min: 46,  share: 0,   sort: null },
+  // Holds the Done-editing button. Zero-width while nothing is being
+  // edited, so it reads as the trailing spacer it otherwise is.
+  { k: 'done',    label: '',         min: 0,   share: 0,   sort: null },
+];
+
+// Earliest not-yet-done line in a risk\u2019s schedule — what "Plan" sorts on.
+// Next date on a risk = the earliest unfinished finish among its real
+// mitigation rows.
+function riskNextDate(r) {
+  const acts = riskTaskList(_riskProject, r.id).map(t => ({
+    due: t.end_date || '',
+    pct: Number(t.progress) || 0,
+  }));
+  const due = acts.filter(a => a.due && !a.done).map(a => a.due).sort();
+  return due[0] || '';
+}
+
+function riskSortList(list) {
+  const arr = list.slice();
+  const d = _riskDir;
+  const txt = (v) => (v || '').toString().toLowerCase();
+  if (_riskSort === 'cat')        arr.sort((a, b) => d * txt(a.cat).localeCompare(txt(b.cat)) || b.score - a.score);
+  else if (_riskSort === 'title') arr.sort((a, b) => d * txt(a.title).localeCompare(txt(b.title)));
+  else if (_riskSort === 'owner') arr.sort((a, b) => d * txt(a.owner).localeCompare(txt(b.owner)) || b.score - a.score);
+  // Sorting by difficulty is how you find the stations worth worrying about
+  // before anyone has scored a chance against them.
+  else if (_riskSort === 'diff')  arr.sort((a, b) => d * ((Number(a.diff) || 0) - (Number(b.diff) || 0)) || b.score - a.score);
+  else if (_riskSort === 'l')     arr.sort((a, b) => d * ((Number(a.l) || 0) - (Number(b.l) || 0)) || b.score - a.score);
+  else if (_riskSort === 's')     arr.sort((a, b) => d * ((Number(a.s) || 0) - (Number(b.s) || 0)) || b.score - a.score);
+  else if (_riskSort === 'date')  arr.sort((a, b) => {
+    const x = riskNextDate(a), y = riskNextDate(b);
+    if (!x && !y) return b.score - a.score;
+    if (!x) return 1;
+    if (!y) return -1;
+    return d * x.localeCompare(y);
+  });
+  else arr.sort((a, b) => d * (a.score - b.score));
+  return arr;
+}
+// "4W" / "3D" -> business days, the same shorthand the scheduler accepts.
+function _riskParseDur(v) {
+  const m = /^\s*([\d.]+)\s*([wd])?\s*$/i.exec(String(v || ''));
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!isFinite(n) || n <= 0) return null;
+  const unit = (m[2] || 'w').toLowerCase();
+  return Math.max(1, Math.round(unit === 'd' ? n : n * 5));
+}
+
+// MM/DD/YY, the way every date in the schedule grid reads.
+function _riskFmt(iso) {
+  if (!iso) return '';
+  try { return fmtDate(iso); } catch (_) { return iso; }
+}
+
+// Business-day duration rendered the way the scheduler renders it (4W, 2.5W).
+function _riskDur(a, b) {
+  if (!a || !b) return '';
+  try {
+    const d = businessDaysBetween(a, b);
+    if (!d || d <= 0) return '';
+    const w = Math.round((d / 5) * 2) / 2;
+    return w >= 1 ? w + 'W' : d + 'D';
+  } catch (_) { return ''; }
+}
+
+// Mitigation lines live in the project like any other work, under a section
+// the main grid does not walk. The tie back to a risk is the sub-department.
+const RISK_GROUP = 'RISK';
+let _riskProject = '';            // project the open register belongs to
+// Per-risk line numbering. A mitigation schedule is its own little schedule,
+// so line 1 is its first row - not the 36th row of the project. Predecessors
+// typed into it read and write against the same local numbers.
+const _riskLineMaps = {};           // riskId -> { byId, byLine }
+function riskLineMapFor(task) {
+  if (!task || task.phase_group !== RISK_GROUP) return null;
+  const sub = String(task.sub_department || '');
+  const id = sub.startsWith('risk:') ? sub.slice(5) : '';
+  return _riskLineMaps[id] || null;
+}
+const riskSubDept = (riskId) => 'risk:' + riskId;
+
+function riskTaskList(project, riskId) {
+  const sub = riskSubDept(riskId);
+  return state.tasks
+    .filter(t => t.project === project && t.phase_group === RISK_GROUP && t.sub_department === sub)
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+
+// Adding a line is the same api.create the grid makes for any row, so the
+// server, the Gantt, history and undo all see an ordinary task.
+async function addRiskLine(project, riskId, afterTask) {
+  const sibs = riskTaskList(project, riskId);
+  const sort = afterTask ? (Number(afterTask.sort_order) || 0) + 0.5
+    : (sibs.length ? (Number(sibs[sibs.length - 1].sort_order) || 0) + 1 : 1);
+  try {
+    await api.create({
+      // Same placeholder the grid uses for any new row - the server
+      // requires a name, and this is what adding a line looks like everywhere
+      // else in the app.
+      name: 'New task',
+      project,
+      phase_group: RISK_GROUP,
+      department: null,
+      sub_department: riskSubDept(riskId),
+      sort_order: sort,
+      duration_days: 5,
+    });
+  } catch (e) {
+    showAlertDialog({ title: 'Could not add the line', message: e.message || String(e) });
+    return;
+  }
+  try { await loadTasks(); } catch (_) {}
+}
+
+// Switch the Schedule view into risk mode, focused on one risk. It is the
+// ordinary schedule - grid, Gantt, toolbar, zoom - with one section per risk
+// instead of one per phase of the build.
+// The toolbar button that flips between the build and the risk sections,
+// and the one that adds a line without a right-click. Both re-label
+// themselves, so there is always a visible way back.
+function syncRiskModeButtons() {
+  const btn = document.getElementById('btn-risk-mode');
+  const on = !!(state.scheduleView && state.scheduleView.riskMode);
+  if (btn) {
+    btn.textContent = on ? '← Back to schedule' : '⚠ Risk schedule';
+    btn.title = on
+      ? 'Back to the build - sections 05 / 10 / 40 / 50.'
+      : 'Show the risk schedule instead of the build: one section per risk you gave a schedule to.';
+    btn.classList.toggle('is-active', on);
+  }
+  // The build-side toggle. Pointless while you are already looking at the risk
+  // schedule, so it only appears on the build — and only when there is at
+  // least one risk with a schedule to show.
+  const ovBtn = document.getElementById('btn-risk-overlay');
+  if (ovBtn) {
+    const n = riskSelectedIds(state.filters.project || '').length;
+    // It is an icon in the bracket now, so keep the glyph and just gate
+    // visibility: pointless in risk mode, and pointless with no risk to show.
+    ovBtn.classList.toggle('hidden', on || !state.filters.project || !n);
+    const showing = !!(state.scheduleView && state.scheduleView.riskOverlay);
+    ovBtn.classList.toggle('is-active', showing);
+    const picked = Array.isArray(state.filters.risksSubset) && state.filters.risksSubset.length;
+    ovBtn.title = showing
+      ? `Hide the risk lines again. Showing ${n} risk${n === 1 ? '' : 's'}.`
+      : `Show the mitigation lines under the build. Which risks is whatever you picked with the Risks pills in the risk schedule — ${picked ? n + ' selected' : 'all ' + n}.`;
+  }
+}
+
+// Add a line to whichever risk you are working in - the one holding the row
+// you last touched, or the first risk if you have not touched one yet.
+async function addRiskLineHere() {
+  const project = state.filters.project || '';
+  if (!project) return;
+  const last = state.tasks.find(t => t.id === _lastRowId);
+  if (last && last.phase_group === RISK_GROUP) {
+    const sub = String(last.sub_department || '');
+    await addRiskLine(project, sub.slice(5), last);
+    return;
+  }
+  const first = riskPlan(project).find(r => r.hasPlan);
+  if (!first) {
+    showToast('No risk has a schedule yet. Tick Schedule on one in the Risk Mitigation Plan.', { kind: 'info' });
+    return;
+  }
+  await addRiskLine(project, first.id, null);
+}
+
+function openRiskSchedule(riskId) {
+  state.scheduleView.riskMode = true;
+  saveScheduleView();
+  setView('schedule');
+  try { syncActionsModeButtons(); } catch (_) {}
+  render();
+  try { zoomToFit(); } catch (_) {}
+  if (!riskId) return;
+  // Land on that risk\'s section.
+  try {
+    const path = groupPath(RISK_GROUP, null, riskSubDept(riskId));
+    const tr = document.querySelector(`tr.group-header[data-path="${CSS.escape(path)}"]`);
+    if (tr) tr.scrollIntoView({ block: 'center' });
+  } catch (_) {}
+}
+function _riskTableHtml(scored) {
+  const COLS = _riskColOrder(RISK_COLS).map(c => c.k !== 'done' ? c
+    : Object.assign({}, c, { min: _riskEdit.size ? 108 : 0 }));
+  const head = COLS.map(c => {
+    // Same handle element and class the schedule grid uses, on every column
+    // — including the ones that cannot be sorted.
+    const grip = c.k === 'done' ? '' : `<span class="col-resize-handle" data-rgrip="${c.k}" draggable="false"></span>`;
+    // min-width on a <col> is ignored under table-layout: fixed — it only
+    // counts on a real cell. Without this the columns collapse under their
+    // own labels and the register reads as a page of ellipses.
+    const mw = c.min ? ` style="min-width:${c.min}px"` : '';
+    const tip = c.hint ? ` title="${escapeHtml(c.hint)}"` : '';
+    if (!c.sort) return `<th class="rg-${c.k}" data-rcol="${c.k}"${mw}${tip}>${c.label ? `<span class="rg-plain">${escapeHtml(c.label)}</span>` : ''}${grip}</th>`;
+    const on = _riskSort === c.sort;
+    return `<th class="rg-${c.k} ${on ? 'is-sorted' : ''}" data-rcol="${c.k}" draggable="true"${mw}${tip}>${grip}
+      <button type="button" data-rsort="${c.sort}">${escapeHtml(c.label)}<span class="rg-arrow">${on ? (_riskDir < 0 ? '▾' : '▴') : ''}</span></button>
+    </th>`;
+  }).join('');
+
+  // Percentage widths from the shares, with a min-width floor on the cell
+  // itself — together that is minmax(): never clipped, always proportional.
+  const totalShare = COLS.reduce((n, c) => n + c.share, 0) || 1;
+  const anyPinned = COLS.some(c => _riskWidths[c.k]);
+  const cols = COLS.map(c => _riskWidths[c.k]
+    ? `<col class="rg-${c.k}" style="width:${_riskWidths[c.k]}px;min-width:${c.min}px" />`
+    : c.share
+    ? `<col class="rg-${c.k}" style="width:${(c.share / totalShare * 100).toFixed(2)}%;min-width:${c.min}px" />`
+    : `<col class="rg-${c.k}" style="width:${c.min}px" />`).join('');
+
+  // A value nobody has picked shows as blank, not as the first option. An
+  // unscored risk claiming 'Proven' is worse than one that is visibly unscored.
+  const sel = (name, opts, val, rid) => `<select data-rf="${name}" data-rid="${rid}">${
+    opts.some(o => o.v === Number(val)) ? '' : '<option value="" selected>—</option>'
+  }${opts.map(o =>
+    `<option value="${o.v}" ${Number(val) === o.v ? 'selected' : ''} title="${escapeHtml(o.hint)}">${escapeHtml(o.label)}</option>`).join('')}</select>`;
+
+  const body = scored.map((r, idx) => {
+    const open = _riskOpen.has(r.id);
+    const actions = riskTaskList(_riskProject, r.id);
+    const catOpts = [''].concat(RISK_CATEGORIES).map(c =>
+      `<option value="${escapeHtml(c)}" ${(r.cat || '') === c ? 'selected' : ''}>${escapeHtml(c || '—')}</option>`).join('');
+    const nextD = riskNextDate(r);
+
+    const detail = '';
+
+    // Keyed by column so the row follows whatever order the headings are in.
+    // One click opens the row, double-click edits the cell you landed on.
+    // Until then every value renders as plain text, so the register reads as
+    // a report rather than a page of form controls.
+    const ed = _riskEdit.has(r.id);
+    const txt = (field, shown, cls) => ed ? null
+      : `<td class="${cls || ''}" data-redcell="${field}" data-rid="${r.id}" title="Double-click to edit">${escapeHtml(shown || '—')}</td>`;
+    const catLabel = r.cat || '';
+    const diffLabel = (RISK_DIFFICULTY.find(o => o.v === Number(r.diff)) || {}).label || '';
+    const lLabel = (RISK_LIKELIHOOD.find(o => o.v === Number(r.l)) || {}).label || '';
+    const sLabel = (RISK_SEVERITY.find(o => o.v === Number(r.s)) || {}).label || '';
+
+    const cell = {
+      n: `<td class="rg-n"><button type="button" class="rg-tog" data-rtog="${r.id}" title="${open ? 'Collapse' : 'Open'}">${open ? '▾' : '▸'}</button><span class="rg-num">${idx + 1}</span></td>`,
+      title: txt('title', r.title, 'rg-title') || `<td class="rg-title"><textarea rows="1" data-rf="title" data-rgrow data-rid="${r.id}">${escapeHtml(r.title || '')}</textarea></td>`,
+      cat: txt('cat', catLabel) || `<td><select data-rf="cat" data-rid="${r.id}">${catOpts}</select></td>`,
+      diff: txt('diff', diffLabel) || `<td>${sel('diff', RISK_DIFFICULTY, r.diff, r.id)}</td>`,
+      l: txt('l', lLabel) || `<td>${sel('l', RISK_LIKELIHOOD, r.l, r.id)}</td>`,
+      s: txt('s', sLabel) || `<td>${sel('s', RISK_SEVERITY, r.s, r.id)}</td>`,
+      score: `<td class="rg-score rgs-${r.band.key}"><span class="rg-scoren">${r.score}</span> <span class="rg-scorel">${escapeHtml(r.band.label)}</span></td>`,
+      owner: txt('owner', r.owner) || `<td>${_riskOwnerSel(r.owner, `data-rf="owner" data-rid="${r.id}"`)}</td>`,
+      // How we are handling it belongs on the row, not hidden behind it.
+      plan: txt('mitigation', r.mitigation, 'rg-planw rg-wrap') || `<td class="rg-planw"><textarea rows="1" data-rf="mitigation" data-rgrow data-rid="${r.id}">${escapeHtml(r.mitigation || '')}</textarea></td>`,
+      done: ed ? `<td class="rg-done"><button type="button" class="rg-donebtn" data-rdone="${r.id}">✓ Done editing</button></td>` : `<td class="rg-done"></td>`,
+      // Ticking Schedule gives this risk its own section in the risk
+      // schedule. Open takes you there - it is the real schedule view, with
+      // the Gantt and every toolbar control, not a grid stuffed in a dialog.
+      sched: `<td class="rg-plan">
+        <label class="rg-chk" title="Give this risk its own section in the risk schedule">
+          <input type="checkbox" data-rf="hasPlan" data-rid="${r.id}" ${r.hasPlan ? 'checked' : ''} />
+          <span>${!r.hasPlan ? '' : (actions.length ? actions.length + ' line' + (actions.length === 1 ? '' : 's') + (nextD ? ' · ' + portalDate(nextD) : '') : 'empty')}</span>
+        </label>
+        ${r.hasPlan ? `<button type="button" class="rg-open" data-ropen="${r.id}">Open ›</button>` : ''}
+      </td>`,
+      show: `<td class="rg-show"><label class="rg-chk" title="Show this risk on the customer portal"><input type="checkbox" data-rf="show" data-rid="${r.id}" ${r.show ? 'checked' : ''} /></label></td>`,
+      del: '',
+    };
+
+    return `<tr class="rg-row rgb-${r.band.key} ${open ? 'is-open' : ''}" data-rrow="${r.id}">
+      ${COLS.map(c => cell[c.k] || '<td></td>').join('')}
+    </tr>${detail}`;  }).join('');
+
+  return `<section class="risk-table-wrap">
+    <div class="risk-reg-bar">
+      <h3 class="risk-h3">Risk register <span class="risk-note">click a row to open it · drag a column heading to reorder</span></h3>
+      <div class="risk-reg-tools">
+        <button type="button" class="risk-tool ${_riskTight ? 'is-on' : ''}" data-rtight title="Shrink the rows to fit more on screen">⇤ Compress</button>
+        <button type="button" class="risk-tool is-primary" data-risk-add>+ Add risk</button>
+      </div>
+    </div>
+
+    ${!scored.length ? `<p class="risk-plan-none">Nothing listed yet. Type the risks above, or load the standard machine-build set from the bottom left.</p>` : `
+    <div class="rg-wrap">
+      <table class="rg ${_riskTight ? 'is-tight' : ''} ${anyPinned ? 'is-pinned' : ''}">
+        <colgroup>${cols}</colgroup>
+        <thead><tr>${head}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`}
+  </section>`;
+}
+// ═══ Customer Portal ═══════════════════════════════════════════════════════
+//
+// One customer, every machine they have with SDC. Built inside the app first
+// so we can look at the shape before deciding how a customer reaches it.
+//
+// Three questions, in the order a customer asks them:
+//   1. When is my machine ready?        → the due-dates table, first thing
+//   2. Is anything slipping?            → behind, named, with the date it was due
+//   3. What is happening right now?     → in progress and just-completed, by name
+// Plus the one that earns SDC something: what are we waiting on from you.
+
+// CUSTOMER is stored per project, because it cannot be derived. The project
+// name carries it only sometimes (1163_Haemonetics_... does, 1160_Y Site
+// Automation does not, and that one IS Haemonetics), and the ETO bridge does
+// not return it - lib/etoDb.js getProjectInfo() selects ProjectID and
+// PDescription only. So: an explicit map, with the name parse as a fallback
+// guess, ready to be backfilled from the ERP when that column arrives.
+function projectCustomerName(project) {
+  const map = (state.settings && state.settings.project_customer) || {};
+  const set = map[project];
+  if (set) return set;
+  try { return projectCustomer(project) || ''; } catch (_) { return ''; }
+}
+
+function projectCustomerIsGuess(project) {
+  const map = (state.settings && state.settings.project_customer) || {};
+  return !map[project];
+}
+
+async function setProjectCustomer(project, name) {
+  state.settings = state.settings || {};
+  const map = state.settings.project_customer = state.settings.project_customer || {};
+  const clean = String(name || '').trim();
+  if (clean) map[project] = clean; else delete map[project];
+  try {
+    await api.putSetting('project_customer', map);
+    showToast(clean ? project + ' → ' + clean : 'Cleared the customer on ' + project, { kind: 'success' });
+  } catch (e) {
+    showToast('Could not save: ' + (e.message || e), { kind: 'error' });
+  }
+  if (state.view === 'portal') renderPortal();
+}
+
+// The contractual spine every machine runs along, in build order.
+const PORTAL_ANCHORS = [
+  { key: 'receipt_of_po',    label: 'PO received' },
+  { key: 'mech_release_1',   label: 'Mech release' },
+  { key: 'machine_power_up', label: 'Power-up' },
+  { key: 'fat',              label: 'FAT' },
+  { key: 'ship_machine',     label: 'Ship' },
+  { key: 'sat',              label: 'SAT' },
+];
+
+let _portalCustomer = null;
+const _portalOpen = new Set();
+const _portalFinLoading = new Set();   // projects whose financials are in flight
+const _portalRiskOpen = new Set();     // risks whose plan is expanded on the portal   // projects whose financials are in flight   // machines whose inline schedule is expanded
+
+function portalCustomerList() {
+  const counts = {};
+  // CONFIRMED only. The name parser guesses a customer out of the project
+  // name, and it is wrong often enough to matter - 1122_CAFI_Tray Handler is
+  // Schneider Electric, not 'CAFI'. A wrong customer name on a customer page
+  // is worse than an empty list, so guesses never reach the picker.
+  _deptSelectedProjects().allProjects.forEach(p => {
+    if (projectCustomerIsGuess(p)) return;
+    const c = projectCustomerName(p);
+    if (!c) return;
+    counts[c] = (counts[c] || 0) + 1;
+  });
+  return Object.keys(counts).sort((a, b) => a.localeCompare(b)).map(c => ({ name: c, n: counts[c] }));
+}
+
+// A machine is a deliverable with its own FAT. Projects with no machine
+// tagging are one unnamed machine; 1163 has M1 and M2 shipping two months
+// apart, and a customer reading this needs them apart too.
+function portalUnits(project) {
+  const rows = state.tasks.filter(t => t.project === project);
+  const machines = [...new Set(rows.map(t => t.machine).filter(Boolean))].sort();
+  if (!machines.length) return [{ machine: null, label: '', rows }];
+  return machines.map(m => ({ machine: m, label: m, rows: rows.filter(t => t.machine === m) }));
+}
+
+// Every milestone on this machine, in date order - not a fixed anchor list.
+// Projects routinely carry Mech 1/2/3 and Controls 1/2, and only the first
+// mech release is a standard anchor, so a fixed list silently dropped the
+// rest. Anything flagged as a milestone counts.
+// Milestones grouped into the phases a machine actually moves through. A
+// flat date-ordered run of fourteen was unreadable - "Receive Mech 1" sat
+// next to FAT with equal weight. Phases give the customer somewhere to stand.
+const PORTAL_PHASES = [
+  { key: 'kickoff',         label: 'Kickoff' },
+  { key: 'design_build',    label: 'Design & build' },
+  { key: 'machine_testing', label: 'Testing' },
+  { key: 'teardown_install',label: 'Ship & install' },
+];
+
+function portalMilestones(rows) {
+  const today = _ymdLocal(new Date());
+  return rows
+    .filter(t => t.is_milestone || t.anchor_key || inferredAnchorKey(t))
+    .map(t => {
+      const key = inferredAnchorKey(t) || t.anchor_key || null;
+      const done = (Number(t.progress) || 0) >= 100;
+      const committed = t.baseline_end_date || t.baseline_start_date || null;
+      const current = t.start_date || t.end_date || null;
+      let slip = null;
+      if (committed && current) {
+        slip = Math.round((new Date(current + 'T00:00:00') - new Date(committed + 'T00:00:00')) / 86400000);
+      }
+      return {
+        key, phase: t.phase_group || null,
+        label: (t.name || '').trim(),
+        done, committed, current, slip,
+        past: !done && current && current < today,
+      };
+    })
+    .filter(m => m.current)
+    .sort((a, b) => a.current.localeCompare(b.current));
+}
+
+// Bucket them for display, keeping shop order and dropping empty phases.
+function portalMilestonePhases(ms) {
+  const out = PORTAL_PHASES.map(p => ({ ...p, items: ms.filter(m => m.phase === p.key) }));
+  const loose = ms.filter(m => !PORTAL_PHASES.some(p => p.key === m.phase));
+  if (loose.length) out.push({ key: 'other', label: 'Other', items: loose });
+  return out.filter(p => p.items.length);
+}
+const PORTAL_ANCHOR_KEYS = new Set(PORTAL_ANCHORS.map(a => a.key));
+function isMilestoneLike(t) { return PORTAL_ANCHOR_KEYS.has(inferredAnchorKey(t)); }
+
+// Real task names, not department buckets. "Wire" told a customer nothing;
+// "Machine Wiring 2, 40%" tells them exactly what is on the floor.
+function portalWork(rows) {
+  const today = _ymdLocal(new Date());
+  const cut = new Date(); cut.setDate(cut.getDate() - 21);
+  const cutISO = _ymdLocal(cut);
+  const behind = [], running = [], recent = [];
+  rows.forEach(t => {
+    if (isMilestoneLike(t)) return;
+    const pct = Number(t.progress) || 0;
+    const name = (t.name || '').trim();
+    if (!name) return;
+    const assignee = (t.assignee || '').trim();
+    if (pct >= 100) {
+      const when = t.completed_on || t.end_date || '';
+      if (when && when >= cutISO) recent.push({ name, when, assignee });
+    } else {
+      if (t.end_date && t.end_date < today) behind.push({ name, due: t.end_date, pct, assignee });
+      else if (pct > 0) running.push({ name, pct, assignee, drift: portalDrift(t) });
+    }
+  });
+  behind.sort((a, b) => a.due.localeCompare(b.due));
+  recent.sort((a, b) => b.when.localeCompare(a.when));
+  running.sort((a, b) => b.pct - a.pct);
+  return { behind, running, recent };
+}
+
+function _portalInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return ((parts[0][0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+function portalDate(iso) {
+  if (!iso) return '—';
+  try { return fmtDate(iso); } catch (_) { return iso; }
+}
+
+function portalSlip(ms) {
+  if (!ms || ms.missing) return { text: '—', cls: '' };
+  if (ms.slip == null) return { text: 'no baseline', cls: 'is-none' };
+  if (ms.slip === 0) return { text: 'on date', cls: 'is-ok' };
+  const d = Math.abs(ms.slip), u = d === 1 ? ' day' : ' days';
+  return ms.slip > 0
+    ? { text: d + u + ' late', cls: 'is-late' }
+    : { text: d + u + ' early', cls: 'is-ok' };
+}
+
+function renderPortal() {
+  const root = document.getElementById('portal-page');
+  if (!root) return;
+  // Tasks drive everything here, and on a cold boot into the portal they have
+  // not arrived yet. Saying "no customers" then is a lie that reads as broken.
+  if (!state.tasks || !state.tasks.length) {
+    root.innerHTML = `<div class="portal-empty"><h1>Customer Portal</h1><p>Loading projects…</p></div>`;
+    return;
+  }
+  const customers = portalCustomerList();
+
+  if (!customers.length) {
+    root.innerHTML = `<div class="portal-empty"><h1>Customer Portal</h1>
+      <p>No project has a confirmed customer yet. Right-click a project tab, pick
+      <b>Customer</b>, and it appears in the list here.</p></div>`;
+    return;
+  }
+  if (!_portalCustomer || !customers.some(c => c.name === _portalCustomer)) _portalCustomer = customers[0].name;
+  const cust = _portalCustomer;
+  const projects = _deptSelectedProjects().allProjects
+    .filter(p => projectCustomerName(p) === cust).sort((a, b) => a.localeCompare(b));
+
+  // Financial milestones load per project on demand. Kick off anything
+  // missing and redraw once, rather than rendering an empty money table.
+  const needFin = projects.filter(p => !state.financials[p] && !_portalFinLoading.has(p));
+  if (needFin.length) {
+    needFin.forEach(p => _portalFinLoading.add(p));
+    Promise.all(needFin.map(p => loadFinancialsForProject(p).catch(() => {})))
+      .then(() => { needFin.forEach(p => _portalFinLoading.delete(p)); if (state.view === 'portal') renderPortal(); });
+  }
+
+  const units = [];
+  projects.forEach(p => portalUnits(p).forEach(u => units.push({ project: p, ...u, ms: portalMilestones(u.rows) })));
+
+  const openFats = units.map(u => {
+    const m = u.ms.find(x => x.key === 'fat');
+    return m && !m.done ? m.current : null;
+  }).filter(Boolean).sort();
+  const nextFat = openFats[0] || null;
+  const behindCount = units.reduce((n, u) => n + portalWork(u.rows).behind.length, 0);
+
+  const opts = customers.map(c =>
+    `<option value="${escapeHtml(c.name)}" ${c.name === cust ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+
+  // One linear band: mark, then the customer picker AS the headline, then the
+  // two numbers. The earlier version stacked a title over a subtitle with the
+  // stats floating off to the right, which left a hole through the middle.
+  root.innerHTML = `
+    <header class="portal-head">
+      <div class="portal-rule">
+        <img src="/img/sdc-logo-white.svg" alt="Steven Douglas Corp" class="portal-logo" />
+        <span class="portal-rule-word">Project Portal</span>
+      </div>
+      <div class="portal-bar">
+        <div class="portal-bar-left">
+          <select class="portal-cust-select" data-portal-cust>${opts}</select>
+          <span class="portal-bar-meta">${units.length} machine${units.length === 1 ? '' : 's'} · ${projects.length} project${projects.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="portal-bar-right">
+          <div class="portal-kpi">
+            <span class="k">Next FAT</span><span class="v">${escapeHtml(portalDate(nextFat))}</span>
+          </div>
+          <div class="portal-kpi ${behindCount ? 'is-alert' : ''}">
+            <span class="k">Behind</span><span class="v">${behindCount ? behindCount + ' task' + (behindCount === 1 ? '' : 's') : 'On track'}</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    ${_portalDueTableHtml(units)}
+    ${_portalMoneyHtml(projects)}
+    ${_portalRiskHtml(projects)}
+    ${units.map(u => _portalUnitHtml(u)).join('')}
+  `;
+  _wirePortal(root);
+}
+
+// Committed vs current FAT, nothing else. Ship and SAT fall out of the
+// contract date the customer actually plans around (Dan).
+// Payment milestones, with the date the SCHEDULE says they land on. The
+// stored due_date is almost always empty - the real trigger is the task the
+// milestone is tied to, which is why this reads through
+// computeFinancialTriggerDate rather than the row.
+function _portalMoneyHtml(projects) {
+  const blocks = projects.map(p => {
+    const rows = (state.financials && state.financials[p]) || [];
+    const live = rows.filter(f => !f.archived_at);
+    if (!live.length) return '';
+    const body = live.slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(f => {
+      let when = null;
+      try { when = computeFinancialTriggerDate(f.predecessors, p) || f.due_date || null; } catch (_) { when = f.due_date || null; }
+      const status = f.paid ? { t: 'Paid', c: 'is-paid' } : f.sent ? { t: 'Invoiced', c: 'is-sent' } : { t: 'Upcoming', c: '' };
+      const amt = [];
+      if (f.percent != null && Number(f.percent) > 0) amt.push(Number(f.percent) + '%');
+      if (f.amount != null && Number(f.amount) > 0) amt.push('$' + Number(f.amount).toLocaleString('en-US'));
+      return `<tr>
+        <td class="pm-name">${escapeHtml(f.name || '')}</td>
+        <td class="pm-amt">${escapeHtml(amt.join(' · ') || '—')}</td>
+        <td class="pm-when">${escapeHtml(portalDate(when))}</td>
+        <td><span class="pm-status ${status.c}">${escapeHtml(status.t)}</span></td>
+      </tr>`;
+    }).join('');
+    return `<div class="portal-money-proj">
+      ${projects.length > 1 ? `<div class="portal-money-title">${escapeHtml(p)}</div>` : ''}
+      <table class="portal-money">
+        <thead><tr><th>Milestone</th><th>Value</th><th>Expected</th><th>Status</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+  }).filter(Boolean).join('');
+  if (!blocks) return '';
+  return `<section class="portal-block">
+    <h2 class="portal-h2">Payment milestones</h2>
+    <div class="portal-money-wrap">${blocks}</div>
+  </section>`;
+}
+
+// Only the risks the PM ticked "show". The register itself stays internal -
+// what reaches the customer is the shortlist SDC chose to put in front of
+// them, with what we are doing about each one.
+// What a customer wants from a risk register is not a list of worries - it is
+// the matrix (so they can see we rated them, and how), and then the plan
+// behind any one of them: parts land here, we test in this window, there is a
+// second pass after it. So: matrix first, click a risk, its little schedule
+// opens underneath.
+function _portalRiskHtml(projects) {
+  const items = [];
+  projects.forEach(p => {
+    riskPlan(p).forEach(r => {
+      if (!r.show) return;
+      const score = (Number(r.l) || 0) * (Number(r.s) || 0);
+      items.push({ ...r, project: p, score, band: riskBand(score) });
+    });
+  });
+  if (!items.length) return '';
+  items.sort((a, b) => b.score - a.score);
+  items.forEach((r, i) => { r.n = i + 1; });
+
+  // The matrix, same orientation as the internal one so the two never disagree.
+  const matrix = RISK_LIKELIHOOD.slice().reverse().map(L => {
+    const cells = RISK_SEVERITY.map(S => {
+      const here = items.filter(r => Number(r.l) === L.v && Number(r.s) === S.v);
+      const band = riskBand(L.v * S.v);
+      return `<td class="rm-cell rm-${band.key}">${here.map(r =>
+        `<button type="button" class="prm-dot" data-prisk="${escapeHtml(r.id || '')}" title="${escapeHtml(r.title || '')}">${r.n}</button>`).join('')}</td>`;
+    }).join('');
+    return `<tr><th class="rm-yl">${escapeHtml(L.label)}</th>${cells}</tr>`;
+  }).join('');
+
+  const rows = items.map(r => {
+    const acts = riskTaskList(project, r.id)
+      .filter(t => (t.name || '').trim())
+      .map(t => ({ text: t.name, due: t.end_date || '', done: (Number(t.progress) || 0) >= 100 }));
+    const open = _portalRiskOpen.has(r.id);
+    const dated = acts.filter(a => a.due).sort((a, b) => a.due.localeCompare(b.due));
+    const today = _ymdLocal(new Date());
+    const plan = !acts.length
+      ? `<p class="portal-none">No separate plan — handled inside the main schedule.</p>`
+      : `<table class="prk-plan">
+          <thead><tr><th>What we are doing</th><th>By</th><th>Status</th></tr></thead>
+          <tbody>${acts.map(a => {
+            const late = !a.done && a.due && a.due < today;
+            return `<tr>
+              <td>${escapeHtml(a.text)}</td>
+              <td class="prk-when">${escapeHtml(portalDate(a.due))}</td>
+              <td>${a.done ? `<span class="pm-status is-paid">Done</span>`
+                : late ? `<span class="pm-status is-late">Overdue</span>`
+                : `<span class="pm-status">Planned</span>`}</td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table>
+        ${dated.length > 1 ? `<div class="prk-window">Testing and checks run ${escapeHtml(portalDate(dated[0].due))} to ${escapeHtml(portalDate(dated[dated.length - 1].due))}</div>` : ''}`;
+
+    return `<div class="prk-item ${open ? 'is-open' : ''}">
+      <button type="button" class="prk-row" data-prisk="${escapeHtml(r.id || '')}">
+        <span class="prk-n">${r.n}</span>
+        <span class="prk-name">${escapeHtml(r.title || '')}</span>
+        <span class="rk-band rk-band-${r.band.key}">${escapeHtml(r.band.label)}</span>
+        <span class="prk-caret">${open ? '▾' : '▸'}</span>
+      </button>
+      ${open ? `<div class="prk-detail">
+        ${r.mitigation ? `<p class="prk-mit-text">${escapeHtml(r.mitigation)}</p>` : ''}
+        ${plan}
+      </div>` : ''}
+    </div>`;
+  }).join('');
+
+  return `<section class="portal-block">
+    <h2 class="portal-h2">Risks we are managing</h2>
+    <div class="portal-risk-grid">
+      <div class="portal-risk-matrix">
+        <table class="risk-matrix">
+          <tbody>
+            ${matrix}
+            <tr><th class="rm-corner">Chance it costs<br>us time ↑<br>How much time →</th>${RISK_SEVERITY.map(S => `<th class="rm-xl">${escapeHtml(S.label)}</th>`).join('')}</tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="portal-risk-list">${rows}</div>
+    </div>
+  </section>`;
+}
+function _portalDueTableHtml(units) {
+  const rows = units.map(u => {
+    const fat = u.ms.find(m => m.key === 'fat') || null;
+    const sl = portalSlip(fat);
+    const name = u.machine ? u.project + ' · ' + u.machine : u.project;
+    return `<tr>
+      <td class="portal-due-name">${escapeHtml(name)}</td>
+      <td>${escapeHtml(portalDate(fat && fat.committed))}</td>
+      <td class="portal-due-key">${escapeHtml(portalDate(fat && fat.current))}</td>
+      <td><span class="portal-slip ${sl.cls}">${escapeHtml(sl.text)}</span></td>
+    </tr>`;
+  }).join('');
+  return `<section class="portal-block">
+    <h2 class="portal-h2">Project due dates</h2>
+    <div class="portal-due-wrap">
+      <table class="portal-due">
+        <thead><tr><th>Machine</th><th>Committed FAT</th><th>Current FAT</th><th>vs commitment</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+// Ahead / behind for one task, as the schedule sees it. Same half-week snap
+// the grid and Gantt chips use, so the portal never disagrees with them.
+function portalDrift(t) {
+  let d = 0;
+  try { d = taskScheduleDelta(t) || 0; } catch (_) { d = 0; }
+  if (!d) return null;
+  const wks = (Math.round((Math.abs(d) / 5) * 2) / 2) || 0.5;
+  return d > 0
+    ? { text: '+' + wks + 'w ahead', cls: 'is-ahead' }
+    : { text: '−' + wks + 'w behind', cls: 'is-behind' };
+}
+
+function _portalWorkTable(kind, rows) {
+  if (!rows.length) {
+    const none = kind === 'behind' ? 'Nothing past its date.'
+      : kind === 'running' ? 'Nothing started on this machine yet.'
+      : 'Nothing closed out in the last three weeks.';
+    return `<p class="portal-none">${escapeHtml(none)}</p>`;
+  }
+  const head = kind === 'behind' ? `<tr><th>Task</th><th>Assigned to</th><th>Was due</th><th>Done</th></tr>`
+    : kind === 'running' ? `<tr><th>Task</th><th>Assigned to</th><th>Done</th><th>Against plan</th></tr>`
+    : `<tr><th>Task</th><th>Assigned to</th><th>Completed</th></tr>`;
+  const body = rows.map(r => {
+    const who = escapeHtml(r.assignee || '—');
+    if (kind === 'behind') {
+      return `<tr><td class="pw-name">${escapeHtml(r.name)}</td><td class="pw-who">${who}</td>
+        <td class="pw-late">${escapeHtml(portalDate(r.due))}</td>${_pwPct(r.pct)}</tr>`;
+    }
+    if (kind === 'running') {
+      const d = r.drift;
+      return `<tr><td class="pw-name">${escapeHtml(r.name)}</td><td class="pw-who">${who}</td>${_pwPct(r.pct)}
+        <td>${d ? `<span class="portal-slip ${d.cls}">${escapeHtml(d.text)}</span>` : `<span class="pw-flat">on plan</span>`}</td></tr>`;
+    }
+    return `<tr><td class="pw-name">${escapeHtml(r.name)}</td><td class="pw-who">${who}</td>
+      <td class="pw-done">${escapeHtml(portalDate(r.when))}</td></tr>`;
+  }).join('');
+  return `<table class="portal-work"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+function _pwPct(pct) {
+  const n = Math.max(0, Math.min(100, Number(pct) || 0));
+  return `<td class="pw-pct"><span class="pw-bar"><span style="width:${n}%"></span></span><span class="pw-num">${n}%</span></td>`;
+}
+
+// What a customer means by "your team" is the people actually touching their
+// machine. That is already in the schedule - every task carries an assignee -
+// and the team table carries each person\u2019s discipline. Deriving it means the
+// list is right on its own and nobody has to keep a roster in sync.
+const PORTAL_ROLES = {
+  pm:      'Project management',
+  mech:    'Mechanical engineering',
+  controls:'Controls engineering',
+  build:   'Build',
+  wire:    'Wiring',
+  service: 'Service',
+  mfgops:  'Manufacturing',
+  ops:     'Operations',
+};
+
+// Grouped by discipline, in the order work moves through the shop. A flat
+// list put a controls engineer between two wiremen and read as a jumble.
+const PORTAL_ROLE_ORDER = ['pm', 'mech', 'controls', 'build', 'wire', 'service', 'mfgops', 'ops', 'other'];
+
+function portalTeam(project, rows) {
+  const byName = {};
+  (state.team || []).forEach(m => { if (m && m.name) byName[m.name.trim()] = m; });
+
+  // Weight by how much of this machine each person is carrying, so the
+  // busiest name in a bucket leads it.
+  const load = {};
+  rows.forEach(t => {
+    const a = (t.assignee || '').trim();
+    if (!a) return;
+    try { if (isPlaceholder(a)) return; } catch (_) {}
+    load[a] = (load[a] || 0) + 1;
+  });
+
+  const pm = projectLead(project, 'pm');
+  const dbg = projectLead(project, 'debug');
+  const groups = {};
+  const push = (disc, person) => { (groups[disc] = groups[disc] || []).push(person); };
+
+  if (pm) push('pm', { name: pm, note: 'Project manager', lead: true });
+  if (dbg) push('pm', { name: dbg, note: 'Lead engineer', lead: true });
+
+  Object.keys(load)
+    .filter(n => n !== pm && n !== dbg)
+    .sort((a, b) => load[b] - load[a] || a.localeCompare(b))
+    .forEach(n => {
+      const m = byName[n];
+      const disc = (m && PORTAL_ROLE_ORDER.includes(m.discipline)) ? m.discipline : 'other';
+      push(disc, { name: n, note: (m && m.specialty) || '', lead: false });
+    });
+
+  return PORTAL_ROLE_ORDER
+    .filter(d => groups[d] && groups[d].length)
+    .map(d => ({ key: d, label: PORTAL_ROLES[d] || 'Project team', people: groups[d] }));
+}
+function _portalUnitHtml(u) {
+  const work = portalWork(u.rows);
+  const fat = u.ms.find(m => m.key === 'fat');
+  const sl = portalSlip(fat);
+  const title = u.machine ? u.project + ' · ' + u.machine : u.project;
+  const team = portalTeam(u.project, u.rows);
+
+  const rail = portalMilestonePhases(u.ms).map(ph => `<div class="portal-phase">
+    <div class="portal-phase-name">${escapeHtml(ph.label)}</div>
+    <ol class="portal-rail">${ph.items.map(m => {
+      const cls = m.done ? 'is-done' : m.past ? 'is-past' : '';
+      return `<li class="portal-step ${cls}">
+        <span class="portal-step-dot"></span>
+        <span class="portal-step-label">${escapeHtml(m.label)}</span>
+        <span class="portal-step-date">${escapeHtml(portalDate(m.current))}</span>
+      </li>`;
+    }).join('')}</ol>
+  </div>`).join('');
+  return `<section class="portal-machine">
+    <header class="portal-machine-head">
+      <div class="portal-machine-id">
+        <h3>${escapeHtml(title)}</h3>
+        <div class="portal-machine-fat">
+          <span class="portal-fat-label">FAT</span>
+          <span class="portal-fat-date">${escapeHtml(portalDate(fat && fat.current))}</span>
+          <span class="portal-slip ${sl.cls}">${escapeHtml(sl.text)}</span>
+        </div>
+
+      </div>
+      <div class="portal-machine-act">
+        <button type="button" class="portal-docbtn" data-doc="comm" data-doc-proj="${escapeHtml(u.project)}">Communication Plan</button>
+        <button type="button" class="portal-open" data-open-sched="${escapeHtml(u.project)}" data-open-mach="${escapeHtml(u.machine || '')}">Open schedule →</button>
+      </div>
+    </header>
+
+    <div class="portal-phases">${rail}</div>
+
+    ${team.length ? `<div class="portal-teamblock">
+      <h4>Your team at SDC</h4>
+      ${team.map(g => `<div class="portal-team-group">
+        <div class="portal-team-role">${escapeHtml(g.label)}</div>
+        <div class="portal-team-people">
+          ${g.people.map(p => `<div class="portal-person ${p.lead ? 'is-lead' : ''}">
+            <span class="pp-avatar">${escapeHtml(_portalInitials(p.name))}</span>
+            <span class="pp-text"><span class="pp-name">${escapeHtml(p.name)}</span>
+            ${p.note ? `<span class="pp-role">${escapeHtml(p.note)}</span>` : ''}</span>
+          </div>`).join('')}
+        </div>
+      </div>`).join('')}
+    </div>` : ''}
+    <div class="portal-work-wrap">
+      <div class="portal-work-sec ${work.behind.length ? 'is-alert' : ''}">
+        <h4>Behind${work.behind.length ? ` <span class="portal-col-n">${work.behind.length}</span>` : ''}</h4>
+        ${_portalWorkTable('behind', work.behind)}
+      </div>
+      <div class="portal-work-sec"><h4>In progress now</h4>${_portalWorkTable('running', work.running)}</div>
+      <div class="portal-work-sec"><h4>Completed recently</h4>${_portalWorkTable('recent', work.recent)}</div>
+    </div>
+  </section>`;
+}
+
+function portalOpenSchedule(project, machine) {
+  state._portalReturn = _portalCustomer || null;
+  state.filters.project = project;
+  state.filters.machinesSubset = machine ? [machine] : [];
+  try { saveProjectTabs(); } catch (_) {}
+  try { saveMachinesSubset(project); } catch (_) {}
+  document.body.classList.add('portal-schedule');
+  setView('schedule');
+  try { enterCustomerView(); } catch (_) {}
+}
+
+function portalBackFromSchedule() {
+  try { exitCustomerView(); } catch (_) {}
+  document.body.classList.remove('portal-schedule');
+  const back = state._portalReturn;
+  state._portalReturn = null;
+  if (back) _portalCustomer = back;
+  setView('portal');
+}
+
+function _wirePortal(root) {
+  const sel = root.querySelector('[data-portal-cust]');
+  if (sel) sel.addEventListener('change', () => { _portalCustomer = sel.value; renderPortal(); });
+
+  root.querySelectorAll('[data-prisk]').forEach(b => {
+    b.addEventListener('click', () => {
+      const id = b.dataset.prisk;
+      if (_portalRiskOpen.has(id)) _portalRiskOpen.delete(id); else _portalRiskOpen.add(id);
+      renderPortal();
+    });
+  });
+  root.querySelectorAll('[data-doc]').forEach(b => {
+    b.addEventListener('click', () => {
+      state.filters.project = b.dataset.docProj;
+      openCommPlanModal(b.dataset.docProj);
+    });
+  });
+  root.querySelectorAll('[data-open-sched]').forEach(b => {
+    b.addEventListener('click', () => portalOpenSchedule(b.dataset.openSched, b.dataset.openMach || ''));
+  });
+  // Per-project paperwork, reachable without leaving the portal.
+  root.querySelectorAll('[data-doc]').forEach(b => {
+    b.addEventListener('click', () => {
+      const p = b.dataset.docProj;
+      state.filters.project = p;
+      if (b.dataset.doc === 'release') {
+        if (isSalesView()) openQuoteCompareModal(p); else openProjectReleaseModal(p);
+      } else if (b.dataset.doc === 'comm') {
+        openCommPlanModal(p);
+      }
+    });
+  });
+}
 function renderExecSummary() {
   const root = document.getElementById('exec-summary-page');
   if (!root) return;
@@ -16284,7 +18059,7 @@ function _wireWeeklyGoal(el, project) {
         });
       }
       saveProjectNotes(project);
-      renderProjectNotes();
+      renderProjectNotes(); renderScheduleGoal();
     };
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
@@ -16304,7 +18079,7 @@ function _wireWeeklyGoal(el, project) {
     });
     ui.pending = null; ui.reason = ''; ui.waitDetail = ''; ui.waitScope = null; ui.waitDept = null;
     saveProjectNotes(project);
-    renderProjectNotes();
+    renderProjectNotes(); renderScheduleGoal();
   };
 
   box.querySelectorAll('[data-wg-score]').forEach(b => {
@@ -16314,7 +18089,7 @@ function _wireWeeklyGoal(el, project) {
       // Missed / Changed / Waiting all require their detail before committing.
       ui.pending = k;
       ui.reason = ''; ui.waitDetail = ''; ui.waitScope = 'internal'; ui.waitDept = goalWaitDepts()[0].key;
-      renderProjectNotes();
+      renderProjectNotes(); renderScheduleGoal();
       setTimeout(() => document.querySelector('.weekly-goal [data-wg-reason], .weekly-goal [data-wg-detail]')?.focus(), 0);
     });
   });
@@ -16325,7 +18100,7 @@ function _wireWeeklyGoal(el, project) {
     if (!prev) return;
     goals[prevKey] = Object.assign({}, prev, { outcome: null });
     saveProjectNotes(project);
-    renderProjectNotes();
+    renderProjectNotes(); renderScheduleGoal();
   });
 
   // Waiting-on sub-form: scope toggle + department.
@@ -16334,7 +18109,7 @@ function _wireWeeklyGoal(el, project) {
       ui.waitScope = b.dataset.wgScope;
       const d = box.querySelector('[data-wg-detail]');
       ui.waitDetail = d ? d.value : '';
-      renderProjectNotes();
+      renderProjectNotes(); renderScheduleGoal();
     });
   });
   box.querySelector('[data-wg-dept]')?.addEventListener('change', (e) => { ui.waitDept = e.target.value; });
@@ -16367,11 +18142,11 @@ function _wireWeeklyGoal(el, project) {
   });
   box.querySelector('[data-wg-cancel]')?.addEventListener('click', () => {
     ui.pending = null;
-    renderProjectNotes();
+    renderProjectNotes(); renderScheduleGoal();
   });
   box.querySelector('[data-wg-hist]')?.addEventListener('click', () => {
     ui.showHistory = !ui.showHistory;
-    renderProjectNotes();
+    renderProjectNotes(); renderScheduleGoal();
   });
 }
 
@@ -16646,7 +18421,13 @@ function renderProjectNotes() {
     api.notes.get(project).then(data => {
       state.projectNotes[project] = (data && Array.isArray(data.sessions)) ? data : { sessions: [] };
       state._notesLoaded[project] = true; // safe to autosave now
-      if ((state.filters && state.filters.project) === project) renderProjectNotes();
+      if ((state.filters && state.filters.project) === project) {
+        renderProjectNotes();
+        // The footer goal reads the same blob, so it can only draw once this
+        // authoritative load lands. Piggy-backing here keeps one fetch and one
+        // source of truth rather than a second loader for the same data.
+        try { renderScheduleGoal(); } catch (_) {}
+      }
     }).catch(() => {
       // Load failed — do NOT fall back to an empty blob. Leaving projectNotes
       // undefined keeps autosave disabled (saveProjectNotes checks the loaded
@@ -16667,9 +18448,10 @@ function renderProjectNotes() {
     <span class="notes-count">${data.sessions.length} meeting${data.sessions.length === 1 ? '' : 's'} · ${starred.length} key</span>
     <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
   </div>`;
-  // The goal bar sits ABOVE the Notes header and stays visible even when the
-  // drawer is collapsed — that visibility IS the reminder (Dan).
-  const goalBar = (() => { try { return renderWeeklyGoalBar(project); } catch (_) { return ''; } })();
+  // The goal used to render here, as a thin line above the Notes header. It
+  // now owns the middle of the footer strip instead - same content, somewhere
+  // it can actually be seen. See renderScheduleGoal().
+  const goalBar = '';
   if (collapsed) {
     el.innerHTML = goalBar + bar;
     _wireNotes(el, project);
@@ -16788,9 +18570,25 @@ function _notesSplitLockHeight() {
   if (gantt) contentH = Math.max(contentH, gantt.scrollHeight);
   return contentH > 0 ? contentH + 4 : _measureSplitFullHeight();
 }
+// With notes open the whole schedule view scrolls: the split is pinned to its
+// CONTENT height so the notes panel flows directly below it, and the 45vh of
+// padding under it means you can scroll the panel up into the middle of the
+// screen to actually work in it. This was stubbed out when the drawers became
+// overlays, which is what left notes jammed against the bottom edge with
+// nothing below it to scroll to.
 function layoutNotesPanel() {
-  // Drawers are now fixed overlays (#schedule-drawer-stack) — they no longer
-  // push the schedule content. No split-locking needed.
+  const view  = document.getElementById('view-schedule');
+  const notes = document.getElementById('schedule-notes');
+  const split = document.getElementById('schedule-split');
+  if (!view || !notes || !split) return;
+  const open = !notes.classList.contains('is-collapsed');
+  if (!open) {
+    view.classList.remove('notes-open');
+    split.style.flex = '';
+    return;
+  }
+  view.classList.add('notes-open');
+  split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
 }
 // Re-measure on window resize so the locked split keeps the right height.
 window.addEventListener('resize', () => {
@@ -16807,6 +18605,20 @@ window.addEventListener('resize', () => {
 // control. The whole button IS the drill-through into SDC Reports, pre-scoped
 // to this job's Procurement tab.
 const _procCache = {};   // job → readiness payload (just for the % ready / no-PO stat)
+// The weekly goal, in the middle of the footer strip. It is the one thing on
+// that row that gets touched every week, so it gets the room - the paperwork
+// buttons that used to crowd it are in the project tab menu now.
+function renderScheduleGoal() {
+  const el = document.getElementById('schedule-goal');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  if (!project || state.view !== 'schedule') { el.innerHTML = ''; return; }
+  let html = '';
+  try { html = renderWeeklyGoalBar(project) || ''; } catch (_) { html = ''; }
+  el.innerHTML = html;
+  if (html) { try { _wireWeeklyGoal(el, project); } catch (_) {} }
+}
+
 function renderScheduleProcurement() {
   const el = document.getElementById('schedule-procurement');
   if (!el) return;
@@ -16821,22 +18633,44 @@ function renderScheduleProcurement() {
   }
   el.style.display = '';
   el.onclick = () => _openEtcJobHours(project, 'procurement');
+  // Do not present a live-looking button that can only produce an error. If
+  // the server has no ETC_PLANNER_URL there is no Reports app to open, so say
+  // that on the button itself rather than after the click.
+  _fetchReportsPort().then(port => {
+    if (!el.isConnected) return;
+    el.disabled = !port;
+    if (!port) {
+      el.title = 'Reports app link not set up on this server (ETC_PLANNER_URL is empty), so there is nowhere for this to open.';
+    }
+  }).catch(() => {});
   if (!job) {
-    el.innerHTML = `📦 Procurement · No ETO job linked`;
-    el.title = 'Link this project to a Total ETO job to see Procurement readiness.';
+    el.innerHTML = `📊 Job Details`;
+    el.title = 'No ETO job linked yet, so there are no hours or parts to show. Set the job number from the project tab menu.';
     return;
   }
   const data = _procCache[job];
   let stat = 'Loading…';
-  if (data && data.error) stat = `<span class="proc-nopo">couldn't load</span>`;
+  // A bare "could not load" reads like the DATA is broken. Nearly always it
+  // is just that this machine cannot reach the ERP - a different problem
+  // with a different fix, so say which one it is.
+  if (data && data.offline) stat = `<span class="proc-down">ETO offline</span>`;
+  else if (data && data.error) stat = `<span class="proc-nopo">couldn&rsquo;t load</span>`;
   else if (data && data.totals) stat = `${data.totals.pct}% ready · <span class="${data.totals.noPO ? 'proc-nopo' : ''}">${data.totals.noPO} no PO</span>`;
-  el.innerHTML = `📦 Procurement · ${stat}`;
-  el.title = "Open this job's Procurement in SDC Reports";
+  // One label, one job: open this job in SDC Reports. The readiness figure
+  // rides along when it loaded, and stays out of the way when it did not.
+  const quiet = !data || data.offline || data.error;
+  el.innerHTML = quiet ? `📊 Job Details` : `📊 Job Details · ${stat}`;
+  el.title = 'Open job ' + job + ' in SDC Reports — hours, parts cost and procurement readiness.';
   if (!data) {
     fetch(`/api/eto/readiness/${encodeURIComponent(job)}`)
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`request failed (${r.status})`)))
+      .then(r => {
+        if (r.ok) return r.json();
+        const err = new Error(`request failed (${r.status})`);
+        err.offline = r.status >= 500;   // ERP unreachable, not bad data
+        throw err;
+      })
       .then(d => { _procCache[job] = d; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); })
-      .catch(e => { _procCache[job] = { error: e.message }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
+      .catch(e => { _procCache[job] = { error: e.message, offline: !!e.offline }; if ((state.filters && state.filters.project) === project) renderScheduleProcurement(); });
   }
 }
 // ── Per-project Job Hours drawer ─────────────────────────────────────────────
@@ -16899,7 +18733,12 @@ function ctrlAbortMsg(e) {
 // toolbar row as the Procurement button above: the whole button IS the
 // drill-through into SDC Reports' Job Hour Details, no expand, no inline
 // pivot table/charts, no separate "Reports" control.
+// Power BI is no longer the hours source, so the button it drove is gone from
+// the footer. The function stays a no-op rather than being deleted: the hours
+// plumbing below it is still referenced elsewhere, and SDC Reports already
+// carries hours on the Job Details page this schedule links to.
 function renderScheduleHours() {
+  return;   // eslint-disable-line no-unreachable
   const el = document.getElementById('schedule-hours');
   if (!el) return;
   const project = state.filters && state.filters.project;
@@ -27032,7 +28871,7 @@ function renderManufacturingPage() {
   root.querySelectorAll('[data-mfg-reload]').forEach(b => b.onclick = () => { _mfgData = null; loadManufacturing(); });
 }
 
-const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'manufacturing', 'team', 'invoicing', 'service', 'exec-summary'];
+const _SCROLL_VIEWS = ['projects', 'favorites', 'recents', 'vendor-pos', 'shop-parts', 'manufacturing', 'team', 'invoicing', 'service', 'exec-summary', 'portal'];
 let _scrollSaveTimer = null;
 function _saveScrollPos(view) {
   if (!_SCROLL_VIEWS.includes(view)) return;
@@ -27095,6 +28934,13 @@ function setView(view) {
     _restoreScrollPos(view);
   }
   else if (view === 'invoicing') { renderInvoicingPage(); _restoreScrollPos(view); }
+  else if (view === 'portal') {
+    // Customer assignments live in settings alongside the leads, so pull them
+    // fresh - someone else may have set a customer since this tab loaded.
+    renderPortal();
+    try { loadSettings().then(() => { if (state.view === 'portal') renderPortal(); }); } catch (_) {}
+    _restoreScrollPos(view);
+  }
   else if (view === 'exec-summary') {
     // Goals live in other people's notes blobs — re-pull settings so the
     // meeting is looking at what everyone actually typed.
@@ -27166,7 +29012,16 @@ function pinGanttDateAxis() {
     const svg = document.querySelector('#gantt-container .gantt');
     if (!gantt || !svg) return;
     const y = gantt.scrollTop || 0;
-    for (const sel of ['.grid-header', '.date', '.sdc-weekday-letter-group']) {
+    // ORDER MATTERS: each selector's matches are re-appended to the end of the
+    // SVG, so the LAST selector paints on top. .grid-header is an opaque white
+    // rect and must go first.
+    //
+    // The month and day labels have to be in this list. compressGanttToWorkDays
+    // deletes frappe's date axis and redraws its own labels as direct children
+    // of the SVG, so they are no longer inside the .date group this function
+    // used to move. That left them BELOW the white header rect (invisible) and
+    // unpinned (they scrolled away with the bars). Both symptoms, one cause.
+    for (const sel of ['.grid-header', '.date', '.lower-text', '.upper-text', '.sdc-weekday-letter-group']) {
       svg.querySelectorAll(sel).forEach(el => {
         el.setAttribute('transform', `translate(0, ${y})`);
         if (el.parentNode !== svg || el !== svg.lastElementChild) svg.appendChild(el);
@@ -27423,6 +29278,8 @@ function loadScheduleView() {
       //   'combined' — schedule rows AND action rows. Actions sort to the
       //                bottom of their sub-dep bucket.
       //   'actions'  — only action items (is_action = 1).
+      riskMode: !!saved.riskMode,
+      riskOverlay: !!saved.riskOverlay,
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
         ? saved.actionsMode
         : 'combined'),
@@ -27434,7 +29291,7 @@ function loadScheduleView() {
       showDeptHours: !!saved.showDeptHours,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false };
   }
 }
 function saveScheduleView() {
@@ -29056,7 +30913,11 @@ function syncViewModeButton() {
   if (!label) return;
   const pane = getCurrentPaneMode();
   const am = state.scheduleView?.actionsMode || 'schedule';
-  label.textContent = `${paneLabel(pane)} · ${actionsLabel(am)}`;
+  // Risk mode replaces the content mode outright - there is no "combined
+  // risk", you are either looking at the build or at the risks.
+  label.textContent = state.scheduleView?.riskMode
+    ? `${paneLabel(pane)} · Risks`
+    : `${paneLabel(pane)} · ${actionsLabel(am)}`;
 }
 function renderViewModeMenu() {
   const menu = document.getElementById('view-mode-menu');
@@ -29069,6 +30930,7 @@ function renderViewModeMenu() {
        <span>${label}</span>
      </button>`;
   const hideDone = !!state.scheduleView?.hideCompleted;
+  const riskMode = !!state.scheduleView?.riskMode;
   menu.innerHTML = `
     <div class="view-mode-section">
       ${item(pane === 'grid',  'grid',  'Grid only',  'pane')}
@@ -29080,6 +30942,10 @@ function renderViewModeMenu() {
       ${item(am === 'schedule', 'schedule', 'Schedule (duration tasks only)',         'actions')}
       ${item(am === 'combined', 'combined', 'Combined (scheduled + action items)',    'actions')}
       ${item(am === 'actions',  'actions',  'Actions (ad-hoc to-do items only)',      'actions')}
+    </div>
+    <div class="dropdown-sep"></div>
+    <div class="view-mode-section">
+      ${item(riskMode, 'risk-mode', 'Risk mitigation (one section per risk)', 'toggle')}
     </div>
     <div class="dropdown-sep"></div>
     <div class="view-mode-section">
@@ -29111,6 +30977,17 @@ function renderViewModeMenu() {
   menu.querySelectorAll('[data-toggle]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (btn.dataset.toggle === 'risk-mode') {
+        // Risk mode swaps the build sections for one section per risk. Same
+        // grid, same Gantt, same controls.
+        state.scheduleView.riskMode = !state.scheduleView.riskMode;
+        saveScheduleView();
+        render();
+        syncViewModeButton();
+        renderViewModeMenu();
+        try { zoomToFit(); } catch (_) {}
+        return;
+      }
       if (btn.dataset.toggle === 'hide-completed') {
         state.scheduleView.hideCompleted = !state.scheduleView.hideCompleted;
         saveScheduleView();
@@ -29901,6 +31778,21 @@ async function init() {
   // v11.6: the + Add task / + Add action buttons were removed from the grid
   // (right-click a row → "Add task/action below" instead). Guarded wiring
   // stays in case a button ever comes back.
+  // Flip between the build and the risk sections, and add a line without
+  // hunting for a right-click. Both live in the toolbar so there is always a
+  // visible way back out of risk mode.
+  document.getElementById('btn-risk-overlay')?.addEventListener('click', () => {
+    state.scheduleView.riskOverlay = !state.scheduleView.riskOverlay;
+    saveScheduleView();
+    render();
+  });
+  document.getElementById('btn-risk-mode')?.addEventListener('click', () => {
+    state.scheduleView.riskMode = !state.scheduleView.riskMode;
+    saveScheduleView();
+    render();
+    try { syncActionsModeButtons(); } catch (_) {}
+    try { zoomToFit(); } catch (_) {}
+  });
   document.getElementById('btn-add')?.addEventListener('click', newTaskInline);
   document.getElementById('btn-add-action')?.addEventListener('click', newActionInline);
   // Cell-edit handler is attached once here — renderTable rebuilds tbody.innerHTML so the
@@ -30285,6 +32177,30 @@ async function init() {
       try { exportGridToExcel(); } catch (e) { showToast('Excel export failed.', { kind: 'error' }); }
     });
   }
+  // Back to the portal. Only meaningful when we got here FROM the portal,
+  // which is what the portal-schedule body class marks.
+  // Documents menu on the schedule toolbar.
+  const docsBtn = document.getElementById('btn-docs');
+  const docsMenu = document.getElementById('docs-menu');
+  if (docsBtn && docsMenu) {
+    docsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      docsMenu.classList.toggle('hidden');
+    });
+    document.addEventListener('click', () => docsMenu.classList.add('hidden'));
+    docsMenu.querySelectorAll('[data-doc]').forEach(b => {
+      b.addEventListener('click', () => {
+        const p = state.filters.project;
+        docsMenu.classList.add('hidden');
+        if (!p) { showToast('Pick a project tab first — documents are per-project.', { kind: 'error' }); return; }
+        if (b.dataset.doc === 'release') { if (isSalesView()) openQuoteCompareModal(p); else openProjectReleaseModal(p); }
+        else if (b.dataset.doc === 'comm') openCommPlanModal(p);
+        else if (b.dataset.doc === 'risk') openRiskPlanModal(p);
+      });
+    });
+  }
+  const portalBackBtn = document.getElementById('btn-portal-back');
+  if (portalBackBtn) portalBackBtn.addEventListener('click', portalBackFromSchedule);
   const customerFitBtn = document.getElementById('btn-customer-view-fit');
   if (customerFitBtn) {
     customerFitBtn.addEventListener('click', () => {
