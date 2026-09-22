@@ -1686,6 +1686,41 @@ function taskScheduleDelta(task) {
   return drift;
 }
 
+const MILESTONE_TYPES = [
+  { key: 'any',              label: 'Any milestone' },
+  { key: 'receipt_of_po',    label: 'Receipt of PO' },
+  { key: 'mech_release_1',   label: 'Mech release' },
+  { key: 'machine_power_up', label: 'Machine Power-Up' },
+  { key: 'fat',              label: 'FAT' },
+  { key: 'ship_machine',     label: 'Ship Machine' },
+  { key: 'sat',              label: 'SAT' },
+];
+
+function milestoneMatchesType(t, type) {
+  if (!type) return true;
+  if (!t.is_milestone && !inferredAnchorKey(t)) return false;
+  if (type === 'any') return true;
+  if (inferredAnchorKey(t) === type) return true;
+  // Name fallback — see the note above about "FAT - Bifacial 7".
+  const n = String(t.name || '').trim().toLowerCase();
+  switch (type) {
+    case 'fat':              return /^fat\b/.test(n) || n.includes('(fat)');
+    case 'sat':              return /^sat\b/.test(n) || n.includes('(sat)');
+    case 'ship_machine':     return n.startsWith('ship machine') || n.startsWith('shipping ');
+    case 'machine_power_up': return n.includes('power-up') || n.includes('power up');
+    case 'mech_release_1':   return n.startsWith('mech') && n.includes('release');
+    case 'receipt_of_po':    return n.includes('receipt of po');
+  }
+  return false;
+}
+
+// A milestone filter is on. Used all over: it drops the section skeleton,
+// forces the flat date-ordered list, and exempts nothing.
+function milestoneFilterActive() {
+  const f = state.filters || {};
+  return f.milestoneType || (f.quick && f.quick.milestones ? 'any' : '');
+}
+
 function applyFilters(tasks, opts = {}) {
   const { search, project, phase, assignee, quick, projectsSubset, machinesSubset } = state.filters;
   // ignoreMachineSubset: when computing canonical line numbers, we want
@@ -1798,7 +1833,10 @@ function applyFilters(tasks, opts = {}) {
     if (qf.showCompleted && !isDone) return false;
     if (state.scheduleView?.hideCompleted && isDone) return false;
     // "Milestones only" filter — straightforward.
-    if (qf.milestones && !t.is_milestone) return false;
+    // Milestone filter. Anchors count as milestones even when is_milestone
+    // is not set on the row, which is why milestoneMatchesType checks both.
+    const mType = milestoneFilterActive();
+    if (mType && !milestoneMatchesType(t, mType)) return false;
 
     // v5.9: milestones and anchors are now subject to the SAME quick-filter
     // logic as tasks. Previously they were unconditionally returned true,
@@ -2297,6 +2335,18 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = nu
     </tr>`;
 }
 
+// Which section a spine anchor belongs to when it carries no phase_group of
+// its own. Mirrors where the unflattened walk parks each one.
+function sectionForLooseAnchor(t) {
+  switch (inferredAnchorKey(t)) {
+    case 'receipt_of_po': return 'kickoff';
+    case 'fat':           return 'machine_testing';
+    case 'ship_machine':
+    case 'sat':           return 'teardown_install';
+  }
+  return null;
+}
+
 function renderTable() {
   const tbody = document.getElementById('tasks-tbody');
   if (!tbody) return;
@@ -2391,8 +2441,7 @@ function renderTable() {
   const flatBySection = {};
   if (flattenEffective) {
     for (const t of filtered) {
-      const k = inferredAnchorKey(t);
-      if (k && SPINE_ANCHORS.has(k)) continue;
+      // Spine anchors included — see the note on the fixed-slot renders below.
       if (!t.phase_group) continue;
       (flatBySection[t.phase_group] ||= []).push(t);
     }
@@ -2574,7 +2623,22 @@ function renderTable() {
   const riskMode = !!(state.scheduleView && state.scheduleView.riskMode);
   if (riskMode) html += _riskSectionRowsHtml(filtered, collapsedGroups);
 
-  for (const group of (riskMode ? [] : HIERARCHY)) {
+  // A milestone filter: no headers, one list, date order. The spine anchors
+  // (FAT / SAT / Ship / PO) sort with everything else here rather than being
+  // parked at fixed positions — being pinned is exactly why flatten plus
+  // sort-by-date could never produce a sorted list of FATs.
+  const mFilter = milestoneFilterActive();
+  if (mFilter) {
+    const rows = filtered.slice().sort((a, b) =>
+      String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
+      || String(a.project || '').localeCompare(String(b.project || ''))
+      || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+    for (const t of rows) {
+      html += inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, 1);
+    }
+  }
+
+  for (const group of ((riskMode || mFilter) ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
@@ -2613,15 +2677,19 @@ function renderTable() {
         };
         sectionTasks = [...sectionTasks, ...shipAnchors].sort(cmp);
       }
+      // FAT and SAT used to be appended here, pinned to the end of their
+      // section. They now flow through flatBySection with everything else, so
+      // they sort by date like any other row — which is what flatten is for.
+      // Anchors WITHOUT a phase_group (Receipt of PO) still need placing, and
+      // they sort in by date alongside the section list.
+      const loose = [receiptAnchor, ...shipAnchors, ...fatAnchors, ...satAnchors]
+        .filter(a => a && !a.phase_group && sectionForLooseAnchor(a) === group.key);
+      if (loose.length) {
+        const cmp = (a, b) => String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
+          || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
+        sectionTasks = [...sectionTasks, ...loose].sort(cmp);
+      }
       for (const t of sectionTasks) html += renderTaskRow(t, 2);
-      // FAT anchors at the end of section 40 even in flatten mode (collapses with the section).
-      if (group.key === 'machine_testing' && fatAnchors.length) {
-        for (const f of fatAnchors) html += anchorRowHtml(f);
-      }
-      // SAT closes section 50 — acceptance at the customer, the project's last marker.
-      if (group.key === 'teardown_install' && satAnchors.length) {
-        for (const s of satAnchors) html += anchorRowHtml(s);
-      }
       continue;
     }
 
@@ -6066,11 +6134,10 @@ function drawFinancialOverlay() {
   for (const project of visibleProjects) {
     const list = state.financials[project] || [];
     for (const f of list) {
-      // Predecessor-derived date wins; manual due_date is the fallback. Computed
-      // at render time so anchor/task edits update the overlay without needing a
-      // round-trip to the server.
-      const derived = computeFinancialTriggerDate(f.predecessors, project);
-      const due = derived || f.due_date;
+      // Same precedence as everywhere else: predecessor trigger, then the live
+      // anchor date, then the stored due_date. Computed at render time so
+      // anchor/task edits move the marker without a round-trip to the server.
+      const due = financialDueDate(f, project);
       if (!due) continue;
       markers.push({ ...f, due_date: due, project });
     }
@@ -7597,7 +7664,8 @@ function renderFilters() {
   const qf = state.filters.quick || {};
   // Active-filter chip count next to the topbar button. Counts every active quick
   // chip so the user sees at a glance how many filters are on.
-  const activeCount = Object.values(qf).filter(Boolean).length;
+  const activeCount = Object.values(qf).filter(Boolean).length
+    + (milestoneFilterActive() ? 1 : 0);
   const chip = document.getElementById('filter-chip-count');
   if (chip) {
     chip.textContent = activeCount ? String(activeCount) : '';
@@ -7620,7 +7688,6 @@ function renderFilters() {
     { key: 'showCompleted', label: 'Show completed',    source: 'quick' },
     { key: 'behind',        label: 'Behind schedule',   source: 'quick' },
     { key: 'ahead',         label: 'Ahead of schedule', source: 'quick' },
-    { key: 'milestones',    label: 'Milestones only',   source: 'quick' },
     { key: 'assigned',      label: 'Assigned (real work)', source: 'quick' },
     { key: 'overallocated', label: 'Over-allocated',    source: 'quick' },
     { key: 'criticalPath',  label: 'Critical path',     source: 'view',  active: !!sv.criticalPath },
@@ -7644,6 +7711,13 @@ function renderFilters() {
       }).join('')}
     </div>
     <div class="filters-popover-sep"></div>
+    <div class="filters-popover-title">Milestones</div>
+    <div class="filters-mile-note">Pick one and the schedule becomes a single list of those milestones, in date order, with no section headers.</div>
+    <select id="filters-milestone-type" class="filters-mile-select">
+      <option value="">Off — show the full schedule</option>
+      ${MILESTONE_TYPES.map(m => `<option value="${m.key}" ${milestoneFilterActive() === m.key ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
+    </select>
+    <div class="filters-popover-sep"></div>
     <div class="filters-popover-title">View</div>
     <label class="filters-check-row">
       <input type="checkbox" id="filters-customer-view-toggle" ${inCustomerView ? 'checked' : ''}>
@@ -7656,6 +7730,21 @@ function renderFilters() {
   // Stop propagation on every click inside the popover so the document-level
   // close handler doesn't see "click outside" and dismiss the popover. Users
   // want to toggle multiple filters in one session without re-opening.
+  // Milestone picker. Choosing a type drops the section skeleton and renders
+  // one date-ordered list; clearing it puts the schedule back as it was.
+  const mSel = pop.querySelector('#filters-milestone-type');
+  if (mSel) {
+    mSel.addEventListener('click', (e) => e.stopPropagation());
+    mSel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      state.filters.milestoneType = mSel.value || '';
+      // The old boolean and the new picker cannot both be authorities.
+      if (state.filters.quick) state.filters.quick.milestones = false;
+      render();
+      try { zoomToFit(); } catch (_) {}
+    });
+  }
+
   pop.querySelectorAll('input[type="checkbox"][data-quick]').forEach(cb => {
     cb.addEventListener('change', (e) => {
       e.stopPropagation();
@@ -7687,6 +7776,7 @@ function renderFilters() {
   pop.querySelector('#btn-clear-filters').addEventListener('click', (e) => {
     e.stopPropagation();
     state.filters.quick = { behind: false, ahead: false, milestones: false, assigned: false, overallocated: false, showCompleted: false };
+    state.filters.milestoneType = '';
     // Also clear Critical path since it lives among quick filters now.
     state.scheduleView.criticalPath = false;
     state.scheduleView.criticalOnly = false;
@@ -8229,6 +8319,47 @@ function invoiceTermsDays(f) {
   const n = Number(f.terms_days);
   return Number.isFinite(n) && n > 0 ? n : 30;
 }
+// The anchor a synced financial row points at. Machine-less rows belong to
+// the base machine — same rule as the grid (_finBaseMachine), so an anchor on
+// a project like 1153 (machines 'DS 2' / 'DS 3' / 'M1') resolves to the machine
+// the row displays under.
+function financialAnchorTask(f, project) {
+  if (!f || !f.sync_to_anchor) return null;
+  const finBase = _finBaseMachine(_finProjectMachines(project));
+  return state.tasks.find(x => x.project === project
+    && inferredAnchorKey(x) === f.sync_to_anchor
+    && (!x.machine || (x.machine || finBase) === (f.machine || finBase))) || null;
+}
+
+// When a milestone is due, from the ONE place everything reads. Precedence:
+// an explicit predecessor trigger, then the LIVE date of the anchor it is
+// synced to, then the stored due_date. The stored value comes last because
+// it is a snapshot — it goes stale the moment the schedule moves, and the
+// invoicing page must never quote a date the schedule disagrees with.
+function financialDueDate(f, project) {
+  const t = financialAnchorTask(f, project);
+  return computeFinancialTriggerDate(f.predecessors, project)
+    || (t ? (t.end_date || t.start_date) : null)
+    || f.due_date
+    || null;
+}
+
+// Which schedule line drives a financial milestone date. The NAME of that
+// line is deliberately not shown: the trigger is only a pointer, and the
+// line it points at can be called anything. What the milestone IS comes from
+// its own description on the Project Release, which is what the row shows.
+function financialTriggerLabel(f, project) {
+  try {
+    const refs = String(f.predecessors || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (refs.length) return 'line ' + refs.join(', ');
+    if (f.sync_to_anchor) {
+      const t = financialAnchorTask(f, project);
+      const line = t ? lineByTaskId[t.id] : null;
+      return line != null ? 'line ' + line : '';
+    }
+  } catch (_) {}
+  return '';
+}
 function invoiceStatus(f, project) {
   if (f.paid) return 'paid';
   if (f.sent) {
@@ -8254,21 +8385,19 @@ function invoiceStatus(f, project) {
     });
   } else if (f.sync_to_anchor) {
     hasTrigger = true;
-    // Machine-less rows belong to the base machine — same rule as the grid
-    // (_finBaseMachine), so an anchor on a project like 1153 (machines
-    // 'DS 2' / 'DS 3' / 'M1') resolves to the machine the row displays under.
-    const finBase = _finBaseMachine(_finProjectMachines(project));
-    const t = state.tasks.find(x => x.project === project
-      && inferredAnchorKey(x) === f.sync_to_anchor
-      && (!x.machine || (x.machine || finBase) === (f.machine || finBase)));
+    const t = financialAnchorTask(f, project);
     ready = !!t && (Number(t.progress) || 0) >= 100;
   }
-  // PAST DUE WINS — a date in the past means "should have been invoiced",
-  // trigger or not. No-trigger is only for rows that aren't overdue yet.
-  const due = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || null;
-  if (due && due < todayISO()) return 'pastdue';
+  // Checked off beats everything: earned work is ready to invoice whether it
+  // is early, on time or weeks late. This is the only door to Sent.
+  if (ready) return 'ready';
   if (!hasTrigger) return 'notrigger';
-  return ready ? 'ready' : 'pending';
+  // Not checked off, and the date it should have happened has gone by. The
+  // fix is on the schedule, not on this page — which is why these rows carry
+  // no Sent tick.
+  const due = financialDueDate(f, project);
+  if (due && due < todayISO()) return 'pastdue';
+  return 'pending';
 }
 
 // The five status cards + their line items, with Sent / Paid actions.
@@ -8296,17 +8425,18 @@ function renderInvoiceBuckets(selectedProjects) {
     }
   }
   // Order inside each bucket: soonest/oldest date first.
-  const dateOf = (x) => computeFinancialTriggerDate(x.f.predecessors, x.project) || x.f.due_date || '9999';
+  const dateOf = (x) => financialDueDate(x.f, x.project) || '9999';
   for (const k in buckets) buckets[k].sort((a, b) => String(dateOf(a)).localeCompare(String(dateOf(b))));
 
   const CARDS = [
-    // Past due is TWO portions in one card: not-sent up top, then a dotted
-    // divider, then sent-but-not-paid (payment terms elapsed).
-    { key: 'pastdue',   title: 'Past due',           sub: 'not sent · below the line: sent, not paid', tone: 'inv-red', chk: 'Sent', dateLbl: 'Due' },
-    { key: 'ready',     title: 'Ready to invoice',   sub: 'schedule trigger met',             tone: 'inv-green', chk: 'Sent', dateLbl: 'Due' },
+    // The trigger date has gone by and the schedule has not checked it off.
+    // Fixed on the schedule, not here, so there is no Sent tick on these rows.
+    { key: 'pastdue',   title: 'Past due',           sub: 'trigger date passed, not checked off on the schedule', tone: 'inv-red', chk: '', dateLbl: 'Due' },
+    { key: 'ready',     title: 'Ready to invoice',   sub: 'checked off on the schedule — send it', tone: 'inv-green', chk: 'Sent', dateLbl: 'Due' },
     // Sent card's date column shows WHEN IT WENT OUT (Dan) — due lives in
     // the tooltip.
-    { key: 'sent',      title: 'Sent',               sub: 'awaiting payment — Net days editable', tone: 'inv-blue', chk: 'Paid', dateLbl: 'Sent' },
+    // Two portions: awaiting payment inside terms, then past terms and unpaid.
+    { key: 'sent',      title: 'Sent',               sub: 'awaiting payment · below the line: past terms, unpaid', tone: 'inv-blue', chk: 'Paid', dateLbl: 'Sent' },
     // No 'paid' card — Dan: paid is history, not something to watch. Undo a
     // paid flag from the project's financial milestones editor if needed.
     { key: 'notrigger', title: 'No trigger',         sub: 'not tied to the schedule — each PM should fix theirs', tone: 'inv-gray', chk: 'Sent', dateLbl: 'Due' },
@@ -8318,29 +8448,33 @@ function renderInvoiceBuckets(selectedProjects) {
     return parts.join(' · ');
   };
   const itemHtml = ({ f, project, status }) => {
-    const due = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || null;
+    const due = financialDueDate(f, project);
     const isSentSide = status === 'sent' || status === 'pastpay';
     // Sent card shows the SENT date (Dan); everything else shows the due
     // date. The other date always rides in the tooltip. Legacy rows marked
     // sent before the date was recorded show "—" rather than lying.
-    const when = status === 'sent'
+    const when = isSentSide
       ? (f.sent_at ? fmtDate(f.sent_at) : '—')
       : (due ? fmtDate(due) : '—');
-    const whenTitle = status === 'sent'
+    const whenTitle = isSentSide
       ? (f.sent_at ? (due ? `Due ${fmtDate(due)}` : 'Sent date') : `Sent date not recorded${due ? ` — due ${fmtDate(due)}` : ''}`)
-      : (isSentSide && f.sent_at ? `Sent ${fmtDate(f.sent_at)}` : 'Due date');
+      : 'Due date';
     const machine = f.machine ? ` <span class="inv-mach">${escapeHtml(f.machine)}</span>` : '';
+    const trigger = financialTriggerLabel(f, project);
     // BLANK checkbox — checking it is the action (Sent for unsent items,
     // Paid for sent ones). The column header on the card says which.
     const actions = isSentSide
       ? `<span class="inv-terms" title="Payment terms — days after sending before it counts as late">Net <input type="number" min="1" max="365" value="${invoiceTermsDays(f)}" data-inv-terms="${f.id}" data-inv-proj="${escapeHtml(project)}" /></span>
          <input type="checkbox" class="inv-chk" data-inv-paid="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when payment is received" />
          <button type="button" class="inv-act inv-act-undo" data-inv-unsend="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Undo — it wasn't actually sent">↩</button>`
+      : status === 'pastdue'
+      ? `<span class="inv-await" title="Nothing to invoice yet — the trigger for this milestone is not checked off on the schedule. Tick it there and this moves to Ready to invoice.">on schedule</span>`
       : `<input type="checkbox" class="inv-chk" data-inv-sent="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when the invoice has been sent" />`;
     return `<div class="inv-item">
       <div class="inv-item-main">
         <span class="inv-item-proj" title="${escapeHtml(project)}">${escapeHtml(project)}</span>
         <span class="inv-item-name">${escapeHtml(f.name || '(unnamed)')}${machine}</span>
+        ${trigger ? `<span class="inv-item-trig" title="The schedule line that drives this date, from the Project Release trigger. The milestone name above is its description on the release; this is only the pointer.">↳ ${escapeHtml(trigger)}</span>` : ''}
       </div>
       <span class="inv-item-amt">${escapeHtml(fmtAmt(f))}</span>
       <span class="inv-item-date" title="${escapeHtml(whenTitle)}">${escapeHtml(when)}</span>
@@ -8351,20 +8485,21 @@ function renderInvoiceBuckets(selectedProjects) {
     let rows = buckets[c.key];
     let count = rows.length;
     let items;
-    if (c.key === 'pastdue') {
-      // Two clearly-labeled portions — BOTH are past due, for different
-      // reasons: top = never sent, bottom = sent but payment terms passed.
+    if (c.key === 'sent') {
+      // Sent splits in two: awaiting payment inside terms, then the ones
+      // whose terms have elapsed. Both have been invoiced — the difference is
+      // whether the customer is late, which is chasing work, not billing work.
       const late = buckets.pastpay;
       count = rows.length + late.length;
-      const notSent = rows.length
-        ? `<div class="inv-subhead inv-subhead-notsent">📤 Not sent yet <span class="inv-subhead-n">${rows.length}</span></div>`
+      const awaiting = rows.length
+        ? `<div class="inv-subhead" title="Invoiced and inside the payment terms shown on each row.">📨 Awaiting payment <span class="inv-subhead-n">${rows.length}</span></div>`
           + rows.map(r => itemHtml(r)).join('')
         : '';
       const lateHtml = late.length
-        ? `<div class="inv-subhead inv-subhead-late">⏰ Sent, not paid — past Net terms <span class="inv-subhead-n">${late.length}</span></div>
+        ? `<div class="inv-subhead inv-subhead-late" title="Invoiced, the Net terms on the row have elapsed, and payment has not arrived.">⏰ Sent, not paid — past terms <span class="inv-subhead-n">${late.length}</span></div>
            <div class="inv-late-zone">${late.map(r => itemHtml(r)).join('')}</div>`
         : '';
-      items = notSent + lateHtml;
+      items = awaiting + lateHtml;
     } else if (c.key === 'notrigger') {
       // Grouped by PM — each person expands/collapses their own list, and
       // every line keeps the job number so "Down Payment" isn't a mystery.
@@ -8613,7 +8748,7 @@ function renderDeptProjectRollup() {
       const fAbbrev = _pdashFinAbbrev(f);
       const leftPct = FIN_POS[fAbbrev];
       if (leftPct == null) continue;
-      const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
+      const fd = financialDueDate(f, project) || '';
       const fPaid = !!f.paid;
       const fSent = !fPaid && !!f.sent;
       const fOverdue = !fPaid && !fSent && fd && fd < todayISO;
@@ -9349,7 +9484,7 @@ function renderDashboard() {
       const fAbbrev = _pdashFinAbbrev(f);
       const leftPct = FIN_POS[fAbbrev];
       if (leftPct == null) continue;   // custom milestones — skip strip
-      const fd = computeFinancialTriggerDate(f.predecessors, project) || f.due_date || '';
+      const fd = financialDueDate(f, project) || '';
       const fPaid = !!f.paid;
       const fSent = !fPaid && !!f.sent;
       const fOverdue = !fPaid && !fSent && fd && fd < todayISO;
@@ -13183,7 +13318,22 @@ function renderProjectTabs() {
           <span class="banner-projects-caret">▾</span>
         </button>
         <div id="banner-projects-popup" class="banner-projects-popup hidden"></div>`;
-      banner.innerHTML = '<span class="schedule-project-name-pill schedule-project-label">All projects</span>' + signInHtml + projectsFilterHtml;
+      // ONLY the name pill goes in the centre zone. That zone is absolutely
+      // positioned and translated to hold the name dead-centre, which makes it
+      // the containing block for anything inside it — the projects popover was
+      // anchoring to that narrow floating box and flying off the top of the
+      // page. The sign-in and projects controls live in the left zone, which is
+      // in normal flow, so their popover drops under its own button.
+      banner.innerHTML = '<span class="schedule-project-name-pill schedule-project-label">All projects</span>';
+      const leftZone = document.querySelector('.banner-left');
+      let extra = document.getElementById('banner-left-extra');
+      if (!extra && leftZone) {
+        extra = document.createElement('div');
+        extra.id = 'banner-left-extra';
+        extra.className = 'banner-left-extra';
+        leftZone.appendChild(extra);
+      }
+      if (extra) extra.innerHTML = signInHtml + projectsFilterHtml;
       const deptSel = document.getElementById('banner-signin-dept');
       if (deptSel) {
         deptSel.addEventListener('change', (e) => {
@@ -13205,6 +13355,8 @@ function renderProjectTabs() {
     } else {
       const p = state.filters.project;
       banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
+      const extraOne = document.getElementById('banner-left-extra');
+      if (extraOne) extraOne.innerHTML = '';
     }
   }
 
@@ -17202,7 +17354,7 @@ function _portalMoneyHtml(projects) {
     if (!live.length) return '';
     const body = live.slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(f => {
       let when = null;
-      try { when = computeFinancialTriggerDate(f.predecessors, p) || f.due_date || null; } catch (_) { when = f.due_date || null; }
+      try { when = financialDueDate(f, p); } catch (_) { when = f.due_date || null; }
       const status = f.paid ? { t: 'Paid', c: 'is-paid' } : f.sent ? { t: 'Invoiced', c: 'is-sent' } : { t: 'Upcoming', c: '' };
       const amt = [];
       if (f.percent != null && Number(f.percent) > 0) amt.push(Number(f.percent) + '%');

@@ -16136,3 +16136,76 @@ tr.group-header.level-1[data-risk-first="1"] td {
   border-color: var(--sdc-primary, #1574c4);
   background: #f0f7fd;
 }
+
+
+/* Past due rows carry no Sent tick — the trigger is not checked off, so there
+   is nothing to invoice yet. This says where the fix actually lives. */
+.inv-await {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+/* The schedule line a financial milestone is waiting on. Shown under the name
+   so a milestone whose name and trigger disagree — "Acceptance at Customer
+   (SAT)" driven by a line that says "Perform FAT" — is visible from here
+   rather than only from the Project Release. */
+.inv-item-trig {
+  display: block;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Milestone picker in the Filters popover ─────────────────────────────
+   Replaces the old "Milestones only" checkbox. Picking a type turns the
+   schedule into one date-ordered list of those milestones across whatever
+   projects are selected — which is the thing a PM watching three jobs
+   actually wants when they ask to "sort the FATs by date". */
+.filters-mile-note {
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  line-height: 1.35;
+  margin: 2px 0 6px;
+}
+.filters-mile-select {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  font: inherit;
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+.filters-mile-select:focus {
+  outline: none;
+  border-color: var(--sdc-primary, #1574c4);
+  box-shadow: 0 0 0 2px rgba(21, 116, 196, 0.15);
+}
+
+/* Sign-in + projects picker on the All-projects tab. They sit in the LEFT
+   zone rather than the centred one: the centre zone is absolutely positioned
+   to hold the project name dead-centre, which makes it the containing block
+   for anything inside it — and the projects popover was anchoring to that
+   narrow floating box instead of to its own button. This wrapper is relative
+   so the popover drops directly under the button that opens it. */
+.banner-left-extra {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.banner-left-extra:empty { display: none; }
+/* The popover must not be clipped by the left zone's horizontal scroll. */
+.banner-left { overflow: visible; }
+
+/* The wrapper is a flex row, so an absolutely-positioned child with no offsets
+   takes its static position IN that row — beside the button, not under it.
+   Pin it to the bottom edge so it drops the way a menu should. */
+.banner-left-extra .banner-projects-popup { top: 100%; left: 0; }
