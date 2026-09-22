@@ -16211,3 +16211,13 @@ tr.group-header.level-1[data-risk-first="1"] td {
 .inv-pm-group.is-clear > summary::marker,
 .inv-pm-group.is-clear > summary::-webkit-details-marker { display: none; }
 .inv-pm-group.is-clear .inv-group-count { opacity: 0.55; }
+
+/* A No-trigger row that was already invoiced and paid. It still belongs in the
+   card — the milestone has nothing driving it — but there is nothing left to
+   tick, so it says so rather than offering a checkbox. */
+.inv-paidtag {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  color: #15803d;
+  white-space: nowrap;
+}

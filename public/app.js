@@ -8315,6 +8315,15 @@ function renderInvoicingPage() {
 //   otherwise                   → 'pending' (future — calendar only)
 // Payment terms (days after the invoice was sent before it counts as LATE).
 // Editable per milestone by the CFO in the Sent bucket; Net 30 by default.
+// A financial milestone drives itself from EITHER an explicit predecessor
+// or a synced anchor. Nothing in either field means nothing can ever move
+// this milestone, whoever eventually invoices it by hand.
+function financialHasTrigger(f) {
+  if (!f) return false;
+  const refs = String(f.predecessors || '').split(',').map(x => x.trim()).filter(Boolean);
+  return refs.length > 0 || !!f.sync_to_anchor;
+}
+
 function invoiceTermsDays(f) {
   const n = Number(f.terms_days);
   return Number.isFinite(n) && n > 0 ? n : 30;
@@ -8361,6 +8370,13 @@ function financialTriggerLabel(f, project) {
   return '';
 }
 function invoiceStatus(f, project) {
+  // No trigger means no trigger. Not 'no trigger and nobody has invoiced it
+  // yet' — an active project with a milestone that has nothing driving it is a
+  // data gap whether or not somebody sent the invoice by hand, and the card is
+  // worth nothing if it quietly omits the ones that were. Sent and Paid are
+  // still actionable from the row, so anything already handled can be pushed
+  // through from here.
+  if (!financialHasTrigger(f)) return 'notrigger';
   if (f.paid) return 'paid';
   if (f.sent) {
     // Sent → either still within terms ("awaiting payment") or LATE
@@ -8449,7 +8465,13 @@ function renderInvoiceBuckets(selectedProjects) {
   };
   const itemHtml = ({ f, project, status }) => {
     const due = financialDueDate(f, project);
-    const isSentSide = status === 'sent' || status === 'pastpay';
+    // A No-trigger row can be at ANY point of its life — never invoiced, or
+    // sent, or long since paid — because it lands there on the trigger alone.
+    // So its controls come from the row's own flags, not from the card, and
+    // anything already handled can be checked off from where it sits.
+    const isSentSide = status === 'sent' || status === 'pastpay'
+      || (status === 'notrigger' && !!f.sent && !f.paid);
+    const doneAlready = status === 'notrigger' && !!f.paid;
     // Sent card shows the SENT date (Dan); everything else shows the due
     // date. The other date always rides in the tooltip. Legacy rows marked
     // sent before the date was recorded show "—" rather than lying.
@@ -8461,12 +8483,15 @@ function renderInvoiceBuckets(selectedProjects) {
       : 'Due date';
     const machine = f.machine ? ` <span class="inv-mach">${escapeHtml(f.machine)}</span>` : '';
     const trigger = financialTriggerLabel(f, project);
+
     // BLANK checkbox — checking it is the action (Sent for unsent items,
     // Paid for sent ones). The column header on the card says which.
     const actions = isSentSide
       ? `<span class="inv-terms" title="Payment terms — days after sending before it counts as late">Net <input type="number" min="1" max="365" value="${invoiceTermsDays(f)}" data-inv-terms="${f.id}" data-inv-proj="${escapeHtml(project)}" /></span>
          <input type="checkbox" class="inv-chk" data-inv-paid="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when payment is received" />
          <button type="button" class="inv-act inv-act-undo" data-inv-unsend="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Undo — it wasn't actually sent">↩</button>`
+      : doneAlready
+      ? '<span class="inv-paidtag" title="Already invoiced and paid. It still needs a trigger so it drives itself next time.">paid</span>'
       : status === 'pastdue'
       ? ''   // no control: nothing to invoice until the trigger is ticked on the schedule
       : `<input type="checkbox" class="inv-chk" data-inv-sent="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when the invoice has been sent" />`;
