@@ -1812,12 +1812,14 @@ function applyFilters(tasks, opts = {}) {
     // Personal mode: hide anchor milestones entirely — this view is "one
     // person across many projects", so per-project anchors like Receipt of
     // PO / FAT / Ship Machine are noise.
-    if (personal && inferredAnchorKey(t)) return false;
-    // Strict assignee filter. The personal view only shows tasks/actions
-    // DIRECTLY assigned to the signed-in person. If a task gets reassigned
-    // away from them (e.g. to a placeholder), it drops off their view
-    // immediately on next render — no stale leftovers.
-    if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
+    const _me = personal ? signedInMember() : null;
+    if (personal && inferredAnchorKey(t) && !personalShowsAnchors(_me)) return false;
+    // Scope filter. What counts as "mine" depends on the role — see
+    // personalScopeMatch. Still strict: reassign a task away and it leaves
+    // the view on the next render, no stale leftovers.
+    if (personal && _me) {
+      if (!personalScopeMatch(t, _me) && !inferredAnchorKey(t)) return false;
+    } else if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
       return false;
     }
     if (q) {
@@ -24226,6 +24228,45 @@ const _actionsPageState = {
 // Shared predicate for personal-view filters. Returns true if the task passes
 // the current Overdue / Ahead / Hide done toggles. Used by both the grid list
 // renderer and the personal Gantt task collector so the two views stay in sync.
+// Who the signed-in person is, or null when nobody is signed in.
+function signedInMember() {
+  if (!_actionsPageState || _actionsPageState.personId == null) return null;
+  return (state.team || []).find(m => m.id === _actionsPageState.personId) || null;
+}
+
+// What "my work" means for this person:
+//   Project manager  — everything on the projects they are PM of. They are
+//                      not assigned tasks, so matching on assignee showed
+//                      them nothing at all.
+//   Department lead  — their team\'s work: anything assigned to someone in
+//                      their discipline, plus that discipline\'s rows that are
+//                      still on a placeholder (unhanded-out work is theirs to
+//                      hand out).
+//   Everyone else    — the tasks with their name on them.
+function personalScopeMatch(t, member) {
+  if (!member) return true;
+  if (member.discipline === 'pm') {
+    return projectLead(t.project, 'pm') === member.name;
+  }
+  if (member.is_lead) {
+    const team = new Set((state.team || [])
+      .filter(m => m.discipline === member.discipline)
+      .map(m => m.name));
+    if (team.has(t.assignee)) return true;
+    // Work that belongs to the discipline but has not been handed out yet.
+    const sameDiscipline = disciplineForSection(t.department, t.sub_department) === member.discipline;
+    return sameDiscipline && (!t.assignee || isPlaceholder(t.assignee));
+  }
+  return t.assignee === member.name;
+}
+
+// A PM or a lead is watching whole projects, so the spine anchors (Receipt
+// of PO, FAT, Ship, SAT) are the most useful rows on the page. For an
+// individual they are noise across a dozen jobs.
+function personalShowsAnchors(member) {
+  return !!member && (member.discipline === 'pm' || !!member.is_lead);
+}
+
 function personalFilterPass(task, todayISO) {
   const pf = _actionsPageState.personalFilters || {};
   const isDone   = (Number(task.progress) || 0) >= 100;
