@@ -8436,6 +8436,11 @@ let _fintlView = { key: null, left: null };
 function renderInvoiceBuckets(selectedProjects) {
   const root = document.getElementById('invoicing-buckets');
   if (!root) return;
+  // Financials stream in per project. Until they have all landed a count of 0
+  // is not a finding, it is an absence of data — and saying 'Nothing here'
+  // over the top of it reads as a verdict. Track it and say so instead.
+  const pending = selectedProjects.filter(p => !state.financials[p]);
+  const loading = pending.length > 0;
   const buckets = { pastdue: [], pastpay: [], ready: [], notrigger: [], sent: [], paid: [] };
   for (const p of selectedProjects) {
     for (const f of (state.financials[p] || [])) {
@@ -8600,7 +8605,7 @@ function renderInvoiceBuckets(selectedProjects) {
         : '';
       items = picker + (shown.length
         ? shown.map(r => itemHtml(r)).join('')
-        : '<div class="inv-empty">Nothing paid in that month</div>');
+        : (_invPaidMonth ? '<div class="inv-empty">Nothing paid in that month</div>' : ''));
     } else {
       items = rows.map(r => itemHtml(r)).join('');
     }
@@ -8611,10 +8616,12 @@ function renderInvoiceBuckets(selectedProjects) {
       <span>Milestone</span><span class="inv-h-amt">Amt</span><span class="inv-h-due">${c.dateLbl}</span><span class="inv-h-chk">${c.chk}</span>
     </div>` : '';
     return `<div class="inv-card ${c.tone}${open ? '' : ' is-collapsed'}" data-inv-card="${c.key}">
-      <div class="inv-card-head" title="Click to ${open ? 'collapse' : 'expand'}"><span class="inv-card-title">${c.title}</span><span class="inv-card-count">${count}</span></div>
+      <div class="inv-card-head" title="Click to ${open ? 'collapse' : 'expand'}"><span class="inv-card-title">${c.title}</span><span class="inv-card-count">${loading && !count ? '…' : count}</span></div>
       <div class="inv-card-sub">${c.sub}</div>
       ${listHead}
-      <div class="inv-card-list">${items || '<div class="inv-empty">Nothing here 🎉</div>'}</div>
+      <div class="inv-card-list">${items || (loading
+        ? `<div class="inv-empty">Loading ${pending.length} project${pending.length === 1 ? '' : 's'}…</div>`
+        : '<div class="inv-empty">Nothing here 🎉</div>')}</div>
     </div>`;
   }).join('')}</div>`;
   // Remember each PM group's open state across re-renders.
