@@ -8438,11 +8438,19 @@ function renderInvoiceBuckets(selectedProjects) {
     for (const f of (state.financials[p] || [])) {
       const st = invoiceStatus(f, p);
       if (buckets[st]) buckets[st].push({ f, project: p, status: st });
+      // A no-trigger milestone is NOT added to Paid in full even when its paid
+      // flag is set. Nothing drove it, so it never went through send-and-verify
+      // — the flag is a leftover, not a record, and Paid in full has to be a
+      // list you can trust.
     }
   }
   // Order inside each bucket: soonest/oldest date first.
   const dateOf = (x) => financialDueDate(x.f, x.project) || '9999';
   for (const k in buckets) buckets[k].sort((a, b) => String(dateOf(a)).localeCompare(String(dateOf(b))));
+  // Paid reads newest first: you are looking for something recent, not
+  // working through a backlog.
+  buckets.paid.sort((a, b) =>
+    String(b.f.paid_at || dateOf(b)).localeCompare(String(a.f.paid_at || dateOf(a))));
 
   const CARDS = [
     // The trigger date has gone by and the schedule has not checked it off.
@@ -8453,9 +8461,15 @@ function renderInvoiceBuckets(selectedProjects) {
     // the tooltip.
     // Two portions: awaiting payment inside terms, then past terms and unpaid.
     { key: 'sent',      title: 'Sent',               sub: 'awaiting payment · below the line: past terms, unpaid', tone: 'inv-blue', chk: 'Paid', dateLbl: 'Sent' },
+    // Read-only record, newest first. Also lists paid milestones that never
+    // had a trigger — those appear in No trigger too, on purpose.
+    { key: 'paid',      title: 'Paid in full',       sub: 'invoiced and paid — newest first', tone: 'inv-done', chk: '', dateLbl: 'Paid' },
     // No 'paid' card — Dan: paid is history, not something to watch. Undo a
     // paid flag from the project's financial milestones editor if needed.
-    { key: 'notrigger', title: 'No trigger',         sub: 'not tied to the schedule — each PM should fix theirs', tone: 'inv-gray', chk: 'Sent', dateLbl: 'Due' },
+    // Just a list: which milestones have nothing driving them, by PM, by
+    // project. No sent/paid column — without a trigger none of that went
+    // through the flow, so the app cannot honestly report it.
+    { key: 'notrigger', title: 'No trigger',         sub: 'no trigger set — each PM should wire theirs', tone: 'inv-gray', chk: '', dateLbl: 'Date' },
   ];
   const fmtAmt = (f) => {
     const parts = [];
@@ -8469,13 +8483,13 @@ function renderInvoiceBuckets(selectedProjects) {
     // sent, or long since paid — because it lands there on the trigger alone.
     // So its controls come from the row's own flags, not from the card, and
     // anything already handled can be checked off from where it sits.
-    const isSentSide = status === 'sent' || status === 'pastpay'
-      || (status === 'notrigger' && !!f.sent && !f.paid);
-    const doneAlready = status === 'notrigger' && !!f.paid;
+    const isSentSide = status === 'sent' || status === 'pastpay';
     // Sent card shows the SENT date (Dan); everything else shows the due
     // date. The other date always rides in the tooltip. Legacy rows marked
     // sent before the date was recorded show "—" rather than lying.
-    const when = isSentSide
+    const when = status === 'paid'
+      ? (f.paid_at ? fmtDate(f.paid_at) : (f.sent_at ? fmtDate(f.sent_at) : '—'))
+      : isSentSide
       ? (f.sent_at ? fmtDate(f.sent_at) : '—')
       : (due ? fmtDate(due) : '—');
     const whenTitle = isSentSide
@@ -8490,8 +8504,10 @@ function renderInvoiceBuckets(selectedProjects) {
       ? `<span class="inv-terms" title="Payment terms — days after sending before it counts as late">Net <input type="number" min="1" max="365" value="${invoiceTermsDays(f)}" data-inv-terms="${f.id}" data-inv-proj="${escapeHtml(project)}" /></span>
          <input type="checkbox" class="inv-chk" data-inv-paid="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when payment is received" />
          <button type="button" class="inv-act inv-act-undo" data-inv-unsend="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Undo — it wasn't actually sent">↩</button>`
-      : doneAlready
-      ? '<span class="inv-paidtag" title="Already invoiced and paid. It still needs a trigger so it drives itself next time.">paid</span>'
+      : status === 'paid'
+      ? ''   // history: nothing left to tick
+      : status === 'notrigger'
+      ? ''   // a list, not a worklist: nothing here went through the flow
       : status === 'pastdue'
       ? ''   // no control: nothing to invoice until the trigger is ticked on the schedule
       : `<input type="checkbox" class="inv-chk" data-inv-sent="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when the invoice has been sent" />`;

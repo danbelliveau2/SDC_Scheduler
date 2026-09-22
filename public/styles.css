@@ -11715,11 +11715,17 @@ td.sales-suppressed {
 /* Scroll-past-the-bottom room so the last section can sit mid-screen. */
 #view-invoicing #dept-project-rollup { padding-bottom: 45vh; }
 /* Status bucket cards — each scrolls its own list. */
+/* Five cards, one row — Past due / Ready / Sent / Paid in full / No trigger.
+   They are the stages of one flow and reading them left to right IS the
+   point, so they stay on a line and give up width instead of wrapping. */
 .inv-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 10px;
   margin-bottom: 10px;
+}
+@media (min-width: 1280px) {
+  .inv-cards { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 .inv-card {
   background: var(--surface, #fff);
@@ -16212,12 +16218,10 @@ tr.group-header.level-1[data-risk-first="1"] td {
 .inv-pm-group.is-clear > summary::-webkit-details-marker { display: none; }
 .inv-pm-group.is-clear .inv-group-count { opacity: 0.55; }
 
-/* A No-trigger row that was already invoiced and paid. It still belongs in the
-   card — the milestone has nothing driving it — but there is nothing left to
-   tick, so it says so rather than offering a checkbox. */
-.inv-paidtag {
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  color: #15803d;
-  white-space: nowrap;
-}
+
+/* Narrower cards mean the project line and milestone name have to wrap rather
+   than push the card wide. */
+.inv-cards .inv-item-proj,
+.inv-cards .inv-item-name { min-width: 0; overflow-wrap: anywhere; }
+/* Paid in full is a record, not a worklist — quieter than the rest. */
+.inv-card.inv-done .inv-item-date { color: #15803d; font-weight: var(--fw-semibold); }
