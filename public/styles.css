@@ -16225,3 +16225,31 @@ tr.group-header.level-1[data-risk-first="1"] td {
 .inv-cards .inv-item-name { min-width: 0; overflow-wrap: anywhere; }
 /* Paid in full is a record, not a worklist — quieter than the rest. */
 .inv-card.inv-done .inv-item-date { color: #15803d; font-weight: var(--fw-semibold); }
+
+/* ── Card lists stay short ───────────────────────────────────────────────
+   Paid in full is a record and grows without limit; left alone it stretched
+   the page to several blank screens while every other card sat empty beside
+   it. Each list scrolls itself instead, so the row of cards keeps one height
+   and the rest of the page stays reachable. */
+.inv-card-list {
+  max-height: 320px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+/* Month picker on Paid in full — sticky so it stays reachable while the list
+   under it scrolls. */
+.inv-month {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  width: 100%;
+  margin-bottom: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: white;
+  font: inherit;
+  font-size: var(--fs-2xs);
+  cursor: pointer;
+}
+.inv-month:focus { outline: none; border-color: #15803d; box-shadow: 0 0 0 2px rgba(21,128,61,0.15); }
