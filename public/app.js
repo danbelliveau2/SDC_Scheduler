@@ -2349,33 +2349,33 @@ function sectionForLooseAnchor(t) {
   return null;
 }
 
+// The task set the schedule is showing right now. The grid and the Gantt
+// MUST render the same rows — a chart that disagrees with the list beside it
+// is worse than either being wrong on its own, because neither can be
+// trusted. Both read this.
+function scheduleVisibleTasks() {
+  let out = applyFilters(state.tasks);
+  // Actions mode. Anchor rows are always kept: they are project-spine
+  // markers, not work items.
+  const am = state.scheduleView?.actionsMode || 'schedule';
+  if (am === 'schedule') out = out.filter(t => !t.is_action || inferredAnchorKey(t));
+  else if (am === 'actions') out = out.filter(t => t.is_action || inferredAnchorKey(t));
+  // Only-critical mode, anchors kept for the same reason.
+  if (state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath) {
+    const crit = computeCriticalPath();
+    out = out.filter(t => crit.has(String(t.id)) || inferredAnchorKey(t));
+  }
+  if (state._exportOnlyIds) {
+    out = out.filter(t => inferredAnchorKey(t) || state._exportOnlyIds.has(t.id));
+  }
+  return out;
+}
+
 function renderTable() {
   const tbody = document.getElementById('tasks-tbody');
   if (!tbody) return;
   try { seedCollapsedSections(); } catch (_) {}
-  let filtered = applyFilters(state.tasks);
-  // v4.46: Actions mode filter. Default 'schedule' hides action items
-  // entirely; 'actions' shows ONLY actions; 'combined' shows both.
-  // Anchor rows (Receipt of PO, FAT, Ship Machine, etc.) are always kept
-  // because they're project-spine markers, not work items.
-  const am = state.scheduleView?.actionsMode || 'schedule';
-  if (am === 'schedule') {
-    filtered = filtered.filter(t => !t.is_action || inferredAnchorKey(t));
-  } else if (am === 'actions') {
-    filtered = filtered.filter(t => t.is_action || inferredAnchorKey(t));
-  }
-  // Only-critical mode: restrict the visible set to tasks on the critical-path
-  // chain. Anchor milestones are always kept (Receipt of PO / FAT / Ship Machine)
-  // since they're the spine markers — Ship Machine sits outside the path but is
-  // still useful context. If the user wants ship-machine hidden too, they can
-  // collapse the section.
-  if (state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath) {
-    const crit = computeCriticalPath();
-    filtered = filtered.filter(t => crit.has(String(t.id)) || inferredAnchorKey(t));
-  }
-  if (state._exportOnlyIds) {
-    filtered = filtered.filter(t => inferredAnchorKey(t) || state._exportOnlyIds.has(t.id));
-  }
+  const filtered = scheduleVisibleTasks();
   const empty = document.getElementById('empty-state');
 
   if (filtered.length === 0) {
@@ -4165,7 +4165,7 @@ function renderGantt() {
   // the user saw with M2 selected: M1 bars still painting on the right
   // side of the chart).
   // Single applyFilters() call — result reused for both ordering paths below.
-  const _ganttFiltered = applyFilters(state.tasks);
+  const _ganttFiltered = scheduleVisibleTasks();
   let ordered;
   if (state.scheduleView?.sortByStart) {
     ordered = [..._ganttFiltered].sort((a, b) =>
@@ -4180,35 +4180,18 @@ function renderGantt() {
       .map(id => byId[id])
       .filter(Boolean);
   }
-  // Same Only-critical filter renderTable applies, mirrored here so the Gantt only
-  // shows the critical bars + anchor markers when the toggle is on.
-  const onlyCrit = state.scheduleView?.criticalOnly && state.scheduleView?.criticalPath;
-  const critForFilter = onlyCrit ? computeCriticalPath() : null;
-  // v4.47: mirror the Schedule/Combined/Actions filter from renderTable —
-  // the Gantt must always show the SAME row set as the grid. Without this
-  // filter, the Gantt drew every task regardless of actionsMode, so "Actions
-  // only" in the grid still showed scheduled bars on the chart.
-  const am = state.scheduleView?.actionsMode || 'schedule';
+  // Actions mode, only-critical and export-only are already applied by
+  // scheduleVisibleTasks — the grid and the chart share that one definition
+  // now, so what remains here is only what is specific to drawing a bar.
   const filtered = ordered
+    // A bar needs dates; the grid can show a row without them.
     .filter(t => t.start_date && t.end_date)
     .filter(t => !isTaskInCollapsedGroup(t))
     // Anchors always render. Above-section-10 rows (phase_group=null, non-anchor)
     // render too. Anything else needs a valid HIERARCHY phase_group; tasks with
     // a phase_group that doesn't match any current section are legacy leftovers
     // and stay hidden (the grid hides them too).
-    .filter(t => inferredAnchorKey(t) || !t.phase_group || validSectionKeys.has(t.phase_group))
-    .filter(t => !critForFilter || critForFilter.has(String(t.id)) || inferredAnchorKey(t))
-    .filter(t => {
-      // Anchors always render. Otherwise honor the actionsMode toggle:
-      //   schedule → drop is_action tasks
-      //   actions  → drop non-action tasks
-      //   combined → keep both
-      if (inferredAnchorKey(t)) return true;
-      if (am === 'schedule') return !t.is_action;
-      if (am === 'actions')  return !!t.is_action;
-      return true; // combined
-    })
-    .filter(t => !state._exportOnlyIds || inferredAnchorKey(t) || state._exportOnlyIds.has(t.id));
+    .filter(t => inferredAnchorKey(t) || !t.phase_group || validSectionKeys.has(t.phase_group));
 
   // Exposed so the drawer chain below (drawBarMeta, drawMilestoneDiamonds, etc.)
   // can loop the tasks actually rendering bars right now instead of state.tasks
