@@ -25526,6 +25526,95 @@ function renderPersonDashboard() {
   panel.classList.add('is-open');
 }
 
+// Popup create/edit form for a team_members row — Name, Department,
+// Specialty/Level, Lead. Pass a full state.team row to edit it, or a seed
+// object with no `.id` (e.g. { discipline: disc }) to create a new member
+// pre-filled into that discipline's card. Sits alongside the existing
+// inline name/specialty inputs + star toggle on each row — this is the
+// deeper editor, not a replacement for the quick inline path.
+function openTeamMemberModal(member) {
+  const existing = document.getElementById('team-member-modal');
+  if (existing) existing.remove();
+  const isEdit = !!(member && Number.isFinite(member.id));
+  const m = member || {};
+  const overlay = document.createElement('div');
+  overlay.id = 'team-member-modal';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card app-dialog" style="max-width: 440px;">
+      <div class="modal-head">
+        <h2>${isEdit ? 'Edit team member' : 'Add team member'}</h2>
+        <button class="modal-close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="pr-field">
+          <div class="pr-label">Name</div>
+          <input type="text" id="tm-name-input" class="app-dialog-input" value="${escapeHtml(m.name || '')}" />
+        </div>
+        <div class="pr-field">
+          <div class="pr-label">Department</div>
+          <select id="tm-discipline-select" class="app-dialog-input">
+            ${boardVisibleDisciplines().map(d => `<option value="${d.key}"${d.key === m.discipline ? ' selected' : ''}>${escapeHtml(d.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="pr-field">
+          <div class="pr-label">Specialty / Level</div>
+          <input type="text" id="tm-specialty-input" class="app-dialog-input" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" />
+        </div>
+        <div class="pr-field tm-checkbox-row">
+          <input type="checkbox" id="tm-lead-checkbox" ${m.is_lead ? 'checked' : ''} />
+          <label for="tm-lead-checkbox">Department lead</label>
+        </div>
+        <p class="promote-error" id="tm-error" style="background:#fee2e2;color:#991b1b;padding:8px 10px;border-radius:4px;font-size:var(--fs-base);margin:10px 0 0;display:none;"></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn-secondary" data-action="cancel">Cancel</button>
+        <button type="button" class="btn-primary" data-action="confirm" id="tm-confirm-btn">${isEdit ? 'Save' : 'Add'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onEsc); };
+  function onEsc(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onEsc);
+  overlay.querySelector('.modal-close').onclick = close;
+  overlay.querySelector('[data-action="cancel"]').onclick = close;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  const nameInput = overlay.querySelector('#tm-name-input');
+  const discSelect = overlay.querySelector('#tm-discipline-select');
+  const specialtyInput = overlay.querySelector('#tm-specialty-input');
+  const leadCheckbox = overlay.querySelector('#tm-lead-checkbox');
+  const errorEl = overlay.querySelector('#tm-error');
+  const showErr = (msg) => { errorEl.textContent = msg; errorEl.style.display = ''; };
+  const hideErr = () => { errorEl.style.display = 'none'; };
+  nameInput.addEventListener('input', hideErr);
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') overlay.querySelector('[data-action="confirm"]').click(); });
+  setTimeout(() => nameInput.select(), 50);
+
+  overlay.querySelector('[data-action="confirm"]').addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    if (!name) { showErr('Name is required.'); return; }
+    const discipline = discSelect.value;
+    const specialty = specialtyInput.value.trim();
+    const is_lead = leadCheckbox.checked;
+    const btn = overlay.querySelector('#tm-confirm-btn');
+    btn.disabled = true;
+    btn.textContent = isEdit ? 'Saving…' : 'Adding…';
+    const result = isEdit
+      ? await api.team.update(m.id, { name, discipline, specialty, is_lead })
+      : await api.team.create({ name, discipline, specialty, is_lead });
+    if (result && result.error) {
+      btn.disabled = false;
+      btn.textContent = isEdit ? 'Save' : 'Add';
+      showErr(result.error);
+      return;
+    }
+    await loadTeam();
+    close();
+  });
+}
+
 function renderTeam() {
   // (The project rollup — key milestones + financial calendar — moved to
   // the INVOICING tab. Departments is people + resources only now.)
@@ -25548,6 +25637,7 @@ function renderTeam() {
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
+        <button type="button" class="team-member-edit-btn" data-action="edit-member" data-id="${m.id}" title="Edit details">✎</button>
       </li>`;
   };
 
@@ -25629,13 +25719,8 @@ function renderTeam() {
 
   // Wire add-member buttons (one per card).
   grid.querySelectorAll('[data-action="add-member"]').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const disc = btn.dataset.discipline;
-      const created = await api.team.create({ name: 'New member', discipline: disc });
-      await loadTeam();
-      // Focus the new row's name input so the user types right into it.
-      const input = document.querySelector(`.team-member-name[data-id="${created.id}"]`);
-      if (input) { input.focus(); input.select(); }
+    btn.addEventListener('click', () => {
+      openTeamMemberModal({ discipline: btn.dataset.discipline });
     });
   });
 
@@ -25708,6 +25793,16 @@ function renderTeam() {
   // runs without also triggering setFocusedMember.
   grid.querySelectorAll('[data-action="toggle-lead"]').forEach(btn => {
     btn.addEventListener('click', (e) => e.stopPropagation());
+  });
+
+  // Pencil button — opens the full create/edit modal for this member.
+  grid.querySelectorAll('[data-action="edit-member"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const member = state.team.find(m => m.id === id);
+      if (member) openTeamMemberModal(member);
+    });
   });
 
   // Drag-to-reorder within the same discipline. Placeholders are draggable=false

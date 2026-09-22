@@ -133,10 +133,12 @@ module.exports = function createRouter(deps) {
     try {
       const name = (req.body.name || '').trim();
       const discipline = req.body.discipline;
+      const specialty = (req.body.specialty || '').trim() || null;
+      const is_lead = req.body.is_lead ? 1 : 0;
       if (!name) return res.status(400).json({ error: 'name required' });
       if (!TEAM_DISCIPLINES.has(discipline)) return res.status(400).json({ error: 'invalid discipline' });
       const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM team_members WHERE discipline = ?', [discipline]);
-      const [result] = await pool.query('INSERT INTO team_members (name, discipline, sort_order) VALUES (?, ?, ?)', [name, discipline, maxRow.m + 1]);
+      const [result] = await pool.query('INSERT INTO team_members (name, discipline, sort_order, specialty, is_lead) VALUES (?, ?, ?, ?, ?)', [name, discipline, maxRow.m + 1, specialty, is_lead]);
       const [[row]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [result.insertId]);
       res.json(row);
       io.emit('team:updated');
