@@ -8468,7 +8468,7 @@ function renderInvoiceBuckets(selectedProjects) {
          <input type="checkbox" class="inv-chk" data-inv-paid="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when payment is received" />
          <button type="button" class="inv-act inv-act-undo" data-inv-unsend="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Undo — it wasn't actually sent">↩</button>`
       : status === 'pastdue'
-      ? `<span class="inv-await" title="Nothing to invoice yet — the trigger for this milestone is not checked off on the schedule. Tick it there and this moves to Ready to invoice.">on schedule</span>`
+      ? ''   // no control: nothing to invoice until the trigger is ticked on the schedule
       : `<input type="checkbox" class="inv-chk" data-inv-sent="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when the invoice has been sent" />`;
     return `<div class="inv-item">
       <div class="inv-item-main">
@@ -8502,22 +8502,37 @@ function renderInvoiceBuckets(selectedProjects) {
       items = awaiting + lateHtml;
     } else if (c.key === 'notrigger') {
       // Grouped by PM — each person expands/collapses their own list, and
-      // every line keeps the job number so "Down Payment" isn't a mystery.
+      // every line keeps the job number so "Down Payment" is not a mystery.
       const byPm = {};
+      // Seed the WHOLE PM roster first, so a PM with nothing outstanding
+      // reads as a deliberate zero rather than being missing. Same source as
+      // the PM picker on a schedule: active, non-placeholder, discipline pm.
+      for (const m of (state.team || [])) {
+        if (m.active === 0 || isPlaceholder(m.name)) continue;
+        if (m.discipline !== 'pm') continue;
+        byPm[m.name] = [];
+      }
       for (const row of rows) {
         const pm = projectLead(row.project, 'pm') || '';
         (byPm[pm] = byPm[pm] || []).push(row);
       }
-      const pms = Object.keys(byPm).sort((a, b) => (a === '') - (b === '') || a.localeCompare(b));
+      // Anyone with rows first, then the clear ones, then unassigned last.
+      const pms = Object.keys(byPm).sort((a, b) =>
+        (a === '') - (b === '')
+        || (byPm[b].length > 0) - (byPm[a].length > 0)
+        || a.localeCompare(b));
       // Re-renders happen while per-project financials stream in — without
       // remembering the open state, a group snapped shut the moment the next
       // load landed (Nick: "can only expand IF you have a project open").
-      items = pms.map(pm => `
-        <details class="inv-pm-group" data-pm="${escapeHtml(pm)}"${_invPmOpen[pm] ? ' open' : ''}>
-          <summary class="inv-group-pm">👤 ${pm ? escapeHtml(pm) : 'No PM assigned'} <span class="inv-group-count">${byPm[pm].length}</span></summary>
-          ${byPm[pm].sort((a, b) => a.project.localeCompare(b.project)).map(r => itemHtml(r)).join('')}
-        </details>
-      `).join('');
+      items = pms.map(pm => {
+        const list = byPm[pm];
+        const none = list.length === 0;
+        return `
+        <details class="inv-pm-group ${none ? 'is-clear' : ''}" data-pm="${escapeHtml(pm)}"${!none && _invPmOpen[pm] ? ' open' : ''}>
+          <summary class="inv-group-pm">👤 ${pm ? escapeHtml(pm) : 'No PM assigned'} <span class="inv-group-count">${list.length}</span></summary>
+          ${list.slice().sort((a, b) => a.project.localeCompare(b.project)).map(r => itemHtml(r)).join('')}
+        </details>`;
+      }).join('');
     } else {
       items = rows.map(r => itemHtml(r)).join('');
     }

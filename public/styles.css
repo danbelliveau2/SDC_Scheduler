@@ -16138,15 +16138,6 @@ tr.group-header.level-1[data-risk-first="1"] td {
 }
 
 
-/* Past due rows carry no Sent tick — the trigger is not checked off, so there
-   is nothing to invoice yet. This says where the fix actually lives. */
-.inv-await {
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-semibold);
-  color: var(--text-muted);
-  font-style: italic;
-  white-space: nowrap;
-}
 
 /* The schedule line a financial milestone is waiting on. Shown under the name
    so a milestone whose name and trigger disagree — "Acceptance at Customer
@@ -16209,3 +16200,14 @@ tr.group-header.level-1[data-risk-first="1"] td {
    takes its static position IN that row — beside the button, not under it.
    Pin it to the bottom edge so it drops the way a menu should. */
 .banner-left-extra .banner-projects-popup { top: 100%; left: 0; }
+
+/* A PM with nothing outstanding still gets a row, so "clear" and "not counted"
+   never look the same. Muted, and it does not open — there is nothing inside. */
+.inv-pm-group.is-clear > summary {
+  color: var(--text-muted);
+  cursor: default;
+  list-style: none;
+}
+.inv-pm-group.is-clear > summary::marker,
+.inv-pm-group.is-clear > summary::-webkit-details-marker { display: none; }
+.inv-pm-group.is-clear .inv-group-count { opacity: 0.55; }
