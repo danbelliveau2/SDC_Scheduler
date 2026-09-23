@@ -14250,16 +14250,58 @@ async function copyCustomerLink(project) {
 // navigator.clipboard silently no-ops outside a secure context (HTTPS or
 // localhost) — this app is often opened over plain http://<lan-host>, so the
 // write fails every time with nothing telling the user. Fall back to a
-// dialog with the link pre-filled so it can still be selected and copied by
-// hand, instead of a toast that claims success when nothing was copied.
+// dialog with a working Copy button (the older execCommand('copy') path
+// still works outside a secure context, unlike navigator.clipboard) so
+// nobody has to select-all + Ctrl+C by hand.
 async function copyLinkOrShowIt(url, successMessage) {
   let copied = false;
   try { await navigator.clipboard.writeText(url); copied = true; } catch (_) {}
   if (copied) {
     showToast(successMessage, { duration: 7000 });
   } else {
-    await showPromptDialog({ title: 'Link ready — copy it below', message: 'Could not copy automatically (this page isn\'t loaded over https). Click the field, select all, and copy:', value: url, okLabel: 'Done' });
+    await showCopyLinkDialog(url, { message: 'Automatic copy is blocked on this page (not https). Click Copy below:' });
   }
+}
+
+function showCopyLinkDialog(url, opts = {}) {
+  return new Promise(resolve => {
+    document.getElementById('app-copy-link-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'app-copy-link-dialog';
+    overlay.className = 'modal-overlay app-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="modal-card app-dialog">
+        <div class="modal-head"><h2>${escapeHtml(opts.title || 'Link ready')}</h2></div>
+        <div class="modal-body">
+          ${opts.message ? `<div class="app-dialog-message">${_formatDialogMessage(opts.message)}</div>` : ''}
+          <input type="text" class="app-dialog-input" readonly />
+          <div class="app-dialog-error hidden"></div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn-ghost" data-action="close">Close</button>
+          <button type="button" class="btn-primary" data-action="copy">📋 Copy</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('.app-dialog-input');
+    input.value = url;
+    const errEl = overlay.querySelector('.app-dialog-error');
+    const copyBtn = overlay.querySelector('[data-action="copy"]');
+    const done = (result) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(result); };
+    const selectLink = () => { input.focus(); input.select(); input.setSelectionRange(0, url.length); };
+    copyBtn.onclick = () => {
+      selectLink();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      if (ok) { copyBtn.textContent = '✓ Copied'; setTimeout(() => done(true), 600); }
+      else { errEl.textContent = 'Still could not copy automatically — the text above is selected, press Ctrl/Cmd+C.'; errEl.classList.remove('hidden'); }
+    };
+    overlay.querySelector('[data-action="close"]').onclick = () => done(false);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(false); });
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(false); } };
+    document.addEventListener('keydown', onKey);
+    setTimeout(selectLink, 0);
+  });
 }
 
 // Static snapshot link — a plain HTML page with today's schedule, no login,
