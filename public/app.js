@@ -14249,6 +14249,35 @@ async function copyCustomerLink(project) {
   } catch (err) { showToast('Could not create the link: ' + (err.message || err), { kind: 'error' }); }
 }
 
+// Static snapshot link — a plain HTML page with today's schedule, no login,
+// no live connection to this app at all (see lib/snapshotRender.js). Same
+// mint-or-reuse shape as the live link above, but a separate token/endpoint:
+// creating, refreshing or revoking one never touches the other.
+async function copySnapshotLink(project) {
+  const rec = state.projectsIndex && state.projectsIndex[project];
+  if (!rec || !rec.id) { showToast('This project has no database row yet — open it once and try again.', { kind: 'error' }); return; }
+  try {
+    const r = await fetch(`/api/projects/${rec.id}/snapshot-link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    const url = `${location.origin}${body.path}`;
+    try { await navigator.clipboard.writeText(url); } catch (_) {}
+    showToast('Snapshot link copied — a static page, no login, not live. Use "Refresh snapshot" any time to update it.', { duration: 7000 });
+    console.log('[snapshot] link for', project, url);
+  } catch (err) { showToast('Could not create the snapshot: ' + (err.message || err), { kind: 'error' }); }
+}
+
+async function refreshSnapshotLink(project) {
+  const rec = state.projectsIndex && state.projectsIndex[project];
+  if (!rec || !rec.id) return;
+  try {
+    const r = await fetch(`/api/projects/${rec.id}/snapshot-link/refresh`, { method: 'POST' });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error === 'no_snapshot_yet' ? 'No snapshot link yet — create one first.' : (body.error || `HTTP ${r.status}`));
+    showToast('Snapshot refreshed — the link stays the same.', { kind: 'success' });
+  } catch (err) { showToast(err.message || 'Refresh failed', { kind: 'error' }); }
+}
+
 function showProjectTabMenu(x, y, project) {
   const isTemplate = isTemplateProject(project);
   const items = [];
@@ -14367,6 +14396,20 @@ function showProjectTabMenu(x, y, project) {
     try {
       await fetch(`/api/projects/${rec.id}/share-link`, { method: 'DELETE' });
       showToast('Customer link revoked.');
+    } catch (err) { showToast(err.message || 'Revoke failed', { kind: 'error' }); }
+  }});
+  // Static snapshot — a separate, no-login, not-live page. Same three
+  // actions as the live link (copy/refresh/revoke), own token, own endpoints.
+  items.push({ label: '📄 Copy static snapshot link', onClick: () => copySnapshotLink(project) });
+  items.push({ label: '🔄 Refresh snapshot', onClick: () => refreshSnapshotLink(project) });
+  items.push({ label: '📄 Revoke snapshot link…', onClick: async () => {
+    const rec = state.projectsIndex && state.projectsIndex[project];
+    if (!rec || !rec.id) return;
+    const ok = await showConfirmDialog({ title: 'Revoke the snapshot link?', message: `The static page for ${project} stops loading immediately. A new link can be made later.`, okLabel: 'Revoke', danger: true });
+    if (!ok) return;
+    try {
+      await fetch(`/api/projects/${rec.id}/snapshot-link`, { method: 'DELETE' });
+      showToast('Snapshot link revoked.');
     } catch (err) { showToast(err.message || 'Revoke failed', { kind: 'error' }); }
   }});
   // 3) Destructive — only on non-template tabs.

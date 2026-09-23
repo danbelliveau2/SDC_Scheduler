@@ -28,6 +28,10 @@ scheduler.db-wal
 
 # Database backup dumps — runtime data (full DB contents), never source
 backups/
+
+# Rendered customer snapshot pages — generated output, not source. Regenerated
+# on demand (routes/projects.js) or nightly (lib/cronJobs.js); never committed.
+public-snapshots/
 *.sql
 
 # Local IDE / tooling

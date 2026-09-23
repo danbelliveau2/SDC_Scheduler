@@ -1,6 +1,7 @@
 'use strict';
 const { Router } = require('express');
 const XLSX = require('xlsx');
+const snapshotRender = require('../lib/snapshotRender');
 
 // ── Smartsheet phase header → SDC hierarchy mapping ──────────────────────────
 const SMARTSHEET_PHASES = {
@@ -655,6 +656,54 @@ module.exports = function createRouter(deps) {
   router.delete('/api/projects/:id/share-link', requireRole('editor'), async (req, res) => {
     try {
       await pool.query('UPDATE projects SET share_token = NULL WHERE id = ?', [Number(req.params.id)]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── Static customer snapshots ─────────────────────────────────────────────
+  // A separate token from share-link, above: this one names a pre-rendered
+  // HTML file (lib/snapshotRender.js) served as a plain static file by
+  // server.js, not a live view of the running app. Create/refresh both do
+  // the same "render now" step; the only difference is whether a new token
+  // is minted first. See lib/snapshotRender.js's header for why this exists
+  // alongside the live share link rather than replacing it.
+  router.post('/api/projects/:id/snapshot-link', requireRole('editor'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const [[row]] = await pool.query('SELECT id, name, snapshot_token FROM projects WHERE id = ?', [id]);
+      if (!row) return res.status(404).json({ error: 'not found' });
+      let token = row.snapshot_token;
+      if (!token || req.body?.regenerate) {
+        token = require('crypto').randomBytes(24).toString('hex');
+        await pool.query('UPDATE projects SET snapshot_token = ? WHERE id = ?', [token, id]);
+      }
+      await snapshotRender.generateSnapshot(pool, { token, projectName: row.name });
+      await pool.query('UPDATE projects SET snapshot_updated_at = NOW() WHERE id = ?', [id]);
+      res.json({ ok: true, token, path: `/snapshot/${token}` });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Re-render the existing token's file in place — same URL, fresh content.
+  // 404s rather than minting a token if one doesn't exist yet: refreshing is
+  // not how a link gets created the first time.
+  router.post('/api/projects/:id/snapshot-link/refresh', requireRole('editor'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const [[row]] = await pool.query('SELECT id, name, snapshot_token FROM projects WHERE id = ?', [id]);
+      if (!row) return res.status(404).json({ error: 'not found' });
+      if (!row.snapshot_token) return res.status(404).json({ error: 'no_snapshot_yet' });
+      await snapshotRender.generateSnapshot(pool, { token: row.snapshot_token, projectName: row.name });
+      await pool.query('UPDATE projects SET snapshot_updated_at = NOW() WHERE id = ?', [id]);
+      res.json({ ok: true, token: row.snapshot_token, path: `/snapshot/${row.snapshot_token}` });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  router.delete('/api/projects/:id/snapshot-link', requireRole('editor'), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const [[row]] = await pool.query('SELECT snapshot_token FROM projects WHERE id = ?', [id]);
+      if (row?.snapshot_token) snapshotRender.deleteSnapshotFile(row.snapshot_token);
+      await pool.query('UPDATE projects SET snapshot_token = NULL, snapshot_updated_at = NULL WHERE id = ?', [id]);
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
