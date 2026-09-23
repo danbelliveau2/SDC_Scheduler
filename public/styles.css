@@ -16312,3 +16312,46 @@ tr.group-header.level-1[data-risk-first="1"] td {
   margin: 0 4px;
 }
 #invoicing-filters:empty { display: none; }
+
+/* ── Project picker: same shape as the All-projects tab ──────────────────
+   Select all / Clear live INSIDE the dropdown, not as pills beside it. One
+   control doing one job, and the same one on both pages. */
+.pdash-picker-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  position: sticky;
+  top: 0;
+  background: var(--surface, #fff);
+  z-index: 1;
+}
+.pdash-picker-action {
+  padding: 3px 10px;
+  border: 1px solid #c8d5e3;
+  border-radius: 6px;
+  background: white;
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--sdc-primary, #1574c4);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pdash-picker-action:hover { background: #f0f7fd; border-color: var(--sdc-primary, #1574c4); }
+/* Variance now sits with the heading it belongs to, pushed to the right. */
+.pdash-variance-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid #c8d5e3;
+  border-radius: 6px;
+  background: white;
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: #4b5e70;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pdash-variance-btn:hover { background: #eef4fa; border-color: #94a3b8; }
+.pdash-variance-btn.is-on { background: var(--sdc-primary, #1574c4); border-color: var(--sdc-primary, #1574c4); color: #fff; }

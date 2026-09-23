@@ -9062,6 +9062,10 @@ function renderDeptProjectRollup() {
             : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} of ${allProjects.length}`)
         }</strong> <span class="pdash-picker-caret">▾</span></summary>
         <div class="pdash-picker-panel">
+          <div class="pdash-picker-actions">
+            <button type="button" class="pdash-picker-action" data-action="select-all">Select all</button>
+            <button type="button" class="pdash-picker-action" data-action="select-none">Clear</button>
+          </div>
           <div class="pdash-picker-list">
             ${allProjects.map(p => `
               <label class="pdash-picker-item">
@@ -9071,10 +9075,7 @@ function renderDeptProjectRollup() {
           </div>
         </div>
       </details>
-      <button type="button" data-action="select-all" class="pdash-picker-sidebtn">Show all</button>
-      <button type="button" data-action="select-none" class="pdash-picker-sidebtn">Hide all</button>
-      <button type="button" data-action="toggle-variance" class="pdash-picker-sidebtn${showVariance ? ' is-on' : ''}"
-        title="Show each milestone&#39;s date vs the baseline — strike-through original dates plus trending/final early-late chips. Off = just the projected dates and done-state.">± Variance</button>
+
       ${invoicingView ? `<span class="pdash-filter-sep"></span>${_pdashFinMonthControls(finMonthFrom, finMonthTo)}` : ''}
     </div>`;
 
@@ -9085,6 +9086,8 @@ function renderDeptProjectRollup() {
       <header class="pdash-section-head">
         <h2>💲 Financial Milestones</h2>
         <span class="pdash-section-sub">Invoiceable payment events across selected projects.</span>
+        <button type="button" data-action="toggle-variance" class="pdash-variance-btn${showVariance ? ' is-on' : ''}"
+          title="Show each milestone&#39;s date vs the baseline — strike-through original dates plus trending/final early-late chips. Off = just the projected dates and done-state.">± Variance</button>
       </header>
       ${financialsTableHtml}
     </section>
@@ -9157,7 +9160,8 @@ function renderDeptProjectRollup() {
     renderDeptProjectRollup();
     try { renderTeamDashboard(); } catch (_) {}
   });
-  _fRoot.querySelector('[data-action="toggle-variance"]')?.addEventListener('click', () => {
+  // Variance sits with the Financial Milestones heading now, inside the rollup.
+  root.querySelector('[data-action="toggle-variance"]')?.addEventListener('click', () => {
     try { localStorage.setItem('sdcDeptShowVariance', showVariance ? '0' : '1'); } catch (_) {}
     renderDeptProjectRollup();
   });
