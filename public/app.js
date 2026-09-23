@@ -8307,12 +8307,20 @@ function renderInvoicingPage() {
 // A financial milestone drives itself from EITHER an explicit predecessor
 // or a synced anchor. Nothing in either field means nothing can ever move
 // this milestone, whoever eventually invoices it by hand.
-function financialHasTrigger(f) {
+function financialHasTrigger(f, project) {
   if (!f) return false;
   const refs = String(f.predecessors || '').split(',').map(x => x.trim()).filter(Boolean);
-  return refs.length > 0 || !!f.sync_to_anchor;
+  const hasText = refs.length > 0 || !!f.sync_to_anchor;
+  if (!hasText) return false;
+  // Before the schedule has loaded nothing can resolve, and calling every
+  // milestone on the job untriggered would be a lie with a big number next to
+  // it. With no tasks to check against, take the field at its word.
+  const anyTasks = (state.tasks || []).some(t => t.project === project);
+  if (!anyTasks) return true;
+  // Every reference has to land on a real row.
+  if (refs.length) return refs.every(r => !!(resolveFinancialTrigger(r, project) || {}).task);
+  return !!financialAnchorTask(f, project);
 }
-
 function invoiceTermsDays(f) {
   const n = Number(f.terms_days);
   return Number.isFinite(n) && n > 0 ? n : 30;
@@ -8349,7 +8357,15 @@ function financialDueDate(f, project) {
 function financialTriggerLabel(f, project) {
   try {
     const refs = String(f.predecessors || '').split(',').map(x => x.trim()).filter(Boolean);
-    if (refs.length) return 'line ' + refs.join(', ');
+    if (refs.length) {
+      // Mark a reference that resolves to nothing — it reads as wired
+      // otherwise, and the whole point of showing the trigger is to make a
+      // wrong one visible.
+      return 'line ' + refs.map(r => {
+        const res = resolveFinancialTrigger(r, project);
+        return (res && res.task) ? r : r + ' (no such line)';
+      }).join(', ');
+    }
     if (f.sync_to_anchor) {
       const t = financialAnchorTask(f, project);
       const line = t ? lineByTaskId[t.id] : null;
@@ -8365,7 +8381,7 @@ function invoiceStatus(f, project) {
   // worth nothing if it quietly omits the ones that were. Sent and Paid are
   // still actionable from the row, so anything already handled can be pushed
   // through from here.
-  if (!financialHasTrigger(f)) return 'notrigger';
+  if (!financialHasTrigger(f, project)) return 'notrigger';
   if (f.paid) return 'paid';
   if (f.sent) {
     // Sent → either still within terms ("awaiting payment") or LATE
