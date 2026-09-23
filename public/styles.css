@@ -16299,3 +16299,16 @@ tr.group-header.level-1[data-risk-first="1"] td {
 .inv-card.inv-done .inv-h-chk { display: none; }
 .inv-card.inv-done .inv-item,
 .inv-card.inv-done .inv-list-head { grid-template-columns: minmax(0, 1fr) max-content; }
+
+/* Invoicing filter strip: one row of controls above the cards they govern.
+   Separator between the project picker and the date range so the two levels
+   read as two filters rather than one long row of buttons. */
+#invoicing-filters .pdash-filters { margin-bottom: 8px; flex-wrap: wrap; }
+.pdash-filter-sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 20px;
+  background: var(--border, #e2e8f0);
+  margin: 0 4px;
+}
+#invoicing-filters:empty { display: none; }

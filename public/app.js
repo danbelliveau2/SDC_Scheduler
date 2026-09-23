@@ -9049,7 +9049,11 @@ function renderDeptProjectRollup() {
       })();
 
   // ── Compose ──
-  root.innerHTML = `
+  // On Invoicing the filter strip lives in its own element ABOVE the cards.
+  // Everywhere else it stays inline at the top of the rollup.
+  const invoicingView = state.view === 'invoicing';
+  const filtersHost = invoicingView ? document.getElementById('invoicing-filters') : null;
+  const filtersHtml = `
     <div class="pdash-filters">
       <details class="pdash-picker"${state._pdashPickerOpen ? ' open' : ''}>
         <summary>Projects: <strong>${
@@ -9070,8 +9074,12 @@ function renderDeptProjectRollup() {
       <button type="button" data-action="select-all" class="pdash-picker-sidebtn">Show all</button>
       <button type="button" data-action="select-none" class="pdash-picker-sidebtn">Hide all</button>
       <button type="button" data-action="toggle-variance" class="pdash-picker-sidebtn${showVariance ? ' is-on' : ''}"
-        title="Show each milestone's date vs the baseline — strike-through original dates plus trending/final early-late chips. Off = just the projected dates and done-state.">± Variance</button>
-    </div>
+        title="Show each milestone&#39;s date vs the baseline — strike-through original dates plus trending/final early-late chips. Off = just the projected dates and done-state.">± Variance</button>
+      ${invoicingView ? `<span class="pdash-filter-sep"></span>${_pdashFinMonthControls(finMonthFrom, finMonthTo)}` : ''}
+    </div>`;
+
+  root.innerHTML = `
+    ${invoicingView ? '' : filtersHtml}
 
     <section class="pdash-section">
       <header class="pdash-section-head">
@@ -9109,6 +9117,13 @@ function renderDeptProjectRollup() {
     </section>` : ''}
   `;
 
+  // On Invoicing the strip lives in its own element above the cards. Fill it
+  // here and clear it everywhere else, so the two can never render at once.
+  const _filtHost = document.getElementById('invoicing-filters');
+  if (_filtHost) _filtHost.innerHTML = invoicingView ? filtersHtml : '';
+  // Wire the filter controls wherever they actually ended up.
+  const _fRoot = (invoicingView && _filtHost) ? _filtHost : root;
+
   // ── Wire handlers ──
   // Keep the picker OPEN across the re-render every checkbox change triggers —
   // check/uncheck as many projects as you like; it only closes on click-off
@@ -9116,42 +9131,49 @@ function renderDeptProjectRollup() {
   root.querySelector('details.pdash-picker')?.addEventListener('toggle', (e) => {
     state._pdashPickerOpen = e.target.open;
   });
-  root.querySelectorAll('.pdash-picker input[type="checkbox"]').forEach(box => {
+  _fRoot.querySelectorAll('.pdash-picker input[type="checkbox"]').forEach(box => {
     box.addEventListener('change', () => {
-      const sel = [...root.querySelectorAll('.pdash-picker input[type="checkbox"]')]
+      const sel = [..._fRoot.querySelectorAll('.pdash-picker input[type="checkbox"]')]
         .filter(b => b.checked).map(b => b.dataset.project);
       try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(sel)); } catch (_) {}
       renderDeptProjectRollup();
       try { renderTeamDashboard(); } catch (_) {}
     });
   });
-  root.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
-    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(allProjects)); } catch (_) {}
+  _fRoot.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
+    // Show all means ALL — now and later. It used to snapshot the list as it
+    // stood at the moment of the click, but that list is still growing: the
+    // planner statuses that mark a job inactive load asynchronously, so early
+    // on there are 47 projects and a moment later 38. A snapshot taken on
+    // either side of that disagrees with the list it is compared against, which
+    // is how 'Show all' could leave you on '38 of 47'. Clearing the key means
+    // no subset at all, which every reader already treats as everything.
+    try { localStorage.removeItem('sdcDashboardProjects'); } catch (_) {}
     renderDeptProjectRollup();
     try { renderTeamDashboard(); } catch (_) {}
   });
-  root.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
+  _fRoot.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
     try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
     renderDeptProjectRollup();
     try { renderTeamDashboard(); } catch (_) {}
   });
-  root.querySelector('[data-action="toggle-variance"]')?.addEventListener('click', () => {
+  _fRoot.querySelector('[data-action="toggle-variance"]')?.addEventListener('click', () => {
     try { localStorage.setItem('sdcDeptShowVariance', showVariance ? '0' : '1'); } catch (_) {}
     renderDeptProjectRollup();
   });
-  root.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
+  _fRoot.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
     inp.addEventListener('change', () => {
       try { localStorage.setItem('sdcDashboardFinMonthFrom', inp.value || ''); } catch (_) {}
       renderDeptProjectRollup();
     });
   });
-  root.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
+  _fRoot.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
     inp.addEventListener('change', () => {
       try { localStorage.setItem('sdcDashboardFinMonthTo', inp.value || ''); } catch (_) {}
       renderDeptProjectRollup();
     });
   });
-  root.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
+  _fRoot.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
     btn.addEventListener('click', () => {
       try {
         localStorage.setItem('sdcDashboardFinMonthFrom', 'any');
@@ -9966,7 +9988,9 @@ function renderDashboard() {
     });
   });
   root.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
-    try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(allProjects)); } catch (_) {}
+    // Same store, same reason as the rollup picker: clear it rather than
+    // snapshot a list that is still being filtered by async planner statuses.
+    try { localStorage.removeItem('sdcDashboardProjects'); } catch (_) {}
     renderDashboard();
   });
   root.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
