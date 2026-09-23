@@ -16244,10 +16244,15 @@ document.addEventListener('mousedown', (e) => {
 });
 
 let _riskProjectSeen = null;
+// Set when the active project changes, so the render that follows can put the
+// view back into the shape people actually want: columns squeezed to their
+// content, chart fitted. Cleared as soon as it is acted on.
+let _projectJustChanged = false;
 function syncRiskStateToProject() {
   const p = state.filters.project || '';
   if (p === _riskProjectSeen) return;
   _riskProjectSeen = p;
+  _projectJustChanged = true;
   // Always land on the build. Risk mode is a place you go, never a place you
   // arrive.
   if (state.scheduleView) state.scheduleView.riskMode = false;
@@ -16283,6 +16288,20 @@ function render(opts = {}) {
   try { renderScheduleGoal(); } catch (_) {}
   if (state.view === 'portal') { try { renderPortal(); } catch (_) {} }
   try { syncRiskModeButtons(); } catch (_) {}
+
+  // Opening a project should not need three clicks to become readable. When
+  // the project has just changed, put the view into its intended shape: the
+  // columns squeezed to fit their content (what the Compress button does, and
+  // what a saved column view looked like) and the chart fitted to the job.
+  // Two frames, because both measure rendered content — the grid has to have
+  // laid out before either can read a width.
+  if (_projectJustChanged && state.view === 'schedule') {
+    _projectJustChanged = false;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      try { compressColumns(); } catch (_) {}
+      try { zoomToFit(); } catch (_) {}
+    }));
+  }
 }
 
 // ── Project phase + priority ──────────────────────────────────────────────
