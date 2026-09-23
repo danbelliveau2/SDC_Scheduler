@@ -8404,9 +8404,11 @@ function invoiceStatus(f, project) {
 // The five status cards + their line items, with Sent / Paid actions.
 // Per-card expand/collapse survives re-renders within the session.
 const _invCardOpen = {};
-// Which month the Paid in full card is showing. '' = every month. Survives the
-// re-renders that fire as each project's financials stream in.
-let _invPaidMonth = '';
+// The Paid in full date range, as YYYY-MM. Either end may be empty, which
+// means open-ended. Survives the re-renders that fire as each project`s
+// financials stream in.
+let _invPaidFrom = '';
+let _invPaidTo = '';
 // Open/closed state of the No-trigger card's per-PM groups and the Key
 // Milestones per-PM strips — survives the re-renders that fire as each
 // project's financials load.
@@ -8445,10 +8447,6 @@ function renderInvoiceBuckets(selectedProjects) {
   buckets.paid.sort((a, b) =>
     String(b.f.paid_at || dateOf(b)).localeCompare(String(a.f.paid_at || dateOf(a))));
 
-  // Which month of Paid in full is on screen. Empty = all of them.
-  const paidMonths = [...new Set(buckets.paid.map(r => String(r.f.paid_at || '').slice(0, 7)).filter(Boolean))]
-    .sort().reverse();
-  if (_invPaidMonth && !paidMonths.includes(_invPaidMonth)) _invPaidMonth = '';
 
   const CARDS = [
     // The trigger date has gone by and the schedule has not checked it off.
@@ -8461,7 +8459,9 @@ function renderInvoiceBuckets(selectedProjects) {
     { key: 'sent',      title: 'Sent',               sub: 'awaiting payment · below the line: past terms, unpaid', tone: 'inv-blue', chk: 'Paid', dateLbl: 'Sent' },
     // Read-only record, newest first. Also lists paid milestones that never
     // had a trigger — those appear in No trigger too, on purpose.
-    { key: 'paid',      title: 'Paid in full',       sub: 'invoiced and paid — newest first', tone: 'inv-done', chk: '', dateLbl: 'Date' },
+    // No date column: the payment date is accounting\'s record, not ours to
+    // restate. It still drives the month range below.
+    { key: 'paid',      title: 'Paid in full',       sub: 'invoiced and paid', tone: 'inv-done', chk: '', dateLbl: '' },
     // No 'paid' card — Dan: paid is history, not something to watch. Undo a
     // paid flag from the project's financial milestones editor if needed.
     // Just a list: which milestones have nothing driving them, by PM, by
@@ -8486,7 +8486,7 @@ function renderInvoiceBuckets(selectedProjects) {
     // date. The other date always rides in the tooltip. Legacy rows marked
     // sent before the date was recorded show "—" rather than lying.
     const when = status === 'paid'
-      ? (f.paid_at ? fmtDate(f.paid_at) : '')   // unknown stays blank, never the sent date
+      ? ''   // not shown — see the Paid in full card definition
       : isSentSide
       ? (f.sent_at ? fmtDate(f.sent_at) : '—')
       : (due ? fmtDate(due) : '—');
@@ -8573,24 +8573,28 @@ function renderInvoiceBuckets(selectedProjects) {
         </details>`;
       }).join('');
     } else if (c.key === 'paid') {
-      // A record, so it is read by month rather than scrolled end to end.
-      const shown = _invPaidMonth
-        ? rows.filter(r => String(r.f.paid_at || '').slice(0, 7) === _invPaidMonth)
-        : rows;
+      // A record, so it is read by date range rather than scrolled end to end.
+      const shown = rows.filter(r => {
+        const m = String(r.f.paid_at || '').slice(0, 7);
+        // A payment with no recorded month cannot be placed in a range, so a
+        // range hides it rather than guessing. No range = everything.
+        if (_invPaidFrom || _invPaidTo) {
+          if (!m) return false;
+          if (_invPaidFrom && m < _invPaidFrom) return false;
+          if (_invPaidTo && m > _invPaidTo) return false;
+        }
+        return true;
+      });
       count = shown.length;
-      const monthLabel = (m) => {
-        const [y, mo] = m.split('-');
-        return new Date(Number(y), Number(mo) - 1, 1).toLocaleString(undefined, { month: 'short' }) + ' ' + y.slice(2);
-      };
-      const picker = paidMonths.length
-        ? `<select class="inv-month" data-inv-paid-month title="Show only payments recorded in this month">
-             <option value="">All months (${rows.length})</option>
-             ${paidMonths.map(m => `<option value="${m}" ${m === _invPaidMonth ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}
-           </select>`
-        : '';
+      // The same From / To month pair the Financial Milestones section uses.
+      const picker = `<div class="inv-range">
+        <label>From <input type="month" data-inv-paid-from value="${escapeHtml(_invPaidFrom)}" /></label>
+        <label>To <input type="month" data-inv-paid-to value="${escapeHtml(_invPaidTo)}" /></label>
+        ${(_invPaidFrom || _invPaidTo) ? `<button type="button" class="btn-ghost btn-tight" data-inv-paid-clear>Clear</button>` : ''}
+      </div>`;
       items = picker + (shown.length
         ? shown.map(r => itemHtml(r)).join('')
-        : (_invPaidMonth ? '<div class="inv-empty">Nothing paid in that month</div>' : ''));
+        : ((_invPaidFrom || _invPaidTo) ? '<div class="inv-empty">Nothing paid in that range</div>' : ''));
     } else {
       items = rows.map(r => itemHtml(r)).join('');
     }
@@ -8637,6 +8641,11 @@ function renderInvoiceBuckets(selectedProjects) {
       } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); el.disabled = false; }
     };
     root.addEventListener('click', (e) => {
+      if (e.target.closest('[data-inv-paid-clear]')) {
+        _invPaidFrom = ''; _invPaidTo = '';
+        renderInvoiceBuckets(selectedProjects);
+        return;
+      }
       // Click a job number → jump into that schedule (open or not).
       const projEl = e.target.closest('.inv-item-proj');
       if (projEl) {
@@ -8669,9 +8678,10 @@ function renderInvoiceBuckets(selectedProjects) {
       } else if (el.dataset.invTerms) {
         const days = Math.max(1, Math.min(365, Number(el.value) || 30));
         saveAndRefresh(Number(el.dataset.invTerms), el.dataset.invProj, { terms_days: days }, el);
-      } else if (el.hasAttribute('data-inv-paid-month')) {
+      } else if (el.hasAttribute('data-inv-paid-from') || el.hasAttribute('data-inv-paid-to')) {
         // View-only: nothing to save, just redraw the card.
-        _invPaidMonth = el.value || '';
+        if (el.hasAttribute('data-inv-paid-from')) _invPaidFrom = el.value || '';
+        else _invPaidTo = el.value || '';
         renderInvoiceBuckets(selectedProjects);
       }
     });

@@ -16252,20 +16252,50 @@ tr.group-header.level-1[data-risk-first="1"] td {
   overflow-y: auto;
   scrollbar-width: thin;
 }
-/* Month picker on Paid in full — sticky so it stays reachable while the list
-   under it scrolls. */
-.inv-month {
+
+/* From / To month range on Paid in full — the same control the Financial
+   Milestones section below uses, so there is one way to pick a period on this
+   page rather than two that look different. Sticky, so it stays reachable
+   while the list under it scrolls. */
+.inv-range {
   position: sticky;
   top: 0;
   z-index: 1;
-  width: 100%;
-  margin-bottom: 4px;
-  padding: 3px 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 2px 0 5px;
+  background: var(--surface, #fff);
+}
+.inv-range label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-2xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.inv-range input[type="month"] {
   border: 1px solid var(--border);
-  border-radius: 5px;
-  background: white;
+  border-radius: 4px;
+  padding: 1px 4px;
   font: inherit;
   font-size: var(--fs-2xs);
-  cursor: pointer;
+  min-width: 0;
+  max-width: 108px;
 }
-.inv-month:focus { outline: none; border-color: #15803d; box-shadow: 0 0 0 2px rgba(21,128,61,0.15); }
+.inv-range input[type="month"]:focus {
+  outline: none;
+  border-color: #15803d;
+  box-shadow: 0 0 0 2px rgba(21,128,61,0.15);
+}
+/* No date and no action column on this card — the rows still render those
+   cells, so hide them and drop the grid to two tracks. A hidden grid item
+   takes no cell, so the name reclaims the width. */
+.inv-card.inv-done .inv-item-date,
+.inv-card.inv-done .inv-item-actions,
+.inv-card.inv-done .inv-h-due,
+.inv-card.inv-done .inv-h-chk { display: none; }
+.inv-card.inv-done .inv-item,
+.inv-card.inv-done .inv-list-head { grid-template-columns: minmax(0, 1fr) max-content; }
