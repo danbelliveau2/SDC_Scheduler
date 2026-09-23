@@ -14243,10 +14243,23 @@ async function copyCustomerLink(project) {
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
     const url = `${location.origin}/?cust=${body.token}`;
-    try { await navigator.clipboard.writeText(url); } catch (_) {}
-    showToast('Customer link copied — live, read-only view of this project. Anyone with the link can see it. (Revoke: right-click the project tab.)', { duration: 7000 });
-    console.log('[share] customer link for', project, url);
+    await copyLinkOrShowIt(url, 'Customer link copied — live, read-only view of this project. Anyone with the link can see it. (Revoke: right-click the project tab.)');
   } catch (err) { showToast('Could not create the link: ' + (err.message || err), { kind: 'error' }); }
+}
+
+// navigator.clipboard silently no-ops outside a secure context (HTTPS or
+// localhost) — this app is often opened over plain http://<lan-host>, so the
+// write fails every time with nothing telling the user. Fall back to a
+// dialog with the link pre-filled so it can still be selected and copied by
+// hand, instead of a toast that claims success when nothing was copied.
+async function copyLinkOrShowIt(url, successMessage) {
+  let copied = false;
+  try { await navigator.clipboard.writeText(url); copied = true; } catch (_) {}
+  if (copied) {
+    showToast(successMessage, { duration: 7000 });
+  } else {
+    await showPromptDialog({ title: 'Link ready — copy it below', message: 'Could not copy automatically (this page isn\'t loaded over https). Click the field, select all, and copy:', value: url, okLabel: 'Done' });
+  }
 }
 
 // Static snapshot link — a plain HTML page with today's schedule, no login,
@@ -14261,9 +14274,7 @@ async function copySnapshotLink(project) {
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
     const url = `${location.origin}${body.path}`;
-    try { await navigator.clipboard.writeText(url); } catch (_) {}
-    showToast('Snapshot link copied — a static page, no login, not live. Use "Refresh snapshot" any time to update it.', { duration: 7000 });
-    console.log('[snapshot] link for', project, url);
+    await copyLinkOrShowIt(url, 'Snapshot link copied — a static page, no login, not live. Use "Refresh snapshot" any time to update it.');
   } catch (err) { showToast('Could not create the snapshot: ' + (err.message || err), { kind: 'error' }); }
 }
 
