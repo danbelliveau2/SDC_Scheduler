@@ -838,10 +838,6 @@ function buildCanonicalTaskOrder() {
   for (const k in buckets) sortBucket(buckets[k]);
 
   const candidates = filtered.map(t => [t, inferredAnchorKey(t)]).filter(([, k]) => !!k);
-  const pickOldest = (key) => {
-    const list = candidates.filter(([, k]) => k === key).map(([t]) => t);
-    return list.length ? list.reduce((a, b) => (a.id < b.id ? a : b)) : null;
-  };
   // Spine anchors: in a multi-machine project, each machine has its OWN
   // FAT / Ship Machine / Power-Up. We need ALL of them in the canonical
   // order, not just the oldest one (otherwise M2's FAT etc. never make
@@ -860,13 +856,14 @@ function buildCanonicalTaskOrder() {
       return ma.localeCompare(mb, undefined, { numeric: true });
     });
   };
-  const receiptAnchor = pickOldest('receipt_of_po'); // single shared anchor
+  // One per machine, like the other spine anchors — see pickAll.
+  const receiptAnchors = pickAll('receipt_of_po');
   const fatAnchors    = pickAll('fat');
   const shipAnchors   = pickAll('ship_machine');
   const satAnchors    = pickAll('sat');
 
   const order = [];
-  if (receiptAnchor) order.push(receiptAnchor.id);
+  for (const r of receiptAnchors) order.push(r.id);
   // Every non-anchor task with no phase_group sits BETWEEN Receipt of PO and
   // section 10 in the rendered grid — these are the "above section 10" rows
   // (Backlog, or anything the user added below an anchor via right-click).
@@ -1793,6 +1790,13 @@ function applyFilters(tasks, opts = {}) {
     //   - Otherwise: STRICT — only in-subset rows pass.
     if (useMachineFilter) {
       if (t.machine == null) {
+        // A SHARED SPINE ANCHOR belongs to every machine. Most jobs raise one
+        // PO covering the whole order, so its Receipt of PO carries no machine
+        // — and hiding it here meant the single most important date on the job
+        // was invisible from every per-machine view. A job that really does
+        // raise a PO per machine tags each row with its machine, and those
+        // still filter normally.
+        if (inferredAnchorKey(t)) return true;
         if (!cloneSoftenFilter) return false;
       } else if (!machineSet.has(t.machine)) {
         return false;
@@ -2580,16 +2584,12 @@ function renderTable() {
   const candidates = filtered
     .map(t => [t, inferredAnchorKey(t)])
     .filter(([, k]) => !!k);
-  const pickOldest = (key) => {
-    const list = candidates.filter(([, k]) => k === key).map(([t]) => t);
-    if (list.length === 0) return null;
-    return list.reduce((a, b) => (a.id < b.id ? a : b));
-  };
   // pickAll: in multi-machine projects each machine has its own FAT /
   // Ship Machine anchor (Power-Up flows through Section 10's inline
   // walk). Return all of them sorted shared-first then by machine name,
-  // so the grid renders M1.FAT, M2.FAT, … side by side at the spine
-  // slot. Receipt of PO stays shared so the single-pick is right.
+  // so the grid renders M1.FAT, M2.FAT, … side by side at the spine slot.
+  // Receipt of PO included: a duplicate-machine job raises one PO per
+  // machine, and treating it as shared hid every PO but the first.
   const pickAll = (key) => {
     const list = candidates.filter(([, k]) => k === key).map(([t]) => t);
     return list.sort((a, b) => {
@@ -2601,7 +2601,7 @@ function renderTable() {
       return ma.localeCompare(mb, undefined, { numeric: true });
     });
   };
-  const receiptAnchor = pickOldest('receipt_of_po');
+  const receiptAnchors = pickAll('receipt_of_po');
   const fatAnchors    = pickAll('fat');
   const shipAnchors   = pickAll('ship_machine');
   const satAnchors    = pickAll('sat');
@@ -2651,7 +2651,11 @@ function renderTable() {
     // with the section. Tasks explicitly MOVED to kickoff render below these
     // through the normal bucket walk.
     if (group.key === 'kickoff') {
-      if (receiptAnchor) html += anchorRowHtml(receiptAnchor, { groupBottom: true });
+      // Every machine that raised its own PO gets a row, ordered shared-first
+      // then by machine name, the same way FAT and Ship render.
+      receiptAnchors.forEach((r, i) => {
+        html += anchorRowHtml(r, { groupBottom: i === receiptAnchors.length - 1 });
+      });
       for (const t of aboveSectionTasks) html += rowHtml(t, 2);
     }
 
@@ -2684,7 +2688,7 @@ function renderTable() {
       // they sort by date like any other row — which is what flatten is for.
       // Anchors WITHOUT a phase_group (Receipt of PO) still need placing, and
       // they sort in by date alongside the section list.
-      const loose = [receiptAnchor, ...shipAnchors, ...fatAnchors, ...satAnchors]
+      const loose = [...receiptAnchors, ...shipAnchors, ...fatAnchors, ...satAnchors]
         .filter(a => a && !a.phase_group && sectionForLooseAnchor(a) === group.key);
       if (loose.length) {
         const cmp = (a, b) => String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
