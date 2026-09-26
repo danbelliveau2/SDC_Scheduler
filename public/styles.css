@@ -1572,8 +1572,8 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
 .schedule-toolbar .toolbar-icon-btn,
 .schedule-toolbar .toolbar-divider,
 .schedule-toolbar .btn-fit { flex: 0 0 auto; }
-.schedule-toolbar .dropdown,
-.schedule-toolbar .schedule-project-filters { flex: 0 1 auto; min-width: 0; }
+.schedule-toolbar .dropdown { flex: 0 1 auto; min-width: 0; }
+.schedule-toolbar .schedule-project-filters { flex: 0 0 auto; min-width: max-content; }
 /* Toolbar buttons keep their full label. Letting them shrink produced
    "Filt..." — a control you cannot read is worse than one that pushed the
    row wider, and fitScheduleToolbar already scales the whole bar down
@@ -1599,7 +1599,6 @@ body.machine-clone-mode #tasks-tbody td[data-col="name"] .name-cell-main {
    ========================================================================= */
 body.customer-view .topbar,
 body.customer-view .project-tab-bar,
-body.customer-view .schedule-project-header,
 body.customer-view .row-height-bar,
 body.customer-view .schedule-divider,
 body.customer-view #btn-add,
@@ -1735,54 +1734,24 @@ body.customer-view tr.group-header td {
    When ACTIVE, the button fills with SDC lime so the user can see at a
    glance that the customer view is currently flattened. */
 .customer-view-tools { display: none; }
-/* One fixed flex row in the top-right corner. Buttons size to their own
-   text and the gap keeps them apart - no hand-measured right: offsets to
-   drift out of sync when a label changes (that was the overlap bug). */
-body.customer-view .customer-view-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  position: fixed;
-  top: 10px;
-  right: 12px;
-  z-index: 1000;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  max-width: calc(100vw - 24px);
-}
-body.customer-view .customer-view-tools > button {
-  display: block;
-  background: white;
-  border: 2px solid var(--anchor-fill, #befa4f);
-  border-radius: 6px;
-  padding: 6px 14px;
-  font: inherit;
-  font-size: var(--fs-md);
-  font-weight: var(--fw-bold);
-  color: var(--sdc-dark, #061d39);
-  cursor: pointer;
-  white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
-}
-body.customer-view .customer-view-tools > button:hover {
-  background: var(--surface-alt, #f1f5f9);
-}
+/* Set by applyCustomerToolbar() on the controls that are ours, not theirs. */
+.cv-off { display: none !important; }
 /* Save as PDF is the reason most people open this view, so it gets the solid
    fill and reads as the primary action rather than one more toggle. */
 body.customer-view .customer-view-print {
   background: var(--anchor-fill, #befa4f) !important;
   border-color: var(--anchor-fill, #befa4f) !important;
+  color: var(--sdc-dark, #061d39) !important;
 }
 body.customer-view .customer-view-print:hover { filter: brightness(0.95); }
-/* Active state — solid SDC lime fill so the user knows flatten is on
-   without having to scan the grid. */
-body.customer-view .customer-view-grid.is-active,
-body.customer-view .customer-view-flatten.is-active {
-  background: var(--anchor-fill, #befa4f);
-  color: var(--sdc-dark, #061d39);
-  border-color: var(--anchor-fill, #befa4f);
+/* The customer keeps the per-project doors the context row already gives
+   everyone — risk schedule, Communication Plan, Risk Mitigation Plan. What
+   comes off is ours: Project Release carries our pricing and terms, and the
+   procurement drawer is our supply chain. */
+body.customer-view #schedule-procurement,
+body.customer-view #docs-menu [data-doc="release"] {
+  display: none !important;
 }
-
 /* Ctrl+P / browser print from customer view. The on-screen customer-view
    rules above strip the toolbar chrome, but the SCREEN layout is deliberately
    viewport-locked — main and #view-schedule are overflow:hidden and every
@@ -6196,12 +6165,11 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   margin-right: auto;
 }
 .schedule-job-links:empty { display: none; }
-body.customer-view .schedule-footer { display: none; }
+
 /* Notes / weekly-goal drawer is internal too - meeting notes and "what are
    we getting done this week" have no business on a screen you are showing a
    customer. Print already hid it; the screen did not. */
-body.customer-view #schedule-drawer-stack,
-body.customer-view .schedule-notes { display: none !important; }
+
 
 /* ── Bottom drawer stack — fixed overlay, doesn't push schedule content ──── */
 #schedule-drawer-stack { flex: 0 0 auto; display: flex; flex-direction: column; position: relative; z-index: 9; }
@@ -8368,6 +8336,7 @@ body[data-view="setup"] #btn-add { display: none; }
 /* ── Customer share-link mode ── the customer view with no way out and no
    internal chrome: the exit/flatten floaters, sidebar, and avatar are gone.
    What's left is exactly what a customer should see: the schedule. */
+body.share-link-view .schedule-project-header,
 body.share-link-view .customer-view-tools,
 body.share-link-view #btn-customer-view-exit,
 body.share-link-view #btn-customer-view-flatten,
@@ -13532,7 +13501,7 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
   background: #fff;
   max-width: 180px;
 }
-body.customer-view .schedule-leads { display: none; }
+
 
 /* Over-allocated card — indented period rows under each person:
    "07/24/26 – 08/07/26   [170%]". Dates in tabular figures so the
@@ -14406,9 +14375,9 @@ textarea:focus-visible,
   justify-content: space-between;
   gap: 24px;
   flex-wrap: wrap;
-  max-width: 1180px;
+  max-width: 1480px;
   margin: 0 auto;
-  padding: 10px 34px 20px;
+  padding: 10px 20px 20px;
 }
 .portal-bar-left { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; min-width: 0; }
 /* The select styled as the page title: one control, one headline. */
@@ -14464,47 +14433,39 @@ textarea:focus-visible,
 .portal-kpi.is-alert { background: rgba(179,38,30,0.22); border-color: rgba(255,140,130,0.45); }
 .portal-kpi.is-alert .v { color: #ff9d95; }
 
-.portal-block, .portal-machine, .portal-assign, .portal-empty {
-  max-width: 1180px;
+.portal-block, .portal-picked, .portal-machine, .portal-assign, .portal-empty {
+  max-width: 1480px;
   margin-left: auto;
   margin-right: auto;
 }
 .portal-h2 {
-  margin: 0 0 12px;
-  font-size: var(--fs-md);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin: 0 0 14px;
+  padding: 0 0 10px;
+  border-bottom: 3px solid var(--sdc-dark, #061d39);
+  font-size: var(--fs-xl);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.06em;
   font-weight: var(--fw-extrabold);
-  color: var(--text-muted);
+  color: var(--sdc-dark, #061d39);
 }
-.portal-block { padding: 26px 34px 0; }
+.portal-h2::before {
+  content: "";
+  width: 8px;
+  height: 24px;
+  border-radius: 2px;
+  background: var(--anchor-fill, #befa4f);
+  flex: 0 0 auto;
+}
+/* Air above each heading is what actually separates one section from the
+   one before it - the rule alone reads as an underline, not a divider. */
+.portal-block { padding-top: 34px; }
+.portal-block + .portal-block { padding-top: 38px; }
+.portal-block { padding: 26px 20px 0; }
 
 /* ── Due dates: the whole reason they opened the page ── */
-.portal-due-wrap {
-  overflow-x: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.portal-due { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-.portal-due th {
-  text-align: left;
-  font-size: var(--fs-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--text-muted);
-  font-weight: var(--fw-bold);
-  padding: 11px 16px;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-.portal-due td {
-  padding: 13px 16px;
-  border-bottom: 1px solid var(--border-soft, #eef1f5);
-  font-size: var(--fs-base);
-  white-space: nowrap;
-}
-.portal-due tr:last-child td { border-bottom: 0; }
 .portal-due-name { font-weight: var(--fw-bold); white-space: normal !important; min-width: 220px; }
 .portal-due-key { font-weight: var(--fw-extrabold); font-size: var(--fs-lg); }
 
@@ -14751,47 +14712,59 @@ textarea:focus-visible,
 
 /* ── Work grids: task, who has it, how far, and what it does to the plan ──── */
 .portal-due-name { white-space: nowrap !important; }
-.portal-work-wrap { display: flex; flex-direction: column; gap: 20px; margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
-.portal-work-sec h4 {
-  margin: 0 0 8px;
-  font-size: var(--fs-2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--text-muted);
+/* ── The task grid ───────────────────────────────────────────────────────
+   One table, three sections. A fixed layout over a <colgroup> is what lets
+   the widths be dragged and lets the three sections keep identical columns;
+   the wrapper scrolls sideways so a long task name is reachable rather than
+   clipped. */
+/* The section name is the loudest thing in the table. It was the quietest,
+   which is why "Behind" read as a stray label above a grid rather than as
+   the heading for the rows under it. */
+.pw-sec td {
+  padding: 14px 12px 8px;
+  background: var(--surface-alt, #f1f5f9);
+  border-bottom: 2px solid var(--sdc-dark, #061d39);
+  border-top: 1px solid var(--border);
+}
+.portal-work tbody tr.pw-sec:first-child td { border-top: 0; }
+.pw-sec-name {
+  font-size: var(--fs-base);
   font-weight: var(--fw-extrabold);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.portal-work-sec.is-alert h4 { color: #b3261e; }
-.portal-work { border-collapse: collapse; width: 100%; }
-.portal-work th {
-  text-align: left;
-  font-size: var(--fs-2xs);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
+  letter-spacing: 0.07em;
+  color: var(--sdc-dark, #061d39);
+}
+.pw-sec-n {
+  display: inline-block;
+  margin-left: 9px;
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--sdc-dark, #061d39);
+  color: #fff;
+  font-size: var(--fs-2xs);
   font-weight: var(--fw-bold);
-  padding: 5px 12px 5px 0;
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
+  text-align: center;
 }
-.portal-work td {
-  padding: 7px 12px 7px 0;
-  border-bottom: 1px solid var(--border-soft, #eef1f5);
-  font-size: var(--fs-md);
-  vertical-align: middle;
-}
-.portal-work tr:last-child td { border-bottom: 0; }
-.pw-name { font-weight: var(--fw-bold); width: 40%; }
-.pw-who { color: var(--text-muted); white-space: nowrap; }
-.pw-late { color: #b3261e; font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.pw-done { color: #3f6b06; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.pw-flat { color: var(--text-muted); font-size: var(--fs-2xs); }
-.pw-pct { white-space: nowrap; width: 120px; }
+.pw-sec-behind td { border-bottom-color: #b3261e; }
+.pw-sec-behind .pw-sec-name { color: #b3261e; }
+.pw-sec-behind .pw-sec-n { background: #b3261e; }
+.pw-empty td { color: var(--text-muted); font-style: italic; font-size: var(--fs-md); }
+/* The task name is the content, not a headline — the section heading above
+   it is what carries the weight. */
+.pw-name { font-weight: var(--fw-regular); color: var(--text); }
+.pw-who { color: var(--text-muted); }
+.pw-due { color: var(--text-muted); }
+.pw-due.is-late { color: #b3261e; font-weight: var(--fw-bold); }
+.pw-done { color: #3f6b06; }
+/* Plain text, not a pill: in a grid a pill reads as a control. */
+.pw-drift { color: var(--text-muted); font-size: var(--fs-md); }
+.pw-drift.is-behind { color: #b3261e; font-weight: var(--fw-bold); }
+.pw-drift.is-ahead { color: #3f6b06; font-weight: var(--fw-bold); }
+.pw-pct { white-space: nowrap; }
 .pw-bar {
   display: inline-block;
-  width: 62px;
+  width: 44px;
   height: 6px;
   border-radius: 3px;
   background: var(--border);
@@ -14800,7 +14773,7 @@ textarea:focus-visible,
   margin-right: 7px;
 }
 .pw-bar > span { display: block; height: 100%; background: var(--sdc-green, #74c415); border-radius: 3px; }
-.pw-num { font-size: var(--fs-2xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.pw-num { font-size: var(--fs-2xs); color: var(--text-muted); }
 .portal-slip.is-ahead  { background: #eaf7d9; color: #3f6b06; }
 .portal-slip.is-behind { background: #fdecea; color: #b3261e; }
 
@@ -14810,9 +14783,20 @@ textarea:focus-visible,
    the true grid + Gantt). This only removes the remaining doors: the sidebar,
    and the exit that would drop a customer into the internal app. */
 .customer-view-back { display: none; }
-body.portal-schedule .customer-view-back { display: block; }
-body.portal-schedule .app-sidebar { display: none !important; }
-body.portal-schedule { margin-left: 0 !important; }
+
+/* ── Customer portal: their own jobs as tabs ── */
+body.portal-schedule .project-tab-bar { display: flex !important; }
+/* Whose tabs these are is decided in renderProjectTabs(); what is left here
+   is the chrome around them — a new-tab picker that lists every job in the
+   company has no place on a customer screen. */
+body.portal-mode .project-tabs-row-label,
+body.portal-mode .project-tab-bar-actions { display: none !important; }
+/* The portal tab is pinned, like All projects is for us. */
+.project-tab.is-portal { font-weight: var(--fw-bold); }
+
+body.portal-schedule .app-sidebar-icon,
+body.portal-schedule .app-sidebar-revision,
+body.portal-schedule #revision-popover { display: none !important; }
 body.portal-schedule #btn-customer-view-exit { display: none !important; }
 body.portal-schedule .customer-view-back {
   background: var(--sdc-dark, #061d39) !important;
@@ -15050,7 +15034,7 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
 
 /* Documents menu on the schedule toolbar. */
 .schedule-docs-wrap { position: relative; display: inline-block; }
-#docs-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; min-width: 216px; }
+#docs-menu { position: absolute; top: calc(100% + 4px); right: 0; left: auto; z-index: 60; min-width: 216px; }
 #docs-menu button {
   display: block;
   width: 100%;
@@ -15087,21 +15071,15 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
 .portal-phase .portal-rail::before { display: none; }
 
 /* ── Payment milestones + risks ──────────────────────────────────────────── */
-.portal-money-wrap {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
 .portal-money-proj + .portal-money-proj { border-top: 1px solid var(--border); }
 .portal-money-title {
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
   font-weight: var(--fw-bold);
-  padding: 10px 16px 0;
-  color: var(--text-muted);
+  color: var(--text);
+  padding: 14px 16px 2px;
+  font-variant-numeric: tabular-nums;
 }
-.portal-money { border-collapse: collapse; width: 100%; }
-.portal-money th {
+.portal-money-th-legacy {
   text-align: left;
   font-size: var(--fs-2xs);
   text-transform: uppercase;
@@ -15112,14 +15090,24 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
-.portal-money td {
+.portal-money-td-legacy {
   padding: 11px 16px;
   border-bottom: 1px solid var(--border-soft, #eef1f5);
   font-size: var(--fs-base);
   vertical-align: top;
 }
 .portal-money tbody tr:last-child td { border-bottom: 0; }
-.pm-name { font-weight: var(--fw-bold); }
+.pm-name { font-weight: var(--fw-regular); color: var(--text); }
+.pm-mach { white-space: nowrap; }
+.pm-mach-pill {
+  display: inline-block;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--text-muted);
+}
 .pm-amt, .pm-when { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pm-status {
   display: inline-block;
@@ -15340,8 +15328,7 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
 /* ── Risk on the portal: the matrix, then the plan behind any one of them ──
    The matrix answers "did you actually assess this"; clicking a number opens
    the little schedule that answers "so what are you doing about it". */
-.portal-risk-grid { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(320px, 1fr); gap: 20px; align-items: start; }
-@media (max-width: 900px) { .portal-risk-grid { grid-template-columns: 1fr; } }
+.portal-risk-grid { display: grid; grid-template-columns: 1fr; gap: 20px; align-items: start; }
 .portal-risk-matrix {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -16355,3 +16342,295 @@ tr.group-header.level-1[data-risk-first="1"] td {
 }
 .pdash-variance-btn:hover { background: #eef4fa; border-color: #94a3b8; }
 .pdash-variance-btn.is-on { background: var(--sdc-primary, #1574c4); border-color: var(--sdc-primary, #1574c4); color: #fff; }
+
+/* ── Customer portal: their projects, laid out like ours ──────────────────
+   Same row shape as the Projects page — name, then what the row is worth
+   knowing, then OPEN — so a customer arriving here is looking at the same
+   kind of list we are, not a dashboard they have to decode. */
+.portal-proj-list { display: flex; flex-direction: column; gap: 6px; }
+.portal-proj-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 14px;
+  cursor: pointer;
+}
+.portal-proj-meta {
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.portal-proj-late,
+.portal-proj-ok {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  padding: 2px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.portal-proj-late { background: #fee2e2; color: #b91c1c; }
+.portal-proj-ok   { background: #dcfce7; color: #166534; }
+/* At phone width the meta and state drop under the name rather than
+   squeezing the project number into an ellipsis. */
+@media (max-width: 560px) {
+  .portal-proj-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .portal-proj-meta { grid-column: 1 / -1; }
+}
+
+/* Adding a machine is a build decision, not a way of looking at one. The
+   machine pills themselves stay — a customer with two machines shipping two
+   months apart needs to tell them apart as much as we do. */
+body.customer-view #btn-add-machine { display: none !important; }
+
+/* ── Portal: pick a project, the page becomes that project ────────────── */
+.portal-proj-row.is-picked {
+  border-color: var(--sdc-primary, #1574c4);
+  background: var(--sdc-primary, #1574c4);
+  box-shadow: 0 2px 10px rgba(21, 116, 196, 0.28);
+}
+.portal-proj-row.is-picked .projects-row-name { color: #fff; }
+.portal-proj-row.is-picked .projects-row-openbtn {
+  background: #fff;
+  border-color: #fff;
+  color: var(--sdc-primary, #1574c4);
+}
+.portal-pick-hint { margin: 10px 2px 0; font-size: var(--fs-md); color: var(--text-muted); }
+/* The bar that says which project you are looking at, and what you can do
+   with it. It sits above every scoped section because all of them answer
+   to it. */
+.portal-picked {
+  max-width: 1440px;
+  margin: 18px auto 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.portal-picked-id { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; min-width: 0; }
+.portal-picked-id h2 { margin: 0; font-size: var(--fs-xl); font-variant-numeric: tabular-nums; }
+.portal-picked-act { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.portal-mach-pills { display: flex; gap: 6px; flex-wrap: wrap; }
+.portal-mach {
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.portal-mach.is-on {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: #fff;
+}
+.portal-team-proj { font-weight: var(--fw-bold); padding: 12px 16px 0; font-variant-numeric: tabular-nums; }
+
+/* ── Portal: where it stands ──────────────────────────────────────────── */
+/* Percent complete is weighted by scheduled days, so the bar and the number
+   agree with how long the work actually takes. */
+.portal-pct { white-space: nowrap; }
+.portal-pct-bar {
+  display: inline-block;
+  width: 74px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  overflow: hidden;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.portal-pct-bar i { display: block; height: 100%; background: var(--anchor-fill, #befa4f); }
+.portal-pct-n { font-variant-numeric: tabular-nums; font-weight: var(--fw-bold); }
+.portal-key-date { font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A date already met reads as settled; one that has slipped past today
+   without being met is the one to look at. */
+.portal-key-date.is-done { color: #3f6b06; font-weight: var(--fw-bold); }
+.portal-key-date.is-past { color: #b91c1c; font-weight: var(--fw-bold); }
+
+/* ── Portal: progress rings ───────────────────────────────────────────── */
+.portal-prog {
+  display: flex;
+  align-items: flex-start;
+  gap: 28px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+}
+.pprog-overall { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 0 0 auto; }
+.pprog-phases { display: flex; gap: 18px; flex-wrap: wrap; flex: 1 1 320px; min-width: 0; }
+.pphase { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 96px; }
+.pphase-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.25;
+}
+.pdonut { display: block; }
+
+/* ── Portal: phase bars + task-status ring ────────────────────────────── */
+/* Columns share one baseline so the phases can be read against each other —
+   which is the whole question a percent-per-phase chart is asked. */
+.pbars {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 84px;
+  grid-template-rows: auto 92px auto;
+  gap: 6px 14px;
+  overflow-x: auto;
+}
+/* Each column contributes its three cells to the three shared rows, so the
+   numbers line up with each other, the tracks line up, and the labels line
+   up - however many lines a label takes. */
+.pbar { display: contents; }
+.pbar > * { justify-self: center; }
+.pbar-n { font-size: var(--fs-sm); font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
+.pbar-track {
+  display: flex;
+  align-items: flex-end;
+  width: 30px;
+  height: 92px;
+  background: var(--surface-alt, #f1f5f9);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.pbar-track i {
+  display: block;
+  width: 100%;
+  background: var(--anchor-fill, #befa4f);
+  border-radius: 5px 5px 0 0;
+}
+.portal-mix {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.pmix-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.pmix-legend li { display: flex; align-items: center; gap: 9px; }
+.pmix-dot { width: 11px; height: 11px; border-radius: 3px; flex: 0 0 auto; }
+.pmix-label { font-size: var(--fs-base); color: var(--text-muted); min-width: 92px; }
+.pmix-n { font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
+
+/* ── Portal: picking one project, a group, or all ─────────────────────── */
+/* The All button rides in the section heading — it belongs to the list it
+   acts on, not to a toolbar somewhere above it. */
+.portal-allbtn {
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 4px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong, #c8d5e3);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.portal-allbtn.is-on {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: #fff;
+}
+/* Click the row to look at one job; tick the box to build a group out of
+   several. Two different intents, so two different targets. */
+.portal-proj-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.portal-proj-tick {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 2px solid var(--border-strong, #c8d5e3);
+  background: var(--surface);
+  cursor: pointer;
+  flex: 0 0 auto;
+  padding: 0;
+}
+.portal-proj-tick.is-on {
+  background: #fff;
+  border-color: #fff;
+  box-shadow: inset 0 0 0 3px var(--sdc-primary, #1574c4);
+}
+.portal-proj-row:not(.is-picked) .portal-proj-tick:hover { border-color: var(--sdc-primary, #1574c4); }
+.portal-picked-names {
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Portal grids ─────────────────────────────────────────────────────
+   Every grid on this page is the same object: fixed layout over a
+   <colgroup>, the TABLE sized to the sum of its columns (never 100%), and
+   the wrapper scrolling sideways. That sum is what makes a drag move one
+   column and one column only — with a 100% table the neighbours shrink to
+   absorb whatever you added. */
+.portal-grid-wrap {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.portal-grid {
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+.portal-grid th {
+  position: relative;
+  text-align: left;
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: var(--fw-bold);
+  padding: 10px 12px;
+  background: var(--surface-alt, #f1f5f9);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.portal-grid td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-soft, #eef1f5);
+  font-size: var(--fs-md);
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.portal-grid tbody tr:last-child td { border-bottom: 0; }
+/* The grip sits on the boundary it moves. */
+.pw-grip {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+.pw-grip:hover { background: var(--sdc-primary, #1574c4); opacity: 0.35; }
+/* While dragging, nothing else on the page should select or swap cursor. */
+body.pcol-resizing { cursor: col-resize; user-select: none; }
+.portal-due-name { font-weight: var(--fw-bold); }
+.portal-money-proj + .portal-money-proj { margin-top: 18px; }

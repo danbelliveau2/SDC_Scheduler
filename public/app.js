@@ -7673,12 +7673,16 @@ function renderFilters() {
   //   - "Critical path only" = filter mode (hide everything not on the chain;
   //                             auto-enables highlight too).
   const sv = state.scheduleView || {};
+  const forCustomer = document.body.classList.contains('customer-view');
   const chipDefs = [
     { key: 'showCompleted', label: 'Show completed',    source: 'quick' },
     { key: 'behind',        label: 'Behind schedule',   source: 'quick' },
     { key: 'ahead',         label: 'Ahead of schedule', source: 'quick' },
-    { key: 'assigned',      label: 'Assigned (real work)', source: 'quick' },
-    { key: 'overallocated', label: 'Over-allocated',    source: 'quick' },
+    // Who is on it and who is over-booked is how WE run the job.
+    ...(forCustomer ? [] : [
+      { key: 'assigned',      label: 'Assigned (real work)', source: 'quick' },
+      { key: 'overallocated', label: 'Over-allocated',    source: 'quick' },
+    ]),
     { key: 'criticalPath',  label: 'Critical path',     source: 'view',  active: !!sv.criticalPath },
     { key: 'criticalOnly',  label: 'Critical path only', source: 'view', active: !!sv.criticalOnly },
   ];
@@ -7706,12 +7710,13 @@ function renderFilters() {
       <option value="">Off — show the full schedule</option>
       ${MILESTONE_TYPES.map(m => `<option value="${m.key}" ${milestoneFilterActive() === m.key ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
     </select>
+    ${document.body.classList.contains('portal-schedule') ? '' : `
     <div class="filters-popover-sep"></div>
     <div class="filters-popover-title">View</div>
     <label class="filters-check-row">
       <input type="checkbox" id="filters-customer-view-toggle" ${inCustomerView ? 'checked' : ''}>
       <span>For Customer mode</span>
-    </label>
+    </label>`}
     <div class="filters-popover-actions">
       <button type="button" id="btn-clear-filters" class="btn-ghost btn-tight">Clear all</button>
     </div>
@@ -13206,7 +13211,13 @@ function renderProjectTabs() {
   // open side-by-side; the workspace is conveyed via per-tab COLOR coding
   // (see CSS .project-tab.workspace-*) instead of filtering tabs away.
   // Templates pinned first; non-templates in their original openProjects order.
-  const visibleList = state.openProjects.slice();
+  const inPortal = document.body.classList.contains('portal-mode');
+  let visibleList = state.openProjects.slice();
+  if (inPortal) {
+    const cust = _portalCustomer || '';
+    visibleList = visibleList.filter(p => p && projectCustomerName(p) === cust);
+    personalTabHtml = '';
+  }
   const templatesFirst = [
     visibleList.find(p => p === ''),
     ...visibleList.filter(p => p !== '' && isTemplateProject(p)),
@@ -13267,7 +13278,15 @@ function renderProjectTabs() {
   // sidebar icon opens, but one click away from any schedule, and the page
   // keeps its scroll spot when you bounce schedule ↔ departments (Dan's ask:
   // "scroll down, go look at a schedule, come back — don't start from the top").
-  const deptTabHtml = `
+  // Departments and Invoicing are ours. In the portal the pinned tab is the
+  // portal itself — always there, never closeable, the way All projects is
+  // for us.
+  const portalTabHtml = inPortal ? `
+      <button class="project-tab is-portal${state.view === 'portal' ? ' active' : ''}" data-portal-tab="1" type="button" draggable="false"
+        title="Your portal — every project we are building for you.">
+        <span class="project-tab-label">⌂ Portal</span>
+      </button>` : '';
+  const deptTabHtml = inPortal ? '' : `
       <button class="project-tab is-dept${state.view === 'team' ? ' active' : ''}" data-dept-tab="1" type="button" draggable="false"
         title="Departments — team, resource timeline, milestones. Keeps your place when you switch away and back.">
         <span class="project-tab-label">Departments</span>
@@ -13281,6 +13300,7 @@ function renderProjectTabs() {
   const activeLabel = salesTabs.length ? '<span class="project-tabs-row-label">Active Projects</span>' : '';
   let mainTabsHtml = mainTabs.map(p => tabHtml(p, false) + (p === '' ? deptTabHtml : '')).join('');
   if (!mainTabs.includes('')) mainTabsHtml = deptTabHtml + mainTabsHtml;
+  mainTabsHtml = portalTabHtml + mainTabsHtml;
   wrap.innerHTML =
     `<div class="project-tabs-row">${activeLabel}${personalTabHtml + mainTabsHtml}</div>`
     + (salesTabs.length
@@ -13316,10 +13336,11 @@ function renderProjectTabs() {
   // no context menu, no drag).
   wrap.querySelector('.project-tab.is-dept:not(.is-inv)')?.addEventListener('click', () => setView('team'));
   wrap.querySelector('.project-tab.is-inv')?.addEventListener('click', () => setView('invoicing'));
+  wrap.querySelector('.project-tab.is-portal')?.addEventListener('click', portalBackFromSchedule);
 
   // Regular project tabs (NOT the personal or Departments tabs) — wire normal
   // click behavior.
-  wrap.querySelectorAll('.project-tab:not(.is-personal):not(.is-dept)').forEach(btn => {
+  wrap.querySelectorAll('.project-tab:not(.is-personal):not(.is-dept):not(.is-portal)').forEach(btn => {
     btn.addEventListener('click', (e) => {
       if (e.target.closest('.project-tab-close')) return;
       // Clicking a regular project tab while signed in: keep personId
@@ -17391,6 +17412,8 @@ const PORTAL_ANCHORS = [
 ];
 
 let _portalCustomer = null;
+let _portalProjects = [];
+let _portalMachine = null;
 const _portalOpen = new Set();
 const _portalFinLoading = new Set();   // projects whose financials are in flight
 const _portalRiskOpen = new Set();     // risks whose plan is expanded on the portal   // projects whose financials are in flight   // machines whose inline schedule is expanded
@@ -17417,7 +17440,8 @@ function portalUnits(project) {
   const rows = state.tasks.filter(t => t.project === project);
   const machines = [...new Set(rows.map(t => t.machine).filter(Boolean))].sort();
   if (!machines.length) return [{ machine: null, label: '', rows }];
-  return machines.map(m => ({ machine: m, label: m, rows: rows.filter(t => t.machine === m) }));
+  const shared = rows.filter(t => !t.machine);
+  return machines.map(m => ({ machine: m, label: m, rows: rows.filter(t => t.machine === m).concat(shared) }));
 }
 
 // Every milestone on this machine, in date order - not a fixed anchor list.
@@ -17470,29 +17494,68 @@ function isMilestoneLike(t) { return PORTAL_ANCHOR_KEYS.has(inferredAnchorKey(t)
 
 // Real task names, not department buckets. "Wire" told a customer nothing;
 // "Machine Wiring 2, 40%" tells them exactly what is on the floor.
+// How late a row already is, for when there is no baseline to drift from.
+// Same half-week snap as every other variance in the app.
+function _portalLate(due, today) {
+  if (!due || !today || due >= today) return null;
+  const days = Math.round((new Date(today + 'T00:00:00') - new Date(due + 'T00:00:00')) / 86400000);
+  const wks = Math.round((days / 5) * 2) / 2 || 0.5;
+  return { text: '−' + wks + 'w behind', cls: 'is-behind' };
+}
+
+// Where one row sits. One definition, read by the ring and the grid, so the
+// count in the donut can never disagree with the rows under it.
+function _portalRowState(t, today) {
+  const pct = Number(t.progress) || 0;
+  if (pct >= 100) return 'complete';
+  const due = t.end_date || '';
+  const drift = portalDrift(t);
+  const late = !!((due && due < today) || (drift && drift.cls === 'is-behind'));
+  // Never started and its date has gone: that one was missed, and it is the
+  // first thing anyone needs to see.
+  if (!pct) return late ? 'missed' : 'notStarted';
+  return late ? 'slipping' : 'running';
+}
+
 function portalWork(rows) {
   const today = _ymdLocal(new Date());
   const cut = new Date(); cut.setDate(cut.getDate() - 21);
   const cutISO = _ymdLocal(cut);
-  const behind = [], running = [], recent = [];
+  const missed = [], slipping = [], running = [], recent = [];
   rows.forEach(t => {
-    if (isMilestoneLike(t)) return;
     const pct = Number(t.progress) || 0;
     const name = (t.name || '').trim();
     if (!name) return;
     const assignee = (t.assignee || '').trim();
-    if (pct >= 100) {
-      const when = t.completed_on || t.end_date || '';
-      if (when && when >= cutISO) recent.push({ name, when, assignee });
-    } else {
-      if (t.end_date && t.end_date < today) behind.push({ name, due: t.end_date, pct, assignee });
-      else if (pct > 0) running.push({ name, pct, assignee, drift: portalDrift(t) });
+    const due = t.end_date || '';
+    const drift = portalDrift(t);
+    const row = { name, assignee, pct, due, drift, when: '' };
+    switch (_portalRowState(t, today)) {
+      case 'complete': {
+        const when = t.completed_on || t.end_date || '';
+        if (when && when >= cutISO) recent.push({ ...row, drift: null, when });
+        break;
+      }
+      // A row past its date with no baseline still has to say how late it is,
+      // or the column reads "on plan" next to a red date.
+      case 'missed':
+        missed.push({ ...row, drift: drift || _portalLate(due, today) });
+        break;
+      case 'slipping':
+        slipping.push({ ...row, drift: drift || _portalLate(due, today) });
+        break;
+      case 'running':
+        running.push(row);
+        break;
+      default:
+        break;
     }
   });
-  behind.sort((a, b) => a.due.localeCompare(b.due));
+  missed.sort((a, b) => a.due.localeCompare(b.due));
+  slipping.sort((a, b) => a.due.localeCompare(b.due));
   recent.sort((a, b) => b.when.localeCompare(a.when));
   running.sort((a, b) => b.pct - a.pct);
-  return { behind, running, recent };
+  return { missed, slipping, running, recent };
 }
 
 function _portalInitials(name) {
@@ -17510,10 +17573,20 @@ function portalSlip(ms) {
   if (!ms || ms.missing) return { text: '—', cls: '' };
   if (ms.slip == null) return { text: 'no baseline', cls: 'is-none' };
   if (ms.slip === 0) return { text: 'on date', cls: 'is-ok' };
-  const d = Math.abs(ms.slip), u = d === 1 ? ' day' : ' days';
+  const wks = Math.round((Math.abs(ms.slip) / 5) * 2) / 2 || 0.5;
   return ms.slip > 0
-    ? { text: d + u + ' late', cls: 'is-late' }
-    : { text: d + u + ' early', cls: 'is-ok' };
+    ? { text: '+' + wks + 'w late', cls: 'is-late' }
+    : { text: '−' + wks + 'w early', cls: 'is-ok' };
+}
+
+// M1 / M2 are how we tag a row. A customer reads the words.
+function _portalMachineLabel(m) {
+  const t = String(m || '').trim();
+  if (!t) return '';
+  // Strip the M and see if what is left is just a number: M1 and M 2 are
+  // tags, 'Feeder cell' is a name and stays as written.
+  const n = t.replace(/^M/i, '').trim();
+  return (n && /^[0-9]+$/.test(n)) ? 'Machine ' + n : t;
 }
 
 function renderPortal() {
@@ -17522,7 +17595,17 @@ function renderPortal() {
   // Tasks drive everything here, and on a cold boot into the portal they have
   // not arrived yet. Saying "no customers" then is a lie that reads as broken.
   if (!state.tasks || !state.tasks.length) {
-    root.innerHTML = `<div class="portal-empty"><h1>Customer Portal</h1><p>Loading projects…</p></div>`;
+    const waiting = !state._tasksLoadedAt;
+    root.innerHTML = waiting
+      ? `<div class="portal-empty"><h1>Customer Portal</h1><p>Loading projects…</p></div>`
+      : `<div class="portal-empty"><h1>Customer Portal</h1>
+          <p>No schedules came back from the server, so there is nothing to show yet.</p>
+          <p><button type="button" class="portal-docbtn" data-portal-retry="1">Try again</button></p></div>`;
+    const again = root.querySelector('[data-portal-retry]');
+    if (again) again.addEventListener('click', async () => {
+      try { await loadTasks(); } catch (_) {}
+      renderPortal();
+    });
     return;
   }
   const customers = portalCustomerList();
@@ -17550,12 +17633,21 @@ function renderPortal() {
   const units = [];
   projects.forEach(p => portalUnits(p).forEach(u => units.push({ project: p, ...u, ms: portalMilestones(u.rows) })));
 
-  const openFats = units.map(u => {
-    const m = u.ms.find(x => x.key === 'fat');
-    return m && !m.done ? m.current : null;
-  }).filter(Boolean).sort();
-  const nextFat = openFats[0] || null;
-  const behindCount = units.reduce((n, u) => n + portalWork(u.rows).behind.length, 0);
+  // A stale pick from a different customer would silently empty the page.
+  // Anything left over from another customer quietly drops out.
+  _portalProjects = projects.filter(p => _portalProjects.includes(p));
+  if (!_portalProjects.length && projects.length) _portalProjects = [projects[0]];
+  const scopeProjects = _portalProjects.length ? _portalProjects : projects;
+  // Machines only mean something inside ONE job; across a group the pills
+  // would be asking which M1 you meant.
+  const picked = scopeProjects.length === 1 ? scopeProjects[0] : null;
+  if (!picked) _portalMachine = null;
+  const pickedMachines = picked ? units.filter(u => u.project === picked && u.machine).map(u => u.machine) : [];
+  if (_portalMachine && !pickedMachines.includes(_portalMachine)) _portalMachine = null;
+  const scopeUnits = units
+    .filter(u => !picked || u.project === picked)
+    .filter(u => !_portalMachine || u.machine === _portalMachine);
+
 
   const opts = customers.map(c =>
     `<option value="${escapeHtml(c.name)}" ${c.name === cust ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
@@ -17574,21 +17666,18 @@ function renderPortal() {
           <select class="portal-cust-select" data-portal-cust>${opts}</select>
           <span class="portal-bar-meta">${units.length} machine${units.length === 1 ? '' : 's'} · ${projects.length} project${projects.length === 1 ? '' : 's'}</span>
         </div>
-        <div class="portal-bar-right">
-          <div class="portal-kpi">
-            <span class="k">Next FAT</span><span class="v">${escapeHtml(portalDate(nextFat))}</span>
-          </div>
-          <div class="portal-kpi ${behindCount ? 'is-alert' : ''}">
-            <span class="k">Behind</span><span class="v">${behindCount ? behindCount + ' task' + (behindCount === 1 ? '' : 's') : 'On track'}</span>
-          </div>
-        </div>
+
       </div>
     </header>
 
-    ${_portalDueTableHtml(units)}
-    ${_portalMoneyHtml(projects)}
-    ${_portalRiskHtml(projects)}
-    ${units.map(u => _portalUnitHtml(u)).join('')}
+    ${_portalProjectsHtml(projects, scopeProjects)}
+    ${_portalPickedBarHtml(picked, pickedMachines, scopeProjects)}
+    ${_portalDueTableHtml(scopeUnits)}
+    ${_portalProgressHtml(scopeProjects, _portalMachine)}
+    ${_portalMoneyHtml(scopeProjects, _portalMachine)}
+    ${_portalRiskHtml(scopeProjects)}
+    ${_portalTeamHtml(scopeProjects)}
+    ${_portalWorkHtml(scopeProjects, _portalMachine)}
   `;
   _wirePortal(root);
 }
@@ -17599,37 +17688,141 @@ function renderPortal() {
 // stored due_date is almost always empty - the real trigger is the task the
 // milestone is tied to, which is why this reads through
 // computeFinancialTriggerDate rather than the row.
-function _portalMoneyHtml(projects) {
+// ── The portal opens on their projects, the way ours opens on ours ──────
+// Signing in as a customer should land on the same thing signing in as us
+// lands on: the list of jobs, one row each, click one to open the schedule.
+// What is different is whose jobs are on it and what a row is allowed to
+// say — workspace, template and planner status are our filing system, so a
+// row carries the things the customer called to ask about instead: how many
+// machines, when the next acceptance is, and whether anything is late.
+function _portalProjectsHtml(projects, chosen) {
+  if (!projects.length) return '';
+  const on = new Set(chosen);
+  const all = projects.every(p => on.has(p));
+  const rows = projects.map(p => `<div class="projects-row portal-proj-row${on.has(p) ? ' is-picked' : ''}"
+      data-pick-proj="${escapeHtml(p)}" role="button" tabindex="0"
+      title="Show this project. Use the tick box to add it to a group.">
+      <button type="button" class="portal-proj-tick${on.has(p) ? ' is-on' : ''}" data-toggle-proj="${escapeHtml(p)}"
+        aria-pressed="${on.has(p)}" title="${on.has(p) ? 'Take this project out of the group' : 'Add this project to the group'}"></button>
+      <span class="projects-row-name">${escapeHtml(p)}</span>
+      <button class="projects-row-openbtn" data-open-sched="${escapeHtml(p)}" type="button">OPEN</button>
+    </div>`).join('');
+  const allBtn = projects.length > 1
+    ? `<button type="button" class="portal-allbtn${all ? ' is-on' : ''}" data-pick-all="1">All projects</button>`
+    : '';
+  return `<section class="portal-block portal-projects">
+    <h2 class="portal-h2">Your projects${allBtn}</h2>
+    <div class="portal-proj-list">${rows}</div>
+  </section>`;
+}
+// What you can do with the project you picked, and which machine you are
+// asking about. Both sit at the top because everything under them answers to
+// this bar.
+function _portalPickedBarHtml(picked, machines, scope) {
+  if (!picked) {
+    if (!scope || scope.length < 2) return '';
+    return `<section class="portal-picked">
+      <div class="portal-picked-id"><h2>${scope.length} projects</h2>
+        <span class="portal-picked-names">${escapeHtml(scope.join(' · '))}</span></div>
+    </section>`;
+  }
+  const uniq = [...new Set(machines)];
+  const pills = uniq.length > 1 ? `<div class="portal-mach-pills">
+      <button type="button" class="portal-mach${!_portalMachine ? ' is-on' : ''}" data-pick-mach="">All machines</button>
+      ${uniq.map(m => `<button type="button" class="portal-mach${_portalMachine === m ? ' is-on' : ''}" data-pick-mach="${escapeHtml(m)}">${escapeHtml(_portalMachineLabel(m))}</button>`).join('')}
+    </div>` : '';
+  return `<section class="portal-picked">
+    <div class="portal-picked-id">
+      <h2>${escapeHtml(picked)}</h2>
+      ${pills}
+    </div>
+    <div class="portal-picked-act">
+      <button type="button" class="portal-docbtn" data-doc="comm" data-doc-proj="${escapeHtml(picked)}">Communication Plan</button>
+      <button type="button" class="portal-open" data-open-sched="${escapeHtml(picked)}" data-open-mach="${escapeHtml(_portalMachine || '')}">Open schedule →</button>
+    </div>
+  </section>`;
+}
+
+// The team block used to repeat under every machine of a job. It is the same
+// people each time — one block per project says it once.
+function _portalTeamHtml(projects) {
   const blocks = projects.map(p => {
-    const rows = (state.financials && state.financials[p]) || [];
-    const live = rows.filter(f => !f.archived_at);
-    if (!live.length) return '';
-    const body = live.slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(f => {
+    const team = portalTeam(p, state.tasks.filter(t => t.project === p));
+    if (!team.length) return '';
+    return `<div class="portal-teamblock">
+      ${projects.length > 1 ? `<div class="portal-team-proj">${escapeHtml(p)}</div>` : ''}
+      ${team.map(g => `<div class="portal-team-group">
+        <div class="portal-team-role">${escapeHtml(g.label)}</div>
+        <div class="portal-team-people">
+          ${g.people.map(x => `<div class="portal-person ${x.lead ? 'is-lead' : ''}">
+            <span class="pp-avatar">${escapeHtml(_portalInitials(x.name))}</span>
+            <span class="pp-text"><span class="pp-name">${escapeHtml(x.name)}</span>
+            ${x.note ? `<span class="pp-role">${escapeHtml(x.note)}</span>` : ''}</span>
+          </div>`).join('')}
+        </div>
+      </div>`).join('')}
+    </div>`;
+  }).filter(Boolean).join('');
+  if (!blocks) return '';
+  return `<section class="portal-block">
+    <h2 class="portal-h2">SDC Team</h2>
+    ${blocks}
+  </section>`;
+}
+const PORTAL_MONEY_COLS = [
+  { key: 'mach',   label: 'Machine',   w: 150 },
+  { key: 'name',   label: 'Milestone', w: 320 },
+  { key: 'value',  label: 'Value',     w: 130 },
+  { key: 'when',   label: 'Expected',  w: 140 },
+  { key: 'status', label: 'Status',    w: 130 },
+];
+
+function _portalMoneyHtml(projects, machine) {
+  const blocks = projects.map(p => {
+    const all = ((state.financials && state.financials[p]) || []).filter(f => !f.archived_at);
+    if (!all.length) return '';
+    const machinesOn = [...new Set(state.tasks.filter(t => t.project === p && t.machine).map(t => t.machine))];
+    const multi = machinesOn.length > 1;
+    const rows = all.map(f => {
       let when = null;
       try { when = financialDueDate(f, p); } catch (_) { when = f.due_date || null; }
+      let mach = f.machine || '';
+      if (!mach) { try { mach = (financialAnchorTask(f, p) || {}).machine || ''; } catch (_) {} }
+      if (!mach && multi) mach = _finBaseMachine(machinesOn);
+      return { f, when, mach };
+    }).filter(r => !machine || !r.mach || r.mach === machine);
+    if (!rows.length) return '';
+    rows.sort((x, y) =>
+      (x.when ? 0 : 1) - (y.when ? 0 : 1)
+      || String(x.when || '').localeCompare(String(y.when || ''))
+      || (x.f.sort_order || 0) - (y.f.sort_order || 0));
+    const body = rows.map(r => {
+      const f = r.f;
       const status = f.paid ? { t: 'Paid', c: 'is-paid' } : f.sent ? { t: 'Invoiced', c: 'is-sent' } : { t: 'Upcoming', c: '' };
       const amt = [];
       if (f.percent != null && Number(f.percent) > 0) amt.push(Number(f.percent) + '%');
       if (f.amount != null && Number(f.amount) > 0) amt.push('$' + Number(f.amount).toLocaleString('en-US'));
+      const machCell = multi
+        ? `<td class="pm-mach"><span class="pm-mach-pill">${escapeHtml(_portalMachineLabel(r.mach))}</span></td>`
+        : '';
       return `<tr>
-        <td class="pm-name">${escapeHtml(f.name || '')}</td>
+        ${machCell}
+        <td class="pm-name" title="${escapeHtml(f.name || '')}">${escapeHtml(f.name || '')}</td>
         <td class="pm-amt">${escapeHtml(amt.join(' · ') || '—')}</td>
-        <td class="pm-when">${escapeHtml(portalDate(when))}</td>
+        <td class="pm-when">${escapeHtml(portalDate(r.when))}</td>
         <td><span class="pm-status ${status.c}">${escapeHtml(status.t)}</span></td>
       </tr>`;
     }).join('');
+    const cols = multi ? PORTAL_MONEY_COLS : PORTAL_MONEY_COLS.filter(c => c.key !== 'mach');
     return `<div class="portal-money-proj">
-      ${projects.length > 1 ? `<div class="portal-money-title">${escapeHtml(p)}</div>` : ''}
-      <table class="portal-money">
-        <thead><tr><th>Milestone</th><th>Value</th><th>Expected</th><th>Status</th></tr></thead>
-        <tbody>${body}</tbody>
-      </table>
+      <div class="portal-money-title">${escapeHtml(p)}</div>
+      ${_portalGridHtml('money:' + (multi ? 'm' : '1'), cols, body, 'portal-money')}
     </div>`;
   }).filter(Boolean).join('');
   if (!blocks) return '';
   return `<section class="portal-block">
     <h2 class="portal-h2">Payment milestones</h2>
-    <div class="portal-money-wrap">${blocks}</div>
+    ${blocks}
   </section>`;
 }
 
@@ -17666,7 +17859,7 @@ function _portalRiskHtml(projects) {
   }).join('');
 
   const rows = items.map(r => {
-    const acts = riskTaskList(project, r.id)
+    const acts = riskTaskList(r.project, r.id)
       .filter(t => (t.name || '').trim())
       .map(t => ({ text: t.name, due: t.end_date || '', done: (Number(t.progress) || 0) >= 100 }));
     const open = _portalRiskOpen.has(r.id);
@@ -17704,7 +17897,7 @@ function _portalRiskHtml(projects) {
   }).join('');
 
   return `<section class="portal-block">
-    <h2 class="portal-h2">Risks we are managing</h2>
+    <h2 class="portal-h2">Risk Mitigation Plan</h2>
     <div class="portal-risk-grid">
       <div class="portal-risk-matrix">
         <table class="risk-matrix">
@@ -17718,31 +17911,63 @@ function _portalRiskHtml(projects) {
     </div>
   </section>`;
 }
+const PORTAL_KEY_DATES = [
+  { key: 'receipt_of_po', label: 'Receipt of PO' },
+  { key: 'machine_power_up', label: 'Machine Power-Up' },
+  { key: 'fat', label: 'FAT' },
+];
+
+// Percent complete across the work in view, weighted by scheduled days —
+// a four-week task finishing is not the same event as a one-day task
+// finishing, and a plain count of rows says it is.
+function _portalPercent(rows) {
+  let planned = 0, done = 0;
+  rows.forEach(t => {
+    if (isMilestoneLike(t)) return;
+    const d = Math.max(Number(t.duration_days) || 0, 0.5);
+    planned += d;
+    done += d * Math.min(Math.max(Number(t.progress) || 0, 0), 100) / 100;
+  });
+  if (!planned) return null;
+  return Math.round((done / planned) * 100);
+}
+
+const PORTAL_DUE_COLS = [
+  { key: 'name',  label: 'Machine',             w: 300 },
+  { key: 'pct',   label: 'Complete',            w: 170 },
+  { key: 'po',    label: 'Receipt of PO',       w: 140 },
+  { key: 'power', label: 'Machine Power-Up',    w: 165 },
+  { key: 'fat',   label: 'FAT',                 w: 120 },
+  { key: 'slip',  label: 'FAT vs commitment',   w: 165 },
+];
+
 function _portalDueTableHtml(units) {
-  const rows = units.map(u => {
+  const body = units.map(u => {
     const fat = u.ms.find(m => m.key === 'fat') || null;
     const sl = portalSlip(fat);
-    const name = u.machine ? u.project + ' · ' + u.machine : u.project;
+    // Inside one job the machine is enough; across a group it is not.
+    const many = new Set(units.map(x => x.project)).size > 1;
+    const name = u.machine
+      ? (many ? u.project + ' · ' + _portalMachineLabel(u.machine) : _portalMachineLabel(u.machine))
+      : u.project;
+    const pct = _portalPercent(u.rows);
+    const cells = PORTAL_KEY_DATES.map(k => {
+      const m = u.ms.find(x => x.key === k.key) || null;
+      const cls = m && m.done ? 'is-done' : (m && m.past ? 'is-past' : '');
+      return `<td class="portal-key-date ${cls}">${escapeHtml(portalDate(m && m.current))}</td>`;
+    }).join('');
     return `<tr>
-      <td class="portal-due-name">${escapeHtml(name)}</td>
-      <td>${escapeHtml(portalDate(fat && fat.committed))}</td>
-      <td class="portal-due-key">${escapeHtml(portalDate(fat && fat.current))}</td>
+      <td class="portal-due-name" title="${escapeHtml(name)}">${escapeHtml(name)}</td>
+      <td class="portal-pct">${pct == null ? '—' : `<span class="portal-pct-bar"><i style="width:${pct}%"></i></span><span class="portal-pct-n">${pct}%</span>`}</td>
+      ${cells}
       <td><span class="portal-slip ${sl.cls}">${escapeHtml(sl.text)}</span></td>
     </tr>`;
   }).join('');
   return `<section class="portal-block">
-    <h2 class="portal-h2">Project due dates</h2>
-    <div class="portal-due-wrap">
-      <table class="portal-due">
-        <thead><tr><th>Machine</th><th>Committed FAT</th><th>Current FAT</th><th>vs commitment</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
+    <h2 class="portal-h2">Where it stands</h2>
+    ${_portalGridHtml('due', PORTAL_DUE_COLS, body, 'portal-due')}
   </section>`;
 }
-
-// Ahead / behind for one task, as the schedule sees it. Same half-week snap
-// the grid and Gantt chips use, so the portal never disagrees with them.
 function portalDrift(t) {
   let d = 0;
   try { d = taskScheduleDelta(t) || 0; } catch (_) { d = 0; }
@@ -17753,41 +17978,114 @@ function portalDrift(t) {
     : { text: '−' + wks + 'w behind', cls: 'is-behind' };
 }
 
-function _portalWorkTable(kind, rows) {
-  if (!rows.length) {
-    const none = kind === 'behind' ? 'Nothing past its date.'
-      : kind === 'running' ? 'Nothing started on this machine yet.'
-      : 'Nothing closed out in the last three weeks.';
-    return `<p class="portal-none">${escapeHtml(none)}</p>`;
-  }
-  const head = kind === 'behind' ? `<tr><th>Task</th><th>Assigned to</th><th>Was due</th><th>Done</th></tr>`
-    : kind === 'running' ? `<tr><th>Task</th><th>Assigned to</th><th>Done</th><th>Against plan</th></tr>`
-    : `<tr><th>Task</th><th>Assigned to</th><th>Completed</th></tr>`;
-  const body = rows.map(r => {
-    const who = escapeHtml(r.assignee || '—');
-    if (kind === 'behind') {
-      return `<tr><td class="pw-name">${escapeHtml(r.name)}</td><td class="pw-who">${who}</td>
-        <td class="pw-late">${escapeHtml(portalDate(r.due))}</td>${_pwPct(r.pct)}</tr>`;
-    }
-    if (kind === 'running') {
-      const d = r.drift;
-      return `<tr><td class="pw-name">${escapeHtml(r.name)}</td><td class="pw-who">${who}</td>${_pwPct(r.pct)}
-        <td>${d ? `<span class="portal-slip ${d.cls}">${escapeHtml(d.text)}</span>` : `<span class="pw-flat">on plan</span>`}</td></tr>`;
-    }
-    return `<tr><td class="pw-name">${escapeHtml(r.name)}</td><td class="pw-who">${who}</td>
-      <td class="pw-done">${escapeHtml(portalDate(r.when))}</td></tr>`;
-  }).join('');
-  return `<table class="portal-work"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+const PORTAL_WORK_COLS = [
+  { key: 'name',  label: 'Event',        w: 340 },
+  { key: 'who',   label: 'Assigned to',  w: 165 },
+  { key: 'due',   label: 'Scheduled completion', w: 150 },
+  { key: 'pct',   label: '% Complete',   w: 120 },
+  { key: 'drift', label: 'Against plan', w: 120 },
+  { key: 'when',  label: 'Completed',    w: 115 },
+];
+
+function _portalColWidths(gridId, cols) {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('sdcPortalCols:' + gridId) || 'null'); } catch (_) {}
+  const out = {};
+  cols.forEach(c => {
+    const v = saved && Number(saved[c.key]);
+    out[c.key] = (v && v >= 60) ? v : c.w;
+  });
+  return out;
 }
 
-function _pwPct(pct) {
-  const n = Math.max(0, Math.min(100, Number(pct) || 0));
-  return `<td class="pw-pct"><span class="pw-bar"><span style="width:${n}%"></span></span><span class="pw-num">${n}%</span></td>`;
+function _portalGridHtml(gridId, cols, bodyHtml, extraClass) {
+  const w = _portalColWidths(gridId, cols);
+  const total = cols.reduce((n, c) => n + w[c.key], 0);
+  const colTags = cols.map(c => `<col data-pcol="${c.key}" style="width:${w[c.key]}px">`).join('');
+  const head = cols.map(c =>
+    `<th data-pcol="${c.key}">${escapeHtml(c.label)}<span class="pw-grip" data-pgrip="${c.key}"></span></th>`).join('');
+  return `<div class="portal-grid-wrap">
+    <table class="portal-grid ${extraClass || ''}" data-grid="${escapeHtml(gridId)}" style="width:${total}px">
+      <colgroup>${colTags}</colgroup>
+      <thead><tr>${head}</tr></thead>
+      <tbody>${bodyHtml}</tbody>
+    </table>
+  </div>`;
+}
+
+function _wirePortalGrids(root) {
+  root.querySelectorAll('table[data-grid]').forEach(table => {
+    const gridId = table.dataset.grid;
+    const sumWidths = () => Array.from(table.querySelectorAll('col[data-pcol]'))
+      .reduce((n, c) => n + (parseFloat(c.style.width) || 0), 0);
+    table.querySelectorAll('[data-pgrip]').forEach(grip => {
+      grip.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const col = table.querySelector('col[data-pcol="' + grip.dataset.pgrip + '"]');
+        if (!col) return;
+        const startX = e.clientX;
+        const startW = parseFloat(col.style.width) || 120;
+        document.body.classList.add('pcol-resizing');
+        const move = (ev) => {
+          col.style.width = Math.max(60, startW + (ev.clientX - startX)) + 'px';
+          table.style.width = sumWidths() + 'px';
+        };
+        const up = () => {
+          document.removeEventListener('mousemove', move);
+          document.removeEventListener('mouseup', up);
+          document.body.classList.remove('pcol-resizing');
+          const out = {};
+          table.querySelectorAll('col[data-pcol]').forEach(c => { out[c.dataset.pcol] = parseFloat(c.style.width) || 120; });
+          try { localStorage.setItem('sdcPortalCols:' + gridId, JSON.stringify(out)); } catch (_) {}
+        };
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
+      });
+    });
+  });
+}
+function _portalWorkSection(label, kind, rows, colCount) {
+  const head = `<tr class="pw-sec pw-sec-${kind}"><td colspan="${colCount}">
+    <span class="pw-sec-name">${escapeHtml(label)}</span>
+    <span class="pw-sec-n">${rows.length}</span>
+  </td></tr>`;
+  if (!rows.length) {
+    const none = kind === 'missed' ? 'Nothing was missed.'
+      : kind === 'slipping' ? 'Everything under way is holding its dates.'
+      : kind === 'running' ? 'Nothing under way is on track right now.'
+      : 'Nothing closed out in the last three weeks.';
+    return head + `<tr class="pw-empty"><td colspan="${colCount}">${escapeHtml(none)}</td></tr>`;
+  }
+  return head + rows.map(r => {
+    const n = Math.max(0, Math.min(100, Number(r.pct) || 0));
+    const lateCls = (kind === 'missed' || kind === 'slipping') ? ' is-late' : '';
+    const driftTxt = r.drift ? r.drift.text : (kind === 'recent' ? '—' : 'on plan');
+    return `<tr class="pw-row">
+      <td class="pw-name" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</td>
+      <td class="pw-who">${escapeHtml(r.assignee || '—')}</td>
+      <td class="pw-due${lateCls}">${escapeHtml(portalDate(r.due))}</td>
+      <td class="pw-pct"><span class="pw-bar"><span style="width:${n}%"></span></span><span class="pw-num">${n}%</span></td>
+      <td class="pw-drift ${r.drift ? r.drift.cls : ''}">${escapeHtml(driftTxt)}</td>
+      <td class="pw-done">${escapeHtml(portalDate(r.when))}</td>
+    </tr>`;
+  }).join('');
+}
+
+function _portalWorkGrid(work) {
+  const n = PORTAL_WORK_COLS.length;
+  const body = [
+    _portalWorkSection('Missed', 'missed', work.missed, n),
+    _portalWorkSection('In progress · behind schedule', 'slipping', work.slipping, n),
+    _portalWorkSection('In progress · on or ahead of schedule', 'running', work.running, n),
+    _portalWorkSection('Completed recently', 'recent', work.recent, n),
+  ].join('');
+  return _portalGridHtml('work', PORTAL_WORK_COLS, body, 'portal-work');
 }
 
 // What a customer means by "your team" is the people actually touching their
 // machine. That is already in the schedule - every task carries an assignee -
-// and the team table carries each person\u2019s discipline. Deriving it means the
+// and the team table carries each person’s discipline. Deriving it means the
 // list is right on its own and nobody has to keep a roster in sync.
 const PORTAL_ROLES = {
   pm:      'Project management',
@@ -17803,7 +18101,6 @@ const PORTAL_ROLES = {
 // Grouped by discipline, in the order work moves through the shop. A flat
 // list put a controls engineer between two wiremen and read as a jumble.
 const PORTAL_ROLE_ORDER = ['pm', 'mech', 'controls', 'build', 'wire', 'service', 'mfgops', 'ops', 'other'];
-
 function portalTeam(project, rows) {
   const byName = {};
   (state.team || []).forEach(m => { if (m && m.name) byName[m.name.trim()] = m; });
@@ -17839,74 +18136,155 @@ function portalTeam(project, rows) {
     .filter(d => groups[d] && groups[d].length)
     .map(d => ({ key: d, label: PORTAL_ROLES[d] || 'Project team', people: groups[d] }));
 }
-function _portalUnitHtml(u) {
-  const work = portalWork(u.rows);
-  const fat = u.ms.find(m => m.key === 'fat');
-  const sl = portalSlip(fat);
-  const title = u.machine ? u.project + ' · ' + u.machine : u.project;
-  const team = portalTeam(u.project, u.rows);
+const PORTAL_PROGRESS_PHASES = [
+  { label: 'Kickoff',                g: 'kickoff' },
+  { label: 'Mechanical engineering', g: 'design_build', d: 'engineering', sub: 'mech' },
+  { label: 'Controls engineering',   g: 'design_build', d: 'engineering', sub: 'controls' },
+  { label: 'General engineering',    g: 'design_build', d: 'engineering', sub: 'general' },
+  { label: 'Procurement',            g: 'design_build', d: 'procurement' },
+  { label: 'Build',                  g: 'design_build', d: 'shop', sub: 'build' },
+  { label: 'Wiring',                 g: 'design_build', d: 'shop', sub: 'wire' },
+  { label: 'Testing',                g: 'machine_testing' },
+  { label: 'Teardown & install',     g: 'teardown_install' },
+];
 
-  const rail = portalMilestonePhases(u.ms).map(ph => `<div class="portal-phase">
-    <div class="portal-phase-name">${escapeHtml(ph.label)}</div>
-    <ol class="portal-rail">${ph.items.map(m => {
-      const cls = m.done ? 'is-done' : m.past ? 'is-past' : '';
-      return `<li class="portal-step ${cls}">
-        <span class="portal-step-dot"></span>
-        <span class="portal-step-label">${escapeHtml(m.label)}</span>
-        <span class="portal-step-date">${escapeHtml(portalDate(m.current))}</span>
-      </li>`;
-    }).join('')}</ol>
-  </div>`).join('');
-  return `<section class="portal-machine">
-    <header class="portal-machine-head">
-      <div class="portal-machine-id">
-        <h3>${escapeHtml(title)}</h3>
-        <div class="portal-machine-fat">
-          <span class="portal-fat-label">FAT</span>
-          <span class="portal-fat-date">${escapeHtml(portalDate(fat && fat.current))}</span>
-          <span class="portal-slip ${sl.cls}">${escapeHtml(sl.text)}</span>
-        </div>
+// A ring rather than a bar: nine of these read as a row of gauges you can
+// scan, where nine bars read as a chart you have to study.
+function _portalDonut(pct, size) {
+  const r = (size / 2) - 5;
+  const c = 2 * Math.PI * r;
+  const on = c * Math.min(Math.max(pct, 0), 100) / 100;
+  const mid = size / 2;
+  return `<svg class="pdonut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img" aria-label="${pct}% complete">
+    <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="var(--surface-alt, #f1f5f9)" stroke-width="8"></circle>
+    <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="var(--anchor-fill, #befa4f)" stroke-width="8"
+      stroke-linecap="round" stroke-dasharray="${on.toFixed(2)} ${(c - on).toFixed(2)}"
+      transform="rotate(-90 ${mid} ${mid})"></circle>
+    <text x="${mid}" y="${mid}" text-anchor="middle" dominant-baseline="central"
+      style="font-family:sans-serif;font-size:${Math.round(size / 3.6)}px;font-weight:800;fill:var(--text);">${pct}%</text>
+  </svg>`;
+}
 
+// Segments of one whole, drawn as a ring. Counts, not percentages, because
+// "three tasks behind" is the sentence people say.
+function _portalRing(segments, size) {
+  const total = segments.reduce((n, x) => n + x.n, 0);
+  const r = (size / 2) - 6;
+  const c = 2 * Math.PI * r;
+  const mid = size / 2;
+  let at = 0;
+  const arcs = segments.filter(x => x.n > 0).map(x => {
+    const on = c * (x.n / total);
+    const dash = `<circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="${x.color}" stroke-width="10"
+      stroke-dasharray="${on.toFixed(2)} ${(c - on).toFixed(2)}" stroke-dashoffset="${(-at).toFixed(2)}"
+      transform="rotate(-90 ${mid} ${mid})"><title>${escapeHtml(x.label)}: ${x.n}</title></circle>`;
+    at += on;
+    return dash;
+  }).join('');
+  return `<svg class="pdonut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img"
+      aria-label="${escapeHtml(segments.map(x => x.label + ' ' + x.n).join(', '))}">
+    <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="var(--surface-alt, #f1f5f9)" stroke-width="10"></circle>
+    ${arcs}
+    <text x="${mid}" y="${mid - 7}" text-anchor="middle" dominant-baseline="central"
+      style="font-family:sans-serif;font-size:${Math.round(size / 3.4)}px;font-weight:800;fill:var(--text);">${total}</text>
+    <text x="${mid}" y="${mid + 15}" text-anchor="middle" dominant-baseline="central"
+      style="font-family:sans-serif;font-size:11px;font-weight:700;fill:var(--text-muted);">tasks</text>
+  </svg>`;
+}
+
+// Columns on a shared baseline. Drawn in HTML rather than SVG so the labels
+// wrap and the whole thing reflows on a narrow screen.
+function _portalBars(items) {
+  return `<div class="pbars">${items.map(x => `<div class="pbar">
+    <span class="pbar-n">${x.pct}%</span>
+    <span class="pbar-track"><i style="height:${Math.max(x.pct, 2)}%"></i></span>
+    <span class="pphase-label">${escapeHtml(x.label)}</span>
+  </div>`).join('')}</div>`;
+}
+
+// How the task list splits four ways. Behind wins over in-progress: a row
+// that is late is late whatever percentage it is sitting at.
+function _portalTaskMix(rows) {
+  const today = _ymdLocal(new Date());
+  const mix = { complete: 0, running: 0, slipping: 0, missed: 0, notStarted: 0 };
+  rows.forEach(t => {
+    if (!(t.name || '').trim()) return;
+    mix[_portalRowState(t, today)]++;
+  });
+  return mix;
+}
+
+function _portalProgressHtml(projects, machine) {
+  const rows = state.tasks.filter(t => projects.includes(t.project))
+    .filter(t => !machine || !t.machine || t.machine === machine);
+  const overall = _portalPercent(rows);
+  if (overall == null) return '';
+  const cells = PORTAL_PROGRESS_PHASES.map(ph => {
+    const mine = rows.filter(t => t.phase_group === ph.g
+      && (!ph.d || t.department === ph.d)
+      && (!ph.sub || t.sub_department === ph.sub));
+    const pct = _portalPercent(mine);
+    // A phase with no rows is not 0% — it is not part of this machine.
+    if (pct == null) return null;
+    return { label: ph.label, pct };
+  }).filter(Boolean);
+  return `<section class="portal-block">
+    <h2 class="portal-h2">Progress</h2>
+    <div class="portal-prog">
+      <div class="pprog-overall">
+        ${_portalDonut(overall, 128)}
+        <span class="pphase-label">Whole machine</span>
       </div>
-      <div class="portal-machine-act">
-        <button type="button" class="portal-docbtn" data-doc="comm" data-doc-proj="${escapeHtml(u.project)}">Communication Plan</button>
-        <button type="button" class="portal-open" data-open-sched="${escapeHtml(u.project)}" data-open-mach="${escapeHtml(u.machine || '')}">Open schedule →</button>
-      </div>
-    </header>
-
-    <div class="portal-phases">${rail}</div>
-
-    ${team.length ? `<div class="portal-teamblock">
-      <h4>Your team at SDC</h4>
-      ${team.map(g => `<div class="portal-team-group">
-        <div class="portal-team-role">${escapeHtml(g.label)}</div>
-        <div class="portal-team-people">
-          ${g.people.map(p => `<div class="portal-person ${p.lead ? 'is-lead' : ''}">
-            <span class="pp-avatar">${escapeHtml(_portalInitials(p.name))}</span>
-            <span class="pp-text"><span class="pp-name">${escapeHtml(p.name)}</span>
-            ${p.note ? `<span class="pp-role">${escapeHtml(p.note)}</span>` : ''}</span>
-          </div>`).join('')}
-        </div>
-      </div>`).join('')}
-    </div>` : ''}
-    <div class="portal-work-wrap">
-      <div class="portal-work-sec ${work.behind.length ? 'is-alert' : ''}">
-        <h4>Behind${work.behind.length ? ` <span class="portal-col-n">${work.behind.length}</span>` : ''}</h4>
-        ${_portalWorkTable('behind', work.behind)}
-      </div>
-      <div class="portal-work-sec"><h4>In progress now</h4>${_portalWorkTable('running', work.running)}</div>
-      <div class="portal-work-sec"><h4>Completed recently</h4>${_portalWorkTable('recent', work.recent)}</div>
+      <div class="pprog-phases">${_portalBars(cells)}</div>
     </div>
+  </section>`;
+}
+
+function _portalWorkHtml(projects, machine) {
+  const rows = state.tasks.filter(t => projects.includes(t.project))
+    // A machine pick means that machine plus the work shared across the job;
+    // design and procurement are how the machine gets built too.
+    .filter(t => !machine || !t.machine || t.machine === machine);
+  if (!rows.length) return '';
+  const work = portalWork(rows);
+  const mix = _portalTaskMix(rows);
+  const segs = [
+    { label: 'Complete',             n: mix.complete,   color: '#74c415' },
+    { label: 'In progress, on track', n: mix.running,    color: '#1574c4' },
+    { label: 'In progress, behind',   n: mix.slipping,   color: '#f59e0b' },
+    { label: 'Missed',               n: mix.missed,     color: '#d92d20' },
+    { label: 'Not started yet',      n: mix.notStarted, color: '#c8d5e3' },
+  ];
+  const legend = segs.map(x => `<li><span class="pmix-dot" style="background:${x.color}"></span>
+    <span class="pmix-label">${escapeHtml(x.label)}</span><span class="pmix-n">${x.n}</span></li>`).join('');
+  return `<section class="portal-block">
+    <h2 class="portal-h2">Event status</h2>
+    <div class="portal-mix">
+      ${_portalRing(segs, 128)}
+      <ul class="pmix-legend">${legend}</ul>
+    </div>
+    ${_portalWorkGrid(work)}
   </section>`;
 }
 
 function portalOpenSchedule(project, machine) {
   state._portalReturn = _portalCustomer || null;
+  if (!state.openProjects.includes(project)) state.openProjects.push(project);
   state.filters.project = project;
-  state.filters.machinesSubset = machine ? [machine] : [];
+  const machines = _finProjectMachines(project);
+  const openOn = machine || (machines.length > 1 ? _finBaseMachine(machines) : '');
+  state.filters.machinesSubset = openOn ? [openOn] : [];
+  state.showFinancials = true;
+  state.showBaseline = true;
   try { saveProjectTabs(); } catch (_) {}
   try { saveMachinesSubset(project); } catch (_) {}
+  document.body.classList.add('portal-mode');
   document.body.classList.add('portal-schedule');
+  // A customer opening their job wants the BUILD. Risk mode is a place you
+  // choose to go — and it persists per session, so whatever the last person
+  // was looking at internally was following the project through to the portal
+  // and opening the customer on a risk schedule.
+  if (state.scheduleView) state.scheduleView.riskMode = false;
   setView('schedule');
   try { enterCustomerView(); } catch (_) {}
 }
@@ -17921,8 +18299,45 @@ function portalBackFromSchedule() {
 }
 
 function _wirePortal(root) {
+  // Pick a project: the page becomes that project. Pick it again to step
+  // back out to all of them.
+  root.querySelectorAll('[data-pick-proj]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-open-sched]') || e.target.closest('[data-toggle-proj]')) return;
+      const p = row.dataset.pickProj;
+      if (_portalProjects.length === 1 && _portalProjects[0] === p) return;
+      _portalProjects = [p];
+      _portalMachine = null;
+      renderPortal();
+    });
+  });
+  root.querySelectorAll('[data-toggle-proj]').forEach(b => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const p = b.dataset.toggleProj;
+      const next = new Set(_portalProjects);
+      if (next.has(p)) next.delete(p); else next.add(p);
+      // Emptying the group would leave the page with nothing to be about.
+      if (next.size) { _portalProjects = [...next]; _portalMachine = null; renderPortal(); }
+    });
+  });
+  root.querySelectorAll('[data-pick-all]').forEach(b => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _portalProjects = [...root.querySelectorAll('[data-pick-proj]')].map(r => r.dataset.pickProj);
+      _portalMachine = null;
+      renderPortal();
+    });
+  });
+  root.querySelectorAll('[data-pick-mach]').forEach(b => {
+    b.addEventListener('click', () => {
+      _portalMachine = b.dataset.pickMach || null;
+      renderPortal();
+    });
+  });
+  try { _wirePortalGrids(root); } catch (_) {}
   const sel = root.querySelector('[data-portal-cust]');
-  if (sel) sel.addEventListener('change', () => { _portalCustomer = sel.value; renderPortal(); });
+  if (sel) sel.addEventListener('change', () => { _portalCustomer = sel.value; _portalProjects = []; _portalMachine = null; renderPortal(); });
 
   root.querySelectorAll('[data-prisk]').forEach(b => {
     b.addEventListener('click', () => {
@@ -29035,6 +29450,9 @@ async function loadTasks() {
     if (backfilled) raw = await api.list();
   } catch (_) { /* anchor backfill is non-critical — show tasks even if it fails */ }
   state.tasks = dedupAnchors(raw);
+  // A load that came back — empty or not — is not the same as one still in
+  // flight, and only the server can tell them apart.
+  state._tasksLoadedAt = Date.now();
   // Anchors are ALWAYS zero-duration milestones — in every schedule. A row
   // that matches an anchor by name but carries a duration (e.g. an imported
   // "SAT" with a 1-week span) gets normalized once so it renders as a
@@ -29458,6 +29876,8 @@ function setView(view) {
   _saveScrollPos(state.view);
   // Clear projects search when leaving the projects page
   if (state.view === 'projects' && view !== 'projects') state._projectsSearch = '';
+  if (view === 'portal') document.body.classList.add('portal-mode');
+  else if (view !== 'schedule') document.body.classList.remove('portal-mode');
   state.view = view;
   // Survive reloads: F5 / Ctrl+Shift+R reopens the view you were on instead
   // of always dumping you back on the schedule.
@@ -30762,16 +31182,6 @@ function toggleGanttVisible(visible) {
 // Gantt together, and zoom-to-fits the chart so the full project span is
 // visible. State (pane mode, zoom, scroll) is saved on entry and restored
 // on exit so toggling off returns the user to their exact editing layout.
-// Keep the floating "≡ Flatten" button in customer view in sync with the
-// flatten + sortByStart toggle. Same is-active class the toolbar's ≡ View-
-// pill icon uses (so both buttons read consistent at a glance).
-function syncCustomerViewFlattenBtn() {
-  const btn = document.getElementById('btn-customer-view-flatten');
-  if (!btn) return;
-  const sv = state.scheduleView || {};
-  btn.classList.toggle('is-active', !!(sv.flatten && sv.sortByStart));
-}
-
 function showCustomerExportModal() {
   if (!state.filters.project) {
     showAlertDialog('Pick a project tab first — export is per-project.');
@@ -30957,17 +31367,85 @@ function _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols, lay
   }, 200);
 }
 
-// Keep the Grid only / Grid + Gantt button labelled for what it will DO next,
-// and lit when the view is currently grid-only.
-function syncCustomerViewGridBtn() {
-  const btn = document.getElementById('btn-customer-view-grid');
-  if (!btn) return;
-  const gridOnly = state.layout && state.layout.showGantt === false;
-  btn.classList.toggle('is-active', !!gridOnly);
-  btn.textContent = gridOnly ? '▦ Grid + Gantt' : '▤ Grid only';
-  // Nothing to fit when the chart is hidden.
-  const fit = document.getElementById('btn-customer-view-fit');
-  if (fit) fit.hidden = !!gridOnly;
+// ── The customer gets the toolbar, not a copy of it ─────────────────────
+// Everything a customer would want to do with a schedule — flatten it, pick
+// which panes to see, put the financial milestones on the chart, zoom, fit,
+// filter — is already on the real toolbar and already works. So the customer
+// presentation SHOWS that toolbar and takes off the controls that only make
+// sense on our side of it: editing, saved column setups, and the numbers that
+// are ours (what each person is allocated, quoted-versus-scheduled hours off
+// the Project Release budget, lag and lead).
+const CUSTOMER_TOOLBAR_OFF = [
+  // The column picker goes because the customer presentation already
+  // decides the columns; the rest of this row is theirs to use.
+  'columns-dropdown',
+  'btn-undo', 'btn-redo', 'btn-save', 'save-indicator',
+  'btn-view-alloc-pre', 'btn-view-bar-meta', 'btn-view-dept-hours', 'btn-view-lags',
+];
+
+// The customer's own buttons live in #customer-view-tools the rest of the
+// time and move INTO the toolbar here, so there is one row of controls rather
+// than a second bar that resembles it. Back-to-portal reads with the other
+// navigation on the left; take-it-with-you reads with zoom on the right.
+const CUSTOMER_TOOLBAR_TAIL = ['btn-customer-view-xls', 'btn-customer-view-print', 'btn-customer-view-exit'];
+
+function applyCustomerToolbar(on) {
+  const bar = document.querySelector('.schedule-toolbar');
+  if (!bar) return;
+  CUSTOMER_TOOLBAR_OFF.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('cv-off', on);
+  });
+  // Back to the portal is the pinned tab up top now, not a toolbar button.
+  const back = null;
+  const tail = CUSTOMER_TOOLBAR_TAIL.map(id => document.getElementById(id)).filter(Boolean);
+  const home = document.getElementById('customer-view-tools');
+  const line = (id) => {
+    let d = document.getElementById(id);
+    if (!d) { d = document.createElement('div'); d.id = id; d.className = 'toolbar-divider'; }
+    return d;
+  };
+  let sep = document.getElementById('cv-tail-divider');
+  const lead = document.getElementById('cv-lead-divider');
+  if (on) {
+    if (back) {
+      bar.insertBefore(line('cv-lead-divider'), bar.firstChild);
+      bar.insertBefore(back, bar.firstChild);
+    }
+    if (!sep) {
+      sep = document.createElement('div');
+      sep.id = 'cv-tail-divider';
+      sep.className = 'toolbar-divider';
+    }
+    bar.appendChild(sep);
+    tail.forEach(b => bar.appendChild(b));
+  } else {
+    if (sep) sep.remove();
+    if (lead) lead.remove();
+    if (home) {
+      if (back) home.appendChild(back);
+      tail.forEach(b => home.appendChild(b));
+    }
+  }
+  // A divider only earns its place between two visible things. Taking whole
+  // groups off the row otherwise leaves the lines that separated them.
+  const kids = Array.from(bar.children);
+  kids.forEach(k => { if (k.classList.contains('toolbar-divider')) k.classList.remove('cv-off'); });
+  if (!on) { try { fitScheduleToolbar(); } catch (_) {} return; }
+  const shows = (k) => !k.classList.contains('cv-off') && !k.classList.contains('hidden')
+    && !k.hidden && getComputedStyle(k).display !== 'none';
+  let seenReal = false;
+  let trailing = null;
+  kids.forEach(k => {
+    if (k.classList.contains('toolbar-divider')) {
+      if (!seenReal) { k.classList.add('cv-off'); return; }
+      seenReal = false; trailing = k; return;
+    }
+    if (k.classList.contains('toolbar-flex-gap')) return;
+    if (shows(k)) { seenReal = true; trailing = null; }
+  });
+  if (trailing) trailing.classList.add('cv-off');
+  try { fitScheduleToolbar(); } catch (_) {}
 }
 
 function enterCustomerView() {
@@ -30984,14 +31462,13 @@ function enterCustomerView() {
   // Apply class first so the body width / panel widths reflow to the
   // customer layout BEFORE zoomToFit measures the Gantt panel size.
   document.body.classList.add('customer-view');
+  applyCustomerToolbar(true);
   // Grid + Gantt by default; the Export dialog can ask for grid-only when the
   // customer just wants the dates (Dan).
   setPaneMode(state._exportLayout === 'grid' ? 'grid' : 'both');
   // Reflect the current flatten state on the floating button — flatten may
   // already be on (carried over from the editing view) and we want the
   // button to show as active immediately, not only after the user clicks it.
-  syncCustomerViewFlattenBtn();
-  syncCustomerViewGridBtn();
   // Defer zoomToFit past the CSS reflow AND past setPaneMode's own deferred
   // fit. Two things go wrong if ours runs first: it measures the pre-class
   // panel size (chart too wide for the now-smaller panel), and its scroll
@@ -31414,6 +31891,7 @@ window.addEventListener('resize', () => {
 function exitCustomerView() {
   if (!document.body.classList.contains('customer-view')) return;
   document.body.classList.remove('customer-view');
+  applyCustomerToolbar(false);
   // Clear export filter, the chosen export layout, and any injected columns.
   state._exportOnlyIds = null;
   state._exportLayout = null;
@@ -32695,7 +33173,6 @@ async function init() {
   // hidden chrome.
   const customerBtn = document.getElementById('btn-customer-view');
   const customerExitBtn = document.getElementById('btn-customer-view-exit');
-  const customerFlattenBtn = document.getElementById('btn-customer-view-flatten');
   if (customerBtn) {
     customerBtn.addEventListener('click', () => {
       if (document.body.classList.contains('customer-view')) {
@@ -32711,22 +33188,6 @@ async function init() {
   }
   if (customerExitBtn) {
     customerExitBtn.addEventListener('click', exitCustomerView);
-  }
-  // Grid only / Grid + Gantt toggle, right in the view. Whatever is on
-  // screen is what prints, so this IS the layout choice for the PDF - the
-  // Export dialog just sets the starting point.
-  const customerGridBtn = document.getElementById('btn-customer-view-grid');
-  if (customerGridBtn) {
-    customerGridBtn.addEventListener('click', () => {
-      const gridOnly = state.layout && state.layout.showGantt === false;
-      state._exportLayout = gridOnly ? null : 'grid';
-      setPaneMode(gridOnly ? 'both' : 'grid');
-      syncCustomerViewGridBtn();
-      // Coming back to Both, re-fit against the settled panel width.
-      if (gridOnly) {
-        setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 160);
-      }
-    });
   }
   // Save as PDF - the browser print dialog with "Save as PDF" as the
   // destination. beforeprint stamps the Gantt viewBox so the chart scales
@@ -32766,12 +33227,6 @@ async function init() {
   }
   const portalBackBtn = document.getElementById('btn-portal-back');
   if (portalBackBtn) portalBackBtn.addEventListener('click', portalBackFromSchedule);
-  const customerFitBtn = document.getElementById('btn-customer-view-fit');
-  if (customerFitBtn) {
-    customerFitBtn.addEventListener('click', () => {
-      try { zoomToFit(); } catch (_) {}
-    });
-  }
   const customerPrintBtn = document.getElementById('btn-customer-view-print');
   if (customerPrintBtn) {
     customerPrintBtn.addEventListener('click', () => {
@@ -32779,25 +33234,6 @@ async function init() {
       setTimeout(() => { try { window.print(); } catch (_) {} }, 120);
     });
   }
-  // The Flatten button in customer view is a slim mirror of the toolbar's
-  // ≡ View pill — both toggle flatten + sortByStart in lockstep (the same
-  // linked pair used everywhere else in the app; flatten without start-date
-  // sort almost never makes sense, per v3.58). After flipping the flag we
-  // call render() to redraw the grid + Gantt under the new layout and
-  // syncCustomerViewFlattenBtn() to update the button's is-active fill.
-  if (customerFlattenBtn) {
-    customerFlattenBtn.addEventListener('click', () => {
-      const turningOn = !(state.scheduleView.flatten && state.scheduleView.sortByStart);
-      state.scheduleView.flatten     = turningOn;
-      state.scheduleView.sortByStart = turningOn;
-      saveScheduleView();
-      applyScheduleView();
-      syncViewPill();
-      syncCustomerViewFlattenBtn();
-      render();
-    });
-  }
-
   document.getElementById('btn-customer-export')?.addEventListener('click', showCustomerExportModal);
 
   // Topbar zoom controls: − / mode / + . The mode picker jumps to a representative zoom

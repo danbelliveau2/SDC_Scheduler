@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260923-336" />
+  <link rel="stylesheet" href="styles.css?v=20260923-362" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
@@ -299,14 +299,14 @@
                handed over. Hidden by default for everyone else. -->
           <button id="btn-etc-back" class="toolbar-toggle-btn hidden" type="button" title="Return to the Projects Reports page you came from">← Back to report</button>
 
-          <div class="dropdown">
+          <div class="dropdown" id="columns-dropdown">
             <button id="btn-columns" class="toolbar-toggle-btn" type="button" title="Show, hide, or reorder grid columns. Drag rows in the menu to reorder them in the grid.">Show/hide columns ▾</button>
             <div id="columns-menu" class="dropdown-menu hidden"></div>
           </div>
 
           <button id="btn-compress-cols" class="toolbar-toggle-btn" type="button" title="Shrink every visible column to the smallest width that still fits its content — frees up room for the Gantt.">⇤ Compress</button>
 
-          <div class="dropdown">
+          <div class="dropdown" id="col-views-dropdown">
             <button id="btn-col-views" class="toolbar-toggle-btn" type="button" title="Saved column views — save the current column setup (which columns, widths, fonts) under a name and switch between setups in one click.">Views ▾</button>
             <div id="col-views-menu" class="dropdown-menu hidden"></div>
           </div>
@@ -422,6 +422,16 @@
             <div id="view-mode-menu" class="dropdown-menu hidden"></div>
           </div>
         </div>
+      </div>
+      <!-- The customer’s own buttons. They do not stay here: on entering the
+           customer presentation they move INTO the toolbar above, so there is
+           one row of controls rather than a second bar that resembles it.
+           This element is just where they live the rest of the time. -->
+      <div class="customer-view-tools" id="customer-view-tools">
+        <button id="btn-portal-back" class="toolbar-toggle-btn customer-view-back" type="button" title="Back to the customer portal.">← Back to portal</button>
+        <button id="btn-customer-view-xls" class="toolbar-toggle-btn customer-view-xls" type="button" title="Download these rows as an Excel workbook — the same tasks and dates you see, as data you can re-sort and re-plan with.">↓ Excel</button>
+        <button id="btn-customer-view-print" class="toolbar-toggle-btn customer-view-print" type="button" title="Open the print dialog — choose “Save as PDF” as the destination for a PDF of exactly this view.">⎙ Save as PDF</button>
+        <button id="btn-customer-view-exit" class="toolbar-toggle-btn customer-view-exit" type="button" title="Exit the customer presentation and return to the full editing layout.">✕ Exit customer view</button>
       </div>
       <!-- Context row. Project name stays CENTRED; the pills that describe what
            you are looking at sit left, and the per-project doors (risk schedule,
@@ -1097,15 +1107,6 @@
        (per user feedback in v4.21) — flatten + sort-by-start is the one
        view tweak that still matters when you're presenting the schedule
        chronologically to a customer. -->
-  <div class="customer-view-tools" id="customer-view-tools">
-    <button id="btn-customer-view-flatten" class="customer-view-flatten" type="button" title="Flatten the schedule for the customer view — hide sub-section headers and sort tasks within each section by start date so the schedule reads chronologically. Click again to restore the grouped layout.">≡ Flatten</button>
-    <button id="btn-portal-back" class="customer-view-back" type="button" title="Back to the customer portal.">← Back to portal</button>
-    <button id="btn-customer-view-fit" class="customer-view-fit" type="button" title="Zoom the Gantt so the whole project fits the panel.">⛶ Fit</button>
-    <button id="btn-customer-view-grid" class="customer-view-grid" type="button" title="Toggle between the grid + Gantt layout and a dates-only grid. Whichever is showing is what prints.">▤ Grid only</button>
-    <button id="btn-customer-view-xls" class="customer-view-xls" type="button" title="Download these rows as an Excel workbook — the same tasks and dates you see, as data the customer can re-sort and re-plan with.">↓ Excel</button>
-    <button id="btn-customer-view-print" class="customer-view-print" type="button" title="Open the print dialog — choose “Save as PDF” as the destination to hand the customer a PDF of exactly this view.">⎙ Save as PDF</button>
-    <button id="btn-customer-view-exit" class="customer-view-exit" type="button" title="Exit customer view and return to the full editing layout.">✕ Exit customer view</button>
-  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1135,7 +1136,7 @@
   <script src="auth-ui.js?v=20260821-share2"></script>
   <script src="phases.js?v=20260601-168"></script>
   <script src="release-notes.js?v=20260819-192"></script>
-  <script src="app.js?v=20260923-336"></script>
+  <script src="app.js?v=20260923-362"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
