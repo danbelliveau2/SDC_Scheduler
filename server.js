@@ -514,7 +514,7 @@ async function startServer({ port } = {}) {
   server.on('error', err => console.error('[scheduler] Server error:', err.message));
   try {
     const cron = require('./lib/cronJobs');
-    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops, hoursApi });
+    if (cron && typeof cron.start === 'function') cron.start({ pool, emailSvc, etoDb, io, ops, hoursApi, plannerClient });
   } catch (_) { /* cronJobs.js is optional */ }
   try {
     const { backfillProjects } = require('./lib/backfillProjects');
