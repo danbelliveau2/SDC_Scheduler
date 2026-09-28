@@ -8556,12 +8556,15 @@ function renderInvoiceBuckets(selectedProjects) {
       ? (f.sent_at ? (due ? `Due ${fmtDate(due)}` : 'Sent date') : `Sent date not recorded${due ? ` — due ${fmtDate(due)}` : ''}`)
       : 'Due date';
     const machine = f.machine ? ` <span class="inv-mach">${escapeHtml(f.machine)}</span>` : '';
+    // Paid in full has no controls, so its invoice number rides on the name line.
+    const paidInv = status === 'paid' && f.invoice_no ? ` <span class="inv-invno-tag">Inv # ${escapeHtml(f.invoice_no)}</span>` : '';
     const trigger = financialTriggerLabel(f, project);
 
     // BLANK checkbox — checking it is the action (Sent for unsent items,
     // Paid for sent ones). The column header on the card says which.
     const actions = isSentSide
       ? `<span class="inv-terms" title="Payment terms — days after sending before it counts as late">Net <input type="number" min="1" max="365" value="${invoiceTermsDays(f)}" data-inv-terms="${f.id}" data-inv-proj="${escapeHtml(project)}" /></span>
+         <button type="button" class="inv-act inv-act-invno${f.invoice_no ? '' : ' is-empty'}" data-inv-invno="${f.id}" data-inv-proj="${escapeHtml(project)}" data-inv-cur="${escapeHtml(f.invoice_no || '')}" title="Invoice number — click to edit">${f.invoice_no ? `# ${escapeHtml(f.invoice_no)}` : '+ Inv #'}</button>
          <input type="checkbox" class="inv-chk" data-inv-paid="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Check when payment is received" />
          <button type="button" class="inv-act inv-act-undo" data-inv-unsend="${f.id}" data-inv-proj="${escapeHtml(project)}" title="Undo — it wasn't actually sent">↩</button>`
       : status === 'paid'
@@ -8574,7 +8577,7 @@ function renderInvoiceBuckets(selectedProjects) {
     return `<div class="inv-item">
       <div class="inv-item-main">
         <span class="inv-item-proj" title="${escapeHtml(project)}">${escapeHtml(project)}</span>
-        <span class="inv-item-name">${escapeHtml(f.name || '(unnamed)')}${machine}</span>
+        <span class="inv-item-name">${escapeHtml(f.name || '(unnamed)')}${machine}${paidInv}</span>
         ${trigger ? `<span class="inv-item-trig" title="The schedule line that drives this date, from the Project Release trigger. The milestone name above is its description on the release; this is only the pointer.">↳ ${escapeHtml(trigger)}</span>` : ''}
       </div>
       <span class="inv-item-amt">${escapeHtml(fmtAmt(f))}</span>
@@ -8721,9 +8724,15 @@ function renderInvoiceBuckets(selectedProjects) {
         }
         return;
       }
+      const invBtn = e.target.closest('[data-inv-invno]');
+      if (invBtn) {
+        showPromptDialog({ title: 'Invoice number', okLabel: 'Save', value: invBtn.dataset.invCur, placeholder: 'e.g. 10452' })
+          .then(no => { if (no && no !== invBtn.dataset.invCur) saveAndRefresh(Number(invBtn.dataset.invInvno), invBtn.dataset.invProj, { invoice_no: no }, invBtn); });
+        return;
+      }
       const btn = e.target.closest('.inv-act');
       if (!btn) return;
-      const patch = btn.dataset.invUnsend ? { sent: 0, sent_at: null }
+      const patch = btn.dataset.invUnsend ? { sent: 0, sent_at: null, invoice_no: null }
                   : btn.dataset.invUnpay ? { paid: 0, paid_at: null }
                   : null;
       const id = Number(btn.dataset.invUnsend || btn.dataset.invUnpay);
@@ -8731,7 +8740,15 @@ function renderInvoiceBuckets(selectedProjects) {
     });
     root.addEventListener('change', (e) => {
       const el = e.target;
-      if (el.classList.contains('inv-chk') && el.checked) {
+      if (el.classList.contains('inv-chk') && el.checked && el.dataset.invSent) {
+        // Sent asks for the invoice number first; Cancel leaves it unsent.
+        showPromptDialog({ title: 'Invoice number', message: 'Enter the invoice number for this milestone.', okLabel: 'Mark sent', placeholder: 'e.g. 10452',
+          validate: v => v ? '' : 'Enter the invoice number' })
+          .then(no => {
+            if (!no) { el.checked = false; return; }
+            saveAndRefresh(Number(el.dataset.invSent), el.dataset.invProj, { sent: 1, sent_at: todayISO(), invoice_no: no }, el);
+          });
+      } else if (el.classList.contains('inv-chk') && el.checked) {
         const patch = el.dataset.invSent ? { sent: 1, sent_at: todayISO() }
                     : el.dataset.invPaid ? { paid: 1, paid_at: todayISO() }
                     : null;

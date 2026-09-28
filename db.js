@@ -128,6 +128,8 @@ async function init() {
   // Payment terms in days (Net 30 etc.) — NULL means the default (30).
   // Drives the "sent but not paid → past due" split on the Invoicing tab.
   await pool.query(`ALTER TABLE project_financials ADD COLUMN terms_days INT`).catch(() => {});
+  // Customer invoice number — typed in when the milestone is ticked Sent.
+  await pool.query(`ALTER TABLE project_financials ADD COLUMN invoice_no VARCHAR(64)`).catch(() => {});
   // sort_order must be DOUBLE (like tasks.sort_order): "add milestone below"
   // inserts between rows with sort = after + 0.5, and the legacy INT column
   // silently rounded 1.5 → 2, dumping the new row in the wrong spot.

@@ -11810,6 +11810,11 @@ td.sales-suppressed {
 .inv-act-paid:hover { background: #f0f9e8; }
 .inv-act-undo { color: var(--text-muted, #94a3b8); padding: 2px 6px; }
 .inv-act-undo:hover { color: #dc2626; border-color: #dc2626; }
+.inv-item-actions { align-items: center; }
+.inv-act-invno { color: #1574c4; border-color: #1574c4; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+.inv-act-invno:hover { background: #eaf3fb; }
+.inv-act-invno.is-empty { color: var(--text-muted, #94a3b8); border-color: var(--border-strong, #cbd5e1); border-style: dashed; }
+.inv-invno-tag { font-size: var(--fs-xs); color: var(--text-muted, #64748b); font-weight: var(--fw-bold); margin-left: 4px; white-space: nowrap; }
 
 /* PM groups around the key-milestone strips. */
 .pdash-pm-group { margin-bottom: 8px; }

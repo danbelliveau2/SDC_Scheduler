@@ -5,7 +5,7 @@ const { Router } = require('express');
 // NULL/'' means M1 / single-machine (legacy rows keep working untouched).
 // archived_at / archived_reason are settable so a mistakenly-archived row can
 // be restored (PUT archived_at: null) without a DB session.
-const FIN_FIELDS = ['name', 'percent', 'amount', 'due_date', 'paid', 'predecessors', 'sync_to_anchor', 'sort_order', 'machine', 'sent', 'sent_at', 'paid_at', 'terms_days', 'archived_at', 'archived_reason'];
+const FIN_FIELDS = ['name', 'percent', 'amount', 'due_date', 'paid', 'predecessors', 'sync_to_anchor', 'sort_order', 'machine', 'sent', 'sent_at', 'paid_at', 'terms_days', 'invoice_no', 'archived_at', 'archived_reason'];
 
 // Archive milestones whose machine is no longer part of the schedule.
 //
@@ -107,6 +107,7 @@ module.exports = function createRouter(deps) {
           if (f === 'paid' || f === 'sent') updates[f] = req.body[f] ? 1 : 0;
           else if (f === 'percent' || f === 'amount' || f === 'terms_days') updates[f] = req.body[f] == null ? null : Number(req.body[f]);
           else if (f === 'name') updates[f] = (req.body[f] || '').toString().trim();
+          else if (f === 'invoice_no') updates[f] = (req.body[f] || '').toString().trim().slice(0, 64) || null;
           else updates[f] = req.body[f] || null;
         }
       }
