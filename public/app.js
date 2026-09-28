@@ -17414,6 +17414,33 @@ const PORTAL_ANCHORS = [
 let _portalCustomer = null;
 let _portalProjects = [];
 let _portalMachine = null;
+// How far back "completed recently" looks. A month by default: long
+// enough that a fortnight of quiet does not read as nothing happening.
+const PORTAL_RECENT_WINDOWS = [
+  { days: 14, label: 'last two weeks' },
+  { days: 30, label: 'last month' },
+  { days: 60, label: 'last two months' },
+];
+let _portalRecentDays = 30;
+
+// What a customer means by "your team" is the people actually touching their
+// machine. That is already in the schedule - every task carries an assignee -
+// and the team table carries each person’s discipline. Deriving it means the
+// list is right on its own and nobody has to keep a roster in sync.
+const PORTAL_ROLES = {
+  pm:      'Project management',
+  mech:    'Mechanical engineering',
+  controls:'Controls engineering',
+  build:   'Build',
+  wire:    'Wiring',
+  service: 'Service',
+  mfgops:  'Manufacturing',
+  ops:     'Operations',
+};
+
+// Grouped by discipline, in the order work moves through the shop. A flat
+// list put a controls engineer between two wiremen and read as a jumble.
+const PORTAL_ROLE_ORDER = ['pm', 'mech', 'controls', 'build', 'wire', 'service', 'mfgops', 'ops', 'other'];
 const _portalOpen = new Set();
 const _portalFinLoading = new Set();   // projects whose financials are in flight
 const _portalRiskOpen = new Set();     // risks whose plan is expanded on the portal   // projects whose financials are in flight   // machines whose inline schedule is expanded
@@ -17505,23 +17532,37 @@ function _portalLate(due, today) {
 
 // Where one row sits. One definition, read by the ring and the grid, so the
 // count in the donut can never disagree with the rows under it.
+// One working week. Half a week is inside the noise of a weekly update.
+const PORTAL_BEHIND_WEEKS = 1;
+
+// How far behind a row is, in weeks, taking the worse of two readings: the
+// date it should already have finished on, and the drift against baseline.
+// Snapped to half weeks like every other variance in the app.
+function _portalLateWeeks(t, today) {
+  let days = 0;
+  const due = t.end_date || '';
+  if (due && today && due < today) {
+    days = Math.round((new Date(today + 'T00:00:00') - new Date(due + 'T00:00:00')) / 86400000);
+  }
+  let drift = 0;
+  try { drift = taskScheduleDelta(t) || 0; } catch (_) { drift = 0; }
+  if (drift < 0) days = Math.max(days, Math.abs(drift));
+  if (!days) return 0;
+  return Math.round((days / 5) * 2) / 2;
+}
+
 function _portalRowState(t, today) {
   const pct = Number(t.progress) || 0;
   if (pct >= 100) return 'complete';
-  const due = t.end_date || '';
-  const drift = portalDrift(t);
-  const late = !!((due && due < today) || (drift && drift.cls === 'is-behind'));
-  // Never started and its date has gone: that one was missed, and it is the
-  // first thing anyone needs to see.
-  if (!pct) return late ? 'missed' : 'notStarted';
-  return late ? 'slipping' : 'running';
+  if (_portalLateWeeks(t, today) >= PORTAL_BEHIND_WEEKS) return 'behind';
+  return pct > 0 ? 'running' : 'notStarted';
 }
 
 function portalWork(rows) {
   const today = _ymdLocal(new Date());
-  const cut = new Date(); cut.setDate(cut.getDate() - 21);
+  const cut = new Date(); cut.setDate(cut.getDate() - _portalRecentDays);
   const cutISO = _ymdLocal(cut);
-  const missed = [], slipping = [], running = [], recent = [];
+  const behind = [], running = [], recent = [];
   rows.forEach(t => {
     const pct = Number(t.progress) || 0;
     const name = (t.name || '').trim();
@@ -17538,11 +17579,8 @@ function portalWork(rows) {
       }
       // A row past its date with no baseline still has to say how late it is,
       // or the column reads "on plan" next to a red date.
-      case 'missed':
-        missed.push({ ...row, drift: drift || _portalLate(due, today) });
-        break;
-      case 'slipping':
-        slipping.push({ ...row, drift: drift || _portalLate(due, today) });
+      case 'behind':
+        behind.push({ ...row, drift: drift || _portalLate(due, today) });
         break;
       case 'running':
         running.push(row);
@@ -17551,11 +17589,10 @@ function portalWork(rows) {
         break;
     }
   });
-  missed.sort((a, b) => a.due.localeCompare(b.due));
-  slipping.sort((a, b) => a.due.localeCompare(b.due));
+  behind.sort((a, b) => a.due.localeCompare(b.due));
   recent.sort((a, b) => b.when.localeCompare(a.when));
   running.sort((a, b) => b.pct - a.pct);
-  return { missed, slipping, running, recent };
+  return { behind, running, recent };
 }
 
 function _portalInitials(name) {
@@ -17914,7 +17951,6 @@ function _portalRiskHtml(projects) {
 const PORTAL_KEY_DATES = [
   { key: 'receipt_of_po', label: 'Receipt of PO' },
   { key: 'machine_power_up', label: 'Machine Power-Up' },
-  { key: 'fat', label: 'FAT' },
 ];
 
 // Percent complete across the work in view, weighted by scheduled days —
@@ -17933,14 +17969,14 @@ function _portalPercent(rows) {
 }
 
 const PORTAL_DUE_COLS = [
-  { key: 'name',  label: 'Machine',             w: 300 },
-  { key: 'pct',   label: 'Complete',            w: 170 },
-  { key: 'po',    label: 'Receipt of PO',       w: 140 },
-  { key: 'power', label: 'Machine Power-Up',    w: 165 },
-  { key: 'fat',   label: 'FAT',                 w: 120 },
-  { key: 'slip',  label: 'FAT vs commitment',   w: 165 },
+  { key: 'name',     label: 'Machine',          w: 300 },
+  { key: 'pct',      label: 'Complete',         w: 170 },
+  { key: 'po',       label: 'Receipt of PO',    w: 140 },
+  { key: 'power',    label: 'Machine Power-Up', w: 165 },
+  { key: 'fatQuote', label: 'FAT quoted',       w: 130 },
+  { key: 'fatProj',  label: 'FAT projected',    w: 140 },
+  { key: 'slip',     label: 'Variance',         w: 140 },
 ];
-
 function _portalDueTableHtml(units) {
   const body = units.map(u => {
     const fat = u.ms.find(m => m.key === 'fat') || null;
@@ -17956,10 +17992,16 @@ function _portalDueTableHtml(units) {
       const cls = m && m.done ? 'is-done' : (m && m.past ? 'is-past' : '');
       return `<td class="portal-key-date ${cls}">${escapeHtml(portalDate(m && m.current))}</td>`;
     }).join('');
+    // The quoted FAT is the baseline we committed to; projected is where the
+    // schedule puts it today. A job with no baseline has nothing to be
+    // measured against, and says so rather than implying it is on time.
+    const quoted = fat && fat.committed;
     return `<tr>
       <td class="portal-due-name" title="${escapeHtml(name)}">${escapeHtml(name)}</td>
       <td class="portal-pct">${pct == null ? '—' : `<span class="portal-pct-bar"><i style="width:${pct}%"></i></span><span class="portal-pct-n">${pct}%</span>`}</td>
       ${cells}
+      <td class="portal-key-date">${escapeHtml(portalDate(quoted))}</td>
+      <td class="portal-key-date ${fat && fat.done ? 'is-done' : (fat && fat.past ? 'is-past' : '')}">${escapeHtml(portalDate(fat && fat.current))}</td>
       <td><span class="portal-slip ${sl.cls}">${escapeHtml(sl.text)}</span></td>
     </tr>`;
   }).join('');
@@ -17979,12 +18021,12 @@ function portalDrift(t) {
 }
 
 const PORTAL_WORK_COLS = [
-  { key: 'name',  label: 'Event',        w: 340 },
-  { key: 'who',   label: 'Assigned to',  w: 165 },
-  { key: 'due',   label: 'Scheduled completion', w: 150 },
-  { key: 'pct',   label: '% Complete',   w: 120 },
-  { key: 'drift', label: 'Against plan', w: 120 },
-  { key: 'when',  label: 'Completed',    w: 115 },
+  { key: 'name',  label: 'Event',                 w: 340 },
+  { key: 'who',   label: 'Assigned to',           w: 165 },
+  { key: 'pct',   label: '% Complete',            w: 120 },
+  { key: 'due',   label: 'Scheduled completion',  w: 165 },
+  { key: 'when',  label: 'Completed',             w: 125 },
+  { key: 'drift', label: 'Against plan',          w: 130 },
 ];
 
 function _portalColWidths(gridId, cols) {
@@ -18027,6 +18069,7 @@ function _wirePortalGrids(root) {
         const startX = e.clientX;
         const startW = parseFloat(col.style.width) || 120;
         document.body.classList.add('pcol-resizing');
+        grip.classList.add('is-dragging');
         const move = (ev) => {
           col.style.width = Math.max(60, startW + (ev.clientX - startX)) + 'px';
           table.style.width = sumWidths() + 'px';
@@ -18035,6 +18078,7 @@ function _wirePortalGrids(root) {
           document.removeEventListener('mousemove', move);
           document.removeEventListener('mouseup', up);
           document.body.classList.remove('pcol-resizing');
+          grip.classList.remove('is-dragging');
           const out = {};
           table.querySelectorAll('col[data-pcol]').forEach(c => { out[c.dataset.pcol] = parseFloat(c.style.width) || 120; });
           try { localStorage.setItem('sdcPortalCols:' + gridId, JSON.stringify(out)); } catch (_) {}
@@ -18045,62 +18089,51 @@ function _wirePortalGrids(root) {
     });
   });
 }
-function _portalWorkSection(label, kind, rows, colCount) {
+function _portalWorkSection(label, kind, rows, colCount, extra, note) {
   const head = `<tr class="pw-sec pw-sec-${kind}"><td colspan="${colCount}">
     <span class="pw-sec-name">${escapeHtml(label)}</span>
-    <span class="pw-sec-n">${rows.length}</span>
+    ${note ? `<span class="pw-sec-note">${escapeHtml(note)}</span>` : ''}
+    ${extra || ''}
   </td></tr>`;
   if (!rows.length) {
-    const none = kind === 'missed' ? 'Nothing was missed.'
-      : kind === 'slipping' ? 'Everything under way is holding its dates.'
-      : kind === 'running' ? 'Nothing under way is on track right now.'
-      : 'Nothing closed out in the last three weeks.';
+    const none = kind === 'behind' ? 'Nothing is a week or more behind.'
+      : kind === 'running' ? 'Nothing open on this machine right now.'
+      : 'Nothing closed out in this window.';
     return head + `<tr class="pw-empty"><td colspan="${colCount}">${escapeHtml(none)}</td></tr>`;
   }
   return head + rows.map(r => {
     const n = Math.max(0, Math.min(100, Number(r.pct) || 0));
-    const lateCls = (kind === 'missed' || kind === 'slipping') ? ' is-late' : '';
-    const driftTxt = r.drift ? r.drift.text : (kind === 'recent' ? '—' : 'on plan');
+    const lateCls = (kind === 'behind') ? ' is-late' : '';
+    let driftTxt = r.drift ? r.drift.text : (kind === 'recent' ? '—' : 'on plan');
+    let driftCls = r.drift ? r.drift.cls : '';
+    if (kind !== 'behind' && r.drift && r.drift.cls === 'is-behind') {
+      driftTxt = r.drift.text.replace(' behind', '');
+      driftCls = 'is-within';
+    }
     return `<tr class="pw-row">
       <td class="pw-name" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</td>
       <td class="pw-who">${escapeHtml(r.assignee || '—')}</td>
-      <td class="pw-due${lateCls}">${escapeHtml(portalDate(r.due))}</td>
       <td class="pw-pct"><span class="pw-bar"><span style="width:${n}%"></span></span><span class="pw-num">${n}%</span></td>
-      <td class="pw-drift ${r.drift ? r.drift.cls : ''}">${escapeHtml(driftTxt)}</td>
+      <td class="pw-due${lateCls}">${escapeHtml(portalDate(r.due))}</td>
       <td class="pw-done">${escapeHtml(portalDate(r.when))}</td>
+      <td class="pw-drift ${driftCls}">${escapeHtml(driftTxt)}</td>
     </tr>`;
   }).join('');
 }
 
 function _portalWorkGrid(work) {
   const n = PORTAL_WORK_COLS.length;
+  const win = PORTAL_RECENT_WINDOWS.find(w => w.days === _portalRecentDays) || PORTAL_RECENT_WINDOWS[1];
+  const picker = `<select class="pw-sec-win" data-recent-win>${PORTAL_RECENT_WINDOWS.map(w =>
+    `<option value="${w.days}" ${w.days === _portalRecentDays ? 'selected' : ''}>${escapeHtml(w.label)}</option>`).join('')}</select>`;
   const body = [
-    _portalWorkSection('Missed', 'missed', work.missed, n),
-    _portalWorkSection('In progress · behind schedule', 'slipping', work.slipping, n),
-    _portalWorkSection('In progress · on or ahead of schedule', 'running', work.running, n),
-    _portalWorkSection('Completed recently', 'recent', work.recent, n),
+    _portalWorkSection('Behind schedule', 'behind', work.behind, n),
+    _portalWorkSection('On or ahead of schedule', 'running', work.running, n, '',
+      '(within our one-week tolerance)'),
+    _portalWorkSection('Completed recently', 'recent', work.recent, n, picker),
   ].join('');
   return _portalGridHtml('work', PORTAL_WORK_COLS, body, 'portal-work');
 }
-
-// What a customer means by "your team" is the people actually touching their
-// machine. That is already in the schedule - every task carries an assignee -
-// and the team table carries each person’s discipline. Deriving it means the
-// list is right on its own and nobody has to keep a roster in sync.
-const PORTAL_ROLES = {
-  pm:      'Project management',
-  mech:    'Mechanical engineering',
-  controls:'Controls engineering',
-  build:   'Build',
-  wire:    'Wiring',
-  service: 'Service',
-  mfgops:  'Manufacturing',
-  ops:     'Operations',
-};
-
-// Grouped by discipline, in the order work moves through the shop. A flat
-// list put a controls engineer between two wiremen and read as a jumble.
-const PORTAL_ROLE_ORDER = ['pm', 'mech', 'controls', 'build', 'wire', 'service', 'mfgops', 'ops', 'other'];
 function portalTeam(project, rows) {
   const byName = {};
   (state.team || []).forEach(m => { if (m && m.name) byName[m.name.trim()] = m; });
@@ -18194,9 +18227,9 @@ function _portalRing(segments, size) {
 
 // Columns on a shared baseline. Drawn in HTML rather than SVG so the labels
 // wrap and the whole thing reflows on a narrow screen.
-function _portalBars(items) {
-  return `<div class="pbars">${items.map(x => `<div class="pbar">
-    <span class="pbar-n">${x.pct}%</span>
+function _portalBars(items, variant) {
+  return `<div class="pbars ${variant || ''}">${items.map(x => `<div class="pbar">
+    <span class="pbar-n">${escapeHtml(x.text != null ? String(x.text) : x.pct + '%')}</span>
     <span class="pbar-track"><i style="height:${Math.max(x.pct, 2)}%"></i></span>
     <span class="pphase-label">${escapeHtml(x.label)}</span>
   </div>`).join('')}</div>`;
@@ -18206,7 +18239,7 @@ function _portalBars(items) {
 // that is late is late whatever percentage it is sitting at.
 function _portalTaskMix(rows) {
   const today = _ymdLocal(new Date());
-  const mix = { complete: 0, running: 0, slipping: 0, missed: 0, notStarted: 0 };
+  const mix = { complete: 0, running: 0, behind: 0, notStarted: 0 };
   rows.forEach(t => {
     if (!(t.name || '').trim()) return;
     mix[_portalRowState(t, today)]++;
@@ -18240,6 +18273,25 @@ function _portalProgressHtml(projects, machine) {
   </section>`;
 }
 
+function _portalDeptChartHtml(rows) {
+  const today = _ymdLocal(new Date());
+  const items = PORTAL_PROGRESS_PHASES.map(ph => {
+    const mine = rows.filter(t => t.phase_group === ph.g
+      && (!ph.d || t.department === ph.d)
+      && (!ph.sub || t.sub_department === ph.sub)
+      && (t.name || '').trim());
+    // A department with no events is not at zero — it is not on this machine.
+    if (!mine.length) return null;
+    const done = mine.filter(t => _portalRowState(t, today) === 'complete').length;
+    return { label: ph.label, pct: Math.round((done / mine.length) * 100),
+             text: done + '/' + mine.length };
+  }).filter(Boolean);
+  if (!items.length) return '';
+  return `<div class="pdept-wrap">
+    <div class="pdept-head">Events complete by department</div>
+    ${_portalBars(items, 'pbars-blue')}
+  </div>`;
+}
 function _portalWorkHtml(projects, machine) {
   const rows = state.tasks.filter(t => projects.includes(t.project))
     // A machine pick means that machine plus the work shared across the job;
@@ -18249,19 +18301,23 @@ function _portalWorkHtml(projects, machine) {
   const work = portalWork(rows);
   const mix = _portalTaskMix(rows);
   const segs = [
-    { label: 'Complete',             n: mix.complete,   color: '#74c415' },
-    { label: 'In progress, on track', n: mix.running,    color: '#1574c4' },
-    { label: 'In progress, behind',   n: mix.slipping,   color: '#f59e0b' },
-    { label: 'Missed',               n: mix.missed,     color: '#d92d20' },
-    { label: 'Not started yet',      n: mix.notStarted, color: '#c8d5e3' },
+    { label: 'Complete',          n: mix.complete,   color: '#74c415' },
+    { label: 'On or ahead ',      n: mix.running,    color: '#1574c4' },
+    { label: 'Behind schedule',   n: mix.behind,     color: '#d92d20' },
+    { label: 'Not started yet',   n: mix.notStarted, color: '#c8d5e3' },
   ];
   const legend = segs.map(x => `<li><span class="pmix-dot" style="background:${x.color}"></span>
     <span class="pmix-label">${escapeHtml(x.label)}</span><span class="pmix-n">${x.n}</span></li>`).join('');
   return `<section class="portal-block">
     <h2 class="portal-h2">Event status</h2>
+    <p class="portal-note">Every task, action and milestone on the schedule. Schedules are reviewed weekly,
+    so a week is the tolerance: behind means a full week or more past plan.</p>
     <div class="portal-mix">
-      ${_portalRing(segs, 128)}
-      <ul class="pmix-legend">${legend}</ul>
+      <div class="pmix-ring">
+        ${_portalRing(segs, 128)}
+        <ul class="pmix-legend">${legend}</ul>
+      </div>
+      ${_portalDeptChartHtml(rows)}
     </div>
     ${_portalWorkGrid(work)}
   </section>`;
@@ -18329,6 +18385,14 @@ function _wirePortal(root) {
       renderPortal();
     });
   });
+  const _win = root.querySelector('[data-recent-win]');
+  if (_win) {
+    _win.addEventListener('click', (e) => e.stopPropagation());
+    _win.addEventListener('change', () => {
+      _portalRecentDays = Number(_win.value) || 30;
+      renderPortal();
+    });
+  }
   root.querySelectorAll('[data-pick-mach]').forEach(b => {
     b.addEventListener('click', () => {
       _portalMachine = b.dataset.pickMach || null;

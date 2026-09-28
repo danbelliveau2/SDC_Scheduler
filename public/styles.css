@@ -16623,14 +16623,95 @@ body.customer-view #btn-add-machine { display: none !important; }
 .pw-grip {
   position: absolute;
   top: 0;
-  right: -3px;
-  width: 7px;
+  right: -9px;
+  width: 18px;
   height: 100%;
   cursor: col-resize;
-  z-index: 2;
+  z-index: 3;
+  touch-action: none;
 }
-.pw-grip:hover { background: var(--sdc-primary, #1574c4); opacity: 0.35; }
+/* The visible line sits down the middle of that target, so what you see is
+   the boundary and what you grab is the 18px around it. */
+.pw-grip::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 2px;
+  height: 100%;
+  transform: translateX(-50%);
+  background: var(--sdc-primary, #1574c4);
+  opacity: 0;
+  transition: opacity 90ms;
+}
+.pw-grip:hover::after { opacity: 1; }
+/* While dragging, the line stays lit on the column being moved even when
+   the pointer runs ahead of it. */
+body.pcol-resizing .pw-grip.is-dragging::after { opacity: 1; }
 /* While dragging, nothing else on the page should select or swap cursor. */
 body.pcol-resizing { cursor: col-resize; user-select: none; }
 .portal-due-name { font-weight: var(--fw-bold); }
 .portal-money-proj + .portal-money-proj { margin-top: 18px; }
+
+/* ── Portal: the note under a heading, and the window picker ──────────── */
+/* A section that has a rule about it says the rule once, up front, instead
+   of leaving people to infer it from what is and is not flagged. */
+.portal-note {
+  margin: -6px 2px 14px;
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  line-height: 1.45;
+  max-width: 78ch;
+}
+/* Completed recently is the one section whose reach is the reader's call. */
+.pw-sec-win {
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 12px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong, #c8d5e3);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* ── Portal: the two charts side by side ──────────────────────────────── */
+.portal-mix { align-items: stretch; gap: 32px; }
+.pmix-ring { display: flex; align-items: center; gap: 24px; flex: 0 0 auto; }
+/* Counts, not weighted percentages: this answers "where is the open work",
+   which is the question the donut leaves hanging. */
+.pdept-wrap {
+  flex: 1 1 340px;
+  min-width: 0;
+  padding-left: 32px;
+  border-left: 1px solid var(--border);
+}
+.pdept-head {
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+/* SDC blue, so the two bar charts on the page are never read as the same
+   measurement drawn twice. */
+.pbars-blue .pbar-track i { background: var(--sdc-primary, #1574c4); }
+.pbars-blue .pbar-n { color: var(--sdc-primary, #1574c4); }
+/* A variance inside tolerance is a number, not a verdict. */
+.pw-drift.is-within { color: var(--text-muted); font-weight: var(--fw-regular); }
+.pw-sec-note {
+  margin-left: 10px;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-regular);
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+@media (max-width: 860px) {
+  .pdept-wrap { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); padding-top: 16px; }
+}
