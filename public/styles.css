@@ -16820,20 +16820,12 @@ tr.ctrl-add-row td { padding: 4px 8px 10px; background: var(--surface); }
    breathe on the right. */
 .portal-cust-select { padding-right: 38px; max-width: min(100%, 620px); }
 .portal-bar-left { gap: 14px; }
-.portal-linkbtn {
-  font: inherit;
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-  padding: 6px 13px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.3);
-  background: rgba(255,255,255,0.08);
-  color: #fff;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.portal-linkbtn:hover { background: rgba(255,255,255,0.18); border-color: var(--sdc-green, #74c415); }
 /* All and Clear are a pair and read as one control. */
 .portal-pickbtns { margin-left: auto; display: flex; gap: 8px; }
 .portal-allbtn[disabled] { opacity: 0.45; cursor: default; }
 .portal-allbtn[disabled]:hover { background: var(--surface); border-color: var(--border-strong, #c8d5e3); color: var(--text-muted); }
+
+/* The grip straddles the boundary it moves, which for the LAST column means
+   hanging 9px past the table — enough to give the wrapper a scrollbar for no
+   visible reason. The last one sits wholly inside instead. */
+.portal-grid th:last-child .pw-grip { right: 0; width: 12px; }
