@@ -1,0 +1,166 @@
+'use strict';
+/**
+ * portal.js — the customer-facing portal API: login, session, and the
+ * customer-scoped analytics dashboard. Mounted on the SNAPSHOT_PUBLIC_PORT
+ * listener in server.js (the tunnel-facing "portal" listener), never on
+ * the main app — same isolation reasoning as the Service module.
+ *
+ * Every route here is customer-facing and public-reachable, so every route
+ * either requires a valid customer session (requireCustomerAuth) or is the
+ * login step itself. Nothing here ever trusts a client-supplied customer
+ * name — the logged-in session's req.customerName is the only source of
+ * "whose data is this."
+ */
+const { Router } = require('express');
+const bcrypt = require('bcryptjs');
+const {
+  signCustomerToken, setCustomerSessionCookie, clearCustomerSessionCookie, requireCustomerAuth,
+} = require('../lib/customerAuth');
+const { createRateLimiter, clientIp } = require('../lib/rateLimit');
+const calc = require('../lib/portalCalc');
+
+// Tighter than the service form's public intake (8/hr): the username here
+// is a customer name, which is guessable, so a brute-force attempt only
+// needs to try passwords. 5 attempts / 15 min per IP is a real speed bump
+// without locking out someone who fat-fingers their password twice.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_RATE_MAX = Number(process.env.PORTAL_LOGIN_RATE_MAX || 5);
+const rateLimited = createRateLimiter({ windowMs: LOGIN_WINDOW_MS });
+
+module.exports = function createPortalRouter({ pool }) {
+  const router = Router();
+
+  router.post('/portal/api/login', async (req, res) => {
+    try {
+      const ip = clientIp(req);
+      if (rateLimited(ip, LOGIN_RATE_MAX)) {
+        return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.', code: 'RATE_LIMITED' });
+      }
+      const username = String(req.body?.username || '').trim();
+      const password = String(req.body?.password || '');
+      if (!username || !password) {
+        return res.status(400).json({ error: 'Username and password are required.' });
+      }
+      const [[account]] = await pool.query(
+        'SELECT * FROM customer_accounts WHERE LOWER(username) = LOWER(?) AND disabled_at IS NULL', [username]
+      );
+      // Same generic error whether the username doesn't exist or the
+      // password is wrong — a distinct "no such user" message lets an
+      // attacker enumerate valid customer logins for free.
+      const bad = () => res.status(401).json({ error: 'Incorrect username or password.', code: 'BAD_CREDENTIALS' });
+      if (!account) return bad();
+      const ok = await bcrypt.compare(password, account.password_hash);
+      if (!ok) return bad();
+
+      await pool.query('UPDATE customer_accounts SET last_login_at = NOW() WHERE id = ?', [account.id]);
+      const token = signCustomerToken(account);
+      setCustomerSessionCookie(res, token);
+      res.json({ ok: true, customerName: account.customer_name, mustChangePassword: !!account.must_change_password });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  router.post('/portal/api/logout', (_req, res) => {
+    clearCustomerSessionCookie(res);
+    res.json({ ok: true });
+  });
+
+  router.get('/portal/api/me', requireCustomerAuth, (req, res) => {
+    res.json({ ok: true, customerName: req.customerName });
+  });
+
+  router.post('/portal/api/change-password', requireCustomerAuth, async (req, res) => {
+    try {
+      const current = String(req.body?.currentPassword || '');
+      const next = String(req.body?.newPassword || '');
+      if (next.length < 8) return res.status(400).json({ error: 'New password must be at least 8 characters.' });
+      const [[account]] = await pool.query('SELECT * FROM customer_accounts WHERE id = ?', [req.customerAccountId]);
+      if (!account) return res.status(404).json({ error: 'Account not found.' });
+      const ok = await bcrypt.compare(current, account.password_hash);
+      if (!ok) return res.status(401).json({ error: 'Current password is incorrect.' });
+      const hash = await bcrypt.hash(next, 12);
+      await pool.query('UPDATE customer_accounts SET password_hash = ?, must_change_password = 0 WHERE id = ?', [hash, req.customerAccountId]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // The full analytics dashboard: every non-template project this customer
+  // owns (projects.customer, the ETC-Planner-synced column — see the plan's
+  // decision on why this replaces the internal Portal tab's old 4-entry
+  // manual-only list), each broken into machine units, with Progress,
+  // Where-it-stands, Payment milestones and Risk plan computed per
+  // lib/portalCalc.js — the same formulas already verified against the
+  // internal staff Portal tab.
+  router.get('/portal/api/dashboard', requireCustomerAuth, async (req, res) => {
+    try {
+      const [projectRows] = await pool.query(
+        'SELECT id, name, share_token FROM projects WHERE customer = ? AND (is_template = 0 OR is_template IS NULL) ORDER BY name ASC',
+        [req.customerName]
+      );
+      if (!projectRows.length) {
+        return res.json({ ok: true, customerName: req.customerName, projects: [], units: [] });
+      }
+
+      // Mint a share token for any project that doesn't have one yet, so
+      // "Open" always has a live link to send the customer to (Phase 5 wires
+      // up where that link actually resolves).
+      for (const p of projectRows) {
+        if (!p.share_token) {
+          const token = require('crypto').randomBytes(24).toString('hex');
+          await pool.query('UPDATE projects SET share_token = ? WHERE id = ?', [token, p.id]);
+          p.share_token = token;
+        }
+      }
+
+      const names = projectRows.map(p => p.name);
+      const [taskRows] = await pool.query(
+        `SELECT * FROM tasks WHERE project IN (${names.map(() => '?').join(',')})`, names
+      );
+      const [finRows] = await pool.query(
+        `SELECT * FROM project_financials WHERE project IN (${names.map(() => '?').join(',')})`, names
+      );
+      const [[riskSettingsRow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', ['risk_plans']);
+      const riskPlans = riskSettingsRow ? JSON.parse(riskSettingsRow.value) : {};
+
+      const tasksByProject = new Map(names.map(n => [n, []]));
+      taskRows.forEach(t => tasksByProject.get(t.project)?.push(t));
+      const finByProject = new Map(names.map(n => [n, []]));
+      finRows.forEach(f => finByProject.get(f.project)?.push(f));
+
+      let unitCount = 0;
+      const units = [];
+      const projects = projectRows.map(p => {
+        const rows = tasksByProject.get(p.name) || [];
+        const rawUnits = calc.portalUnits(rows);
+        unitCount += rawUnits.length;
+        const tasksById = new Map(rows.map(t => [t.id, t]));
+        rawUnits.forEach(u => {
+          units.push({
+            project: p.name,
+            machine: u.machine,
+            due: calc.portalDueRow(u),
+            progress: calc.portalProgress(u.rows),
+          });
+        });
+        return {
+          id: p.id,
+          name: p.name,
+          shareToken: p.share_token,
+          machines: rawUnits.map(u => u.machine).filter(Boolean),
+          money: calc.portalMoney(finByProject.get(p.name) || [], tasksById, rows),
+          risk: calc.portalRisk(riskPlans[p.name], rows),
+        };
+      });
+
+      res.json({
+        ok: true,
+        customerName: req.customerName,
+        projectCount: projects.length,
+        unitCount,
+        projects,
+        units,
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  return { router };
+};

@@ -188,9 +188,31 @@ if (SNAPSHOT_PUBLIC_PORT) {
     }
     res.sendFile(file);
   });
-  snap.use((_req, res) => res.status(404).type('text/plain').send('Not found'));
+  // Customer portal: login page + its own small client + the customer-scoped
+  // analytics API (routes/portal.js), plus — once logged in and given a
+  // project's "Open" link — the REAL live schedule. That last part is not
+  // reimplemented here: a request for '/' carrying ?cust=<token> (or any
+  // path this listener doesn't otherwise own) falls through to the SAME
+  // `app` instance the main port serves, at the bottom of this block. `app`
+  // already has exactly the right gate for that — the share-token
+  // middleware + express.static(public/) below — unchanged and untouched;
+  // this only adds a second door to it. Public-portal-only requests never
+  // reach that far because the routes above answer first.
+  snap.get('/', (req, res, next) => {
+    if (req.query.cust) return next(); // falls through to `app` at the bottom
+    res.sendFile(path.join(__dirname, 'public', 'portal-login.html'));
+  });
+  snap.get('/portal.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal.css')));
+  snap.get('/portal-app.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal-app.js')));
+  snap.get('/img/sdc-logo-white.svg', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'img', 'sdc-logo-white.svg')));
+  // Scoped to /portal/api only — a request falling through to `app` below
+  // must reach it with its body stream untouched, so `app`'s own
+  // express.json() (already in its middleware chain) is the one that reads it.
+  snap.use('/portal/api', express.json());
+  snap.use(require('./routes/portal')({ pool }).router);
+  snap.use((req, res) => app(req, res));
   snap.listen(SNAPSHOT_PUBLIC_PORT, () =>
-    console.log(`[snapshot] public listener on :${SNAPSHOT_PUBLIC_PORT} (snapshot pages only)`));
+    console.log(`[snapshot] public listener on :${SNAPSHOT_PUBLIC_PORT} (customer portal + live share + snapshot pages)`));
 }
 
 // Public capability probe — no auth needed, frontend uses this to show/hide the Job Hours drawer

@@ -477,6 +477,29 @@ async function init() {
   await pool.query(`ALTER TABLE projects ADD COLUMN customer VARCHAR(255)`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD COLUMN customer_manually_edited TINYINT(1) DEFAULT 0`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD COLUMN customer_synced_at DATETIME`).catch(() => {});
+
+  // ─── Customer portal login accounts ───────────────────────────────────────
+  // One login per customer (not per project — a customer with 5 projects
+  // signs in once and sees all 5). customer_name is the join key against
+  // projects.customer, NOT a foreign key (customer names are free text
+  // synced from the ETC Planner, not a separate customers table). Username
+  // is stored separately from customer_name even though today's convention
+  // sets it to the same value — so a rename doesn't just brick a login.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS customer_accounts (
+      id                    INT AUTO_INCREMENT PRIMARY KEY,
+      customer_name         VARCHAR(255) NOT NULL,
+      username              VARCHAR(255) NOT NULL,
+      password_hash         VARCHAR(255) NOT NULL,
+      must_change_password  TINYINT(1) DEFAULT 0,
+      created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_login_at         DATETIME,
+      disabled_at           DATETIME
+    )
+  `).catch(() => {});
+  await pool.query(`ALTER TABLE customer_accounts ADD UNIQUE INDEX idx_customer_accounts_username (username)`).catch(() => {});
+  await pool.query(`ALTER TABLE customer_accounts ADD UNIQUE INDEX idx_customer_accounts_customer_name (customer_name)`).catch(() => {});
+
   // Clean up duplicate (po, job) rows left by syncs that overlapped before the
   // sync serializer existed. Conservatively deletes only the higher-id copy and
   // only when it carries NO PM-entered data — so manual edits are never lost; a
