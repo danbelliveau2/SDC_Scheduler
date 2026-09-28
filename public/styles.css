@@ -16803,3 +16803,37 @@ tr.ctrl-add-row td { padding: 4px 8px 10px; background: var(--surface); }
 @media (max-width: 720px) {
   .pprog-vs { border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 14px; }
 }
+
+/* On a locked customer link the picker is not a control — it is their name. */
+.portal-cust-name {
+  display: inline-block;
+  font-size: 32px;
+  font-weight: var(--fw-extrabold);
+  letter-spacing: -0.026em;
+  color: #fff;
+  border-bottom: 2px solid rgba(255,255,255,0.28);
+  padding-bottom: 2px;
+}
+
+/* ── Portal: the customer picker and its link ─────────────────────────── */
+/* The chevron sat under the longest name because the control had no room to
+   breathe on the right. */
+.portal-cust-select { padding-right: 38px; max-width: min(100%, 620px); }
+.portal-bar-left { gap: 14px; }
+.portal-linkbtn {
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  padding: 6px 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.portal-linkbtn:hover { background: rgba(255,255,255,0.18); border-color: var(--sdc-green, #74c415); }
+/* All and Clear are a pair and read as one control. */
+.portal-pickbtns { margin-left: auto; display: flex; gap: 8px; }
+.portal-allbtn[disabled] { opacity: 0.45; cursor: default; }
+.portal-allbtn[disabled]:hover { background: var(--surface); border-color: var(--border-strong, #c8d5e3); color: var(--text-muted); }

@@ -6151,10 +6151,19 @@ function drawFinancialOverlay() {
       visibleProjects.add(t.project || '');
     }
   }
+  const machinePick = Array.isArray(state.filters.machinesSubset) ? state.filters.machinesSubset : [];
   const markers = [];
   for (const project of visibleProjects) {
     const list = state.financials[project] || [];
+    // Only worth resolving when this job HAS more than one machine; on a
+    // single-machine job every milestone is that machine’s by definition.
+    const machinesOn = machinePick.length ? _finProjectMachines(project) : [];
+    const base = machinesOn.length > 1 ? _finBaseMachine(machinesOn) : '';
     for (const f of list) {
+      if (machinePick.length && machinesOn.length > 1) {
+        const owner = f.machine || base;
+        if (!machinePick.includes(owner)) continue;
+      }
       // Same precedence as everywhere else: predecessor trigger, then the live
       // anchor date, then the stored due_date. Computed at render time so
       // anchor/task edits move the marker without a round-trip to the server.
@@ -17610,16 +17619,30 @@ function _riskTableHtml(scored) {
 // not return it - lib/etoDb.js getProjectInfo() selects ProjectID and
 // PDescription only. So: an explicit map, with the name parse as a fallback
 // guess, ready to be backfilled from the ERP when that column arrives.
+// The synced name, from projects.customer. Empty when the sync has not
+// matched this job to a Planner or ETO record yet.
+function projectCustomerSynced(project) {
+  const rec = state.projectsIndex && state.projectsIndex[project];
+  return (rec && String(rec.customer || '').trim()) || '';
+}
+
 function projectCustomerName(project) {
   const map = (state.settings && state.settings.project_customer) || {};
   const set = map[project];
   if (set) return set;
+  const synced = projectCustomerSynced(project);
+  if (synced) return synced;
   try { return projectCustomer(project) || ''; } catch (_) { return ''; }
 }
 
+// A name parsed out of the project title is a guess and must never reach a
+// customer page: 1122_CAFI_Tray Handler is Schneider Electric, not "CAFI".
+// A name someone set here, or one the sync pulled from the Planner or ETO,
+// is not a guess.
 function projectCustomerIsGuess(project) {
   const map = (state.settings && state.settings.project_customer) || {};
-  return !map[project];
+  if (map[project]) return false;
+  return !projectCustomerSynced(project);
 }
 
 async function setProjectCustomer(project, name) {
@@ -17647,6 +17670,12 @@ const PORTAL_ANCHORS = [
 ];
 
 let _portalCustomer = null;
+// Set from ?customer= — when locked, the portal shows one customer and
+// offers no way to look at another.
+let _portalLockedCustomer = null;
+// Deliberately empty, as opposed to not chosen yet. Without this the
+// default-to-first rule would undo Clear on the very next render.
+let _portalCleared = false;
 let _portalProjects = [];
 let _portalMachine = null;
 // How far back "completed recently" looks. A month by default: long
@@ -17882,12 +17911,23 @@ function renderPortal() {
   }
   const customers = portalCustomerList();
 
+  if (_portalLockedCustomer === ' unknown') {
+    root.innerHTML = `<div class="portal-empty"><h1>Project Portal</h1>
+      <p>This link is not valid. Ask your contact at SDC for a new one.</p></div>`;
+    return;
+  }
+  if (_portalLockedCustomer && !customers.some(c => c.name === _portalLockedCustomer)) {
+    root.innerHTML = `<div class="portal-empty"><h1>Project Portal</h1>
+      <p>No projects are linked to ${escapeHtml(_portalLockedCustomer)} yet.</p></div>`;
+    return;
+  }
   if (!customers.length) {
     root.innerHTML = `<div class="portal-empty"><h1>Customer Portal</h1>
       <p>No project has a confirmed customer yet. Right-click a project tab, pick
       <b>Customer</b>, and it appears in the list here.</p></div>`;
     return;
   }
+  if (_portalLockedCustomer) _portalCustomer = _portalLockedCustomer;
   if (!_portalCustomer || !customers.some(c => c.name === _portalCustomer)) _portalCustomer = customers[0].name;
   const cust = _portalCustomer;
   const projects = _deptSelectedProjects().allProjects
@@ -17908,8 +17948,8 @@ function renderPortal() {
   // A stale pick from a different customer would silently empty the page.
   // Anything left over from another customer quietly drops out.
   _portalProjects = projects.filter(p => _portalProjects.includes(p));
-  if (!_portalProjects.length && projects.length) _portalProjects = [projects[0]];
-  const scopeProjects = _portalProjects.length ? _portalProjects : projects;
+  if (!_portalProjects.length && projects.length && !_portalCleared) _portalProjects = [projects[0]];
+  const scopeProjects = _portalProjects;
   // Machines only mean something inside ONE job; across a group the pills
   // would be asking which M1 you meant.
   const picked = scopeProjects.length === 1 ? scopeProjects[0] : null;
@@ -17935,7 +17975,11 @@ function renderPortal() {
       </div>
       <div class="portal-bar">
         <div class="portal-bar-left">
-          <select class="portal-cust-select" data-portal-cust>${opts}</select>
+          ${_portalLockedCustomer
+            ? `<span class="portal-cust-name">${escapeHtml(cust)}</span>`
+            : `<select class="portal-cust-select" data-portal-cust>${opts}</select>
+               <button type="button" class="portal-linkbtn" data-portal-link
+                 title="Copy a link that opens this portal on ${escapeHtml(cust)} and nothing else.">🔗 Copy link</button>`}
           <span class="portal-bar-meta">${units.length} machine${units.length === 1 ? '' : 's'} · ${projects.length} project${projects.length === 1 ? '' : 's'}</span>
         </div>
 
@@ -17980,7 +18024,10 @@ function _portalProjectsHtml(projects, chosen) {
       <button class="projects-row-openbtn" data-open-sched="${escapeHtml(p)}" type="button">OPEN</button>
     </div>`).join('');
   const allBtn = projects.length > 1
-    ? `<button type="button" class="portal-allbtn${all ? ' is-on' : ''}" data-pick-all="1">All projects</button>`
+    ? `<span class="portal-pickbtns">
+        <button type="button" class="portal-allbtn${all ? ' is-on' : ''}" data-pick-all="1">All projects</button>
+        <button type="button" class="portal-allbtn" data-pick-none="1"${on.size ? '' : ' disabled'}>Clear</button>
+      </span>`
     : '';
   return `<section class="portal-block portal-projects">
     <h2 class="portal-h2">Your projects${allBtn}</h2>
@@ -18234,6 +18281,8 @@ const PORTAL_DUE_COLS = [
   { key: 'slip',     label: 'Variance',         w: 140 },
 ];
 function _portalDueTableHtml(units) {
+  // Nothing picked, nothing to report on.
+  if (!units.length) return '';
   const body = units.map(u => {
     const fat = u.ms.find(m => m.key === 'fat') || null;
     const sl = portalSlip(fat);
@@ -18632,6 +18681,7 @@ function _wirePortal(root) {
       if (_portalProjects.length === 1 && _portalProjects[0] === p) return;
       _portalProjects = [p];
       _portalMachine = null;
+      _portalCleared = false;
       renderPortal();
     });
   });
@@ -18642,13 +18692,28 @@ function _wirePortal(root) {
       const next = new Set(_portalProjects);
       if (next.has(p)) next.delete(p); else next.add(p);
       // Emptying the group would leave the page with nothing to be about.
-      if (next.size) { _portalProjects = [...next]; _portalMachine = null; renderPortal(); }
+      _portalCleared = !next.size;
+      _portalProjects = [...next];
+      _portalMachine = null;
+      renderPortal();
+    });
+  });
+  root.querySelectorAll('[data-pick-none]').forEach(b => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _portalProjects = [];
+      // Nothing picked means nothing to be scoped to, so the machine
+      // filter goes with it.
+      _portalMachine = null;
+      _portalCleared = true;
+      renderPortal();
     });
   });
   root.querySelectorAll('[data-pick-all]').forEach(b => {
     b.addEventListener('click', (e) => {
       e.stopPropagation();
       _portalProjects = [...root.querySelectorAll('[data-pick-proj]')].map(r => r.dataset.pickProj);
+      _portalCleared = false;
       _portalMachine = null;
       renderPortal();
     });
@@ -18668,8 +18733,12 @@ function _wirePortal(root) {
     });
   });
   try { _wirePortalGrids(root); } catch (_) {}
+  root.querySelector('[data-portal-link]')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    copyPortalLink(_portalCustomer);
+  });
   const sel = root.querySelector('[data-portal-cust]');
-  if (sel) sel.addEventListener('change', () => { _portalCustomer = sel.value; _portalProjects = []; _portalMachine = null; renderPortal(); });
+  if (sel) sel.addEventListener('change', () => { _portalCustomer = sel.value; _portalProjects = []; _portalMachine = null; _portalCleared = false; renderPortal(); });
 
   root.querySelectorAll('[data-prisk]').forEach(b => {
     b.addEventListener('click', () => {
@@ -32778,7 +32847,8 @@ async function init() {
       for (const p of projects) {
         if (!p || !p.name) continue;
         // ETO integration + project-link chip need the row id and job number.
-        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '', hours_job_id: p.hours_job_id || '', customer: p.customer || '' };
+        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '', hours_job_id: p.hours_job_id || '',
+          customer: p.customer || '', customer_manually_edited: !!p.customer_manually_edited };
         // Sync is_template from DB so the projects page shows the right button label.
         if (p.is_template) dbTemplates.push(p.name);
         // Server stores the legacy literal 'default' for projects that
@@ -33736,6 +33806,7 @@ async function init() {
     // restored the last active project from sessionStorage — so this override
     // wins. No-op when there's no ?job= param.
     _applyEtcJobDeepLink();
+    _applyPortalCustomerDeepLink();
     // ?view=<name> (e.g. the Reports app's sidebar link → ?view=projects).
     // After the job deep-link, which owns the view when ?job= is present.
     _applyViewDeepLink();
@@ -33951,6 +34022,73 @@ async function _openEtcJobHours(project, section) {
 // Validated by asking the DOM whether a matching #view-<name> section exists,
 // so the list can't drift out of sync with the rail the way a hard-coded array
 // would, and an unknown value is simply ignored rather than blanking the page.
+// ?customer=<name> — open the portal on one customer and stay there.
+// Matched case-insensitively against the customers the projects actually
+// carry, so a link keeps working when the Planner corrects the casing.
+const PORTAL_LINK_KEY = 'portal_links';
+
+function _portalLinks() {
+  return (state.settings && state.settings[PORTAL_LINK_KEY]) || {};
+}
+
+// 22 characters of base36 from crypto — not a counter, not a hash of the
+// name, nothing anyone can work backwards from or stumble onto.
+function _newPortalToken() {
+  const a = new Uint8Array(16);
+  (window.crypto || window.msCrypto).getRandomValues(a);
+  return Array.from(a).map(n => n.toString(36).padStart(2, '0')).join('').slice(0, 22);
+}
+
+// One token per customer, minted once and reused, so re-copying a link does
+// not quietly invalidate the one already sitting in somebody's inbox.
+async function portalLinkFor(customer) {
+  const links = { ..._portalLinks() };
+  let token = Object.keys(links).find(k => links[k] === customer);
+  if (!token) {
+    token = _newPortalToken();
+    links[token] = customer;
+    state.settings = state.settings || {};
+    state.settings[PORTAL_LINK_KEY] = links;
+    try { await api.putSetting(PORTAL_LINK_KEY, links); }
+    catch (e) { showToast('Could not save the link: ' + (e.message || e), { kind: 'error' }); return ''; }
+  }
+  return location.origin + '/?portal=' + token;
+}
+
+async function copyPortalLink(customer) {
+  if (!customer) return;
+  const url = await portalLinkFor(customer);
+  if (!url) return;
+  await copyLinkOrShowIt(url, 'Portal link copied for ' + customer + '. It opens their projects and nothing else.');
+}
+
+function _applyPortalCustomerDeepLink() {
+  let name = '';
+  try {
+    const qs = new URLSearchParams(location.search);
+    const token = (qs.get('portal') || '').trim();
+    // A token that resolves to nothing must not fall through to the picker.
+    if (token) name = _portalLinks()[token] || ' unknown';
+    else name = (qs.get('customer') || '').trim();
+  } catch (_) {}
+  if (!name) return;
+  if (name === ' unknown') {
+    _portalLockedCustomer = ' unknown';
+    setView('portal');
+    return;
+  }
+  let known = [];
+  try { known = portalCustomerList().map(c => c.name); } catch (_) {}
+  const match = known.find(c => c.toLowerCase() === name.toLowerCase());
+  // An unknown name still locks the portal. Falling through to the picker
+  // would hand whoever followed the link somebody else’s jobs.
+  _portalLockedCustomer = match || name;
+  _portalCustomer = _portalLockedCustomer;
+  _portalProjects = [];
+  _portalMachine = null;
+  setView('portal');
+}
+
 function _applyViewDeepLink() {
   try {
     const params = new URLSearchParams(location.search);
