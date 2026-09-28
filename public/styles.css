@@ -16715,3 +16715,53 @@ body.pcol-resizing { cursor: col-resize; user-select: none; }
 @media (max-width: 860px) {
   .pdept-wrap { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); padding-top: 16px; }
 }
+
+/* ── Controls items ──────────────────────────────────────────────────────
+   The controls team's own list. Same treatment as the risk sections — its
+   own header colour so it never reads as part of 10 / 40 / 50 — in the
+   controls green the CE rows already carry, so it is recognisably theirs. */
+tr.group-header.level-1[data-section-key="controls-list"] td {
+  background: #cfe6d2;
+  color: #14532d;
+}
+tr.group-header.level-1[data-section-key="controls-list"] .group-label { color: #14532d; }
+/* The divider between the build and the list riding under it. */
+tr.group-header.level-1[data-ctrl-first="1"] td {
+  border-top: 3px solid #2f855a;
+}
+tr.ctrl-add-row td { padding: 4px 8px 10px; background: var(--surface); }
+
+/* ── Portal: planned vs actual ────────────────────────────────────────── */
+/* Three figures read top to bottom beside the ring: what the plan called for
+   by today, where the work actually is, and the gap between them. */
+.pprog-vs {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 26px 0 4px;
+  border-right: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.pprog-vs > div { display: flex; align-items: baseline; gap: 12px; justify-content: space-between; }
+.pprog-vs dt {
+  font-size: var(--fs-md);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.pprog-vs dd {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-extrabold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The gap is the one that earns a colour — ahead, a little behind, or a
+   problem. */
+.pprog-gap { border-top: 1px solid var(--border); padding-top: 8px; }
+.pprog-gap.is-ok dd   { color: #3f6b06; }
+.pprog-gap.is-warn dd { color: #b45309; }
+.pprog-gap.is-late dd { color: #b3261e; }
+@media (max-width: 720px) {
+  .pprog-vs { border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 14px; }
+}

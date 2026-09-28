@@ -590,7 +590,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false, riskMode: false, riskOverlay: false },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -935,7 +935,7 @@ function buildCanonicalTaskOrder() {
   // against the same map every other row uses.
   const seen = new Set(order);
   state.tasks
-    .filter(t => t.phase_group === RISK_GROUP && !seen.has(t.id))
+    .filter(t => (t.phase_group === RISK_GROUP || t.phase_group === CONTROLS_GROUP) && !seen.has(t.id))
     .sort((a, b) => String(a.sub_department || '').localeCompare(String(b.sub_department || ''))
       || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
     .forEach(t => order.push(t.id));
@@ -1730,6 +1730,12 @@ function applyFilters(tasks, opts = {}) {
   // Mitigation lines are real tasks under their own sections. Risk mode
   // shows those and nothing else; outside it they are hidden unless the
   // risk is flagged to sit on the real schedule alongside the build.
+  // The controls list is its own view of its own rows, for the same reason
+  // risk mode is: the build filters belong to the build.
+  if (state.scheduleView && state.scheduleView.controlsMode) {
+    return tasks.filter(t => t.phase_group === CONTROLS_GROUP
+      && (!project || t.project === project));
+  }
   if (state.scheduleView && state.scheduleView.riskMode) {
     // Risk mode is its own view of its own rows. Behind / Ahead / Hide done
     // / assignee / search all belong to the build, and leaving them applied
@@ -1744,6 +1750,10 @@ function applyFilters(tasks, opts = {}) {
   {
     const over = riskOverlaySubDepts();
     tasks = tasks.filter(t => t.phase_group !== RISK_GROUP || over.has(t.sub_department));
+  }
+  // Controls items stay off the build until the C toggle asks for them.
+  if (!(state.scheduleView && state.scheduleView.controlsOverlay)) {
+    tasks = tasks.filter(t => t.phase_group !== CONTROLS_GROUP);
   }
   const qf = quick || {};
   const personal = isPersonalMode();
@@ -2155,6 +2165,8 @@ function rowColorKey(task) {
   // text. Their sub_department is "risk:<id>", which matches no palette, so
   // without this they came out neutral grey with white lettering.
   if (task.phase_group === RISK_GROUP) return 'risk';
+  // The controls palette, because that is whose list it is.
+  if (task.phase_group === CONTROLS_GROUP) return 'controls';
   // Sub-department wins. The sub-depts named 'engineering' / 'shop' (section 50
   // INSTALL has them) share the combined eng/shop palette so they read like
   // section 40's dept-only engineering/shop.
@@ -2624,6 +2636,8 @@ function renderTable() {
   // a section means.
   const riskMode = !!(state.scheduleView && state.scheduleView.riskMode);
   if (riskMode) html += _riskSectionRowsHtml(filtered, collapsedGroups);
+  const controlsMode = !!(state.scheduleView && state.scheduleView.controlsMode);
+  if (controlsMode) html += _controlsSectionRowsHtml(filtered, collapsedGroups);
 
   // A milestone filter: no headers, one list, date order. The spine anchors
   // (FAT / SAT / Ship / PO) sort with everything else here rather than being
@@ -2640,7 +2654,7 @@ function renderTable() {
     }
   }
 
-  for (const group of ((riskMode || mFilter) ? [] : HIERARCHY)) {
+  for (const group of ((riskMode || controlsMode || mFilter) ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
@@ -2762,6 +2776,11 @@ function renderTable() {
             { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key }, deptHoursFor(tasks));
           if (sCollapsed) continue;
           for (const t of tasks) html += renderTaskRow(t, 4);
+          // Controls items sit under the section they belong to, not at the
+          // bottom of the job.
+          if (sub.key === 'controls' && !controlsMode) {
+            html += _controlsSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
+          }
         }
       } else {
         const tasks = buckets[dPath] || [];
@@ -2787,11 +2806,24 @@ function renderTable() {
   // Risks flagged On sched ride along under the build, each as its own section,
   // so you can see the mitigation work against the work it protects.
   if (!riskMode) html += _riskSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
+  // If the job has no Controls Engineering sub-section to hang them under
+  // (a sales schedule, or every CE row moved into the list), they still have
+  // to appear somewhere rather than vanish with the filter on.
+  if (!riskMode && !controlsMode && !html.includes('data-sub-key="controls"')) {
+    html += _controlsSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
+  }
 
   tbody.innerHTML = html;
   if (state.layout) applyColumnVisibility();
 
   updateLineNumbersAndPreds();
+
+  tbody.querySelectorAll('[data-add-ctrl]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      addControlsLine(state.filters.project || '', null);
+    });
+  });
 
   tbody.querySelectorAll('[data-risk-add]').forEach(tr => {
     tr.addEventListener('click', (e) => {
@@ -4155,7 +4187,7 @@ function renderGantt() {
   // need bars. Without it they were dropped as ''leftovers from an old data
   // structure'' and the Gantt sat empty in risk mode even though every row
   // had dates.
-  const validSectionKeys = new Set([...HIERARCHY.map(g => g.key), RISK_GROUP]);
+  const validSectionKeys = new Set([...HIERARCHY.map(g => g.key), RISK_GROUP, CONTROLS_GROUP]);
   // v4.50: when NOT in sortByStart mode, use the GRID's canonical order
   // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
   // grid rows do — Receipt of PO at top, Backlog under it, section 10
@@ -16425,6 +16457,7 @@ function render(opts = {}) {
   try { renderScheduleGoal(); } catch (_) {}
   if (state.view === 'portal') { try { renderPortal(); } catch (_) {} }
   try { syncRiskModeButtons(); } catch (_) {}
+  try { syncControlsButtons(); } catch (_) {}
 
   // Opening a project should not need three clicks to become readable. When
   // the project has just changed, put the view into its intended shape: the
@@ -17138,6 +17171,148 @@ function _riskDur(a, b) {
 // Mitigation lines live in the project like any other work, under a section
 // the main grid does not walk. The tie back to a risk is the sub-department.
 const RISK_GROUP = 'RISK';
+
+// One flat bucket. Risks each get a section because each risk is a thing;
+// the controls list is a list.
+const CONTROLS_GROUP = 'CTRL';
+const CONTROLS_SUB = 'controls-list';
+
+function controlsList(project) {
+  return state.tasks
+    .filter(t => t.project === project && t.phase_group === CONTROLS_GROUP)
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+
+// Adding a line is the same api.create the grid makes for any row, so the
+// server, the Gantt, history and undo all see an ordinary task.
+const CONTROLS_ORIGIN_KEY = 'controls_origin';
+
+function _controlsOrigins() {
+  return (state.settings && state.settings[CONTROLS_ORIGIN_KEY]) || {};
+}
+
+async function _rememberControlsOrigin(t) {
+  state.settings = state.settings || {};
+  const map = state.settings[CONTROLS_ORIGIN_KEY] = { ..._controlsOrigins() };
+  map[String(t.id)] = {
+    phase_group: t.phase_group || null,
+    department: t.department || null,
+    sub_department: t.sub_department || null,
+    sort_order: Number(t.sort_order) || 0,
+  };
+  try { await api.putSetting(CONTROLS_ORIGIN_KEY, map); } catch (_) {}
+}
+
+async function _forgetControlsOrigin(id) {
+  const map = { ..._controlsOrigins() };
+  if (!(String(id) in map)) return;
+  delete map[String(id)];
+  state.settings = state.settings || {};
+  state.settings[CONTROLS_ORIGIN_KEY] = map;
+  try { await api.putSetting(CONTROLS_ORIGIN_KEY, map); } catch (_) {}
+}
+
+async function moveToControlsList(id) {
+  const t = state.tasks.find(x => x.id === id);
+  if (!t) return;
+  if (t.phase_group === CONTROLS_GROUP) return;
+  await _rememberControlsOrigin(t);
+  const sibs = controlsList(t.project);
+  const sort = sibs.length ? (Number(sibs[sibs.length - 1].sort_order) || 0) + 1 : 1;
+  try {
+    await api.update(id, {
+      phase_group: CONTROLS_GROUP,
+      department: null,
+      sub_department: CONTROLS_SUB,
+      sort_order: sort,
+    });
+  } catch (e) {
+    showToast(e.message || 'Could not move the line.', { kind: 'error' });
+    return;
+  }
+  await loadTasks();
+  // Say where it went, because by default it just disappeared off the build.
+  showToast('Moved to the controls list. Turn on C to see it here.', { kind: 'success' });
+}
+
+// Back onto the build. Controls work belongs to Controls Engineering, which
+// is the one place it can land without asking where it came from.
+async function moveOutOfControlsList(id) {
+  // Home is where it came from. A line typed straight into the list has no
+  // origin, so it lands with the controls work — which is whose it is.
+  const home = _controlsOrigins()[String(id)] || {
+    phase_group: 'design_build', department: 'engineering', sub_department: 'controls',
+  };
+  try {
+    await api.update(id, {
+      phase_group: home.phase_group || 'design_build',
+      department: home.department || null,
+      sub_department: home.sub_department || null,
+      sort_order: home.sort_order != null ? home.sort_order : undefined,
+    });
+  } catch (e) {
+    showToast(e.message || 'Could not move the line.', { kind: 'error' });
+    return;
+  }
+  await _forgetControlsOrigin(id);
+  await loadTasks();
+  showToast('Moved back to the schedule.', { kind: 'success' });
+}
+
+async function addControlsLine(project, afterTask) {
+  if (!project) {
+    showToast('Pick a project tab first — controls items belong to a project.', { kind: 'error' });
+    return;
+  }
+  const sibs = controlsList(project);
+  const sort = afterTask ? (Number(afterTask.sort_order) || 0) + 0.5
+    : (sibs.length ? (Number(sibs[sibs.length - 1].sort_order) || 0) + 1 : 1);
+  try {
+    await api.create({
+      name: 'New controls item',
+      project,
+      phase_group: CONTROLS_GROUP,
+      department: null,
+      sub_department: CONTROLS_SUB,
+      sort_order: sort,
+      duration_days: 5,
+    });
+  } catch (e) {
+    showAlertDialog({ title: 'Could not add the line', message: e.message || String(e) });
+    return;
+  }
+  try { await loadTasks(); } catch (_) {}
+}
+
+// The list, as one section. Overlay mode rides under the build; on its own
+// it IS the view.
+function _controlsSectionRowsHtml(filtered, collapsedGroups, opts) {
+  const project = state.filters.project || '';
+  const cols = state.layout.columnOrder.length;
+  const overlay = !!(opts && opts.overlay);
+  if (overlay && !(state.scheduleView && state.scheduleView.controlsOverlay)) return '';
+  const rows = filtered.filter(t => t.phase_group === CONTROLS_GROUP)
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  if (overlay && !rows.length) return '';
+  const path = groupPath(CONTROLS_GROUP, null, CONTROLS_SUB);
+  const collapsed = collapsedGroups.has(path);
+  let html = headerRowHtml(1, 'CONTROLS ITEMS', path, collapsed, {
+    'section-key': 'controls-list',
+    'ctrl-first': overlay ? '1' : '',
+  });
+  if (collapsed) return html;
+  for (const t of rows) html += rowHtml(t, 2);
+  if (project) {
+    html += `<tr class="ctrl-add-row"><td colspan="${cols}">
+      <button type="button" class="risk-add-line" data-add-ctrl="1">＋ Add item</button>
+    </td></tr>`;
+  } else if (!rows.length) {
+    html += `<tr class="ctrl-add-row"><td colspan="${cols}">
+      <span class="risk-mode-hint">Pick a project tab to add controls items.</span>
+    </td></tr>`;
+  }
+  return html;
+}
 let _riskProject = '';            // project the open register belongs to
 // Per-risk line numbering. A mitigation schedule is its own little schedule,
 // so line 1 is its first row - not the 36th row of the project. Predecessors
@@ -17190,6 +17365,33 @@ async function addRiskLine(project, riskId, afterTask) {
 // The toolbar button that flips between the build and the risk sections,
 // and the one that adds a line without a right-click. Both re-label
 // themselves, so there is always a visible way back.
+// The controls pair, mirroring the risk pair: a button that swaps the view,
+// and a bracket icon that brings the list onto the build without leaving it.
+function syncControlsButtons() {
+  const on = !!(state.scheduleView && state.scheduleView.controlsMode);
+  const btn = document.getElementById('btn-controls-mode');
+  if (btn) {
+    btn.textContent = on ? '← Back to schedule' : '⚙ Controls list';
+    btn.title = on
+      ? 'Back to the build — sections 05 / 10 / 40 / 50.'
+      : 'The controls team’s own list for this project. They keep their predecessors against the build, and stay off it until you ask for them.';
+    btn.classList.toggle('is-active', on);
+  }
+  const ov = document.getElementById('btn-view-controls');
+  if (ov) {
+    const project = state.filters.project || '';
+    const n = project ? controlsList(project).length : 0;
+    ov.classList.toggle('hidden', on || !project);
+    const showing = !!(state.scheduleView && state.scheduleView.controlsOverlay);
+    ov.classList.toggle('is-active', showing);
+    ov.title = showing
+      ? 'Hide the controls items again.'
+      : (n
+        ? 'Show the ' + n + ' controls item' + (n === 1 ? '' : 's') + ' under the build.'
+        : 'No controls items on this job yet — right-click any line to move it here.');
+  }
+}
+
 function syncRiskModeButtons() {
   const btn = document.getElementById('btn-risk-mode');
   const on = !!(state.scheduleView && state.scheduleView.riskMode);
@@ -17208,13 +17410,15 @@ function syncRiskModeButtons() {
     const n = riskSelectedIds(state.filters.project || '').length;
     // It is an icon in the bracket now, so keep the glyph and just gate
     // visibility: pointless in risk mode, and pointless with no risk to show.
-    ovBtn.classList.toggle('hidden', on || !state.filters.project || !n);
+    ovBtn.classList.toggle('hidden', on || !state.filters.project);
     const showing = !!(state.scheduleView && state.scheduleView.riskOverlay);
     ovBtn.classList.toggle('is-active', showing);
     const picked = Array.isArray(state.filters.risksSubset) && state.filters.risksSubset.length;
     ovBtn.title = showing
       ? `Hide the risk lines again. Showing ${n} risk${n === 1 ? '' : 's'}.`
-      : `Show the mitigation lines under the build. Which risks is whatever you picked with the Risks pills in the risk schedule — ${picked ? n + ' selected' : 'all ' + n}.`;
+      : (n
+        ? `Show the mitigation lines under the build. Which risks is whatever you picked with the Risks pills in the risk schedule — ${picked ? n + ' selected' : 'all ' + n}.`
+        : 'No risk on this job has a schedule yet — Documents → Risk Mitigation Plan, then tick Schedule on a risk.');
   }
 }
 
@@ -17956,6 +18160,27 @@ const PORTAL_KEY_DATES = [
 // Percent complete across the work in view, weighted by scheduled days —
 // a four-week task finishing is not the same event as a one-day task
 // finishing, and a plain count of rows says it is.
+function _portalPlannedPercent(rows, today) {
+  const now = new Date((today || _ymdLocal(new Date())) + 'T00:00:00').getTime();
+  let planned = 0, due = 0;
+  rows.forEach(t => {
+    if (isMilestoneLike(t)) return;
+    const d = Math.max(Number(t.duration_days) || 0, 0.5);
+    planned += d;
+    const a = t.start_date ? new Date(t.start_date + 'T00:00:00').getTime() : NaN;
+    const b = t.end_date ? new Date(t.end_date + 'T00:00:00').getTime() : NaN;
+    // No window to measure against: it cannot be late and cannot be early.
+    if (!isFinite(a) || !isFinite(b)) return;
+    if (now >= b) { due += d; return; }
+    if (now <= a) return;
+    // A same-day task is either done or not; there is no part-way through it.
+    const span = b - a;
+    due += span > 0 ? d * ((now - a) / span) : d;
+  });
+  if (!planned) return null;
+  return Math.round((due / planned) * 100);
+}
+
 function _portalPercent(rows) {
   let planned = 0, done = 0;
   rows.forEach(t => {
@@ -18252,6 +18477,11 @@ function _portalProgressHtml(projects, machine) {
     .filter(t => !machine || !t.machine || t.machine === machine);
   const overall = _portalPercent(rows);
   if (overall == null) return '';
+  const planned = _portalPlannedPercent(rows);
+  // Points, not percent: the gap between two percentages is not a percentage.
+  const gap = planned == null ? null : overall - planned;
+  const gapCls = gap == null ? '' : (gap >= 0 ? 'is-ok' : (gap <= -10 ? 'is-late' : 'is-warn'));
+  const gapTxt = gap == null ? '—' : (gap > 0 ? '+' : '') + gap + ' pts';
   const cells = PORTAL_PROGRESS_PHASES.map(ph => {
     const mine = rows.filter(t => t.phase_group === ph.g
       && (!ph.d || t.department === ph.d)
@@ -18263,11 +18493,18 @@ function _portalProgressHtml(projects, machine) {
   }).filter(Boolean);
   return `<section class="portal-block">
     <h2 class="portal-h2">Progress</h2>
+    <p class="portal-note">Should be is the share of the plan due by today — every task counted by its
+    scheduled days, not as one of a list, so it ramps with the work the way the crew does.</p>
     <div class="portal-prog">
       <div class="pprog-overall">
         ${_portalDonut(overall, 128)}
         <span class="pphase-label">Whole machine</span>
       </div>
+      ${planned == null ? '' : `<dl class="pprog-vs">
+        <div><dt>Should be</dt><dd>${planned}%</dd></div>
+        <div><dt>Actually</dt><dd>${overall}%</dd></div>
+        <div class="pprog-gap ${gapCls}"><dt>Variance</dt><dd>${escapeHtml(gapTxt)}</dd></div>
+      </dl>`}
       <div class="pprog-phases">${_portalBars(cells)}</div>
     </div>
   </section>`;
@@ -20322,6 +20559,14 @@ function handleRowContextMenu(e) {
   }
   if (task && !(task.is_milestone || inferredAnchorKey(task))) {
     items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
+  }
+  // The controls list is built out of the schedule. An anchor is part of the
+  // spine and cannot leave it.
+  if (task && !inferredAnchorKey(task)) {
+    items.push({ separator: true });
+    items.push(task.phase_group === CONTROLS_GROUP
+      ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfControlsList(id) }
+      : { label: '⚙ Move to controls list', onClick: () => moveToControlsList(id) });
   }
   // Key-milestone promotion — any MILESTONE row can become a key milestone
   // (green chip + anchor diamond, same format as PO / Mech 1 / FAT). Custom
@@ -30328,6 +30573,7 @@ function loadScheduleView() {
       // whichever project happened to be open last. The build is always the
       // way in.
       riskMode: false,
+      controlsMode: false,
       riskOverlay: !!saved.riskOverlay,
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
         ? saved.actionsMode
@@ -30340,7 +30586,7 @@ function loadScheduleView() {
       showDeptHours: !!saved.showDeptHours,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false };
   }
 }
 function saveScheduleView() {
@@ -30387,6 +30633,7 @@ function syncViewPill() {
   // chips/borders actually paint.
   setActive('btn-view-machine', sv.showMachineColors !== false);
   setActive('btn-view-dept-hours', sv.showDeptHours);
+  try { syncControlsButtons(); } catch (_) {}
 }
 
 // True when the visible task set spans 2+ distinct machine tags. Drives
@@ -32892,6 +33139,19 @@ async function init() {
     state.scheduleView.riskOverlay = !state.scheduleView.riskOverlay;
     saveScheduleView();
     render();
+  });
+  document.getElementById('btn-view-controls')?.addEventListener('click', () => {
+    state.scheduleView.controlsOverlay = !state.scheduleView.controlsOverlay;
+    saveScheduleView();
+    render();
+  });
+  document.getElementById('btn-controls-mode')?.addEventListener('click', () => {
+    state.scheduleView.controlsMode = !state.scheduleView.controlsMode;
+    // The two views are alternatives, not layers.
+    if (state.scheduleView.controlsMode) state.scheduleView.riskMode = false;
+    saveScheduleView();
+    render();
+    try { zoomToFit(); } catch (_) {}
   });
   document.getElementById('btn-risk-mode')?.addEventListener('click', () => {
     state.scheduleView.riskMode = !state.scheduleView.riskMode;
