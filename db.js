@@ -468,6 +468,14 @@ async function init() {
   // schedule. DECIMAL(12,2) — money is never a float here.
   await pool.query(`ALTER TABLE projects ADD COLUMN contract_value DECIMAL(12,2)`).catch(() => {});
   await pool.query(`ALTER TABLE projects ADD COLUMN po_number VARCHAR(64)`).catch(() => {});
+  // Customer name, synced from Total ETO (vwProjects.CName via tblCompany) by
+  // etoDb.syncProjectCustomers, same join key (job_number) and cadence as the
+  // vendor PO sync. customer_manually_edited mirrors the ETC Planner's
+  // Job.customerManuallyEdited contract: once a person corrects this field the
+  // sync must never silently overwrite it again.
+  await pool.query(`ALTER TABLE projects ADD COLUMN customer VARCHAR(255)`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN customer_manually_edited TINYINT(1) DEFAULT 0`).catch(() => {});
+  await pool.query(`ALTER TABLE projects ADD COLUMN customer_synced_at DATETIME`).catch(() => {});
   // Clean up duplicate (po, job) rows left by syncs that overlapped before the
   // sync serializer existed. Conservatively deletes only the higher-id copy and
   // only when it carries NO PM-entered data — so manual edits are never lost; a
