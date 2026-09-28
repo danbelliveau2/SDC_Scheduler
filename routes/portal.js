@@ -10,6 +10,12 @@
  * login step itself. Nothing here ever trusts a client-supplied customer
  * name — the logged-in session's req.customerName is the only source of
  * "whose data is this."
+ *
+ * createStaffRouter (below) is the opposite of all that: a small STAFF-only
+ * router — requireRole('editor'), mounted on the MAIN app — for creating,
+ * resetting, and disabling a customer's login. Kept in this file because it
+ * shares the customer_accounts schema and the password-generation logic, not
+ * because it belongs on the public listener; server.js mounts it separately.
  */
 const { Router } = require('express');
 const bcrypt = require('bcryptjs');
@@ -163,4 +169,62 @@ module.exports = function createPortalRouter({ pool }) {
   });
 
   return { router };
+};
+
+// Same word-word-word-NN shape as routes/users.js's _genTempPassword() —
+// easy for staff to read aloud or paste into a chat message.
+const PASSWORD_WORDS = ['blue', 'lime', 'gear', 'bolt', 'fast', 'spark', 'steel', 'motor', 'shaft', 'cam', 'weld', 'panel'];
+function genCustomerPassword() {
+  const pick = () => PASSWORD_WORDS[Math.floor(Math.random() * PASSWORD_WORDS.length)];
+  return `${pick()}-${pick()}-${pick()}-${Math.floor(10 + Math.random() * 89)}`;
+}
+
+module.exports.createStaffRouter = function createStaffRouter({ pool, requireRole }) {
+  const staffRouter = Router();
+
+  staffRouter.get('/api/portal/customer-accounts/:customerName', requireRole('editor'), async (req, res) => {
+    try {
+      const [[account]] = await pool.query(
+        'SELECT id, customer_name, username, must_change_password, created_at, last_login_at, disabled_at FROM customer_accounts WHERE customer_name = ?',
+        [req.params.customerName]
+      );
+      res.json({ ok: true, account: account || null });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // Create-or-reset in one step: a customer with no login yet gets one, a
+  // customer who already has one gets a fresh password (their username never
+  // changes). Re-enables a disabled account too — resetting a login is a
+  // deliberate "let them back in" action.
+  staffRouter.post('/api/portal/customer-accounts/:customerName', requireRole('editor'), async (req, res) => {
+    try {
+      const customerName = req.params.customerName;
+      if (!customerName.trim()) return res.status(400).json({ error: 'Customer name is required.' });
+      const password = genCustomerPassword();
+      const hash = await bcrypt.hash(password, 12);
+      await pool.query(
+        `INSERT INTO customer_accounts (customer_name, username, password_hash)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), disabled_at = NULL`,
+        [customerName, customerName, hash]
+      );
+      res.json({ ok: true, username: customerName, password });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  staffRouter.post('/api/portal/customer-accounts/:customerName/disable', requireRole('editor'), async (req, res) => {
+    try {
+      await pool.query('UPDATE customer_accounts SET disabled_at = NOW() WHERE customer_name = ?', [req.params.customerName]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  staffRouter.post('/api/portal/customer-accounts/:customerName/enable', requireRole('editor'), async (req, res) => {
+    try {
+      await pool.query('UPDATE customer_accounts SET disabled_at = NULL WHERE customer_name = ?', [req.params.customerName]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  return { staffRouter };
 };

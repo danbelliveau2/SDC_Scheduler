@@ -454,6 +454,10 @@ app.use(require('./routes/planner')(  { ...routeDeps }));
 app.use(require('./routes/agent')(    { ...routeDeps }));
 app.use(require('./routes/hours')(    { ...routeDeps }));
 app.use(require('./routes/projects')( { ...routeDeps }));
+// Customer portal — staff half (create/reset/disable a customer's login).
+// The customer-facing half (login, dashboard) is mounted on the
+// SNAPSHOT_PUBLIC_PORT listener instead; see there.
+app.use(require('./routes/portal').createStaffRouter({ pool, requireRole }).staffRouter);
 // Service module — internal half (Service Log, Work Orders, attachments,
 // reports). Its public intake half was mounted above requireAuth; see there.
 if (_serviceRouters) app.use(_serviceRouters.router);

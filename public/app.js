@@ -17979,7 +17979,9 @@ function renderPortal() {
             ? `<span class="portal-cust-name">${escapeHtml(cust)}</span>`
             : `<select class="portal-cust-select" data-portal-cust>${opts}</select>
                <button type="button" class="portal-linkbtn" data-portal-link
-                 title="Copy a link that opens this portal on ${escapeHtml(cust)} and nothing else.">🔗 Copy link</button>`}
+                 title="Copy a link that opens this portal on ${escapeHtml(cust)} and nothing else.">🔗 Copy link</button>
+               <button type="button" class="portal-linkbtn" data-portal-login-manage
+                 title="Create, reset, or disable ${escapeHtml(cust)}'s login for the customer portal (portal.sdcautomation.com).">🔑 Manage login</button>`}
           <span class="portal-bar-meta">${units.length} machine${units.length === 1 ? '' : 's'} · ${projects.length} project${projects.length === 1 ? '' : 's'}</span>
         </div>
 
@@ -18736,6 +18738,10 @@ function _wirePortal(root) {
   root.querySelector('[data-portal-link]')?.addEventListener('click', (e) => {
     e.stopPropagation();
     copyPortalLink(_portalCustomer);
+  });
+  root.querySelector('[data-portal-login-manage]')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    manageCustomerLogin(_portalCustomer);
   });
   const sel = root.querySelector('[data-portal-cust]');
   if (sel) sel.addEventListener('change', () => { _portalCustomer = sel.value; _portalProjects = []; _portalMachine = null; _portalCleared = false; renderPortal(); });
@@ -34053,6 +34059,68 @@ async function portalLinkFor(customer) {
     catch (e) { showToast('Could not save the link: ' + (e.message || e), { kind: 'error' }); return ''; }
   }
   return location.origin + '/?portal=' + token;
+}
+
+// Customer portal LOGIN (routes/portal.js's staff router) — a different
+// thing from copyPortalLink above: that's an internal staff shortcut into
+// this same app; this is a real account a customer signs into themselves at
+// portal.sdcautomation.com. See lib/customerAuth.js for why the two are
+// deliberately unrelated systems.
+async function manageCustomerLogin(customer) {
+  if (!customer) return;
+  let account = null;
+  try {
+    const r = await fetch(`/api/portal/customer-accounts/${encodeURIComponent(customer)}`);
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    account = body.account;
+  } catch (e) { showToast('Could not check login status: ' + (e.message || e), { kind: 'error' }); return; }
+
+  if (!account) {
+    const ok = await showConfirmDialog({
+      title: 'Create a portal login',
+      message: `${customer} has no login yet for the customer portal (portal.sdcautomation.com). Create one now?`,
+      okLabel: 'Create login',
+    });
+    if (ok) await _createOrResetCustomerLogin(customer, 'created');
+    return;
+  }
+
+  const statusLine = account.disabled_at
+    ? 'Currently disabled — resetting will re-enable it.'
+    : `Last signed in: ${account.last_login_at ? fmtDate(String(account.last_login_at).slice(0, 10)) : 'never'}.`;
+  const reset = await showConfirmDialog({
+    title: 'Reset this login?',
+    message: `${customer} already has a login (username: ${account.username}). ${statusLine}\n\nResetting generates a new password and invalidates the old one immediately.`,
+    okLabel: 'Reset password',
+  });
+  if (reset) { await _createOrResetCustomerLogin(customer, 'reset'); return; }
+
+  if (!account.disabled_at) {
+    const disable = await showConfirmDialog({
+      title: 'Disable this login instead?',
+      message: `${customer} will not be able to sign in to the customer portal until this is undone.`,
+      okLabel: 'Disable login', danger: true,
+    });
+    if (disable) {
+      try {
+        await fetch(`/api/portal/customer-accounts/${encodeURIComponent(customer)}/disable`, { method: 'POST' });
+        showToast(`${customer}'s portal login is disabled.`);
+      } catch (e) { showToast('Could not disable: ' + (e.message || e), { kind: 'error' }); }
+    }
+  }
+}
+
+async function _createOrResetCustomerLogin(customer, verb) {
+  try {
+    const r = await fetch(`/api/portal/customer-accounts/${encodeURIComponent(customer)}`, { method: 'POST' });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    await showAlertDialog({
+      title: 'Portal login ' + verb,
+      message: `Give ${customer} these details to sign in at portal.sdcautomation.com — this password is shown only once:\n\nUsername: ${body.username}\nPassword: ${body.password}`,
+    });
+  } catch (e) { showToast('Could not save the login: ' + (e.message || e), { kind: 'error' }); }
 }
 
 async function copyPortalLink(customer) {
