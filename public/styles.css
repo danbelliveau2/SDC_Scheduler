@@ -416,6 +416,18 @@ body {
   min-width: 0;
 }
 .projects-search-input::placeholder { color: var(--text-muted, #94a3b8); }
+.projects-customer-filter {
+  flex: 0 0 auto;
+  max-width: 200px;
+  border: none;
+  border-left: 1px solid var(--border, #e2e8f0);
+  background: none;
+  font: inherit;
+  font-size: var(--fs-sm, 13px);
+  color: var(--text, #1e293b);
+  outline: none;
+  padding: 0 0 0 10px;
+}
 
 /* Stats row */
 .projects-page-stats {
@@ -485,6 +497,19 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-normal, 400);
+  color: var(--text-muted, #94a3b8);
+}
+/* Customer column — text, so it gets more room than Job #, but still fixed
+   so it doesn't compete with the name for space. Templates show an em-dash
+   (no customer); title attr carries the full name past the ellipsis. */
+.projects-row-customer {
+  flex: 0 0 130px;
+  width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--fs-xs);
   font-weight: var(--fw-normal, 400);
   color: var(--text-muted, #94a3b8);

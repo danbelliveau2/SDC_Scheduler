@@ -7997,7 +7997,7 @@ async function _persistWorkspaceToServer(p, workspace) {
       if (!r.ok) return;
       const row = await r.json();
       state.projectsIndex = state.projectsIndex || {};
-      state.projectsIndex[p] = { id: row.id, job_number: row.job_number || '', hours_job_id: row.hours_job_id || '' };
+      state.projectsIndex[p] = { id: row.id, job_number: row.job_number || '', hours_job_id: row.hours_job_id || '', customer: row.customer || '' };
       if (row.workspace === workspace) return; // fresh INSERT already carries it
       rec = state.projectsIndex[p];
     }
@@ -12268,6 +12268,14 @@ function renderProjectsPage() {
   }
   const expanded = state._projectsExpanded || (state._projectsExpanded = {});
   const searchQ = (state._projectsSearch || '').toLowerCase().trim();
+  const custFilter = state._projectsCustomerFilter || '';
+  // Distinct customer names across real (non-template) projects, for the
+  // filter dropdown — sorted, deduped, blanks left out (nothing to pick).
+  const customerOptions = [...new Set(
+    all.filter(p => !isTemplateProject(p))
+       .map(p => String((state.projectsIndex[p] && state.projectsIndex[p].customer) || '').trim())
+       .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
 
   const favSet = new Set(state.favoriteProjects || []);
 
@@ -12305,10 +12313,16 @@ function renderProjectsPage() {
     // exclusion pattern as the status column above).
     const jobNum = isTmpl ? '' : String((state.projectsIndex[p] && state.projectsIndex[p].job_number) || '').trim();
     const jobCell = `<span class="projects-row-jobnum">${jobNum ? escapeHtml(jobNum) : '—'}</span>`;
+    // Customer column, right of the name — same source as the customer
+    // filter dropdown above workspaceSection, same em-dash-for-none pattern
+    // as job # and status.
+    const custName = isTmpl ? '' : String((state.projectsIndex[p] && state.projectsIndex[p].customer) || '').trim();
+    const custCell = `<span class="projects-row-customer"${custName ? ` title="${escapeHtml(custName)}"` : ''}>${custName ? escapeHtml(custName) : '—'}</span>`;
     const openBtn = `<button class="projects-row-openbtn${isOpen ? ' is-open' : ''}" data-action="open-project" data-project="${escapeHtml(p)}" type="button">OPEN</button>`;
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
       ${jobCell}
       <span class="projects-row-name">${escapeHtml(p)}</span>
+      ${custCell}
       ${statusChip}
       ${openBtn}
       ${favBtn}
@@ -12320,6 +12334,7 @@ function renderProjectsPage() {
     const templates = projects.filter(isTemplateProject);
     let nonTemplates = projects.filter(p => !isTemplateProject(p));
     if (searchQ) nonTemplates = nonTemplates.filter(p => p.toLowerCase().includes(searchQ));
+    if (custFilter) nonTemplates = nonTemplates.filter(p => (state.projectsIndex[p] && state.projectsIndex[p].customer) === custFilter);
     const isExpanded = !!expanded[ws];
     // New schedules start in Active or Sales — On Hold/Closed are places
     // projects get MOVED to (right-click → Move to …), not born in.
@@ -12339,14 +12354,14 @@ function renderProjectsPage() {
         </button>
         <div class="projects-workspace-body">
           ${allowsNew ? `<button class="projects-workspace-newbtn" data-action="new" data-workspace="${escapeHtml(ws)}"${wsTmpl ? ` data-template="${escapeHtml(wsTmpl)}"` : ''} type="button">${newBtnLabel}</button>` : ''}
-          ${!searchQ && templates.length > 0 ? `
+          ${!searchQ && !custFilter && templates.length > 0 ? `
             <div class="projects-templates-row">
               <div class="projects-templates-label">Templates</div>
               ${templates.map(rowHtml).join('')}
             </div>
           ` : ''}
           ${nonTemplates.length === 0
-            ? `<div class="projects-workspace-empty">${searchQ ? 'No matches.' : 'No schedules yet — use the "+ New" button to start one.'}</div>`
+            ? `<div class="projects-workspace-empty">${(searchQ || custFilter) ? 'No matches.' : 'No schedules yet — use the "+ New" button to start one.'}</div>`
             : nonTemplates.map(rowHtml).join('')}
         </div>
       </div>
@@ -12374,6 +12389,10 @@ function renderProjectsPage() {
     <div class="projects-search-wrap">
       <span class="projects-search-icon">🔍</span>
       <input class="projects-search-input" type="text" placeholder="Search projects…" value="${escapeHtml(searchQ)}" autocomplete="off" spellcheck="false" />
+      <select class="projects-customer-filter" title="Filter by customer">
+        <option value="">All customers</option>
+        ${customerOptions.map(c => `<option value="${escapeHtml(c)}"${c === custFilter ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+      </select>
     </div>
     ${WORKSPACES.map(workspaceSection).join('')}
   `;
@@ -12393,6 +12412,13 @@ function renderProjectsPage() {
     searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
     searchInput.addEventListener('input', () => {
       state._projectsSearch = searchInput.value;
+      renderProjectsPage();
+    });
+  }
+  const customerFilterSelect = root.querySelector('.projects-customer-filter');
+  if (customerFilterSelect) {
+    customerFilterSelect.addEventListener('change', () => {
+      state._projectsCustomerFilter = customerFilterSelect.value;
       renderProjectsPage();
     });
   }
@@ -30188,8 +30214,8 @@ function setView(view) {
   if (view === 'procurement') view = 'schedule';
   // Save scroll position of the view we're leaving before switching.
   _saveScrollPos(state.view);
-  // Clear projects search when leaving the projects page
-  if (state.view === 'projects' && view !== 'projects') state._projectsSearch = '';
+  // Clear projects search/customer-filter when leaving the projects page
+  if (state.view === 'projects' && view !== 'projects') { state._projectsSearch = ''; state._projectsCustomerFilter = ''; }
   if (view === 'portal') document.body.classList.add('portal-mode');
   else if (view !== 'schedule') document.body.classList.remove('portal-mode');
   state.view = view;
@@ -32752,7 +32778,7 @@ async function init() {
       for (const p of projects) {
         if (!p || !p.name) continue;
         // ETO integration + project-link chip need the row id and job number.
-        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '', hours_job_id: p.hours_job_id || '' };
+        state.projectsIndex[p.name] = { id: p.id, job_number: p.job_number || '', hours_job_id: p.hours_job_id || '', customer: p.customer || '' };
         // Sync is_template from DB so the projects page shows the right button label.
         if (p.is_template) dbTemplates.push(p.name);
         // Server stores the legacy literal 'default' for projects that
