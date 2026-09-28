@@ -47,6 +47,45 @@
     });
   }
 
+  // Ported from public/app.js's _portalDonut — same ring, same math, so the
+  // customer portal's "whole machine" chart matches the internal Portal tab.
+  function donutHtml(pct, size) {
+    const r = (size / 2) - 5;
+    const c = 2 * Math.PI * r;
+    const on = c * Math.min(Math.max(pct, 0), 100) / 100;
+    const mid = size / 2;
+    return `<svg class="pdonut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img" aria-label="${pct}% complete">
+      <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="#eef0f3" stroke-width="8"></circle>
+      <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="var(--cp-lime)" stroke-width="8"
+        stroke-linecap="round" stroke-dasharray="${on.toFixed(2)} ${(c - on).toFixed(2)}"
+        transform="rotate(-90 ${mid} ${mid})"></circle>
+      <text x="${mid}" y="${mid}" text-anchor="middle" dominant-baseline="central"
+        style="font-size:${Math.round(size / 3.6)}px;font-weight:800;fill:var(--cp-text);">${pct}%</text>
+    </svg>`;
+  }
+
+  function initials(name) {
+    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return '?';
+    return ((parts[0][0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+  }
+
+  function renderTeamBlock(p) {
+    if (!p.team.length) return '';
+    return `<div class="cp-team-block">
+      <div class="cp-team-proj">${esc(p.name)}</div>
+      ${p.team.map(g => `<div class="cp-team-group">
+        <div class="cp-team-role">${esc(g.label)}</div>
+        <div class="cp-team-people">
+          ${g.people.map(person => `<div class="cp-person${person.lead ? ' is-lead' : ''}">
+            <span class="cp-person-avatar">${esc(initials(person.name))}</span>
+            <span><span class="cp-person-name">${esc(person.name)}</span>${person.note ? `<span class="cp-person-note">${esc(person.note)}</span>` : ''}</span>
+          </div>`).join('')}
+        </div>
+      </div>`).join('')}
+    </div>`;
+  }
+
   function gapClass(gap) {
     if (gap == null) return '';
     if (gap >= 0) return 'cp-gap-ok';
@@ -117,6 +156,10 @@
       const progress = u.progress;
       const progHtml = !progress ? '<p class="cp-empty">No scheduled tasks yet.</p>' : `
         <div class="cp-prog">
+          <div class="cp-prog-overall">
+            ${donutHtml(progress.overall, 128)}
+            <span class="cp-phase-label">Whole machine</span>
+          </div>
           <dl class="cp-prog-vs ${gapClass(progress.gap)}">
             <div><dt>Should be</dt><dd>${progress.planned == null ? '—' : progress.planned + '%'}</dd></div>
             <div><dt>Actually</dt><dd>${progress.overall}%</dd></div>
@@ -149,6 +192,10 @@
 
     const riskBlocks = data.projects.filter(p => p.risk.length).map(renderRiskBlock).join('');
 
+    const teamBlocks = data.projects.filter(p => p.team.length).length
+      ? `<div class="cp-block"><h2 class="cp-h2">SDC Team</h2>${data.projects.filter(p => p.team.length).map(renderTeamBlock).join('')}</div>`
+      : '';
+
     root.innerHTML = `
       <header class="cp-header">
         <div class="cp-header-left">
@@ -168,12 +215,39 @@
         ${unitBlocks}
         ${moneyBlocks}
         ${riskBlocks}
+        ${teamBlocks}
       </div>`;
 
     document.getElementById('cp-logout-btn').addEventListener('click', async () => {
+      stopPolling();
       try { await api('/portal/api/logout', { method: 'POST' }); } catch (_) {}
       renderLogin();
     });
+  }
+
+  // Auto-refresh: the dashboard is a live query every time it's fetched (see
+  // routes/portal.js), so nothing here goes stale — it just isn't PUSHED to
+  // an already-open tab without this. Silent re-render on each tick, no
+  // loading spinner, so a customer sitting on the page doesn't see a flicker
+  // every minute. A 401 mid-poll (session expired) drops back to login.
+  const POLL_MS = 60000;
+  let _pollTimer = null;
+  function stopPolling() {
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  }
+  function startPolling() {
+    stopPolling();
+    _pollTimer = setInterval(async () => {
+      try {
+        const data = await api('/portal/api/dashboard');
+        renderDashboard(data);
+      } catch (err) {
+        if (err.status === 401) { stopPolling(); renderLogin(); }
+        // Any other error (a dropped connection, a transient 5xx) is left
+        // alone — the next tick tries again rather than kicking the
+        // customer back to login over a blip.
+      }
+    }, POLL_MS);
   }
 
   async function loadDashboard() {
@@ -181,7 +255,9 @@
     try {
       const data = await api('/portal/api/dashboard');
       renderDashboard(data);
+      startPolling();
     } catch (_) {
+      stopPolling();
       renderLogin();
     }
   }

@@ -65,9 +65,25 @@ body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font-size: 14
 .cp-phase-bars { display: flex; gap: 14px; flex-wrap: wrap; }
 .cp-phase-bar { text-align: center; width: 56px; }
 .cp-phase-track { height: 70px; width: 18px; background: var(--cp-border); border-radius: 4px; margin: 0 auto 6px; display: flex; align-items: flex-end; overflow: hidden; }
-.cp-phase-fill { width: 100%; background: var(--cp-primary); }
+.cp-phase-fill { width: 100%; background: var(--cp-lime); }
 .cp-phase-pct { font-size: 11px; font-weight: 700; }
 .cp-phase-label { font-size: 10px; color: var(--cp-muted); }
+
+/* ── Donut (whole-machine %) ── */
+.cp-prog-overall { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.pdonut text { font-family: inherit; }
+
+/* ── SDC Team ── */
+.cp-team-block + .cp-team-block { margin-top: 16px; }
+.cp-team-proj { font-weight: 700; font-size: 12px; margin-bottom: 8px; }
+.cp-team-group { margin-bottom: 10px; }
+.cp-team-role { font-size: 10px; text-transform: uppercase; color: var(--cp-muted); font-weight: 700; margin-bottom: 6px; }
+.cp-team-people { display: flex; flex-wrap: wrap; gap: 14px; }
+.cp-person { display: flex; align-items: center; gap: 8px; }
+.cp-person-avatar { width: 28px; height: 28px; border-radius: 50%; background: #0d2436; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+.cp-person.is-lead .cp-person-avatar { background: var(--cp-primary); }
+.cp-person-name { font-size: 12px; font-weight: 600; }
+.cp-person-note { font-size: 10px; color: var(--cp-muted); display: block; }
 
 /* ── Tables ── */
 /* Dates are the entire point of these tables — truncating them to "…" on a

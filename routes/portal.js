@@ -126,6 +126,9 @@ module.exports = function createPortalRouter({ pool }) {
       );
       const [[riskSettingsRow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', ['risk_plans']);
       const riskPlans = riskSettingsRow ? JSON.parse(riskSettingsRow.value) : {};
+      const [[leadsSettingsRow]] = await pool.query('SELECT value FROM settings WHERE `key` = ?', ['project_leads']);
+      const projectLeads = leadsSettingsRow ? JSON.parse(leadsSettingsRow.value) : {};
+      const [teamMembers] = await pool.query('SELECT name, discipline, specialty, active FROM team_members');
 
       const tasksByProject = new Map(names.map(n => [n, []]));
       taskRows.forEach(t => tasksByProject.get(t.project)?.push(t));
@@ -154,6 +157,7 @@ module.exports = function createPortalRouter({ pool }) {
           machines: rawUnits.map(u => u.machine).filter(Boolean),
           money: calc.portalMoney(finByProject.get(p.name) || [], tasksById, rows),
           risk: calc.portalRisk(riskPlans[p.name], rows),
+          team: calc.portalTeam(rows, teamMembers, projectLeads[p.name]),
         };
       });
 
