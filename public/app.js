@@ -12301,8 +12301,13 @@ function renderProjectsPage() {
     const statusChip = isTmpl ? '' : `<span class="projects-row-statuscell">${pStatus
       ? `<span class="projects-row-status ${pStatus.toLowerCase() === 'active' ? 'is-active' : 'is-inactive'}" title="Status from SDC Projects Reports — non-Active jobs are left out of Departments and Invoicing.">${escapeHtml(pStatus)}</span>`
       : `<span class="projects-row-status is-unknown" title="No status — this schedule isn't linked to a job in SDC Projects Reports.">—</span>`}</span>`;
+    // Job # column, left of the name — templates don't have one (same
+    // exclusion pattern as the status column above).
+    const jobNum = isTmpl ? '' : String((state.projectsIndex[p] && state.projectsIndex[p].job_number) || '').trim();
+    const jobCell = `<span class="projects-row-jobnum">${jobNum ? escapeHtml(jobNum) : '—'}</span>`;
     const openBtn = `<button class="projects-row-openbtn${isOpen ? ' is-open' : ''}" data-action="open-project" data-project="${escapeHtml(p)}" type="button">OPEN</button>`;
     return `<div class="projects-row${isOpen ? ' is-open' : ''}${isTmpl ? ' is-template' : ''}" data-project="${escapeHtml(p)}" role="button" tabindex="0">
+      ${jobCell}
       <span class="projects-row-name">${escapeHtml(p)}</span>
       ${statusChip}
       ${openBtn}

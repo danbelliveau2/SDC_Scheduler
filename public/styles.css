@@ -476,6 +476,19 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Job # column — numeric, so it stays small and fixed-width rather than
+   stretching like the name does. Templates show an em-dash (no job number). */
+.projects-row-jobnum {
+  flex: 0 0 52px;
+  width: 52px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-normal, 400);
+  color: var(--text-muted, #94a3b8);
+}
 .projects-row-meta {
   font-size: var(--fs-xs);
   font-weight: var(--fw-normal, 400);
