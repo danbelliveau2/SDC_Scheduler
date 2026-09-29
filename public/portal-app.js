@@ -104,24 +104,27 @@
         <a class="cp-open-btn" href="/?cust=${encodeURIComponent(p.shareToken)}" target="_blank" rel="noopener" data-stop-pick>Open</a>
       </div>`;
     }).join('');
+    // portal-pickbtns/portal-allbtn and portal-mach-pills/portal-mach are the
+    // SAME classes public/app.js's _portalProjectsHtml/_portalPickedBarHtml
+    // use for these exact two controls — reused here (not a lookalike copy)
+    // so the pill buttons are pixel-identical, not just similar.
     const pickButtons = multiPick
-      ? `<span class="cp-pickbtns">
-          <button type="button" class="cp-pickbtn${_scope === 'all' ? ' is-on' : ''}" data-scope-all>All projects</button>
-          <button type="button" class="cp-pickbtn" data-scope-clear${Array.isArray(_scope) && !_scope.length ? ' disabled' : ''}>Clear</button>
+      ? `<span class="portal-pickbtns">
+          <button type="button" class="portal-allbtn${_scope === 'all' ? ' is-on' : ''}" data-scope-all>All projects</button>
+          <button type="button" class="portal-allbtn" data-scope-clear${Array.isArray(_scope) && !_scope.length ? ' disabled' : ''}>Clear</button>
         </span>`
       : '';
 
     // Same gesture as the internal Portal tab: the pills only appear once
     // you've drilled into one job with more than one machine on it.
     const machineTabsHtml = (pickedProject && pickedProject.machines.length > 1) ? `
-      <div class="cp-block">
-        <h2 class="cp-h2 cp-h2-flex">${esc(pickedName)}
-          <span class="cp-pickbtns">
-            <button type="button" class="cp-pickbtn${!pickedMachine ? ' is-on' : ''}" data-mach-all>All machines</button>
-            ${pickedProject.machines.map(m => `<button type="button" class="cp-pickbtn${pickedMachine === m ? ' is-on' : ''}" data-mach-pick="${esc(m)}">${esc(_portalMachineLabel(m))}</button>`).join('')}
-          </span>
-        </h2>
-      </div>` : '';
+      <section class="portal-block">
+        <h2 class="portal-h2">${esc(pickedName)}</h2>
+        <div class="portal-mach-pills">
+          <button type="button" class="portal-mach${!pickedMachine ? ' is-on' : ''}" data-mach-all>All machines</button>
+          ${pickedProject.machines.map(m => `<button type="button" class="portal-mach${pickedMachine === m ? ' is-on' : ''}" data-mach-pick="${esc(m)}">${esc(_portalMachineLabel(m))}</button>`).join('')}
+        </div>
+      </section>` : '';
 
     // Everything below this line is the SAME functions public/app.js's
     // renderPortal() calls (public/portalRender.js) — one combined
@@ -156,10 +159,10 @@
         <button class="cp-logout" id="cp-logout-btn" type="button">Sign out</button>
       </header>
       <div class="cp-wrap">
-        <div class="cp-block">
-          <h2 class="cp-h2 cp-h2-flex">Your projects${pickButtons}</h2>
+        <section class="portal-block portal-projects">
+          <h2 class="portal-h2">Your projects${pickButtons}</h2>
           ${projectRows || '<p class="cp-empty">No projects are linked to your account yet.</p>'}
-        </div>
+        </section>
         ${pickedEmptyMsg}
         ${machineTabsHtml}
         ${dueHtml}

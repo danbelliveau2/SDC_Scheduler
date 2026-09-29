@@ -1,14 +1,27 @@
 /* portal.css — the customer portal's own login page / header / project-list
-   chrome. public/portal-login.html also loads the staff app's styles.css
-   (before this file) for the portal/pw/rm-prefixed classes public/portalRender.js's
-   shared HTML uses — see portal-login.html's own comment. NOT declaring
-   font-family here anymore (deliberately): styles.css already sets the real
-   app font (--font-ui, Montserrat) on html/body, and this file used to
-   silently out-specificity that with :root { font-family: 'Segoe UI'... },
-   which is why the shared analytics content and the customer chrome used to
-   look like two different apps stitched together. Letting styles.css's font
-   apply everywhere, including this page's own login/header, makes the whole
-   page consistent instead. */
+   chrome: the parts of the page with no staff-app equivalent to reuse.
+   public/portal-login.html also loads the staff app's styles.css (before
+   this file) for the portal/pw/rm-prefixed classes public/portalRender.js's
+   shared HTML uses — see portal-login.html's own comment.
+
+   Two rules going forward:
+   1. Never redeclare font-family here. styles.css sets the real app font
+      (--font-ui, Montserrat) on html/body; a :root { font-family } in THIS
+      file used to silently out-specificity that (a :root selector always
+      beats an element selector, regardless of load order), which is why the
+      shared analytics content and this page's own login/header used to look
+      like two different apps stitched together.
+   2. Any class here that duplicates a concept styles.css's portal-* classes
+      already cover (a section header, a pill button, a "card") should be
+      DELETED and the shared class used instead (see portal-app.js's h2/
+      pickbtn/mach-pills markup) — not kept "for now". Every rule below this
+      point is used by NOTHING styles.css already styles: the login form,
+      the header bar, and the simple project-list rows (which need a real
+      <a href> "Open" link, unlike the staff app's own JS-driven version, so
+      they can't just reuse .projects-row-openbtn). Where a font-weight is
+      still declared here, it's tied to styles.css's --fw-* scale, not a
+      separate hardcoded number, so it can never drift from the app's own
+      weight choices even though the selector itself is unique. */
 :root {
   --cp-primary: #1574c4;
   --cp-lime: #befa4f;
@@ -21,13 +34,11 @@
 }
 * { box-sizing: border-box; }
 /* styles.css's html/body rules assume the staff app's fixed-viewport SPA
-   shell: overflow:hidden (all scrolling happens inside its own internal
-   grid/Gantt panes, never the page itself), height:100%, a 90px left margin
+   shell: overflow hidden (all scrolling happens inside its own internal
+   grid/Gantt panes, never the page itself), height 100%, a 90px left margin
    reserved for its fixed sidebar, and a flex column body. None of that
    applies to this portal — it's a normal page that's supposed to scroll —
-   so explicitly cancel exactly those four, and nothing else, leaving the
-   font/color variables and every portal/pw/rm-prefixed rule from styles.css
-   untouched. */
+   so explicitly cancel exactly those four, and nothing else. */
 html, body {
   overflow: visible;
   height: auto;
@@ -41,17 +52,18 @@ body {
   line-height: 1.45;
 }
 .cp-loading { padding: 60px; text-align: center; color: var(--cp-muted); }
+.cp-empty { text-align: center; color: var(--cp-muted); padding: 40px; }
 
 /* ── Login ── */
 .cp-login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
 .cp-login-card { width: 100%; max-width: 360px; background: #fff; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 32px; }
 .cp-login-logo { height: 32px; margin-bottom: 8px; filter: invert(1); }
-.cp-login-card h1 { font-size: 18px; margin: 0 0 20px; }
+.cp-login-card h1 { font-size: 18px; margin: 0 0 20px; font-weight: var(--fw-extrabold, 800); }
 .cp-field { margin-bottom: 14px; }
-.cp-field label { display: block; font-size: 12px; font-weight: 600; color: var(--cp-muted); margin-bottom: 4px; }
+.cp-field label { display: block; font-size: 12px; font-weight: var(--fw-semibold, 600); color: var(--cp-muted); margin-bottom: 4px; }
 .cp-field input { width: 100%; padding: 9px 11px; border: 1.5px solid var(--cp-border); border-radius: 6px; font-size: 14px; }
 .cp-field input:focus { outline: none; border-color: var(--cp-primary); }
-.cp-btn { width: 100%; padding: 10px; border: none; border-radius: 6px; background: var(--cp-primary); color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; }
+.cp-btn { width: 100%; padding: 10px; border: none; border-radius: 6px; background: var(--cp-primary); color: #fff; font-weight: var(--fw-bold, 700); font-size: 14px; cursor: pointer; }
 .cp-btn:hover { opacity: .92; }
 .cp-btn:disabled { opacity: .6; cursor: default; }
 .cp-error { color: var(--cp-danger); font-size: 12px; margin: 10px 0 0; }
@@ -60,113 +72,26 @@ body {
 .cp-header { background: #0d2436; color: #fff; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
 .cp-header-left { display: flex; align-items: center; gap: 14px; }
 .cp-header-logo { height: 24px; }
-.cp-header-title { font-weight: 700; font-size: 16px; }
+.cp-header-title { font-weight: var(--fw-extrabold, 800); font-size: 16px; }
 .cp-header-meta { font-size: 12px; color: #b7c4d1; }
 .cp-logout { background: none; border: 1px solid #43586b; color: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 .cp-logout:hover { background: #16344a; }
 
-.cp-wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
-.cp-block { background: #fff; border-radius: 8px; padding: 18px 20px; margin-bottom: 18px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-.cp-h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--cp-muted); margin: 0 0 12px; border-left: 3px solid var(--cp-lime); padding-left: 8px; }
-.cp-h2-flex { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.cp-wrap { max-width: 1480px; margin: 0 auto; padding: 24px 20px 60px; }
 
 /* ── Project list — click a row to drill into just that project; tick a
    box to build a custom multi-project group instead (same two gestures as
-   the internal Portal tab's project list). ── */
-.cp-pickbtns { display: flex; gap: 6px; text-transform: none; letter-spacing: normal; }
-.cp-pickbtn { font-size: 11px; font-weight: 600; padding: 3px 10px; border: 1px solid var(--cp-border); border-radius: 12px; background: #fff; color: var(--cp-muted); cursor: pointer; }
-.cp-pickbtn.is-on { background: var(--cp-primary); border-color: var(--cp-primary); color: #fff; }
-.cp-pickbtn:disabled { opacity: .5; cursor: default; }
+   the internal Portal tab's project list). The row itself is its own
+   design (not reused from styles.css's .projects-row): that one drives a
+   whole internal-only feature set (templates, favorites, status badges, a
+   JS-driven Open button) this simple list doesn't need, and "Open" here has
+   to be a real <a href> to the live share link, not a click handler. */
 .cp-proj-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--cp-border); cursor: pointer; border-radius: 4px; }
 .cp-proj-row:first-child { border-top: none; }
 .cp-proj-row:hover { background: #f8fafc; }
 .cp-proj-row.is-picked { background: color-mix(in srgb, var(--cp-primary) 8%, white); }
-.cp-proj-name { flex: 1 1 auto; font-weight: 600; }
+.cp-proj-name { flex: 1 1 auto; font-weight: var(--fw-semibold, 600); }
 .cp-proj-tick { width: 16px; height: 16px; border: 1.5px solid var(--cp-border); border-radius: 4px; background: #fff; cursor: pointer; flex-shrink: 0; padding: 0; }
 .cp-proj-tick.is-on { background: var(--cp-lime); border-color: var(--cp-lime); }
-.cp-open-btn { padding: 6px 16px; border: 1.5px solid var(--cp-primary); color: var(--cp-primary); background: #fff; border-radius: 5px; font-weight: 700; font-size: 12px; cursor: pointer; text-decoration: none; }
+.cp-open-btn { padding: 6px 16px; border: 1.5px solid var(--cp-primary); color: var(--cp-primary); background: #fff; border-radius: 5px; font-weight: var(--fw-bold, 700); font-size: 12px; cursor: pointer; text-decoration: none; }
 .cp-open-btn:hover { background: var(--cp-primary); color: #fff; }
-
-/* ── Progress ── */
-.cp-unit-title { font-weight: 700; margin: 0 0 10px; }
-.cp-prog { display: flex; gap: 28px; flex-wrap: wrap; align-items: center; }
-.cp-prog-vs { display: flex; gap: 20px; }
-.cp-prog-vs div { text-align: center; }
-.cp-prog-vs dt { font-size: 11px; color: var(--cp-muted); text-transform: uppercase; }
-.cp-prog-vs dd { margin: 2px 0 0; font-size: 20px; font-weight: 800; }
-.cp-gap-ok dd { color: var(--cp-ok); }
-.cp-gap-warn dd { color: #b45309; }
-.cp-gap-late dd { color: var(--cp-danger); }
-.cp-phase-bars { display: flex; gap: 14px; flex-wrap: wrap; }
-.cp-phase-bar { text-align: center; width: 56px; }
-.cp-phase-track { height: 70px; width: 18px; background: var(--cp-border); border-radius: 4px; margin: 0 auto 6px; display: flex; align-items: flex-end; overflow: hidden; }
-.cp-phase-fill { width: 100%; background: var(--cp-lime); }
-.cp-phase-pct { font-size: 11px; font-weight: 700; }
-.cp-phase-label { font-size: 10px; color: var(--cp-muted); }
-
-/* ── Donut (whole-machine %) ── */
-.cp-prog-overall { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.pdonut text { font-family: inherit; }
-
-/* ── SDC Team ── */
-.cp-team-block + .cp-team-block { margin-top: 16px; }
-.cp-team-proj { font-weight: 700; font-size: 12px; margin-bottom: 8px; }
-.cp-team-group { margin-bottom: 10px; }
-.cp-team-role { font-size: 10px; text-transform: uppercase; color: var(--cp-muted); font-weight: 700; margin-bottom: 6px; }
-.cp-team-people { display: flex; flex-wrap: wrap; gap: 14px; }
-.cp-person { display: flex; align-items: center; gap: 8px; }
-.cp-person-avatar { width: 28px; height: 28px; border-radius: 50%; background: #0d2436; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
-.cp-person.is-lead .cp-person-avatar { background: var(--cp-primary); }
-.cp-person-name { font-size: 12px; font-weight: 600; }
-.cp-person-note { font-size: 10px; color: var(--cp-muted); display: block; }
-
-/* ── Tables ── */
-/* Dates are the entire point of these tables — truncating them to "…" on a
-   narrow screen is worse than useless, so the wrapper scrolls horizontally
-   instead of the table ever compressing a column below min-width. */
-.cp-table-wrap { overflow-x: auto; }
-table.cp-table { width: 100%; min-width: 640px; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
-table.cp-table th { text-align: left; font-size: 10px; text-transform: uppercase; color: var(--cp-muted); padding: 6px 8px; border-bottom: 1px solid var(--cp-border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-table.cp-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cp-status { padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; text-transform: uppercase; background: #f1f5f9; color: var(--cp-muted); }
-.cp-status.is-paid { background: #dcfce7; color: var(--cp-ok); }
-.cp-status.is-invoiced { background: #dbeafe; color: #1d4ed8; }
-.cp-variance { font-size: 11px; font-weight: 700; }
-.cp-variance.is-ok { color: var(--cp-ok); }
-.cp-variance.is-late, .cp-variance.is-behind { color: var(--cp-danger); }
-.cp-variance.is-ahead { color: var(--cp-ok); }
-.cp-variance.is-none { color: var(--cp-muted); }
-
-/* ── Event status ── */
-.cp-note { font-size: 12px; color: var(--cp-muted); margin: -6px 0 16px; }
-.cp-mix-row { display: flex; gap: 32px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; }
-.cp-mix-ring { display: flex; align-items: center; gap: 14px; }
-.cp-mix-legend { list-style: none; margin: 0; padding: 0; font-size: 12px; }
-.cp-mix-legend li { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.cp-mix-legend b { margin-left: auto; padding-left: 10px; }
-.cp-mix-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.cp-dept-wrap { flex: 1 1 260px; }
-.cp-dept-head { font-size: 11px; font-weight: 700; color: var(--cp-muted); text-transform: uppercase; margin-bottom: 10px; }
-.cp-pw-sec td { background: #f8fafc; font-size: 11px; text-transform: uppercase; letter-spacing: .02em; padding: 8px; }
-.cp-pw-note { text-transform: none; font-weight: 400; color: var(--cp-muted); letter-spacing: normal; }
-.cp-recent-win { float: right; font-size: 11px; padding: 2px 6px; border: 1px solid var(--cp-border); border-radius: 4px; text-transform: none; }
-.cp-pw-bar { display: inline-block; width: 40px; height: 6px; background: var(--cp-border); border-radius: 3px; overflow: hidden; margin-right: 6px; vertical-align: middle; }
-.cp-pw-bar i { display: block; height: 100%; background: var(--cp-primary); }
-
-/* ── Risk matrix ── */
-.cp-risk-grid { display: flex; gap: 24px; flex-wrap: wrap; }
-table.cp-risk-matrix { border-collapse: collapse; }
-table.cp-risk-matrix th, table.cp-risk-matrix td { border: 1px solid #fff; padding: 0; width: 58px; height: 32px; text-align: center; font-size: 11px; }
-table.cp-risk-matrix th.cp-rm-yl { text-align: right; padding-right: 8px; font-size: 10px; color: var(--cp-muted); width: auto; border: none; }
-table.cp-risk-matrix th.cp-rm-xl { font-size: 10px; color: var(--cp-muted); border: none; padding-top: 4px; }
-.cp-rm-low { background: #dcfce7; }
-.cp-rm-medium { background: #fef9c3; }
-.cp-rm-high { background: #fed7aa; }
-.cp-rm-critical { background: #fecaca; }
-.cp-rm-dot { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #0d2436; color: #fff; font-weight: 700; }
-.cp-risk-list { flex: 1 1 260px; min-width: 240px; }
-.cp-risk-item { border-top: 1px solid var(--cp-border); padding: 8px 0; }
-.cp-risk-item:first-child { border-top: none; }
-.cp-risk-band { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; margin-left: 8px; }
-
-.cp-empty { text-align: center; color: var(--cp-muted); padding: 40px; }
