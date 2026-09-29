@@ -893,6 +893,15 @@ function buildCanonicalTaskOrder() {
         sectionTasks = [...sectionTasks, ...shipAnchors]
           .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
       }
+      // Same rows as the build, in date order. Nothing added, nothing lost:
+      // an anchor that also carries a phase_group arrived here twice, once
+      // from flatBySection and once from the splice above.
+      const _seen = new Set();
+      sectionTasks = sectionTasks.filter(t => {
+        if (_seen.has(t.id)) return false;
+        _seen.add(t.id);
+        return true;
+      });
       for (const t of sectionTasks) order.push(t.id);
     } else {
       let groupLevelTasks = buckets[groupPath(group.key)] || [];
@@ -2746,6 +2755,15 @@ function renderTable() {
           || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
         sectionTasks = [...sectionTasks, ...loose].sort(cmp);
       }
+      // Same rows as the build, in date order. Nothing added, nothing lost:
+      // an anchor that also carries a phase_group arrived here twice, once
+      // from flatBySection and once from the splice above.
+      const _seen = new Set();
+      sectionTasks = sectionTasks.filter(t => {
+        if (_seen.has(t.id)) return false;
+        _seen.add(t.id);
+        return true;
+      });
       for (const t of sectionTasks) html += renderTaskRow(t, 2);
       continue;
     }
