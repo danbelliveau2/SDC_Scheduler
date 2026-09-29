@@ -96,10 +96,15 @@ module.exports = function createPortalRouter({ pool }) {
   // Where-it-stands, Payment milestones and Risk plan computed per
   // lib/portalCalc.js — the same formulas already verified against the
   // internal staff Portal tab.
+  // Matches public/app.js's PORTAL_RECENT_WINDOWS exactly — the "Completed
+  // recently" window in Event Status. Any other value falls back to 30.
+  const RECENT_WINDOWS = new Set([14, 30, 60]);
+
   router.get('/portal/api/dashboard', requireCustomerAuth, async (req, res) => {
     try {
+      const recentDays = RECENT_WINDOWS.has(Number(req.query.recentDays)) ? Number(req.query.recentDays) : 30;
       const [projectRows] = await pool.query(
-        'SELECT id, name, share_token FROM projects WHERE customer = ? AND (is_template = 0 OR is_template IS NULL) ORDER BY name ASC',
+        'SELECT id, name, share_token, workspace FROM projects WHERE customer = ? AND (is_template = 0 OR is_template IS NULL) ORDER BY name ASC',
         [req.customerName]
       );
       if (!projectRows.length) {
@@ -118,9 +123,14 @@ module.exports = function createPortalRouter({ pool }) {
       }
 
       const names = projectRows.map(p => p.name);
-      const [taskRows] = await pool.query(
+      const [rawTaskRows] = await pool.query(
         `SELECT * FROM tasks WHERE project IN (${names.map(() => '?').join(',')})`, names
       );
+      // Collapses duplicate anchor-named tasks (e.g. two "SAT" rows on the
+      // same project — a real data state, not hypothetical) the same way
+      // the staff app does client-side, or every count that touches an
+      // affected project drifts from what the internal Portal tab shows.
+      const taskRows = calc.normalizeTasks(rawTaskRows);
       const [finRows] = await pool.query(
         `SELECT * FROM project_financials WHERE project IN (${names.map(() => '?').join(',')})`, names
       );
@@ -139,6 +149,7 @@ module.exports = function createPortalRouter({ pool }) {
       const units = [];
       const projects = projectRows.map(p => {
         const rows = tasksByProject.get(p.name) || [];
+        const isSales = p.workspace === 'Sales';
         const rawUnits = calc.portalUnits(rows);
         unitCount += rawUnits.length;
         const tasksById = new Map(rows.map(t => [t.id, t]));
@@ -148,6 +159,15 @@ module.exports = function createPortalRouter({ pool }) {
             machine: u.machine,
             due: calc.portalDueRow(u),
             progress: calc.portalProgress(u.rows),
+            // Per-machine Event Status, so picking a single machine on a
+            // multi-machine job shows that machine's own events — not the
+            // whole job's — same as the internal Portal tab.
+            eventStatus: u.rows.length ? {
+              mix: calc.portalTaskMix(u.rows, isSales),
+              deptChart: calc.portalDeptChart(u.rows, isSales),
+              work: calc.portalWork(u.rows, isSales, recentDays),
+              recentDays,
+            } : null,
           });
         });
         return {
@@ -158,6 +178,12 @@ module.exports = function createPortalRouter({ pool }) {
           money: calc.portalMoney(finByProject.get(p.name) || [], tasksById, rows),
           risk: calc.portalRisk(riskPlans[p.name], rows),
           team: calc.portalTeam(rows, teamMembers, projectLeads[p.name]),
+          eventStatus: rows.length ? {
+            mix: calc.portalTaskMix(rows, isSales),
+            deptChart: calc.portalDeptChart(rows, isSales),
+            work: calc.portalWork(rows, isSales, recentDays),
+            recentDays,
+          } : null,
         };
       });
 

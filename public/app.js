@@ -32089,6 +32089,10 @@ const CUSTOMER_TOOLBAR_OFF = [
   'columns-dropdown',
   'btn-undo', 'btn-redo', 'btn-save', 'save-indicator',
   'btn-view-alloc-pre', 'btn-view-bar-meta', 'btn-view-dept-hours', 'btn-view-lags',
+  // Compress and Views manage OUR column setups (widths, saved layouts) —
+  // there's nothing for a customer to compress or a saved view of theirs
+  // to switch to, so these go the same way as the column picker above.
+  'btn-compress-cols', 'col-views-dropdown',
 ];
 
 // The customer's own buttons live in #customer-view-tools the rest of the

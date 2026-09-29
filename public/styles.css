@@ -8376,8 +8376,16 @@ body[data-view="setup"] #btn-add { display: none; }
 
 /* ── Customer share-link mode ── the customer view with no way out and no
    internal chrome: the exit/flatten floaters, sidebar, and avatar are gone.
-   What's left is exactly what a customer should see: the schedule. */
-body.share-link-view .schedule-project-header,
+   What's left is exactly what a customer should see: the schedule. Note:
+   .schedule-project-header is NOT hidden here — since the v4.52 toolbar
+   refactor it IS the toolbar row (see its own comment at ~1543), and the
+   toolbar is meant to reach a share-link customer too (applyCustomerToolbar
+   already strips the editing-only controls). Hiding it here was a stale
+   leftover from before that refactor and blanked the customer's entire
+   toolbar (Filters, Zoom, Excel, Save as PDF — everything) on every real
+   share link. .customer-view-tools's own buttons move INTO that toolbar
+   (CUSTOMER_TOOLBAR_TAIL) rather than showing here, which is why this
+   selector below still hides the leftover empty shell. */
 body.share-link-view .customer-view-tools,
 body.share-link-view #btn-customer-view-exit,
 body.share-link-view #btn-customer-view-flatten,
