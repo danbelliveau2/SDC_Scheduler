@@ -1,8 +1,14 @@
-/* portal.css — standalone stylesheet for the customer-facing portal
-   (public/portal-login.html + portal-app.js). Deliberately its own small
-   file rather than a dependency on the staff app's styles.css: this page
-   ships to unauthenticated visitors, so it stays a "one small thing" like
-   the rest of what this listener serves. */
+/* portal.css — the customer portal's own login page / header / project-list
+   chrome. public/portal-login.html also loads the staff app's styles.css
+   (before this file) for the portal/pw/rm-prefixed classes public/portalRender.js's
+   shared HTML uses — see portal-login.html's own comment. NOT declaring
+   font-family here anymore (deliberately): styles.css already sets the real
+   app font (--font-ui, Montserrat) on html/body, and this file used to
+   silently out-specificity that with :root { font-family: 'Segoe UI'... },
+   which is why the shared analytics content and the customer chrome used to
+   look like two different apps stitched together. Letting styles.css's font
+   apply everywhere, including this page's own login/header, makes the whole
+   page consistent instead. */
 :root {
   --cp-primary: #1574c4;
   --cp-lime: #befa4f;
@@ -12,10 +18,28 @@
   --cp-bg: #f4f5f7;
   --cp-danger: #b91c1c;
   --cp-ok: #15803d;
-  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--cp-bg); color: var(--cp-text); font-size: 14px; line-height: 1.45; }
+/* styles.css's html/body rules assume the staff app's fixed-viewport SPA
+   shell: overflow:hidden (all scrolling happens inside its own internal
+   grid/Gantt panes, never the page itself), height:100%, a 90px left margin
+   reserved for its fixed sidebar, and a flex column body. None of that
+   applies to this portal — it's a normal page that's supposed to scroll —
+   so explicitly cancel exactly those four, and nothing else, leaving the
+   font/color variables and every portal/pw/rm-prefixed rule from styles.css
+   untouched. */
+html, body {
+  overflow: visible;
+  height: auto;
+  margin-left: 0;
+}
+body {
+  display: block;
+  background: var(--cp-bg);
+  color: var(--cp-text);
+  font-size: 14px;
+  line-height: 1.45;
+}
 .cp-loading { padding: 60px; text-align: center; color: var(--cp-muted); }
 
 /* ── Login ── */
