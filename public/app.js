@@ -26043,6 +26043,7 @@ function openMyWork() {
   applyPersonalViewDefaults();
   document.body.classList.remove('personal-mode');
   setView('schedule');
+  render();   // grid AND chart — setView alone repaints neither here
   // A blank page with no way off it is a dead end. Open the list.
   if (canChooseWho() && (state.team || []).length) {
     requestAnimationFrame(() => { try { showMyWorkSignIn(); } catch (_) {} });
@@ -26295,9 +26296,10 @@ function renderPersonalBanner() {
     setMyWork(true);
     state.filters.project = '';
     state.filters.assignee = '';
-    restorePersonalViewDefaults();
+    applyPersonalViewDefaults();
     document.body.classList.remove('personal-mode');
     setView('schedule');
+    render();   // grid AND chart together, always
   });
 }
 
