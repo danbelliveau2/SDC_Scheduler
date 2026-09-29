@@ -196,18 +196,19 @@ if (SNAPSHOT_PUBLIC_PORT) {
   // stale, regardless of what Cache-Control says.
   snap.use((_req, res, next) => { res.set('Cache-Control', 'no-cache'); next(); });
   // Changes only on restart — exactly when a new build needs fresh URLs.
-  const PORTAL_BUILD_ID = Date.now();
+  // The login page only loads its own two files now (portal.css,
+  // portal-app.js) — it used to also pull in styles.css/portalCalc.js/
+  // portalRender.js/portalCustomerShim.js for a standalone dashboard that's
+  // since been retired in favor of customer sessions running the real
+  // app.js (which loads those same files itself, via index.html's own
+  // cache-busting query strings — unrelated to this one).
   // Matches href="..."/src="..." specifically (not a bare path fragment) —
-  // a bare '/portalRender.js' search once matched that same substring
-  // inside this file's own explanatory HTML comment instead of the real
-  // <script> tag, since String.replace() only hits the FIRST occurrence in
-  // the whole document and the comment came first.
+  // a bare search string once matched that same substring inside this
+  // file's own explanatory HTML comment instead of the real tag, since
+  // String.replace() only hits the FIRST occurrence in the whole document.
+  const PORTAL_BUILD_ID = Date.now();
   const portalLoginHtml = fs.readFileSync(path.join(__dirname, 'public', 'portal-login.html'), 'utf8')
-    .replace('href="/styles.css"', `href="/styles.css?v=${PORTAL_BUILD_ID}"`)
     .replace('href="/portal.css"', `href="/portal.css?v=${PORTAL_BUILD_ID}"`)
-    .replace('src="/portalCalc.js"', `src="/portalCalc.js?v=${PORTAL_BUILD_ID}"`)
-    .replace('src="/portalRender.js"', `src="/portalRender.js?v=${PORTAL_BUILD_ID}"`)
-    .replace('src="/portalCustomerShim.js"', `src="/portalCustomerShim.js?v=${PORTAL_BUILD_ID}"`)
     .replace('src="/portal-app.js"', `src="/portal-app.js?v=${PORTAL_BUILD_ID}"`);
   snap.get('/', (req, res, next) => {
     if (req.query.cust) return next(); // one-project share link → falls through to `app`
@@ -220,13 +221,6 @@ if (SNAPSHOT_PUBLIC_PORT) {
     if (token && verifyCustomerToken(token)) return next();
     res.type('html').send(portalLoginHtml);
   });
-  // The Portal tab's rendering, shared verbatim with public/app.js (see
-  // public/portalRender.js's own header) — so the customer page looks
-  // identical to the internal staff Portal tab, one file to change for both.
-  snap.get('/styles.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'styles.css')));
-  snap.get('/portalCalc.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portalCalc.js')));
-  snap.get('/portalRender.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portalRender.js')));
-  snap.get('/portalCustomerShim.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portalCustomerShim.js')));
   snap.get('/portal.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal.css')));
   snap.get('/portal-app.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal-app.js')));
   snap.get('/img/sdc-logo-white.svg', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'img', 'sdc-logo-white.svg')));

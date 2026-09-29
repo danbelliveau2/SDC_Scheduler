@@ -1,21 +1,25 @@
-// portalRender.js — the Portal tab's CONTENT rendering, shared verbatim
-// between the staff app (public/app.js's renderPortal(), which keeps its own
-// customer picker / "Manage login" / SDC aggregate view — none of that is
-// here, on purpose, since a customer must never receive that HTML) and the
-// customer-facing portal (public/portal-app.js).
+// portalRender.js — the Portal tab's CONTENT rendering: due dates, progress,
+// payment milestones, risk plan, team, event status. Used by public/app.js's
+// renderPortal(), for BOTH staff's own internal Portal tab AND a real
+// customer session (which runs this exact same app.js, locked to the
+// Portal tab and scoped server-side — see server.js's CUSTOMER_GET_PATHS).
+// renderPortal() itself — the customer picker, "Manage login", the SDC
+// cross-customer aggregate view — stays in app.js, not here, on purpose:
+// none of that belongs anywhere a customer's browser could ever load it,
+// and app.js already gates it behind _portalLockedCustomer regardless.
 //
 // This file is a plain classic script (no module wrapper), loaded via
-// <script> on BOTH pages, same pattern as phases.js/release-notes.js already
-// loading before app.js. Every function here is a byte-for-byte relocation
-// out of app.js — not a rewrite — so the staff Portal tab's output is
+// <script> in index.html before app.js, same pattern as phases.js/
+// release-notes.js. Every function here is a byte-for-byte relocation out
+// of app.js — not a rewrite — so the staff Portal tab's output is
 // unchanged. It depends on a handful of globals it does NOT define itself
 // (state, escapeHtml, fmtDate, inferredAnchorKey, isMilestoneLike,
 // taskScheduleDelta, getEffectiveProgress, financialDueDate,
 // financialAnchorTask, _finBaseMachine, riskPlan, riskBand, riskTaskList,
-// projectLead, isPlaceholder, _ymdLocal): on the staff page app.js already
-// defines all of these; on the customer page portalCustomerShim.js defines
-// customer-appropriate equivalents before this file's functions are ever
-// called. Loaded after public/portalCalc.js on both pages.
+// projectLead, isPlaceholder, _ymdLocal) — app.js defines all of these
+// already, for both a staff session and a real customer session alike, so
+// this file never needs its own copies or stand-ins for them. Loaded after
+// public/portalCalc.js.
 
 // ── Milestones / due dates ──────────────────────────────────────────────
 
@@ -301,9 +305,9 @@ function _portalMoneyHtml(projects, machine) {
 
 // ── Risk mitigation plan ─────────────────────────────────────────────────
 // RISK_LIKELIHOOD / RISK_SEVERITY are NOT declared here — app.js already
-// declares them globally (its risk-register editor also uses them) and
-// portalCustomerShim.js declares customer-page equivalents; this file just
-// reads them as external globals, same as state/escapeHtml/riskPlan/etc.
+// declares them globally (its risk-register editor also uses them too);
+// this file just reads them as external globals, same as
+// state/escapeHtml/riskPlan/etc.
 
 const _portalRiskOpen = new Set(); // risks whose plan is expanded on the portal
 

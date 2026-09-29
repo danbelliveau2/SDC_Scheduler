@@ -1,114 +1,41 @@
-/* portal.css — the customer portal's own login page / header / project-list
-   chrome: the parts of the page with no staff-app equivalent to reuse.
-   public/portal-login.html also loads the staff app's styles.css (before
-   this file) for the portal/pw/rm-prefixed classes public/portalRender.js's
-   shared HTML uses — see portal-login.html's own comment.
-
-   Two rules going forward:
-   1. Never redeclare font-family here. styles.css sets the real app font
-      (--font-ui, Montserrat) on html/body; a :root { font-family } in THIS
-      file used to silently out-specificity that (a :root selector always
-      beats an element selector, regardless of load order), which is why the
-      shared analytics content and this page's own login/header used to look
-      like two different apps stitched together.
-   2. Any class here that duplicates a concept styles.css's portal-* classes
-      already cover (a section header, a pill button, a "card") should be
-      DELETED and the shared class used instead (see portal-app.js's h2/
-      pickbtn/mach-pills markup) — not kept "for now". Every rule below this
-      point is used by NOTHING styles.css already styles: the login form,
-      the header bar, and the simple project-list rows (which need a real
-      <a href> "Open" link, unlike the staff app's own JS-driven version, so
-      they can't just reuse .projects-row-openbtn). Where a font-weight is
-      still declared here, it's tied to styles.css's --fw-* scale, not a
-      separate hardcoded number, so it can never drift from the app's own
-      weight choices even though the selector itself is unique. */
+/* portal.css — styles for the customer portal's login page. That's the
+   whole job now: a successful login redirects to the real app (see
+   portal-login.html's own comment for why). This file used to also style
+   a full standalone dashboard (header, project list, due tables, etc.) —
+   retired along with that dashboard once customer sessions started running
+   the real app.js/styles.css instead. Font-weight values below fall back to
+   the same numbers styles.css's --fw-* scale uses (700/800/600), since this
+   page doesn't load that file anymore and has no reason to — it never
+   renders a class styles.css defines. */
 :root {
   --cp-primary: #1574c4;
-  --cp-lime: #befa4f;
   --cp-text: #1e293b;
   --cp-muted: #64748b;
   --cp-border: #e2e8f0;
   --cp-bg: #f4f5f7;
   --cp-danger: #b91c1c;
-  --cp-ok: #15803d;
 }
 * { box-sizing: border-box; }
-/* styles.css's html/body rules assume the staff app's fixed-viewport SPA
-   shell: overflow hidden (all scrolling happens inside its own internal
-   grid/Gantt panes, never the page itself), height 100%, a 90px left margin
-   reserved for its fixed sidebar, and a flex column body. None of that
-   applies to this portal — it's a normal page that's supposed to scroll —
-   so explicitly cancel exactly those four, and nothing else. */
-html, body {
-  overflow: visible;
-  height: auto;
-  margin-left: 0;
-}
 body {
-  display: block;
+  margin: 0;
   background: var(--cp-bg);
   color: var(--cp-text);
   font-size: 14px;
   line-height: 1.45;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 .cp-loading { padding: 60px; text-align: center; color: var(--cp-muted); }
-.cp-empty { text-align: center; color: var(--cp-muted); padding: 40px; }
 
 /* ── Login ── */
 .cp-login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
 .cp-login-card { width: 100%; max-width: 360px; background: #fff; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 32px; }
 .cp-login-logo { height: 32px; margin-bottom: 8px; filter: invert(1); }
-.cp-login-card h1 { font-size: 18px; margin: 0 0 20px; font-weight: var(--fw-extrabold, 800); }
+.cp-login-card h1 { font-size: 18px; margin: 0 0 20px; font-weight: 800; }
 .cp-field { margin-bottom: 14px; }
-.cp-field label { display: block; font-size: 12px; font-weight: var(--fw-semibold, 600); color: var(--cp-muted); margin-bottom: 4px; }
+.cp-field label { display: block; font-size: 12px; font-weight: 600; color: var(--cp-muted); margin-bottom: 4px; }
 .cp-field input { width: 100%; padding: 9px 11px; border: 1.5px solid var(--cp-border); border-radius: 6px; font-size: 14px; }
 .cp-field input:focus { outline: none; border-color: var(--cp-primary); }
-.cp-btn { width: 100%; padding: 10px; border: none; border-radius: 6px; background: var(--cp-primary); color: #fff; font-weight: var(--fw-bold, 700); font-size: 14px; cursor: pointer; }
+.cp-btn { width: 100%; padding: 10px; border: none; border-radius: 6px; background: var(--cp-primary); color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; }
 .cp-btn:hover { opacity: .92; }
 .cp-btn:disabled { opacity: .6; cursor: default; }
 .cp-error { color: var(--cp-danger); font-size: 12px; margin: 10px 0 0; }
-
-/* ── Header ── */
-.cp-header { background: #0d2436; color: #fff; padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-.cp-header-left { display: flex; align-items: center; gap: 14px; }
-.cp-header-logo { height: 24px; }
-.cp-header-title { font-weight: var(--fw-extrabold, 800); font-size: 16px; }
-.cp-header-meta { font-size: 12px; color: #b7c4d1; }
-.cp-logout { background: none; border: 1px solid #43586b; color: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; }
-.cp-logout:hover { background: #16344a; }
-
-.cp-wrap { max-width: 1480px; margin: 0 auto; padding: 24px 20px 60px; }
-
-/* ── Project list — click a row to drill into just that project; tick a
-   box to build a custom multi-project group instead (same two gestures as
-   the internal Portal tab's project list). The row itself is its own
-   design (not reused from styles.css's .projects-row): that one drives a
-   whole internal-only feature set (templates, favorites, status badges, a
-   JS-driven Open button) this simple list doesn't need, and "Open" here has
-   to be a real <a href> to the live share link, not a click handler. */
-.cp-proj-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--cp-border); cursor: pointer; border-radius: 4px; }
-.cp-proj-row:first-child { border-top: none; }
-.cp-proj-row:hover { background: #f8fafc; }
-/* The picked/selected look, copied field-for-field from styles.css's
-   .portal-proj-row.is-picked (the identical state on the staff side's own
-   project list) — same --sdc-primary variable, same shadow, not a
-   lookalike color chosen separately. Selector differs (.cp-proj-row, not
-   .portal-proj-row) only because this row's "Open" is a real <a href>
-   the staff app's JS-driven row doesn't need — see the comment above. */
-.cp-proj-row.is-picked {
-  border-color: var(--sdc-primary, #1574c4);
-  background: var(--sdc-primary, #1574c4);
-  box-shadow: 0 2px 10px rgba(21, 116, 196, 0.28);
-}
-.cp-proj-row.is-picked .cp-proj-name { color: #fff; }
-.cp-proj-row.is-picked .cp-open-btn {
-  background: #fff;
-  border-color: #fff;
-  color: var(--sdc-primary, #1574c4);
-}
-.cp-proj-row.is-picked .cp-proj-tick { border-color: #fff; }
-.cp-proj-name { flex: 1 1 auto; font-weight: var(--fw-semibold, 600); }
-.cp-proj-tick { width: 16px; height: 16px; border: 1.5px solid var(--cp-border); border-radius: 4px; background: #fff; cursor: pointer; flex-shrink: 0; padding: 0; }
-.cp-proj-tick.is-on { background: var(--cp-lime); border-color: var(--cp-lime); }
-.cp-open-btn { padding: 6px 16px; border: 1.5px solid var(--cp-primary); color: var(--cp-primary); background: #fff; border-radius: 5px; font-weight: var(--fw-bold, 700); font-size: 12px; cursor: pointer; text-decoration: none; }
-.cp-open-btn:hover { background: var(--cp-primary); color: #fff; }
