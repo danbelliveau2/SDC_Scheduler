@@ -12691,7 +12691,7 @@ function renderProjectTabs() {
   // (see CSS .project-tab.workspace-*) instead of filtering tabs away.
   // Templates pinned first; non-templates in their original openProjects order.
   const inPortal = document.body.classList.contains('portal-mode')
-    || state.view === 'portal' || !!_portalCustomer;
+    || state.view === 'portal';
   let visibleList = state.openProjects.slice();
   if (inPortal) {
     const cust = _portalCustomer || '';
