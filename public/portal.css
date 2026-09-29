@@ -89,7 +89,24 @@ body {
 .cp-proj-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--cp-border); cursor: pointer; border-radius: 4px; }
 .cp-proj-row:first-child { border-top: none; }
 .cp-proj-row:hover { background: #f8fafc; }
-.cp-proj-row.is-picked { background: color-mix(in srgb, var(--cp-primary) 8%, white); }
+/* The picked/selected look, copied field-for-field from styles.css's
+   .portal-proj-row.is-picked (the identical state on the staff side's own
+   project list) — same --sdc-primary variable, same shadow, not a
+   lookalike color chosen separately. Selector differs (.cp-proj-row, not
+   .portal-proj-row) only because this row's "Open" is a real <a href>
+   the staff app's JS-driven row doesn't need — see the comment above. */
+.cp-proj-row.is-picked {
+  border-color: var(--sdc-primary, #1574c4);
+  background: var(--sdc-primary, #1574c4);
+  box-shadow: 0 2px 10px rgba(21, 116, 196, 0.28);
+}
+.cp-proj-row.is-picked .cp-proj-name { color: #fff; }
+.cp-proj-row.is-picked .cp-open-btn {
+  background: #fff;
+  border-color: #fff;
+  color: var(--sdc-primary, #1574c4);
+}
+.cp-proj-row.is-picked .cp-proj-tick { border-color: #fff; }
 .cp-proj-name { flex: 1 1 auto; font-weight: var(--fw-semibold, 600); }
 .cp-proj-tick { width: 16px; height: 16px; border: 1.5px solid var(--cp-border); border-radius: 4px; background: #fff; cursor: pointer; flex-shrink: 0; padding: 0; }
 .cp-proj-tick.is-on { background: var(--cp-lime); border-color: var(--cp-lime); }

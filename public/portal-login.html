@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>SDC Project Portal</title>
+<!-- Same Montserrat load as index.html, byte-for-byte — styles.css's
+     --font-ui names 'Montserrat' first, but naming it isn't loading it.
+     Without this, every element styled by styles.css (all of
+     portalRender.js's shared HTML) silently fell back to a system font,
+     which renders noticeably bolder at heavy weights (700/800) than the
+     real Montserrat glyphs staff actually sees — same CSS rule, different
+     rendered result. -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
 <!-- The staff app's own stylesheet FIRST (styles.css defines the .portal-*
      classes public/portalRender.js's shared HTML uses — see its header),
      portal.css SECOND so its own login/header/chrome rules win any tie
