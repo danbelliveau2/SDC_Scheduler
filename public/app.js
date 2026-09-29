@@ -877,6 +877,11 @@ function buildCanonicalTaskOrder() {
     .slice()
     .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
   for (const t of aboveSectionTasks) order.push(t.id);
+  // Line numbers have to agree with the rows on screen, so the events are
+  // placed by date here exactly as the grid places them.
+  const _evtByDate = ((state.scheduleView?.flatten || isPersonalMode())
+      && !state.scheduleView?.eventsMode && state.scheduleView?.eventsOverlay)
+    ? standardEventsByDateSection(filtered) : {};
   for (const group of HIERARCHY) {
     if (state.scheduleView?.flatten || isPersonalMode()) {
       // Same SPINE_ANCHORS rule as the table walk.
@@ -892,6 +897,12 @@ function buildCanonicalTaskOrder() {
       if (group.key === 'teardown_install' && shipAnchors.length) {
         sectionTasks = [...sectionTasks, ...shipAnchors]
           .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+      }
+      // Standard events land by their own date, not in a heap at the end.
+      if (_evtByDate[group.key]) {
+        sectionTasks = [...sectionTasks, ..._evtByDate[group.key]]
+          .sort((a, b) => String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
+            || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
       }
       // Same rows as the build, in date order. Nothing added, nothing lost:
       // an anchor that also carries a phase_group arrived here twice, once
@@ -2389,6 +2400,44 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = nu
 
 // Which section a spine anchor belongs to when it carries no phase_group of
 // its own. Mirrors where the unflattened walk parks each one.
+function standardEventsByDateSection(filtered) {
+  const out = {};
+  const evts = filtered.filter(t => t.phase_group === EVENTS_GROUP);
+  if (!evts.length) return out;
+  // Each section's date span, taken from the rows already in it.
+  const spans = [];
+  for (const g of HIERARCHY) {
+    let min = '', max = '';
+    for (const t of filtered) {
+      if (t.phase_group !== g.key) continue;
+      const sd = String(t.start_date || '');
+      const ed = String(t.end_date || t.start_date || '');
+      if (sd && (!min || sd < min)) min = sd;
+      if (ed && (!max || ed > max)) max = ed;
+    }
+    if (min) spans.push({ key: g.key, min, max: max || min });
+  }
+  for (const e of evts) {
+    const d = String(e.start_date || e.end_date || '');
+    let key = null;
+    if (d && spans.length) {
+      const hit = spans.find(sp => d >= sp.min && d <= sp.max);
+      if (hit) key = hit.key;
+      else if (d < spans[0].min) key = spans[0].key;
+      else {
+        // Between two sections, or past the end: the last one that has
+        // already started by then.
+        const before = spans.filter(sp => sp.min <= d);
+        key = (before.length ? before[before.length - 1] : spans[spans.length - 1]).key;
+      }
+    }
+    if (!key) key = spans.length ? spans[spans.length - 1].key : (HIERARCHY[0] && HIERARCHY[0].key);
+    if (!key) continue;
+    (out[key] ||= []).push(e);
+  }
+  return out;
+}
+
 function sectionForLooseAnchor(t) {
   switch (inferredAnchorKey(t)) {
     case 'receipt_of_po': return 'kickoff';
@@ -2684,6 +2733,11 @@ function renderTable() {
   if (controlsMode) html += _controlsSectionRowsHtml(filtered, collapsedGroups);
   const eventsMode = !!(state.scheduleView && state.scheduleView.eventsMode);
   if (eventsMode) html += _eventsSectionRowsHtml(filtered, collapsedGroups);
+  // Flattened, the events sort into the sections by date (see
+  // standardEventsByDateSection). Unflattened they keep their own section
+  // at the end, because there is no department to tuck them under.
+  const _evtByDate = (flattenEffective && !eventsMode && state.scheduleView && state.scheduleView.eventsOverlay)
+    ? standardEventsByDateSection(filtered) : {};
 
   // A milestone filter: no headers, one list, date order. The spine anchors
   // (FAT / SAT / Ship / PO) sort with everything else here rather than being
@@ -2754,6 +2808,12 @@ function renderTable() {
         const cmp = (a, b) => String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
           || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
         sectionTasks = [...sectionTasks, ...loose].sort(cmp);
+      }
+      // Standard events land by their own date, not in a heap at the end.
+      if (_evtByDate[group.key]) {
+        sectionTasks = [...sectionTasks, ..._evtByDate[group.key]]
+          .sort((a, b) => String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
+            || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
       }
       // Same rows as the build, in date order. Nothing added, nothing lost:
       // an anchor that also carries a phase_group arrived here twice, once
@@ -2869,7 +2929,7 @@ function renderTable() {
   }
   // Standard events close the schedule. They belong to the job rather than
   // to a department, so there is no sub-section to tuck them under.
-  if (!riskMode && !controlsMode && !eventsMode) {
+  if (!riskMode && !controlsMode && !eventsMode && !Object.keys(_evtByDate).length) {
     html += _eventsSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
   }
 
