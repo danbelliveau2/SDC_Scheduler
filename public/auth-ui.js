@@ -61,6 +61,30 @@ try {
 const SHARE_TOKEN = new URLSearchParams(location.search).get('cust') || null;
 window.sdcAuth.shareMode = !!SHARE_TOKEN;
 
+// Customer portal session (sdc_customer_session cookie, HttpOnly — set by
+// routes/portal.js's login, unreadable from JS by design). Unlike
+// shareMode above, this can't be known synchronously: the only way to find
+// out is to ask the server. Kicked off here, at load time, as a promise
+// app.js's boot sequence awaits at the right point — NOT a bare flag read
+// later, which would race this fetch and could read `false` before it
+// resolves. Skipped entirely in share-link mode (that already answers "who
+// is this" a different way) — never awaited there, so it can't slow that
+// boot path down.
+window.sdcAuth.customerSessionCheck = SHARE_TOKEN
+  ? Promise.resolve({ isCustomer: false, customerName: null })
+  // window.fetch, not a wrapped copy: this line runs before the wrapping
+  // below happens, so it's still the browser's native fetch at this point.
+  : (async () => {
+      try {
+        const r = await window.fetch('/portal/api/me', { credentials: 'same-origin' });
+        if (!r.ok) return { isCustomer: false, customerName: null };
+        const data = await r.json();
+        return { isCustomer: !!data.ok, customerName: data.customerName || null };
+      } catch (_) {
+        return { isCustomer: false, customerName: null };
+      }
+    })();
+
 const _originalFetch = window.fetch.bind(window);
 window.fetch = async function (input, init) {
   init = init || {};

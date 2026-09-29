@@ -20,6 +20,7 @@ const bcrypt = require('bcryptjs');
 const { Server: SocketIO } = require('socket.io');
 const { pool } = require('./db');
 const { requireAuth, requireRole, signToken, AUTH_ENABLED } = require('./lib/auth');
+const { parseCookies: parseCustomerCookies, verifyCustomerToken, COOKIE_NAME: CUSTOMER_COOKIE_NAME } = require('./lib/customerAuth');
 const ops = require('./lib/ops'); // backups, health/status, crash logging
 const agent = require('./lib/agent'); // local-Ollama read-only assistant
 // Moved up from where it used to live (just above routeDeps) so the auth
@@ -209,7 +210,14 @@ if (SNAPSHOT_PUBLIC_PORT) {
     .replace('src="/portalCustomerShim.js"', `src="/portalCustomerShim.js?v=${PORTAL_BUILD_ID}"`)
     .replace('src="/portal-app.js"', `src="/portal-app.js?v=${PORTAL_BUILD_ID}"`);
   snap.get('/', (req, res, next) => {
-    if (req.query.cust) return next(); // falls through to `app` at the bottom
+    if (req.query.cust) return next(); // one-project share link → falls through to `app`
+    // A logged-in customer (sdc_customer_session cookie) gets the real app,
+    // not the old standalone dashboard — same fallthrough as the share-link
+    // case above, just gated by a cookie instead of a URL token. app.js's
+    // own boot sequence (auth-ui.js) detects this session and locks the UI
+    // to the Portal tab; see CUSTOMER_GET_PATHS in this file.
+    const token = parseCustomerCookies(req)[CUSTOMER_COOKIE_NAME];
+    if (token && verifyCustomerToken(token)) return next();
     res.type('html').send(portalLoginHtml);
   });
   // The Portal tab's rendering, shared verbatim with public/app.js (see
@@ -254,6 +262,29 @@ app.use(async (req, res, next) => {
     if (req.path === '/api/share/info') return res.json({ project: row.name });
     next();
   } catch (e) { res.status(503).json({ error: e.message }); }
+});
+
+// ─── Customer portal sessions running the REAL app ──────────────────────────
+// A logged-in customer (sdc_customer_session cookie, set by routes/portal.js's
+// /portal/api/login) gets the SAME app.js/index.html/styles.css bundle staff
+// runs — not a separate page trying to imitate it — locked to the Portal tab
+// and their own projects. req.shareCustomer is this session's parallel to
+// req.shareProject above: read-only, and every route that already checks
+// req.shareProject for one project now also checks req.shareCustomer for
+// "any project belonging to this customer" (routes/tasks.js, financials.js,
+// settings.js, projects.js). GET-only, same as the share-token model — a
+// customer session can view, never write.
+const CUSTOMER_GET_PATHS = new Set(['/api/tasks', '/api/team', '/api/settings', '/api/financials', '/api/projects']);
+app.use((req, res, next) => {
+  if (req.shareProject || req.authUser) return next(); // share-token or staff JWT already resolved this request
+  if (req.method !== 'GET' || !CUSTOMER_GET_PATHS.has(req.path)) return next();
+  const token = parseCustomerCookies(req)[CUSTOMER_COOKIE_NAME];
+  if (!token) return next();
+  const payload = verifyCustomerToken(token);
+  if (!payload) return next();
+  req.shareCustomer = payload.customerName;
+  req.authUser = { id: 0, email: 'customer@portal-session', name: 'Customer portal', role: 'viewer' };
+  next();
 });
 
 // Global auth guard — every /api/* request below this line goes through it.

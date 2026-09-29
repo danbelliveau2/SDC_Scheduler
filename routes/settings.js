@@ -19,6 +19,28 @@ module.exports = function createRouter(deps) {
       for (const r of rows) {
         try { out[r.key] = JSON.parse(r.value); } catch { out[r.key] = r.value; }
       }
+      // Customer portal session (req.shareCustomer) or a single-project share
+      // link (req.shareProject) → risk_plans and project_leads are keyed by
+      // project name and hold other customers'/projects' data (risk register
+      // text, who's the PM) that this viewer has no business receiving even
+      // if the UI never displays it. Every OTHER settings key (colors,
+      // thresholds, app-wide config) isn't project-specific and stays as-is —
+      // this is a targeted fix for the two keys the portal actually reads,
+      // not a full settings audit.
+      const scopeProject = req.shareProject || null;
+      if (scopeProject || req.shareCustomer) {
+        for (const key of ['risk_plans', 'project_leads']) {
+          if (!out[key] || typeof out[key] !== 'object') continue;
+          const allowed = scopeProject
+            ? new Set([scopeProject])
+            : new Set((await pool.query('SELECT name FROM projects WHERE customer = ?', [req.shareCustomer]))[0].map(r => r.name));
+          const filtered = {};
+          for (const proj of Object.keys(out[key])) {
+            if (allowed.has(proj)) filtered[proj] = out[key][proj];
+          }
+          out[key] = filtered;
+        }
+      }
       res.json(out);
     } catch (e) { res.status(503).json({ error: e.message }); }
   });

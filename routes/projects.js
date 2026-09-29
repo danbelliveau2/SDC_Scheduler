@@ -445,9 +445,15 @@ module.exports = function createRouter(deps) {
   }
 
   // ── GET /api/projects ─────────────────────────────────────────────────────
-  router.get('/api/projects', async (_req, res) => {
+  router.get('/api/projects', async (req, res) => {
     try {
-      const [rows] = await pool.query('SELECT * FROM projects ORDER BY name ASC');
+      // Customer portal session → their own projects only. A single-project
+      // share link (req.shareProject) never calls this route today (the
+      // schedule view already knows which one project it's showing), so no
+      // separate branch for it.
+      const [rows] = req.shareCustomer
+        ? await pool.query('SELECT * FROM projects WHERE customer = ? ORDER BY name ASC', [req.shareCustomer])
+        : await pool.query('SELECT * FROM projects ORDER BY name ASC');
       res.json(rows);
     } catch (e) { res.status(503).json({ error: e.message }); }
   });

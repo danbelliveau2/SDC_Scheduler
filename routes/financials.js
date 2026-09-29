@@ -47,6 +47,15 @@ module.exports = function createRouter(deps) {
     try {
       // Customer share link → forced to that project regardless of the query.
       const project = req.shareProject || (req.query.project || '').toString();
+      // Customer portal session → the requested project must actually be one
+      // of THIS customer's own, checked server-side (a JOIN, not a trust of
+      // whatever ?project= the client sent) — a bare shareCustomer with no
+      // project asked for gets nothing rather than every project's numbers.
+      if (req.shareCustomer) {
+        if (!project) return res.json([]);
+        const [[owns]] = await pool.query('SELECT 1 FROM projects WHERE name = ? AND customer = ?', [project, req.shareCustomer]);
+        if (!owns) return res.status(403).json({ error: 'Not your project.' });
+      }
       // Keep milestones in step with the schedule at the point every consumer
       // (Project Release, Invoicing, the Gantt overlay, the dashboards) reads
       // them, so a machine deleted in the schedule stops being an active

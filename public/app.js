@@ -17461,7 +17461,7 @@ function _portalPickedBarHtml(picked, machines, scope) {
       ${pills}
     </div>
     <div class="portal-picked-act">
-      <button type="button" class="portal-docbtn" data-doc="comm" data-doc-proj="${escapeHtml(picked)}">Communication Plan</button>
+      ${_portalLockedCustomer ? '' : `<button type="button" class="portal-docbtn" data-doc="comm" data-doc-proj="${escapeHtml(picked)}">Communication Plan</button>`}
       <button type="button" class="portal-open" data-open-sched="${escapeHtml(picked)}" data-open-mach="${escapeHtml(_portalMachine || '')}">Open schedule →</button>
     </div>
   </section>`;
@@ -33408,7 +33408,32 @@ async function init() {
     }
   } catch (_) {}
 
-  loadTasks().then(() => {
+  loadTasks().then(async () => {
+    // Customer portal session (sdc_customer_session cookie, set by
+    // routes/portal.js's login): the server already scoped every /api/*
+    // read this boot's loadTasks()/loadTeam() etc. just made to THIS
+    // customer's own projects (server.js's CUSTOMER_GET_PATHS middleware) —
+    // nothing here re-fetches anything. What's left is telling the UI to
+    // land on the Portal tab, locked to this customer, same as the
+    // internal-only ?customer= preview link (_applyPortalCustomerDeepLink,
+    // below) already does — reusing that exact lock (_portalLockedCustomer)
+    // is what makes renderPortal() skip the customer picker, "Manage
+    // login", and the SDC cross-customer view for a real customer: they're
+    // already gated behind `if (_portalLockedCustomer) ... else ...` in
+    // that function, built for the staff-preview case, and a real session
+    // takes the identical branch.
+    try {
+      const { isCustomer, customerName } = await (window.sdcAuth && window.sdcAuth.customerSessionCheck || Promise.resolve({ isCustomer: false }));
+      if (isCustomer && customerName) {
+        _portalLockedCustomer = customerName;
+        _portalCustomer = customerName;
+        _portalProjects = [];
+        _portalMachine = null;
+        document.body.classList.add('share-link-view');
+        setView('portal'); // already calls renderPortal() itself — see setView's 'portal' branch
+        return;
+      }
+    } catch (_) {}
     // Customer share link (/?cust=<token>): the server already scoped every
     // read to ONE project — lock the UI onto it, enter the customer view,
     // and stop. No tabs, no sidebar, no editing (the server rejects writes).

@@ -44,7 +44,11 @@
       const password = form.password.value;
       try {
         await api('/portal/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
-        await loadDashboard();
+        // Full reload, not loadDashboard(): the cookie this just set makes
+        // server.js's snap.get('/') fall through to the REAL app (locked to
+        // the Portal tab, scoped to this customer) instead of serving this
+        // login page again — see server.js's customer-session check there.
+        window.location.href = '/';
       } catch (err) {
         renderLogin(err.status === 429 ? ((err.body && err.body.error) || 'Too many attempts. Try again later.') : 'Incorrect username or password.');
       }

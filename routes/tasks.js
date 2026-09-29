@@ -109,9 +109,20 @@ module.exports = function createRouter(deps) {
   router.get('/api/tasks', async (req, res) => {
     try {
       // Customer share link → ONLY that project's rows leave the building.
-      const [tasks] = req.shareProject
-        ? await pool.query('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id', [req.shareProject])
-        : await pool.query('SELECT * FROM tasks ORDER BY sort_order, id');
+      // Customer portal session → ONLY that customer's own projects' rows.
+      let tasks;
+      if (req.shareProject) {
+        [tasks] = await pool.query('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id', [req.shareProject]);
+      } else if (req.shareCustomer) {
+        [tasks] = await pool.query(
+          `SELECT t.* FROM tasks t
+           JOIN projects p ON p.name = t.project
+           WHERE p.customer = ? ORDER BY t.sort_order, t.id`,
+          [req.shareCustomer]
+        );
+      } else {
+        [tasks] = await pool.query('SELECT * FROM tasks ORDER BY sort_order, id');
+      }
       res.json(tasks);
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
