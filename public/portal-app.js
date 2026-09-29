@@ -9,6 +9,15 @@
     return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // M1 / M2 are how a row is tagged internally; a customer reads the words.
+  // Ported from public/app.js's _portalMachineLabel().
+  function machineLabel(m) {
+    const t = String(m || '').trim();
+    if (!t) return '';
+    const n = t.replace(/^M/i, '').trim();
+    return (n && /^[0-9]+$/.test(n)) ? 'Machine ' + n : t;
+  }
+
   async function api(path, opts) {
     const r = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts));
     let body = null;
@@ -229,10 +238,22 @@
   // 60s poll's re-render.
   let _scope = 'all';
 
+  // Which machine to show for the one drilled-into project — keyed by
+  // project name so each project remembers its own pick independently.
+  // Absent/'' = "All machines". Only meaningful while a single project is
+  // picked (see `pickedName` below) — mirrors the internal Portal tab's
+  // "All machines | Machine 1 | Machine 2 | ..." pills, which likewise only
+  // appear once you have drilled into one job.
+  const _machineScope = {};
+
   function renderDashboard(data) {
     const inScope = (name) => _scope === 'all' || _scope.includes(name);
+    const pickedName = (_scope !== 'all' && _scope.length === 1) ? _scope[0] : null;
+    const pickedProject = pickedName ? data.projects.find(p => p.name === pickedName) : null;
+    const pickedMachine = pickedName ? (_machineScope[pickedName] || '') : '';
     const scopeProjects = data.projects.filter(p => inScope(p.name));
-    const scopeUnits = data.units.filter(u => inScope(u.project));
+    const scopeUnits = data.units.filter(u => inScope(u.project)
+      && (!pickedMachine || u.project !== pickedName || u.machine === pickedMachine));
     const multiPick = data.projects.length > 1;
 
     const projectRows = data.projects.map(p => {
@@ -253,15 +274,28 @@
       : '';
 
     const noneScoped = Array.isArray(_scope) && !_scope.length;
+
+    // Same gesture as the internal Portal tab: the pills only appear once
+    // you've drilled into one job with more than one machine on it.
+    const machineTabsHtml = (pickedProject && pickedProject.machines.length > 1) ? `
+      <div class="cp-block">
+        <h2 class="cp-h2 cp-h2-flex">${esc(pickedName)}
+          <span class="cp-pickbtns">
+            <button type="button" class="cp-pickbtn${!pickedMachine ? ' is-on' : ''}" data-mach-all>All machines</button>
+            ${pickedProject.machines.map(m => `<button type="button" class="cp-pickbtn${pickedMachine === m ? ' is-on' : ''}" data-mach-pick="${esc(m)}">${esc(machineLabel(m))}</button>`).join('')}
+          </span>
+        </h2>
+      </div>` : '';
+
     const unitBlocks = noneScoped ? '' : scopeUnits.map(u => {
-      const title = u.machine ? `${u.project} · ${u.machine}` : u.project;
+      const title = u.machine ? `${u.project} · ${machineLabel(u.machine)}` : u.project;
       const due = u.due;
       const dueHtml = !due ? '' : `
         <div class="cp-table-wrap"><table class="cp-table">
           <colgroup><col style="width:22%"><col style="width:60px"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:13%"></colgroup>
           <thead><tr><th>Machine</th><th>Complete</th><th>Receipt of PO</th><th>Power-Up</th><th>FAT quoted</th><th>FAT projected</th><th>Variance</th></tr></thead>
           <tbody><tr>
-            <td>${esc(u.machine || u.project)}</td>
+            <td>${esc(u.machine ? machineLabel(u.machine) : u.project)}</td>
             <td>${due.pct == null ? '—' : due.pct + '%'}</td>
             <td>${esc((due.keyDates.find(k => k.key === 'receipt_of_po') || {}).dateText || '—')}</td>
             <td>${esc((due.keyDates.find(k => k.key === 'machine_power_up') || {}).dateText || '—')}</td>
@@ -292,20 +326,31 @@
       return `<div class="cp-block"><h2 class="cp-unit-title">${esc(title)}</h2>${dueHtml}<div style="height:16px"></div>${progHtml}</div>`;
     }).join('');
 
-    const moneyBlocks = noneScoped ? '' : scopeProjects.filter(p => p.money.length).map(p => `
+    const moneyBlocks = noneScoped ? '' : scopeProjects.filter(p => p.money.length).map(p => {
+      // Same metric as the internal Portal tab's PORTAL_MONEY_COLS: the
+      // Machine column only appears when the job actually has more than one
+      // machine — otherwise it's a column of one repeated, useless value.
+      const multi = p.machines.length > 1;
+      const rows = (pickedName === p.name && pickedMachine)
+        ? p.money.filter(m => !m.machine || m.machine === pickedMachine)
+        : p.money;
+      if (!rows.length) return '';
+      return `
       <div class="cp-block">
         <h2 class="cp-h2">Payment milestones — ${esc(p.name)}</h2>
         <div class="cp-table-wrap"><table class="cp-table">
-          <colgroup><col><col style="width:60px"><col style="width:100px"><col style="width:100px"></colgroup>
-          <thead><tr><th>Milestone</th><th>%</th><th>Due</th><th>Status</th></tr></thead>
-          <tbody>${p.money.map(m => `<tr>
+          <colgroup>${multi ? '<col style="width:110px">' : ''}<col><col style="width:60px"><col style="width:100px"><col style="width:100px"></colgroup>
+          <thead><tr>${multi ? '<th>Machine</th>' : ''}<th>Milestone</th><th>%</th><th>Due</th><th>Status</th></tr></thead>
+          <tbody>${rows.map(m => `<tr>
+            ${multi ? `<td>${esc(machineLabel(m.machine) || '—')}</td>` : ''}
             <td>${esc(m.name)}</td>
             <td>${m.percent != null ? m.percent + '%' : '—'}</td>
             <td>${esc(m.dueText || '—')}</td>
             <td><span class="cp-status is-${esc(m.status)}">${esc(m.status)}</span></td>
           </tr>`).join('')}</tbody>
         </table></div>
-      </div>`).join('');
+      </div>`;
+    }).filter(Boolean).join('');
 
     const riskBlocks = noneScoped ? '' : scopeProjects.filter(p => p.risk.length).map(renderRiskBlock).join('');
 
@@ -334,6 +379,7 @@
           ${projectRows || '<p class="cp-empty">No projects are linked to your account yet.</p>'}
         </div>
         ${pickedEmptyMsg}
+        ${machineTabsHtml}
         ${unitBlocks}
         ${moneyBlocks}
         ${riskBlocks}
@@ -366,6 +412,17 @@
     });
     root.querySelector('[data-scope-all]')?.addEventListener('click', () => { _scope = 'all'; renderDashboard(data); });
     root.querySelector('[data-scope-clear]')?.addEventListener('click', () => { _scope = []; renderDashboard(data); });
+
+    root.querySelector('[data-mach-all]')?.addEventListener('click', () => {
+      if (pickedName) delete _machineScope[pickedName];
+      renderDashboard(data);
+    });
+    root.querySelectorAll('[data-mach-pick]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (pickedName) _machineScope[pickedName] = btn.dataset.machPick;
+        renderDashboard(data);
+      });
+    });
 
     document.getElementById('cp-logout-btn').addEventListener('click', async () => {
       stopPolling();
