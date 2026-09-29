@@ -17136,9 +17136,15 @@ const PORTAL_ANCHORS = [
 ];
 
 let _portalCustomer = null;
-// Set from ?customer= — when locked, the portal shows one customer and
-// offers no way to look at another.
+// Set from ?customer= (staff preview) OR a real customer-session cookie —
+// when locked, the portal shows one customer and offers no way to look at
+// another.
 let _portalLockedCustomer = null;
+// True ONLY for a real customer-session login (set at boot, see the
+// customerSessionCheck branch in init()) — NOT for staff's own ?customer=
+// preview link, which also sets _portalLockedCustomer above but has no
+// session to sign out of. Gates the Sign out button below.
+let _portalRealCustomerSession = false;
 // Deliberately empty, as opposed to not chosen yet. Without this the
 // default-to-first rule would undo Clear on the very next render.
 let _portalCleared = false;
@@ -17277,7 +17283,8 @@ function renderPortal() {
       <div class="portal-bar">
         <div class="portal-bar-left">
           ${_portalLockedCustomer
-            ? `<span class="portal-cust-name">${escapeHtml(cust)}</span>`
+            ? `<span class="portal-cust-name">${escapeHtml(cust)}</span>
+               ${_portalRealCustomerSession ? `<button type="button" class="portal-headbtn" data-portal-signout>Sign out</button>` : ''}`
             : `<details class="pdash-picker portal-cust-picker"${state._portalPickerOpen ? ' open' : ''}>
                  <summary><span class="portal-cust-name">${escapeHtml(cust)}</span><span class="pdash-picker-caret">▾</span></summary>
                  <div class="pdash-picker-panel">
@@ -17713,6 +17720,15 @@ function _wirePortal(root) {
   root.querySelector('[data-portal-login-manage]')?.addEventListener('click', (e) => {
     e.stopPropagation();
     manageCustomerLogin(_portalCustomer);
+  });
+  // Real customer session only (see _portalRealCustomerSession) — clears
+  // the sdc_customer_session cookie server-side, same endpoint the old
+  // standalone portal page used, then a full reload so server.js's
+  // snap.get('/') sees no cookie and serves the login page again.
+  root.querySelector('[data-portal-signout]')?.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try { await fetch('/portal/api/logout', { method: 'POST' }); } catch (_) {}
+    location.href = '/';
   });
   // One more pass after layout settles: on first paint the wrapper can
   // still be measuring, and a fit against a stale width is no fit at all.
@@ -33426,6 +33442,7 @@ async function init() {
       const { isCustomer, customerName } = await (window.sdcAuth && window.sdcAuth.customerSessionCheck || Promise.resolve({ isCustomer: false }));
       if (isCustomer && customerName) {
         _portalLockedCustomer = customerName;
+        _portalRealCustomerSession = true;
         _portalCustomer = customerName;
         _portalProjects = [];
         _portalMachine = null;
