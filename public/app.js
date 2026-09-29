@@ -19801,13 +19801,21 @@ function renderPanelCountdown() {
   // countdown simply never appeared on those. A row that mentions the panel
   // and being ready IS this milestone — "Panel Build+ Land in Cabinet" says
   // panel but never says ready, so it stays out.
+  // Say so rather than showing nothing — a blank slot reads as a broken
+  // countdown, and "this job has no panel milestone" is worth knowing.
+  const _none = () => {
+    el.innerHTML = `<span class="panel-cd is-none" title="No parts+drawings-ready-for-panel milestone on this schedule. Add one to get the countdown.">
+      <span class="panel-cd-label">Panel parts</span>
+      <span class="panel-cd-value">no milestone</span>
+    </span>`;
+  };
   const isPanelReady = (t) => {
     if (inferredAnchorKey(t) === 'parts_panel_ready') return true;
     const n = String(t.name || '').trim().toLowerCase();
     return n.includes('panel') && n.includes('ready');
   };
   const rows = state.tasks.filter(t => t.project === project && isPanelReady(t));
-  if (!rows.length) { el.innerHTML = ''; return; }
+  if (!rows.length) { _none(); return; }
   // Multi-machine jobs have one per machine; the nearest one is the one
   // with time pressure on it.
   const machine = (state.filters.machinesSubset || [])[0] || null;
@@ -19816,7 +19824,7 @@ function renderPanelCountdown() {
     .map(t => ({ t, d: t.end_date || t.start_date || '' }))
     .filter(x => x.d)
     .sort((a, b) => a.d.localeCompare(b.d));
-  if (!dated.length) { el.innerHTML = ''; return; }
+  if (!dated.length) { _none(); return; }
   const next = dated[0];
   const done = getEffectiveProgress(next.t) >= 100;
   const today = _ymdLocal(new Date());

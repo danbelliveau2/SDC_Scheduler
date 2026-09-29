@@ -17108,3 +17108,12 @@ tr.ctrl-add-row td { padding: 4px 8px 10px; background: var(--surface); }
   opacity: 0.75;
 }
 .list-blank-row:hover .list-blank-hint { color: var(--sdc-primary, #1574c4); opacity: 1; font-style: normal; }
+
+/* No panel milestone on this job — stated plainly, and quiet enough that it
+   does not compete with a real countdown. */
+.panel-cd.is-none {
+  background: var(--surface-alt, #f1f5f9);
+  border-color: var(--border, #e2e8f0);
+  color: var(--text-muted, #64748b);
+}
+.panel-cd.is-none .panel-cd-value { color: var(--text-muted, #64748b); font-weight: var(--fw-bold); }
