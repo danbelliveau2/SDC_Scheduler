@@ -1797,8 +1797,11 @@ function applyFilters(tasks, opts = {}) {
   const qf = quick || {};
   const personal = isPersonalMode();
   // My work with nobody signed in. Not the aggregate schedule, not a
-  // sample — nothing, until we know whose page this is.
-  if (state.myWork && state.view === 'schedule' && !project && !personal) return [];
+  // sample — nothing, until we know whose page this is. Deliberately does
+  // NOT test state.view: the grid and the chart read this at different
+  // moments, and a guard that flips between them shows one full and the
+  // other empty.
+  if (state.myWork && !project && !personal) return [];
   const subset = Array.isArray(projectsSubset) ? projectsSubset : [];
   // Subset only applies on the All-projects view (no single-project filter
   // active). Empty subset = no filter; non-empty = whitelist.
@@ -26021,6 +26024,8 @@ function showMyWorkSignIn() {
 }
 
 function openMyWork() {
+  // The portal is its own world. Nothing here reaches into it.
+  if (state.view === 'portal' || document.body.classList.contains('portal-mode')) return;
   setMyWork(true);
   const me = memberForSignedInUser();
   if (me) { setPersonalPerson(me.id); routePersonalMode(me.id); return; }
@@ -26035,6 +26040,7 @@ function openMyWork() {
   setPersonalPerson(null);
   state.filters.project = '';
   state.filters.assignee = '';
+  applyPersonalViewDefaults();
   document.body.classList.remove('personal-mode');
   setView('schedule');
   // A blank page with no way off it is a dead end. Open the list.
@@ -34273,11 +34279,14 @@ async function init() {
     if (me) setPersonalPerson(me.id);
     else if (window.sdcAuth && window.sdcAuth.authEnabled) setPersonalPerson(null);
     // _bootForcedProjects means boot parked us on Projects, not the user.
-    if (state.myWork && (state.view === 'schedule' || state._bootForcedProjects)) {
+    // Not during a portal boot — the deep-link may not have landed yet,
+    // and My work must never be what a portal visitor arrives on.
+    const portalBound = state.view === 'portal'
+      || document.body.classList.contains('portal-mode')
+      || /[?&]customer=/.test(location.search);
+    if (!portalBound && state.myWork && (state.view === 'schedule' || state._bootForcedProjects)) {
       openMyWork();
-      return;
     }
-    try { renderProjectTabs(); } catch (_) {}
   });
   // Phase 2 (Abhi port): boot the comments UI once. It attaches a
   // MutationObserver to #tasks-tbody and re-injects 💬 badges after every
