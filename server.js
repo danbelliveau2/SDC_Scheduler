@@ -184,15 +184,24 @@ if (SNAPSHOT_PUBLIC_PORT) {
   const snap = express();
   snap.disable('x-powered-by');
   snap.use(compression());
-  // Same reasoning as the main app's static-asset middleware above:
-  // no-cache (NOT no-store) so the browser always revalidates via ETag
-  // instead of trusting Cloudflare's default multi-hour Browser Cache TTL
-  // for .css/.js, which otherwise leaves a stale login page or dashboard
-  // client cached in a customer's browser after every update here.
+  // Belt: no-cache so a DIRECT request (bypassing Cloudflare, or any proxy
+  // that respects origin headers) always revalidates. Braces, since this
+  // alone isn't enough: confirmed live that Cloudflare's edge REWRITES this
+  // to its own multi-hour default for .css/.js on this tunnel-routed
+  // hostname (sdcautomation.com isn't a managed zone in this Cloudflare
+  // account, so there's no Cache Rules dashboard to fix that at the source).
+  // The actual fix is below: cache-busted URLs, so the browser's cache
+  // simply never has an entry for the CURRENT build's filename to serve
+  // stale, regardless of what Cache-Control says.
   snap.use((_req, res, next) => { res.set('Cache-Control', 'no-cache'); next(); });
+  // Changes only on restart — exactly when a new build needs fresh URLs.
+  const PORTAL_BUILD_ID = Date.now();
+  const portalLoginHtml = fs.readFileSync(path.join(__dirname, 'public', 'portal-login.html'), 'utf8')
+    .replace('/portal.css', `/portal.css?v=${PORTAL_BUILD_ID}`)
+    .replace('/portal-app.js', `/portal-app.js?v=${PORTAL_BUILD_ID}`);
   snap.get('/', (req, res, next) => {
     if (req.query.cust) return next(); // falls through to `app` at the bottom
-    res.sendFile(path.join(__dirname, 'public', 'portal-login.html'));
+    res.type('html').send(portalLoginHtml);
   });
   snap.get('/portal.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal.css')));
   snap.get('/portal-app.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal-app.js')));
