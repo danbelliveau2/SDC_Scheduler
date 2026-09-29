@@ -196,13 +196,18 @@ if (SNAPSHOT_PUBLIC_PORT) {
   snap.use((_req, res, next) => { res.set('Cache-Control', 'no-cache'); next(); });
   // Changes only on restart — exactly when a new build needs fresh URLs.
   const PORTAL_BUILD_ID = Date.now();
+  // Matches href="..."/src="..." specifically (not a bare path fragment) —
+  // a bare '/portalRender.js' search once matched that same substring
+  // inside this file's own explanatory HTML comment instead of the real
+  // <script> tag, since String.replace() only hits the FIRST occurrence in
+  // the whole document and the comment came first.
   const portalLoginHtml = fs.readFileSync(path.join(__dirname, 'public', 'portal-login.html'), 'utf8')
-    .replace('/styles.css', `/styles.css?v=${PORTAL_BUILD_ID}`)
-    .replace('/portal.css', `/portal.css?v=${PORTAL_BUILD_ID}`)
-    .replace('/portalCalc.js', `/portalCalc.js?v=${PORTAL_BUILD_ID}`)
-    .replace('/portalRender.js', `/portalRender.js?v=${PORTAL_BUILD_ID}`)
-    .replace('/portalCustomerShim.js', `/portalCustomerShim.js?v=${PORTAL_BUILD_ID}`)
-    .replace('/portal-app.js', `/portal-app.js?v=${PORTAL_BUILD_ID}`);
+    .replace('href="/styles.css"', `href="/styles.css?v=${PORTAL_BUILD_ID}"`)
+    .replace('href="/portal.css"', `href="/portal.css?v=${PORTAL_BUILD_ID}"`)
+    .replace('src="/portalCalc.js"', `src="/portalCalc.js?v=${PORTAL_BUILD_ID}"`)
+    .replace('src="/portalRender.js"', `src="/portalRender.js?v=${PORTAL_BUILD_ID}"`)
+    .replace('src="/portalCustomerShim.js"', `src="/portalCustomerShim.js?v=${PORTAL_BUILD_ID}"`)
+    .replace('src="/portal-app.js"', `src="/portal-app.js?v=${PORTAL_BUILD_ID}"`);
   snap.get('/', (req, res, next) => {
     if (req.query.cust) return next(); // falls through to `app` at the bottom
     res.type('html').send(portalLoginHtml);
