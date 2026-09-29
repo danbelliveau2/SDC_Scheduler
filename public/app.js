@@ -1034,6 +1034,9 @@ const ZOOM_MAX = 145;
 // three lines spanning a month) needs several times the build px-per-day to
 // fill the panel, and clamping fit to ZOOM_MAX left it filling about half.
 const ZOOM_FIT_MAX = 600;
+// Floor for a FIT only — see the note above. 0.4px per working day still
+// draws a readable overview bar.
+const ZOOM_FIT_MIN = 2;
 const ZOOM_STEP = 10;
 
 // 100% = 20 px/day (matches frappe-gantt's Week default of 140 / 7).
@@ -4437,7 +4440,7 @@ function renderGantt() {
     const PAD_DAYS = 14;
     if (target > 0) {
       const requiredPxPerDay = target / (projectDays + PAD_DAYS);
-      state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
+      state.zoomPercent = Math.max(ZOOM_FIT_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
     }
     state._lastFitProject = projectKey;
     state._fitOnNextRender = false;
@@ -6803,7 +6806,7 @@ function zoomToFitPersonal() {
   const projectDays = Math.max(1, (maxEnd - minStart) / 86400000 + 1);
   const PAD_DAYS = 14;
   const requiredPxPerDay = target / (projectDays + PAD_DAYS);
-  state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
+  state.zoomPercent = Math.max(ZOOM_FIT_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
   renderActionsPersonGantt();
 }
 
@@ -6837,7 +6840,7 @@ function zoomToFit() {
   const usableWidth = Math.max(50, target - LABEL_PAD_LEFT - LABEL_PAD_RIGHT - EDGE_PAD * 2);
 
   const requiredPxPerDay = usableWidth / workDaysSpan;
-  state.zoomPercent = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
+  state.zoomPercent = Math.max(ZOOM_FIT_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
   renderGantt();
 
   // The penalty-clause marker is drawn PAST the last task (PO + sold weeks),
@@ -6871,7 +6874,7 @@ function zoomToFit() {
       // parks it 130px short of the edge. Measure against the panel itself,
       // from the same origin the scroll below uses.
       const penSpan = Math.max(120, target - LABEL_PAD_LEFT - EDGE_PAD - PEN_EDGE_PAD);
-      const next = Math.max(ZOOM_MIN, Math.min(ZOOM_FIT_MAX, state.zoomPercent * (penSpan / needed)));
+      const next = Math.max(ZOOM_FIT_MIN, Math.min(ZOOM_FIT_MAX, state.zoomPercent * (penSpan / needed)));
       if (Math.abs(next - state.zoomPercent) < 0.5) break;   // already there
       state.zoomPercent = next;
       renderGantt();
@@ -26152,11 +26155,15 @@ function routePersonalMode(personId) {
         try { saveLayout(); } catch {}
       }
       setView('schedule');
-      // Auto-fit the Gantt to this person's tasks/actions. Defer one frame
-      // so the schedule view has rendered + measured panel width before fit.
-      requestAnimationFrame(() => {
+      // Lay the grid out now and leave the chart to zoomToFit, which draws
+      // it at the fitted zoom. Without this render the fit measured the
+      // PREVIOUS person's chart and cut the new rows off the right edge.
+      render({ deferGantt: true });
+      // Two frames: one for the grid to land, one for the split panel to
+      // settle at its real width before the fit measures it.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
         try { zoomToFit(); } catch (_) {}
-      });
+      }));
       return;
     }
   }
