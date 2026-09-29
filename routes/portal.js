@@ -177,6 +177,7 @@ module.exports = function createPortalRouter({ pool }) {
           id: p.id,
           name: p.name,
           shareToken: p.share_token,
+          isSales,
           machines: rawUnits.map(u => u.machine).filter(Boolean),
           money: calc.portalMoney(finByProject.get(p.name) || [], tasksById, rows),
           risk: calc.portalRisk(riskPlans[p.name], rows),
@@ -190,6 +191,13 @@ module.exports = function createPortalRouter({ pool }) {
         };
       });
 
+      // Raw ingredients too, alongside the pre-computed summaries above —
+      // the customer page's own render call now uses these directly (via
+      // public/portalRender.js, the SAME functions public/app.js's Portal
+      // tab uses), rather than a second, separately-maintained computation.
+      const financialsByProject = {};
+      finByProject.forEach((rows, name) => { financialsByProject[name] = rows; });
+
       res.json({
         ok: true,
         customerName: req.customerName,
@@ -197,6 +205,12 @@ module.exports = function createPortalRouter({ pool }) {
         unitCount,
         projects,
         units,
+        recentDays,
+        rawTasks: taskRows,
+        financials: financialsByProject,
+        riskPlans,
+        projectLeads,
+        teamMembers,
       });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });

@@ -5,10 +5,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>SDC Project Portal</title>
+<!-- The staff app's own stylesheet FIRST (styles.css defines the .portal-*
+     classes public/portalRender.js's shared HTML uses — see its header),
+     portal.css SECOND so its own login/header/chrome rules win any tie
+     against styles.css's generic selectors (body, *, table, ...). Neither
+     file defines the other's classes, so there's no real collision, only
+     these few generic ones. -->
+<link rel="stylesheet" href="/styles.css">
 <link rel="stylesheet" href="/portal.css">
 </head>
 <body>
   <div id="root"><div class="cp-loading">Loading…</div></div>
+  <!-- Shared with public/app.js's Portal tab — see each file's own header
+       for why this exists and what it provides. Order matters: portal-app.js
+       calls functions the earlier three define. -->
+  <script src="/portalCalc.js"></script>
+  <script src="/portalRender.js"></script>
+  <script src="/portalCustomerShim.js"></script>
   <script src="/portal-app.js"></script>
 </body>
 </html>

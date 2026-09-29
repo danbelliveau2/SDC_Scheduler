@@ -197,12 +197,23 @@ if (SNAPSHOT_PUBLIC_PORT) {
   // Changes only on restart — exactly when a new build needs fresh URLs.
   const PORTAL_BUILD_ID = Date.now();
   const portalLoginHtml = fs.readFileSync(path.join(__dirname, 'public', 'portal-login.html'), 'utf8')
+    .replace('/styles.css', `/styles.css?v=${PORTAL_BUILD_ID}`)
     .replace('/portal.css', `/portal.css?v=${PORTAL_BUILD_ID}`)
+    .replace('/portalCalc.js', `/portalCalc.js?v=${PORTAL_BUILD_ID}`)
+    .replace('/portalRender.js', `/portalRender.js?v=${PORTAL_BUILD_ID}`)
+    .replace('/portalCustomerShim.js', `/portalCustomerShim.js?v=${PORTAL_BUILD_ID}`)
     .replace('/portal-app.js', `/portal-app.js?v=${PORTAL_BUILD_ID}`);
   snap.get('/', (req, res, next) => {
     if (req.query.cust) return next(); // falls through to `app` at the bottom
     res.type('html').send(portalLoginHtml);
   });
+  // The Portal tab's rendering, shared verbatim with public/app.js (see
+  // public/portalRender.js's own header) — so the customer page looks
+  // identical to the internal staff Portal tab, one file to change for both.
+  snap.get('/styles.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'styles.css')));
+  snap.get('/portalCalc.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portalCalc.js')));
+  snap.get('/portalRender.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portalRender.js')));
+  snap.get('/portalCustomerShim.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portalCustomerShim.js')));
   snap.get('/portal.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal.css')));
   snap.get('/portal-app.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal-app.js')));
   snap.get('/img/sdc-logo-white.svg', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'img', 'sdc-logo-white.svg')));
