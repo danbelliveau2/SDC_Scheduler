@@ -23,7 +23,10 @@ const {
   signCustomerToken, setCustomerSessionCookie, clearCustomerSessionCookie, requireCustomerAuth,
 } = require('../lib/customerAuth');
 const { createRateLimiter, clientIp } = require('../lib/rateLimit');
-const calc = require('../lib/portalCalc');
+// Shared with public/app.js's Portal tab (loaded there as the browser
+// global PortalCalc via a <script> tag) — one copy of this math, not two
+// that can drift out of sync. See public/portalCalc.js's own header.
+const calc = require('../public/portalCalc');
 
 // Tighter than the service form's public intake (8/hr): the username here
 // is a customer name, which is guessable, so a brute-force attempt only

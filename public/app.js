@@ -8502,13 +8502,13 @@ function invoiceTermsDays(f) {
 // The anchor a synced financial row points at. Machine-less rows belong to
 // the base machine — same rule as the grid (_finBaseMachine), so an anchor on
 // a project like 1153 (machines 'DS 2' / 'DS 3' / 'M1') resolves to the machine
-// the row displays under.
+// the row displays under. Shared with the customer portal (public/portalCalc.js,
+// financialAnchorTaskForMoney) — this wrapper just gathers state.tasks for the
+// shared function, which has no idea what `state` is.
 function financialAnchorTask(f, project) {
   if (!f || !f.sync_to_anchor) return null;
   const finBase = _finBaseMachine(_finProjectMachines(project));
-  return state.tasks.find(x => x.project === project
-    && inferredAnchorKey(x) === f.sync_to_anchor
-    && (!x.machine || (x.machine || finBase) === (f.machine || finBase))) || null;
+  return PortalCalc.financialAnchorTaskForMoney(f, state.tasks.filter(x => x.project === project), finBase);
 }
 
 // When a milestone is due, from the ONE place everything reads. Precedence:
@@ -16029,11 +16029,10 @@ const RISK_SEVERITY = [
 // managing to.
 const RISK_CATEGORIES = ['Technical', 'Supply chain', 'Resource', 'Safety'];
 // Chance (1-5) x impact (1-3), so 15 is the worst a risk can score.
+// Shared with the customer portal (public/portalCalc.js) — same bands
+// on both sides.
 function riskBand(score) {
-  if (score >= 12) return { key: 'critical', label: 'Very high' };
-  if (score >= 8)  return { key: 'high',     label: 'High' };
-  if (score >= 4)  return { key: 'medium',   label: 'Medium' };
-  return { key: 'low', label: 'Low' };
+  return PortalCalc.riskBand(score);
 }
 
 // Owners come from the team, so a mitigation line can land in that person's
@@ -17248,7 +17247,8 @@ function portalMilestonePhases(ms) {
   return out.filter(p => p.items.length);
 }
 const PORTAL_ANCHOR_KEYS = new Set(PORTAL_ANCHORS.map(a => a.key));
-function isMilestoneLike(t) { return PORTAL_ANCHOR_KEYS.has(inferredAnchorKey(t)); }
+// Shared with the customer portal (public/portalCalc.js).
+function isMilestoneLike(t) { return PortalCalc.isMilestoneLike(t); }
 
 // Real task names, not department buckets. "Wire" told a customer nothing;
 // "Machine Wiring 2, 40%" tells them exactly what is on the floor.
@@ -22213,15 +22213,14 @@ async function _deleteFinancialMilestone(project, id) {
 // straight back. Prefer a machine literally named M1 (the base on every
 // normal project, and where the legacy NULL rows have always displayed),
 // otherwise the first machine.
+// Shared with the customer portal (public/portalCalc.js, finBaseMachine).
 function _finBaseMachine(machines) {
-  const list = (machines || []).filter(Boolean).map(String);
-  if (!list.length) return 'M1';
-  return list.includes('M1') ? 'M1' : list[0];
+  return PortalCalc.finBaseMachine(machines);
 }
+// Shared with the customer portal (public/portalCalc.js, finProjectMachines)
+// — this wrapper just gathers state.tasks for it.
 function _finProjectMachines(project) {
-  return Array.from(new Set(
-    (state.tasks || []).filter(t => t.project === project && t.machine).map(t => String(t.machine))
-  )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return PortalCalc.finProjectMachines((state.tasks || []).filter(t => t.project === project));
 }
 async function mountFinancialsEditor(container, project, machine) {
   if (!container || !project) return;
@@ -29928,22 +29927,11 @@ function offsetISO(days) {
 
 // Match an existing task to an anchor by either anchor_key (when the column has been
 // populated) OR by name (fallback for tasks created before the column existed).
+// Shared with the customer portal (public/portalCalc.js) — one copy of this
+// logic, not two that can quietly drift apart (a missing parts_panel_ready
+// branch in the customer-portal copy was found and fixed by unifying these).
 function inferredAnchorKey(t) {
-  // Backlog is NOT an anchor for behavior purposes — it's just a regular
-  // row that happens to live above section 10. Returning null here makes
-  // every code path (delete protection, milestone-flip logic, etc.)
-  // treat it as an ordinary task.
-  if (t.anchor_key && t.anchor_key !== 'backlog') return t.anchor_key;
-  const n = String(t.name || '').trim().toLowerCase();
-  if (n === 'receipt of po')                              return 'receipt_of_po';
-  if (n === 'mech 1 release' || n === 'mech release 1' || n === 'mech1 release') return 'mech_release_1';
-  if (n === 'machine power-up' || n === 'machine powerup' || n === 'machine power up') return 'machine_power_up';
-  if (n === 'fat')                                        return 'fat';
-  if (n === 'ship machine')                               return 'ship_machine';
-  if (n === 'sat' || n === 'acceptance at customer (sat)') return 'sat';
-  if (/^parts\s*(\+|and|&)\s*drawings\s+for\s+panel\s+(build\s+)?ready$/.test(n)
-      || /^parts\s*(\+|and|&)\s*drawings\s+ready\s+for\s+panel(\s+build)?$/.test(n)) return 'parts_panel_ready';
-  return null;
+  return PortalCalc.inferredAnchorKey(t);
 }
 
 // Backlog is a "duration milestone" — a project-spine task with real calendar
@@ -30028,51 +30016,10 @@ async function ensureAnchorsForProject(project) {
 // Machine), and remap legacy phase_group / department values left over from earlier
 // restructures so the rest of the app sees clean, current-shape data even before the
 // server is restarted (which is when the persistent SQL migrations actually run).
+// Shared with the customer portal (public/portalCalc.js, normalizeTasks) —
+// same dedup + legacy phase_group remap on both sides.
 function dedupAnchors(all) {
-  // Dedup PER (project, machine, anchor_key). Anchors are scoped to a project,
-  // AND for per-machine anchors (FAT / Ship Machine / Power-Up) also scoped to
-  // a machine. So a multi-machine project can have FAT-M1, FAT-M2, etc. side
-  // by side without one shadowing the other. machine='' = shared (PO,
-  // Mech Release) which stays one-per-project.
-  const oldest = {}; // key = `${project}::${machine}::${anchor_key}` → lowest id
-  for (const t of all) {
-    const k = inferredAnchorKey(t);
-    if (!k) continue;
-    const scope = `${t.project || ''}::${t.machine || ''}::${k}`;
-    if (!(scope in oldest) || t.id < oldest[scope]) oldest[scope] = t.id;
-  }
-  return all
-    .filter(t => {
-      const k = inferredAnchorKey(t);
-      if (!k) return true;
-      return t.id === oldest[`${t.project || ''}::${t.machine || ''}::${k}`];
-    })
-    .map(t => {
-      // Legacy section-50 split ('teardown' or 'install' as their own phase_group)
-      // is now reunified under 'teardown_install'. Pull those rows back into shape
-      // so they render in the right section without waiting on a server restart.
-      if (t.phase_group === 'teardown') {
-        return { ...t, phase_group: 'teardown_install', department: t.department || 'teardown' };
-      }
-      if (t.phase_group === 'install') {
-        return { ...t, phase_group: 'teardown_install', department: t.department || 'install' };
-      }
-      // Section 50 INSTALL has engineering/shop as SUB-departments, not departments.
-      // Wrap legacy rows that still have department='engineering' or 'shop' directly
-      // under teardown_install (no sub-dept) into install/<engineering|shop>.
-      if (t.phase_group === 'teardown_install'
-          && (t.department === 'engineering' || t.department === 'shop')
-          && !t.sub_department) {
-        return { ...t, sub_department: t.department, department: 'install' };
-      }
-      // Section 50 tasks with no department default to TEARDOWN. Without this they
-      // bucket at the section level (right under "50 TEARDOWN & INSTALL" with no
-      // indent) which looks orphaned next to the proper TEARDOWN/INSTALL grouping.
-      if (t.phase_group === 'teardown_install' && !t.department) {
-        return { ...t, department: 'teardown' };
-      }
-      return t;
-    });
+  return PortalCalc.normalizeTasks(all);
 }
 
 // One-shot data repair, run on every task load: any row that IS an anchor
