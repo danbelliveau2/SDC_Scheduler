@@ -167,6 +167,16 @@ async function _boot() {
   // Customer share link: no login, no modal, no user pill — the share token
   // on every request is the whole identity (read-only, one project).
   if (SHARE_TOKEN) return;
+  // Customer portal session (sdc_customer_session cookie): same idea, no
+  // staff login, no modal, no user pill — that cookie is the whole identity
+  // here too (read-only, this customer's own projects). Without this check,
+  // a logged-in customer still hit the 401 branch below (no staff JWT, ever
+  // — they never have one) and got the SDC-email staff login modal on top
+  // of a page they were already correctly signed into a different way.
+  try {
+    const { isCustomer } = await window.sdcAuth.customerSessionCheck;
+    if (isCustomer) return;
+  } catch (_) {}
   await _trySsoHandoff();
   try {
     const r = await _originalFetch('/api/auth/me', {
