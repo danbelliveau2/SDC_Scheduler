@@ -590,7 +590,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false, eventsMode: false, eventsOverlay: false },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -612,6 +612,9 @@ const state = {
   // to localStorage so reloads remember which schedules you had open and which one was
   // active. The Team and Setup views ignore this — they show data across all projects.
   openProjects: [''],
+  // The first tab is My work rather than the aggregate schedule. Restored
+  // per browser so a reload comes back where you were.
+  myWork: (() => { try { return localStorage.getItem('sdcMyWork') === '1'; } catch (_) { return false; } })(),
   // Project names flagged as templates: protected from accidental close, marked with
   // a star in the tab. Stored in localStorage as a string array.
   templateProjects: [],
@@ -935,7 +938,7 @@ function buildCanonicalTaskOrder() {
   // against the same map every other row uses.
   const seen = new Set(order);
   state.tasks
-    .filter(t => (t.phase_group === RISK_GROUP || t.phase_group === CONTROLS_GROUP) && !seen.has(t.id))
+    .filter(t => (t.phase_group === RISK_GROUP || t.phase_group === CONTROLS_GROUP || t.phase_group === EVENTS_GROUP) && !seen.has(t.id))
     .sort((a, b) => String(a.sub_department || '').localeCompare(String(b.sub_department || ''))
       || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
     .forEach(t => order.push(t.id));
@@ -1118,6 +1121,11 @@ function sortMembersForDisplay(members) {
 // any row.
 function relevantDisciplinesForTask(task) {
   if (!task) return ALL_SCHEDULABLE_DISCIPLINES;
+  // Standard events are company work, not delivery-team work — marketing,
+  // purchasing, finance, whoever. The section guardrail below exists to stop
+  // a trade landing on an engineering row; it has nothing to say here, so
+  // every department is offered.
+  if (task.phase_group === EVENTS_GROUP) return DISCIPLINES.map(d => d.key);
   const pg  = task.phase_group;
   const dep = task.department;
   const sub = task.sub_department;
@@ -1735,6 +1743,10 @@ function applyFilters(tasks, opts = {}) {
   // risk is flagged to sit on the real schedule alongside the build.
   // The controls list is its own view of its own rows, for the same reason
   // risk mode is: the build filters belong to the build.
+  if (!skipViewMode && state.scheduleView && state.scheduleView.eventsMode) {
+    return tasks.filter(t => t.phase_group === EVENTS_GROUP
+      && (!project || t.project === project));
+  }
   if (!skipViewMode && state.scheduleView && state.scheduleView.controlsMode) {
     return tasks.filter(t => t.phase_group === CONTROLS_GROUP
       && (!project || t.project === project));
@@ -1757,9 +1769,16 @@ function applyFilters(tasks, opts = {}) {
     if (!(state.scheduleView && state.scheduleView.controlsOverlay)) {
       tasks = tasks.filter(t => t.phase_group !== CONTROLS_GROUP);
     }
+    // Standard events are the same deal: off the build until S is on.
+    if (!(state.scheduleView && state.scheduleView.eventsOverlay)) {
+      tasks = tasks.filter(t => t.phase_group !== EVENTS_GROUP);
+    }
   }
   const qf = quick || {};
   const personal = isPersonalMode();
+  // My work with nobody signed in. Not the aggregate schedule, not a
+  // sample — nothing, until we know whose page this is.
+  if (state.myWork && state.view === 'schedule' && !project && !personal) return [];
   const subset = Array.isArray(projectsSubset) ? projectsSubset : [];
   // Subset only applies on the All-projects view (no single-project filter
   // active). Empty subset = no filter; non-empty = whitelist.
@@ -2170,6 +2189,9 @@ function rowColorKey(task) {
   if (task.phase_group === RISK_GROUP) return 'risk';
   // The controls palette, because that is whose list it is.
   if (task.phase_group === CONTROLS_GROUP) return 'controls';
+  // No department of their own; the kickoff palette reads as "about the
+  // job" which is exactly what these are.
+  if (task.phase_group === EVENTS_GROUP) return 'kickoff';
   // Sub-department wins. The sub-depts named 'engineering' / 'shop' (section 50
   // INSTALL has them) share the combined eng/shop palette so they read like
   // section 40's dept-only engineering/shop.
@@ -2397,7 +2419,9 @@ function renderTable() {
   const filtered = scheduleVisibleTasks();
   const empty = document.getElementById('empty-state');
 
-  if (filtered.length === 0) {
+  const _listMode = !!(state.scheduleView &&
+    (state.scheduleView.eventsMode || state.scheduleView.controlsMode));
+  if (filtered.length === 0 && !_listMode) {
     tbody.innerHTML = '';
     if (empty) {
       empty.classList.remove('hidden');
@@ -2424,19 +2448,27 @@ function renderTable() {
     (buckets[path] ||= []).push(t);
   }
   // Sort each bucket — by start_date when the user has flipped the "By date" toggle,
-  // otherwise by their manual sort_order so drag-reordering sticks. In BOTH cases,
-  // action items (is_action = 1) sort to the BOTTOM of their bucket so scheduled
-  // work appears first and actions read as "extras tucked under their section."
-  // v4.46 added the is_action secondary sort.
-  const sortBucket = (arr) => {
+  // otherwise by their manual sort_order so drag-reordering sticks. Inside a
+  // sub-department, action items (is_action = 1) sort to the BOTTOM so
+  // scheduled work appears first and actions read as "extras tucked under
+  // their section."
+  //
+  // That tuck is OFF in the flat list (actionsLast = false). Flatten removes
+  // the sub-department headers, so there is no section left to tuck under —
+  // an action parked at the bottom of a thirty-row section, months away from
+  // its own date, and its line number (which comes from the canonical
+  // date-ordered walk, where is_action is not a factor) then disagreed with
+  // where the row actually sat. Flatten sorts by date. Nothing else.
+  const sortBucket = (arr, actionsLast = true) => {
+    const act = (a, b) => actionsLast ? ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0)) : 0;
     if (state.scheduleView.sortByStart) {
       arr.sort((a, b) =>
-        ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0))
+        act(a, b)
         || (a.start_date || '￿').localeCompare(b.start_date || '￿')
         || (a.sort_order || 0) - (b.sort_order || 0));
     } else {
       arr.sort((a, b) =>
-        ((a.is_action ? 1 : 0) - (b.is_action ? 1 : 0))
+        act(a, b)
         || (a.sort_order || 0) - (b.sort_order || 0));
     }
   };
@@ -2466,7 +2498,7 @@ function renderTable() {
       if (!t.phase_group) continue;
       (flatBySection[t.phase_group] ||= []).push(t);
     }
-    for (const k in flatBySection) sortBucket(flatBySection[k]);
+    for (const k in flatBySection) sortBucket(flatBySection[k], false);
     for (const k in flatBySection) flatBySection[k] = _collapseChains(flatBySection[k]);
   }
 
@@ -2641,6 +2673,8 @@ function renderTable() {
   if (riskMode) html += _riskSectionRowsHtml(filtered, collapsedGroups);
   const controlsMode = !!(state.scheduleView && state.scheduleView.controlsMode);
   if (controlsMode) html += _controlsSectionRowsHtml(filtered, collapsedGroups);
+  const eventsMode = !!(state.scheduleView && state.scheduleView.eventsMode);
+  if (eventsMode) html += _eventsSectionRowsHtml(filtered, collapsedGroups);
 
   // A milestone filter: no headers, one list, date order. The spine anchors
   // (FAT / SAT / Ship / PO) sort with everything else here rather than being
@@ -2657,7 +2691,7 @@ function renderTable() {
     }
   }
 
-  for (const group of ((riskMode || controlsMode || mFilter) ? [] : HIERARCHY)) {
+  for (const group of ((riskMode || controlsMode || eventsMode || mFilter) ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
@@ -2814,6 +2848,11 @@ function renderTable() {
   // to appear somewhere rather than vanish with the filter on.
   if (!riskMode && !controlsMode && !html.includes('data-sub-key="controls"')) {
     html += _controlsSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
+  }
+  // Standard events close the schedule. They belong to the job rather than
+  // to a department, so there is no sub-section to tuck them under.
+  if (!riskMode && !controlsMode && !eventsMode) {
+    html += _eventsSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
   }
 
   tbody.innerHTML = html;
@@ -4183,7 +4222,7 @@ function renderGantt() {
   // need bars. Without it they were dropped as ''leftovers from an old data
   // structure'' and the Gantt sat empty in risk mode even though every row
   // had dates.
-  const validSectionKeys = new Set([...HIERARCHY.map(g => g.key), RISK_GROUP, CONTROLS_GROUP]);
+  const validSectionKeys = new Set([...HIERARCHY.map(g => g.key), RISK_GROUP, CONTROLS_GROUP, EVENTS_GROUP]);
   // v4.50: when NOT in sortByStart mode, use the GRID's canonical order
   // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
   // grid rows do — Receipt of PO at top, Backlog under it, section 10
@@ -11669,6 +11708,13 @@ function renderProjectsPage() {
         <h1 class="projects-page-title">Projects</h1>
         <div class="projects-page-sub">${nonTmplCount} schedule${nonTmplCount !== 1 ? 's' : ''} across ${wsWithProjects} workspace${wsWithProjects !== 1 ? 's' : ''}</div>
       </div>
+      <!-- The aggregate every-project schedule. It used to be the first tab;
+           that tab is My work now, so its entrance is here, on the page you
+           are already on when you are looking for projects rather than for
+           your own work. -->
+      <button class="toolbar-toggle-btn" data-action="open-all-schedule" type="button"
+        title="Open the combined schedule across every project."
+        style="flex:none;white-space:nowrap;">☷ All-projects schedule</button>
       <a class="toolbar-toggle-btn" id="link-reports-projects" href="${_reportsAppUrl('/quoted')}" target="_blank" rel="noopener"
          title="Open SDC Projects Reports (Projects grid) in a new tab" style="flex:none;text-decoration:none;white-space:nowrap;">← SDC Projects Reports</a>
     </div>
@@ -11733,6 +11779,8 @@ function renderProjectsPage() {
       const p = row.dataset.project;
       if (!p) return;
       if (!state.openProjects.includes(p)) state.openProjects.push(p);
+      setMyWork(false);
+      clearListModes();
       state.filters.project = p;
       state.activeWorkspace = projectWorkspace(p);
       recordRecentProject(p);
@@ -11762,6 +11810,23 @@ function renderProjectsPage() {
     });
   });
   // Star toggle on each row (favorite / unfavorite).
+  root.querySelector('[data-action="open-all-schedule"]')?.addEventListener('click', () => {
+    // The aggregate view is the no-project-filter schedule.
+    if (isPersonalMode()) {
+      state.filters.assignee = '';
+      restorePersonalViewDefaults();
+      document.body.classList.remove('personal-mode');
+    }
+    // The aggregate schedule is deliberately NOT My work — it is the
+    // across-the-shop view a PM opens to pick a set of jobs out of.
+    setMyWork(false);
+    clearListModes();
+    state.filters.project = '';
+    if (!state.openProjects.includes('')) state.openProjects.unshift('');
+    try { saveProjectTabs(); } catch (_) {}
+    setView('schedule');
+  });
+
   root.querySelectorAll('[data-action="toggle-fav"]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -12533,25 +12598,9 @@ function renderProjectTabs() {
   if (!wrap) return;
   try { renderScheduleLeads(); } catch (_) {}
 
-  // When signed in (personId persisted), the personal tab is ALWAYS visible
-  // in the strip — even when the user clicks away to a project tab — so
-  // they can return to their personal view in one click. Active state is
-  // separate: only highlighted when isPersonalMode() reports true (assignee
-  // filter actually applied + no project filter).
-  let personalTabHtml = '';
-  const personId = _actionsPageState?.personId;
-  if (personId != null) {
-    const member = (state.team || []).find(m => m.id === personId);
-    if (member) {
-      const isPersonalActive = isPersonalMode();
-      personalTabHtml = `
-        <button class="project-tab is-personal ${isPersonalActive ? 'active' : ''}" data-personal="1" type="button" draggable="false">
-          <span class="project-tab-dot project-tab-dot-personal" title="Personal view"></span>
-          <span class="project-tab-label">👤 ${escapeHtml(member.name)}</span>
-          <span class="project-tab-close" data-personal-clear="1" title="Sign out — back to All projects">×</span>
-        </button>`;
-    }
-  }
+  // The first tab is My work, and when we know who you are it carries your
+  // name. There is no second personal tab any more — one page, one tab.
+  const personalTabHtml = '';
 
   // Show ALL open project tabs regardless of workspace. v4.18 dropped the
   // workspace filter that v4.8 introduced — having tabs disappear when you
@@ -12584,10 +12633,12 @@ function renderProjectTabs() {
     // schedule tab looking selected. Personal mode is also exclusive —
     // the personal tab owns the active state then.
     const isActive = state.view === 'schedule'
-      && !isPersonalMode()
-      && (state.filters.project || '') === p;
+      && (isAll ? !!state.myWork : (!isPersonalMode() && (state.filters.project || '') === p));
     const isTemplate = isTemplateProject(p);
-    const label = isAll ? 'All projects' : p;
+    const _mwMember = isAll ? signedInMember() : null;
+    const label = !isAll ? p
+      : _mwMember ? '👤 ' + _mwMember.name
+      : '👤 My work';
     // All-projects pseudo-tab has no close button (it's a special permanent
     // tab). Everything else — including templates — can be closed via the ×;
     // "close" only removes the tab from the open-tabs list, the underlying
@@ -12657,29 +12708,9 @@ function renderProjectTabs() {
       : '');
   fitProjectTabRows();
 
-  // Personal-tab × handler — full sign-out: clear personId entirely, drop
-  // assignee filter, return to All Projects.
-  const personalClearBtn = wrap.querySelector('[data-personal-clear]');
-  if (personalClearBtn) {
-    personalClearBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      _actionsPageState.personId = null;
-      try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
-      routePersonalMode(null);
-    });
-  }
-  // Personal tab body click — re-enter personal mode (re-applies the
-  // assignee filter + clears the project filter so the schedule view
-  // shows just this person's work again).
-  const personalTabBtn = wrap.querySelector('.project-tab.is-personal');
-  if (personalTabBtn) {
-    personalTabBtn.addEventListener('click', (e) => {
-      if (e.target.closest('.project-tab-close')) return;
-      if (_actionsPageState && _actionsPageState.personId != null) {
-        routePersonalMode(_actionsPageState.personId);
-      }
-    });
-  }
+  // The separate personal tab and its × are gone with personalTabHtml —
+  // signing out lives on the personal banner above the toolbar now, next to
+  // the name it signs you out of.
 
   // Departments tab — just navigates; it's not a project (no project filter,
   // no context menu, no drag).
@@ -12692,14 +12723,20 @@ function renderProjectTabs() {
   wrap.querySelectorAll('.project-tab:not(.is-personal):not(.is-dept):not(.is-portal)').forEach(btn => {
     btn.addEventListener('click', (e) => {
       if (e.target.closest('.project-tab-close')) return;
+      // My work: your own schedule. openMyWork works out who you are and
+      // only asks if it cannot.
+      if (btn.dataset.project === '') { openMyWork(); return; }
       // Clicking a regular project tab while signed in: keep personId
       // persisted (so the personal tab stays visible — they can return)
       // but drop the assignee filter so the project view shows the whole
       // project, not just this person's slice.
       if (isPersonalMode()) {
         state.filters.assignee = '';
+        restorePersonalViewDefaults();
         document.body.classList.remove('personal-mode');
       }
+      setMyWork(false);
+      clearListModes();
       state.filters.project = btn.dataset.project;
       // Load this project's machine-subset filter (each project remembers
       // its own machine selection so switching tabs doesn't bleed filters).
@@ -12785,33 +12822,6 @@ function renderProjectTabs() {
       // toolbar — this one stays empty so the layout doesn't double up.
       banner.innerHTML = '';
     } else if (!state.filters.project) {
-      // Two-step sign-in: department first, then person. Mirrors the picker
-      // the Actions tab used to have. `_actionsPageState.deptForPicker`
-      // holds the currently-picked department.
-      const team = (state.team || []).filter(m => m.active !== 0 && !isPlaceholder(m.name));
-      const dept = _actionsPageState.deptForPicker || '';
-      const inDept = dept ? team.filter(m => m.discipline === dept) : [];
-      inDept.sort((a, b) => {
-        if (!!b.is_lead - !!a.is_lead !== 0) return (!!b.is_lead) - (!!a.is_lead);
-        return (a.sort_order || 0) - (b.sort_order || 0) || (a.name || '').localeCompare(b.name || '');
-      });
-      const signInHtml = team.length > 0
-        ? `<span class="banner-signin-wrap" title="Sign in as one team member — switches to a personal view of their tasks/actions across every project.">
-             <span class="banner-signin-label">Sign in:</span>
-             <select id="banner-signin-dept" class="banner-signin-pick">
-               <option value="">Department…</option>
-               <option value="mech"     ${dept === 'mech'     ? 'selected' : ''}>Mech Eng</option>
-               <option value="controls" ${dept === 'controls' ? 'selected' : ''}>Controls Eng</option>
-               <option value="build"    ${dept === 'build'    ? 'selected' : ''}>Build</option>
-               <option value="wire"     ${dept === 'wire'     ? 'selected' : ''}>Wire</option>
-               <option value="pm"       ${dept === 'pm'       ? 'selected' : ''}>Project Mgmt</option>
-             </select>
-             <select id="banner-signin-pick" class="banner-signin-pick" ${dept ? '' : 'disabled'}>
-               <option value="">${dept ? 'Pick yourself…' : 'Pick department first'}</option>
-               ${inDept.map(m => `<option value="${m.id}">${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`).join('')}
-             </select>
-           </span>`
-        : '';
       // Multi-project filter — PM view.
       const subset = Array.isArray(state.filters.projectsSubset) ? state.filters.projectsSubset : [];
       const subsetCount = subset.length;
@@ -12831,7 +12841,11 @@ function renderProjectTabs() {
       // anchoring to that narrow floating box and flying off the top of the
       // page. The sign-in and projects controls live in the left zone, which is
       // in normal flow, so their popover drops under its own button.
-      banner.innerHTML = '<span class="schedule-project-name-pill schedule-project-label">All projects</span>';
+      // Personal mode draws its own banner above the toolbar, so reaching
+      // here with My work on means we could not tell who you are. Say so,
+      // rather than letting an empty grid look like a broken page.
+      const pillText = state.myWork ? '👤 My work' : 'All projects';
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(pillText)}</span>`;
       const leftZone = document.querySelector('.banner-left');
       let extra = document.getElementById('banner-left-extra');
       if (!extra && leftZone) {
@@ -12840,25 +12854,15 @@ function renderProjectTabs() {
         extra.className = 'banner-left-extra';
         leftZone.appendChild(extra);
       }
-      if (extra) extra.innerHTML = signInHtml + projectsFilterHtml;
-      const deptSel = document.getElementById('banner-signin-dept');
-      if (deptSel) {
-        deptSel.addEventListener('change', (e) => {
-          _actionsPageState.deptForPicker = e.target.value || '';
-          renderProjectTabs(); // re-render so the person select repopulates
-        });
-      }
-      const signInPick = document.getElementById('banner-signin-pick');
-      if (signInPick) {
-        signInPick.addEventListener('change', (e) => {
-          const id = e.target.value ? Number(e.target.value) : null;
-          if (id == null) return;
-          _actionsPageState.personId = id;
-          try { localStorage.setItem('sdcActionsPersonId', String(id)); } catch {}
-          routePersonalMode(id);
-        });
-      }
-      wireBannerProjectsFilter();
+      // The projects subset picker belongs to the aggregate view, where a
+      // PM narrows to the jobs they run. On My work the scope is already
+      // you.
+      const signInHtml = state.myWork
+        ? `<button type="button" class="banner-signin-btn" id="btn-my-work-signin">Sign in to see your work</button>`
+        : '';
+      if (extra) extra.innerHTML = state.myWork ? signInHtml : projectsFilterHtml;
+      document.getElementById('btn-my-work-signin')?.addEventListener('click', () => showMyWorkSignIn());
+      if (!state.myWork) wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
       banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
@@ -15740,9 +15744,11 @@ function render(opts = {}) {
   try { renderProjectNotes(); } catch (_) {}
   try { renderScheduleProcurement(); } catch (_) {}
   try { renderScheduleGoal(); } catch (_) {}
+  try { renderPanelCountdown(); } catch (_) {}
   if (state.view === 'portal') { try { renderPortal(); } catch (_) {} }
   try { syncRiskModeButtons(); } catch (_) {}
   try { syncControlsButtons(); } catch (_) {}
+  try { syncEventsButtons(); } catch (_) {}
 
   // Opening a project should not need three clicks to become readable. When
   // the project has just changed, put the view into its intended shape: the
@@ -16565,12 +16571,171 @@ function _controlsSectionRowsHtml(filtered, collapsedGroups, opts) {
   // No add-row here: right-click any line and "Add task below" is how rows
   // are made everywhere else in the grid.
   if (!rows.length && project) {
+    // An empty list gets real lines to work from. Clicking one makes the
+    // row — no toolbar button, no menu to find, just the empty line you
+    // would have typed into anyway.
+    for (let i = 0; i < 3; i++) {
+      html += `<tr class="list-blank-row" data-add-list="controls"><td colspan="${cols}">
+        <span class="list-blank-hint">Click to add a line</span></td></tr>`;
+    }
     html += `<tr class="ctrl-add-row"><td colspan="${cols}">
       <span class="risk-mode-hint">Nothing here yet — right-click a line on the schedule and pick “Move to controls list”.</span>
     </td></tr>`;
   }
   return html;
 }
+// ── Standard project events ─────────────────────────────────────────────
+// The things that happen on every job and belong to nobody's department:
+// send the marketing videos, get the spare parts list out, the standing
+// reminders a PM would otherwise retype into thirty schedules. They are
+// ordinary rows — real dates, a real assignee, real history — parked in
+// their own list so they are not cluttering the build, and brought onto it
+// with the S bracket when you want to see them.
+//
+// Put them in SDC_StandardProject_Template once and every schedule cloned
+// from it starts with them. That is the "I do not want to type this into
+// every schedule" half of the problem; this list is the other half.
+const EVENTS_GROUP = 'EVT';
+const EVENTS_SUB = 'standard-events';
+
+function standardEvents(project) {
+  return state.tasks
+    .filter(t => t.project === project && t.phase_group === EVENTS_GROUP)
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+
+const EVENTS_ORIGIN_KEY = 'std_events_origin';
+
+function _eventsOrigins() {
+  return (state.settings && state.settings[EVENTS_ORIGIN_KEY]) || {};
+}
+
+async function _rememberEventsOrigin(t) {
+  state.settings = state.settings || {};
+  const map = state.settings[EVENTS_ORIGIN_KEY] = { ..._eventsOrigins() };
+  map[String(t.id)] = {
+    phase_group: t.phase_group || null,
+    department: t.department || null,
+    sub_department: t.sub_department || null,
+    sort_order: Number(t.sort_order) || 0,
+  };
+  try { await api.putSetting(EVENTS_ORIGIN_KEY, map); } catch (_) {}
+}
+
+async function _forgetEventsOrigin(id) {
+  const map = { ..._eventsOrigins() };
+  if (!(String(id) in map)) return;
+  delete map[String(id)];
+  state.settings = state.settings || {};
+  state.settings[EVENTS_ORIGIN_KEY] = map;
+  try { await api.putSetting(EVENTS_ORIGIN_KEY, map); } catch (_) {}
+}
+
+async function moveToStandardEvents(id) {
+  const t = state.tasks.find(x => x.id === id);
+  if (!t) return;
+  if (t.phase_group === EVENTS_GROUP) return;
+  await _rememberEventsOrigin(t);
+  const sibs = standardEvents(t.project);
+  const sort = sibs.length ? (Number(sibs[sibs.length - 1].sort_order) || 0) + 1 : 1;
+  try {
+    await api.update(id, {
+      phase_group: EVENTS_GROUP,
+      department: null,
+      sub_department: EVENTS_SUB,
+      sort_order: sort,
+    });
+  } catch (e) {
+    showToast(e.message || 'Could not move the line.', { kind: 'error' });
+    return;
+  }
+  await loadTasks();
+  showToast('Moved to the standard events list. Turn on S to see it here.', { kind: 'success' });
+}
+
+// Back onto the build, where it came from. A line typed straight into the
+// list has no origin, so it lands in Kickoff — the one section that is
+// about the job rather than a department.
+async function moveOutOfStandardEvents(id) {
+  const home = _eventsOrigins()[String(id)] || {
+    phase_group: 'kickoff', department: null, sub_department: null,
+  };
+  try {
+    await api.update(id, {
+      phase_group: home.phase_group || 'kickoff',
+      department: home.department || null,
+      sub_department: home.sub_department || null,
+      sort_order: home.sort_order != null ? home.sort_order : undefined,
+    });
+  } catch (e) {
+    showToast(e.message || 'Could not move the line.', { kind: 'error' });
+    return;
+  }
+  await _forgetEventsOrigin(id);
+  await loadTasks();
+  showToast('Moved back to the schedule.', { kind: 'success' });
+}
+
+// The list as one section. On the build it rides at the bottom — these
+// events belong to the job, not to a department, so there is no sub-section
+// to tuck them under the way the controls items have one.
+function _eventsSectionRowsHtml(filtered, collapsedGroups, opts) {
+  const project = state.filters.project || '';
+  const cols = state.layout.columnOrder.length;
+  const overlay = !!(opts && opts.overlay);
+  if (overlay && !(state.scheduleView && state.scheduleView.eventsOverlay)) return '';
+  const rows = filtered.filter(t => t.phase_group === EVENTS_GROUP)
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  if (overlay && !rows.length) return '';
+  const path = groupPath(EVENTS_GROUP, null, EVENTS_SUB);
+  const collapsed = collapsedGroups.has(path);
+  let html = headerRowHtml(1, 'STANDARD EVENTS', path, collapsed, {
+    'section-key': 'standard-events',
+  });
+  if (collapsed) return html;
+  for (const t of rows) html += rowHtml(t, 2);
+  if (!rows.length && project) {
+    // An empty list gets real lines to work from. Clicking one makes the
+    // row — no toolbar button, no menu to find, just the empty line you
+    // would have typed into anyway.
+    for (let i = 0; i < 3; i++) {
+      html += `<tr class="list-blank-row" data-add-list="events"><td colspan="${cols}">
+        <span class="list-blank-hint">Click to add a line</span></td></tr>`;
+    }
+    html += `<tr class="ctrl-add-row"><td colspan="${cols}">
+      <span class="risk-mode-hint">Nothing here yet — right-click a line on the schedule and pick “Move to standard events”, or click a blank line above.</span>
+    </td></tr>`;
+  }
+  return html;
+}
+
+// The pair of buttons, mirroring controls: one swaps the view, one brings
+// the list onto the build without leaving it.
+function syncEventsButtons() {
+  const on = !!(state.scheduleView && state.scheduleView.eventsMode);
+  const btn = document.getElementById('btn-events-mode');
+  if (btn) {
+    btn.textContent = on ? '← Back to schedule' : '★ Standard events';
+    btn.title = on
+      ? 'Back to the build — sections 05 / 10 / 40 / 50.'
+      : 'The standing items every job carries — marketing videos, the spare parts list, and the rest. They stay off the build until you ask for them.';
+    btn.classList.toggle('is-active', on);
+  }
+  const ov = document.getElementById('btn-view-events');
+  if (ov) {
+    const project = state.filters.project || '';
+    const n = project ? standardEvents(project).length : 0;
+    ov.classList.toggle('hidden', !project);
+    const showing = !!(state.scheduleView && state.scheduleView.eventsOverlay);
+    ov.classList.toggle('is-active', showing);
+    ov.title = showing
+      ? 'Hide the standard events again.'
+      : (n
+        ? 'Show the ' + n + ' standard event' + (n === 1 ? '' : 's') + ' on this job.'
+        : 'No standard events on this job yet — right-click any line to move it here.');
+  }
+}
+
 let _riskProject = '';            // project the open register belongs to
 // Per-risk line numbering. A mitigation schedule is its own little schedule,
 // so line 1 is its first row - not the 36th row of the project. Predecessors
@@ -17279,6 +17444,7 @@ function _portalPhaseOf(t) {
   // its own name rather than being lumped in with the build.
   if (t.phase_group === RISK_GROUP) return 'Risk mitigation';
   if (t.phase_group === CONTROLS_GROUP) return 'Controls list';
+  if (t.phase_group === EVENTS_GROUP) return 'Standard events';
   return byGroup(t.phase_group) || 'Other';
 }
 
@@ -19191,11 +19357,157 @@ function _setDrawerCollapsed(key, collapsed) {
   try { localStorage.setItem('sdcDrawer_' + key, collapsed ? '1' : '0'); } catch (_) {}
 }
 
+// The names whose notes count as yours. Yourself always; a department lead
+// also gets their team, which is how personalScopeMatch already reads
+// tasks, so the two panes agree about who you are.
+function _myNoteNames(member) {
+  const out = new Set();
+  if (!member) return out;
+  out.add(String(member.name || '').trim().toLowerCase());
+  if (member.is_lead) {
+    (state.team || [])
+      .filter(m => m.discipline === member.discipline)
+      .forEach(m => out.add(String(m.name || '').trim().toLowerCase()));
+  }
+  out.delete('');
+  return out;
+}
+
+// Every note across every project that is addressed to you. A PM also sees
+// the notes on the jobs they run — nobody informs the PM on their own
+// project, they are expected to read it.
+function _myNotes(member) {
+  const names = _myNoteNames(member);
+  const isPm = member && member.discipline === 'pm';
+  const out = [];
+  Object.keys(state.projectNotes || {}).forEach(p => {
+    if (isTemplateProject(p) || projectWorkspace(p) === 'Sales') return;
+    const minePm = isPm && projectLead(p, 'pm') === member.name;
+    ((state.projectNotes[p] || {}).sessions || []).forEach(sess => {
+      (sess.items || []).forEach(it => {
+        const text = String(it.text || '').trim();
+        if (!text) return;
+        const informed = _infList(it);
+        const forMe = informed.some(n => names.has(String(n).trim().toLowerCase()));
+        if (!forMe && !minePm) return;
+        out.push({ project: p, text, informed, due: it.due || '', starred: !!it.starred, mdate: sess.date || '', direct: forMe });
+      });
+    });
+  });
+  // Dated first, soonest at the top — that is the order you work them in.
+  // Undated notes fall to the bottom, newest meeting first.
+  out.sort((a, b) => {
+    if (!!b.due !== !!a.due) return a.due ? -1 : 1;
+    if (a.due && b.due && a.due !== b.due) return a.due.localeCompare(b.due);
+    return (b.mdate || '').localeCompare(a.mdate || '');
+  });
+  return out;
+}
+
+// The Notes drawer in personal mode. Same bar, same collapse memory, same
+// slot under the schedule — the contents are yours across every job.
+function renderPersonalNotes(el) {
+  const member = signedInMember();
+  if (!member) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  const projects = uniqueValues('project')
+    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales');
+  const missing = projects.filter(p => !state.projectNotes[p]);
+  if (missing.length) {
+    el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes for you</span><span class="notes-count">loading…</span></div>`;
+    state._notesLoaded = state._notesLoaded || {};
+    missing.forEach(p => {
+      api.notes.get(p)
+        .then(d => {
+          state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] };
+          state._notesLoaded[p] = true;
+        })
+        // Display-only fallback. Deliberately does NOT set the loaded flag,
+        // so the per-project panel still does its own authoritative load
+        // before autosave is allowed anywhere near it.
+        .catch(() => { state.projectNotes[p] = { sessions: [] }; })
+        .finally(() => {
+          if (projects.every(pp => state.projectNotes[pp]) && isPersonalMode()) renderProjectNotes();
+        });
+    });
+    return;
+  }
+  const notes = _myNotes(member);
+  const collapsed = _drawerCollapsed('notes');
+  el.classList.toggle('is-collapsed', collapsed);
+  const today = _ymdLocal(new Date());
+  const overdue = notes.filter(n => n.due && n.due < today).length;
+  const bar = `<div class="notes-bar" data-action="toggle-notes">
+    <span class="notes-bar-title">📝 Notes for you</span>
+    <span class="notes-count">${notes.length} note${notes.length === 1 ? '' : 's'}${overdue ? ` · ${overdue} past due` : ''}</span>
+    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
+  </div>`;
+  if (collapsed) { el.innerHTML = bar; _wirePersonalNotes(el); return; }
+  const body = notes.length
+    ? notes.map(n => {
+        const late = n.due && n.due < today;
+        const chips = n.informed
+          .map(p => `<span class="pn-who">${escapeHtml(p)}</span>`).join('');
+        return `<div class="pn-row${late ? ' is-late' : ''}" data-project="${escapeHtml(n.project)}" title="Open ${escapeHtml(n.project)}">
+          <span class="pn-due">${n.due ? escapeHtml(fmtDate(n.due)) : '—'}</span>
+          <span class="pn-project">${escapeHtml(n.project)}</span>
+          <span class="pn-text">${n.starred ? '<span class="pn-star">★</span> ' : ''}${escapeHtml(n.text)}</span>
+          <span class="pn-informed">${chips}</span>
+        </div>`;
+      }).join('')
+    : `<div class="pn-empty">No notes name you right now. When someone informs you on a meeting note, it lands here.</div>`;
+  el.innerHTML = bar + `<div class="pn-wrap">
+    <div class="pn-head"><span>Due</span><span>Project</span><span>Note</span><span>Informed</span></div>
+    ${body}
+  </div>`;
+  _wirePersonalNotes(el);
+}
+
+function _wirePersonalNotes(el) {
+  el.onclick = (e) => {
+    if (e.target.closest('[data-action="toggle-notes"]')) {
+      const willOpen = el.classList.contains('is-collapsed');
+      el.classList.toggle('is-collapsed');
+      _setDrawerCollapsed('notes', el.classList.contains('is-collapsed'));
+      renderProjectNotes();
+      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
+      return;
+    }
+    // A note is a pointer to a conversation on a job — clicking it should
+    // take you there, to the meeting it came from.
+    const row = e.target.closest('.pn-row[data-project]');
+    if (!row) return;
+    const p = row.dataset.project;
+    // Same hand-off a project tab does: leave personal scope, open the job.
+    state.filters.assignee = '';
+    restorePersonalViewDefaults();
+    document.body.classList.remove('personal-mode');
+    if (!state.openProjects.includes(p)) state.openProjects.push(p);
+    setMyWork(false);
+    clearListModes();
+    state.filters.project = p;
+    state.activeWorkspace = projectWorkspace(p);
+    loadMachinesSubset(p);
+    loadMachineColors(p);
+    recordRecentProject(p);
+    try { saveProjectTabs(); } catch (_) {}
+    setView('schedule');
+    requestAnimationFrame(() => {
+      try { document.getElementById('schedule-notes')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+    });
+  };
+}
+
 function renderProjectNotes() {
   const el = document.getElementById('schedule-notes');
   if (!el) return;
   const project = state.filters && state.filters.project;
+  // My work has no project, but it does have notes — yours, from every job.
+  if (!project && state.view === 'schedule' && isPersonalMode()) { renderPersonalNotes(el); return; }
   if (!project || state.view !== 'schedule') { el.style.display = 'none'; return; }
+  // Leaving personal mode: drop the digest's delegated click handler so the
+  // per-project panel's own listener is the only one running.
+  el.onclick = null;
   el.style.display = '';
   if (!state.projectNotes[project] || !(state._notesLoaded && state._notesLoaded[project])) {
     // Re-fetch unless this project's notes were VERIFIED-loaded (loaded flag).
@@ -19394,6 +19706,50 @@ const _procCache = {};   // job → readiness payload (just for the % ready / no
 // The weekly goal, in the middle of the footer strip. It is the one thing on
 // that row that gets touched every week, so it gets the room - the paperwork
 // buttons that used to crowd it are in the project tab menu now.
+function renderPanelCountdown() {
+  const el = document.getElementById('schedule-panel-countdown');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  if (!project || state.view !== 'schedule') { el.innerHTML = ''; return; }
+  // The milestone by anchor, or by the name people actually type. The exact
+  // match was the bug: the standard template says "Parts+Drawings for Panel
+  // Ready", real jobs say "Parts and Panels Ready for Build", and the
+  // countdown simply never appeared on those. A row that mentions the panel
+  // and being ready IS this milestone — "Panel Build+ Land in Cabinet" says
+  // panel but never says ready, so it stays out.
+  const isPanelReady = (t) => {
+    if (inferredAnchorKey(t) === 'parts_panel_ready') return true;
+    const n = String(t.name || '').trim().toLowerCase();
+    return n.includes('panel') && n.includes('ready');
+  };
+  const rows = state.tasks.filter(t => t.project === project && isPanelReady(t));
+  if (!rows.length) { el.innerHTML = ''; return; }
+  // Multi-machine jobs have one per machine; the nearest one is the one
+  // with time pressure on it.
+  const machine = (state.filters.machinesSubset || [])[0] || null;
+  const scoped = machine ? rows.filter(t => !t.machine || t.machine === machine) : rows;
+  const dated = (scoped.length ? scoped : rows)
+    .map(t => ({ t, d: t.end_date || t.start_date || '' }))
+    .filter(x => x.d)
+    .sort((a, b) => a.d.localeCompare(b.d));
+  if (!dated.length) { el.innerHTML = ''; return; }
+  const next = dated[0];
+  const done = getEffectiveProgress(next.t) >= 100;
+  const today = _ymdLocal(new Date());
+  const days = Math.round((new Date(next.d + 'T00:00:00') - new Date(today + 'T00:00:00')) / 86400000);
+  // Working weeks, like every other duration on this page.
+  const wks = Math.round((Math.abs(days) / 5) * 2) / 2;
+  let label, cls;
+  if (done) { label = 'ready'; cls = 'is-done'; }
+  else if (days < 0) { label = wks + 'w overdue'; cls = 'is-late'; }
+  else if (days === 0) { label = 'due today'; cls = 'is-soon'; }
+  else { label = wks + 'w to go'; cls = wks <= 2 ? 'is-soon' : ''; }
+  el.innerHTML = `<span class="panel-cd ${cls}" title="Parts + drawings ready for the panel build — ${escapeHtml(portalDate(next.d))}. How long the controls team has to get the parts in.">
+      <span class="panel-cd-label">Panel parts</span>
+      <span class="panel-cd-value">${escapeHtml(label)}</span>
+    </span>`;
+}
+
 function renderScheduleGoal() {
   const el = document.getElementById('schedule-goal');
   if (!el) return;
@@ -20143,6 +20499,24 @@ async function deleteTaskById(id) {
 // section (including phase-group level for cross-cutting tasks like Perform FAT).
 // Right-click on a task row → "Move to section…" or "Delete task".
 function handleRowContextMenu(e) {
+  // Standard-events / controls list: the whole panel IS the list, so a
+  // right-click anywhere in it — on the hint row, under the last row, or
+  // on a list with no rows at all — offers the one thing there is to do.
+  // Checked before anything else because in an empty list there is no row
+  // and no header under the pointer to find.
+  const _sv = state.scheduleView || {};
+  if ((_sv.eventsMode || _sv.controlsMode) && !e.target.closest('tr[data-id]')) {
+    e.preventDefault();
+    const inEvents = !!_sv.eventsMode;
+    showContextMenu(e.clientX, e.clientY, [{
+      label: '＋ Add task',
+      onClick: () => createTaskInSection(
+        inEvents ? EVENTS_GROUP : CONTROLS_GROUP,
+        null,
+        inEvents ? EVENTS_SUB : CONTROLS_SUB),
+    }]);
+    return;
+  }
   const headerTr = e.target.closest('tr.group-header');
   if (headerTr) {
     e.preventDefault();
@@ -20211,6 +20585,9 @@ function handleRowContextMenu(e) {
     items.push(task.phase_group === CONTROLS_GROUP
       ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfControlsList(id) }
       : { label: '⚙ Move to controls list', onClick: () => moveToControlsList(id) });
+    items.push(task.phase_group === EVENTS_GROUP
+      ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfStandardEvents(id) }
+      : { label: '★ Move to standard events', onClick: () => moveToStandardEvents(id) });
   }
   // Key-milestone promotion — any MILESTONE row can become a key milestone
   // (green chip + anchor diamond, same format as PO / Mech 1 / FAT). Custom
@@ -24767,7 +25144,27 @@ function signedInMember() {
 //                      still on a placeholder (unhanded-out work is theirs to
 //                      hand out).
 //   Everyone else    — the tasks with their name on them.
+const EXEC_TEAM = [
+  'dan belliveau',
+  'patrick morrison',
+  'isa',
+  'andriani',
+];
+// Matches a full name, or a first name on its own for the entries above
+// that are given that way.
+function isExecMember(member) {
+  if (!member) return false;
+  const full = String(member.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!full) return false;
+  return EXEC_TEAM.includes(full) || EXEC_TEAM.includes(full.split(' ')[0]);
+}
+
 function personalScopeMatch(t, member) {
+  // Executive leadership: everybody's work, on every job. Rows still sitting
+  // on a placeholder are not anybody's work yet, and they are the bulk of
+  // what made the old all-projects view unreadable — this is "see anyone",
+  // not "see every line in the database".
+  if (isExecMember(member)) return !!t.assignee && !isPlaceholder(t.assignee);
   if (!member) return true;
   if (member.discipline === 'pm') {
     return projectLead(t.project, 'pm') === member.name;
@@ -24788,7 +25185,7 @@ function personalScopeMatch(t, member) {
 // of PO, FAT, Ship, SAT) are the most useful rows on the page. For an
 // individual they are noise across a dozen jobs.
 function personalShowsAnchors(member) {
-  return !!member && (member.discipline === 'pm' || !!member.is_lead);
+  return !!member && (isExecMember(member) || member.discipline === 'pm' || !!member.is_lead);
 }
 
 function personalFilterPass(task, todayISO) {
@@ -25359,6 +25756,19 @@ function renderActionsPersonBar() {
     return (a.sort_order || 0) - (b.sort_order || 0);
   });
 
+  // Signed in and placed on the team — no picker. Choosing a name from a
+  // list is choosing whose work to read, and that is the one thing this
+  // page must not offer.
+  const authed = memberForSignedInUser();
+  if (authed && !isExecMember(authed)) {
+    if (_actionsPageState.personId !== authed.id) setPersonalPerson(authed.id);
+    bar.innerHTML = `
+      <div class="actions-person-bar-label">Signed in</div>
+      <span class="actions-person-who">${escapeHtml(authed.name)}</span>
+      <button type="button" class="actions-person-clear" id="actions-person-open" title="Open your schedule — every job you are on.">Open my schedule</button>`;
+    document.getElementById('actions-person-open')?.addEventListener('click', () => openMyWork());
+    return;
+  }
   bar.innerHTML = `
     <div class="actions-person-bar-label">Sign in</div>
     <select class="actions-person-select" id="actions-person-dept" title="Pick your department first.">
@@ -25386,11 +25796,7 @@ function renderActionsPersonBar() {
   });
   document.getElementById('actions-person-pick').addEventListener('change', (e) => {
     const id = e.target.value ? Number(e.target.value) : null;
-    _actionsPageState.personId = id;
-    try {
-      if (id == null) localStorage.removeItem('sdcActionsPersonId');
-      else localStorage.setItem('sdcActionsPersonId', String(id));
-    } catch {}
+    setPersonalPerson(id);
     routePersonalMode(id);
   });
   const clearBtn = document.getElementById('actions-person-clear');
@@ -25409,11 +25815,212 @@ function renderActionsPersonBar() {
 // EXACT same grid + Gantt + divider + zoom + scroll that the main schedule
 // has, just scoped to one person. When cleared, return to the Actions tab
 // and drop the assignee filter.
+// Names are typed by people, so compare them the way people mean them:
+// letters only, case and punctuation ignored.
+function _personNameKey(v) {
+  return String(v || '').toLowerCase().replace(/[^a-z]/g, '');
+}
+
+// The team member the signed-in account belongs to, or null if we cannot
+// place them. Name first; failing that the local part of the email, which
+// catches 'danbelliveau@…' → 'Dan Belliveau'.
+function memberForSignedInUser() {
+  const u = window.sdcAuth && window.sdcAuth.user;
+  if (!u) return null;
+  const roster = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
+  if (!roster.length) return null;
+  const byName = _personNameKey(u.name);
+  const hit = byName && roster.find(m => _personNameKey(m.name) === byName);
+  if (hit) return hit;
+  const local = _personNameKey(String(u.email || '').split('@')[0]);
+  if (!local) return null;
+  return roster.find(m => _personNameKey(m.name) === local) || null;
+}
+
+// One place that remembers who is signed in, so the tab strip, the Actions
+// bar and the dialog below cannot drift apart.
+// The three list views are detours off a schedule, never the thing you
+// land on. Opening any project resets them.
+function clearListModes() {
+  const sv = state.scheduleView;
+  if (!sv) return;
+  if (!sv.riskMode && !sv.controlsMode && !sv.eventsMode) return;
+  sv.riskMode = false;
+  sv.controlsMode = false;
+  sv.eventsMode = false;
+  saveScheduleView();
+}
+
+function setMyWork(on) {
+  state.myWork = !!on;
+  try { localStorage.setItem('sdcMyWork', on ? '1' : '0'); } catch (_) {}
+}
+
+function setPersonalPerson(id) {
+  if (!_actionsPageState) return;
+  _actionsPageState.personId = id;
+  try {
+    if (id == null) localStorage.removeItem('sdcActionsPersonId');
+    else localStorage.setItem('sdcActionsPersonId', String(id));
+  } catch (_) {}
+}
+
+// The My work tab.
+function canChooseWho() {
+  const authed = memberForSignedInUser();
+  if (!authed) return true;      // nothing to enforce — no identity to hold them to
+  return isExecMember(authed);   // leadership looks at anyone
+}
+
+// The sign-in list. Grouped by department because that is how people find
+// themselves in a list of sixty names, leads first inside each group.
+function showMyWorkSignIn() {
+  if (!canChooseWho()) { openMyWork(); return; }
+  const roster = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
+  if (!roster.length) { showAlertDialog({ title: 'My work', message: 'The team list has not loaded yet. Give it a moment and try again.' }); return; }
+  const exec = isExecMember(memberForSignedInUser());
+  const GROUPS = [
+    ['pm', 'Project Mgmt'], ['mech', 'Mech Eng'], ['controls', 'Controls Eng'],
+    ['build', 'Build'], ['wire', 'Wire'],
+  ];
+  const cur = _actionsPageState && _actionsPageState.personId;
+  const used = new Set();
+  const optsFor = (key) => roster
+    .filter(m => m.discipline === key)
+    .sort((a, b) => ((!!b.is_lead) - (!!a.is_lead)) || (a.sort_order || 0) - (b.sort_order || 0))
+    .map(m => { used.add(m.id); return `<option value="${m.id}"${m.id === cur ? ' selected' : ''}>${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`; })
+    .join('');
+  const groupHtml = GROUPS
+    .map(([key, label]) => { const o = optsFor(key); return o ? `<optgroup label="${label}">${o}</optgroup>` : ''; })
+    .join('');
+  const rest = roster.filter(m => !used.has(m.id))
+    .map(m => `<option value="${m.id}"${m.id === cur ? ' selected' : ''}>${escapeHtml(m.name)}</option>`).join('');
+  document.getElementById('my-work-signin')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'my-work-signin';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card app-dialog">
+      <div class="modal-head"><h2>👤 ${exec ? 'View anyone' : 'My work'}</h2></div>
+      <div class="modal-body">
+        <div class="app-dialog-message">${exec
+          ? 'You are on the leadership team, so you can open anyone’s page. Their tasks, actions and notes, across every job.'
+          : 'Who are you? Your page shows every job you are on — tasks, actions and notes. A department lead sees the whole team.'}</div>
+        <select class="app-dialog-input" id="my-work-person">
+          <option value="">Pick a name…</option>
+          ${groupHtml}
+          ${rest ? `<optgroup label="Other">${rest}</optgroup>` : ''}
+        </select>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn-ghost" data-action="cancel">Cancel</button>
+        <button type="button" class="btn-primary" data-action="ok">Open schedule</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const sel = overlay.querySelector('#my-work-person');
+  const close = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
+  const go = () => {
+    const id = sel.value ? Number(sel.value) : null;
+    if (id == null) { sel.focus(); return; }
+    close();
+    setMyWork(true);
+    setPersonalPerson(id);
+    routePersonalMode(id);
+  };
+  overlay.querySelector('[data-action="cancel"]').onclick = close;
+  overlay.querySelector('[data-action="ok"]').onclick = go;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  // Picking from the list is the whole interaction — do not make them
+  // confirm what they just chose.
+  sel.addEventListener('change', go);
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'Enter') { e.preventDefault(); go(); }
+  };
+  document.addEventListener('keydown', onKey);
+  setTimeout(() => sel.focus(), 0);
+}
+
+function openMyWork() {
+  setMyWork(true);
+  const me = memberForSignedInUser();
+  if (me) { setPersonalPerson(me.id); routePersonalMode(me.id); return; }
+  // Signed out, or an account with no matching team member. The page is
+  // blank rather than everyone's — showing every row to someone we cannot
+  // name is the failure this tab was built to stop.
+  const remembered = _actionsPageState && _actionsPageState.personId;
+  if (remembered != null && (state.team || []).some(m => m.id === remembered)) {
+    routePersonalMode(remembered);
+    return;
+  }
+  setPersonalPerson(null);
+  state.filters.project = '';
+  state.filters.assignee = '';
+  document.body.classList.remove('personal-mode');
+  setView('schedule');
+  // A blank page with no way off it is a dead end. Open the list.
+  if (canChooseWho() && (state.team || []).length) {
+    requestAnimationFrame(() => { try { showMyWorkSignIn(); } catch (_) {} });
+  }
+}
+
+const PERSONAL_VIEW_ON = {
+  flatten: true,          // ≡ no dept / sub-dept headers
+  sortByStart: true,      // ≡ in date order, which is how a week reads
+  showInlineAlloc: true,  // α how loaded each line is
+};
+const PERSONAL_VIEW_OFF = {
+  showDeptHours: false,   // Δ quoted vs scheduled — a whole-job number
+  showBarMeta: false,     // % allocation and duration on the bars
+  showArrowLags: false,   // ↔ lag and lead
+  criticalPath: false,
+  criticalOnly: false,
+  riskOverlay: false,
+  controlsOverlay: false,
+  eventsOverlay: false,
+};
+
+function applyPersonalViewDefaults() {
+  if (state._pmSavedView) return;   // already in one — do not re-snapshot
+  const saved = {};
+  const set = (k, v) => { saved[k] = state.scheduleView[k]; state.scheduleView[k] = v; };
+  Object.keys(PERSONAL_VIEW_ON).forEach(k => set(k, PERSONAL_VIEW_ON[k]));
+  Object.keys(PERSONAL_VIEW_OFF).forEach(k => set(k, PERSONAL_VIEW_OFF[k]));
+  state._pmSavedView = saved;
+  // Financial milestones is a FILTER, not a view flag — it lives in the
+  // Filters popover and has to be put back separately.
+  const f = state.filters || {};
+  state._pmSavedFin = { milestoneType: f.milestoneType || '', milestones: !!(f.quick && f.quick.milestones), overallocated: !!(f.quick && f.quick.overallocated) };
+  f.milestoneType = '';
+  if (f.quick) { f.quick.milestones = false; f.quick.overallocated = false; }
+  saveScheduleView();
+}
+
+function restorePersonalViewDefaults() {
+  if (state._pmSavedView) {
+    Object.keys(state._pmSavedView).forEach(k => { state.scheduleView[k] = state._pmSavedView[k]; });
+    state._pmSavedView = null;
+    saveScheduleView();
+  }
+  if (state._pmSavedFin) {
+    const f = state.filters || {};
+    f.milestoneType = state._pmSavedFin.milestoneType;
+    if (f.quick) {
+      f.quick.milestones = state._pmSavedFin.milestones;
+      f.quick.overallocated = state._pmSavedFin.overallocated;
+    }
+    state._pmSavedFin = null;
+  }
+}
+
 function routePersonalMode(personId) {
   if (personId != null) {
+    setMyWork(true);
     const member = (state.team || []).find(m => m.id === personId);
     if (member) {
       state.filters.assignee = member.name;
+      applyPersonalViewDefaults();
       // Personal view spans ALL projects for this person — drop the project
       // filter so they see everything on their plate.
       state.filters.project = '';
@@ -25560,16 +26167,26 @@ function renderPersonalBanner() {
   if (!member) { el.hidden = true; el.innerHTML = ''; return; }
   // Banner is minimal — just identity + sign-out. All filters live in the
   // regular Filters popover, no duplication.
+  // Leadership gets a way to move between people without signing out
+  // first; everyone else is simply themselves.
+  const canSwitch = canChooseWho();
+  const viewingSomeoneElse = isExecMember(memberForSignedInUser());
   el.innerHTML = `
-    <span class="spb-label">Signed in as:</span>
+    <span class="spb-label">${viewingSomeoneElse ? 'Viewing:' : 'Signed in as:'}</span>
     <span class="spb-name">${escapeHtml(member.name)}</span>
-    <button type="button" class="spb-clear" id="spb-clear" title="Sign out — return to the All Projects view">× Clear</button>
+    ${canSwitch ? `<button type="button" class="spb-switch" id="spb-switch" title="Open someone else’s page.">Switch person</button>` : ''}
+    <button type="button" class="spb-clear" id="spb-clear" title="Sign out — My work goes blank until someone signs in">× Sign out</button>
   `;
   el.hidden = false;
+  el.querySelector('#spb-switch')?.addEventListener('click', () => showMyWorkSignIn());
   el.querySelector('#spb-clear').addEventListener('click', () => {
-    _actionsPageState.personId = null;
-    try { localStorage.removeItem('sdcActionsPersonId'); } catch {}
-    routePersonalMode(null);
+    setPersonalPerson(null);
+    setMyWork(true);
+    state.filters.project = '';
+    state.filters.assignee = '';
+    restorePersonalViewDefaults();
+    document.body.classList.remove('personal-mode');
+    setView('schedule');
   });
 }
 
@@ -30220,6 +30837,8 @@ function loadScheduleView() {
       // way in.
       riskMode: false,
       controlsMode: false,
+      eventsMode:    !!saved.eventsMode,
+      eventsOverlay: !!saved.eventsOverlay,
       riskOverlay: !!saved.riskOverlay,
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
         ? saved.actionsMode
@@ -30232,7 +30851,7 @@ function loadScheduleView() {
       showDeptHours: !!saved.showDeptHours,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false, eventsMode: false, eventsOverlay: false };
   }
 }
 function saveScheduleView() {
@@ -30280,6 +30899,7 @@ function syncViewPill() {
   setActive('btn-view-machine', sv.showMachineColors !== false);
   setActive('btn-view-dept-hours', sv.showDeptHours);
   try { syncControlsButtons(); } catch (_) {}
+  try { syncEventsButtons(); } catch (_) {}
 }
 
 // True when the visible task set spans 2+ distinct machine tags. Drives
@@ -31536,6 +32156,14 @@ function applyCustomerToolbar(on) {
   try { fitScheduleToolbar(); } catch (_) {}
 }
 
+// Overlays that are ours, not the customer's. Each one has its button
+// removed from their toolbar; this is the other half of that.
+const CUSTOMER_OVERLAYS_OFF = {
+  showDeptHours: false,   // Δ quoted vs scheduled — our budget
+  showInlineAlloc: false, // α who is allocated what
+  showBarMeta: false,     // % allocation and duration on the bars
+  showArrowLags: false,   // ↔ lag and lead
+};
 function enterCustomerView() {
   if (document.body.classList.contains('customer-view')) return;
   // Snapshot what we're about to change so exitCustomerView() can put it
@@ -31546,6 +32174,12 @@ function enterCustomerView() {
   state._cvSavedZoom = state.zoomPercent;
   state._cvSavedScroll = getGanttScroller()?.scrollLeft ?? 0;
   state._cvSavedRowH = state.layout.rowHeight;
+  // Snapshot the internal overlays and switch to the customer's.
+  state._cvSavedOverlays = {};
+  Object.keys(CUSTOMER_OVERLAYS_OFF).forEach(k => {
+    state._cvSavedOverlays[k] = state.scheduleView[k];
+    state.scheduleView[k] = CUSTOMER_OVERLAYS_OFF[k];
+  });
 
   // Apply class first so the body width / panel widths reflow to the
   // customer layout BEFORE zoomToFit measures the Gantt panel size.
@@ -31990,6 +32624,12 @@ function exitCustomerView() {
     state._cvSavedPane = null;
   }
   // Restore row height (set state directly to avoid an extra render pass).
+  if (state._cvSavedOverlays) {
+    Object.keys(state._cvSavedOverlays).forEach(k => {
+      state.scheduleView[k] = state._cvSavedOverlays[k];
+    });
+    state._cvSavedOverlays = null;
+  }
   if (state._cvSavedRowH != null) {
     state.layout.rowHeight = state._cvSavedRowH;
     applyRowHeight();
@@ -32922,10 +33562,36 @@ async function init() {
     saveScheduleView();
     render();
   });
+  document.getElementById('btn-view-events')?.addEventListener('click', () => {
+    // From inside the list, S means "show these on the schedule" — so it
+    // turns the overlay on and takes you back to the build in one click.
+    if (state.scheduleView.eventsMode) {
+      state.scheduleView.eventsMode = false;
+      state.scheduleView.eventsOverlay = true;
+      saveScheduleView();
+      render();
+      try { zoomToFit(); } catch (_) {}
+      return;
+    }
+    state.scheduleView.eventsOverlay = !state.scheduleView.eventsOverlay;
+    saveScheduleView();
+    render();
+  });
+  document.getElementById('btn-events-mode')?.addEventListener('click', () => {
+    state.scheduleView.eventsMode = !state.scheduleView.eventsMode;
+    // The three list views are alternatives, not layers.
+    if (state.scheduleView.eventsMode) {
+      state.scheduleView.riskMode = false;
+      state.scheduleView.controlsMode = false;
+    }
+    saveScheduleView();
+    render();
+    try { zoomToFit(); } catch (_) {}
+  });
   document.getElementById('btn-controls-mode')?.addEventListener('click', () => {
     state.scheduleView.controlsMode = !state.scheduleView.controlsMode;
     // The two views are alternatives, not layers.
-    if (state.scheduleView.controlsMode) state.scheduleView.riskMode = false;
+    if (state.scheduleView.controlsMode) { state.scheduleView.riskMode = false; state.scheduleView.eventsMode = false; }
     saveScheduleView();
     render();
     try { zoomToFit(); } catch (_) {}
@@ -32972,7 +33638,20 @@ async function init() {
     e.stopPropagation();
     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
   }, true);
-  tbodyEl.addEventListener('contextmenu', handleRowContextMenu);
+  (document.getElementById('schedule-grid') || tbodyEl)
+    .addEventListener('contextmenu', handleRowContextMenu);
+  // The blank lines in an empty standard-events / controls list.
+  (document.getElementById('schedule-grid') || tbodyEl)
+    .addEventListener('click', (e) => {
+      const blank = e.target.closest('[data-add-list]');
+      if (!blank) return;
+      e.preventDefault();
+      const inEvents = blank.dataset.addList === 'events';
+      createTaskInSection(
+        inEvents ? EVENTS_GROUP : CONTROLS_GROUP,
+        null,
+        inEvents ? EVENTS_SUB : CONTROLS_SUB);
+    });
   // Remember the row the user last touched — Ctrl+C / X / V act on it.
   // Capture phase, so it still registers when a cell handler stops propagation.
   tbodyEl.addEventListener('mousedown', (e) => {
@@ -33499,23 +34178,24 @@ async function init() {
       requestAnimationFrame(() => requestAnimationFrame(() => { try { zoomToFit(); } catch (_) {} }));
     }
   });
-  // After team loads, if a personId is persisted from a prior session,
-  // route into personal mode (assignee filter + schedule view + banner) —
-  // but only when the user was last on the schedule; a restored Procurement /
-  // Vendor PO / Shop Parts view should stay where the user left it.
+  // After the team loads, settle who this browser belongs to. The login is
+  // the answer when there is one: a machine on the shop floor must not hand
+  // the next person the last person's page just because it was left in
+  // localStorage. With no auth at all we keep what was stored, which is the
+  // only identity such a deployment has.
+  //
+  // Routing is separate. My work is restored because it is where the user
+  // was; a restored Procurement / Vendor PO / Shop Parts view is left alone.
   loadTeam().then(() => {
-    const pid = _actionsPageState.personId;
-    if (pid == null) return;
-    if (state._bootForcedProjects) {
-      // Fresh tab: boot parked us on Projects. A signed-in person still gets
-      // their personal view — but only if that person still exists;
-      // routePersonalMode's not-found branch falls back to a bare
-      // setView('schedule') with no filters, i.e. the all-projects render
-      // we just avoided.
-      if ((state.team || []).some(m => m.id === pid)) routePersonalMode(pid);
+    const me = memberForSignedInUser();
+    if (me) setPersonalPerson(me.id);
+    else if (window.sdcAuth && window.sdcAuth.authEnabled) setPersonalPerson(null);
+    // _bootForcedProjects means boot parked us on Projects, not the user.
+    if (state.myWork && (state.view === 'schedule' || state._bootForcedProjects)) {
+      openMyWork();
       return;
     }
-    if (state.view === 'schedule') routePersonalMode(pid);
+    try { renderProjectTabs(); } catch (_) {}
   });
   // Phase 2 (Abhi port): boot the comments UI once. It attaches a
   // MutationObserver to #tasks-tbody and re-injects 💬 badges after every
