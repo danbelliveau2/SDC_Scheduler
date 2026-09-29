@@ -12690,12 +12690,12 @@ function renderProjectTabs() {
   // open side-by-side; the workspace is conveyed via per-tab COLOR coding
   // (see CSS .project-tab.workspace-*) instead of filtering tabs away.
   // Templates pinned first; non-templates in their original openProjects order.
-  const inPortal = document.body.classList.contains('portal-mode');
+  const inPortal = document.body.classList.contains('portal-mode')
+    || state.view === 'portal' || !!_portalCustomer;
   let visibleList = state.openProjects.slice();
   if (inPortal) {
     const cust = _portalCustomer || '';
     visibleList = visibleList.filter(p => p && projectCustomerName(p) === cust);
-    personalTabHtml = '';
   }
   const templatesFirst = [
     visibleList.find(p => p === ''),
@@ -26065,36 +26065,63 @@ const PERSONAL_VIEW_OFF = {
   eventsOverlay: false,
 };
 
+// $ is state.showFinancials — a TOP-LEVEL flag, not a scheduleView key and
+// not a quick filter. Every earlier attempt at this turned off the quick
+// filter and left the real one alone, which is why the money diamonds kept
+// coming back. The portal sets it true on entry and never clears it, so it
+// arrives here on by default. Baseline is the same shape: state.showBaseline.
 function applyPersonalViewDefaults() {
-  if (state._pmSavedView) return;   // already in one — do not re-snapshot
-  const saved = {};
-  const set = (k, v) => { saved[k] = state.scheduleView[k]; state.scheduleView[k] = v; };
-  Object.keys(PERSONAL_VIEW_ON).forEach(k => set(k, PERSONAL_VIEW_ON[k]));
-  Object.keys(PERSONAL_VIEW_OFF).forEach(k => set(k, PERSONAL_VIEW_OFF[k]));
-  state._pmSavedView = saved;
-  // Financial milestones is a FILTER, not a view flag — it lives in the
-  // Filters popover and has to be put back separately.
+  // Snapshot ONCE per visit, but force the values EVERY time. The old
+  // early-return meant any exit path that missed the restore left the
+  // snapshot in place, and every later sign-in silently did nothing.
+  if (!state._pmSavedView) {
+    const saved = {};
+    Object.keys(PERSONAL_VIEW_ON).forEach(k => { saved[k] = state.scheduleView[k]; });
+    Object.keys(PERSONAL_VIEW_OFF).forEach(k => { saved[k] = state.scheduleView[k]; });
+    saved._showFinancials = state.showFinancials;
+    saved._showBaseline = state.showBaseline;
+    const f0 = state.filters || {};
+    saved._fin = {
+      milestoneType: f0.milestoneType || '',
+      milestones: !!(f0.quick && f0.quick.milestones),
+      overallocated: !!(f0.quick && f0.quick.overallocated),
+    };
+    state._pmSavedView = saved;
+  }
+  Object.keys(PERSONAL_VIEW_ON).forEach(k => { state.scheduleView[k] = PERSONAL_VIEW_ON[k]; });
+  Object.keys(PERSONAL_VIEW_OFF).forEach(k => { state.scheduleView[k] = PERSONAL_VIEW_OFF[k]; });
+  // The two that live outside scheduleView.
+  state.showFinancials = false;   // $ — every job's money, across a person's week
+  state.showBaseline = true;      // baseline overlay comes on
   const f = state.filters || {};
-  state._pmSavedFin = { milestoneType: f.milestoneType || '', milestones: !!(f.quick && f.quick.milestones), overallocated: !!(f.quick && f.quick.overallocated) };
   f.milestoneType = '';
   if (f.quick) { f.quick.milestones = false; f.quick.overallocated = false; }
   saveScheduleView();
+  try { syncViewPill(); } catch (_) {}
+  try { syncBaselineButtons(); } catch (_) {}
 }
 
 function restorePersonalViewDefaults() {
   if (state._pmSavedView) {
-    Object.keys(state._pmSavedView).forEach(k => { state.scheduleView[k] = state._pmSavedView[k]; });
+    const saved = state._pmSavedView;
+    Object.keys(saved).forEach(k => {
+      if (k.charAt(0) === '_') return;   // the non-scheduleView ones, below
+      state.scheduleView[k] = saved[k];
+    });
+    state.showFinancials = !!saved._showFinancials;
+    state.showBaseline = !!saved._showBaseline;
+    if (saved._fin) {
+      const f = state.filters || {};
+      f.milestoneType = saved._fin.milestoneType;
+      if (f.quick) {
+        f.quick.milestones = saved._fin.milestones;
+        f.quick.overallocated = saved._fin.overallocated;
+      }
+    }
     state._pmSavedView = null;
     saveScheduleView();
-  }
-  if (state._pmSavedFin) {
-    const f = state.filters || {};
-    f.milestoneType = state._pmSavedFin.milestoneType;
-    if (f.quick) {
-      f.quick.milestones = state._pmSavedFin.milestones;
-      f.quick.overallocated = state._pmSavedFin.overallocated;
-    }
-    state._pmSavedFin = null;
+    try { syncViewPill(); } catch (_) {}
+    try { syncBaselineButtons(); } catch (_) {}
   }
 }
 
