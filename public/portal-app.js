@@ -129,14 +129,38 @@
     </div>`;
   }
 
-  function renderDashboard(data) {
-    const projectRows = data.projects.map(p => `
-      <div class="cp-proj-row">
-        <span class="cp-proj-name">${esc(p.name)}</span>
-        <a class="cp-open-btn" href="/?cust=${encodeURIComponent(p.shareToken)}" target="_blank" rel="noopener">Open</a>
-      </div>`).join('');
+  // 'all' = every project shown at once (today's default). An array = only
+  // those project names — click a row to drill into just it, tick the box
+  // to build a custom multi-project group instead, same two gestures as the
+  // internal Portal tab's project list. Module-scope so it survives the
+  // 60s poll's re-render.
+  let _scope = 'all';
 
-    const unitBlocks = data.units.map(u => {
+  function renderDashboard(data) {
+    const inScope = (name) => _scope === 'all' || _scope.includes(name);
+    const scopeProjects = data.projects.filter(p => inScope(p.name));
+    const scopeUnits = data.units.filter(u => inScope(u.project));
+    const multiPick = data.projects.length > 1;
+
+    const projectRows = data.projects.map(p => {
+      const picked = _scope !== 'all' && _scope.length === 1 && _scope[0] === p.name;
+      const checked = Array.isArray(_scope) && _scope.includes(p.name);
+      return `
+      <div class="cp-proj-row${picked ? ' is-picked' : ''}" data-pick-proj="${esc(p.name)}">
+        ${multiPick ? `<button type="button" class="cp-proj-tick${checked ? ' is-on' : ''}" data-toggle-proj="${esc(p.name)}" aria-pressed="${checked}"></button>` : ''}
+        <span class="cp-proj-name">${esc(p.name)}</span>
+        <a class="cp-open-btn" href="/?cust=${encodeURIComponent(p.shareToken)}" target="_blank" rel="noopener" data-stop-pick>Open</a>
+      </div>`;
+    }).join('');
+    const pickButtons = multiPick
+      ? `<span class="cp-pickbtns">
+          <button type="button" class="cp-pickbtn${_scope === 'all' ? ' is-on' : ''}" data-scope-all>All projects</button>
+          <button type="button" class="cp-pickbtn" data-scope-clear${Array.isArray(_scope) && !_scope.length ? ' disabled' : ''}>Clear</button>
+        </span>`
+      : '';
+
+    const noneScoped = Array.isArray(_scope) && !_scope.length;
+    const unitBlocks = noneScoped ? '' : scopeUnits.map(u => {
       const title = u.machine ? `${u.project} · ${u.machine}` : u.project;
       const due = u.due;
       const dueHtml = !due ? '' : `
@@ -175,7 +199,7 @@
       return `<div class="cp-block"><h2 class="cp-unit-title">${esc(title)}</h2>${dueHtml}<div style="height:16px"></div>${progHtml}</div>`;
     }).join('');
 
-    const moneyBlocks = data.projects.filter(p => p.money.length).map(p => `
+    const moneyBlocks = noneScoped ? '' : scopeProjects.filter(p => p.money.length).map(p => `
       <div class="cp-block">
         <h2 class="cp-h2">Payment milestones — ${esc(p.name)}</h2>
         <div class="cp-table-wrap"><table class="cp-table">
@@ -190,11 +214,13 @@
         </table></div>
       </div>`).join('');
 
-    const riskBlocks = data.projects.filter(p => p.risk.length).map(renderRiskBlock).join('');
+    const riskBlocks = noneScoped ? '' : scopeProjects.filter(p => p.risk.length).map(renderRiskBlock).join('');
 
-    const teamBlocks = data.projects.filter(p => p.team.length).length
-      ? `<div class="cp-block"><h2 class="cp-h2">SDC Team</h2>${data.projects.filter(p => p.team.length).map(renderTeamBlock).join('')}</div>`
+    const teamBlocks = (!noneScoped && scopeProjects.filter(p => p.team.length).length)
+      ? `<div class="cp-block"><h2 class="cp-h2">SDC Team</h2>${scopeProjects.filter(p => p.team.length).map(renderTeamBlock).join('')}</div>`
       : '';
+
+    const pickedEmptyMsg = noneScoped ? '<p class="cp-empty">Pick a project above to see its details.</p>' : '';
 
     root.innerHTML = `
       <header class="cp-header">
@@ -209,14 +235,36 @@
       </header>
       <div class="cp-wrap">
         <div class="cp-block">
-          <h2 class="cp-h2">Your projects</h2>
+          <h2 class="cp-h2 cp-h2-flex">Your projects${pickButtons}</h2>
           ${projectRows || '<p class="cp-empty">No projects are linked to your account yet.</p>'}
         </div>
+        ${pickedEmptyMsg}
         ${unitBlocks}
         ${moneyBlocks}
         ${riskBlocks}
         ${teamBlocks}
       </div>`;
+
+    root.querySelectorAll('[data-pick-proj]').forEach(row => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('[data-toggle-proj], [data-stop-pick]')) return;
+        const name = row.dataset.pickProj;
+        _scope = (_scope !== 'all' && _scope.length === 1 && _scope[0] === name) ? 'all' : [name];
+        renderDashboard(data);
+      });
+    });
+    root.querySelectorAll('[data-toggle-proj]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const name = btn.dataset.toggleProj;
+        const current = new Set(_scope === 'all' ? [] : _scope);
+        if (current.has(name)) current.delete(name); else current.add(name);
+        _scope = [...current];
+        renderDashboard(data);
+      });
+    });
+    root.querySelector('[data-scope-all]')?.addEventListener('click', () => { _scope = 'all'; renderDashboard(data); });
+    root.querySelector('[data-scope-clear]')?.addEventListener('click', () => { _scope = []; renderDashboard(data); });
 
     document.getElementById('cp-logout-btn').addEventListener('click', async () => {
       stopPolling();

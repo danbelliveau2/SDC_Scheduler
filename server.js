@@ -184,6 +184,12 @@ if (SNAPSHOT_PUBLIC_PORT) {
   const snap = express();
   snap.disable('x-powered-by');
   snap.use(compression());
+  // Same reasoning as the main app's static-asset middleware above:
+  // no-cache (NOT no-store) so the browser always revalidates via ETag
+  // instead of trusting Cloudflare's default multi-hour Browser Cache TTL
+  // for .css/.js, which otherwise leaves a stale login page or dashboard
+  // client cached in a customer's browser after every update here.
+  snap.use((_req, res, next) => { res.set('Cache-Control', 'no-cache'); next(); });
   snap.get('/', (req, res, next) => {
     if (req.query.cust) return next(); // falls through to `app` at the bottom
     res.sendFile(path.join(__dirname, 'public', 'portal-login.html'));
