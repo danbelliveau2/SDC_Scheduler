@@ -109,8 +109,25 @@ table.cp-table td { padding: 8px; border-bottom: 1px solid #f1f5f9; overflow: hi
 .cp-status.is-invoiced { background: #dbeafe; color: #1d4ed8; }
 .cp-variance { font-size: 11px; font-weight: 700; }
 .cp-variance.is-ok { color: var(--cp-ok); }
-.cp-variance.is-late { color: var(--cp-danger); }
+.cp-variance.is-late, .cp-variance.is-behind { color: var(--cp-danger); }
+.cp-variance.is-ahead { color: var(--cp-ok); }
 .cp-variance.is-none { color: var(--cp-muted); }
+
+/* ── Event status ── */
+.cp-note { font-size: 12px; color: var(--cp-muted); margin: -6px 0 16px; }
+.cp-mix-row { display: flex; gap: 32px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; }
+.cp-mix-ring { display: flex; align-items: center; gap: 14px; }
+.cp-mix-legend { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.cp-mix-legend li { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.cp-mix-legend b { margin-left: auto; padding-left: 10px; }
+.cp-mix-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.cp-dept-wrap { flex: 1 1 260px; }
+.cp-dept-head { font-size: 11px; font-weight: 700; color: var(--cp-muted); text-transform: uppercase; margin-bottom: 10px; }
+.cp-pw-sec td { background: #f8fafc; font-size: 11px; text-transform: uppercase; letter-spacing: .02em; padding: 8px; }
+.cp-pw-note { text-transform: none; font-weight: 400; color: var(--cp-muted); letter-spacing: normal; }
+.cp-recent-win { float: right; font-size: 11px; padding: 2px 6px; border: 1px solid var(--cp-border); border-radius: 4px; text-transform: none; }
+.cp-pw-bar { display: inline-block; width: 40px; height: 6px; background: var(--cp-border); border-radius: 3px; overflow: hidden; margin-right: 6px; vertical-align: middle; }
+.cp-pw-bar i { display: block; height: 100%; background: var(--cp-primary); }
 
 /* ── Risk matrix ── */
 .cp-risk-grid { display: flex; gap: 24px; flex-wrap: wrap; }

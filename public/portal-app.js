@@ -64,6 +64,99 @@
     </svg>`;
   }
 
+  // Ported from public/app.js's _portalRing — multi-segment ring (task-mix
+  // counts, not percentages) with a "N tasks" center label.
+  function ringHtml(segments, size) {
+    const total = segments.reduce((n, x) => n + x.n, 0);
+    const r = (size / 2) - 6;
+    const c = 2 * Math.PI * r;
+    const mid = size / 2;
+    let at = 0;
+    const arcs = segments.filter(x => x.n > 0).map(x => {
+      const on = c * (x.n / total);
+      const dash = `<circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="${x.color}" stroke-width="10"
+        stroke-dasharray="${on.toFixed(2)} ${(c - on).toFixed(2)}" stroke-dashoffset="${(-at).toFixed(2)}"
+        transform="rotate(-90 ${mid} ${mid})"><title>${esc(x.label)}: ${x.n}</title></circle>`;
+      at += on;
+      return dash;
+    }).join('');
+    return `<svg class="pdonut" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img">
+      <circle cx="${mid}" cy="${mid}" r="${r}" fill="none" stroke="#eef0f3" stroke-width="10"></circle>
+      ${arcs}
+      <text x="${mid}" y="${mid - 7}" text-anchor="middle" dominant-baseline="central"
+        style="font-size:${Math.round(size / 3.4)}px;font-weight:800;fill:var(--cp-text);">${total}</text>
+      <text x="${mid}" y="${mid + 15}" text-anchor="middle" dominant-baseline="central"
+        style="font-size:11px;font-weight:700;fill:var(--cp-muted);">tasks</text>
+    </svg>`;
+  }
+
+  const RECENT_WINDOWS = [{ days: 14, label: 'last two weeks' }, { days: 30, label: 'last month' }, { days: 60, label: 'last two months' }];
+
+  function renderEventStatusBlock(p) {
+    const es = p.eventStatus;
+    if (!es) return '';
+    const mix = es.mix;
+    const segs = [
+      { label: 'Complete', n: mix.complete, color: 'var(--cp-lime)' },
+      { label: 'On or ahead', n: mix.running, color: 'var(--cp-primary)' },
+      { label: 'Behind schedule', n: mix.behind, color: 'var(--cp-danger)' },
+      { label: 'Not started yet', n: mix.notStarted, color: '#c8d5e3' },
+    ];
+    const legend = segs.map(x => `<li><span class="cp-mix-dot" style="background:${x.color}"></span><span>${esc(x.label)}</span><b>${x.n}</b></li>`).join('');
+    const deptBars = es.deptChart.length ? `<div class="cp-dept-wrap">
+      <div class="cp-dept-head">Events complete by department</div>
+      <div class="cp-phase-bars">${es.deptChart.map(d => `
+        <div class="cp-phase-bar">
+          <div class="cp-phase-track"><div class="cp-phase-fill" style="height:${Math.max(d.pct, 2)}%;background:var(--cp-primary)"></div></div>
+          <div class="cp-phase-pct">${esc(d.text)}</div>
+          <div class="cp-phase-label">${esc(d.label)}</div>
+        </div>`).join('')}</div>
+    </div>` : '';
+
+    const rowHtml = (r, kind) => {
+      const late = kind === 'behind';
+      let driftTxt = r.drift ? r.drift.text : (kind === 'recent' ? '—' : 'on plan');
+      let driftCls = r.drift ? r.drift.cls : '';
+      if (kind !== 'behind' && r.drift && r.drift.cls === 'is-behind') { driftTxt = r.drift.text.replace(' behind', ''); driftCls = 'is-none'; }
+      return `<tr>
+        <td title="${esc(r.name)}">${esc(r.name)}</td>
+        <td>${esc(r.assignee || '—')}</td>
+        <td><span class="cp-pw-bar"><i style="width:${Math.max(0, Math.min(100, r.pct))}%"></i></span>${r.pct}%</td>
+        <td${late ? ' style="color:var(--cp-danger);font-weight:700"' : ''}>${esc(r.dueText || '—')}</td>
+        <td>${esc(r.whenText || '—')}</td>
+        <td><span class="cp-variance ${driftCls}">${esc(driftTxt)}</span></td>
+      </tr>`;
+    };
+    const section = (label, kind, rows, note, extra) => {
+      const head = `<tr class="cp-pw-sec"><td colspan="6"><b>${esc(label)}</b>${note ? ` <span class="cp-pw-note">${esc(note)}</span>` : ''}${extra || ''}</td></tr>`;
+      if (!rows.length) {
+        const none = kind === 'behind' ? 'Nothing is a week or more behind.' : kind === 'running' ? 'Nothing open right now.' : 'Nothing closed out in this window.';
+        return head + `<tr><td colspan="6" class="cp-empty" style="padding:10px">${esc(none)}</td></tr>`;
+      }
+      return head + rows.map(r => rowHtml(r, kind)).join('');
+    };
+    const picker = `<select class="cp-recent-win" data-recent-win>${RECENT_WINDOWS.map(w =>
+      `<option value="${w.days}"${w.days === es.recentDays ? ' selected' : ''}>${esc(w.label)}</option>`).join('')}</select>`;
+
+    return `<div class="cp-block">
+      <h2 class="cp-h2">Event status — ${esc(p.name)}</h2>
+      <p class="cp-note">Every task, action and milestone on the schedule. Schedules are reviewed weekly, so a week is the tolerance: behind means a full week or more past plan.</p>
+      <div class="cp-mix-row">
+        <div class="cp-mix-ring">${ringHtml(segs, 128)}<ul class="cp-mix-legend">${legend}</ul></div>
+        ${deptBars}
+      </div>
+      <div class="cp-table-wrap"><table class="cp-table cp-pw-table">
+        <colgroup><col><col style="width:140px"><col style="width:110px"><col style="width:120px"><col style="width:100px"><col style="width:110px"></colgroup>
+        <thead><tr><th>Event</th><th>Assigned to</th><th>% Complete</th><th>Scheduled completion</th><th>Completed</th><th>Against plan</th></tr></thead>
+        <tbody>
+          ${section('Behind schedule', 'behind', es.work.behind)}
+          ${section('On or ahead of schedule', 'running', es.work.running, '(within our one-week tolerance)')}
+          ${section('Completed recently', 'recent', es.work.recent, '', picker)}
+        </tbody>
+      </table></div>
+    </div>`;
+  }
+
   function initials(name) {
     const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
     if (!parts.length) return '?';
@@ -220,6 +313,8 @@
       ? `<div class="cp-block"><h2 class="cp-h2">SDC Team</h2>${scopeProjects.filter(p => p.team.length).map(renderTeamBlock).join('')}</div>`
       : '';
 
+    const eventBlocks = noneScoped ? '' : scopeProjects.filter(p => p.eventStatus).map(renderEventStatusBlock).join('');
+
     const pickedEmptyMsg = noneScoped ? '<p class="cp-empty">Pick a project above to see its details.</p>' : '';
 
     root.innerHTML = `
@@ -243,7 +338,13 @@
         ${moneyBlocks}
         ${riskBlocks}
         ${teamBlocks}
+        ${eventBlocks}
       </div>`;
+
+    root.querySelector('[data-recent-win]')?.addEventListener('change', (e) => {
+      _recentDays = Number(e.target.value) || 30;
+      loadDashboard();
+    });
 
     root.querySelectorAll('[data-pick-proj]').forEach(row => {
       row.addEventListener('click', (e) => {
@@ -273,6 +374,12 @@
     });
   }
 
+  // "Completed recently" window for Event Status — matches public/app.js's
+  // PORTAL_RECENT_WINDOWS. Sent to the server since the categorized lists
+  // are computed there, not recomputed from raw tasks client-side.
+  let _recentDays = 30;
+  function dashboardUrl() { return '/portal/api/dashboard?recentDays=' + _recentDays; }
+
   // Auto-refresh: the dashboard is a live query every time it's fetched (see
   // routes/portal.js), so nothing here goes stale — it just isn't PUSHED to
   // an already-open tab without this. Silent re-render on each tick, no
@@ -287,7 +394,7 @@
     stopPolling();
     _pollTimer = setInterval(async () => {
       try {
-        const data = await api('/portal/api/dashboard');
+        const data = await api(dashboardUrl());
         renderDashboard(data);
       } catch (err) {
         if (err.status === 401) { stopPolling(); renderLogin(); }
@@ -301,7 +408,7 @@
   async function loadDashboard() {
     root.innerHTML = '<div class="cp-loading">Loading…</div>';
     try {
-      const data = await api('/portal/api/dashboard');
+      const data = await api(dashboardUrl());
       renderDashboard(data);
       startPolling();
     } catch (_) {
