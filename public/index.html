@@ -8,11 +8,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260923-384" />
+  <link rel="stylesheet" href="styles.css?v=20260929-00987" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
-  <link rel="stylesheet" href="service-ui.css?v=20260827-1" />
+  <link rel="stylesheet" href="service-ui.css?v=20260929-93507" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -160,14 +160,6 @@
         </svg>
       </span>
       <span class="app-sidebar-label">Vendor POs</span>
-    </button>
-    <button class="app-sidebar-icon" data-view="job-hours" type="button" title="Job Hours — quoted vs actual hours by function across all jobs">
-      <span class="app-sidebar-glyph app-sidebar-glyph-svg">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <rect x="3" y="12" width="4" height="9"/><rect x="10" y="7" width="4" height="14"/><rect x="17" y="3" width="4" height="18"/>
-        </svg>
-      </span>
-      <span class="app-sidebar-label">Job Hours</span>
     </button>
     <!-- SDC Projects Reports (the ETC app) — sibling service on port 4006 of
          this same host. Opens in its own tab so the schedule stays put, same as
@@ -796,9 +788,6 @@
     </section>
 
 
-    <section id="view-job-hours" class="view">
-      <div id="job-hours-page" class="job-hours-page"></div>
-    </section>
 
     <section id="view-setup" class="view">
       <div class="setup-pane">
@@ -1137,23 +1126,23 @@
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->
-  <script src="auth-ui.js?v=20260821-share2"></script>
-  <script src="phases.js?v=20260601-168"></script>
-  <script src="release-notes.js?v=20260819-192"></script>
-  <script src="app.js?v=20260923-384"></script>
+  <script src="auth-ui.js?v=20260929-26008"></script>
+  <script src="phases.js?v=20260929-16872"></script>
+  <script src="release-notes.js?v=20260929-38175"></script>
+  <script src="app.js?v=20260929-15478"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
        loadCommentCounts, and initCommentsUI are available to app.js. -->
-  <script src="comments-ui.js?v=20260601-166"></script>
+  <script src="comments-ui.js?v=20260929-49557"></script>
   <!-- Service module (Service Log replacement). Self-contained page; app.js
        calls window.renderServicePage() from setView('service'). Loaded after
        app.js so showToast / showConfirmDialog exist by the time it runs. -->
-  <script src="service-ui.js?v=20260827-1"></script>
+  <script src="service-ui.js?v=20260929-85110"></script>
   <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
        broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
-  <script src="realtime-ui.js?v=20260601-166"></script>
+  <script src="realtime-ui.js?v=20260929-01515"></script>
   <!-- Phase 4.1: "who's editing" presence pills, top-right under the user pill. -->
-  <script src="presence-ui.js?v=20260601-166"></script>
+  <script src="presence-ui.js?v=20260929-29517"></script>
 </body>
 </html>

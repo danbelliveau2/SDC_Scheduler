@@ -16834,3 +16834,114 @@ tr.ctrl-add-row td { padding: 4px 8px 10px; background: var(--surface); }
    hanging 9px past the table — enough to give the wrapper a scrollbar for no
    visible reason. The last one sits wholly inside instead. */
 .portal-grid th:last-child .pw-grip { right: 0; width: 12px; }
+
+/* ── Portal: the customer picker ──────────────────────────────────────────
+   Same <details> + panel as the Projects picker, sitting on the dark header
+   band. It replaced a native <select>, whose list the OS drew: names hard
+   against the left edge, no way to search, and it closed on any focus
+   change — which is why it could not even be screenshotted. */
+.portal-cust-picker {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  z-index: 40;
+}
+.portal-cust-picker > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 0 0 3px;
+  border-bottom: 2px solid rgba(255,255,255,0.28);
+}
+.portal-cust-picker > summary::-webkit-details-marker { display: none; }
+.portal-cust-picker > summary:hover { border-bottom-color: var(--sdc-green, #74c415); }
+.portal-cust-picker[open] > summary { border-bottom-color: var(--sdc-green, #74c415); }
+.portal-cust-picker .pdash-picker-caret { color: rgba(255,255,255,0.75); font-size: 18px; }
+/* The panel is a normal light popover below the dark band. */
+.portal-cust-picker .pdash-picker-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 320px;
+  max-width: 460px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border-strong, #c8d5e3);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(6, 29, 57, 0.28);
+  padding: 10px;
+  z-index: 41;
+}
+.portal-cust-search {
+  width: 100%;
+  font: inherit;
+  font-size: var(--fs-base);
+  padding: 7px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border-strong, #c8d5e3);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+}
+.portal-cust-search:focus { outline: none; border-color: var(--sdc-primary, #1574c4); }
+.portal-cust-picker .pdash-picker-list { max-height: 320px; overflow-y: auto; display: grid; gap: 2px; }
+/* Room on both sides — the native list had none, so every name read as
+   though it were clipped. */
+.portal-cust-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  font: inherit;
+  font-size: var(--fs-base);
+  text-align: left;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.portal-cust-item:hover { background: var(--surface-alt, #f1f5f9); }
+.portal-cust-item.is-on { background: var(--sdc-primary, #1574c4); color: #fff; font-weight: var(--fw-bold); }
+.portal-cust-n { font-size: var(--fs-sm); opacity: 0.65; font-variant-numeric: tabular-nums; }
+.portal-cust-item.is-on .portal-cust-n { opacity: 0.85; }
+/* Buttons on the dark band read as the app's buttons, not as pills with
+   emoji on them. */
+.portal-headbtn {
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  padding: 6px 14px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.32);
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.portal-headbtn:hover { background: rgba(255,255,255,0.18); border-color: var(--sdc-green, #74c415); }
+
+/* ── Saved views: drag to reorder ─────────────────────────────────────── */
+/* Alphabetical is an arbitrary order for five things you named yourself. */
+.col-view-row[data-view-name] { cursor: grab; border-radius: 6px; }
+.col-view-row[data-view-name]:active { cursor: grabbing; }
+.col-view-row.is-dragging { opacity: 0.45; }
+/* The line shows where it will land, above the row you are over. */
+.col-view-row.is-drop-target { box-shadow: inset 0 2px 0 var(--sdc-primary, #1574c4); }
+
+/* While a grid is being measured for Compress, nothing may clip: an inner
+   span with its own ellipsis reports a truncated width, and the column then
+   gets sized to the truncation. */
+.grid-measuring td,
+.grid-measuring th,
+.grid-measuring td *,
+.grid-measuring th * {
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+.grid-measuring td:not(.svc-detail-cell),
+.grid-measuring td:not(.svc-detail-cell) * {
+  white-space: nowrap !important;
+}

@@ -8306,6 +8306,15 @@ function projectIsInactive(p) {
   return !!st && st.toLowerCase() !== 'active';
 }
 
+// The picker lives on two pages. Redraw the one we are actually on: on
+// Invoicing neither the rollup nor the team dashboard owns the DOM the
+// checkboxes are in, so calling those left the boxes showing the old
+// selection while localStorage had already changed.
+function _pdashRerender() {
+  if (state.view === 'invoicing') { try { renderInvoicingPage(); } catch (_) {} return; }
+  try { renderDeptProjectRollup(); } catch (_) {}
+  try { renderTeamDashboard(); } catch (_) {}
+}
 function _deptSelectedProjects() {
   // null = never picked (default to ALL) vs [] = explicitly "None".
   let selected;
@@ -8778,11 +8787,19 @@ function renderDeptProjectRollup() {
   // COMPLETED JOBS auto-move (Dan): a project whose financial milestones are
   // ALL PAID is done invoicing — it drops out of the cards/calendar/strips
   // and lands in the collapsed "Completed Jobs" section at the bottom.
-  const completedJobs = _sel.selected.filter(p => {
+  const _fullyPaid = (p) => {
     const rows = state.financials[p];
     return Array.isArray(rows) && rows.length > 0 && rows.every(r => r.paid);
-  });
-  const selected = _sel.selected.filter(p => !completedJobs.includes(p));
+  };
+  const completedJobs = _sel.selected.filter(_fullyPaid);
+  const selected = _sel.selected.filter(p => !_fullyPaid(p));
+  // The picker has to offer what it can actually select. Fully-paid jobs
+  // were left ON the list but filtered OUT of the selection, which is what
+  // produced a count like "39 of 48" with nine boxes that would not tick
+  // however often you pressed Select all - they were being removed again
+  // on every render. A job with every invoice paid is done invoicing, so
+  // it comes off the list; it still has its own Completed Jobs section.
+  const pickerProjects = allProjects.filter(p => !_fullyPaid(p));
   // ± Variance toggle — OFF (default): milestones show just their projected/
   // actual date and done-state, clean and compact. ON: baseline comparison
   // appears — strike-through original dates + trending/final slip chips.
@@ -9136,9 +9153,9 @@ function renderDeptProjectRollup() {
     <div class="pdash-filters">
       <details class="pdash-picker"${state._pdashPickerOpen ? ' open' : ''}>
         <summary>Projects: <strong>${
-          selected.length === allProjects.length ? 'all'
+          selected.length === pickerProjects.length ? 'all'
             : selected.length === 0 ? 'none'
-            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} of ${allProjects.length}`)
+            : (selected.length === 1 ? escapeHtml(selected[0]) : `${selected.length} of ${pickerProjects.length}`)
         }</strong> <span class="pdash-picker-caret">▾</span></summary>
         <div class="pdash-picker-panel">
           <div class="pdash-picker-actions">
@@ -9146,7 +9163,7 @@ function renderDeptProjectRollup() {
             <button type="button" class="pdash-picker-action" data-action="select-none">Clear</button>
           </div>
           <div class="pdash-picker-list">
-            ${allProjects.map(p => `
+            ${pickerProjects.map(p => `
               <label class="pdash-picker-item">
                 <input type="checkbox" data-project="${escapeHtml(p)}" ${selected.includes(p) ? 'checked' : ''}/>
                 <span>${escapeHtml(p)}</span>
@@ -9218,8 +9235,7 @@ function renderDeptProjectRollup() {
       const sel = [..._fRoot.querySelectorAll('.pdash-picker input[type="checkbox"]')]
         .filter(b => b.checked).map(b => b.dataset.project);
       try { localStorage.setItem('sdcDashboardProjects', JSON.stringify(sel)); } catch (_) {}
-      renderDeptProjectRollup();
-      try { renderTeamDashboard(); } catch (_) {}
+    _pdashRerender();
     });
   });
   _fRoot.querySelector('[data-action="select-all"]')?.addEventListener('click', () => {
@@ -9231,13 +9247,11 @@ function renderDeptProjectRollup() {
     // is how 'Show all' could leave you on '38 of 47'. Clearing the key means
     // no subset at all, which every reader already treats as everything.
     try { localStorage.removeItem('sdcDashboardProjects'); } catch (_) {}
-    renderDeptProjectRollup();
-    try { renderTeamDashboard(); } catch (_) {}
+    _pdashRerender();
   });
   _fRoot.querySelector('[data-action="select-none"]')?.addEventListener('click', () => {
     try { localStorage.setItem('sdcDashboardProjects', JSON.stringify([])); } catch (_) {}
-    renderDeptProjectRollup();
-    try { renderTeamDashboard(); } catch (_) {}
+    _pdashRerender();
   });
   // Variance sits with the Financial Milestones heading now, inside the rollup.
   root.querySelector('[data-action="toggle-variance"]')?.addEventListener('click', () => {
@@ -10830,7 +10844,6 @@ function _hoursCheckOnce() {
       try { renderScheduleHours(); } catch (_) {}
       try { renderProjectTabs(); } catch (_) {}
       // Start warming the frontend cache for all local jobs immediately
-      _prefetchJobHours();
     }
   }).catch(() => {});
 }
@@ -11518,755 +11531,6 @@ function renderVendorPOsPage() {
     const csv = csvData.map(row => row.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
     const a = document.createElement('a'); a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv); a.download = 'vendor-pos.csv'; a.click();
   }));
-}
-
-// ─── Job Hours Page ───────────────────────────────────────────────────────────
-const _jhPageState = { jobIds: [], search: '', pbiJobs: null, hoursType: 'quoted', dropdownOpen: false, fnFilter: null, fnDropOpen: false, _didAutoSelect: false };
-
-function renderJobHoursPage() {
-  const root = document.getElementById('job-hours-page');
-  if (!root) return;
-
-  // ── Build job list from local DB merged with PBI status ───────────────────
-  const localJobs = Object.entries(state.projectsIndex || {})
-    .map(([name, info]) => ({ id: String(info.hours_job_id || info.job_number || '').trim(), name, status: '' }))
-    .filter(j => j.id);
-
-  const pbiMap = new Map((_jhPageState.pbiJobs || []).map(j => [j.id, j]));
-  const allJobs = localJobs.map(j => {
-    const p = pbiMap.get(j.id);
-    return p ? { ...j, name: p.name || j.name, status: p.status || '' } : j;
-  });
-  if (_jhPageState.pbiJobs) {
-    const localIds = new Set(localJobs.map(j => j.id));
-    for (const p of _jhPageState.pbiJobs) {
-      if (!localIds.has(p.id)) allJobs.push(p);
-    }
-  }
-  allJobs.sort((a, b) => a.name.localeCompare(b.name));
-
-  // Auto-select first job only on true first load, not after a user clears/removes
-  if (!_jhPageState._didAutoSelect && !_jhPageState.jobIds.length && allJobs.length) {
-    _jhPageState.jobIds = [allJobs[0].id];
-    _jhPageState._didAutoSelect = true;
-  }
-
-  const selIds = new Set(_jhPageState.jobIds);
-  const q      = _jhPageState.search.toLowerCase();
-
-  const selCount = selIds.size;
-  const dropOpen = _jhPageState.dropdownOpen;
-
-  // Build pill chips for selected jobs
-  const pillsHtml = selCount === 0
-    ? `<span class="jhp-dd-placeholder">Select job…</span>`
-    : [...selIds].map(id => {
-        const j = allJobs.find(x => x.id === id);
-        const lbl = j ? `${id} — ${j.name}` : id;
-        return `<span class="jhp-sel-pill"><span class="jhp-sel-pill-lbl">${escapeHtml(lbl)}</span><span class="jhp-sel-pill-x" data-jhp-pill-rm="${escapeHtml(id)}">×</span></span>`;
-      }).join('');
-
-  // Build grouped list with checkboxes
-  const statuses = ['Active', 'Complete', ''];
-  const grouped  = statuses.map(s => ({
-    label: s || '(Blank)',
-    jobs: allJobs.filter(j => j.status === s && (!q || j.name.toLowerCase().includes(q) || j.id.includes(q))),
-  })).filter(g => g.jobs.length);
-
-  const dropHtml = grouped.map(g => `
-    <div class="jhp-dd-group">
-      <div class="jhp-dd-group-label">${escapeHtml(g.label)}</div>
-      ${g.jobs.map(j => {
-        const checked = selIds.has(j.id);
-        return `<label class="jhp-dd-item${checked ? ' is-active' : ''}" data-jhp-id="${escapeHtml(j.id)}">
-          <span class="jhp-dd-cb${checked ? ' checked' : ''}"></span>
-          <span class="jhp-dd-job-id">${escapeHtml(j.id)}</span>
-          <span class="jhp-dd-job-name">${escapeHtml(j.name)}</span>
-        </label>`;
-      }).join('')}
-    </div>`).join('');
-
-  root.innerHTML = `
-    <div class="jhp-page">
-      <div class="jhp-top-filters">
-        <div class="jhp-filter-block">
-          <div class="jhp-filter-block-title">Job Status, Job</div>
-          <div class="jhp-dd-wrap${dropOpen ? ' is-open' : ''}">
-            <button class="jhp-dd-btn${selCount ? ' has-pills' : ''}" id="jhp-dd-toggle">
-              <span class="jhp-dd-pills-wrap">${pillsHtml}</span>
-              <span class="jhp-dd-caret">${dropOpen ? '▲' : '▼'}</span>
-            </button>
-            ${dropOpen ? `
-            <div class="jhp-dd-panel">
-              <div class="jhp-dd-search-wrap">
-                <span class="jhp-dd-search-icon">🔍</span>
-                <input class="jhp-dd-search" placeholder="Search" value="${escapeHtml(_jhPageState.search)}" autofocus>
-              </div>
-              ${selCount > 0 ? `<div class="jhp-dd-sel-bar"><span>${selCount} selected</span><button class="jhp-dd-clear">Clear all</button></div>` : ''}
-              <div class="jhp-dd-list">${dropHtml || '<div class="jhp-dd-empty">No jobs found</div>'}</div>
-            </div>` : ''}
-          </div>
-        </div>
-        <div class="jhp-filter-block">
-          <div class="jhp-filter-block-title">Hours Type</div>
-          <div class="jhp-ht-radios">
-            <label class="jhp-ht-radio"><input type="radio" name="jht" value="quoted"${_jhPageState.hoursType==='quoted'?' checked':''}> Quoted</label>
-            <label class="jhp-ht-radio"><input type="radio" name="jht" value="etc"${_jhPageState.hoursType==='etc'?' checked':''}> ETC</label>
-          </div>
-        </div>
-        <div id="jhp-fn-filter-slot"></div>
-        ${selCount > 0 ? `<div class="jhp-filter-active-job">
-          <span class="jhp-active-job-name">${escapeHtml(selCount === 1 ? (allJobs.find(j => j.id === [...selIds][0])?.name || '') : `${selCount} jobs`)}</span>
-          <span class="jhp-active-job-id">${[...selIds].map(id => `#${escapeHtml(id)}`).join(', ')}</span>
-        </div>` : ''}
-      </div>
-      <div id="jhp-hours-content" class="jhp-hours-content">
-        ${selCount ? `<div class="proc-empty">Loading hours…</div>` : `<div class="proc-empty">Select a job to view hours.</div>`}
-      </div>
-    </div>`;
-
-  // Toggle dropdown
-  root.querySelector('#jhp-dd-toggle').addEventListener('click', e => {
-    e.stopPropagation();
-    _jhPageState.dropdownOpen = !_jhPageState.dropdownOpen;
-    renderJobHoursPage();
-  });
-
-  // Close dropdown on outside click
-  if (dropOpen) {
-    const close = e => {
-      if (!root.querySelector('.jhp-dd-panel')?.contains(e.target) &&
-          !root.querySelector('#jhp-dd-toggle')?.contains(e.target)) {
-        _jhPageState.dropdownOpen = false;
-        renderJobHoursPage();
-        document.removeEventListener('click', close);
-      }
-    };
-    document.addEventListener('click', close);
-  }
-
-  // Checkbox toggle — keep dropdown open, reload hours
-  root.querySelectorAll('[data-jhp-id]').forEach(el => {
-    el.addEventListener('click', e => {
-      e.stopPropagation();
-      const id = el.dataset.jhpId;
-      const cur = new Set(_jhPageState.jobIds);
-      if (cur.has(id)) cur.delete(id); else cur.add(id);
-      _jhPageState.jobIds = [...cur];
-      _jhPageState.fnFilter = null; // reset fn filter when job selection changes
-      renderJobHoursPage();
-    });
-  });
-
-  // Clear all
-  root.querySelector('.jhp-dd-clear')?.addEventListener('click', e => {
-    e.stopPropagation();
-    _jhPageState.jobIds = [];
-    renderJobHoursPage();
-  });
-
-  // Pill × remove buttons — stop propagation so they don't toggle the dropdown
-  root.querySelectorAll('[data-jhp-pill-rm]').forEach(x => {
-    x.addEventListener('click', e => {
-      e.stopPropagation();
-      const id = x.dataset.jhpPillRm;
-      _jhPageState.jobIds = _jhPageState.jobIds.filter(j => j !== id);
-      _jhPageState.fnFilter = null;
-      renderJobHoursPage();
-    });
-  });
-
-  // Search — re-render but restore focus so typing is uninterrupted
-  root.querySelector('.jhp-dd-search')?.addEventListener('input', e => {
-    const pos = e.target.selectionStart;
-    _jhPageState.search = e.target.value;
-    renderJobHoursPage();
-    const inp = root.querySelector('.jhp-dd-search');
-    if (inp) { inp.focus(); inp.setSelectionRange(pos, pos); }
-  });
-
-  // Hours type radios
-  root.querySelectorAll('input[name="jht"]').forEach(r => {
-    r.addEventListener('change', () => { _jhPageState.hoursType = r.value; _loadJhpHours(); });
-  });
-
-  // Load hours for selected jobs
-  if (selCount) _loadJhpHours();
-
-  // Sequential pre-fetch — keeps at most 1 background query in-flight at a time
-  (async () => {
-    for (const j of allJobs) {
-      if (_hoursCache[j.id] || _hoursFetching[j.id]) continue;
-      _hoursFetching[j.id] = true;
-      try {
-        const r = await fetch(`/api/hours/${encodeURIComponent(j.id)}`);
-        const d = await r.json();
-        if (!d?.error) _hoursCache[j.id] = d;
-      } catch (_) {}
-      _hoursFetching[j.id] = false;
-    }
-  })();
-
-  // Fetch PBI jobs list in background to enrich status
-  if (!_jhPageState.pbiJobs) {
-    fetch('/api/hours/jobs/list').then(r => r.json()).then(data => {
-      if (!data.error) { _jhPageState.pbiJobs = data; renderJobHoursPage(); }
-    }).catch(() => {});
-  }
-}
-
-// Sequential prefetch — one job at a time so user-triggered requests
-// queue behind at most 1 background query instead of all of them at once.
-async function _prefetchJobHours() {
-  const localJobs = Object.entries(state.projectsIndex || {})
-    .map(([name, info]) => ({ id: String(info.hours_job_id || info.job_number || '').trim(), name }))
-    .filter(j => j.id)
-    .sort((a, b) => a.name.localeCompare(b.name));
-  for (const j of localJobs) {
-    if (_hoursCache[j.id] || _hoursFetching[j.id]) continue;
-    _hoursFetching[j.id] = true;
-    try {
-      const r = await fetch(`/api/hours/${encodeURIComponent(j.id)}`);
-      const d = await r.json();
-      if (!d?.error) _hoursCache[j.id] = d;
-    } catch (_) {}
-    _hoursFetching[j.id] = false;
-  }
-}
-
-function _jhBarChart(title, groups, seriesLabels, seriesColors, W, H) {
-  const F = "Montserrat,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
-  const hasSec   = groups.some(g => g.sectionLabel);
-  const hasGrp   = groups.some(g => g.groupLabel);
-  const fnRowH   = 32;
-  const grpRowH  = hasSec || hasGrp ? 28 : 0;
-  const secRowH  = hasSec ? 30 : 0;
-  const legendH  = 32;
-  const padL = 72, padR = 8, padT = 36;
-  W = Math.max(W, padL + padR + groups.length * 90);
-  const padB = fnRowH + grpRowH + secRowH + legendH + 6;
-  const chartH = H - padT - padB;
-  const axisY  = padT + chartH;
-  const allVals = groups.flatMap(g => g.series.map(s => s.value));
-  const rawMax  = Math.max(...allVals, 1);
-  const mag     = Math.pow(10, Math.floor(Math.log10(rawMax)));
-  const step    = rawMax / mag <= 2 ? mag * 0.5 : rawMax / mag <= 5 ? mag : mag * 2;
-  const maxVal  = Math.ceil(rawMax / step) * step;
-  const ticks = 5;
-  const tickStep = maxVal / ticks;
-  let grid = '';
-  for (let i = 0; i <= ticks; i++) {
-    const v   = tickStep * i;
-    const y   = padT + chartH - (v / maxVal) * chartH;
-    const lbl = Math.round(v).toLocaleString();
-    grid += `<line x1="${padL}" x2="${W-padR}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#e2e8f0" stroke-width="1"/>`;
-    grid += `<text x="${padL-6}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="13" style="fill:var(--text-muted,#64748b);font-family:${F}">${lbl}</text>`;
-  }
-  const groupCount = groups.length;
-  const slotW = (W - padL - padR) / groupCount;
-  const barPad = 1;
-  const seriesCount = seriesLabels.length;
-  const barW = Math.max(4, Math.floor((slotW * 0.85 - barPad * (seriesCount - 1)) / seriesCount));
-  let bars = '';
-  const sectionMeta = new Map();
-  const groupMeta   = new Map();
-  groups.forEach((g, gi) => {
-    const slotX = padL + gi * slotW;
-    const groupCenter = slotX + slotW / 2;
-    const totalBarW = barW * seriesCount + barPad * (seriesCount - 1);
-    const barsStartX = groupCenter - totalBarW / 2;
-    const sk = g.sectionLabel || '';
-    const gk = (g.sectionLabel||'') + '||' + (g.label||'');
-    if (!sectionMeta.has(sk)) sectionMeta.set(sk, { start: gi, end: gi });
-    else sectionMeta.get(sk).end = gi;
-    if (!groupMeta.has(gk)) groupMeta.set(gk, { start: gi, end: gi, label: g.label, sec: g.sectionLabel });
-    else groupMeta.get(gk).end = gi;
-    const qVal = g.series[0]?.value || 0;
-    const aVal = g.series[1]?.value || 0;
-    const diff = qVal - aVal;
-    let minBarTop = axisY;
-    g.series.forEach((s, si) => {
-      if (!s.value) return;
-      const color = seriesColors[si] || s.color;
-      const bh  = Math.max(1, (s.value / maxVal) * chartH);
-      const bx  = barsStartX + si * (barW + barPad);
-      const by  = axisY - bh;
-      if (by < minBarTop) minBarTop = by;
-      const q = Math.round(qVal).toLocaleString();
-      const a = Math.round(aVal).toLocaleString();
-      const diffStr = (diff>=0?'+':'')+Math.round(diff).toLocaleString();
-      const tip = `${g.fn || g.label || ''}\nQuoted: ${q}\nActual: ${a}\nDiff: ${diffStr}`;
-      bars += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${barW}" height="${bh.toFixed(1)}" fill="${color}"><title>${escapeHtml(tip)}</title></rect>`;
-      const lv = Math.round(s.value).toLocaleString();
-      const lblY = by + Math.min(bh - 4, 18);
-      const lblColor = si === 1 ? 'white' : '#0f172a';
-      bars += `<text x="${(bx+barW/2).toFixed(1)}" y="${lblY.toFixed(1)}" text-anchor="middle" font-size="15" font-weight="700" style="fill:${lblColor};font-family:${F}">${lv}</text>`;
-    });
-    if (qVal && aVal) {
-      const diffLabel = (diff >= 0 ? '+' : '') + Math.round(diff).toLocaleString();
-      const diffColor = diff >= 0 ? '#16a34a' : '#dc2626';
-      const actualBh = Math.max(1, (aVal / maxVal) * chartH);
-      const actualBx = barsStartX + 1 * (barW + barPad);
-      const actualBy = axisY - actualBh;
-      bars += `<text x="${(actualBx + barW/2).toFixed(1)}" y="${(actualBy - 5).toFixed(1)}" text-anchor="middle" font-size="12" font-weight="700" style="fill:${diffColor};font-family:${F}">${diffLabel}</text>`;
-    }
-    const fnLabel = g.fn || g.label || '';
-    bars += `<text x="${groupCenter.toFixed(1)}" y="${(axisY + secRowH + grpRowH + fnRowH - 6).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" style="fill:var(--text,#061d39);font-family:${F}">${escapeHtml(fnLabel)}</text>`;
-  });
-  let secBandRects = '', secBandLabels = '';
-  if (secRowH) {
-    const sy = axisY;
-    sectionMeta.forEach((m, sk) => {
-      if (!sk) return;
-      const x1 = padL + m.start * slotW;
-      const x2 = padL + (m.end + 1) * slotW;
-      const secBandW = x2 - x1;
-      secBandRects  += `<rect x="${x1.toFixed(1)}" y="${sy.toFixed(1)}" width="${secBandW.toFixed(1)}" height="${secRowH}" fill="${seriesColors[1]||'#1e3a5f'}"><title>${escapeHtml(sk)}</title></rect>`;
-      secBandLabels += `<text x="${((x1+x2)/2).toFixed(1)}" y="${(sy+secRowH/2+5).toFixed(1)}" text-anchor="middle" font-size="14" font-weight="700" fill="white" style="font-family:${F}">${escapeHtml(sk)}</text>`;
-      secBandRects += `<line x1="${x2.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${(sy+secRowH).toFixed(1)}" stroke="white" stroke-width="2"/>`;
-    });
-  }
-  const secBands = secBandRects + secBandLabels;
-  let grpBandRects = '', grpBandLabels = '';
-  if (grpRowH) {
-    const gy = axisY + secRowH;
-    groupMeta.forEach((m) => {
-      const x1 = padL + m.start * slotW;
-      const x2 = padL + (m.end + 1) * slotW;
-      const grpBandW = x2 - x1;
-      const grpLabel = m.label || '';
-      grpBandRects  += `<rect x="${x1.toFixed(1)}" y="${gy.toFixed(1)}" width="${grpBandW.toFixed(1)}" height="${grpRowH}" fill="${seriesColors[0]||'#AACEE8'}"><title>${escapeHtml(`${m.sec ? m.sec + ' › ' : ''}${grpLabel}`)}</title></rect>`;
-      grpBandLabels += `<text x="${((x1+x2)/2).toFixed(1)}" y="${(gy+grpRowH/2+5).toFixed(1)}" text-anchor="middle" font-size="13" font-weight="700" fill="#0f172a" style="font-family:${F}">${escapeHtml(grpLabel)}</text>`;
-      grpBandRects  += `<line x1="${x2.toFixed(1)}" y1="${gy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${(gy+grpRowH).toFixed(1)}" stroke="white" stroke-width="2"/>`;
-    });
-  }
-  const grpBands = grpBandRects + grpBandLabels;
-  const legendY = axisY + fnRowH + grpRowH + secRowH + 8;
-  const legendTotalW = seriesLabels.reduce((a, sl) => a + 14 + sl.length * 6.5 + 16, 0);
-  let legend = '', lx = (W - legendTotalW) / 2;
-  seriesLabels.forEach((sl, i) => {
-    legend += `<rect x="${lx.toFixed(1)}" y="${legendY}" width="10" height="10" fill="${seriesColors[i]}" rx="1"/>`;
-    legend += `<text x="${(lx+16).toFixed(1)}" y="${legendY+10}" font-size="13" font-weight="600" style="fill:var(--text,#061d39);font-family:${F}">${escapeHtml(sl)}</text>`;
-    lx += 14 + sl.length * 6.5 + 16;
-  });
-  const titleSvg = `<text x="${(W/2).toFixed(1)}" y="22" text-anchor="middle" font-size="16" font-weight="700" style="fill:var(--text,#061d39);font-family:${F}">${escapeHtml(title)}</text>`;
-  return `<div class="jhp-chart-wrap">
-    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">
-      ${titleSvg}${grid}${bars}${grpBands}${secBands}${legend}
-      <line x1="${padL}" x2="${padL}" y1="${padT}" y2="${axisY}" stroke="#cbd5e1" stroke-width="1"/>
-      <line x1="${padL}" x2="${W-padR}" y1="${axisY}" y2="${axisY}" stroke="#cbd5e1" stroke-width="1"/>
-    </svg>
-  </div>`;
-}
-
-async function _loadJhpHours() {
-  const content = document.getElementById('jhp-hours-content');
-  if (!content) return;
-  const job = [..._jhPageState.jobIds].sort().join('&').trim();
-  if (!job) { content.innerHTML = `<div class="proc-empty">Select a job to view hours.</div>`; return; }
-
-  if (!_hoursCache[job]) {
-    // Already being pre-fetched? Wait for it, otherwise fetch now
-    const _loadingMsg = () => `<div class="proc-empty jhp-loading-msg"><span class="jhp-spinner"></span>Querying Power BI… this takes 10–30 s on first load</div>`;
-    if (_hoursFetching[job]) {
-      content.innerHTML = _loadingMsg();
-      await _awaitHoursFetch(job);
-      if (!_hoursCache[job]) {
-        content.innerHTML = `<div class="proc-empty proc-error">⚠ Timed out waiting for Power BI.<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
-        content.querySelector('.jhp-retry-btn')?.addEventListener('click', () => _loadJhpHours());
-        return;
-      }
-    } else {
-      content.innerHTML = _loadingMsg();
-      _hoursFetching[job] = true;
-      let fetchedData;
-      try {
-        fetchedData = await _fetchJobHoursJson(job);
-      } catch (e) {
-        _hoursFetching[job] = false;
-        content.innerHTML = `<div class="proc-empty proc-error">⚠ Failed to load hours: ${escapeHtml(ctrlAbortMsg(e))}<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
-        content.querySelector('.jhp-retry-btn')?.addEventListener('click', () => _loadJhpHours());
-        return;
-      }
-      _hoursFetching[job] = false;
-      if (fetchedData?.error) {
-        content.innerHTML = `<div class="proc-empty proc-error">⚠ ${escapeHtml(fetchedData.error)}<br><button class="jhp-retry-btn">↺ Retry</button></div>`;
-        content.querySelector('.jhp-retry-btn')?.addEventListener('click', () => _loadJhpHours());
-        return;
-      }
-      _hoursCache[job] = fetchedData;
-    }
-  }
-
-  const data = _hoursCache[job];
-  if (!data) return;
-  if (data.error) { content.innerHTML = `<div class="proc-empty proc-error">⚠ ${escapeHtml(data.error)}</div>`; return; }
-
-  const { bgTotals, totals } = data;
-  // Remap Manufacturing out of "Shop" group into its own standalone group
-  const fns = data.fns.map(r => r.fn === 'Manufacturing' ? { ...r, group: 'Manufacturing' } : r);
-  if (!fns || !fns.length) { content.innerHTML = `<div class="proc-empty">No hours data found for job ${escapeHtml(job)}.</div>`; return; }
-
-  const fmt   = n => Math.round(n || 0).toLocaleString();
-  const dCls  = d => d < -0.5 ? ' hours-over' : d > 0.5 ? ' hours-under' : '';
-  const dFmt  = d => `${d > 0 ? '+' : ''}${fmt(d)}`;
-
-  // ── Function Hierarchy filter ─────────────────────────────────────────────
-  // Build section→groups hierarchy from ALL fns (unfiltered)
-  const fnHier = [];
-  const fnHierMap = new Map();
-  for (const r of fns) {
-    if (!fnHierMap.has(r.section)) { fnHierMap.set(r.section, new Set()); fnHier.push(r.section); }
-    if (r.group) fnHierMap.get(r.section).add(r.group);
-  }
-
-  // Build the full set of "section\x00group" keys
-  const allFnKeys = new Set();
-  for (const sec of fnHier) {
-    const grps = fnHierMap.get(sec);
-    if (grps.size) grps.forEach(g => allFnKeys.add(sec + '\x00' + g));
-    else allFnKeys.add(sec + '\x00');
-  }
-
-  // Active filter — null means all shown
-  const activeFnKeys = _jhPageState.fnFilter || allFnKeys;
-
-  // Apply filter to fns — exclude PM group and Warranty section from pivot/chart
-  const allFns = fns.filter(r => {
-    const key = r.section + '\x00' + (r.group || '');
-    if (/^pm$/i.test(r.group || '')) return false;
-    if (/warranty/i.test(r.section || '')) return false;
-    return activeFnKeys.has(key);
-  });
-  const secGroups = [];
-  const secSeen = new Map();
-  for (const r of allFns) {
-    if (!secSeen.has(r.section)) { secSeen.set(r.section, []); secGroups.push({ sec: r.section, fns: secSeen.get(r.section) }); }
-    secSeen.get(r.section).push(r);
-  }
-  const pivotCols = secGroups.flatMap(g => g.fns);
-
-  const secSpans = secGroups.map(g => `<th class="hpt-sec-hdr" colspan="${g.fns.length}" title="${escapeHtml(g.sec)}">${escapeHtml(g.sec)}</th>`).join('');
-  const grpSpans = secGroups.flatMap(g => {
-    const grpOrder = [], grpCount = new Map();
-    for (const r of g.fns) { const k = r.group || ''; if (!grpCount.has(k)) { grpOrder.push(k); grpCount.set(k, 0); } grpCount.set(k, grpCount.get(k)+1); }
-    const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
-    return grpOrder.map(grp => `<th class="hpt-grp-hdr" colspan="${grpCount.get(grp)}" title="${escapeHtml(grp)}">${escapeHtml(_gl(grp))}</th>`);
-  }).join('');
-  const _glFn = s => s === 'Manufacturing' ? 'MFG' : s;
-  const fnHdrs = pivotCols.map(r => `<th class="hpt-fn-hdr" title="${escapeHtml(r.fn)}" style="color:#000!important;font-weight:700"><span style="color:#000!important">${escapeHtml(_glFn(r.fn))}</span></th>`).join('');
-
-  // Pre-compute per-column full data for rich tooltips
-  const colTip = pivotCols.map(r => {
-    const q = r.quoted||0, a = r.actual||0, e = r.etc||0, d = q - a;
-    return escapeHtml(JSON.stringify({ fn: r.fn, group: r.group||'', section: r.section||'', q, a, e, d }));
-  });
-  const makeRow = (label, valFn, cls, rowCls) => {
-    const cells = pivotCols.map((r, i) => { const v = valFn(r); return `<td class="hpt-val${cls ? cls(r) : ''}" data-tip="${colTip[i]}" data-tip-row="${label}">${fmt(v)}</td>`; }).join('');
-    const total = pivotCols.reduce((a, r) => a + valFn(r), 0);
-    const tq = pivotCols.reduce((a,r)=>a+(r.quoted||0),0), ta = pivotCols.reduce((a,r)=>a+(r.actual||0),0);
-    const totTip = escapeHtml(JSON.stringify({ fn:'Total', group:'', section:'All functions', q:tq, a:ta, e:pivotCols.reduce((a,r)=>a+(r.etc||0),0), d:tq-ta }));
-    return `<tr class="${rowCls||''}"><td class="hpt-row-lbl">${label}</td>${cells}<td class="hpt-total" data-tip="${totTip}" data-tip-row="${label}">${fmt(total)}</td></tr>`;
-  };
-  const ht     = _jhPageState.hoursType;
-  const isEtc  = ht === 'etc';
-  const pivotBody = [
-    makeRow('Quoted', r => r.quoted || 0, null, ht === 'quoted' ? ' hpt-row-active' : ''),
-    makeRow('Actual', r => r.actual || 0),
-    makeRow('ETC',    r => r.etc    || 0, null, ht === 'etc'    ? ' hpt-row-active' : ''),
-    makeRow('Diff',   r => (isEtc ? (r.etc||0) : (r.quoted||0)) - (r.actual||0), r => dCls((isEtc ? (r.etc||0) : (r.quoted||0))-(r.actual||0))),
-  ].join('');
-
-  const totalQ = pivotCols.reduce((a,r) => a+(r.quoted||0), 0);
-  const totalA = pivotCols.reduce((a,r) => a+(r.actual||0), 0);
-  const totalE = pivotCols.reduce((a,r) => a+(r.etc||0), 0);
-
-
-
-  // ── Chart 1: driven by hoursType filter ──────────────────────────────────
-  const compVal    = r => isEtc ? (r.etc || 0) : (r.quoted || 0);
-  const compLabel  = isEtc ? 'ETC' : 'Quoted';
-  const chartTitle = isEtc ? 'Estimate to Complete vs Actual' : 'Quoted vs Actual by Function';
-
-  const _gl = g => g === 'Manufacturing' ? 'MFG' : g;
-  const fnGroups = secGroups.flatMap(sg => {
-    return sg.fns.map(r => ({
-      fn: _gl(r.fn),
-      label: _gl(r.group || r.fn),
-      sectionLabel: sg.sec,
-      series: [{ value: compVal(r) }, { value: r.actual || 0 }],
-    }));
-  }).filter(g => g.series[0].value || g.series[1].value);
-  const fnChart = _jhBarChart(chartTitle, fnGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 1800, 900);
-
-  // ── Chart 2: Section Group — driven by hoursType filter ──────────────────
-  // Subtotals are keyed on the Reports App's section GROUP since 2026-08-26,
-  // when hours moved from Power BI to Paylocity + the Reports App DB. Power BI's
-  // old "Billing Group" (Engineering / Shop / Manufacturing) has no equivalent
-  // there; these six are what SECTIONS actually carries. The data key is still
-  // called `billing` so this page did not need rewriting — only the values moved.
-  //
-  // Anything the data has but this list does not is APPENDED rather than dropped:
-  // a hard-coded order that silently hides a group is how hours go missing from a
-  // total without anyone noticing.
-  const BG_ORDER_BASE = ['Management', 'Mechanical Engineering', 'Controls Engineering',
-                         'General Engineering', 'Engineering', 'Shop', 'Manufacturing'];
-  const BG_ORDER = [...BG_ORDER_BASE, ...Object.keys(bgTotals).filter(k => !BG_ORDER_BASE.includes(k)).sort()];
-  const bgGroups = BG_ORDER.filter(bg => bgTotals[bg]).map(bg => ({
-    fn: _gl(bg), label: _gl(bg), sectionLabel: null,
-    series: [{ value: isEtc ? bgTotals[bg].etc : bgTotals[bg].quoted }, { value: bgTotals[bg].actual }],
-  }));
-  const bgChartTitle = isEtc ? 'ETC and Actual by Group' : 'Quoted and Actual by Group';
-  const bgChart = _jhBarChart(bgChartTitle, bgGroups, [compLabel, 'Actual'], ['#AACEE8','#1e3a5f'], 600, 900);
-
-  // group cards — only for groups present in the data, so a job with no shop
-  // hours does not show an empty SHOP card implying zero work booked.
-  const BG_CARD_ORDER = BG_ORDER.filter(bg => bgTotals[bg]);
-  const bgCards = BG_CARD_ORDER.map(bg => {
-    const t = bgTotals[bg] || { quoted: 0, actual: 0, etc: 0 };
-    const diff = t.quoted - t.actual;
-    return `<div class="hours-bg-card" data-tip="${escapeHtml(JSON.stringify({ fn: bg, group: 'Group', section: '', q: t.quoted, a: t.actual, e: t.etc||0, d: diff }))}" data-tip-row="Group">
-      <div class="hours-bg-name">${bg.toUpperCase()}</div>
-      <div class="hours-bg-nums">
-        <span class="hours-col-q">${fmt(t.quoted)}</span>
-        <span class="hours-col-a">${fmt(t.actual)}</span>
-        <span class="hours-col-d${dCls(diff)}">${dFmt(diff)}</span>
-      </div>
-    </div>`;
-  }).join('');
-
-  // ── Function Hierarchy dropdown HTML ────────────────────────────────────
-  const SEC_DISPLAY_LABEL = {
-    'Complete Design and Build': 'Sec-10: Complete Design and Build',
-    'Machine Testing':           'Sec-40: Machine Testing',
-    'Teardown and Install':      'Sec-50: Teardown and Install',
-  };
-  const fnDropOpen = _jhPageState.fnDropOpen;
-  const fnFilterActive = _jhPageState.fnFilter;
-  const fnSelCount = fnFilterActive ? fnFilterActive.size : allFnKeys.size;
-  const fnTotalCount = allFnKeys.size;
-  const fnBtnLabel = !fnFilterActive || fnSelCount === fnTotalCount ? 'All' : 'Multiple selections';
-
-  const fnDropHtml = fnHier.map(sec => {
-    const grps = [...fnHierMap.get(sec)];
-    const secKeys = grps.length
-      ? grps.map(g => sec + '\x00' + g)
-      : [sec + '\x00'];
-    const selCount = secKeys.filter(k => activeFnKeys.has(k)).length;
-    const allSel = selCount === secKeys.length;
-    const noneSel = selCount === 0;
-    const partSel = !allSel && !noneSel;
-    return `<div class="jhp-fn-sec">
-      <label class="jhp-fn-item jhp-fn-sec-row" data-fn-sec="${escapeHtml(sec)}">
-        <span class="jhp-dd-cb${allSel ? ' checked' : partSel ? ' partial' : ''}"></span>
-        <span class="jhp-fn-sec-name">${escapeHtml(SEC_DISPLAY_LABEL[sec] || sec)}</span>
-      </label>
-      ${grps.map(g => {
-        const k = sec + '\x00' + g;
-        const sel = activeFnKeys.has(k);
-        return `<label class="jhp-fn-item jhp-fn-grp-row" data-fn-sec="${escapeHtml(sec)}" data-fn-grp="${escapeHtml(g)}">
-          <span class="jhp-dd-cb${sel ? ' checked' : ''}"></span>
-          <span class="jhp-fn-grp-name">${escapeHtml(g)}</span>
-        </label>`;
-      }).join('')}
-    </div>`;
-  }).join('');
-
-  // Inject Function Hierarchy filter into the top-bar slot
-  const fnSlot = document.getElementById('jhp-fn-filter-slot');
-  if (fnSlot) {
-    fnSlot.innerHTML = `
-      <div class="jhp-filter-block">
-        <div class="jhp-filter-block-title">Function Hierarchy</div>
-        <div class="jhp-dd-wrap${fnDropOpen ? ' is-open' : ''}">
-          <button class="jhp-dd-btn jhp-fn-dd-btn" id="jhp-fn-dd-toggle">
-            <span class="jhp-dd-btn-label">${escapeHtml(fnBtnLabel)}</span>
-            <span class="jhp-dd-caret">${fnDropOpen ? '▲' : '▼'}</span>
-          </button>
-          ${fnDropOpen ? `
-          <div class="jhp-dd-panel jhp-fn-dd-panel">
-            <div class="jhp-dd-search-wrap">
-              <span class="jhp-dd-search-icon">🔍</span>
-              <input class="jhp-fn-search" placeholder="Search" autofocus>
-            </div>
-            <div class="jhp-dd-sel-bar">
-              <label class="jhp-fn-item" data-fn-all>
-                <span class="jhp-dd-cb${!fnFilterActive || fnSelCount===fnTotalCount ? ' checked' : ''}"></span>
-                <span>Select all</span>
-              </label>
-              ${fnFilterActive ? `<button class="jhp-dd-clear" data-fn-clear>Clear</button>` : ''}
-            </div>
-            <div class="jhp-fn-list">${fnDropHtml}</div>
-          </div>` : ''}
-        </div>
-      </div>`;
-  }
-
-  content.innerHTML = `
-    <div class="hours-bg-row" style="margin-bottom:12px">${bgCards}</div>
-    <div class="jhp-summary-bar">
-      <div class="jhp-totals">
-        <span class="jhp-total-label">Total Quoted</span><span class="jhp-total-val">${fmt(totalQ)}</span>
-        <span class="jhp-total-sep">·</span>
-        <span class="jhp-total-label">Actual</span><span class="jhp-total-val">${fmt(totalA)}</span>
-        <span class="jhp-total-sep">·</span>
-        <span class="jhp-total-label">ETC</span><span class="jhp-total-val">${fmt(totalE)}</span>
-        <span class="jhp-total-sep">·</span>
-        <span class="jhp-total-label">Diff</span><span class="jhp-total-val${dCls(totalQ-totalA)}">${dFmt(totalQ-totalA)}</span>
-      </div>
-    </div>
-    <div class="hpt-fn-wrap" style="margin-top:12px;overflow-x:auto">
-      <table class="hpt" style="table-layout:auto;width:100%">
-        <colgroup>
-          <col style="width:80px">
-          ${pivotCols.map(() => `<col>`).join('')}
-          <col style="width:80px">
-        </colgroup>
-        <thead>
-          <tr><th class="hpt-corner" rowspan="3"></th>${secSpans}<th class="hpt-total-hdr" rowspan="3">Total</th></tr>
-          <tr>${grpSpans}</tr>
-          <tr>${fnHdrs}</tr>
-        </thead>
-        <tbody>${pivotBody}</tbody>
-      </table>
-    </div>
-    <div class="jhp-charts-row" style="align-items:flex-start">
-      <div class="jhp-chart-main" style="overflow-x:auto">${fnChart}</div>
-      <div class="jhp-chart-side" style="overflow-x:auto">${bgChart}</div>
-    </div>`;
-
-  // Wire fn filter events on the slot
-  if (fnSlot) {
-    fnSlot.querySelector('#jhp-fn-dd-toggle')?.addEventListener('click', e => {
-      e.stopPropagation();
-      _jhPageState.fnDropOpen = !_jhPageState.fnDropOpen;
-      _loadJhpHours();
-    });
-
-    if (fnDropOpen) {
-      const close = e => {
-        if (!fnSlot.contains(e.target)) {
-          _jhPageState.fnDropOpen = false;
-          _loadJhpHours();
-          document.removeEventListener('click', close);
-        }
-      };
-      document.addEventListener('click', close);
-    }
-
-    fnSlot.querySelector('[data-fn-all]')?.addEventListener('click', e => {
-      e.stopPropagation();
-      _jhPageState.fnFilter = null;
-      _loadJhpHours();
-    });
-
-    fnSlot.querySelector('[data-fn-clear]')?.addEventListener('click', e => {
-      e.stopPropagation();
-      _jhPageState.fnFilter = new Set();
-      _loadJhpHours();
-    });
-
-    fnSlot.querySelector('.jhp-fn-search')?.addEventListener('input', e => {
-      const q = e.target.value.toLowerCase();
-      fnSlot.querySelectorAll('.jhp-fn-sec').forEach(secEl => {
-        const secName = secEl.querySelector('.jhp-fn-sec-name')?.textContent.toLowerCase() || '';
-        let anyVisible = secName.includes(q);
-        secEl.querySelectorAll('.jhp-fn-grp-row').forEach(grpEl => {
-          const grpName = grpEl.querySelector('.jhp-fn-grp-name')?.textContent.toLowerCase() || '';
-          const vis = grpName.includes(q) || secName.includes(q);
-          grpEl.style.display = vis ? '' : 'none';
-          if (vis) anyVisible = true;
-        });
-        secEl.style.display = anyVisible ? '' : 'none';
-      });
-    });
-
-    fnSlot.querySelectorAll('[data-fn-grp]').forEach(el => {
-      el.addEventListener('click', e => {
-        e.stopPropagation();
-        const sec = el.dataset.fnSec, grp = el.dataset.fnGrp;
-        const key = sec + '\x00' + grp;
-        const cur = new Set(_jhPageState.fnFilter || allFnKeys);
-        if (cur.has(key)) cur.delete(key); else cur.add(key);
-        _jhPageState.fnFilter = cur.size === allFnKeys.size ? null : cur;
-        _loadJhpHours();
-      });
-    });
-
-    fnSlot.querySelectorAll('[data-fn-sec]:not([data-fn-grp])').forEach(el => {
-      el.addEventListener('click', e => {
-        e.stopPropagation();
-        const sec = el.dataset.fnSec;
-        const grps = [...fnHierMap.get(sec)];
-        const secKeys = grps.length ? grps.map(g => sec + '\x00' + g) : [sec + '\x00'];
-        const cur = new Set(_jhPageState.fnFilter || allFnKeys);
-        const allSel = secKeys.every(k => cur.has(k));
-        if (allSel) secKeys.forEach(k => cur.delete(k));
-        else secKeys.forEach(k => cur.add(k));
-        _jhPageState.fnFilter = cur.size === allFnKeys.size ? null : cur;
-        _loadJhpHours();
-      });
-    });
-  }
-
-  // ── Rich floating tooltip for pivot cells + billing cards ──────────────────
-  _jhpTipWire(content);
-}
-
-function _jhpTipWire(container) {
-  // Ensure tooltip element exists
-  let tip = document.getElementById('jhp-tip');
-  if (!tip) {
-    tip = document.createElement('div');
-    tip.id = 'jhp-tip';
-    document.body.appendChild(tip);
-  }
-  const fmt = n => Math.round(n || 0).toLocaleString();
-  const show = (d, row, x, y) => {
-    try {
-      const p = JSON.parse(d);
-      const diff = p.d;
-      const diffCls = diff < -0.5 ? 'jt-over' : diff > 0.5 ? 'jt-under' : 'jt-val';
-      const diffSign = diff > 0 ? '+' : '';
-      const path = [p.section, p.group].filter(Boolean).join(' › ');
-      tip.innerHTML = `
-        <div class="jt-fn">${escapeHtml(p.fn)}</div>
-        ${path ? `<div class="jt-path">${escapeHtml(path)}</div>` : ''}
-        <div class="jt-div"></div>
-        <div class="jt-row"><span class="jt-lbl">Quoted</span><span class="jt-val">${fmt(p.q)}</span></div>
-        <div class="jt-row"><span class="jt-lbl">Actual</span><span class="jt-val">${fmt(p.a)}</span></div>
-        <div class="jt-row"><span class="jt-lbl">ETC</span><span class="jt-val">${fmt(p.e)}</span></div>
-        <div class="jt-div"></div>
-        <div class="jt-row"><span class="jt-lbl">Diff (Q−A)</span><span class="${diffCls}">${diffSign}${fmt(diff)}</span></div>`;
-      tip.style.display = 'block';
-      _jhpTipMove(x, y);
-    } catch (_) {}
-  };
-  container.addEventListener('mouseover', e => {
-    const el = e.target.closest('[data-tip]');
-    if (el) show(el.dataset.tip, el.dataset.tipRow, e.clientX, e.clientY);
-  });
-  container.addEventListener('mousemove', e => {
-    if (tip.style.display === 'block') _jhpTipMove(e.clientX, e.clientY);
-  });
-  container.addEventListener('mouseout', e => {
-    if (!e.target.closest('[data-tip]')) return;
-    if (!e.relatedTarget || !e.relatedTarget.closest('[data-tip]')) tip.style.display = 'none';
-  });
-  // Hide when leaving content area entirely
-  container.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
-}
-
-function _jhpTipMove(x, y) {
-  const tip = document.getElementById('jhp-tip');
-  if (!tip) return;
-  const W = tip.offsetWidth || 200, H = tip.offsetHeight || 120;
-  // Mouse coords → layout px inside the zoomed body (app scale).
-  const z = _appScale();
-  const xl = x / z, yl = y / z;
-  const vw = window.innerWidth / z, vh = window.innerHeight / z;
-  tip.style.left = (xl + 14 + W > vw ? xl - W - 10 : xl + 14) + 'px';
-  tip.style.top  = (yl + 14 + H > vh ? yl - H - 10 : yl + 14) + 'px';
 }
 
 function renderProjectsPage() {
@@ -17934,8 +17198,9 @@ function renderPortal() {
 
 
   const isSdc = _portalCustomer === PORTAL_SDC;
-  const opts = [{ name: PORTAL_SDC }].concat(customers).map(c =>
-    `<option value="${escapeHtml(c.name)}" ${c.name === cust ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+  const pickerItems = [{ name: PORTAL_SDC }].concat(customers).map(c =>
+    `<button type="button" class="pdash-picker-item portal-cust-item${c.name === cust ? ' is-on' : ''}"
+      data-portal-pick="${escapeHtml(c.name)}">${escapeHtml(c.name)}${c.n ? `<span class="portal-cust-n">${c.n}</span>` : ''}</button>`).join('');
 
   // One linear band: mark, then the customer picker AS the headline, then the
   // two numbers. The earlier version stacked a title over a subtitle with the
@@ -17950,9 +17215,17 @@ function renderPortal() {
         <div class="portal-bar-left">
           ${_portalLockedCustomer
             ? `<span class="portal-cust-name">${escapeHtml(cust)}</span>`
-            : `<select class="portal-cust-select" data-portal-cust>${opts}</select>
-               <button type="button" class="portal-linkbtn" data-portal-login-manage
-                 title="Create, reset, or disable ${escapeHtml(cust)}'s login for the customer portal (portal.sdcautomation.com).">🔑 Manage login</button>`}
+            : `<details class="pdash-picker portal-cust-picker"${state._portalPickerOpen ? ' open' : ''}>
+                 <summary><span class="portal-cust-name">${escapeHtml(cust)}</span><span class="pdash-picker-caret">▾</span></summary>
+                 <div class="pdash-picker-panel">
+                   <input type="search" class="portal-cust-search" data-portal-cust-search placeholder="Search customers…" autocomplete="off">
+                   <div class="pdash-picker-list" data-portal-cust-list>
+                     ${pickerItems}
+                   </div>
+                 </div>
+               </details>
+               <button type="button" class="portal-headbtn" data-portal-login-manage
+                 title="Create, reset, or disable ${escapeHtml(cust)}'s login for the customer portal (portal.sdcautomation.com).">Manage login</button>`}
           <span class="portal-bar-meta">${units.length} machine${units.length === 1 ? '' : 's'} · ${projects.length} project${projects.length === 1 ? '' : 's'}</span>
         </div>
 
@@ -18402,6 +17675,140 @@ const PORTAL_WORK_COLS = [
   { key: 'drift', label: 'Against plan',          w: 130 },
 ];
 
+function compressGridColumns(table, storeKey) {
+  if (!table) return;
+  const cols = Array.from(table.querySelectorAll('colgroup > col'));
+  const ths = Array.from(table.querySelectorAll('thead th'));
+  if (!cols.length || cols.length !== ths.length) return;
+  const GAP = 12;
+  const wrapIdx = cols.map((c, i) => c.dataset.wrap === '1' ? i : -1).filter(i => i >= 0);
+  const prevWidths = cols.map(c => c.style.width);
+  const prevTableW = table.style.width;
+  const prevLayout = table.style.tableLayout;
+  let measured = null;
+  try {
+    // Measuring pass: auto layout, nothing clipping, and the prose column
+    // pinned narrow so it cannot dominate the others.
+    table.classList.add('grid-measuring');
+    table.style.tableLayout = 'auto';
+    table.style.width = 'max-content';
+    cols.forEach((c, i) => { c.style.width = wrapIdx.includes(i) ? '200px' : ''; });
+    void table.offsetWidth;
+    // offsetWidth, NOT getBoundingClientRect: the app runs under a CSS zoom
+    // (the app-scale control), so the rect is in SCALED pixels while the
+    // width we are about to set is in layout pixels. Measuring with the rect
+    // sized every column ~15% short, which is why Company and Quote # came
+    // back clipped after a compress that had measured them correctly.
+    measured = ths.map(th => th.offsetWidth);
+  } catch (_) {
+    measured = null;
+  } finally {
+    table.classList.remove('grid-measuring');
+    table.style.tableLayout = prevLayout || 'fixed';
+  }
+  if (!measured) {
+    cols.forEach((c, i) => { c.style.width = prevWidths[i]; });
+    table.style.width = prevTableW;
+    return;
+  }
+  table.style.tableLayout = 'fixed';
+  cols.forEach((c, i) => {
+    if (wrapIdx.includes(i)) return;
+    c.style.width = Math.max(48, measured[i] + GAP) + 'px';
+  });
+  // Whatever is left goes to the prose column, and never less than a third
+  // of the visible width — it is the column people actually read.
+  if (wrapIdx.length) {
+    const avail = (table.parentElement && table.parentElement.clientWidth) || 0;
+    const fixed = cols.reduce((n, c, i) => n + (wrapIdx.includes(i) ? 0 : (parseFloat(c.style.width) || 0)), 0);
+    const share = Math.max(Math.floor(avail / 3), Math.floor((avail - fixed) / wrapIdx.length), 260);
+    wrapIdx.forEach(i => { cols[i].style.width = share + 'px'; });
+  }
+  table.style.width = cols.reduce((n, c) => n + (parseFloat(c.style.width) || 0), 0) + 'px';
+  if (storeKey) {
+    const out = {};
+    cols.forEach(c => { out[c.dataset.scol] = parseFloat(c.style.width) || 0; });
+    try { localStorage.setItem('sdcGridCols:' + storeKey, JSON.stringify(out)); } catch (_) {}
+  }
+}
+function makeGridResizable(table, storeKey) {
+  if (!table || table.dataset.resizable === '1') return;
+  const cols = Array.from(table.querySelectorAll('colgroup > col'));
+  const ths = Array.from(table.querySelectorAll('thead th '.trim()));
+  if (!cols.length || cols.length !== ths.length) return;
+  table.dataset.resizable = '1';
+  cols.forEach((c, i) => { if (!c.dataset.scol) c.dataset.scol = String(i); });
+
+  // A column declared auto has no number to drag from, so it gets the width
+  // it happens to be rendering at right now.
+  const pxWidths = () => ths.map((th, i) => {
+    const declared = parseFloat(cols[i].style.width);
+    return Number.isFinite(declared) ? declared : Math.round(th.getBoundingClientRect().width) || 100;
+  });
+
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('sdcGridCols:' + storeKey) || 'null'); } catch (_) {}
+  const start = pxWidths();
+  cols.forEach((c, i) => {
+    const v = saved && Number(saved[c.dataset.scol]);
+    c.style.width = ((v && v >= 48) ? v : start[i]) + 'px';
+  });
+  const sum = () => cols.reduce((n, c) => n + (parseFloat(c.style.width) || 0), 0);
+  table.style.width = sum() + 'px';
+  table.style.tableLayout = 'fixed';
+  // A stylesheet min-width would floor the table and reintroduce the
+  // squeeze this whole approach exists to avoid.
+  table.style.minWidth = '0';
+
+  const persist = () => {
+    const out = {};
+    cols.forEach(c => { out[c.dataset.scol] = parseFloat(c.style.width) || 0; });
+    try { localStorage.setItem('sdcGridCols:' + storeKey, JSON.stringify(out)); } catch (_) {}
+  };
+
+  ths.forEach((th, i) => {
+    if (th.querySelector('.pw-grip')) return;
+    // Sticky headers already establish a containing block. Forcing relative
+    // here would drop the header out of its sticky position.
+    if (getComputedStyle(th).position === 'static') th.style.position = 'relative';
+    const grip = document.createElement('span');
+    grip.className = 'pw-grip';
+    // The last grip sits wholly inside, or it hangs past the table edge and
+    // the wrapper grows a scrollbar for nine pixels of nothing.
+    if (i === ths.length - 1) { grip.style.right = '0'; grip.style.width = '12px'; }
+    th.appendChild(grip);
+    grip.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const col = cols[i];
+      const startX = e.clientX;
+      const startW = parseFloat(col.style.width) || 100;
+      document.body.classList.add('pcol-resizing');
+      grip.classList.add('is-dragging');
+      const move = (ev) => {
+        col.style.width = Math.max(48, startW + (ev.clientX - startX)) + 'px';
+        table.style.width = sum() + 'px';
+      };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        document.body.classList.remove('pcol-resizing');
+        grip.classList.remove('is-dragging');
+        persist();
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+    // Double-click a grip to give that column back its starting width.
+    grip.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      cols[i].style.width = start[i] + 'px';
+      table.style.width = sum() + 'px';
+      persist();
+    });
+  });
+}
 function _portalColWidths(gridId, cols) {
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('sdcPortalCols:' + gridId) || 'null'); } catch (_) {}
@@ -18850,8 +18257,32 @@ function _wirePortal(root) {
   setTimeout(() => {
     try { root.querySelectorAll('table[data-grid]').forEach(_fitPortalGrid); } catch (_) {}
   }, 60);
-  const sel = root.querySelector('[data-portal-cust]');
-  if (sel) sel.addEventListener('change', () => { _portalCustomer = sel.value; _portalProjects = []; _portalMachine = null; _portalCleared = false; renderPortal(); });
+  const picker = root.querySelector('.portal-cust-picker');
+  if (picker) {
+    // Survive the re-render a pick causes, so it does not slam shut.
+    picker.addEventListener('toggle', () => { state._portalPickerOpen = picker.open; });
+    const search = picker.querySelector('[data-portal-cust-search]');
+    const list = picker.querySelector('[data-portal-cust-list]');
+    if (search && list) {
+      // Filter in place. Re-rendering here would take the typing with it.
+      search.addEventListener('input', () => {
+        const q = search.value.trim().toLowerCase();
+        list.querySelectorAll('[data-portal-pick]').forEach(b => {
+          b.classList.toggle('hidden', !!q && !b.dataset.portalPick.toLowerCase().includes(q));
+        });
+      });
+      search.addEventListener('click', (e) => e.stopPropagation());
+    }
+    picker.querySelectorAll('[data-portal-pick]').forEach(b => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _portalCustomer = b.dataset.portalPick;
+        _portalProjects = []; _portalMachine = null; _portalCleared = false;
+        state._portalPickerOpen = false;
+        renderPortal();
+      });
+    });
+  }
 
   root.querySelectorAll('[data-prisk]').forEach(b => {
     b.addEventListener('click', () => {
@@ -30388,6 +29819,9 @@ function _restoreScrollPos(view) {
 }
 
 function setView(view) {
+  // Job Hours was removed from the Scheduler — hours come from the Reports
+  // app. A saved view or an old link must not strand anyone on a blank page.
+  if (view === 'job-hours') view = 'projects';
   // v7.6: the Dashboard view was merged into Departments. Anyone who
   // had state.view === 'dashboard' saved in localStorage lands on
   // Departments instead so they don't get a blank page.
@@ -30474,7 +29908,6 @@ function setView(view) {
   // it is a self-contained page with its own data and no Gantt involvement.
   // This is the ONLY place app.js knows about it.
   else if (view === 'service')    { try { renderServicePage(); } catch (_) {} _restoreScrollPos(view); }
-  else if (view === 'job-hours')  { renderJobHoursPage(); _restoreScrollPos(view); }
   else if (view === 'projects')  { renderProjectsPage(); _restoreScrollPos(view); }
   else if (view === 'favorites') { renderFavoritesPage(); _restoreScrollPos(view); }
   else if (view === 'recents')   { renderRecentsPage(); _restoreScrollPos(view); }
@@ -31163,12 +30596,55 @@ function _sharedViews() {
     default: (sv && sv.default) || null,           // standard view for normal schedules
     salesDefault: (sv && sv.salesDefault) || null, // standard view for Sales-workspace schedules
     views: (sv && sv.views) || {},
+    // The hand-picked order. Anything read here has to be carried back out
+    // by _saveSharedViews, or a drag cannot survive its own re-render.
+    order: (sv && Array.isArray(sv.order)) ? sv.order : [],
   };
 }
 function _saveSharedViews(sv) {
   state.settings.shared_column_views = sv;
   api.putSetting('shared_column_views', sv)
     .catch(() => showToast('Could not save the shared view to the server.', { kind: 'error' }));
+}
+
+// Names in the saved order first, anything new after it alphabetically, and
+// nothing lost if a view is renamed or deleted behind the order's back.
+function _orderedViewNames(names, order) {
+  const want = Array.isArray(order) ? order.filter(n => names.includes(n)) : [];
+  const rest = names.filter(n => !want.includes(n)).sort((a, b) => a.localeCompare(b));
+  return want.concat(rest);
+}
+
+// Drag within one section only: a shared view and a private one are stored
+// in different places, so dragging between them would mean something else.
+function _wireViewDrag(menu, scope, onDrop) {
+  let from = null;
+  menu.querySelectorAll(`.col-view-row[data-scope="${scope}"]`).forEach(rowEl => {
+    rowEl.setAttribute('draggable', 'true');
+    rowEl.addEventListener('dragstart', (e) => {
+      from = rowEl.dataset.viewName;
+      rowEl.classList.add('is-dragging');
+      try { e.dataTransfer.setData('text/plain', from); e.dataTransfer.effectAllowed = 'move'; } catch (_) {}
+    });
+    rowEl.addEventListener('dragend', () => { rowEl.classList.remove('is-dragging'); from = null; });
+    rowEl.addEventListener('dragover', (e) => {
+      if (!from || from === rowEl.dataset.viewName) return;
+      e.preventDefault();
+      rowEl.classList.add('is-drop-target');
+    });
+    rowEl.addEventListener('dragleave', () => rowEl.classList.remove('is-drop-target'));
+    rowEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      rowEl.classList.remove('is-drop-target');
+      const to = rowEl.dataset.viewName;
+      if (!from || from === to) return;
+      const names = [...menu.querySelectorAll(`.col-view-row[data-scope="${scope}"]`)].map(r => r.dataset.viewName);
+      const next = names.filter(n => n !== from);
+      next.splice(next.indexOf(to), 0, from);
+      onDrop(next);
+    });
+  });
 }
 
 function renderColViewsMenu() {
@@ -31179,8 +30655,8 @@ function renderColViewsMenu() {
   const me = window.sdcAuth?.user?.name || '';
 
   const sec = (label) => `<div style="padding:6px 12px 2px;font-size:10px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;">${label}</div>`;
-  const row = (label, attrs, extraBtns = '', style = '') => `
-    <div class="col-view-row" style="display:flex;align-items:center;gap:4px;">
+  const row = (label, attrs, extraBtns = '', style = '', meta = '') => `
+    <div class="col-view-row" ${meta} style="display:flex;align-items:center;gap:4px;">
       <button type="button" class="dropdown-item" ${attrs} style="flex:1;text-align:left;${style}">${label}</button>
       ${extraBtns}
     </div>`;
@@ -31197,22 +30673,24 @@ function renderColViewsMenu() {
   if (shared.salesDefault) {
     html += row('Sales Default', 'data-apply-sales-default', '', defaultStyle);
   }
-  const sharedNames = Object.keys(shared.views).sort((a, b) => a.localeCompare(b));
+  const sharedNames = _orderedViewNames(Object.keys(shared.views), shared.order);
   if (sharedNames.length) {
     html += sec('Shared');
     html += sharedNames.map(n => {
-      const owner = shared.views[n]?.owner;
-      const ownerTag = owner ? ` <span style="color:var(--text-muted);font-size:10px;">· ${escapeHtml(owner)}</span>` : '';
-      return row(`${escapeHtml(n)}${ownerTag}`, `data-shared-view="${escapeHtml(n)}"`,
-        `<button type="button" class="btn-icon" data-del-shared="${escapeHtml(n)}" title="Delete this shared view (affects everyone)" style="flex:0 0 auto;font-size:11px;">✕</button>`);
+      // The owner is still recorded on the view; it just has no business
+      // taking up half the row. The name is what you are picking.
+      return row(escapeHtml(n), `data-shared-view="${escapeHtml(n)}"`,
+        `<button type="button" class="btn-icon" data-del-shared="${escapeHtml(n)}" title="Delete this shared view (affects everyone)" style="flex:0 0 auto;font-size:11px;">✕</button>`,
+        '', `data-scope="shared" data-view-name="${escapeHtml(n)}"`);
     }).join('');
   }
-  const myNames = Object.keys(mine).sort((a, b) => a.localeCompare(b));
+  const myNames = _orderedViewNames(Object.keys(mine), state.layout.savedViewOrder);
   html += sec('My views');
   html += myNames.length
     ? myNames.map(n => row(escapeHtml(n), `data-my-view="${escapeHtml(n)}"`,
         `<button type="button" class="btn-icon" data-share="${escapeHtml(n)}" title="Share this view with everyone (moves it to the Shared section)" style="flex:0 0 auto;font-size:11px;">★</button>
-         <button type="button" class="btn-icon" data-del-mine="${escapeHtml(n)}" title="Delete this view" style="flex:0 0 auto;font-size:11px;">✕</button>`)).join('')
+         <button type="button" class="btn-icon" data-del-mine="${escapeHtml(n)}" title="Delete this view" style="flex:0 0 auto;font-size:11px;">✕</button>`,
+        '', `data-scope="mine" data-view-name="${escapeHtml(n)}"`)).join('')
     : '<div style="padding:2px 12px 6px;font-size:12px;color:var(--text-muted);">None yet.</div>';
   html += `
     <div class="dropdown-sep"></div>
@@ -31222,6 +30700,92 @@ function renderColViewsMenu() {
   menu.innerHTML = html;
 
   const close = () => menu.classList.add('hidden');
+
+  _wireViewDrag(menu, 'shared', (order) => {
+    const sv = _sharedViews();
+    sv.order = order;
+    _saveSharedViews(sv);
+    renderColViewsMenu();
+  });
+  _wireViewDrag(menu, 'mine', (order) => {
+    state.layout.savedViewOrder = order;
+    saveLayout();
+    renderColViewsMenu();
+  });
+
+  // Right-click a view: rename it, move it between shared and private,
+  // or delete it. Same menu pattern as a right-clicked grid row.
+  menu.querySelectorAll('.col-view-row[data-view-name]').forEach(rowEl => {
+    rowEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const n = rowEl.dataset.viewName;
+      const isShared = rowEl.dataset.scope === 'shared';
+      const items = [];
+      items.push({ label: '✎ Rename…', onClick: async () => {
+        const next = await showPromptDialog({ title: 'Rename view', value: n, okLabel: 'Rename' });
+        const name = (next || '').trim();
+        if (!name || name === n) return;
+        if (isShared) {
+          const sv = _sharedViews();
+          if (sv.views[name]) { showToast('A shared view is already called that.', { kind: 'error' }); return; }
+          sv.views[name] = sv.views[n];
+          delete sv.views[n];
+          sv.order = (sv.order || []).map(x => x === n ? name : x);
+          _saveSharedViews(sv);
+        } else {
+          if (state.layout.savedViews[name]) { showToast('You already have a view called that.', { kind: 'error' }); return; }
+          state.layout.savedViews[name] = state.layout.savedViews[n];
+          delete state.layout.savedViews[n];
+          state.layout.savedViewOrder = (state.layout.savedViewOrder || []).map(x => x === n ? name : x);
+          saveLayout();
+        }
+        renderColViewsMenu();
+      }});
+      items.push(isShared
+        ? { label: '↩ Unshare (keep as my view)', onClick: () => {
+            const sv = _sharedViews();
+            const v = sv.views[n];
+            if (!v) return;
+            // The owner tag belongs to the shared copy, not to a private one.
+            const { owner, ...rest } = v;
+            state.layout.savedViews = state.layout.savedViews || {};
+            state.layout.savedViews[n] = rest;
+            delete sv.views[n];
+            sv.order = (sv.order || []).filter(x => x !== n);
+            saveLayout();
+            _saveSharedViews(sv);
+            renderColViewsMenu();
+            showToast(`“${n}” is yours again — nobody else sees it now.`, { kind: 'success' });
+          } }
+        : { label: '★ Share with everyone', onClick: () => {
+            const sv = _sharedViews();
+            sv.views[n] = { ...state.layout.savedViews[n], owner: me };
+            delete state.layout.savedViews[n];
+            state.layout.savedViewOrder = (state.layout.savedViewOrder || []).filter(x => x !== n);
+            saveLayout();
+            _saveSharedViews(sv);
+            renderColViewsMenu();
+          } });
+      items.push({ separator: true });
+      items.push({ label: '✕ Delete', onClick: async () => {
+        if (isShared) {
+          const ok = await showConfirmDialog({ title: `Delete shared view “${n}”?`, message: 'This deletes it for EVERYONE.', okLabel: 'Delete' });
+          if (!ok) return;
+          const sv = _sharedViews();
+          delete sv.views[n];
+          sv.order = (sv.order || []).filter(x => x !== n);
+          _saveSharedViews(sv);
+        } else {
+          delete state.layout.savedViews[n];
+          state.layout.savedViewOrder = (state.layout.savedViewOrder || []).filter(x => x !== n);
+          saveLayout();
+        }
+        renderColViewsMenu();
+      }});
+      showContextMenu(e.clientX, e.clientY, items);
+    });
+  });
   menu.querySelector('[data-apply-default]')?.addEventListener('click', (e) => {
     e.stopPropagation(); _applyColumnViewObj(_sharedViews().default, 'Active Project Default'); close();
   });
@@ -32981,7 +32545,6 @@ async function init() {
       }
       try { localStorage.setItem('sdcProjectWorkspaces', JSON.stringify(state.projectWorkspaces)); } catch (_) {}
       if (state.view === 'projects') renderProjectsPage();
-      _prefetchJobHours();
     }
   } catch (_) {}
   _etoCheckOnce(); // resolve ETO availability early so chips/buttons render on first paint
@@ -34123,7 +33686,7 @@ async function _openEtcJobHours(project, section) {
 }
 
 // ── ?view= deep-link ────────────────────────────────────────────────────────
-// Land on a named top-level view (projects / favorites / team / job-hours / …)
+// Land on a named top-level view (projects / favorites / team / …)
 // instead of whatever localStorage last restored — this is what the Reports
 // app's "Project Scheduler" sidebar link uses (?view=projects). Until now the
 // param was accepted but ignored: the ETC job deep-link called setView() itself

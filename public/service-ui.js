@@ -202,6 +202,7 @@ async function renderServicePage() {
         <div class="svc-head">
           <div class="svc-tabs" id="svcTabs"></div>
           <div class="svc-head-right">
+            <button class="svc-btn" id="svcCompressBtn" type="button" title="Shrink every column to the smallest width that still fits its content.">⇤ Compress</button>
             <input type="search" id="svcSearch" class="svc-search" placeholder="Search request #, company, requestor, job, details…">
             <button class="svc-btn svc-btn-primary" id="svcNewBtn" type="button">+ Log a request</button>
           </div>
@@ -213,6 +214,15 @@ async function renderServicePage() {
       <aside class="svc-drawer" id="svcDrawer" hidden></aside>`;
 
     document.getElementById('svcNewBtn').addEventListener('click', openNewRequestForm);
+
+    // Compress whichever table the current tab is showing.
+    document.getElementById('svcCompressBtn').addEventListener('click', () => {
+      const body = document.getElementById('svcBody');
+      const req = body && body.querySelector('.svc-table-requests');
+      const wos = body && body.querySelector('.svc-table-wos');
+      if (req) compressGridColumns(req, 'svc:requests');
+      if (wos) compressGridColumns(wos, 'svc:workorders');
+    });
 
     // Debounced so typing doesn't fire a query per keystroke.
     let t = null;
@@ -350,7 +360,7 @@ function drawRequestTable(body) {
     <table class="svc-table svc-table-requests">
       <colgroup>
         <col style="width:108px"><col style="width:56px"><col style="width:44px"><col style="width:76px">
-        <col style="width:200px"><col style="width:auto"><col style="width:104px"><col style="width:100px">
+        <col style="width:200px"><col data-wrap="1" style="width:auto"><col style="width:104px"><col style="width:100px">
         <col style="width:110px">
         <col style="width:120px"><col style="width:108px"><col style="width:58px"><col style="width:88px">
         <col style="width:56px">
@@ -381,7 +391,7 @@ function drawRequestTable(body) {
               <span class="svc-company-name">${esc(r.company_name) || '—'}</span>
               ${r.requestor_name ? `<span class="svc-sub">${esc(r.requestor_name)}</span>` : ''}
             </td>
-            <td class="svc-detail-cell"><span class="svc-detail-clamp">${esc(String(r.service_details || '').slice(0, 220))}</span></td>
+            <td class="svc-detail-cell">${esc(String(r.service_details || ''))}</td>
             <td>${esc(r.machine_serial || r.job_number) || '—'}${
               r.machine_type === 'non_sdc' ? ' <span class="svc-pill svc-nonsdc" title="Not an SDC-built machine — no build history or SDC warranty">non-SDC</span>' : ''}</td>
             <td class="svc-quote-cell" title="${r.quote_no
@@ -414,6 +424,9 @@ function drawRequestTable(body) {
     }));
   body.querySelectorAll('button[data-del]').forEach(btn =>
     btn.addEventListener('click', (e) => { e.stopPropagation(); deleteRequest(btn); }));
+  // Draggable columns, the same as every other grid in the app. Defined in
+  // app.js so one implementation serves them all.
+  try { makeGridResizable(body.querySelector('.svc-table-requests'), 'svc:requests'); } catch (_) {}
 }
 
 // Every write in routes/service.js is requireRole('editor') — creating, editing,
@@ -485,7 +498,7 @@ function drawWorkOrderTable(body) {
     <table class="svc-table svc-table-wos">
       <colgroup>
         <col style="width:150px"><col style="width:106px"><col style="width:150px">
-        <col style="width:170px"><col style="width:auto"><col style="width:78px">
+        <col style="width:170px"><col data-wrap="1" style="width:auto"><col style="width:78px">
         <col style="width:62px"><col style="width:100px"><col style="width:120px">
       </colgroup>
       <thead>
@@ -506,7 +519,7 @@ function drawWorkOrderTable(body) {
                 ? `<div class="svc-sub">through ${fmtDate(w.end_date)}</div>` : ''}</td>
             <td>${esc(w.employee_name) || '—'}</td>
             <td>${esc(w.company_name) || '—'}<div class="svc-sub">${esc(w.request_no)}</div></td>
-            <td class="svc-detail-cell"><span class="svc-detail-clamp">${esc(String(w.task_description || '').slice(0, 200))}</span></td>
+            <td class="svc-detail-cell">${esc(String(w.task_description || ''))}</td>
             <td>${w.location_type === 'onsite' ? 'On-site' : w.location_type === 'remote' ? 'Remote' : '—'}</td>
             <td class="svc-num">${w.budgeted_hours != null ? w.budgeted_hours : '—'}</td>
             <td>${w.status === 'complete'
@@ -522,6 +535,7 @@ function drawWorkOrderTable(body) {
     </div>`;
   body.querySelectorAll('tbody tr').forEach(tr =>
     tr.addEventListener('click', () => openServiceRequest(Number(tr.dataset.request), Number(tr.dataset.wo))));
+  try { makeGridResizable(body.querySelector('.svc-table-wos'), 'svc:workorders'); } catch (_) {}
 }
 
 // ── Detail drawer (§14) ──────────────────────────────────────────────────────
