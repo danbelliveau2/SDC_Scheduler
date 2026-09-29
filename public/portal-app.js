@@ -358,7 +358,15 @@
       ? `<div class="cp-block"><h2 class="cp-h2">SDC Team</h2>${scopeProjects.filter(p => p.team.length).map(renderTeamBlock).join('')}</div>`
       : '';
 
-    const eventBlocks = noneScoped ? '' : scopeProjects.filter(p => p.eventStatus).map(renderEventStatusBlock).join('');
+    const eventBlocks = noneScoped ? '' : scopeProjects.map(p => {
+      // A picked machine gets that machine's own Event Status (from its
+      // unit), not the whole job's — same as Payment Milestones and
+      // Progress above.
+      const es = (pickedName === p.name && pickedMachine)
+        ? (data.units.find(u => u.project === p.name && u.machine === pickedMachine) || {}).eventStatus
+        : p.eventStatus;
+      return renderEventStatusBlock({ name: p.name, eventStatus: es });
+    }).filter(Boolean).join('');
 
     const pickedEmptyMsg = noneScoped ? '<p class="cp-empty">Pick a project above to see its details.</p>' : '';
 

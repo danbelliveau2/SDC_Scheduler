@@ -159,6 +159,15 @@ module.exports = function createPortalRouter({ pool }) {
             machine: u.machine,
             due: calc.portalDueRow(u),
             progress: calc.portalProgress(u.rows),
+            // Per-machine Event Status, so picking a single machine on a
+            // multi-machine job shows that machine's own events — not the
+            // whole job's — same as the internal Portal tab.
+            eventStatus: u.rows.length ? {
+              mix: calc.portalTaskMix(u.rows, isSales),
+              deptChart: calc.portalDeptChart(u.rows, isSales),
+              work: calc.portalWork(u.rows, isSales, recentDays),
+              recentDays,
+            } : null,
           });
         });
         return {
