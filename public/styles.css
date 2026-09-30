@@ -17331,3 +17331,15 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   text-transform: uppercase; letter-spacing: 0.03em;
 }
 .risk-paste-more { margin-top: 6px; font-size: var(--fs-sm); color: var(--text-muted, #94a3b8); }
+
+/* The file picker above the paste box — the usual way in, with pasting
+   kept for the times the sheet lives somewhere you cannot save from. */
+.risk-paste-file {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 10px; padding: 9px 11px;
+  border: 1px dashed var(--border, #cbd5e1);
+  border-radius: 7px;
+  background: var(--surface-alt, #f8fafc);
+}
+.risk-paste-file input[type="file"] { font-size: var(--fs-sm); min-width: 0; }
+.risk-paste-or { color: var(--text-muted, #94a3b8); font-size: var(--fs-sm); white-space: nowrap; }

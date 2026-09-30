@@ -1777,6 +1777,31 @@ module.exports = function createRouter(deps) {
   });
 
   // ── POST /api/project/:source/promote ─────────────────────────────────────
+  // Any spreadsheet → tab-separated text. Used by the risk-register import
+  // so a PM can pick the file instead of copying two dozen rows by hand.
+  // Reads the FIRST sheet unless one is named, and touches nothing on disk.
+  router.post('/api/sheet-to-text', requireRole('editor'), async (req, res) => {
+    try {
+      const b64 = (req.body && req.body.data) || '';
+      if (!b64) return res.status(400).json({ error: 'no file' });
+      const buf = Buffer.from(String(b64).replace(/^data:[^,]*,/, ''), 'base64');
+      const wb = XLSX.read(buf, { type: 'buffer', cellDates: true });
+      const want = (req.body && req.body.sheet) || '';
+      const name = wb.SheetNames.find(n => n === want)
+        || wb.SheetNames.find(n => /risk/i.test(n))
+        || wb.SheetNames[0];
+      if (!name) return res.status(400).json({ error: 'no sheets in that file' });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', raw: false });
+      // Tabs and newlines inside a cell would break the grid this becomes.
+      const TAB = '\t';
+      const text = rows
+        .map(r => r.map(c => String(c == null ? '' : c).replace(/[\t\r\n]+/g, ' ').trim()).join(TAB))
+        .filter(line => line.split(TAB).join('').trim())
+        .join('\n');
+      res.json({ ok: true, sheet: name, sheets: wb.SheetNames, text });
+    } catch (e) { res.status(400).json({ error: e.message }); }
+  });
+
   router.post('/api/project/:source/promote', requireRole('editor'), async (req, res) => {
     try {
       const source  = (req.params.source || '').toString().trim();

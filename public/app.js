@@ -16394,6 +16394,10 @@ function showRiskPasteDialog(onAdd) {
       <div class="modal-head"><h2>Paste risks from a sheet</h2></div>
       <div class="modal-body">
         <div class="app-dialog-message">Select the rows in the spreadsheet — including the header line — and paste them here. Columns are matched by name: <strong>Risk</strong> is the only one that has to be there. Status, Severity, Suggested Next Step, Background, Owner and Category are used when present, and anything else on the row is kept as an update note.</div>
+        <div class="risk-paste-file">
+          <input type="file" id="risk-paste-file" accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt" />
+          <span class="risk-paste-or">or paste below</span>
+        </div>
         <textarea class="release-text" id="risk-paste-text" rows="10" spellcheck="false" placeholder="Status&#9;Risk&#9;Severity&#9;Suggested Next Step&#9;Background"></textarea>
         <div class="risk-paste-preview" id="risk-paste-preview"></div>
       </div>
@@ -16428,6 +16432,40 @@ function showRiskPasteDialog(onAdd) {
   const close = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
   ta.addEventListener('input', refresh);
   ta.addEventListener('paste', () => setTimeout(refresh, 0));
+  overlay.querySelector('#risk-paste-file').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    prev.innerHTML = `<div class="risk-paste-count">Reading ${escapeHtml(file.name)}…</div>`;
+    try {
+      if (/\.(csv|tsv|txt)$/i.test(file.name)) {
+        ta.value = await file.text();
+      } else {
+        const buf = await file.arrayBuffer();
+        // btoa in chunks: a workbook is comfortably past the argument
+        // limit of String.fromCharCode applied to the whole array.
+        const bytes = new Uint8Array(buf);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        }
+        const r = await fetch('/api/sheet-to-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: btoa(binary) }),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok || !body.ok) throw new Error(body.error || ('HTTP ' + r.status));
+        ta.value = body.text || '';
+        if (body.sheets && body.sheets.length > 1) {
+          showToast(`Read the "${body.sheet}" sheet.`, { kind: 'info' });
+        }
+      }
+    } catch (err) {
+      prev.innerHTML = `<div class="risk-paste-none">Could not read that file — ${escapeHtml(err.message || String(err))}</div>`;
+      return;
+    }
+    refresh();
+  });
   overlay.querySelector('[data-action="cancel"]').onclick = close;
   okBtn.onclick = () => {
     const people = riskPeople();
