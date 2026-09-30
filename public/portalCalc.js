@@ -1,34 +1,43 @@
+(function (root, factory) {
+  'use strict';
+  if (typeof module === 'object' && module.exports) {
+    module.exports = factory();
+  } else {
+    root.PortalCalc = factory();
+  }
+}(typeof self !== 'undefined' ? self : this, function () {
 'use strict';
 /**
- * portalCalc.js — server-side port of the customer Portal's analytics math
- * (public/app.js's renderPortal() + ~30 helpers, lines ~17640-18630).
+ * portalCalc.js — the ONE copy of the Portal tab's analytics math, shared by
+ * both sides that need it:
+ *   - public/app.js (the browser, staff view) — loads this via a <script>
+ *     tag (see index.html) as the global `PortalCalc`, and calls it from
+ *     thin wrapper functions that still read `state.tasks` etc. themselves
+ *     (this file has no idea what `state` is — it only takes plain rows).
+ *   - routes/portal.js (the server, customer-facing dashboard) — requires
+ *     this file directly and calls it with rows read from MySQL.
  *
- * WHY a port instead of reuse: those functions read from `state` (the
- * browser-side app object — state.tasks, state.financials, state.settings)
- * and return HTML strings for the staff app's own DOM. The customer-facing
- * portal needs the same NUMBERS, computed from DB rows, returned as JSON —
- * a customer's browser never runs the staff app.js at all, by design (see
- * the plan's Phase 4 note on why this listener stays a "one small thing"
- * shape like the Service and Snapshot listeners).
+ * Before this file existed, these formulas were hand-ported into a second
+ * file (lib/portalCalc.js) and kept "in sync by hand" — which is exactly
+ * how drift happens: inferredAnchorKey() below was missing the
+ * parts_panel_ready branch that public/app.js's copy already had, silently,
+ * until this file unified the two. There is now only one place to change
+ * this math; app.js's wrappers and the customer dashboard both call it.
  *
- * Every formula below was verified line-for-line against public/app.js and
- * cross-checked against live data for a real project (1160_Y Site
- * Automation: 36% actual, 41% should-be, -5pts variance, all 8 phase
- * percentages, all 4 Where-it-stands dates, all 4 payment milestone dates)
- * before being ported. Keep this file's formulas in sync with app.js's if
- * either changes — they must never drift, or the internal Portal tab and
- * the customer-facing one would show different numbers for the same job.
+ * Every formula here was verified line-for-line against public/app.js and
+ * cross-checked against live data for real projects (1160_Y Site Automation,
+ * 1150/1164_Centrus Energy) before being trusted.
  */
 
 const PORTAL_ANCHOR_KEYS = new Set([
   'receipt_of_po', 'mech_release_1', 'machine_power_up', 'fat', 'ship_machine', 'sat',
 ]);
 
-// Ported from public/app.js's dedupAnchors() — applied to EVERY project's
-// task rows before any other calc runs here, or a project with a duplicate
-// anchor-named task (seen in real data: two "SAT" rows, one a malformed
-// empty duplicate) inflates every count that touches it, out of step with
-// what the internal Portal tab actually shows.
+// De-duplicate anchor milestones (Receipt of PO, FAT, ...) PER (project,
+// machine, anchor_key) — keeps the lowest id of each so a stray duplicate
+// row (e.g. two "SAT" tasks on the same job) doesn't inflate every count
+// that touches it. Also remaps legacy phase_group/department values left
+// over from earlier restructures. Ported from public/app.js's dedupAnchors().
 function normalizeTasks(all) {
   const oldest = {};
   for (const t of all) {
@@ -54,6 +63,9 @@ function normalizeTasks(all) {
     });
 }
 
+// Match an existing task to an anchor by either anchor_key (when the column
+// has been populated) OR by name (fallback for tasks created before the
+// column existed). Kept byte-for-byte identical to public/app.js's copy.
 function inferredAnchorKey(t) {
   if (t.anchor_key && t.anchor_key !== 'backlog') return t.anchor_key;
   const n = String(t.name || '').trim().toLowerCase();
@@ -63,6 +75,8 @@ function inferredAnchorKey(t) {
   if (n === 'fat') return 'fat';
   if (n === 'ship machine') return 'ship_machine';
   if (n === 'sat' || n === 'acceptance at customer (sat)') return 'sat';
+  if (/^parts\s*(\+|and|&)\s*drawings\s+for\s+panel\s+(build\s+)?ready$/.test(n)
+      || /^parts\s*(\+|and|&)\s*drawings\s+ready\s+for\s+panel(\s+build)?$/.test(n)) return 'parts_panel_ready';
   return null;
 }
 function isMilestoneLike(t) { return PORTAL_ANCHOR_KEYS.has(inferredAnchorKey(t)); }
@@ -156,9 +170,9 @@ function businessDaysBetween(start, end) {
 // isBacklogTask() is gutted everywhere in the app (Backlog special-casing
 // was removed) — only isBacklogRow (a task literally NAMED "Backlog") still
 // derives its % from the calendar. Mirrors public/app.js's getEffectiveProgress.
-function isBacklogRow(t) { return String(t?.name || '').trim().toLowerCase() === 'backlog'; }
+function isBacklogRow(t) { return String(t && t.name || '').trim().toLowerCase() === 'backlog'; }
 function getEffectiveProgress(t) {
-  const raw = Math.max(0, Math.min(100, Number(t?.progress) || 0));
+  const raw = Math.max(0, Math.min(100, Number(t && t.progress) || 0));
   if (!isBacklogRow(t) || !t.start_date || !t.end_date) return raw;
   const today = ymdLocal(new Date());
   if (today >= t.end_date) return 100;
@@ -388,7 +402,7 @@ const FIN_TRIGGER_ALIASES = {
   fat: 'fat', ship: 'ship_machine', 'ship machine': 'ship_machine', sat: 'sat',
 };
 
-// tasksById: Map<id, task>, tasksByProject: task[] for the one project (used
+// tasksById: Map<id, task>, tasksForProject: task[] for the one project (used
 // for the legacy bare-line-number fallback, which this port skips — every
 // financial trigger created going forward stores "#<id>", per app.js's own
 // comment; bare-line-number support is a client-only migration shim for
@@ -558,9 +572,14 @@ function portalRisk(riskPlanForProject, tasksForProject) {
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
-module.exports = {
+return {
   normalizeTasks, inferredAnchorKey, isMilestoneLike, portalPercent, portalPlannedPercent,
-  portalProgress, portalUnits, portalMilestones, portalDueRow, portalMoney,
-  portalRisk, portalTeam, portalTaskMix, portalDeptChart, portalWork,
+  portalProgress, portalUnits, portalMilestones, portalDueRow, portalSlip, portalMoney,
+  portalRisk, riskBand, portalTeam, portalTaskMix, portalDeptChart, portalWork,
+  finBaseMachine, finProjectMachines, financialAnchorTaskForMoney,
+  resolveFinancialTrigger, financialDueDate, addBusinessDays,
+  isBacklogRow, getEffectiveProgress, taskScheduleDelta, portalDrift, portalLate, portalLateWeeks, portalRowState,
   fmtDate, ymdLocal,
 };
+
+}));

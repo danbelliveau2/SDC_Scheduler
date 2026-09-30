@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>SDC Project Portal</title>
+<!-- This page is JUST the login form now — the customer portal used to be
+     a standalone dashboard rendered here (portalCalc.js/portalRender.js/
+     portalCustomerShim.js/a much bigger portal-app.js, plus styles.css for
+     the shared .portal-* classes that dashboard used). All of that was
+     retired once customer sessions started running the REAL app.js/
+     index.html instead, scoped server-side (see server.js's
+     CUSTOMER_GET_PATHS) — a successful login here just redirects to '/',
+     which falls through to that real app. This page never renders a
+     .portal-* class, so it doesn't need styles.css or any of those three
+     shared scripts — just its own small stylesheet. -->
 <link rel="stylesheet" href="/portal.css">
 </head>
 <body>
