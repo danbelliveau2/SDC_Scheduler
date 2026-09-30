@@ -2174,7 +2174,7 @@ function cellHtml(t, key) {
         const style = `background:${c.hex};color:${c.text};border-color:${c.hex};`;
         machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="${style}">${escapeHtml(t.machine)}</span> `;
       }
-      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
+      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${escapeHtml(t.name)}${driftChip}${releaseIconHtml(t)}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
@@ -2349,6 +2349,90 @@ function riskOverlaySubDepts() {
   const project = state.filters.project || '';
   if (!project) return new Set();
   return new Set(riskSelectedIds(project).map(riskSubDept));
+}
+
+const RELEASE_KEY = 'release_contents';
+
+// A release row is one whose name says release: Mech 1 Release, Ele
+// Release 2, Controls Release 1, Mech Release 3 — the shapes people
+// actually type. Milestones only: a duration task about a release is work
+// towards it, not the release itself.
+function isReleaseRow(t) {
+  if (!t || !t.is_milestone) return false;
+  return /\brelease\b/i.test(String(t.name || ''));
+}
+
+function _releaseAll() {
+  return (state.settings && state.settings[RELEASE_KEY]) || {};
+}
+function releaseItems(taskId) {
+  const v = _releaseAll()[String(taskId)];
+  return Array.isArray(v) ? v : [];
+}
+
+async function setReleaseItems(taskId, items) {
+  const all = { ..._releaseAll() };
+  const clean = (items || []).map(x => String(x).trim()).filter(Boolean);
+  if (clean.length) all[String(taskId)] = clean; else delete all[String(taskId)];
+  state.settings = state.settings || {};
+  state.settings[RELEASE_KEY] = all;
+  try { await api.putSetting(RELEASE_KEY, all); } catch (e) {
+    showToast(e.message || 'Could not save the release list.', { kind: 'error' });
+    return;
+  }
+  render();
+}
+
+// The icon that sits on a release row, carrying its count.
+function releaseIconHtml(t) {
+  if (!isReleaseRow(t)) return '';
+  const n = releaseItems(t.id).length;
+  const title = n
+    ? n + (n === 1 ? ' item ' : ' items ') + 'in this release. Click to see or edit the list.'
+    : 'Nothing listed for this release yet. Click to write down what is in it.';
+  return `<button type="button" class="release-chip${n ? ' has-items' : ''}" data-release="${t.id}" title="${escapeHtml(title)}" tabindex="-1">☰${n ? `<span class="release-chip-n">${n}</span>` : ''}</button>`;
+}
+
+// One line per thing. A list is what people write anyway, and a textarea
+// lets them paste one straight out of an email.
+function showReleaseDialog(taskId) {
+  const t = state.tasks.find(x => x.id === Number(taskId));
+  if (!t) return;
+  const items = releaseItems(t.id);
+  document.getElementById('release-dialog')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'release-dialog';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card app-dialog">
+      <div class="modal-head"><h2>${escapeHtml(t.name || 'Release')}</h2></div>
+      <div class="modal-body">
+        <div class="app-dialog-message">What is going out in this release — one station or assembly per line.</div>
+        <textarea class="release-text" id="release-text" rows="9" spellcheck="false" placeholder="Station 10 — infeed conveyor&#10;Station 20 — rotary slitter&#10;Guarding, north side">${escapeHtml(items.join('\n'))}</textarea>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn-ghost" data-action="cancel">Cancel</button>
+        <button type="button" class="btn-primary" data-action="ok">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const ta = overlay.querySelector('#release-text');
+  const close = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
+  const save = async () => {
+    const lines = ta.value.split(/\r?\n/);
+    close();
+    await setReleaseItems(t.id, lines);
+  };
+  overlay.querySelector('[data-action="cancel"]').onclick = close;
+  overlay.querySelector('[data-action="ok"]').onclick = save;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    // Enter makes a new line here — this is a list. Ctrl/Cmd+Enter saves.
+    else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+  };
+  document.addEventListener('keydown', onKey);
+  setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 0);
 }
 
 function rowHtml(t, depth = 0) {
@@ -2749,7 +2833,7 @@ function renderTable() {
           machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="background:${c.hex};color:${c.text};border-color:${c.hex};">${escapeHtml(t.machine)}</span> `;
         }
         const tdCls = checkBtn ? 'has-pills' : '';
-        return `<td data-col="name" class="${tdCls}">${machineChip}<span class="${chipCls}">${chipDone}${escapeHtml(t.name || '')}</span>${checkBtn}</td>`;
+        return `<td data-col="name" class="${tdCls}">${machineChip}<span class="${chipCls}">${chipDone}${escapeHtml(t.name || '')}</span>${releaseIconHtml(t)}${checkBtn}</td>`;
       }
       return cellHtml(t, k);
     }).join('');
@@ -33344,6 +33428,14 @@ async function init() {
   // nested element-level handlers (pill mousedown, cell editors). When
   // cloneMode is null the trap is a no-op so normal editing still works.
   tbodyEl.addEventListener('click', (e) => {
+    const relBtn = e.target.closest('[data-release]');
+    if (relBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      showReleaseDialog(relBtn.dataset.release);
+      return;
+    }
     if (state._miniPick) {
       const tr = e.target.closest('tr[data-id]');
       if (tr) {
