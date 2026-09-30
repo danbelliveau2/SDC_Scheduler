@@ -2430,6 +2430,7 @@ function eventSectionKey(t) {
 async function setEventSection(id, sectionKey) {
   const t = state.tasks.find(x => x.id === id);
   if (!t) return;
+  pushSectionUndo(t, 'Set the section for "' + (t.name || 'event') + '"');
   const sub = sectionKey ? (EVENTS_SUB + ':' + sectionKey) : EVENTS_SUB;
   try {
     await api.update(id, { sub_department: sub });
@@ -16655,6 +16656,7 @@ async function moveToControlsList(id) {
   if (!t) return;
   if (t.phase_group === CONTROLS_GROUP) return;
   await _rememberControlsOrigin(t);
+  pushSectionUndo(t, 'Move "' + (t.name || 'task') + '" to the controls list');
   const sibs = controlsList(t.project);
   const sort = sibs.length ? (Number(sibs[sibs.length - 1].sort_order) || 0) + 1 : 1;
   try {
@@ -16676,6 +16678,7 @@ async function moveToControlsList(id) {
 // Back onto the build. Controls work belongs to Controls Engineering, which
 // is the one place it can land without asking where it came from.
 async function moveOutOfControlsList(id) {
+  pushSectionUndo(state.tasks.find(x => x.id === id), 'Move back to the schedule');
   // Home is where it came from. A line typed straight into the list has no
   // origin, so it lands with the controls work — which is whose it is.
   const home = _controlsOrigins()[String(id)] || {
@@ -16782,6 +16785,7 @@ async function moveToStandardEvents(id) {
   if (!t) return;
   if (t.phase_group === EVENTS_GROUP) return;
   await _rememberEventsOrigin(t);
+  pushSectionUndo(t, 'Move "' + (t.name || 'task') + '" to standard events');
   const sibs = standardEvents(t.project);
   const sort = sibs.length ? (Number(sibs[sibs.length - 1].sort_order) || 0) + 1 : 1;
   try {
@@ -16803,6 +16807,7 @@ async function moveToStandardEvents(id) {
 // list has no origin, so it lands in Kickoff — the one section that is
 // about the job rather than a department.
 async function moveOutOfStandardEvents(id) {
+  pushSectionUndo(state.tasks.find(x => x.id === id), 'Move back to the schedule');
   const home = _eventsOrigins()[String(id)] || {
     phase_group: 'kickoff', department: null, sub_department: null,
   };
@@ -20474,8 +20479,25 @@ async function createTaskInSection(g, d, s) {
   }
 }
 
+function pushSectionUndo(task, description) {
+  if (!task) return;
+  const before = {
+    phase_group: task.phase_group ?? null,
+    department: task.department ?? null,
+    sub_department: task.sub_department ?? null,
+    sort_order: Number(task.sort_order) || 0,
+  };
+  state.undoStack.push({ taskId: task.id, before, description });
+  while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
+  state.redoStack = [];
+  syncUndoButton();
+  syncRedoButton();
+}
+
 function moveTaskInline(id, x, y) {
   showSectionPicker(x, y, async (g, d, s) => {
+    const t = state.tasks.find(x2 => x2.id === id);
+    pushSectionUndo(t, 'Move "' + ((t && t.name) || 'task') + '" to another section');
     await api.update(id, { phase_group: g, department: d, sub_department: s });
     await loadTasks();
   });
