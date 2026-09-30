@@ -16263,6 +16263,184 @@ async function saveRiskPlan(project, risks) {
   catch (e) { showToast('Could not save: ' + (e.message || e), { kind: 'error' }); }
 }
 
+// A pasted sheet, by its header row. Unknown columns are ignored, missing
+// ones are blank; the only column that must exist is the risk itself.
+function _riskParsePaste(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+  // Tab if the paste came from a spreadsheet; comma only as a fallback.
+  const tabbed = lines.some(l => l.indexOf('\t') >= 0);
+  const split = (line) => tabbed ? line.split('\t') : _splitCsvLine(line);
+  const rows = [];
+  let head = null;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const cells = split(line).map(c => String(c).replace(/^"|"$/g, '').trim());
+    if (!head) {
+      const joined = cells.join('|').toLowerCase();
+      if (/\brisk\b/.test(joined)) { head = cells.map(c => c.toLowerCase()); continue; }
+      // No header line: assume the sheet order we see most often.
+      head = ['status', 'risk', 'severity', 'suggested next step', 'background', 'update'];
+    }
+    rows.push(cells);
+  }
+  if (!head) return [];
+  const find = (...names) => {
+    for (const n of names) {
+      const i = head.findIndex(h => h === n);
+      if (i >= 0) return i;
+    }
+    for (const n of names) {
+      const i = head.findIndex(h => h.indexOf(n) >= 0);
+      if (i >= 0) return i;
+    }
+    return -1;
+  };
+  const iStatus = find('status');
+  const iRisk   = find('risk', 'risk description', 'description');
+  const iRate   = find('severity', 'rating', 'impact', 'priority');
+  const iNext   = find('suggested next step', 'next step', 'mitigation', 'mitigation / resolution plan', 'plan', 'action');
+  const iBack   = find('background', 'source', 'notes', 'detail');
+  const iOwner  = find('owner', 'assigned', 'responsible');
+  const iCat    = find('category', 'type');
+  if (iRisk < 0) return [];
+  // Anything past the recognised columns is a running update note — the
+  // dated "9/28 ..." remarks people add on the right of the sheet.
+  const known = new Set([iStatus, iRisk, iRate, iNext, iBack, iOwner, iCat].filter(i => i >= 0));
+  return rows.map(cells => {
+    const at = (i) => (i >= 0 && cells[i] != null) ? String(cells[i]).trim() : '';
+    const extra = cells.map((c, i) => known.has(i) ? '' : String(c || '').trim()).filter(Boolean);
+    return {
+      status: at(iStatus), risk: at(iRisk), rate: at(iRate),
+      next: at(iNext), background: at(iBack), owner: at(iOwner), cat: at(iCat),
+      update: extra.join(' · '),
+    };
+  }).filter(r => r.risk);
+}
+
+function _splitCsvLine(line) {
+  const out = []; let cur = ''; let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { if (inQ && line[i + 1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+    else if (ch === ',' && !inQ) { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+// A sheet rates a risk once; this register asks two questions. Read the
+// one rating into both, erring high — a risk that turns out tamer than
+// its first reading is a five-second correction, one that turns out worse
+// is a missed mitigation.
+function _riskRating(text) {
+  const t = String(text || '').toLowerCase();
+  const hi = /high|critical|severe/.test(t);
+  const lo = /\blow\b/.test(t);
+  const med = /med/.test(t);
+  if (hi && med) return { l: 4, s: 2, diff: 4 };   // "Medium/High"
+  if (hi)        return { l: 4, s: 3, diff: 4 };   // months on the line
+  if (lo && med) return { l: 2, s: 2, diff: 3 };   // "Low/Medium"
+  if (med)       return { l: 3, s: 2, diff: 3 };
+  if (lo)        return { l: 2, s: 1, diff: 2 };
+  return { l: 3, s: 2, diff: 3 };                  // unrated: middle of the road
+}
+
+// Category from the words people actually use. Safety first: a solvent or
+// ventilation risk is a safety risk even when it is also technical.
+function _riskCategory(text) {
+  const t = String(text || '').toLowerCase();
+  if (/\bhse\b|safety|ventilat|exhaust|fume|hazard|splash|contaminat/.test(t)) return 'Safety';
+  if (/vendor|supplier|sourc|procure|quote|lead time|order|unresponsive|datasheet|supply/.test(t)) return 'Supply chain';
+  if (/capacity|headcount|resourc|staff|availability/.test(t)) return 'Resource';
+  return 'Technical';
+}
+
+// Resolved rows are kept, not dropped — a register that forgets what it
+// closed cannot show anyone how the job was steered. Scored at the bottom
+// so they sit out of the way of live work.
+function _riskFromPasted(p, people) {
+  const resolved = /resolv|closed|complete|done/i.test(p.status || '');
+  const r = _riskRating(p.rate);
+  const owner = people.find(n => n.toLowerCase() === String(p.owner || '').toLowerCase()) || '';
+  const parts = [];
+  if (p.next) parts.push(p.next);
+  if (p.update) parts.push('Update: ' + p.update);
+  if (p.background) parts.push('Raised: ' + p.background);
+  if (resolved) parts.unshift('RESOLVED.');
+  const catFromSheet = RISK_CATEGORIES.find(c => c.toLowerCase() === String(p.cat || '').toLowerCase());
+  return {
+    id: 'imp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    title: p.risk,
+    cat: catFromSheet || _riskCategory(p.risk + ' ' + p.background + ' ' + p.cat),
+    diff: resolved ? 1 : r.diff,
+    l: resolved ? 1 : r.l,
+    s: resolved ? 1 : r.s,
+    mitigation: parts.join(' — '),
+    owner,
+    show: false,
+    hasPlan: false,
+    actions: [],
+  };
+}
+
+function showRiskPasteDialog(onAdd) {
+  document.getElementById('risk-paste-dialog')?.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'risk-paste-dialog';
+  overlay.className = 'modal-overlay app-dialog-overlay';
+  overlay.innerHTML = `
+    <div class="modal-card app-dialog risk-paste-card">
+      <div class="modal-head"><h2>Paste risks from a sheet</h2></div>
+      <div class="modal-body">
+        <div class="app-dialog-message">Select the rows in the spreadsheet — including the header line — and paste them here. Columns are matched by name: <strong>Risk</strong> is the only one that has to be there. Status, Severity, Suggested Next Step, Background, Owner and Category are used when present, and anything else on the row is kept as an update note.</div>
+        <textarea class="release-text" id="risk-paste-text" rows="10" spellcheck="false" placeholder="Status&#9;Risk&#9;Severity&#9;Suggested Next Step&#9;Background"></textarea>
+        <div class="risk-paste-preview" id="risk-paste-preview"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn-ghost" data-action="cancel">Cancel</button>
+        <button type="button" class="btn-primary" data-action="ok" disabled>Add</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const ta = overlay.querySelector('#risk-paste-text');
+  const prev = overlay.querySelector('#risk-paste-preview');
+  const okBtn = overlay.querySelector('[data-action="ok"]');
+  let parsed = [];
+  const refresh = () => {
+    parsed = _riskParsePaste(ta.value);
+    okBtn.disabled = !parsed.length;
+    if (!ta.value.trim()) { prev.innerHTML = ''; return; }
+    if (!parsed.length) {
+      prev.innerHTML = `<div class="risk-paste-none">No risks found. The header line needs a column called <strong>Risk</strong>.</div>`;
+      return;
+    }
+    const resolved = parsed.filter(p => /resolv|closed|complete|done/i.test(p.status || '')).length;
+    const people = riskPeople();
+    const sample = parsed.slice(0, 4).map(p => {
+      const r = _riskFromPasted(p, people);
+      return `<li><span class="risk-paste-cat">${escapeHtml(r.cat)}</span>${escapeHtml(r.title.slice(0, 90))}${r.title.length > 90 ? '…' : ''}</li>`;
+    }).join('');
+    prev.innerHTML = `<div class="risk-paste-count"><strong>${parsed.length}</strong> risk${parsed.length === 1 ? '' : 's'} read${resolved ? `, ${resolved} already resolved` : ''}.</div>
+      <ul class="risk-paste-list">${sample}</ul>
+      ${parsed.length > 4 ? `<div class="risk-paste-more">…and ${parsed.length - 4} more.</div>` : ''}`;
+  };
+  const close = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
+  ta.addEventListener('input', refresh);
+  ta.addEventListener('paste', () => setTimeout(refresh, 0));
+  overlay.querySelector('[data-action="cancel"]').onclick = close;
+  okBtn.onclick = () => {
+    const people = riskPeople();
+    const added = parsed.map(p => _riskFromPasted(p, people));
+    close();
+    if (added.length && typeof onAdd === 'function') onAdd(added);
+  };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey);
+  setTimeout(() => ta.focus(), 0);
+}
+
 function openRiskPlanModal(project) {
   if (!project) return;
   _riskProject = project;
@@ -16371,6 +16549,13 @@ function openRiskPlanModal(project) {
       if (inp) inp.focus();
     };
     ov.querySelectorAll('[data-risk-add]').forEach(b => { b.onclick = addRisk; });
+    ov.querySelectorAll('[data-risk-paste]').forEach(b => { b.onclick = () => showRiskPasteDialog((added) => {
+      // Everything arrives open for editing: the scores are read from one
+      // spreadsheet rating and are a starting point, not an answer.
+      added.forEach(r => { risks.push(r); _riskEdit.add(r.id); _riskOpen.add(r.id); });
+      draw();
+      showToast(added.length + ' risk' + (added.length === 1 ? '' : 's') + " added. Check the chance and impact on each — a sheet rates a risk once, this register asks twice.", { kind: 'success' });
+    }); });
     ov.querySelector('[data-risk-save]').onclick = async () => {
       await saveRiskPlan(project, risks.filter(r => (r.title || '').trim()));
       showToast('Risk plan saved.', { kind: 'success' });
@@ -17370,6 +17555,7 @@ function _riskTableHtml(scored) {
       <h3 class="risk-h3">Risk register <span class="risk-note">click a row to open it · drag a column heading to reorder</span></h3>
       <div class="risk-reg-tools">
         <button type="button" class="risk-tool ${_riskTight ? 'is-on' : ''}" data-rtight title="Shrink the rows to fit more on screen">⇤ Compress</button>
+        <button type="button" class="risk-tool" data-risk-paste title="Copy the rows out of a spreadsheet and paste them here — the columns are worked out from the header line.">⎘ Paste from a sheet</button>
         <button type="button" class="risk-tool is-primary" data-risk-add>+ Add risk</button>
       </div>
     </div>

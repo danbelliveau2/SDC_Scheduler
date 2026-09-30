@@ -17304,3 +17304,30 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   border-color: var(--sdc-primary, #1574c4);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--sdc-primary, #1574c4) 18%, transparent);
 }
+
+/* ── Paste risks from a sheet ─────────────────────────────────────────────
+   The preview earns its place: twenty-four rows landing in a register is
+   not something to find out about afterwards. */
+.risk-paste-card { max-width: 720px; }
+.risk-paste-preview { margin-top: 12px; }
+.risk-paste-count { font-size: var(--fs-md); color: var(--text, #1f2937); }
+.risk-paste-count strong { color: var(--sdc-primary, #1574c4); font-size: var(--fs-lg); }
+.risk-paste-none { font-size: var(--fs-md); color: #b91c1c; }
+.risk-paste-list {
+  margin: 8px 0 0; padding: 0; list-style: none;
+  max-height: 150px; overflow-y: auto;
+}
+.risk-paste-list li {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 0; border-top: 1px solid var(--border, #e2e8f0);
+  font-size: var(--fs-sm); line-height: 1.4; color: var(--text-muted, #475569);
+}
+.risk-paste-cat {
+  flex: 0 0 auto;
+  padding: 0 6px; border-radius: 3px;
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 12%, #fff);
+  color: #1574c4;
+  font-size: var(--fs-2xs); font-weight: var(--fw-extrabold);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.risk-paste-more { margin-top: 6px; font-size: var(--fs-sm); color: var(--text-muted, #94a3b8); }
