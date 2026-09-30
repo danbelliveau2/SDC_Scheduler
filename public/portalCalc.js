@@ -33,6 +33,10 @@ const PORTAL_ANCHOR_KEYS = new Set([
   'receipt_of_po', 'mech_release_1', 'machine_power_up', 'fat', 'ship_machine', 'sat',
 ]);
 
+// Anchors that describe the JOB rather than one machine, so every machine
+// reports them whichever machine the row happens to be tagged to.
+const PORTAL_PROJECT_WIDE_ANCHORS = new Set(['receipt_of_po']);
+
 // De-duplicate anchor milestones (Receipt of PO, FAT, ...) PER (project,
 // machine, anchor_key) — keeps the lowest id of each so a stray duplicate
 // row (e.g. two "SAT" tasks on the same job) doesn't inflate every count
@@ -309,8 +313,19 @@ function portalWork(rows, projectIsSales, recentDays) {
 function portalUnits(rows) {
   const machines = [...new Set(rows.map(t => t.machine).filter(Boolean))].sort();
   if (!machines.length) return [{ machine: null, label: '', rows }];
-  const shared = rows.filter(t => !t.machine);
-  return machines.map(m => ({ machine: m, label: m, rows: rows.filter(t => t.machine === m).concat(shared) }));
+  // Untagged rows are shared, and so are the job-wide anchors however they
+  // are tagged — see PORTAL_PROJECT_WIDE_ANCHORS.
+  const jobWide = (t) => PORTAL_PROJECT_WIDE_ANCHORS.has(inferredAnchorKey(t) || t.anchor_key || '');
+  const shared = rows.filter(t => !t.machine || jobWide(t));
+  const sharedIds = new Set(shared.map(t => t.id));
+  return machines.map(m => ({
+    machine: m,
+    label: m,
+    // Filter by id, not by identity: a job-wide anchor tagged to THIS
+    // machine is already in `shared`, and adding it twice would double it
+    // in every count that walks these rows.
+    rows: rows.filter(t => t.machine === m && !sharedIds.has(t.id)).concat(shared),
+  }));
 }
 
 // Every milestone on a unit, in date order (public/app.js portalMilestones).

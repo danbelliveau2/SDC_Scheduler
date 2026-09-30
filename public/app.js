@@ -17489,12 +17489,25 @@ function portalCustomerList() {
 // A machine is a deliverable with its own FAT. Projects with no machine
 // tagging are one unnamed machine; 1163 has M1 and M2 shipping two months
 // apart, and a customer reading this needs them apart too.
+// The job has ONE purchase order, whichever machine its row is tagged to.
+// Kept here rather than read across from portalCalc.js so this walk does
+// not depend on another script's lexical scope.
+const APP_PROJECT_WIDE_ANCHORS = new Set(['receipt_of_po']);
+
 function portalUnits(project) {
   const rows = state.tasks.filter(t => t.project === project);
   const machines = [...new Set(rows.map(t => t.machine).filter(Boolean))].sort();
   if (!machines.length) return [{ machine: null, label: '', rows }];
-  const shared = rows.filter(t => !t.machine);
-  return machines.map(m => ({ machine: m, label: m, rows: rows.filter(t => t.machine === m).concat(shared) }));
+  const jobWide = (t) => APP_PROJECT_WIDE_ANCHORS.has(inferredAnchorKey(t) || t.anchor_key || '');
+  const shared = rows.filter(t => !t.machine || jobWide(t));
+  const sharedIds = new Set(shared.map(t => t.id));
+  // By id: a job-wide anchor tagged to THIS machine is already in `shared`,
+  // and adding it twice would double it in every count over these rows.
+  return machines.map(m => ({
+    machine: m,
+    label: m,
+    rows: rows.filter(t => t.machine === m && !sharedIds.has(t.id)).concat(shared),
+  }));
 }
 
 // PORTAL_PHASES, portalMilestones, portalMilestonePhases now live in
