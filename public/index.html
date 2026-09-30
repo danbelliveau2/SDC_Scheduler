@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260930-02679" />
+  <link rel="stylesheet" href="styles.css?v=20260930-35288" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
@@ -355,6 +355,7 @@
                  in their own list and come onto the build when you ask. -->
             <button id="btn-view-events" class="view-bracket-icon" type="button" title="Show the standard project events on this job.">S</button>
             <button id="btn-view-dept-hours" class="view-bracket-icon" type="button" title="Show QUOTED vs SCHEDULED hours on each department subheader — scheduled (from durations) under DUR, quoted (from the Project Release budget) under %COM, and an over/under-scheduled chip in the Assigned To area.">Δ</button>
+            <button id="btn-view-stats" class="view-bracket-icon" type="button" title="Project summary card — duration, % complete, FAT and the penalty date, quoted against scheduled. Floats over the top-right of the chart; click to put it away."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><line x1="4.5" y1="6" x2="11.5" y2="6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="4.5" y1="8.5" x2="11.5" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="4.5" y1="11" x2="9" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
             <button id="btn-view-baseline" class="view-bracket-icon" type="button" title="Baseline overlay — dashed plan-of-record outlines + ahead/behind chips vs the baseline. Click to toggle; right-click to set, reset, or turn off the baseline."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.8" fill="currentColor"/></svg></button>
           </div>
 
@@ -1151,7 +1152,7 @@
        app.js keeps its own customer picker / Manage-login / SDC aggregate
        view — none of that is in this shared file, on purpose. -->
   <script src="portalRender.js?v=20260929-18929"></script>
-  <script src="app.js?v=20260930-06627"></script>
+  <script src="app.js?v=20260930-93961"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

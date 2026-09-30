@@ -17140,3 +17140,24 @@ tr.ctrl-add-row td { padding: 4px 8px 10px; background: var(--surface); }
    sides of the divider. */
 tr.std-event-row td[data-col="name"] { color: #1574c4; }
 tr.ctrl-item-row td[data-col="name"] { color: #15803d; }
+
+/* The two side lists colour their NAME SPAN, not the cell — an action row
+   sets .name-cell-main's colour itself, which is why the controls items came
+   out blue while the one non-action row among them came out green. Same
+   specificity as that rule and later in the file, so this wins; the overdue
+   rule is more specific still, so late stays red. */
+tbody tr.ctrl-item-row .name-cell-main { color: #15803d; }
+tbody tr.std-event-row .name-cell-main { color: #1574c4; }
+
+/* The project summary card, made smaller. It sits over the top-right of the
+   chart, so every pixel it takes is a bar it hides — especially in a list
+   view where the rows bunch to one side. The Δ toggle beside it puts it
+   away entirely. */
+.project-stats-popup {
+  padding: 15px 8px 5px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+}
+.project-stats-popup .popup-row { gap: 10px; padding: 1px 0; }
+.project-stats-popup .popup-row + .popup-row { margin-top: 1px; padding-top: 3px; }
+.project-stats-popup .popup-value { font-size: var(--fs-sm); }

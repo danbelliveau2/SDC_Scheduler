@@ -590,7 +590,7 @@ const state = {
   //   reads at a glance.
   // - criticalOnly: filter the grid + Gantt to ONLY the critical-path tasks (and their
   //   anchor markers). Requires criticalPath to also be on.
-  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false, eventsMode: false, eventsOverlay: false },
+  scheduleView: { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false, eventsMode: false, eventsOverlay: false, showProjectStats: true },
   settings: null,
   setupDraft: null, // editable copy while user is in Setup view
   layout: null,     // { gridWidth, showGantt, colWidths, rowHeight } - hydrated in init
@@ -5548,7 +5548,8 @@ function renderProjectStatsPopup() {
   if (!split) return;
   // In risk mode this box is about a project spine that is not on screen,
   // and it floats over the chart. Take it down.
-  if (state.scheduleView && state.scheduleView.riskMode) {
+  const _sv = state.scheduleView || {};
+  if (_sv.riskMode || _sv.controlsMode || _sv.eventsMode || _sv.showProjectStats === false) {
     const gone = split.querySelector('#project-stats-popup');
     if (gone) gone.remove();
     return;
@@ -30261,6 +30262,8 @@ function loadScheduleView() {
       riskMode: false,
       controlsMode: false,
       eventsMode:    !!saved.eventsMode,
+      // Absent means never toggled, which means on.
+      showProjectStats: saved.showProjectStats !== false,
       eventsOverlay: !!saved.eventsOverlay,
       riskOverlay: !!saved.riskOverlay,
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
@@ -30274,7 +30277,7 @@ function loadScheduleView() {
       showDeptHours: !!saved.showDeptHours,
     };
   } catch {
-    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false, eventsMode: false, eventsOverlay: false };
+    return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false, eventsMode: false, eventsOverlay: false, showProjectStats: true };
   }
 }
 function saveScheduleView() {
@@ -30321,6 +30324,7 @@ function syncViewPill() {
   // chips/borders actually paint.
   setActive('btn-view-machine', sv.showMachineColors !== false);
   setActive('btn-view-dept-hours', sv.showDeptHours);
+  setActive('btn-view-stats', sv.showProjectStats !== false);
   try { syncControlsButtons(); } catch (_) {}
   try { syncEventsButtons(); } catch (_) {}
 }
@@ -32782,6 +32786,7 @@ async function init() {
   wireViewToggle('btn-view-bar-meta',   'showBarMeta');
   wireViewToggle('btn-view-machine',    'showMachineColors');
   wireViewToggle('btn-view-dept-hours', 'showDeptHours');
+  wireViewToggle('btn-view-stats',       'showProjectStats');
   syncViewPill();
 
   // Baseline — dropdown menu. The menu rebuilds on every open so its items
