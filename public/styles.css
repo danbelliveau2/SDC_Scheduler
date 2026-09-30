@@ -17172,3 +17172,15 @@ tbody tr.ctrl-item-row.is-overdue .name-cell-dur { color: #15803d; }
 tbody tr.std-event-row.is-action .name-cell-main,
 tbody tr.std-event-row.is-overdue .name-cell-main,
 tbody tr.std-event-row.is-overdue .name-cell-dur { color: #1574c4; }
+
+/* The Simple/Advanced toggle is absolutely positioned in the top-right, so
+   the card's top padding has to clear it. Shrinking the card cut that
+   padding under the toggle's height and it landed on the header row.
+   Toggle tightened, padding set to clear it with room to spare. */
+.project-stats-popup { padding-top: 19px; }
+.project-stats-popup .popup-mode-toggle {
+  top: 3px;
+  right: 5px;
+  padding: 0 5px;
+  line-height: 1.35;
+}

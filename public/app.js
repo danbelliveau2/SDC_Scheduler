@@ -5566,7 +5566,7 @@ function renderProjectStatsPopup() {
   // In risk mode this box is about a project spine that is not on screen,
   // and it floats over the chart. Take it down.
   const _sv = state.scheduleView || {};
-  if (_sv.riskMode || _sv.controlsMode || _sv.eventsMode || _sv.showProjectStats === false) {
+  if (_sv.riskMode || _sv.showProjectStats === false) {
     const gone = split.querySelector('#project-stats-popup');
     if (gone) gone.remove();
     return;
