@@ -2922,7 +2922,15 @@ function renderTable() {
     }
   }
 
-  for (const group of ((riskMode || controlsMode || eventsMode || mFilter) ? [] : HIERARCHY)) {
+  // Flattened mini schedule: one date-ordered list, no headers at all.
+  const _miniFlat = !!activeMiniIds() && flattenEffective;
+  if (_miniFlat) {
+    const rows = filtered.slice().sort((a, b) =>
+      String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
+      || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+    for (const t of rows) html += inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, 1);
+  }
+  for (const group of ((riskMode || controlsMode || eventsMode || mFilter || _miniFlat) ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     // In a mini schedule most sections have nothing in them; a column of
