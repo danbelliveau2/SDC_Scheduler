@@ -29527,7 +29527,7 @@ function computeOverAllocatedTasks(tasks) {
       for (let d = startMs; d <= endMs; d += 86400000) {
         if ((allocByDay.get(d) || 0) + a > 100) { pushesOver = true; break; }
       }
-      if (pushesOver) flagged.add(t.id);
+      if (pushesOver && getEffectiveProgress(t) < 100) flagged.add(t.id);
       // Always book this task into the running map — even if it pushes over, we still
       // count it for downstream priorities so they see the realistic load.
       for (let d = startMs; d <= endMs; d += 86400000) {
