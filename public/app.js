@@ -2163,7 +2163,15 @@ function cellHtml(t, key) {
         const style = `background:${c.hex};color:${c.text};border-color:${c.hex};`;
         machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="${style}">${escapeHtml(t.machine)}</span> `;
       }
-      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
+      const evtSec = t.phase_group === EVENTS_GROUP
+        ? (() => {
+            const k = eventSectionKey(t);
+            const g = k && HIERARCHY.find(x => x.key === k);
+            const short = g ? String(g.label).split(' ')[0] : '—';
+            return `<span class="evt-section-chip${g ? '' : ' is-none'}" title="${g ? 'Shows under ' + escapeHtml(g.label) + ' when S is on.' : 'No section — shows in the list at the bottom. Right-click to place it.'}">${escapeHtml(short)}</span>`;
+          })()
+        : '';
+      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${evtSec}${escapeHtml(t.name)}${driftChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
@@ -2456,6 +2464,11 @@ async function setEventSection(id, sectionKey) {
     return;
   }
   await loadTasks();
+  const after = state.tasks.find(x => x.id === id);
+  if (after && String(after.sub_department || '') !== sub) {
+    showToast('The section did not save — it came back as "' + (after.sub_department || 'empty') + '". Tell Claude.', { kind: 'error' });
+    return;
+  }
   const g = HIERARCHY.find(x => x.key === sectionKey);
   showToast(g ? ('Shows under ' + g.label + ' when S is on.')
               : 'No section — shows at the bottom when S is on.',

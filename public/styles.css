@@ -17184,3 +17184,26 @@ tbody tr.std-event-row.is-overdue .name-cell-dur { color: #1574c4; }
   padding: 0 5px;
   line-height: 1.35;
 }
+
+/* Which section a standard event is placed in, on the row itself — the
+   answer to "did that stick?" without a right-click. Small and quiet: it is
+   a label, not a control. */
+.evt-section-chip {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 14%, #fff);
+  border: 1px solid color-mix(in srgb, var(--sdc-primary, #1574c4) 32%, #fff);
+  color: #1574c4;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-extrabold);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
+}
+.evt-section-chip.is-none {
+  background: var(--surface-alt, #f1f5f9);
+  border-color: var(--border, #e2e8f0);
+  color: var(--text-muted, #94a3b8);
+}
