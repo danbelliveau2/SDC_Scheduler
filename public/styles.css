@@ -17161,3 +17161,14 @@ tbody tr.std-event-row .name-cell-main { color: #1574c4; }
 .project-stats-popup .popup-row { gap: 10px; padding: 1px 0; }
 .project-stats-popup .popup-row + .popup-row { margin-top: 1px; padding-top: 3px; }
 .project-stats-popup .popup-value { font-size: var(--fs-sm); }
+
+/* The overdue-action rule carries TWO classes on the row, so it outranked
+   the single-class list colour and the three past-due controls items came
+   out blue among green ones. Matched here at the same specificity, later in
+   the file, so the list a row belongs to always decides its colour. */
+tbody tr.ctrl-item-row.is-action .name-cell-main,
+tbody tr.ctrl-item-row.is-overdue .name-cell-main,
+tbody tr.ctrl-item-row.is-overdue .name-cell-dur { color: #15803d; }
+tbody tr.std-event-row.is-action .name-cell-main,
+tbody tr.std-event-row.is-overdue .name-cell-main,
+tbody tr.std-event-row.is-overdue .name-cell-dur { color: #1574c4; }
