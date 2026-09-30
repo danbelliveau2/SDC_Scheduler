@@ -743,6 +743,23 @@ function seedCollapsedSections() {
   for (const [path, g] of Object.entries(tally)) {
     if (g.total > 0 && g.done === g.total) collapsedGroups.add(path);
   }
+  if (leadTestProgress(pool) < 50) collapsedGroups.add(groupPath('teardown_install'));
+}
+
+// How far along the LEAD test engineer is, 0-100, or 100 when the job has
+// no test-engineer row to read (nothing to hold section 50 shut for).
+// "Lead" is the first engineering test row in section 40 by sort order —
+// Test Engineer 1 on a standard schedule. The whole test programme hangs
+// off that line, so it is the honest read on whether teardown is near.
+function leadTestProgress(pool) {
+  const tests = pool.filter(t =>
+    t.phase_group === 'machine_testing'
+    && t.department === 'engineering'
+    && !t.is_milestone
+    && /test/i.test(String(t.name || '')));
+  if (!tests.length) return 100;
+  tests.sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0) || a.id - b.id);
+  return getEffectiveProgress(tests[0]);
 }
 
 // Maps maintained by updateLineNumbersAndPreds. Predecessors are stored by task id but shown

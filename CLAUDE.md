@@ -93,10 +93,16 @@ One branch: `main`. Always pull first. Never commit and forget to push — the p
 - "Show completed" ON = show ONLY completed; OFF = no completion filtering (all show).
 - **Hide completed items** lives in the **View** menu, NOT in filters. Separate toggle.
 
+### Default collapse state
+- A top-level section whose tasks are **all** 100% complete opens collapsed.
+- **Section 50 (Teardown & Install) opens collapsed until the LEAD test engineer is past 50%.** Verbatim from Dan: *"this is like one of the first things I do in every schedule I open is collapse section fifty because it takes up a lot of space, but it's like we're not even close to that, so I don't care about that yet."* The lead is the **first engineering test row in section 40 by sort order** (Test Engineer 1 on a standard schedule) — *"whoever the first engineer is, because that's like the main engineer."* A job with no test-engineer row has nothing to wait on, so section 50 opens normally. See `leadTestProgress()`.
+- Seeding runs **once per project** (`seedCollapsedSections`). Expand a section and it stays expanded for the rest of the visit.
+
 ### Completed (100%) tasks
 - **Grid row stays normal.** No row-wide hash, no row-wide lime border. Just the green-check % pill.
 - **Gantt bar: lime green outline + diagonal lime hash lines through the bar.** Description label stays readable.
 - **NO ahead/behind drift chip on done tasks.** Baseline feature already covers finish-variance.
+- **NO over-allocation warning on done tasks.** Marked complete means the work got done, so whether the resource "was available" is settled. Done rows are still booked into the allocation day-map (the person really was busy), they just never get flagged.
 - **Completed column exists in the grid** — shows `completed_on` date. Server auto-stamps when progress → 100, clears when it drops below.
 
 ### Backlog
