@@ -17117,3 +17117,26 @@ tr.ctrl-add-row td { padding: 4px 8px 10px; background: var(--surface); }
   color: var(--text-muted, #64748b);
 }
 .panel-cd.is-none .panel-cd-value { color: var(--text-muted, #64748b); font-weight: var(--fw-bold); }
+
+/* ── The two side lists, told apart by colour ─────────────────────────────
+   Standard events blue, controls items green. Lime stays reserved for the
+   spine anchors — a controls line is not one of those. An overdue row keeps
+   its red diamond; late is the more urgent thing to know. */
+.gantt .bar-wrapper.is-std-event text,
+.gantt .bar-wrapper.is-std-event .bar-label {
+  fill: #1574c4 !important;
+  font-weight: var(--fw-bold);
+}
+.gantt .bar-wrapper.is-ctrl-item text,
+.gantt .bar-wrapper.is-ctrl-item .bar-label {
+  fill: #15803d !important;
+  font-weight: var(--fw-bold);
+}
+/* Duration bars in the two lists, tinted to match their diamonds. */
+.gantt .bar-wrapper.is-std-event .bar { fill: #bfdbfe; }
+.gantt .bar-wrapper.is-ctrl-item .bar { fill: #bbf7d0; }
+
+/* Grid rows follow the same colour so the list reads the same on both
+   sides of the divider. */
+tr.std-event-row td[data-col="name"] { color: #1574c4; }
+tr.ctrl-item-row td[data-col="name"] { color: #15803d; }

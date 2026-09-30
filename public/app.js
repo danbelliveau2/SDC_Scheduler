@@ -879,9 +879,12 @@ function buildCanonicalTaskOrder() {
   for (const t of aboveSectionTasks) order.push(t.id);
   // Line numbers have to agree with the rows on screen, so the events are
   // placed by date here exactly as the grid places them.
-  const _evtByDate = ((state.scheduleView?.flatten || isPersonalMode())
-      && !state.scheduleView?.eventsMode && state.scheduleView?.eventsOverlay)
-    ? standardEventsByDateSection(filtered) : {};
+  const _evtOn = !state.scheduleView?.eventsMode && !!state.scheduleView?.eventsOverlay;
+  const _evtFlat = state.scheduleView?.flatten || isPersonalMode();
+  const _evtByDate = (_evtOn && _evtFlat) ? standardEventsByDateSection(filtered) : {};
+  // Unflattened, only the ones placed by hand move; the rest stay in the
+  // list at the bottom.
+  const _evtPlaced = (_evtOn && !_evtFlat) ? placedEventsBySection(filtered) : {};
   for (const group of HIERARCHY) {
     if (state.scheduleView?.flatten || isPersonalMode()) {
       // Same SPINE_ANCHORS rule as the table walk.
@@ -950,6 +953,9 @@ function buildCanonicalTaskOrder() {
     if (group.key === 'teardown_install' && satAnchors.length) {
       for (const s of satAnchors) order.push(s.id);
     }
+    // Standard events placed in this section (see eventSectionKey). Line
+    // numbers must count them exactly where the grid draws them.
+    if (_evtPlaced[group.key]) for (const e of _evtPlaced[group.key]) order.push(e.id);
   }
   // Risk-mitigation lines are ordinary tasks under a section the walk above
   // does not visit, and applyFilters keeps them out of the grid by default.
@@ -2349,7 +2355,11 @@ function rowHtml(t, depth = 0) {
   // don't re-evaluate per row.
   const todayISO = new Date().toISOString().slice(0, 10);
   const overdueCls = (t.is_action && (t.progress || 0) < 100 && t.end_date && t.end_date < todayISO) ? ' is-overdue' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  // The two side lists carry their colour in the grid as well as the chart,
+  // so a row reads the same on both sides of the divider.
+  const listCls = t.phase_group === EVENTS_GROUP ? ' std-event-row'
+    : t.phase_group === CONTROLS_GROUP ? ' ctrl-item-row' : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}${listCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = null) {
@@ -2406,6 +2416,34 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = nu
 
 // Which section a spine anchor belongs to when it carries no phase_group of
 // its own. Mirrors where the unflattened walk parks each one.
+// The section a standard event has been placed in, or '' for one that has
+// not been placed.
+function eventSectionKey(t) {
+  if (!t || t.phase_group !== EVENTS_GROUP) return '';
+  const sub = String(t.sub_department || '');
+  const i = sub.indexOf(':');
+  if (i < 0) return '';
+  const key = sub.slice(i + 1);
+  return HIERARCHY.some(g => g.key === key) ? key : '';
+}
+
+async function setEventSection(id, sectionKey) {
+  const t = state.tasks.find(x => x.id === id);
+  if (!t) return;
+  const sub = sectionKey ? (EVENTS_SUB + ':' + sectionKey) : EVENTS_SUB;
+  try {
+    await api.update(id, { sub_department: sub });
+  } catch (e) {
+    showToast(e.message || 'Could not set the section.', { kind: 'error' });
+    return;
+  }
+  await loadTasks();
+  const g = HIERARCHY.find(x => x.key === sectionKey);
+  showToast(g ? ('Shows under ' + g.label + ' when S is on.')
+              : 'No section — shows at the bottom when S is on.',
+            { kind: 'success' });
+}
+
 function standardEventsByDateSection(filtered) {
   const out = {};
   const evts = filtered.filter(t => t.phase_group === EVENTS_GROUP);
@@ -2424,6 +2462,9 @@ function standardEventsByDateSection(filtered) {
     if (min) spans.push({ key: g.key, min, max: max || min });
   }
   for (const e of evts) {
+    // Placed by hand beats worked out from a date.
+    const placed = eventSectionKey(e);
+    if (placed) { (out[placed] ||= []).push(e); continue; }
     const d = String(e.start_date || e.end_date || '');
     let key = null;
     if (d && spans.length) {
@@ -2742,8 +2783,11 @@ function renderTable() {
   // Flattened, the events sort into the sections by date (see
   // standardEventsByDateSection). Unflattened they keep their own section
   // at the end, because there is no department to tuck them under.
-  const _evtByDate = (flattenEffective && !eventsMode && state.scheduleView && state.scheduleView.eventsOverlay)
-    ? standardEventsByDateSection(filtered) : {};
+  const _evtOn = !eventsMode && !!(state.scheduleView && state.scheduleView.eventsOverlay);
+  const _evtByDate = (_evtOn && flattenEffective) ? standardEventsByDateSection(filtered) : {};
+  // Unflattened, only the ones placed by hand move; the rest stay in the
+  // list at the bottom.
+  const _evtPlaced = (_evtOn && !flattenEffective) ? placedEventsBySection(filtered) : {};
 
   // A milestone filter: no headers, one list, date order. The spine anchors
   // (FAT / SAT / Ship / PO) sort with everything else here rather than being
@@ -2919,6 +2963,9 @@ function renderTable() {
     if (group.key === 'teardown_install' && satAnchors.length) {
       for (const s of satAnchors) html += anchorRowHtml(s);
     }
+    // Standard events placed in this section close it out, after the
+    // section's own work and its spine anchors.
+    if (_evtPlaced[group.key]) for (const e of _evtPlaced[group.key]) html += rowHtml(e, 2);
   }
 
   // No UNASSIGNED bucket and no orphan auto-promote. Orphans (tasks with no phase_group
@@ -4401,6 +4448,10 @@ function renderGantt() {
     // Backlog row picks up the same lime border + hash overlay once today
     // crosses its end_date.
     if (!t.is_milestone && getEffectiveProgress(t) >= 100) classes.push('is-done');
+    // The two side lists read by colour: standard events blue, controls
+    // items green. Not the lime — that is reserved for the spine anchors.
+    if (t.phase_group === EVENTS_GROUP)   classes.push('is-std-event');
+    if (t.phase_group === CONTROLS_GROUP) classes.push('is-ctrl-item');
     if (state.overAllocatedTaskIds.has(t.id)) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
@@ -7029,6 +7080,18 @@ function drawMilestoneDiamonds() {
     } else if (isOverdueAction) {
       dFill = '#fca5a5';  // red-300
       dStroke = '#dc2626'; // red-600
+      dStrokeW = '1.5';
+    } else if (task.phase_group === EVENTS_GROUP) {
+      // Standard events: blue. Whatever the row is, it reads as a standard
+      // event first — that is the point of the list.
+      dFill = '#3a8edc';  // SDC primary lighter
+      dStroke = '#1574c4'; // SDC primary
+      dStrokeW = '1.5';
+    } else if (task.phase_group === CONTROLS_GROUP) {
+      // Controls items: green, but NOT the lime — that belongs to the spine
+      // anchors and a controls line is not one.
+      dFill = '#86efac';  // green-300
+      dStroke = '#16a34a'; // green-600
       dStrokeW = '1.5';
     } else if (task.is_action) {
       dFill = '#3a8edc';  // SDC primary lighter
@@ -16763,12 +16826,33 @@ async function moveOutOfStandardEvents(id) {
 // The list as one section. On the build it rides at the bottom — these
 // events belong to the job, not to a department, so there is no sub-section
 // to tuck them under the way the controls items have one.
+// Just the placed ones, for the unflattened walk. Flatten has its own map
+// (standardEventsByDateSection) which starts from these and works the rest
+// out from their dates.
+function placedEventsBySection(filtered) {
+  const out = {};
+  for (const t of filtered) {
+    if (t.phase_group !== EVENTS_GROUP) continue;
+    const key = eventSectionKey(t);
+    if (!key) continue;
+    (out[key] ||= []).push(t);
+  }
+  Object.keys(out).forEach(k => out[k].sort((a, b) =>
+    String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
+    || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)));
+  return out;
+}
+
 function _eventsSectionRowsHtml(filtered, collapsedGroups, opts) {
   const project = state.filters.project || '';
   const cols = state.layout.columnOrder.length;
   const overlay = !!(opts && opts.overlay);
   if (overlay && !(state.scheduleView && state.scheduleView.eventsOverlay)) return '';
+  // On the build, the placed events are drawn inside their own sections, so
+  // only the unplaced ones are left for the list at the bottom. In the
+  // list view (overlay false) every event shows — that is the list.
   const rows = filtered.filter(t => t.phase_group === EVENTS_GROUP)
+    .filter(t => !overlay || !eventSectionKey(t))
     .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
   if (overlay && !rows.length) return '';
   const path = groupPath(EVENTS_GROUP, null, EVENTS_SUB);
@@ -20680,6 +20764,20 @@ function handleRowContextMenu(e) {
     items.push(task.phase_group === EVENTS_GROUP
       ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfStandardEvents(id) }
       : { label: '★ Move to standard events', onClick: () => moveToStandardEvents(id) });
+    // Which section this event shows under when S is on. Without one it
+    // sits in the list at the bottom, and the only way to move it was to
+    // flatten the whole schedule.
+    if (task.phase_group === EVENTS_GROUP) {
+      const cur = eventSectionKey(task);
+      items.push({ separator: true });
+      HIERARCHY.forEach(g => {
+        items.push({
+          label: (cur === g.key ? '✓ ' : '   ') + g.label,
+          onClick: () => setEventSection(id, cur === g.key ? '' : g.key),
+        });
+      });
+      if (cur) items.push({ label: '   No section — keep it in the list', onClick: () => setEventSection(id, '') });
+    }
   }
   // Key-milestone promotion — any MILESTONE row can become a key milestone
   // (green chip + anchor diamond, same format as PO / Mech 1 / FAT). Custom
