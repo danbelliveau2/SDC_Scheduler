@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20260930-52649" />
+  <link rel="stylesheet" href="styles.css?v=20260930-05684" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
@@ -364,6 +364,15 @@
           <!-- Filters dropdown — restored as a dropdown with text labels.
                Hover the button to see the active-count chip; click to open the
                popover with all filters as labelled chips. -->
+          <!-- Mini schedules — a named handful of lines out of this
+               schedule, so one flow can be read without the other eighty
+               rows. A lens: the lines keep their real row numbers and
+               never leave the build. -->
+          <div class="schedule-mini-wrap">
+            <button id="btn-mini" class="toolbar-toggle-btn hidden" type="button">◫ <span class="mini-btn-label">Mini</span> ▾</button>
+            <div id="mini-menu" class="dropdown-menu mini-menu hidden"></div>
+          </div>
+
           <div class="schedule-project-filters">
             <button id="btn-filters" class="toolbar-toggle-btn" type="button" title="Filter the schedule. For Customer mode also lives here.">⌕ Filters <span class="filter-chip-count" id="filter-chip-count" hidden></span> ▾</button>
             <div id="filters-popover" class="filters-popover hidden"></div>
@@ -1152,7 +1161,7 @@
        app.js keeps its own customer picker / Manage-login / SDC aggregate
        view — none of that is in this shared file, on purpose. -->
   <script src="portalRender.js?v=20260929-18929"></script>
-  <script src="app.js?v=20260930-18721"></script>
+  <script src="app.js?v=20260930-59232"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,

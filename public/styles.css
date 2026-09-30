@@ -17185,3 +17185,78 @@ tbody tr.std-event-row.is-overdue .name-cell-dur { color: #1574c4; }
   line-height: 1.35;
 }
 
+
+/* ── Mini schedules ───────────────────────────────────────────────────────
+   A named handful of lines out of the big schedule. The dropdown sits
+   beside Filters because it is the same kind of act — narrowing what you
+   are looking at — and nothing to do with the Views menu, which is
+   columns. */
+.schedule-mini-wrap { position: relative; display: inline-block; }
+#btn-mini.is-active {
+  background: var(--sdc-primary, #1574c4);
+  border-color: var(--sdc-primary, #1574c4);
+  color: #fff;
+}
+.mini-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 40;
+  min-width: 300px; max-width: 420px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+}
+.mini-menu-head {
+  padding: 4px 8px 6px;
+  font-size: var(--fs-xs); font-weight: var(--fw-extrabold);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted, #64748b);
+}
+.mini-menu-row { display: flex; align-items: center; gap: 2px; border-radius: 6px; }
+.mini-menu-row:hover { background: var(--surface-alt, #f1f5f9); }
+.mini-menu-row.is-on { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 10%, #fff); }
+.mini-menu-pick {
+  flex: 1 1 auto; display: flex; align-items: baseline; gap: 7px;
+  background: none; border: 0; cursor: pointer;
+  padding: 6px 6px; text-align: left; min-width: 0;
+  font-size: var(--fs-md); color: var(--text, #1f2937);
+}
+.mini-menu-tick { width: 12px; color: var(--sdc-primary, #1574c4); font-weight: var(--fw-extrabold); }
+.mini-menu-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--fw-bold); }
+.mini-menu-count {
+  color: var(--text-muted, #64748b); font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.mini-menu-act {
+  background: none; border: 0; cursor: pointer; padding: 4px 6px;
+  font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  color: var(--text-muted, #64748b); border-radius: 4px; white-space: nowrap;
+}
+.mini-menu-act:hover { color: var(--sdc-primary, #1574c4); background: #fff; }
+.mini-menu-act.is-danger:hover { color: #b91c1c; }
+.mini-menu-all, .mini-menu-new {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 0; cursor: pointer;
+  padding: 7px 8px; border-radius: 6px;
+  font-size: var(--fs-md); font-weight: var(--fw-bold);
+  color: var(--sdc-primary, #1574c4);
+}
+.mini-menu-all:hover, .mini-menu-new:hover { background: var(--surface-alt, #f1f5f9); }
+.mini-menu-new { border-top: 1px solid var(--border, #e2e8f0); margin-top: 4px; }
+.mini-menu-empty {
+  padding: 10px 8px; color: var(--text-muted, #64748b);
+  font-size: var(--fs-sm); line-height: 1.45;
+}
+
+/* Picking lines. Every row is a target, and the chosen ones say so. */
+body.mini-picking #tasks-tbody tr[data-id] { cursor: pointer; }
+body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in srgb, var(--sdc-primary, #1574c4) 9%, #fff); }
+#tasks-tbody tr.mini-picked td {
+  background: color-mix(in srgb, var(--sdc-primary, #1574c4) 17%, #fff) !important;
+  box-shadow: inset 3px 0 0 var(--sdc-primary, #1574c4);
+}
+.mini-pick-count {
+  font-weight: var(--fw-extrabold); color: var(--sdc-primary, #1574c4);
+  font-variant-numeric: tabular-nums;
+}
+.mini-pick-hint { color: var(--text-muted, #64748b); font-size: var(--fs-sm); }

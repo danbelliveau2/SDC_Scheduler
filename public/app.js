@@ -615,6 +615,10 @@ const state = {
   // The first tab is My work rather than the aggregate schedule. Restored
   // per browser so a reload comes back where you were.
   myWork: (() => { try { return localStorage.getItem('sdcMyWork') === '1'; } catch (_) { return false; } })(),
+  // The open mini schedule, by name. Restored per browser; dropped by
+  // reconcileActiveMini when the project has no such mini schedule.
+  _miniActive: (() => { try { return localStorage.getItem('sdcMiniActive') || ''; } catch (_) { return ''; } })(),
+  _miniPick: null,   // { name, ids:Set } while picking lines
   // Project names flagged as templates: protected from accidental close, marked with
   // a star in the tab. Stored in localStorage as a string array.
   templateProjects: [],
@@ -1789,6 +1793,13 @@ function applyFilters(tasks, opts = {}) {
   // risk is flagged to sit on the real schedule alongside the build.
   // The controls list is its own view of its own rows, for the same reason
   // risk mode is: the build filters belong to the build.
+  // A mini schedule is a lens over the real rows. Narrow to its lines and
+  // let the normal walk lay them out under their own sections, so you can
+  // see WHERE in the build each one sits.
+  if (!skipViewMode && !state._miniPick) {
+    const miniIds = activeMiniIds();
+    if (miniIds) return tasks.filter(t => miniIds.has(Number(t.id)) && (!project || t.project === project));
+  }
   if (!skipViewMode && state.scheduleView && state.scheduleView.eventsMode) {
     return tasks.filter(t => t.phase_group === EVENTS_GROUP
       && (!project || t.project === project));
@@ -2830,6 +2841,9 @@ function renderTable() {
   for (const group of ((riskMode || controlsMode || eventsMode || mFilter) ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
+    // In a mini schedule most sections have nothing in them; a column of
+    // empty headers buries the five rows you came to look at.
+    if (activeMiniIds() && !filtered.some(t => (t.phase_group || 'kickoff') === group.key)) continue;
     html += headerRowHtml(1, group.label, gPath, gCollapsed, { 'section-key': group.key });
     if (gCollapsed) continue;
 
@@ -15908,6 +15922,7 @@ function render(opts = {}) {
     // into Schedule doesn't run the full Gantt pipeline twice back to back.
     if (!opts.deferGantt) renderGantt();
     try { decorateCloneModeRows(); } catch (_) {}
+    try { decorateMiniPickRows(); } catch (_) {}
   } else if (state.view === 'team') {
     renderTeam();
   }
@@ -15920,6 +15935,7 @@ function render(opts = {}) {
   try { syncRiskModeButtons(); } catch (_) {}
   try { syncControlsButtons(); } catch (_) {}
   try { syncEventsButtons(); } catch (_) {}
+  try { reconcileActiveMini(); syncMiniButton(); wireMiniMenu(); } catch (_) {}
 
   // Opening a project should not need three clicks to become readable. When
   // the project has just changed, put the view into its intended shape: the
@@ -16906,6 +16922,102 @@ function _eventsSectionRowsHtml(filtered, collapsedGroups, opts) {
 
 // The pair of buttons, mirroring controls: one swaps the view, one brings
 // the list onto the build without leaving it.
+function syncMiniButton() {
+  const btn = document.getElementById('btn-mini');
+  if (!btn) return;
+  const project = state.filters.project || '';
+  const names = Object.keys(miniSchedules());
+  btn.classList.toggle('hidden', !project);
+  const active = activeMiniName();
+  btn.classList.toggle('is-active', !!active);
+  const label = btn.querySelector('.mini-btn-label');
+  if (label) label.textContent = active || 'Mini';
+  btn.title = active
+    ? 'Showing the "' + active + '" mini schedule — only its lines, with their real row numbers.'
+    : (names.length
+      ? 'Mini schedules — a named handful of lines, so you can follow one flow without the other eighty rows.'
+      : 'Mini schedules — pick a few lines that belong together and name them, so you can come back to just those.');
+}
+
+function renderMiniMenu() {
+  const menu = document.getElementById('mini-menu');
+  if (!menu) return;
+  const names = Object.keys(miniSchedules()).sort((a, b) => a.localeCompare(b));
+  const active = activeMiniName();
+  const rows = names.map(n => {
+    const count = (miniSchedules()[n] || []).length;
+    return `<div class="mini-menu-row${n === active ? ' is-on' : ''}" data-mini="${escapeHtml(n)}">
+      <button type="button" class="mini-menu-pick" data-mini-show="${escapeHtml(n)}">
+        <span class="mini-menu-tick">${n === active ? '✓' : ''}</span>
+        <span class="mini-menu-name">${escapeHtml(n)}</span>
+        <span class="mini-menu-count">${count}</span>
+      </button>
+      <button type="button" class="mini-menu-act" data-mini-edit="${escapeHtml(n)}" title="Change which lines are in it.">Edit lines</button>
+      <button type="button" class="mini-menu-act" data-mini-rename="${escapeHtml(n)}" title="Rename.">Rename</button>
+      <button type="button" class="mini-menu-act is-danger" data-mini-del="${escapeHtml(n)}" title="Delete the mini schedule. The lines themselves are untouched.">Delete</button>
+    </div>`;
+  }).join('');
+  menu.innerHTML = `
+    <div class="mini-menu-head">Mini schedules</div>
+    ${active ? `<button type="button" class="mini-menu-all" data-mini-show="">← Back to the whole schedule</button>` : ''}
+    ${rows || `<div class="mini-menu-empty">None yet. Make one and click the lines that belong together — they keep their real row numbers, and nothing moves.</div>`}
+    <button type="button" class="mini-menu-new" id="mini-menu-new">＋ New mini schedule…</button>`;
+}
+
+function wireMiniMenu() {
+  const btn = document.getElementById('btn-mini');
+  const menu = document.getElementById('mini-menu');
+  if (!btn || !menu || btn._miniWired) return;
+  btn._miniWired = true;
+  const close = () => menu.classList.add('hidden');
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = menu.classList.contains('hidden');
+    if (open) { renderMiniMenu(); menu.classList.remove('hidden'); } else close();
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) close();
+  });
+  menu.addEventListener('click', async (e) => {
+    const show = e.target.closest('[data-mini-show]');
+    if (show) { close(); setActiveMini(show.dataset.miniShow); return; }
+    const edit = e.target.closest('[data-mini-edit]');
+    if (edit) { close(); startMiniPick(edit.dataset.miniEdit); return; }
+    const ren = e.target.closest('[data-mini-rename]');
+    if (ren) {
+      close();
+      const from = ren.dataset.miniRename;
+      const to = await showPromptDialog({ title: 'Rename mini schedule', value: from, okLabel: 'Rename' });
+      if (to && to !== from) await miniRename(from, to);
+      return;
+    }
+    const del = e.target.closest('[data-mini-del]');
+    if (del) {
+      close();
+      const n = del.dataset.miniDel;
+      const ok = await showConfirmDialog({
+        title: 'Delete "' + n + '"?',
+        message: 'The mini schedule goes; the lines in it stay exactly where they are on the schedule.',
+        okLabel: 'Delete', danger: true,
+      });
+      if (ok) await miniDelete(n);
+      return;
+    }
+    if (e.target.closest('#mini-menu-new')) {
+      close();
+      const name = await showPromptDialog({
+        title: 'New mini schedule',
+        message: 'Name it, then click the lines that belong together. They keep their real row numbers and nothing moves off the schedule.',
+        placeholder: 'Mech 1 rework loop', okLabel: 'Pick lines',
+        validate: (v) => !v ? 'Give it a name.' : (miniSchedules()[v] ? 'There is already one called that.' : null),
+      });
+      if (name) startMiniPick(name);
+    }
+  });
+}
+
+function syncMiniButton_hook() {}
+
 function syncEventsButtons() {
   const on = !!(state.scheduleView && state.scheduleView.eventsMode);
   const btn = document.getElementById('btn-events-mode');
@@ -20020,6 +20132,18 @@ function handleRowContextMenu(e) {
     items.push(task.phase_group === EVENTS_GROUP
       ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfStandardEvents(id) }
       : { label: '★ Move to standard events', onClick: () => moveToStandardEvents(id) });
+    // Mini schedules this line is in, and the ones it could join.
+    const _minis = Object.keys(miniSchedules()).sort((a, b) => a.localeCompare(b));
+    if (_minis.length) {
+      items.push({ separator: true });
+      _minis.forEach(n => {
+        const inIt = (miniSchedules()[n] || []).map(Number).includes(id);
+        items.push({
+          label: (inIt ? '✓ ' : '   ') + '◫ ' + n,
+          onClick: () => (inIt ? miniRemoveTask(n, id) : miniAddTask(n, id)),
+        });
+      });
+    }
     // Which section this event shows under when S is on. Without one it
     // sits in the list at the bottom, and the only way to move it was to
     // flatten the whole schedule.
@@ -20266,6 +20390,8 @@ async function createTaskBelow(taskId, asAction) {
   // Record an undo entry so the topbar Undo can remove an accidental add.
   // kind:'create' → undo deletes this row; redo re-creates it from the payload.
   state.undoStack.push({ kind: 'create', taskId: created.id, payload, description: `Add row below "${t.name || 'task'}"` });
+  // Added while a mini schedule is open? Then it is part of it.
+  if (activeMiniName()) { try { await miniAddTask(activeMiniName(), created.id); } catch (_) {} }
   while (state.undoStack.length > UNDO_STACK_MAX) state.undoStack.shift();
   state.redoStack = [];
   syncUndoButton();
@@ -25656,9 +25782,161 @@ function wireBannerProjectsFilter() {
 // in. Shows the person's name + their personal-filter chips (Overdue /
 // Ahead / Hide done) + a Clear button that drops the assignee filter and
 // returns to the Actions tab.
+const MINI_KEY = 'mini_schedules';
+
+// { project: { name: [taskId, ...] } }
+function _miniAll() {
+  return (state.settings && state.settings[MINI_KEY]) || {};
+}
+function miniSchedules(project) {
+  return _miniAll()[project || state.filters.project || ''] || {};
+}
+function activeMiniName() {
+  return state._miniActive || '';
+}
+function activeMiniIds() {
+  const name = activeMiniName();
+  if (!name) return null;
+  const ids = miniSchedules()[name];
+  return Array.isArray(ids) ? new Set(ids.map(Number)) : null;
+}
+
+async function _miniSave(project, map) {
+  state.settings = state.settings || {};
+  const all = { ..._miniAll() };
+  if (map && Object.keys(map).length) all[project] = map; else delete all[project];
+  state.settings[MINI_KEY] = all;
+  try { await api.putSetting(MINI_KEY, all); } catch (e) {
+    showToast(e.message || 'Could not save the mini schedule.', { kind: 'error' });
+  }
+}
+
+async function miniSetIds(name, ids) {
+  const project = state.filters.project || '';
+  if (!project || !name) return;
+  const map = { ...miniSchedules(project) };
+  const clean = [...new Set(ids.map(Number))].filter(n => Number.isFinite(n));
+  if (clean.length) map[name] = clean; else delete map[name];
+  await _miniSave(project, map);
+}
+
+async function miniAddTask(name, id) {
+  const cur = miniSchedules()[name] || [];
+  if (cur.map(Number).includes(Number(id))) return;
+  await miniSetIds(name, [...cur, id]);
+  render();
+}
+
+async function miniRemoveTask(name, id) {
+  const cur = miniSchedules()[name] || [];
+  await miniSetIds(name, cur.filter(x => Number(x) !== Number(id)));
+  render();
+}
+
+async function miniDelete(name) {
+  const project = state.filters.project || '';
+  const map = { ...miniSchedules(project) };
+  delete map[name];
+  await _miniSave(project, map);
+  if (activeMiniName() === name) state._miniActive = '';
+  render();
+}
+
+async function miniRename(oldName, newName) {
+  const project = state.filters.project || '';
+  const map = { ...miniSchedules(project) };
+  if (!map[oldName] || !newName || map[newName]) return;
+  map[newName] = map[oldName];
+  delete map[oldName];
+  await _miniSave(project, map);
+  if (activeMiniName() === oldName) state._miniActive = newName;
+  render();
+}
+
+// A mini schedule belongs to one project, so switching projects drops it
+// rather than showing an empty schedule with no explanation.
+function reconcileActiveMini() {
+  const name = state._miniActive;
+  if (!name) return;
+  if (!miniSchedules()[name]) {
+    state._miniActive = '';
+    try { localStorage.removeItem('sdcMiniActive'); } catch (_) {}
+  }
+}
+
+function setActiveMini(name) {
+  state._miniActive = name || '';
+  try { localStorage.setItem('sdcMiniActive', state._miniActive); } catch (_) {}
+  render();
+  // Six lines spread over two years want fitting, every time.
+  if (state._miniActive) requestAnimationFrame(() => { try { zoomToFit(); } catch (_) {} });
+}
+
+// ── Picking the lines ───────────────────────────────────────────────────
+// Click rows to add and remove them, the way machine-clone picking works,
+// because that is the gesture already in the muscle memory here.
+function startMiniPick(name) {
+  state._miniPick = { name, ids: new Set((miniSchedules()[name] || []).map(Number)) };
+  document.body.classList.add('mini-picking');
+  render();
+}
+
+async function finishMiniPick(keep) {
+  const pick = state._miniPick;
+  state._miniPick = null;
+  document.body.classList.remove('mini-picking');
+  if (!pick) { render(); return; }
+  if (keep) {
+    await miniSetIds(pick.name, [...pick.ids]);
+    state._miniActive = pick.name;
+    try { localStorage.setItem('sdcMiniActive', pick.name); } catch (_) {}
+  }
+  render();
+  if (keep) requestAnimationFrame(() => { try { zoomToFit(); } catch (_) {} });
+}
+
+function miniPickToggle(id) {
+  const pick = state._miniPick;
+  if (!pick) return false;
+  const n = Number(id);
+  if (pick.ids.has(n)) pick.ids.delete(n); else pick.ids.add(n);
+  renderMiniBanner();
+  const tr = document.querySelector(`tr[data-id="${n}"]`);
+  if (tr) tr.classList.toggle('mini-picked', pick.ids.has(n));
+  return true;
+}
+
+function decorateMiniPickRows() {
+  const pick = state._miniPick;
+  if (!pick) return;
+  document.querySelectorAll('#tasks-tbody tr[data-id]').forEach(tr => {
+    tr.classList.toggle('mini-picked', pick.ids.has(Number(tr.dataset.id)));
+  });
+}
+
+function renderMiniBanner() {
+  const el = document.getElementById('schedule-personal-banner');
+  if (!el) return false;
+  const pick = state._miniPick;
+  if (!pick) return false;
+  el.innerHTML = `
+    <span class="spb-label">Picking lines for:</span>
+    <span class="spb-name">${escapeHtml(pick.name)}</span>
+    <span class="mini-pick-count">${pick.ids.size} line${pick.ids.size === 1 ? '' : 's'}</span>
+    <span class="mini-pick-hint">Click any row to add or remove it.</span>
+    <button type="button" class="spb-switch" id="mini-pick-done">Done</button>
+    <button type="button" class="spb-clear" id="mini-pick-cancel">× Cancel</button>`;
+  el.hidden = false;
+  el.querySelector('#mini-pick-done').addEventListener('click', () => finishMiniPick(true));
+  el.querySelector('#mini-pick-cancel').addEventListener('click', () => finishMiniPick(false));
+  return true;
+}
+
 function renderPersonalBanner() {
   const el = document.getElementById('schedule-personal-banner');
   if (!el) return;
+  // A pick in progress owns this bar — it is the only way out of the mode.
+  if (renderMiniBanner()) return;
   if (!isPersonalMode()) { el.hidden = true; el.innerHTML = ''; return; }
   const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
   if (!member) { el.hidden = true; el.innerHTML = ''; return; }
@@ -33066,6 +33344,16 @@ async function init() {
   // nested element-level handlers (pill mousedown, cell editors). When
   // cloneMode is null the trap is a no-op so normal editing still works.
   tbodyEl.addEventListener('click', (e) => {
+    if (state._miniPick) {
+      const tr = e.target.closest('tr[data-id]');
+      if (tr) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        miniPickToggle(tr.dataset.id);
+      }
+      return;
+    }
     if (state.cloneMode) handleCloneModeRowClick(e);
     else if (state.joinPick) handleJoinPickClick(e);
   }, true);
