@@ -117,7 +117,7 @@ html, body {
 body {
   display: flex;
   flex-direction: column;
-  margin-left: 90px;       /* matches .app-sidebar width */
+  margin-left: var(--rail-w, 90px);   /* follows the rail's rendered width (see _fitRail) */
   font-weight: var(--fw-normal, 500);   /* base weight — a notch bolder than browser-default 400 */
 }
 
@@ -17593,16 +17593,4 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 .schedule-project-banner.banner-compact .banner-right { gap: 4px; }
 .schedule-project-banner.banner-compact .schedule-project-name-pill { font-size: var(--fs-sm); padding: 2px 10px; }
 
-/* ── Compact rail ─────────────────────────────────────────────────────────
-   Applied by applyAppScale when the rail alone would force the app smaller
-   than the chosen scale. Everything on it loses about a third of its
-   height — padding, gap, icon, label, logo — so the rest of the app can
-   stay about a third larger on a short screen. */
-.app-sidebar.rail-compact .app-sidebar-top { padding: 4px 8px 6px; margin-bottom: 2px; }
-.app-sidebar.rail-compact .app-sidebar-logo { width: 44px; }
-.app-sidebar.rail-compact .app-sidebar-icon { padding: 4px 4px; margin: 0 7px; gap: 2px; border-radius: 6px; }
-.app-sidebar.rail-compact .app-sidebar-icon svg,
-.app-sidebar.rail-compact .app-sidebar-icon img { width: 17px; height: 17px; }
-.app-sidebar.rail-compact .app-sidebar-label { font-size: 8px; line-height: 1.1; }
-.app-sidebar.rail-compact .app-sidebar-sep { margin: 3px 12px; }
-.app-sidebar.rail-compact .app-scale-ctl { transform: scale(0.9); }
+

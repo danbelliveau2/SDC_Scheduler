@@ -21281,65 +21281,41 @@ function _appScale() {
   const v = Number(localStorage.getItem('sdcAppScale'));
   return (v >= 0.5 && v <= 1.5) ? v : APP_SCALE_DEFAULT;
 }
-function _fitAppScale() {
-  let fit = 1.5;
+// The rail fits the screen on its own, as a zoom of just the rail, so the
+// same icons take up the same share of the screen whatever size the rest
+// of the app is. Rendered height = scrollHeight × appZoom × railZoom.
+function _fitRail(appZoom) {
   const rail = document.getElementById('app-sidebar');
-  if (rail && rail.scrollHeight > 0) {
-    const want = _appScale();
-    const railFit = () => (window.innerHeight - 8) / rail.scrollHeight;
-    // Pass one at full size. If the rail alone would pull the app under
-    // the chosen scale, compact the rail and measure again — a smaller
-    // rail is a better trade than a smaller schedule.
-    rail.classList.remove('rail-compact');
-    if (railFit() < want) {
-      rail.classList.add('rail-compact');
-      void rail.offsetHeight;
-    }
-    fit = Math.min(fit, railFit());
-  }
-  const banner = document.getElementById('schedule-project-banner');
-  if (banner && banner.offsetParent !== null) {
-    // The centre pill is absolutely positioned, so the banner never reports
-    // overflow — it overlaps instead. Add the three zones up by hand.
-    const need = () => {
-      let n = 0;
-      banner.querySelectorAll('.banner-zone').forEach(z => {
-        const inner = Array.from(z.children).reduce((t, c) => t + c.scrollWidth, 0);
-        n += Math.max(inner, z.scrollWidth) + 16;
-      });
-      return n;
-    };
-    const railW = rail ? rail.offsetWidth : 0;
-    const room = window.innerWidth - 8;
-    // Pass one: full-size buttons. If they would force the scale under what
-    // the rail needs, compact them and measure again.
-    banner.classList.remove('banner-compact');
-    let n = need();
-    if (n > 0 && room / (railW + n) < fit) {
-      banner.classList.add('banner-compact');
-      void banner.offsetWidth;
-      n = need();
-    }
-    if (n > 0) fit = Math.min(fit, room / (railW + n));
-  }
-  return Math.max(0.5, Math.min(1.5, fit));
+  if (!rail) return;
+  rail.style.zoom = '1';
+  void rail.offsetHeight;
+  const natural = rail.scrollHeight;
+  let z = natural > 0 ? (window.innerHeight - 6) / (natural * appZoom) : 1;
+  z = Math.max(0.55, Math.min(1, Math.floor(z * 100) / 100));
+  rail.style.zoom = String(z);
+  // The content sits to the right of the rail; its margin follows the
+  // rail's rendered width.
+  document.documentElement.style.setProperty('--rail-w', (90 * z) + 'px');
 }
 
 function applyAppScale() {
-  const want = _appScale();
-  const fit = _fitAppScale();
-  // Snap to 5% so it reads as a number people can repeat, not 0.7312.
-  const s = Math.max(0.5, Math.floor(Math.min(want, fit) * 20) / 20);
+  const s = _appScale();
   document.body.style.zoom = String(s);
   const pct = document.getElementById('app-scale-pct');
-  if (pct) {
-    const reduced = s < want - 0.001;
-    pct.textContent = Math.round(s * 100) + '%';
-    pct.title = reduced
-      ? 'Reduced from ' + Math.round(want * 100) + '% to fit this screen. Click to reset the ceiling.'
-      : 'App scale. Click to reset to the default.';
-    pct.classList.toggle('is-auto', reduced);
-  }
+  if (pct) { pct.textContent = Math.round(s * 100) + '%'; pct.title = 'App scale. Click to reset to the default.'; pct.classList.remove('is-auto'); }
+  try { _fitRail(s); } catch (_) {}
+  // The banner's own buttons tighten when the row is too wide for the
+  // screen; the scale itself is not touched.
+  try {
+    const banner = document.getElementById('schedule-project-banner');
+    const rail = document.getElementById('app-sidebar');
+    if (banner && banner.offsetParent !== null) {
+      const need = () => { let n = 0; banner.querySelectorAll('.banner-zone').forEach(z => { const inner = Array.from(z.children).reduce((t, c) => t + c.scrollWidth, 0); n += Math.max(inner, z.scrollWidth) + 16; }); return n; };
+      const railW = rail ? rail.getBoundingClientRect().width / s : 0;
+      banner.classList.remove('banner-compact');
+      if ((railW + need()) * s > window.innerWidth - 8) banner.classList.add('banner-compact');
+    }
+  } catch (_) {}
 }
 function setAppScale(s) {
   s = Math.round(Math.min(1.5, Math.max(0.5, s)) * 20) / 20;
