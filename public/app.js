@@ -22603,11 +22603,12 @@ function _commPlanDefaults(project) {
       { role: 'Sales / Account Manager', name: '', email: '', phone: '', when: 'Commercial questions, new scope, relationship' },
     ],
     leadership: [
-      { role: 'VP of Operations',                name: 'Patrick Morrison', email: '', phone: '', when: 'Escalation beyond the project team; commercial disputes' },
-      { role: 'ME Manager',                      name: 'Mike Czenszak',    email: '', phone: '', when: 'Mechanical engineering escalation' },
-      { role: 'CE Manager',                      name: 'Tim Wilmot',       email: '', phone: '', when: 'Controls engineering escalation' },
-      { role: 'Electrical Engineering Team Lead', name: 'Jason Perry',     email: '', phone: '', when: 'Controls questions' },
-      { role: 'Sales Manager',                   name: 'Greg Merrill',     email: '', phone: '', when: 'Commercial questions, new scope, relationship' },
+      { role: 'President',                     name: 'Dan Belliveau',    email: '', phone: '', when: 'Final escalation; anything that threatens the relationship or the business' },
+      { role: 'VP of Operations',              name: 'Patrick Morrison', email: '', phone: '', when: 'Escalation beyond the project team; commercial disputes' },
+      { role: 'Project Execution Manager',     name: 'Mike Gast',        email: '', phone: '', when: 'Escalation from the project manager; schedule and delivery' },
+      { role: 'ME Manager',                    name: 'Mike Czenszak',    email: '', phone: '', when: 'Mechanical engineering escalation' },
+      { role: 'CE Manager',                    name: 'Tim Wilmot',       email: '', phone: '', when: 'Controls engineering escalation' },
+      { role: 'Sales & Relationship Manager',  name: 'Greg Merrill',     email: '', phone: '', when: 'Commercial questions, new scope, the relationship' },
     ],
     customer: [
       { role: 'Project Manager',          name: '', email: '', phone: '', when: 'Schedule, status, coordination on the customer side' },
@@ -22662,6 +22663,11 @@ async function openCommPlanModal(project) {
   for (const k of ['sdc', 'leadership', 'customer', 'cadence', 'escalation_sdc', 'escalation_customer']) {
     if (!Array.isArray(plan[k])) plan[k] = d[k];
   }
+  // The first leadership seed had the wrong people on it. A plan still
+  // carrying exactly that seed, untouched, takes the corrected one.
+  const OLD_LEADERSHIP = 'VP of Operations|Patrick Morrison;ME Manager|Mike Czenszak;CE Manager|Tim Wilmot;Electrical Engineering Team Lead|Jason Perry;Sales Manager|Greg Merrill';
+  const sig = (rows) => (rows || []).map(r => (r.role || '') + '|' + (r.name || '')).join(';');
+  if (sig(plan.leadership) === OLD_LEADERSHIP) plan.leadership = d.leadership;
   if (typeof plan.notes !== 'string') plan.notes = '';
 
   const overlay = document.createElement('div');
