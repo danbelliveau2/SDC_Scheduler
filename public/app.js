@@ -16702,14 +16702,18 @@ function openRiskPlanModal(project) {
     });
 
     const tightBtn = ov.querySelector('[data-rtight]');
+    ov.querySelectorAll('[data-rwidthreset]').forEach(b => {
+      b.onclick = () => {
+        _riskWidths = {};
+        try { localStorage.removeItem('sdcRiskColWidths'); } catch (_) {}
+        draw();
+      };
+    });
     if (tightBtn) tightBtn.onclick = () => {
-      _riskTight = !_riskTight;
-      if (!_riskTight) {
-        // Hand the table back to the share-based widths it had.
-        const t = ov.querySelector('table.rg');
-        if (t) { t.style.width = ''; t.style.minWidth = ''; t.style.tableLayout = ''; }
-      }
-      draw();
+      // One shot: measure, write the widths, redraw. Not a mode — there is
+      // nothing to get stuck in, and a column drag afterwards just
+      // overwrites one of the numbers it wrote.
+      _riskCompressColumns(ov.querySelector('table.rg'), draw);
     };
     ov.querySelectorAll('[data-rscale]').forEach(b => {
       b.onclick = () => _setRiskScale(_riskScale + (b.dataset.rscale === '+' ? 0.05 : -0.05), draw);
@@ -16773,14 +16777,7 @@ function openRiskPlanModal(project) {
       _newWrap.scrollLeft = _keepX;
       _newWrap.scrollTop = _keepY;
     }
-    if (_riskTight) {
-      requestAnimationFrame(() => {
-        const w = ov.querySelector('.rg-wrap');
-        const keep = w ? w.scrollLeft : 0;
-        _riskCompressColumns(ov.querySelector('table.rg'));
-        if (w) w.scrollLeft = keep;
-      });
-    }
+
     // After layout, so the matrix above it has its real height.
     requestAnimationFrame(() => _riskFitGrid(ov));
     if (!ov._riskFitBound) {
@@ -16960,7 +16957,14 @@ const _riskEdit = new Set();  // rows in edit mode — every cell editable at on
 let _riskWidths = {};         // dragged column widths, keyed by column
 let _riskSgWidths = {};       // and the same for the mitigation schedule
 try { _riskSgWidths = JSON.parse(localStorage.getItem('sdcRiskSgWidths') || '{}') || {}; } catch (_) { _riskSgWidths = {}; }
-try { _riskWidths = JSON.parse(localStorage.getItem('sdcRiskColWidths') || '{}') || {}; } catch (_) { _riskWidths = {}; }       // Compress, same idea as the schedule toolbar
+try { _riskWidths = JSON.parse(localStorage.getItem('sdcRiskColWidths') || '{}') || {}; } catch (_) { _riskWidths = {}; }
+// A saved width narrower than this is not a width, it is a bug that got
+// persisted — and a persisted bug means the grid comes back broken every
+// time with no way out. Drop them and fall back to the shares.
+Object.keys(_riskWidths).forEach(k => {
+  const w = Number(_riskWidths[k]);
+  if (!(w >= 28)) delete _riskWidths[k];
+});       // Compress, same idea as the schedule toolbar
 
 // Column order is the user\u2019s, dragged by the heading and remembered.
 function _riskColOrder(cols) {
@@ -17623,14 +17627,47 @@ function openRiskSchedule(riskId) {
     if (tr) tr.scrollIntoView({ block: 'center' });
   } catch (_) {}
 }
-function _riskCompressColumns(table) {
+// Measure every column's widest value and write it into _riskWidths — the
+// store the colgroup is already built from. Same measuring technique as
+// compressGridColumns on the schedule and service grids (auto layout,
+// max-content, read offsetWidth because the app runs under a CSS zoom);
+// it writes into this grid's own width store instead of a second one.
+function _riskCompressColumns(table, redraw) {
   if (!table) return;
-  table.querySelectorAll('thead th').forEach(th => { th.style.minWidth = '0px'; });
-  table.style.minWidth = '0px';
-  compressGridColumns(table, 'riskRegister');
-  // compressGridColumns sets the table width; the floor has to stay out of
-  // its way or fixed layout hands the surplus back to the columns.
-  table.style.minWidth = table.style.width || '0px';
+  const ths = Array.from(table.querySelectorAll('thead th'));
+  if (!ths.length) return;
+  // Risk and Plan hold sentences — they keep a fixed, readable width.
+  const PROSE = { title: 430, plan: 430 };
+  const prevLayout = table.style.tableLayout;
+  const prevWidth = table.style.width;
+  let measured = null;
+  try {
+    table.classList.add('rg-measuring');
+    table.style.tableLayout = 'auto';
+    table.style.width = 'max-content';
+    // Every floor off: a floor is what Compress exists to go under.
+    ths.forEach(th => {
+      th.style.minWidth = '0px';
+      th.style.width = PROSE[th.dataset.rcol] ? PROSE[th.dataset.rcol] + 'px' : '';
+    });
+    table.querySelectorAll('colgroup > col').forEach(c => { c.style.width = ''; c.style.minWidth = '0px'; });
+    void table.offsetWidth;
+    measured = ths.map(th => th.offsetWidth);
+  } catch (_) { measured = null; }
+  finally {
+    table.classList.remove('rg-measuring');
+    table.style.tableLayout = prevLayout || '';
+    table.style.width = prevWidth || '';
+  }
+  if (!measured) return;
+  const GAP = 8;
+  ths.forEach((th, i) => {
+    const k = th.dataset.rcol;
+    if (!k) return;
+    _riskWidths[k] = PROSE[k] || Math.max(34, measured[i] + GAP);
+  });
+  try { localStorage.setItem('sdcRiskColWidths', JSON.stringify(_riskWidths)); } catch (_) {}
+  if (redraw) redraw();
 }
 
 function _riskTableHtml(scored) {
@@ -17657,7 +17694,9 @@ function _riskTableHtml(scored) {
   const totalShare = COLS.reduce((n, c) => n + c.share, 0) || 1;
   const anyPinned = COLS.some(c => _riskWidths[c.k]);
   const cols = COLS.map(c => _riskWidths[c.k]
-    ? `<col class="rg-${c.k}" style="width:${_riskWidths[c.k]}px;min-width:${c.min}px" />`
+    // A pinned width is a decision — a drag or a Compress — so it is not
+    // second-guessed by the column's default floor.
+    ? `<col class="rg-${c.k}" style="width:${_riskWidths[c.k]}px;min-width:${_riskWidths[c.k]}px" />`
     : c.share
     ? `<col class="rg-${c.k}" style="width:${(c.share / totalShare * 100).toFixed(2)}%;min-width:${c.min}px" />`
     : `<col class="rg-${c.k}" style="width:${c.min}px" />`).join('');
@@ -17733,7 +17772,8 @@ function _riskTableHtml(scored) {
           <span class="risk-scale-n">${Math.round(_riskScale * 100)}%</span>
           <button type="button" class="risk-tool risk-scale-btn" data-rscale="+" ${_riskScale >= 1 ? 'disabled' : ''}>+</button>
         </span>
-        <button type="button" class="risk-tool ${_riskTight ? 'is-on' : ''}" data-rtight title="Size every column to its widest value — Category tight to &quot;Supply chain&quot;, Complexity tight to &quot;Moderate&quot;">⇤ Compress</button>
+        <button type="button" class="risk-tool" data-rwidthreset title="Put every column back to its default width">↺ Reset widths</button>
+        <button type="button" class="risk-tool" data-rtight title="Size every column to its widest value — Category tight to &quot;Supply chain&quot;, Complexity tight to &quot;Moderate&quot;">⇤ Compress</button>
         <button type="button" class="risk-tool" data-risk-paste title="Copy the rows out of a spreadsheet and paste them here — the columns are worked out from the header line.">⎘ Paste from a sheet</button>
         <button type="button" class="risk-tool is-primary" data-risk-add>+ Add risk</button>
       </div>
@@ -17742,7 +17782,6 @@ function _riskTableHtml(scored) {
     ${!scored.length ? `<p class="risk-plan-none">Nothing listed yet. Type the risks above, or load the standard machine-build set from the bottom left.</p>` : `
     <div class="rg-wrap">
       <table class="rg ${anyPinned ? 'is-pinned' : ''}" style="--rg-scale:${_riskScale}">
-        <colgroup>${COLS.map(c => `<col data-scol="${c.k}"${(c.k === 'title' || c.k === 'plan') ? ' data-wrap="1"' : ''}>`).join('')}</colgroup>
         <colgroup>${cols}</colgroup>
         <thead><tr>${head}</tr></thead>
         <tbody>${body}</tbody>
