@@ -17439,3 +17439,21 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 }
 .rg-resolvebtn:hover { border-color: #16a34a; color: #15803d; }
 .rg-row.is-resolved .rg-resolvebtn { border-color: #86efac; color: #15803d; }
+
+/* Dragging a panel around. The cursor is the only signal that it is
+   happening, and text selection has to stop or the drag paints a blue
+   smear across every row it crosses. */
+.is-panning, .is-panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+/* The header row stays put while the rows scroll under it — a register
+   twenty-four deep is unreadable once "Chance" and "Impact" have gone off
+   the top. Each cell carries its own background or the rows show through. */
+.rg thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--sdc-dark, #061d39);
+}

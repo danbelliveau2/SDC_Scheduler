@@ -16744,6 +16744,8 @@ function openRiskPlanModal(project) {
 
     // Mitigation-schedule columns resize with the same handle as everything
     // else. Widths are remembered so a layout stays put between risks.
+    // Drag the grid around whether rows are open for editing or not.
+    ov.querySelectorAll('.rg-wrap').forEach(w => makeDragScrollable(w));
     ov.querySelectorAll('[data-rresolve]').forEach(b => {
       b.onclick = (e) => {
         e.stopPropagation();
@@ -22536,6 +22538,10 @@ async function openCommPlanModal(project) {
   };
   // Height follows content. Reset to auto first or the box only ever grows,
   // because scrollHeight is measured against whatever height it already has.
+  // Drag the plan around rather than hunting for a scrollbar.
+  const _cpPan = () => {
+    overlay.querySelectorAll('.modal-body, .cp-scroll').forEach(el => makeDragScrollable(el));
+  };
   const _cpGrow = (el) => {
     if (!el || el.tagName !== 'TEXTAREA') return;
     el.style.height = 'auto';
@@ -22547,6 +22553,7 @@ async function openCommPlanModal(project) {
       el.addEventListener('input', () => _cpGrow(el));
       _cpGrow(el);
     });
+    _cpPan();
     overlay.querySelectorAll('[data-cp-add]').forEach(btn => {
       btn.addEventListener('click', () => {
         readPlan();
@@ -31864,6 +31871,44 @@ function setupRowHeightHandle() {
 }
 
 // Click-and-drag pan: pure scrollLeft/scrollTop. No CSS transforms.
+function makeDragScrollable(panel) {
+  if (!panel || panel._dragScroll) return;
+  panel._dragScroll = true;
+  panel.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    // Anything you can type in, click or drag the value of stays its own.
+    if (e.target.closest('input, textarea, select, button, a, label, option')) return;
+    const scrollers = [];
+    let el = e.target;
+    while (el && el !== document.body) {
+      const st = window.getComputedStyle(el);
+      if (/(auto|scroll)/.test(st.overflow + st.overflowX + st.overflowY)) {
+        scrollers.push({ el, sx: el.scrollLeft, sy: el.scrollTop });
+      }
+      if (el === panel) break;
+      el = el.parentElement;
+    }
+    if (!scrollers.length) scrollers.push({ el: panel, sx: panel.scrollLeft, sy: panel.scrollTop });
+    const startX = e.clientX, startY = e.clientY;
+    let moved = false;
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX, dy = ev.clientY - startY;
+      // A few pixels of slop so a click that wobbles is still a click.
+      if (!moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      if (!moved) { moved = true; panel.classList.add('is-panning'); }
+      ev.preventDefault();
+      scrollers.forEach(sc => { sc.el.scrollLeft = sc.sx - dx; sc.el.scrollTop = sc.sy - dy; });
+    };
+    const onUp = () => {
+      panel.classList.remove('is-panning');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
 function setupGanttPan() {
   const panel = document.getElementById('schedule-gantt');
   if (!panel) return;
