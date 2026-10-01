@@ -17565,3 +17565,10 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 /* Headings never wrap; a compressed column is exactly as wide as its
    longest word, so a wrapping heading would double its height. */
 .rg thead th button, .rg thead th .rg-plain { white-space: nowrap; }
+
+/* Compressed (pinned) columns breathe 4px, not 10. Widths are measured from
+   the cell's left edge to its furthest ink, so the left padding is the only
+   air a compressed column carries — this is that air. */
+.rg.is-pinned tbody td:not(.rg-title):not(.rg-planw) { padding-left: 4px; padding-right: 4px; }
+.rg.is-pinned thead th button,
+.rg.is-pinned thead th .rg-plain { padding-left: 4px; padding-right: 4px; }

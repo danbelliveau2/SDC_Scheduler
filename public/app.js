@@ -17793,7 +17793,7 @@ function _riskCompressColumns(table, redraw) {
   // grid scrolls instead.
   const wrap = table.parentElement;
   const avail = (wrap && wrap.clientWidth ? wrap.clientWidth : 0) - 2;
-  const each = Math.max(300, Math.floor((avail - fixed) / PROSE.length));
+  const each = Math.max(140, Math.floor((avail - fixed) / PROSE.length));
   PROSE.forEach(k => { _riskWidths[k] = each; });
   try { localStorage.setItem('sdcRiskColWidths', JSON.stringify(_riskWidths)); } catch (_) {}
   table.classList.add('is-pinned');
