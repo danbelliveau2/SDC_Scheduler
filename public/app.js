@@ -16777,7 +16777,7 @@ function openRiskPlanModal(project) {
         document.body.classList.add('resizing-col');
         g.classList.add('resizing');
         const move = (ev) => {
-          const w = Math.max(col.min, Math.round(startW + (ev.clientX - startX)));
+          const w = Math.max(24, Math.round(startW + (ev.clientX - startX)));
           _riskWidths[key] = w;
           const cel = ov.querySelector(`col.rg-${key}`);
           if (cel) { cel.style.width = w + 'px'; }
@@ -17742,7 +17742,7 @@ function _riskTableHtml(scored) {
     // min-width on a <col> is ignored under table-layout: fixed — it only
     // counts on a real cell. Without this the columns collapse under their
     // own labels and the register reads as a page of ellipses.
-    const mw = c.min ? ` style="min-width:${c.min}px"` : '';
+    const mw = (c.min && !_riskWidths[c.k]) ? ` style="min-width:${c.min}px"` : '';
     const tip = c.hint ? ` title="${escapeHtml(c.hint)}"` : '';
     if (!c.sort) return `<th class="rg-${c.k}" data-rcol="${c.k}"${mw}${tip}>${c.label ? `<span class="rg-plain">${escapeHtml(c.label)}</span>` : ''}${grip}</th>`;
     const on = _riskSort === c.sort;
