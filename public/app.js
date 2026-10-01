@@ -16732,6 +16732,8 @@ function openRiskPlanModal(project) {
     });
 
     const tightBtn = ov.querySelector('[data-rtight]');
+    ov.querySelectorAll('[data-rruler]').forEach(b => { b.onclick = () => { _riskRuler = !_riskRuler; draw(); }; });
+    requestAnimationFrame(() => _riskRulerDraw(ov));
     ov.querySelectorAll('[data-rwidthreset]').forEach(b => {
       b.onclick = () => {
         _riskWidths = {};
@@ -17668,6 +17670,54 @@ function openRiskSchedule(riskId) {
 // Chance — the two longest headings — kept an inch of air while Category
 // and Impact looked right. The heading is allowed to sit tight to its own
 // text; anything more is slack.
+let _riskRuler = false;
+function _riskRulerDraw(ov) {
+  const wrap = ov && ov.querySelector('.rg-wrap');
+  if (!wrap) return;
+  wrap.querySelectorAll('.rg-ruler').forEach(n => n.remove());
+  if (!_riskRuler) return;
+  const table = wrap.querySelector('table.rg');
+  if (!table) return;
+  const PROSE = ['title', 'plan'];
+  const wb = wrap.getBoundingClientRect();
+  const ths = Array.from(table.querySelectorAll('thead th'));
+  const inkRight = (cell) => {
+    let right = -Infinity;
+    const walk = (node) => {
+      if (node.nodeType === 3) {
+        if (!node.textContent.trim()) return;
+        const r = document.createRange(); r.selectNodeContents(node);
+        for (const b of r.getClientRects()) if (b.right > right) right = b.right;
+      } else if (node.nodeType === 1) {
+        if (node.classList && (node.classList.contains('col-resize-handle') || (node.classList.contains('rg-arrow') && !node.textContent.trim()))) return;
+        if (node.tagName === 'INPUT' || node.tagName === 'SELECT') { const b = node.getBoundingClientRect(); if (b.right > right) right = b.right; }
+        node.childNodes.forEach(walk);
+      }
+    };
+    walk(cell);
+    return right;
+  };
+  ths.forEach((th, i) => {
+    const k = th.dataset.rcol;
+    if (!k || PROSE.includes(k)) return;
+    let ink = inkRight(th);
+    table.querySelectorAll('tbody tr').forEach(tr => { const td = tr.children[i]; if (td) ink = Math.max(ink, inkRight(td)); });
+    if (!isFinite(ink)) return;
+    const edge = th.getBoundingClientRect().right;
+    const gap = Math.round(edge - ink);
+    const mk = (x, cls, text) => {
+      const el = document.createElement('div');
+      el.className = 'rg-ruler ' + cls;
+      el.style.left = (x - wb.left + wrap.scrollLeft) + 'px';
+      if (text != null) el.textContent = text;
+      wrap.appendChild(el);
+    };
+    mk(ink, 'rg-ruler-ink');
+    mk(edge, 'rg-ruler-edge');
+    mk(Math.min(ink, edge), 'rg-ruler-gap', gap + 'px');
+  });
+}
+
 function _riskCompressColumns(table, redraw) {
   if (!table) return;
   const ths = Array.from(table.querySelectorAll('thead th'));
@@ -17689,19 +17739,36 @@ function _riskCompressColumns(table, redraw) {
     measured = ths.map((th, i) => {
       const k = th.dataset.rcol;
       if (!k || PROSE.includes(k)) return 0;
-      // The heading's own text, not the button and arrow wrapped round it.
-      const label = th.querySelector('button, .rg-plain');
-      const headW = label ? Math.ceil(label.scrollWidth) : th.offsetWidth;
-      // The widest cell in this column.
-      let cellW = 0;
+      // Ink width of a cell: furthest right any text or control reaches,
+      // measured from the cell's left edge. Padding is NOT in it.
+      const inkRight = (cell) => {
+        const base = cell.getBoundingClientRect().left;
+        let right = base;
+        const walk = (node) => {
+          if (node.nodeType === 3) {
+            if (!node.textContent.trim()) return;
+            const r = document.createRange(); r.selectNodeContents(node);
+            for (const b of r.getClientRects()) if (b.right > right) right = b.right;
+          } else if (node.nodeType === 1) {
+            const tag = node.tagName;
+            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'BUTTON' && !node.querySelector('*')) {
+              const b = node.getBoundingClientRect(); if (b.right > right) right = b.right;
+            }
+            // The sort arrow is not text until something is sorted.
+            if (node.classList && node.classList.contains('rg-arrow') && !node.textContent.trim()) return;
+            if (node.classList && node.classList.contains('col-resize-handle')) return;
+            node.childNodes.forEach(walk);
+          }
+        };
+        walk(cell);
+        return right - base;
+      };
+      let w = inkRight(th);
       table.querySelectorAll('tbody tr').forEach(tr => {
         const td = tr.children[i];
-        if (!td) return;
-        const inner = td.firstElementChild;
-        const w = inner && inner.scrollWidth ? inner.scrollWidth : td.scrollWidth;
-        if (w > cellW) cellW = Math.ceil(w);
+        if (td) w = Math.max(w, inkRight(td));
       });
-      return Math.max(headW, cellW);
+      return Math.ceil(w);
     });
   } catch (_) { measured = null; }
   finally {
@@ -17712,12 +17779,12 @@ function _riskCompressColumns(table, redraw) {
   if (!measured) return;
   // The padding a cell actually draws with, counted once rather than
   // guessed at.
-  const PAD = 22;
+  const PAD = 0;
   let fixed = 0;
   ths.forEach((th, i) => {
     const k = th.dataset.rcol;
     if (!k || PROSE.includes(k)) return;
-    const w = Math.max(30, measured[i] + PAD);
+    const w = Math.max(16, measured[i] + PAD);
     _riskWidths[k] = w;
     fixed += w;
   });
@@ -17834,6 +17901,7 @@ function _riskTableHtml(scored) {
           <span class="risk-scale-n">${Math.round(_riskScale * 100)}%</span>
           <button type="button" class="risk-tool risk-scale-btn" data-rscale="+" ${_riskScale >= 1 ? 'disabled' : ''}>+</button>
         </span>
+        <button type="button" class="risk-tool ${_riskRuler ? 'is-on' : ''}" data-rruler title="Prove it: red line at the furthest text in each column, blue line at the column edge, gap in px. They should sit on top of each other.">📏 Ruler</button>
         <button type="button" class="risk-tool" data-rwidthreset title="Put every column back to its default width">↺ Reset widths</button>
         <button type="button" class="risk-tool" data-rtight title="Size every column to its widest value — Category tight to &quot;Supply chain&quot;, Complexity tight to &quot;Moderate&quot;">⇤ Compress</button>
         <button type="button" class="risk-tool" data-risk-paste title="Copy the rows out of a spreadsheet and paste them here — the columns are worked out from the header line.">⎘ Paste from a sheet</button>

@@ -17548,3 +17548,20 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   margin-top: 12px;
 }
 .risk-paste-template { text-decoration: none; flex: 0 0 auto; }
+
+/* The ruler. Red = furthest ink in the column. Blue = the column's right
+   edge. The number is the gap between them. When Compress is right the
+   red and blue lines are the same line. */
+.rg-wrap { position: relative; }
+.rg-ruler { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; z-index: 20; }
+.rg-ruler-ink  { border-left: 2px solid #e11d48; }
+.rg-ruler-edge { border-left: 2px dashed #1d4ed8; }
+.rg-ruler-gap {
+  top: 2px; bottom: auto; width: auto; height: auto;
+  background: #e11d48; color: #fff;
+  font-size: 10px; font-weight: 800; line-height: 1.4;
+  padding: 0 4px; border-radius: 3px; transform: translateX(2px);
+}
+/* Headings never wrap; a compressed column is exactly as wide as its
+   longest word, so a wrapping heading would double its height. */
+.rg thead th button, .rg thead th .rg-plain { white-space: nowrap; }
