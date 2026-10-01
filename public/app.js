@@ -16746,6 +16746,17 @@ function openRiskPlanModal(project) {
     // else. Widths are remembered so a layout stays put between risks.
     // Drag the grid around whether rows are open for editing or not.
     ov.querySelectorAll('.rg-wrap').forEach(w => makeDragScrollable(w));
+    // After layout, so the matrix above it has its real height.
+    requestAnimationFrame(() => _riskFitGrid(ov));
+    if (!ov._riskFitBound) {
+      ov._riskFitBound = true;
+      window.addEventListener('resize', () => _riskFitGrid(ov));
+      // The modal is drag-resizable; the grid follows it.
+      try {
+        const m = ov.querySelector('.risk-modal');
+        if (m) new ResizeObserver(() => _riskFitGrid(ov)).observe(m);
+      } catch (_) {}
+    }
     ov.querySelectorAll('[data-rresolve]').forEach(b => {
       b.onclick = (e) => {
         e.stopPropagation();
@@ -16955,6 +16966,22 @@ function riskNextDate(r) {
   }));
   const due = acts.filter(a => a.due && !a.done).map(a => a.due).sort();
   return due[0] || '';
+}
+
+function _riskFitGrid(ov) {
+  const wrap = ov && ov.querySelector('.rg-wrap');
+  const body = ov && ov.querySelector('.risk-body');
+  if (!wrap || !body) return;
+  const modal = ov.querySelector('.risk-modal');
+  const foot = ov.querySelector('.risk-foot');
+  const bottom = modal
+    ? modal.getBoundingClientRect().bottom - (foot ? foot.offsetHeight : 0)
+    : body.getBoundingClientRect().bottom;
+  const wrapBox = wrap.getBoundingClientRect();
+  // Everything between the top of the grid and the bottom of the modal
+  // (less the footer) is the grid's. 12px keeps the horizontal bar clear.
+  const avail = Math.floor(bottom - wrapBox.top - 12);
+  wrap.style.maxHeight = Math.max(180, avail) + 'px';
 }
 
 function riskSortList(list) {

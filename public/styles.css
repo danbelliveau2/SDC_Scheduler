@@ -16008,9 +16008,9 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
 .risk-overlay .rm-yl, .risk-overlay .rm-xl { padding: 5px 8px; }
 .risk-overlay .rm-corner { padding: 4px 8px; }
 
-/* A short register should not leave a void under it. */
-.risk-overlay .risk-modal { height: auto; }
-.risk-overlay .risk-body { max-height: calc(92vh - 130px); }
+/* A definite height: flex cannot hand the leftover to the grid without
+   one, and an auto height is what let the body outgrow the viewport. */
+.risk-overlay .risk-modal { height: 92vh; }
 
 /* ── Risk register: Open › and the risk-schedule empty state ─────────────
    The register lists risks. The schedule for those risks is the ordinary
@@ -17456,4 +17456,23 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   top: 0;
   z-index: 4;
   background: var(--sdc-dark, #061d39);
+}
+
+/* One scrollbar. The body laid out a tall page and scrolled it, which put
+   the grid's own horizontal bar below the fold — you had to scroll the
+   page a sliver, in a strip a few pixels wide at the far right, before you
+   could scroll the grid sideways. The body no longer scrolls; the grid
+   takes the height that is left (measured in _riskFitGrid) and owns both
+   bars. */
+.risk-overlay .risk-body {
+  overflow: hidden;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.risk-overlay .rg-wrap {
+  flex: 1 1 auto;
+  min-height: 180px;
+  max-height: none;   /* _riskFitGrid sets the real one */
 }
