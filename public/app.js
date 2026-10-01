@@ -21278,32 +21278,41 @@ function moveTaskInline(id, x, y) {
 // (see showContextMenu / _confirmPredChange / _jhpTipMove).
 const APP_SCALE_DEFAULT = 0.85;  // Dan: "what is 85% right now, be the default"
 function _appScale() {
+  try {
+    if (!localStorage.getItem('sdcAppScaleReset2')) {
+      localStorage.removeItem('sdcAppScale');
+      localStorage.setItem('sdcAppScaleReset2', '1');
+    }
+  } catch (_) {}
   const v = Number(localStorage.getItem('sdcAppScale'));
   return (v >= 0.5 && v <= 1.5) ? v : APP_SCALE_DEFAULT;
 }
-// The rail fits the screen on its own, as a zoom of just the rail, so the
-// same icons take up the same share of the screen whatever size the rest
-// of the app is. Rendered height = scrollHeight × appZoom × railZoom.
-function _fitRail(appZoom) {
+const CHROME_SEL = ['#project-tab-bar', '.schedule-toolbar', '#schedule-project-banner'];
+function _fitChrome(appZoom) {
+  const inv = 1 / appZoom;
+  CHROME_SEL.forEach(sel => document.querySelectorAll(sel).forEach(el => { el.style.zoom = String(inv); }));
   const rail = document.getElementById('app-sidebar');
   if (!rail) return;
-  rail.style.zoom = '1';
+  // Measure the rail at its natural size (rendered scale 1).
+  rail.style.zoom = String(inv);
   void rail.offsetHeight;
-  const natural = rail.scrollHeight;
-  let z = natural > 0 ? (window.innerHeight - 6) / (natural * appZoom) : 1;
-  z = Math.max(0.55, Math.min(1, Math.floor(z * 100) / 100));
+  const natural = rail.scrollHeight;             // CSS px at rendered scale 1
+  const target = Math.min(natural, (window.innerHeight - 6) * 0.80);
+  // rendered = natural × appZoom × railZoom  →  solve for the zoom that
+  // puts the bottom of the rail at the target, independent of appZoom.
+  let z = natural > 0 ? target / (natural * appZoom) : inv;
+  z = Math.max(0.3, Math.min(3, Math.round(z * 1000) / 1000));
   rail.style.zoom = String(z);
   // The content sits to the right of the rail; its margin follows the
-  // rail's rendered width.
+  // rail's rendered width (90 CSS px × railZoom, in body layout px).
   document.documentElement.style.setProperty('--rail-w', (90 * z) + 'px');
 }
-
 function applyAppScale() {
   const s = _appScale();
   document.body.style.zoom = String(s);
   const pct = document.getElementById('app-scale-pct');
   if (pct) { pct.textContent = Math.round(s * 100) + '%'; pct.title = 'App scale. Click to reset to the default.'; pct.classList.remove('is-auto'); }
-  try { _fitRail(s); } catch (_) {}
+  try { _fitChrome(s); } catch (_) {}
   // The banner's own buttons tighten when the row is too wide for the
   // screen; the scale itself is not touched.
   try {
