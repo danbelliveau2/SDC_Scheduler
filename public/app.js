@@ -16367,7 +16367,7 @@ function _riskFromPasted(p, people) {
   if (p.next) parts.push(p.next);
   if (p.update) parts.push('Update: ' + p.update);
   if (p.background) parts.push('Raised: ' + p.background);
-  if (resolved) parts.unshift('RESOLVED.');
+  // The flag carries this now — see the Resolved button on each row.
   const catFromSheet = RISK_CATEGORIES.find(c => c.toLowerCase() === String(p.cat || '').toLowerCase());
   return {
     id: 'imp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -16380,6 +16380,7 @@ function _riskFromPasted(p, people) {
     owner,
     show: false,
     hasPlan: false,
+    resolved,
     actions: [],
   };
 }
@@ -16574,6 +16575,7 @@ function openRiskPlanModal(project) {
         </div>
         <footer class="risk-foot">
           <span class="risk-foot-gap"></span>
+          <button type="button" class="btn-ghost" data-risk-doneall hidden>✓ Done editing</button>
           <button type="button" class="btn-primary" data-risk-save>Save plan</button>
         </footer>
       </div>`;
@@ -16611,10 +16613,19 @@ function openRiskPlanModal(project) {
       if (inp) inp.focus();
     };
     ov.querySelectorAll('[data-risk-add]').forEach(b => { b.onclick = addRisk; });
+    // Only offered when something is actually open — a button that does
+    // nothing most of the time is just furniture.
+    ov.querySelectorAll('[data-risk-doneall]').forEach(b => {
+      b.hidden = _riskEdit.size === 0;
+      b.textContent = '✓ Done editing' + (_riskEdit.size > 1 ? ' (' + _riskEdit.size + ')' : '');
+      b.onclick = () => { _riskEdit.clear(); draw(); };
+    });
     ov.querySelectorAll('[data-risk-paste]').forEach(b => { b.onclick = () => showRiskPasteDialog((added) => {
-      // Everything arrives open for editing: the scores are read from one
-      // spreadsheet rating and are a starting point, not an answer.
-      added.forEach(r => { risks.push(r); _riskEdit.add(r.id); _riskOpen.add(r.id); });
+      // They arrive FINISHED. The scores are read from one spreadsheet
+      // rating and are a starting point, but twenty-four rows of open
+      // dropdowns is twenty-four rows to close again — right-click any one
+      // that needs correcting.
+      added.forEach(r => { risks.push(r); });
       draw();
       showToast(added.length + ' risk' + (added.length === 1 ? '' : 's') + " added. Check the chance and impact on each — a sheet rates a risk once, this register asks twice.", { kind: 'success' });
     }); });
@@ -16733,6 +16744,15 @@ function openRiskPlanModal(project) {
 
     // Mitigation-schedule columns resize with the same handle as everything
     // else. Widths are remembered so a layout stays put between risks.
+    ov.querySelectorAll('[data-rresolve]').forEach(b => {
+      b.onclick = (e) => {
+        e.stopPropagation();
+        const r = risks.find(x => x.id === b.dataset.rresolve);
+        if (!r) return;
+        r.resolved = !r.resolved;
+        draw();
+      };
+    });
     ov.querySelectorAll('[data-rdone]').forEach(b => {
       b.onclick = (e) => {
         e.stopPropagation();
@@ -16937,6 +16957,9 @@ function riskNextDate(r) {
 
 function riskSortList(list) {
   const arr = list.slice();
+  // Resolved last, always. Applied after whichever sort is active, so it
+  // survives sorting by score, owner, category or anything else.
+  const settle = (out) => out.sort((a, b) => (a.resolved ? 1 : 0) - (b.resolved ? 1 : 0));
   const d = _riskDir;
   const txt = (v) => (v || '').toString().toLowerCase();
   if (_riskSort === 'cat')        arr.sort((a, b) => d * txt(a.cat).localeCompare(txt(b.cat)) || b.score - a.score);
@@ -16955,7 +16978,7 @@ function riskSortList(list) {
     return d * x.localeCompare(y);
   });
   else arr.sort((a, b) => d * (a.score - b.score));
-  return arr;
+  return settle(arr);
 }
 // "4W" / "3D" -> business days, the same shorthand the scheduler accepts.
 function _riskParseDur(v) {
@@ -17584,7 +17607,9 @@ function _riskTableHtml(scored) {
 
     const cell = {
       n: `<td class="rg-n"><button type="button" class="rg-tog" data-rtog="${r.id}" title="${open ? 'Collapse' : 'Open'}">${open ? '▾' : '▸'}</button><span class="rg-num">${idx + 1}</span></td>`,
-      title: txt('title', r.title, 'rg-title') || `<td class="rg-title"><textarea rows="1" data-rf="title" data-rgrow data-rid="${r.id}">${escapeHtml(r.title || '')}</textarea></td>`,
+      title: (r.resolved && !ed
+        ? `<td class="rg-title"><span class="rg-resolved-chip">Resolved</span>${escapeHtml(r.title || '')}</td>`
+        : txt('title', r.title, 'rg-title')) || `<td class="rg-title"><textarea rows="1" data-rf="title" data-rgrow data-rid="${r.id}">${escapeHtml(r.title || '')}</textarea></td>`,
       cat: txt('cat', catLabel) || `<td><select data-rf="cat" data-rid="${r.id}">${catOpts}</select></td>`,
       diff: txt('diff', diffLabel) || `<td>${sel('diff', RISK_DIFFICULTY, r.diff, r.id)}</td>`,
       l: txt('l', lLabel) || `<td>${sel('l', RISK_LIKELIHOOD, r.l, r.id)}</td>`,
@@ -17593,7 +17618,9 @@ function _riskTableHtml(scored) {
       owner: txt('owner', r.owner) || `<td>${_riskOwnerSel(r.owner, `data-rf="owner" data-rid="${r.id}"`)}</td>`,
       // How we are handling it belongs on the row, not hidden behind it.
       plan: txt('mitigation', r.mitigation, 'rg-planw rg-wrap') || `<td class="rg-planw"><textarea rows="1" data-rf="mitigation" data-rgrow data-rid="${r.id}">${escapeHtml(r.mitigation || '')}</textarea></td>`,
-      done: ed ? `<td class="rg-done"><button type="button" class="rg-donebtn" data-rdone="${r.id}">✓ Done editing</button></td>` : `<td class="rg-done"></td>`,
+      done: ed
+        ? `<td class="rg-done"><button type="button" class="rg-donebtn" data-rdone="${r.id}">✓ Done editing</button></td>`
+        : `<td class="rg-done"><button type="button" class="rg-resolvebtn" data-rresolve="${r.id}" title="${r.resolved ? 'Put it back on the live register' : 'Mark it resolved — it drops to the bottom and stops counting as a live risk'}">${r.resolved ? '↩ Reopen' : '✓ Resolved'}</button></td>`,
       // Ticking Schedule gives this risk its own section in the risk
       // schedule. Open takes you there - it is the real schedule view, with
       // the Gantt and every toolbar control, not a grid stuffed in a dialog.
@@ -17608,7 +17635,7 @@ function _riskTableHtml(scored) {
       del: '',
     };
 
-    return `<tr class="rg-row rgb-${r.band.key} ${open ? 'is-open' : ''}" data-rrow="${r.id}">
+    return `<tr class="rg-row rgb-${r.band.key} ${open ? 'is-open' : ''} ${r.resolved ? 'is-resolved' : ''}" data-rrow="${r.id}">
       ${COLS.map(c => cell[c.k] || '<td></td>').join('')}
     </tr>${detail}`;  }).join('');
 
@@ -22355,8 +22382,11 @@ async function openCommPlanModal(project) {
   overlay.className = 'modal-overlay app-dialog-overlay';
   const close = () => overlay.remove();
 
+  // A textarea, not an input: these cells hold sentences, and an input
+  // clips whatever does not fit. rows=1 plus _cpGrow keeps a one-word cell
+  // one line tall while a long one opens up to hold all of it.
   const inp = (section, i, field, value, placeholder) =>
-    `<input type="text" data-cp="${section}.${i}.${field}" value="${escapeHtml(value || '')}" placeholder="${escapeHtml(placeholder || '')}" autocomplete="off">`;
+    `<textarea rows="1" data-cp="${section}.${i}.${field}" placeholder="${escapeHtml(placeholder || '')}" autocomplete="off" spellcheck="false">${escapeHtml(value || '')}</textarea>`;
   const delBtn = (section, i) =>
     `<button type="button" class="cp-del" data-cp-del="${section}.${i}" title="Remove this row">×</button>`;
 
@@ -22475,7 +22505,7 @@ async function openCommPlanModal(project) {
 
   // Read every input back into the plan object.
   const readPlan = () => {
-    overlay.querySelectorAll('input[data-cp]').forEach(el => {
+    overlay.querySelectorAll('[data-cp]').forEach(el => {
       const [section, i, field] = el.dataset.cp.split('.');
       if (plan[section] && plan[section][Number(i)]) plan[section][Number(i)][field] = el.value;
     });
@@ -22504,9 +22534,18 @@ async function openCommPlanModal(project) {
       }
     }, 600);
   };
+  // Height follows content. Reset to auto first or the box only ever grows,
+  // because scrollHeight is measured against whatever height it already has.
+  const _cpGrow = (el) => {
+    if (!el || el.tagName !== 'TEXTAREA') return;
+    el.style.height = 'auto';
+    el.style.height = Math.max(el.scrollHeight, 24) + 'px';
+  };
   const wire = () => {
-    overlay.querySelectorAll('input[data-cp], [data-cp-notes]').forEach(el => {
+    overlay.querySelectorAll('[data-cp], [data-cp-notes]').forEach(el => {
       el.addEventListener('input', savePlan);
+      el.addEventListener('input', () => _cpGrow(el));
+      _cpGrow(el);
     });
     overlay.querySelectorAll('[data-cp-add]').forEach(btn => {
       btn.addEventListener('click', () => {

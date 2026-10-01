@@ -17362,3 +17362,80 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text-muted, #64748b); font-size: var(--fs-sm);
 }
+
+/* Comm-plan cells hold sentences, so they are textareas that grow to their
+   content — an input clips whatever does not fit, and "Contact for…" is a
+   field somebody is meant to READ. Styled to look exactly like the inputs
+   they replaced: no resize grip, no scrollbar, no border. */
+.cp-table textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 5px 8px;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  line-height: 1.35;
+  color: var(--text, #1f2937);
+  box-sizing: border-box;
+  resize: none;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: block;
+}
+.cp-table textarea:focus {
+  outline: none;
+  background: #eef5fb;
+  box-shadow: inset 0 0 0 1px var(--sdc-primary, #1574c4);
+}
+/* A wrapping cell cannot sit on a fixed row height. */
+.cp-table td { vertical-align: top; }
+
+/* ── Risk register: nothing clipped, and the scrollbar where you can reach it
+   The risk text is a sentence now that registers are imported from a sheet,
+   and a sentence cut to "Machine footprint vs. available equ…" tells you
+   nothing. It wraps; the row grows. Same rule as every other grid here. */
+.rg tbody td.rg-title,
+.rg tbody td.rg-plan {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  vertical-align: top;
+  line-height: 1.35;
+  padding-top: 7px; padding-bottom: 7px;
+}
+.rg tbody td.rg-title textarea,
+.rg tbody td.rg-plan textarea { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* The horizontal scrollbar sat at the bottom of the CONTENT, so you had to
+   scroll twenty rows down before you could scroll sideways. Bounding the
+   height puts the bar at the bottom of the PANEL, in reach from any row. */
+.rg-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: min(62vh, 760px);
+  overscroll-behavior: contain;
+}
+.rg thead th { position: sticky; top: 0; z-index: 3; }
+
+/* A resolved risk is history, not a live one: still here so the register can
+   show how the job was steered, visibly out of the running. */
+.rg-row.is-resolved td { opacity: 0.58; }
+.rg-row.is-resolved td.rg-title { text-decoration: none; }
+.rg-resolved-chip {
+  display: inline-block; margin-right: 6px; padding: 0 6px;
+  border-radius: 3px; background: #dcfce7; color: #166534;
+  font-size: var(--fs-2xs); font-weight: var(--fw-extrabold);
+  text-transform: uppercase; letter-spacing: 0.03em;
+  vertical-align: 1px;
+}
+.rg-resolvebtn {
+  border: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff);
+  color: var(--text-muted, #64748b);
+  border-radius: 5px; padding: 2px 8px;
+  font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+  cursor: pointer; white-space: nowrap;
+}
+.rg-resolvebtn:hover { border-color: #16a34a; color: #15803d; }
+.rg-row.is-resolved .rg-resolvebtn { border-color: #86efac; color: #15803d; }
