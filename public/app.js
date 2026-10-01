@@ -21285,8 +21285,17 @@ function _fitAppScale() {
   let fit = 1.5;
   const rail = document.getElementById('app-sidebar');
   if (rail && rail.scrollHeight > 0) {
-    // Every icon on the rail, plus a little floor, inside the screen height.
-    fit = Math.min(fit, (window.innerHeight - 8) / rail.scrollHeight);
+    const want = _appScale();
+    const railFit = () => (window.innerHeight - 8) / rail.scrollHeight;
+    // Pass one at full size. If the rail alone would pull the app under
+    // the chosen scale, compact the rail and measure again — a smaller
+    // rail is a better trade than a smaller schedule.
+    rail.classList.remove('rail-compact');
+    if (railFit() < want) {
+      rail.classList.add('rail-compact');
+      void rail.offsetHeight;
+    }
+    fit = Math.min(fit, railFit());
   }
   const banner = document.getElementById('schedule-project-banner');
   if (banner && banner.offsetParent !== null) {
