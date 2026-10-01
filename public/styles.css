@@ -15875,11 +15875,8 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
 .rg-show .rg-chk { justify-content: center; }
 
 /* Compress — the same idea as the schedule toolbar's. */
-.rg.is-tight tbody td { padding: 1px 6px; }
-.rg.is-tight tbody input[type="text"],
-.rg.is-tight tbody select { padding: 1px 5px; font-size: var(--fs-2xs); }
-.rg.is-tight .rk-band { padding: 1px 6px; font-size: 9px; }
-.rg.is-tight .rg-chk > span { display: none; }
+/* .is-tight retired: Compress sizes COLUMNS. Shrinking the type is the
+   scale control beside it, which is a separate decision. */
 
 /* Drag a heading to move the column. */
 .rg thead th[draggable="true"] { cursor: grab; }
@@ -17543,3 +17540,11 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   font-size: var(--fs-2xs); font-weight: var(--fw-bold);
   opacity: 0.75; font-variant-numeric: tabular-nums;
 }
+
+/* The blank template sits with the importer that reads it — a template
+   nobody can find is a template nobody uses. */
+.risk-paste-grab {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px;
+}
+.risk-paste-template { text-decoration: none; flex: 0 0 auto; }

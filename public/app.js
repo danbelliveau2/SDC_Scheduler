@@ -16434,6 +16434,10 @@ function showRiskPasteDialog(onAdd) {
       <div class="modal-head"><h2>Paste risks from a sheet</h2></div>
       <div class="modal-body">
         <div class="app-dialog-message">Select the rows in the spreadsheet — including the header line — and paste them here. Columns are matched by name: <strong>Risk</strong> is the only one that has to be there. Status, Severity, Suggested Next Step, Background, Owner and Category are used when present, and anything else on the row is kept as an update note.</div>
+        <div class="risk-paste-grab">
+          <a class="btn-ghost risk-paste-template" href="templates/SDC%20Risk%20Register%20Template.xlsx" download>⬇ Blank template (.xlsx)</a>
+          <span class="risk-paste-or">fill it in, hand it round, load it back here</span>
+        </div>
         <div class="risk-paste-file">
           <input type="file" id="risk-paste-file" class="visually-hidden-file" accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt" />
           <label class="btn-primary risk-paste-choose" for="risk-paste-file">Choose a file…</label>
@@ -17621,57 +17625,12 @@ function openRiskSchedule(riskId) {
 }
 function _riskCompressColumns(table) {
   if (!table) return;
-  const ths = Array.from(table.querySelectorAll('thead th'));
-  if (!ths.length) return;
-  // Risk and Plan hold sentences. Everything else should be exactly as
-  // wide as its widest cell and not a pixel more.
-  const prose = new Set(['title', 'plan']);
-  const prev = ths.map(th => th.style.width);
-  const prevLayout = table.style.tableLayout;
-  const prevWidth = table.style.width;
-  let measured = null;
-  try {
-    table.classList.add('rg-measuring');
-    table.style.tableLayout = 'auto';
-    table.style.width = 'max-content';
-    ths.forEach(th => {
-      const k = th.dataset.rcol;
-      // Clear the floor. The whole point of Compress is to go under it.
-      th.style.minWidth = '0px';
-      // Pin the prose columns narrow while measuring so they cannot
-      // dominate and starve the ones we are trying to size.
-      th.style.width = prose.has(k) ? '220px' : '';
-    });
-    void table.offsetWidth;
-    measured = ths.map(th => th.offsetWidth);
-  } catch (_) { measured = null; }
-  finally { table.classList.remove('rg-measuring'); }
-  if (!measured) {
-    ths.forEach((th, i) => { th.style.width = prev[i]; th.style.minWidth = ''; });
-    table.style.tableLayout = prevLayout;
-    table.style.width = prevWidth;
-    return;
-  }
-  table.style.tableLayout = 'fixed';
-  const GAP = 6;
-  let fixed = 0;
-  ths.forEach((th, i) => {
-    if (prose.has(th.dataset.rcol)) return;
-    const w = Math.max(38, measured[i] + GAP);
-    th.style.width = w + 'px';
-    th.style.minWidth = w + 'px';
-    fixed += w;
-  });
-  // Whatever is left goes to the two columns people actually read.
-  const avail = (table.parentElement && table.parentElement.clientWidth) || 0;
-  const proseThs = ths.filter(th => prose.has(th.dataset.rcol));
-  if (proseThs.length) {
-    const each = Math.max(240, Math.floor((avail - fixed) / proseThs.length));
-    proseThs.forEach(th => { th.style.width = each + 'px'; th.style.minWidth = each + 'px'; });
-    fixed += each * proseThs.length;
-  }
-  table.style.width = fixed + 'px';
-  table.style.minWidth = fixed + 'px';
+  table.querySelectorAll('thead th').forEach(th => { th.style.minWidth = '0px'; });
+  table.style.minWidth = '0px';
+  compressGridColumns(table, 'riskRegister');
+  // compressGridColumns sets the table width; the floor has to stay out of
+  // its way or fixed layout hands the surplus back to the columns.
+  table.style.minWidth = table.style.width || '0px';
 }
 
 function _riskTableHtml(scored) {
@@ -17782,7 +17741,8 @@ function _riskTableHtml(scored) {
 
     ${!scored.length ? `<p class="risk-plan-none">Nothing listed yet. Type the risks above, or load the standard machine-build set from the bottom left.</p>` : `
     <div class="rg-wrap">
-      <table class="rg ${_riskTight ? 'is-tight' : ''} ${anyPinned ? 'is-pinned' : ''}" style="--rg-scale:${_riskScale}">
+      <table class="rg ${anyPinned ? 'is-pinned' : ''}" style="--rg-scale:${_riskScale}">
+        <colgroup>${COLS.map(c => `<col data-scol="${c.k}"${(c.k === 'title' || c.k === 'plan') ? ' data-wrap="1"' : ''}>`).join('')}</colgroup>
         <colgroup>${cols}</colgroup>
         <thead><tr>${head}</tr></thead>
         <tbody>${body}</tbody>
