@@ -244,7 +244,7 @@ body {
   gap: 2px;
   /* Big bottom margin clears the floating signed-in avatar (position:fixed,
      bottom 58px + ~46px tall) so the control sits right ABOVE it. */
-  margin: 2px 6px 56px;
+  margin: 4px 6px 6px;
 }
 .app-scale-ctl button {
   border: 1px solid rgba(255,255,255,0.18);

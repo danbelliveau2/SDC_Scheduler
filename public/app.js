@@ -21297,7 +21297,8 @@ function _fitChrome(appZoom) {
   rail.style.zoom = String(inv);
   void rail.offsetHeight;
   const natural = rail.scrollHeight;             // CSS px at rendered scale 1
-  const target = Math.min(natural, (window.innerHeight - 6) * 0.80);
+  const AVATAR_ZONE = 112;   // fixed-position signed-in avatar: bottom 58px + ~46px tall + air
+  const target = Math.min(natural, window.innerHeight - AVATAR_ZONE);
   // rendered = natural × appZoom × railZoom  →  solve for the zoom that
   // puts the bottom of the rail at the target, independent of appZoom.
   let z = natural > 0 ? target / (natural * appZoom) : inv;
