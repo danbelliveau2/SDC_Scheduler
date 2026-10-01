@@ -17797,7 +17797,28 @@ function _riskCompressColumns(table, redraw) {
   PROSE.forEach(k => { _riskWidths[k] = each; });
   try { localStorage.setItem('sdcRiskColWidths', JSON.stringify(_riskWidths)); } catch (_) {}
   table.classList.add('is-pinned');
-  if (redraw) redraw();
+  if (!redraw) return;
+  redraw();
+  // Correction passes against the rendered table, not the plan.
+  let passes = 0;
+  const settle = () => {
+    const w = document.querySelector('.risk-overlay .rg-wrap');
+    const t = w && w.querySelector('table.rg');
+    if (!w || !t) return;
+    const over = t.offsetWidth - w.clientWidth;
+    if (over <= 0 || passes++ >= 3) return;
+    const cut = Math.ceil(over / PROSE.length) + 1;
+    let changed = false;
+    PROSE.forEach(k => {
+      const next = Math.max(140, (_riskWidths[k] || 300) - cut);
+      if (next !== _riskWidths[k]) { _riskWidths[k] = next; changed = true; }
+    });
+    if (!changed) return;
+    try { localStorage.setItem('sdcRiskColWidths', JSON.stringify(_riskWidths)); } catch (_) {}
+    redraw();
+    requestAnimationFrame(settle);
+  };
+  requestAnimationFrame(settle);
 }
 function _riskTableHtml(scored) {
   const COLS = _riskColOrder(RISK_COLS).map(c => c.k !== 'done' ? c
