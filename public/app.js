@@ -16732,8 +16732,6 @@ function openRiskPlanModal(project) {
     });
 
     const tightBtn = ov.querySelector('[data-rtight]');
-    ov.querySelectorAll('[data-rruler]').forEach(b => { b.onclick = () => { _riskRuler = !_riskRuler; draw(); }; });
-    requestAnimationFrame(() => _riskRulerDraw(ov));
     ov.querySelectorAll('[data-rwidthreset]').forEach(b => {
       b.onclick = () => {
         _riskWidths = {};
@@ -17062,8 +17060,10 @@ function _riskFitGrid(ov) {
   const wrapBox = wrap.getBoundingClientRect();
   // Everything between the top of the grid and the bottom of the modal
   // (less the footer) is the grid's. 12px keeps the horizontal bar clear.
-  const avail = Math.floor(bottom - wrapBox.top - 12);
-  wrap.style.maxHeight = Math.max(180, avail) + 'px';
+  // Flex sizes the grid to the space that is left; a pixel cap set here
+  // could only ever be wrong by whatever moved after it was measured.
+  wrap.style.maxHeight = '';
+  void bottom; void wrapBox;
 }
 
 function riskSortList(list) {
@@ -17670,54 +17670,6 @@ function openRiskSchedule(riskId) {
 // Chance — the two longest headings — kept an inch of air while Category
 // and Impact looked right. The heading is allowed to sit tight to its own
 // text; anything more is slack.
-let _riskRuler = false;
-function _riskRulerDraw(ov) {
-  const wrap = ov && ov.querySelector('.rg-wrap');
-  if (!wrap) return;
-  wrap.querySelectorAll('.rg-ruler').forEach(n => n.remove());
-  if (!_riskRuler) return;
-  const table = wrap.querySelector('table.rg');
-  if (!table) return;
-  const PROSE = ['title', 'plan'];
-  const wb = wrap.getBoundingClientRect();
-  const ths = Array.from(table.querySelectorAll('thead th'));
-  const inkRight = (cell) => {
-    let right = -Infinity;
-    const walk = (node) => {
-      if (node.nodeType === 3) {
-        if (!node.textContent.trim()) return;
-        const r = document.createRange(); r.selectNodeContents(node);
-        for (const b of r.getClientRects()) if (b.right > right) right = b.right;
-      } else if (node.nodeType === 1) {
-        if (node.classList && (node.classList.contains('col-resize-handle') || (node.classList.contains('rg-arrow') && !node.textContent.trim()))) return;
-        if (node.tagName === 'INPUT' || node.tagName === 'SELECT') { const b = node.getBoundingClientRect(); if (b.right > right) right = b.right; }
-        node.childNodes.forEach(walk);
-      }
-    };
-    walk(cell);
-    return right;
-  };
-  ths.forEach((th, i) => {
-    const k = th.dataset.rcol;
-    if (!k || PROSE.includes(k)) return;
-    let ink = inkRight(th);
-    table.querySelectorAll('tbody tr').forEach(tr => { const td = tr.children[i]; if (td) ink = Math.max(ink, inkRight(td)); });
-    if (!isFinite(ink)) return;
-    const edge = th.getBoundingClientRect().right;
-    const gap = Math.round(edge - ink);
-    const mk = (x, cls, text) => {
-      const el = document.createElement('div');
-      el.className = 'rg-ruler ' + cls;
-      el.style.left = (x - wb.left + wrap.scrollLeft) + 'px';
-      if (text != null) el.textContent = text;
-      wrap.appendChild(el);
-    };
-    mk(ink, 'rg-ruler-ink');
-    mk(edge, 'rg-ruler-edge');
-    mk(Math.min(ink, edge), 'rg-ruler-gap', gap + 'px');
-  });
-}
-
 function _riskCompressColumns(table, redraw) {
   if (!table) return;
   const ths = Array.from(table.querySelectorAll('thead th'));
@@ -17922,7 +17874,6 @@ function _riskTableHtml(scored) {
           <span class="risk-scale-n">${Math.round(_riskScale * 100)}%</span>
           <button type="button" class="risk-tool risk-scale-btn" data-rscale="+" ${_riskScale >= 1 ? 'disabled' : ''}>+</button>
         </span>
-        <button type="button" class="risk-tool ${_riskRuler ? 'is-on' : ''}" data-rruler title="Prove it: red line at the furthest text in each column, blue line at the column edge, gap in px. They should sit on top of each other.">📏 Ruler</button>
         <button type="button" class="risk-tool" data-rwidthreset title="Put every column back to its default width">↺ Reset widths</button>
         <button type="button" class="risk-tool" data-rtight title="Size every column to its widest value — Category tight to &quot;Supply chain&quot;, Complexity tight to &quot;Moderate&quot;">⇤ Compress</button>
         <button type="button" class="risk-tool" data-risk-paste title="Copy the rows out of a spreadsheet and paste them here — the columns are worked out from the header line.">⎘ Paste from a sheet</button>

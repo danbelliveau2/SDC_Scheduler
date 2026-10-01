@@ -17549,19 +17549,6 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 }
 .risk-paste-template { text-decoration: none; flex: 0 0 auto; }
 
-/* The ruler. Red = furthest ink in the column. Blue = the column's right
-   edge. The number is the gap between them. When Compress is right the
-   red and blue lines are the same line. */
-.rg-wrap { position: relative; }
-.rg-ruler { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; z-index: 20; }
-.rg-ruler-ink  { border-left: 2px solid #e11d48; }
-.rg-ruler-edge { border-left: 2px dashed #1d4ed8; }
-.rg-ruler-gap {
-  top: 2px; bottom: auto; width: auto; height: auto;
-  background: #e11d48; color: #fff;
-  font-size: 10px; font-weight: 800; line-height: 1.4;
-  padding: 0 4px; border-radius: 3px; transform: translateX(2px);
-}
 /* Headings never wrap; a compressed column is exactly as wide as its
    longest word, so a wrapping heading would double its height. */
 .rg thead th button, .rg thead th .rg-plain { white-space: nowrap; }
@@ -17572,3 +17559,13 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 .rg.is-pinned tbody td:not(.rg-title):not(.rg-planw) { padding-left: 4px; padding-right: 4px; }
 .rg.is-pinned thead th button,
 .rg.is-pinned thead th .rg-plain { padding-left: 4px; padding-right: 4px; }
+
+
+/* The risk is prose. The red-cell rule is more specific than the plain one
+   and was keeping it bold. */
+.rg tbody td.rg-title[data-redcell] { font-weight: var(--fw-normal, 400); }
+
+/* Room for another row: less air under the grid, and the panel fills the
+   body by flex rather than by a measured cap. */
+.risk-overlay .risk-body { padding-bottom: 8px; }
+.risk-overlay .rg-wrap { flex: 1 1 auto; min-height: 180px; }
