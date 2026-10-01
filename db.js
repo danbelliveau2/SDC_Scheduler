@@ -97,6 +97,11 @@ async function init() {
   // routes/team.js for where a linked row's discipline/active get written
   // through to the shared Employee row.
   await pool.query(`ALTER TABLE team_members ADD COLUMN employee_id INT NULL`).catch(() => {});
+  // Who to reach and what they are called (2026-10-01). The roster is the
+  // one directory: the communication plan picks a name here and fills
+  // email and role from it, so neither is ever typed twice.
+  await pool.query(`ALTER TABLE team_members ADD COLUMN email VARCHAR(255) NULL`).catch(() => {});
+  await pool.query(`ALTER TABLE team_members ADD COLUMN title VARCHAR(255) NULL`).catch(() => {});
   await pool.query(`ALTER TABLE team_members ADD INDEX idx_team_employee (employee_id)`).catch(() => {});
 
   await pool.query(`

@@ -22602,6 +22602,13 @@ function _commPlanDefaults(project) {
       { role: 'Debug Lead',              name: projectLead(project, 'debug') || '', email: '', phone: '', when: 'Machine debug, testing issues, on-site startup' },
       { role: 'Sales / Account Manager', name: '', email: '', phone: '', when: 'Commercial questions, new scope, relationship' },
     ],
+    leadership: [
+      { role: 'VP of Operations',                name: 'Patrick Morrison', email: '', phone: '', when: 'Escalation beyond the project team; commercial disputes' },
+      { role: 'ME Manager',                      name: 'Mike Czenszak',    email: '', phone: '', when: 'Mechanical engineering escalation' },
+      { role: 'CE Manager',                      name: 'Tim Wilmot',       email: '', phone: '', when: 'Controls engineering escalation' },
+      { role: 'Electrical Engineering Team Lead', name: 'Jason Perry',     email: '', phone: '', when: 'Controls questions' },
+      { role: 'Sales Manager',                   name: 'Greg Merrill',     email: '', phone: '', when: 'Commercial questions, new scope, relationship' },
+    ],
     customer: [
       { role: 'Project Manager',          name: '', email: '', phone: '', when: 'Schedule, status, coordination on the customer side' },
       { role: 'Engineering Contact',      name: '', email: '', phone: '', when: 'Technical approvals, specs, design sign-off' },
@@ -22652,7 +22659,7 @@ async function openCommPlanModal(project) {
   }
   // Older saved plans might miss a section — backfill so render never breaks.
   const d = _commPlanDefaults(project);
-  for (const k of ['sdc', 'customer', 'cadence', 'escalation_sdc', 'escalation_customer']) {
+  for (const k of ['sdc', 'leadership', 'customer', 'cadence', 'escalation_sdc', 'escalation_customer']) {
     if (!Array.isArray(plan[k])) plan[k] = d[k];
   }
   if (typeof plan.notes !== 'string') plan.notes = '';
@@ -22665,6 +22672,23 @@ async function openCommPlanModal(project) {
   // A textarea, not an input: these cells hold sentences, and an input
   // clips whatever does not fit. rows=1 plus _cpGrow keeps a one-word cell
   // one line tall while a long one opens up to hold all of it.
+  // SDC people are picked, not typed. The roster is the directory: choose a
+  // name and the role and email arrive with it.
+  const roster = (state.team || []).filter(m => m && m.name && m.active !== 0 && !isPlaceholder(m.name));
+  const byName = (n) => roster.find(m => m.name.trim().toLowerCase() === String(n || '').trim().toLowerCase()) || null;
+  const pick = (section, i, value) => {
+    const groups = {};
+    roster.forEach(m => { (groups[m.discipline] ||= []).push(m); });
+    const opts = Object.keys(groups).map(k => {
+      const d = DISCIPLINE_BY_KEY[k];
+      const label = d ? d.label : k;
+      const items = groups[k].slice().sort((a, b) => ((!!b.is_lead) - (!!a.is_lead)) || (a.sort_order || 0) - (b.sort_order || 0))
+        .map(m => `<option value="${escapeHtml(m.name)}"${m.name === value ? ' selected' : ''}>${escapeHtml(m.name)}${m.is_lead ? ' ★' : ''}</option>`).join('');
+      return `<optgroup label="${escapeHtml(label)}">${items}</optgroup>`;
+    }).join('');
+    const stray = value && !byName(value) ? `<option value="${escapeHtml(value)}" selected>${escapeHtml(value)} (not on the roster)</option>` : '';
+    return `<select data-cp="${section}.${i}.name" data-cp-pick="1"><option value="">Pick a name…</option>${stray}${opts}</select>`;
+  };
   const inp = (section, i, field, value, placeholder) =>
     `<textarea rows="1" data-cp="${section}.${i}.${field}" placeholder="${escapeHtml(placeholder || '')}" autocomplete="off" spellcheck="false">${escapeHtml(value || '')}</textarea>`;
   const delBtn = (section, i) =>
@@ -22677,17 +22701,17 @@ async function openCommPlanModal(project) {
         <colgroup><col style="width:19%"><col style="width:17%"><col style="width:20%"><col style="width:12%"><col style="width:28%"><col style="width:4%"></colgroup>
         <thead><tr><th>Role</th><th>Name</th><th>Email</th><th>Phone</th><th title="What this person is the contact FOR — which situations go to them.">Contact for…</th><th></th></tr></thead>
         <tbody>
-          ${plan[section].map((r, i) => `<tr>
-            <td>${inp(section, i, 'role', r.role, 'Role')}</td>
-            <td>${inp(section, i, 'name', r.name, 'Name')}</td>
-            <td>${inp(section, i, 'email', r.email, 'name@company.com')}</td>
+          ${plan[section].map((r, i) => { const m = (section === 'sdc' || section === 'leadership') ? byName(r.name) : null; return `<tr>
+            <td>${m ? `<span class="cp-ro">${escapeHtml(m.title || r.role || '')}</span>${inp(section, i, 'role', m.title || r.role, 'Role').replace('<textarea', '<textarea hidden')}` : inp(section, i, 'role', r.role, 'Role')}</td>
+            <td>${(section === 'sdc' || section === 'leadership') ? pick(section, i, r.name) : inp(section, i, 'name', r.name, 'Name')}</td>
+            <td>${m ? `<span class="cp-ro">${escapeHtml(m.email || r.email || '')}</span>${inp(section, i, 'email', m.email || r.email, 'name@company.com').replace('<textarea', '<textarea hidden')}` : inp(section, i, 'email', r.email, 'name@company.com')}</td>
             <td>${inp(section, i, 'phone', r.phone, '')}</td>
             <td>${inp(section, i, 'when', r.when, 'Which situations go to them')}</td>
             <td>${delBtn(section, i)}</td>
-          </tr>`).join('')}
+          </tr>`; }).join('')}
           <tr class="cp-blank-row">
             <td><input type="text" data-cp-new="${section}.role" placeholder="+ Add someone — role…" autocomplete="off"></td>
-            <td><input type="text" data-cp-new="${section}.name" placeholder="Name" autocomplete="off"></td>
+            <td>${(section === 'sdc' || section === 'leadership') ? pick(section, 'new', '').replace(`data-cp="${section}.new.name" data-cp-pick="1"`, `data-cp-new="${section}.name"`) : `<input type="text" data-cp-new="${section}.name" placeholder="Name" autocomplete="off">`}</td>
             <td><input type="text" data-cp-new="${section}.email" placeholder="Email" autocomplete="off"></td>
             <td><input type="text" data-cp-new="${section}.phone" placeholder="Phone" autocomplete="off"></td>
             <td><input type="text" data-cp-new="${section}.when" placeholder="Contact for…" autocomplete="off"></td>
@@ -22701,7 +22725,8 @@ async function openCommPlanModal(project) {
     <p class="pr-muted pr-edithint">Who's who on both sides, how this project communicates, and where issues escalate. <strong>Saves as you type</strong> — shared with everyone on this project.</p>
     <div class="pr-field"><div class="pr-label">Project team directory</div>
       <div class="cp-people">
-        ${peopleTable('sdc', 'SDC', 'cp-side-sdc')}
+        ${peopleTable('sdc', 'SDC project team', 'cp-side-sdc')}
+      ${peopleTable('leadership', 'SDC leadership', 'cp-side-sdc')}
         ${peopleTable('customer', 'Customer', 'cp-side-customer')}
       </div>
     </div>
@@ -22826,6 +22851,23 @@ async function openCommPlanModal(project) {
     el.style.height = Math.max(el.scrollHeight, 24) + 'px';
   };
   const wire = () => {
+    // A picked name brings its role and email along.
+    overlay.querySelectorAll('select[data-cp-pick]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const [section, idx] = sel.dataset.cp.split('.');
+        const row = plan[section] && plan[section][Number(idx)];
+        const m = byName(sel.value);
+        if (row) {
+          row.name = sel.value;
+          if (m) { if (m.title) row.role = m.title; if (m.email) row.email = m.email; }
+        }
+        savePlan();
+        // Redraw the way the modal already does it — there is no named
+        // rerender; the body is rebuilt and rewired in place.
+        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
+        wire();
+      });
+    });
     overlay.querySelectorAll('[data-cp], [data-cp-notes]').forEach(el => {
       el.addEventListener('input', savePlan);
       el.addEventListener('input', () => _cpGrow(el));
@@ -27172,6 +27214,14 @@ function openTeamMemberModal(member) {
           <div class="pr-label">Specialty / Level</div>
           <input type="text" id="tm-specialty-input" class="app-dialog-input" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" />
         </div>
+        <div class="pr-field">
+          <div class="pr-label">Role / title</div>
+          <input type="text" id="tm-title-input" class="app-dialog-input" value="${escapeHtml(m.title || '')}" placeholder="Sr. Mechanical Engineer" />
+        </div>
+        <div class="pr-field">
+          <div class="pr-label">Email</div>
+          <input type="email" id="tm-email-input" class="app-dialog-input" value="${escapeHtml(m.email || '')}" placeholder="name@sdcautomation.com" />
+        </div>
         <div class="pr-field tm-checkbox-row">
           <input type="checkbox" id="tm-lead-checkbox" ${m.is_lead ? 'checked' : ''} />
           <label for="tm-lead-checkbox">Department lead</label>
@@ -27208,13 +27258,15 @@ function openTeamMemberModal(member) {
     if (!name) { showErr('Name is required.'); return; }
     const discipline = discSelect.value;
     const specialty = specialtyInput.value.trim();
+    const title = (overlay.querySelector('#tm-title-input') || {}).value || '';
+    const email = (overlay.querySelector('#tm-email-input') || {}).value || '';
     const is_lead = leadCheckbox.checked;
     const btn = overlay.querySelector('#tm-confirm-btn');
     btn.disabled = true;
     btn.textContent = isEdit ? 'Saving…' : 'Adding…';
     const result = isEdit
-      ? await api.team.update(m.id, { name, discipline, specialty, is_lead })
-      : await api.team.create({ name, discipline, specialty, is_lead });
+      ? await api.team.update(m.id, { name, discipline, specialty, is_lead, title: title.trim(), email: email.trim() })
+      : await api.team.create({ name, discipline, specialty, is_lead, title: title.trim(), email: email.trim() });
     if (result && result.error) {
       btn.disabled = false;
       btn.textContent = isEdit ? 'Save' : 'Add';
@@ -27232,6 +27284,24 @@ function renderTeam() {
   const grid = document.getElementById('team-grid');
   if (!grid) return;
 
+  // Contact details (role + email) are a toggle, remembered per browser.
+  let showContact = false;
+  try { showContact = localStorage.getItem('sdcTeamContact') === '1'; } catch (_) {}
+  grid.classList.toggle('show-contact', showContact);
+  let tools = document.getElementById('team-contact-tools');
+  if (!tools) {
+    tools = document.createElement('div');
+    tools.id = 'team-contact-tools';
+    tools.className = 'team-contact-tools';
+    grid.parentNode.insertBefore(tools, grid);
+  }
+  tools.innerHTML = `<button type="button" class="toolbar-toggle-btn ${showContact ? 'is-active' : ''}" id="btn-team-contact" title="Show each person’s role and email on the board. These fill the communication plan.">✉ Contact details</button>`;
+  tools.querySelector('#btn-team-contact').onclick = () => {
+    const on = !grid.classList.contains('show-contact');
+    try { localStorage.setItem('sdcTeamContact', on ? '1' : '0'); } catch (_) {}
+    renderTeam();
+  };
+
   // Build a member row. Used for both regular and placeholder lists.
   const renderRow = (m) => {
     const ph = isPlaceholder(m.name);
@@ -27247,6 +27317,8 @@ function renderTeam() {
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
+        ${ph ? '' : `<input type="text" class="team-member-field team-member-title" data-field="title" value="${escapeHtml(m.title || '')}" placeholder="Role / title" data-id="${m.id}" title="What they are called — fills the communication plan." />
+        <input type="email" class="team-member-field team-member-email" data-field="email" value="${escapeHtml(m.email || '')}" placeholder="email@sdcautomation.com" data-id="${m.id}" title="Where to reach them — fills the communication plan." />`}
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="team-member-edit-btn" data-action="edit-member" data-id="${m.id}" title="Edit details">✎</button>
       </li>`;
@@ -27365,6 +27437,26 @@ function renderTeam() {
       await api.team.update(id, { is_lead: !member.is_lead });
       await loadTeam();
     });
+  });
+
+  // Role and email — same save-on-blur as specialty. One place to keep
+  // them; the communication plan reads from here.
+  grid.querySelectorAll('.team-member-field').forEach(input => {
+    const id = Number(input.dataset.id);
+    const field = input.dataset.field;
+    const original = input.value;
+    input.addEventListener('blur', async () => {
+      const v = input.value.trim();
+      if (v === original) return;
+      await api.team.update(id, { [field]: v });
+      await loadTeam();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); input.value = original; input.blur(); }
+    });
+    // A click on the row focuses the person; typing in a field should not.
+    input.addEventListener('click', (e) => e.stopPropagation());
   });
 
   // Specialty — save on blur. Trim + treat empty as null so the placeholder

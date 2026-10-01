@@ -134,11 +134,13 @@ module.exports = function createRouter(deps) {
       const name = (req.body.name || '').trim();
       const discipline = req.body.discipline;
       const specialty = (req.body.specialty || '').trim() || null;
+      const email = (req.body.email || '').trim() || null;
+      const title = (req.body.title || '').trim() || null;
       const is_lead = req.body.is_lead ? 1 : 0;
       if (!name) return res.status(400).json({ error: 'name required' });
       if (!TEAM_DISCIPLINES.has(discipline)) return res.status(400).json({ error: 'invalid discipline' });
       const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order), 0) AS m FROM team_members WHERE discipline = ?', [discipline]);
-      const [result] = await pool.query('INSERT INTO team_members (name, discipline, sort_order, specialty, is_lead) VALUES (?, ?, ?, ?, ?)', [name, discipline, maxRow.m + 1, specialty, is_lead]);
+      const [result] = await pool.query('INSERT INTO team_members (name, discipline, sort_order, specialty, is_lead, email, title) VALUES (?, ?, ?, ?, ?, ?, ?)', [name, discipline, maxRow.m + 1, specialty, is_lead, email, title]);
       const [[row]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [result.insertId]);
       res.json(row);
       io.emit('team:updated');
@@ -150,14 +152,14 @@ module.exports = function createRouter(deps) {
       const id = Number(req.params.id);
       const [[existing]] = await pool.query('SELECT * FROM team_members WHERE id = ?', [id]);
       if (!existing) return res.status(404).json({ error: 'not found' });
-      const allowed = ['name', 'discipline', 'active', 'sort_order', 'is_lead', 'specialty'];
+      const allowed = ['name', 'discipline', 'active', 'sort_order', 'is_lead', 'specialty', 'email', 'title'];
       const updates = {};
       for (const f of allowed) {
         if (f in req.body) {
           if (f === 'discipline' && !TEAM_DISCIPLINES.has(req.body[f])) return res.status(400).json({ error: 'invalid discipline' });
           if (f === 'active' || f === 'is_lead') updates[f] = req.body[f] ? 1 : 0;
           else if (f === 'name') updates[f] = (req.body[f] || '').trim();
-          else if (f === 'specialty') updates[f] = (req.body[f] || '').trim() || null;
+          else if (f === 'specialty' || f === 'email' || f === 'title') updates[f] = (req.body[f] || '').trim() || null;
           else updates[f] = req.body[f];
         }
       }

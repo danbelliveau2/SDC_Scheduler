@@ -17600,3 +17600,39 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
    tightens the BUTTONS, which were crowding it, not the name itself. */
 .schedule-project-name-pill { font-size: var(--fs-xl); padding: 4px 20px; }
 .schedule-project-banner.banner-compact .schedule-project-name-pill { font-size: var(--fs-xl); padding: 4px 20px; }
+
+/* ── Contact details on the Departments board ─────────────────────────────
+   Role and email live on each person here — the roster is the directory.
+   Off by default (two more fields per person is a lot of board); the
+   ✉ Contact details toggle shows them. */
+.team-contact-tools { display: flex; justify-content: flex-end; margin: 0 0 8px; }
+#team-grid .team-member-field { display: none; }
+#team-grid.show-contact .team-member-field {
+  display: inline-block;
+  font: inherit; font-size: var(--fs-xs);
+  border: 1px solid transparent; border-radius: 4px;
+  background: transparent; color: var(--text-muted, #64748b);
+  padding: 1px 5px; min-width: 0;
+}
+#team-grid.show-contact .team-member-title { flex: 1 1 120px; }
+#team-grid.show-contact .team-member-email { flex: 1 1 160px; }
+#team-grid.show-contact .team-member-field:hover,
+#team-grid.show-contact .team-member-field:focus { border-color: var(--border, #e2e8f0); background: #fff; color: var(--text, #1f2937); outline: none; }
+#team-grid.show-contact .team-member { flex-wrap: wrap; }
+
+/* ── Communication plan: stacked, picked from the roster ──────────────────
+   SDC team above, SDC leadership, then the customer — each the full width,
+   so nothing is cut off. SDC names are a picker; role and email come from
+   the roster and show read-only. */
+.cp-people { flex-direction: column; }
+.cp-people-col { flex: 1 1 auto; min-width: 0; width: 100%; }
+.cp-table select[data-cp], .cp-table select[data-cp-new] {
+  width: 100%; border: none; background: transparent;
+  padding: 5px 8px; font: inherit; font-size: var(--fs-md);
+  color: var(--text, #1f2937); cursor: pointer;
+}
+.cp-table select[data-cp]:focus, .cp-table select[data-cp-new]:focus {
+  outline: none; background: #eef5fb;
+  box-shadow: inset 0 0 0 1px var(--sdc-primary, #1574c4);
+}
+.cp-ro { display: block; padding: 5px 8px; font-size: var(--fs-md); color: var(--text-muted, #475569); line-height: 1.35; }
