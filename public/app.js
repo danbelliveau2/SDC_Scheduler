@@ -15912,6 +15912,7 @@ function syncSalesModeUI() {
 // overflows — detect that and zoom the whole bar down until everything fits.
 // Text just gets proportionally smaller; nothing ever clips.
 function fitScheduleToolbar() {
+  try { applyAppScale(); } catch (_) {}
   const bar = document.querySelector('.schedule-toolbar');
   if (!bar) return;
   bar.style.zoom = '';
@@ -15940,6 +15941,9 @@ window.addEventListener('resize', () => {
 window.addEventListener('resize', () => {
   clearTimeout(fitScheduleToolbar._t);
   fitScheduleToolbar._t = setTimeout(() => {
+    // Scale first: the rail and banner are measured in layout px, and the
+    // toolbar fit below reads rendered widths that depend on the zoom.
+    try { applyAppScale(); } catch (_) {}
     fitScheduleToolbar();
     fitProjectTabRows();
   }, 120);
@@ -21279,11 +21283,43 @@ function _appScale() {
   const v = Number(localStorage.getItem('sdcAppScale'));
   return (v >= 0.5 && v <= 1.5) ? v : APP_SCALE_DEFAULT;
 }
+function _fitAppScale() {
+  let fit = 1.5;
+  const rail = document.getElementById('app-sidebar');
+  if (rail && rail.scrollHeight > 0) {
+    // Every icon on the rail, plus a little floor, inside the screen height.
+    fit = Math.min(fit, (window.innerHeight - 8) / rail.scrollHeight);
+  }
+  const banner = document.getElementById('schedule-project-banner');
+  if (banner && banner.offsetParent !== null) {
+    // The centre pill is absolutely positioned, so the banner never reports
+    // overflow — it overlaps instead. Add the three zones up by hand.
+    let need = 0;
+    banner.querySelectorAll('.banner-zone').forEach(z => {
+      const inner = Array.from(z.children).reduce((n, c) => n + c.scrollWidth, 0);
+      need += Math.max(inner, z.scrollWidth) + 16;
+    });
+    const railW = rail ? rail.offsetWidth : 0;
+    if (need > 0) fit = Math.min(fit, (window.innerWidth - 8) / (railW + need));
+  }
+  return Math.max(0.5, Math.min(1.5, fit));
+}
+
 function applyAppScale() {
-  const s = _appScale();
+  const want = _appScale();
+  const fit = _fitAppScale();
+  // Snap to 5% so it reads as a number people can repeat, not 0.7312.
+  const s = Math.max(0.5, Math.floor(Math.min(want, fit) * 20) / 20);
   document.body.style.zoom = String(s);
   const pct = document.getElementById('app-scale-pct');
-  if (pct) pct.textContent = Math.round(s * 100) + '%';
+  if (pct) {
+    const reduced = s < want - 0.001;
+    pct.textContent = Math.round(s * 100) + '%';
+    pct.title = reduced
+      ? 'Reduced from ' + Math.round(want * 100) + '% to fit this screen. Click to reset the ceiling.'
+      : 'App scale. Click to reset to the default.';
+    pct.classList.toggle('is-auto', reduced);
+  }
 }
 function setAppScale(s) {
   s = Math.round(Math.min(1.5, Math.max(0.5, s)) * 20) / 20;

@@ -17569,3 +17569,14 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
    body by flex rather than by a measured cap. */
 .risk-overlay .risk-body { padding-bottom: 8px; }
 .risk-overlay .rg-wrap { flex: 1 1 auto; min-height: 180px; }
+
+/* ── The app fits the screen it is on ─────────────────────────────────────
+   applyAppScale brings the zoom down until the rail fits the height and the
+   project banner fits the width (the chosen scale is a ceiling). If the
+   floor is reached and the rail is still taller than a very short window,
+   it scrolls rather than hiding Setup and Manual off the bottom. */
+.app-sidebar { overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.18) transparent; }
+.app-sidebar::-webkit-scrollbar { width: 4px; }
+.app-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 2px; }
+/* The readout says when the screen, not the person, picked the number. */
+#app-scale-pct.is-auto { color: var(--sdc-accent, #ffde51); }
