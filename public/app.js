@@ -16312,8 +16312,10 @@ function _riskParsePaste(text) {
   // Score is derived, never read: the sheet's formula and this register
   // compute the same thing, and reading it back would let them disagree.
   const iScore  = find('score');
+  // Row numbers belong to the sheet, not to the risk.
+  const iNum = head.findIndex(h => h === '#' || h === 'no' || h === 'no.' || h === 'num' || h === 'number');
   const known = new Set([iStatus, iRisk, iRate, iNext, iBack, iOwner, iCat,
-    iCplx, iChance, iImpact, iScore].filter(i => i >= 0));
+    iCplx, iChance, iImpact, iScore, iNum].filter(i => i >= 0));
   return rows.map(cells => {
     const at = (i) => (i >= 0 && cells[i] != null) ? String(cells[i]).trim() : '';
     const extra = cells.map((c, i) => known.has(i) ? '' : String(c || '').trim()).filter(Boolean);
