@@ -15939,7 +15939,7 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
    column soaks up whatever is left, so the grid still fills the dialog and a
    drag never redistributes. max-content solved the bleed but left a band of
    dead space down the right. */
-.rg.is-pinned { width: 100%; min-width: 0; }
+.rg.is-pinned { width: max-content; min-width: 0; }
 
 
 /* ── Mitigation schedule header: copied from #tasks-table, not approximated ─

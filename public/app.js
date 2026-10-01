@@ -17660,13 +17660,16 @@ function _riskCompressColumns(table, redraw) {
     table.style.width = prevWidth || '';
   }
   if (!measured) return;
-  const GAP = 8;
+  const GAP = 2;
   ths.forEach((th, i) => {
     const k = th.dataset.rcol;
     if (!k) return;
     _riskWidths[k] = PROSE[k] || Math.max(34, measured[i] + GAP);
   });
   try { localStorage.setItem('sdcRiskColWidths', JSON.stringify(_riskWidths)); } catch (_) {}
+  // Every column now has a width, so the table sizes to their sum rather
+  // than stretching to the panel and handing the slack back.
+  table.classList.add('is-pinned');
   if (redraw) redraw();
 }
 
