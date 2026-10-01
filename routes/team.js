@@ -74,9 +74,44 @@ const DEPT_LABEL_TO_CODE = {
 };
 const SYNCED_DISCIPLINES = new Set(Object.values(DEPT_LABEL_TO_CODE));
 
+// Fallback for people whose `discipline` is blank but whose Paylocity-style
+// `department` is filled in (hand-added TEMP hires, e.g. Lahu Shedole:
+// department "Mechanical Engineering", discipline empty). EXACT department
+// names only, and only departments where every person already carries one
+// matching discipline. Deliberately left out: "Mechanical Build /
+// Manufacturing" (mixes Builders and Manufacturing Operations), "Electrical
+// Engineering", "Manufacturing", "Service", "Mechanical Build" — ambiguous.
+// A set-but-unmapped discipline (e.g. "AI") never falls back.
+const DEPARTMENT_TO_CODE = {
+  'mechanical engineering': 'mech',
+  'controls engineering': 'controls',
+  'electrical build': 'wire',
+  'machine wiring': 'wire',
+  'project management': 'pm',
+  'project execution / project management': 'pm',
+  'service engineering': 'service',
+  'growth / business development': 'growth',
+  'business development': 'growth',
+};
+
+// paylocityId → department, read straight from the shared Employee table (the
+// HTTP feed doesn't carry it). Fail-soft: no connection → no fallback.
+async function fetchEtcDepartments() {
+  const byId = new Map();
+  if (!isEtcSharedConfigured()) return byId;
+  try {
+    const [rows] = await etcQuery('SELECT paylocityId, department FROM sdc_etc_planner.Employee');
+    for (const r of rows) if (r.paylocityId && r.department) byId.set(String(r.paylocityId), r.department);
+  } catch (e) {
+    console.error('[team] department fallback unavailable:', e.message);
+  }
+  return byId;
+}
+
 async function syncTeamFromPlanner(pool, io, opts = {}) {
   if (!planner.CONFIGURED) return { ok: false, reason: 'ETC Planner not configured' };
   const employees = await planner.getEmployees();
+  const departments = opts.departments || await fetchEtcDepartments();
   const [team] = await pool.query('SELECT * FROM team_members');
   const byKey = new Map(team.map(t => [normEtcName(t.name), t]));
   const isPh = (n) => /placeholder/i.test(n || '');
@@ -88,7 +123,10 @@ async function syncTeamFromPlanner(pool, io, opts = {}) {
     if (!e.name || isPh(e.name)) continue;
     const key = normEtcName(e.name);
     const cur = people.get(key);
-    const disc = DEPT_LABEL_TO_CODE[String(e.discipline || '').trim().toLowerCase()] || null;
+    const label = String(e.discipline || '').trim().toLowerCase();
+    const disc = label
+      ? (DEPT_LABEL_TO_CODE[label] || null)
+      : (DEPARTMENT_TO_CODE[String(departments.get(String(e.paylocityId)) || '').trim().toLowerCase()] || null);
     const cand = { name: e.name, active: !!e.active, disc };
     if (!cur || (cand.active && !cur.active) || (cand.active === cur.active && !cur.disc && cand.disc)) people.set(key, cand);
   }
