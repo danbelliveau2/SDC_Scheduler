@@ -16559,6 +16559,7 @@ function openRiskPlanModal(project) {
       const score = (Number(r.l) || 0) * (Number(r.s) || 0);
       return Object.assign({}, r, { score, band: riskBand(score) });
     }));
+    scored.forEach((r, i) => { r.n = i + 1; });
 
     // Build the shell once. Redrawing it on every click is what made the
     // dialog blink out and come back.
@@ -16697,7 +16698,15 @@ function openRiskPlanModal(project) {
     });
 
     const tightBtn = ov.querySelector('[data-rtight]');
-    if (tightBtn) tightBtn.onclick = () => { _riskTight = !_riskTight; draw(); };
+    if (tightBtn) tightBtn.onclick = () => {
+      _riskTight = !_riskTight;
+      if (!_riskTight) {
+        // Hand the table back to the share-based widths it had.
+        const t = ov.querySelector('table.rg');
+        if (t) { t.style.width = ''; t.style.minWidth = ''; t.style.tableLayout = ''; }
+      }
+      draw();
+    };
     ov.querySelectorAll('[data-rscale]').forEach(b => {
       b.onclick = () => _setRiskScale(_riskScale + (b.dataset.rscale === '+' ? 0.05 : -0.05), draw);
     });
@@ -16897,7 +16906,7 @@ function _riskMatrixHtml(scored) {
       const here = cellRisks(L.v, S.v);
       const band = riskBand(L.v * S.v);
       return `<td class="rm-cell rm-${band.key}" title="${escapeHtml(L.label + ' × ' + S.label + ' = ' + (L.v * S.v) + ' (' + band.label + ')')}">
-        ${here.map(r => `<span class="rm-dot" title="${escapeHtml(r.title || 'Untitled risk')}">${escapeHtml(_riskShort(r.title))}</span>`).join('')}
+        ${here.map(r => `<span class="rm-dot" title="#${r.n} · score ${r.score} — ${escapeHtml(r.title || 'Untitled risk')}"><b>${r.n}</b><span class="rm-dot-score">${r.score}</span></span>`).join('')}
       </td>`;
     }).join('');
     return `<tr><th class="rm-yl">${escapeHtml(L.label)}</th>${cells}</tr>`;
@@ -17662,6 +17671,7 @@ function _riskCompressColumns(table) {
     fixed += each * proseThs.length;
   }
   table.style.width = fixed + 'px';
+  table.style.minWidth = fixed + 'px';
 }
 
 function _riskTableHtml(scored) {
@@ -17722,7 +17732,7 @@ function _riskTableHtml(scored) {
     const sLabel = (RISK_SEVERITY.find(o => o.v === Number(r.s)) || {}).label || '';
 
     const cell = {
-      n: `<td class="rg-n"><button type="button" class="rg-tog" data-rtog="${r.id}" title="${open ? 'Collapse' : 'Open'}">${open ? '▾' : '▸'}</button><span class="rg-num">${idx + 1}</span></td>`,
+      n: `<td class="rg-n"><button type="button" class="rg-tog" data-rtog="${r.id}" title="${open ? 'Collapse' : 'Open'}">${open ? '▾' : '▸'}</button><span class="rg-num">${r.n || idx + 1}</span></td>`,
       title: (r.resolved && !ed
         ? `<td class="rg-title"><span class="rg-resolved-chip">Resolved</span>${escapeHtml(r.title || '')}</td>`
         : txt('title', r.title, 'rg-title')) || `<td class="rg-title"><textarea rows="1" data-rf="title" data-rgrow data-rid="${r.id}">${escapeHtml(r.title || '')}</textarea></td>`,

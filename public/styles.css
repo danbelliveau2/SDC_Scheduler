@@ -17513,3 +17513,33 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   color: var(--text-muted, #64748b);
   font-variant-numeric: tabular-nums;
 }
+
+
+/* The scale has to reach the CELLS, not just the headings. .rg tbody td
+   sets its own font-size, which beat the size inherited from the table —
+   so the headings shrank and the grid did not. Same custom property, same
+   ratio, so the whole register scales together. */
+.rg tbody td { font-size: calc(var(--fs-md) * var(--rg-scale, 1)); }
+.rg tbody td.rg-planw { font-size: calc(var(--fs-md) * var(--rg-scale, 1)); }
+
+/* The risk is prose, not a heading. */
+.rg tbody td.rg-title,
+.rg tbody td.rg-title textarea,
+.rg-title input { font-weight: var(--fw-normal, 400); }
+
+/* Matrix chips: the number and the score, which is what you read a matrix
+   for — "that is risk 1, it scores 12, go and look at it". The first four
+   words of a sentence told you nothing. Full text on hover. */
+.rm-dot {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  padding: 1px 7px; margin: 2px;
+  border-radius: 10px;
+  background: var(--sdc-dark, #061d39); color: #fff;
+  font-size: var(--fs-xs); line-height: 1.5;
+  cursor: default;
+}
+.rm-dot b { font-weight: var(--fw-extrabold); font-variant-numeric: tabular-nums; }
+.rm-dot-score {
+  font-size: var(--fs-2xs); font-weight: var(--fw-bold);
+  opacity: 0.75; font-variant-numeric: tabular-nums;
+}
