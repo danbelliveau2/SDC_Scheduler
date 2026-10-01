@@ -9768,6 +9768,19 @@ body.share-link-view .app-scale-ctl.share-floating {
   color: var(--text-muted);
   border-radius: 3px;
 }
+/* Position title on the Departments board — mirrored from the Employee table
+   by the roster sync, so read-only here. Blank stays blank. */
+.team-member-position {
+  flex: 0 1 46%;
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: var(--fs-sm);
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .team-member-specialty:hover { border-color: var(--border); background: var(--surface-alt); }
 .team-member-specialty:focus {
   outline: none;
