@@ -48,59 +48,80 @@ function normEtcName(name) {
   return parts.join('');
 }
 
-// ── PULL-sync: the Reports app's Employee roster is the MASTER for the 7
-// delivery teams (Dan, 2026-08-31: "I want our list to be pulling directly
-// from there — if that list ever changes, ours changes accordingly").
-// Direction summary: existence/active/grouping flow ETC → board here; board
-// edits still write straight through (writeThroughToEtc above), so both
-// stay in step whichever side changes first.
-//   * ETC person on a shared team, missing here      → created
-//   * discipline/active drifted                      → aligned to ETC
-//   * board row on a shared card, not in ETC roster  → deactivated (never
+// ── PULL-sync: the Reports app's Employee roster is the MASTER for the
+// Departments board (Dan, 2026-08-31: "if that list ever changes, ours changes
+// accordingly"). The feed's `discipline` is the DISPLAY NAME ("Mechanical
+// Engineers"), not a team code — the first version compared it to codes, matched
+// nobody, and (with deactivation on) switched off most of the board. The
+// label→code map below is the fix.
+//   * active person on a mapped department, missing here → created
+//   * department / active drifted                         → aligned to ETC
+//   * person marked INACTIVE in ETC                       → deactivated (never
 //     deleted — task assignments + history stay intact)
-// Placeholders and the 5 Scheduler-local disciplines are untouched.
+// Deactivation only fires when the feed explicitly lists the person as inactive
+// on every row; someone merely absent from the feed is never touched. People
+// with no department, departments without a board card (Finance, Exec, Mfg
+// Ops, AI, …) and placeholders are left alone.
 // Fail-soft: planner not configured (local dev) → no-op.
-async function syncTeamFromPlanner(pool, io) {
+const DEPT_LABEL_TO_CODE = {
+  'project management': 'pm',
+  'mechanical engineers': 'mech',
+  'controls engineers': 'controls',
+  'builders': 'build',
+  'electricians': 'wire',
+  'service engineering': 'service',
+  'growth / business development': 'growth',
+};
+const SYNCED_DISCIPLINES = new Set(Object.values(DEPT_LABEL_TO_CODE));
+
+async function syncTeamFromPlanner(pool, io, opts = {}) {
   if (!planner.CONFIGURED) return { ok: false, reason: 'ETC Planner not configured' };
   const employees = await planner.getEmployees();
   const [team] = await pool.query('SELECT * FROM team_members');
   const byKey = new Map(team.map(t => [normEtcName(t.name), t]));
   const isPh = (n) => /placeholder/i.test(n || '');
-  let created = 0, updated = 0, deactivated = 0;
-  const seen = new Set();
+
+  // One entry per person: ETC has duplicate-name rows (an old inactive record
+  // beside the current one), so an ACTIVE row always wins over an inactive one.
+  const people = new Map();
   for (const e of employees) {
-    if (isPh(e.name) || !e.name) continue;
-    const disc = e.discipline;
-    if (!SHARED_TEAM_DISCIPLINES.has(disc)) continue;
+    if (!e.name || isPh(e.name)) continue;
     const key = normEtcName(e.name);
-    seen.add(key);
+    const cur = people.get(key);
+    const disc = DEPT_LABEL_TO_CODE[String(e.discipline || '').trim().toLowerCase()] || null;
+    const cand = { name: e.name, active: !!e.active, disc };
+    if (!cur || (cand.active && !cur.active) || (cand.active === cur.active && !cur.disc && cand.disc)) people.set(key, cand);
+  }
+
+  const changes = { created: [], moved: [], activated: [], deactivated: [] };
+  for (const [key, p] of people) {
     const row = byKey.get(key);
-    if (!row) {
-      if (!e.active) continue;
-      const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order),0) AS m FROM team_members WHERE discipline = ?', [disc]);
-      await pool.query('INSERT INTO team_members (name, discipline, sort_order, active) VALUES (?, ?, ?, 1)', [e.name, disc, maxRow.m + 1]);
-      created++;
-    } else if (e.active) {
-      // ADDITIVE-ONLY (see incident note below): align grouping and turn
-      // people ON, never off. Only shared-card rows follow ETC's grouping —
-      // a linked back-office person keeps their Scheduler-local card.
-      const wantDisc = SHARED_TEAM_DISCIPLINES.has(row.discipline) ? disc : row.discipline;
-      if (!row.active || row.discipline !== wantDisc) {
-        await pool.query('UPDATE team_members SET active = 1, discipline = ? WHERE id = ?', [wantDisc, row.id]);
-        updated++;
+    if (p.active && p.disc) {
+      if (!row) {
+        if (!opts.dryRun) {
+          const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order),0) AS m FROM team_members WHERE discipline = ?', [p.disc]);
+          await pool.query('INSERT INTO team_members (name, discipline, sort_order, active) VALUES (?, ?, ?, 1)', [p.name, p.disc, maxRow.m + 1]);
+        }
+        changes.created.push(`${p.name} → ${p.disc}`);
+      } else {
+        // A row on a Scheduler-local card (ops/finance/exec/…) keeps its card.
+        const wantDisc = (SYNCED_DISCIPLINES.has(row.discipline) || SHARED_TEAM_DISCIPLINES.has(row.discipline)) ? p.disc : row.discipline;
+        if (row.discipline !== wantDisc || !row.active) {
+          if (!opts.dryRun) await pool.query('UPDATE team_members SET active = 1, discipline = ? WHERE id = ?', [wantDisc, row.id]);
+          (row.active ? changes.moved : changes.activated).push(`${p.name}: ${row.discipline} → ${wantDisc}`);
+        }
       }
+    } else if (!p.active && row && row.active && SYNCED_DISCIPLINES.has(row.discipline)) {
+      if (!opts.dryRun) await pool.query('UPDATE team_members SET active = 0 WHERE id = ?', [row.id]);
+      changes.deactivated.push(`${p.name} (${row.discipline})`);
     }
   }
-  // DEACTIVATION IS DISABLED (2026-08-31 incident): the planner feed's
-  // `discipline` field turned out NOT to carry the team codes for most
-  // employees, so `seen` was nearly empty and the first production run
-  // deactivated almost the entire board (mech 16→1, service 5→0, …).
-  // Until the feed's field mapping is confirmed with Abhi, this sync is
-  // ADDITIVE-ONLY: it creates missing people and aligns active→true, and
-  // NEVER turns anyone off. Removals stay manual (or ETC marks them
-  // inactive, which flows through the update branch above).
-  if ((created || updated) && io) io.emit('team:updated');
-  return { ok: true, created, updated, deactivated: 0, seenShared: seen.size };
+  const n = changes.created.length + changes.moved.length + changes.activated.length + changes.deactivated.length;
+  if (n && io && !opts.dryRun) io.emit('team:updated');
+  return {
+    ok: true, dryRun: !!opts.dryRun, changed: n, changes,
+    created: changes.created.length, updated: changes.moved.length + changes.activated.length, deactivated: changes.deactivated.length,
+  };
 }
 
 module.exports = function createRouter(deps) {
@@ -289,3 +310,5 @@ module.exports = function createRouter(deps) {
 
   return router;
 };
+
+module.exports.syncTeamFromPlanner = syncTeamFromPlanner;
