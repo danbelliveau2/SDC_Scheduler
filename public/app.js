@@ -22676,9 +22676,21 @@ async function openCommPlanModal(project) {
   // name and the role and email arrive with it.
   const roster = (state.team || []).filter(m => m && m.name && m.active !== 0 && !isPlaceholder(m.name));
   const byName = (n) => roster.find(m => m.name.trim().toLowerCase() === String(n || '').trim().toLowerCase()) || null;
-  const pick = (section, i, value) => {
+  // Which departments can fill a given role. Leadership rows and anything
+  // unrecognised fall through to everyone.
+  const DISC_FOR_ROLE = [
+    [/projects*manager|pm|execution/i,            ['pm']],
+    [/engineerings*lead|engineer/i,                    ['mech', 'controls', 'service']],
+    [/technician|build|shop|wir/i,                      ['build', 'wire', 'service']],
+    [/debug/i,                                          ['pm', 'mech', 'controls']],
+    [/sales|account/i,                                  ['sales', 'growth']],
+  ];
+  const discsFor = (role) => { const hit = DISC_FOR_ROLE.find(([re]) => re.test(String(role || ''))); return hit ? new Set(hit[1]) : null; };
+  const pick = (section, i, value, role) => {
+    const allow = section === 'sdc' ? discsFor(role) : null;
+    const list = allow ? roster.filter(m => allow.has(m.discipline)) : roster;
     const groups = {};
-    roster.forEach(m => { (groups[m.discipline] ||= []).push(m); });
+    list.forEach(m => { (groups[m.discipline] ||= []).push(m); });
     const opts = Object.keys(groups).map(k => {
       const d = DISCIPLINE_BY_KEY[k];
       const label = d ? d.label : k;
@@ -22703,7 +22715,7 @@ async function openCommPlanModal(project) {
         <tbody>
           ${plan[section].map((r, i) => { const m = (section === 'sdc' || section === 'leadership') ? byName(r.name) : null; return `<tr>
             <td>${m ? `<span class="cp-ro">${escapeHtml(m.title || r.role || '')}</span>${inp(section, i, 'role', m.title || r.role, 'Role').replace('<textarea', '<textarea hidden')}` : inp(section, i, 'role', r.role, 'Role')}</td>
-            <td>${(section === 'sdc' || section === 'leadership') ? pick(section, i, r.name) : inp(section, i, 'name', r.name, 'Name')}</td>
+            <td>${(section === 'sdc' || section === 'leadership') ? pick(section, i, r.name, r.role) : inp(section, i, 'name', r.name, 'Name')}</td>
             <td>${m ? `<span class="cp-ro">${escapeHtml(m.email || r.email || '')}</span>${inp(section, i, 'email', m.email || r.email, 'name@company.com').replace('<textarea', '<textarea hidden')}` : inp(section, i, 'email', r.email, 'name@company.com')}</td>
             <td>${inp(section, i, 'phone', r.phone, '')}</td>
             <td>${inp(section, i, 'when', r.when, 'Which situations go to them')}</td>
@@ -22725,8 +22737,8 @@ async function openCommPlanModal(project) {
     <p class="pr-muted pr-edithint">Who's who on both sides, how this project communicates, and where issues escalate. <strong>Saves as you type</strong> — shared with everyone on this project.</p>
     <div class="pr-field"><div class="pr-label">Project team directory</div>
       <div class="cp-people">
-        ${peopleTable('sdc', 'SDC project team', 'cp-side-sdc')}
-      ${peopleTable('leadership', 'SDC leadership', 'cp-side-sdc')}
+        ${peopleTable('leadership', 'SDC leadership', 'cp-side-sdc')}
+      ${peopleTable('sdc', 'SDC project team', 'cp-side-sdc')}
         ${peopleTable('customer', 'Customer', 'cp-side-customer')}
       </div>
     </div>

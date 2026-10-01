@@ -17636,3 +17636,9 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   box-shadow: inset 0 0 0 1px var(--sdc-primary, #1574c4);
 }
 .cp-ro { display: block; padding: 5px 8px; font-size: var(--fs-md); color: var(--text-muted, #475569); line-height: 1.35; }
+
+/* The read-only role/email on a picked SDC row keeps its textarea in the
+   DOM (hidden) so the plan still saves it. .cp-table textarea sets
+   display:block, which overrode [hidden] and drew the field twice — the
+   "VP of Operations, VP of Operations" row. */
+.cp-table textarea[hidden] { display: none !important; }
