@@ -16299,19 +16299,28 @@ function _riskParsePaste(text) {
   const iRisk   = find('risk', 'risk description', 'description');
   const iRate   = find('severity', 'rating', 'impact', 'priority');
   const iNext   = find('suggested next step', 'next step', 'mitigation', 'mitigation / resolution plan', 'plan', 'action');
+  // The register's own scales, when the sheet speaks them.
+  const iCplx   = find('complexity', 'difficulty');
+  const iChance = find('chance', 'likelihood');
+  const iImpact = find('impact');
   const iBack   = find('background', 'source', 'notes', 'detail');
   const iOwner  = find('owner', 'assigned', 'responsible');
   const iCat    = find('category', 'type');
   if (iRisk < 0) return [];
   // Anything past the recognised columns is a running update note — the
   // dated "9/28 ..." remarks people add on the right of the sheet.
-  const known = new Set([iStatus, iRisk, iRate, iNext, iBack, iOwner, iCat].filter(i => i >= 0));
+  // Score is derived, never read: the sheet's formula and this register
+  // compute the same thing, and reading it back would let them disagree.
+  const iScore  = find('score');
+  const known = new Set([iStatus, iRisk, iRate, iNext, iBack, iOwner, iCat,
+    iCplx, iChance, iImpact, iScore].filter(i => i >= 0));
   return rows.map(cells => {
     const at = (i) => (i >= 0 && cells[i] != null) ? String(cells[i]).trim() : '';
     const extra = cells.map((c, i) => known.has(i) ? '' : String(c || '').trim()).filter(Boolean);
     return {
       status: at(iStatus), risk: at(iRisk), rate: at(iRate),
       next: at(iNext), background: at(iBack), owner: at(iOwner), cat: at(iCat),
+      cplx: at(iCplx), chance: at(iChance), impact: at(iImpact),
       update: extra.join(' · '),
     };
   }).filter(r => r.risk);
@@ -16359,8 +16368,27 @@ function _riskCategory(text) {
 // Resolved rows are kept, not dropped — a register that forgets what it
 // closed cannot show anyone how the job was steered. Scored at the bottom
 // so they sit out of the way of live work.
+// A label from one of the register's own scales back to its number. Takes
+// the whole label ('4 High'), the word ('High'), or just the digit.
+function _riskScaleValue(text, opts) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return null;
+  const exact = opts.find(o => String(o.label).toLowerCase() === t);
+  if (exact) return exact.v;
+  const worded = opts.find(o => String(o.label).toLowerCase().replace(/^d+s*/, '') === t);
+  if (worded) return worded.v;
+  const n = Number(t.match(/^d+/));
+  return opts.some(o => o.v === n) ? n : null;
+}
+
 function _riskFromPasted(p, people) {
   const resolved = /resolv|closed|complete|done/i.test(p.status || '');
+  // Prefer what the sheet actually says over anything inferred from one
+  // word. Only fall back to the Severity mapping for the columns it did
+  // not give us.
+  const vCplx   = _riskScaleValue(p.cplx, RISK_DIFFICULTY);
+  const vChance = _riskScaleValue(p.chance, RISK_LIKELIHOOD);
+  const vImpact = _riskScaleValue(p.impact, RISK_SEVERITY);
   const r = _riskRating(p.rate);
   const owner = people.find(n => n.toLowerCase() === String(p.owner || '').toLowerCase()) || '';
   const parts = [];
@@ -16373,9 +16401,9 @@ function _riskFromPasted(p, people) {
     id: 'imp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     title: p.risk,
     cat: catFromSheet || _riskCategory(p.risk + ' ' + p.background + ' ' + p.cat),
-    diff: resolved ? 1 : r.diff,
-    l: resolved ? 1 : r.l,
-    s: resolved ? 1 : r.s,
+    diff: vCplx != null ? vCplx : (resolved ? 1 : r.diff),
+    l: vChance != null ? vChance : (resolved ? 1 : r.l),
+    s: vImpact != null ? vImpact : (resolved ? 1 : r.s),
     mitigation: parts.join(' — '),
     owner,
     show: false,
@@ -17632,12 +17660,19 @@ function openRiskSchedule(riskId) {
 // compressGridColumns on the schedule and service grids (auto layout,
 // max-content, read offsetWidth because the app runs under a CSS zoom);
 // it writes into this grid's own width store instead of a second one.
+// Measure the HEADING and the CELLS separately, then take the wider of the
+// two. Measuring the whole <th> was measuring the sort button's padding and
+// its sort-arrow span as well as the word, which is why Complexity and
+// Chance — the two longest headings — kept an inch of air while Category
+// and Impact looked right. The heading is allowed to sit tight to its own
+// text; anything more is slack.
 function _riskCompressColumns(table, redraw) {
   if (!table) return;
   const ths = Array.from(table.querySelectorAll('thead th'));
   if (!ths.length) return;
-  // Risk and Plan hold sentences — they keep a fixed, readable width.
-  const PROSE = { title: 430, plan: 430 };
+  // Risk and Plan hold sentences; they are sized at the end from whatever
+  // is left, so the grid always fills the panel.
+  const PROSE = ['title', 'plan'];
   const prevLayout = table.style.tableLayout;
   const prevWidth = table.style.width;
   let measured = null;
@@ -17645,14 +17680,27 @@ function _riskCompressColumns(table, redraw) {
     table.classList.add('rg-measuring');
     table.style.tableLayout = 'auto';
     table.style.width = 'max-content';
-    // Every floor off: a floor is what Compress exists to go under.
-    ths.forEach(th => {
-      th.style.minWidth = '0px';
-      th.style.width = PROSE[th.dataset.rcol] ? PROSE[th.dataset.rcol] + 'px' : '';
-    });
+    // Every floor off — a floor is what Compress exists to go under.
+    ths.forEach(th => { th.style.minWidth = '0px'; th.style.width = ''; });
     table.querySelectorAll('colgroup > col').forEach(c => { c.style.width = ''; c.style.minWidth = '0px'; });
     void table.offsetWidth;
-    measured = ths.map(th => th.offsetWidth);
+    measured = ths.map((th, i) => {
+      const k = th.dataset.rcol;
+      if (!k || PROSE.includes(k)) return 0;
+      // The heading's own text, not the button and arrow wrapped round it.
+      const label = th.querySelector('button, .rg-plain');
+      const headW = label ? Math.ceil(label.scrollWidth) : th.offsetWidth;
+      // The widest cell in this column.
+      let cellW = 0;
+      table.querySelectorAll('tbody tr').forEach(tr => {
+        const td = tr.children[i];
+        if (!td) return;
+        const inner = td.firstElementChild;
+        const w = inner && inner.scrollWidth ? inner.scrollWidth : td.scrollWidth;
+        if (w > cellW) cellW = Math.ceil(w);
+      });
+      return Math.max(headW, cellW);
+    });
   } catch (_) { measured = null; }
   finally {
     table.classList.remove('rg-measuring');
@@ -17660,19 +17708,28 @@ function _riskCompressColumns(table, redraw) {
     table.style.width = prevWidth || '';
   }
   if (!measured) return;
-  const GAP = 2;
+  // The padding a cell actually draws with, counted once rather than
+  // guessed at.
+  const PAD = 22;
+  let fixed = 0;
   ths.forEach((th, i) => {
     const k = th.dataset.rcol;
-    if (!k) return;
-    _riskWidths[k] = PROSE[k] || Math.max(34, measured[i] + GAP);
+    if (!k || PROSE.includes(k)) return;
+    const w = Math.max(30, measured[i] + PAD);
+    _riskWidths[k] = w;
+    fixed += w;
   });
+  // Never a gap on the right: whatever the panel has spare goes to Risk and
+  // Plan, split evenly. Below that they hold their readable minimum and the
+  // grid scrolls instead.
+  const wrap = table.parentElement;
+  const avail = (wrap && wrap.clientWidth ? wrap.clientWidth : 0) - 2;
+  const each = Math.max(300, Math.floor((avail - fixed) / PROSE.length));
+  PROSE.forEach(k => { _riskWidths[k] = each; });
   try { localStorage.setItem('sdcRiskColWidths', JSON.stringify(_riskWidths)); } catch (_) {}
-  // Every column now has a width, so the table sizes to their sum rather
-  // than stretching to the panel and handing the slack back.
   table.classList.add('is-pinned');
   if (redraw) redraw();
 }
-
 function _riskTableHtml(scored) {
   const COLS = _riskColOrder(RISK_COLS).map(c => c.k !== 'done' ? c
     : Object.assign({}, c, { min: _riskEdit.size ? 108 : 0 }));
