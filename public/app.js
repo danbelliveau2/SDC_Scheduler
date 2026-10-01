@@ -16545,6 +16545,10 @@ function openRiskPlanModal(project) {
   };
 
   const draw = () => {
+    // Where the grid was before this redraw tore the table down.
+    const _keepWrap = ov && ov.querySelector('.rg-wrap');
+    const _keepX = _keepWrap ? _keepWrap.scrollLeft : 0;
+    const _keepY = _keepWrap ? _keepWrap.scrollTop : 0;
     risks.forEach((r, i) => { r.id = r.id || ('r' + i + '_' + Date.now()); });
     const scored = riskSortList(risks.map(r => {
       // Impact used to be a 5-point scale; anything saved above 3 predates
@@ -16746,6 +16750,21 @@ function openRiskPlanModal(project) {
     // else. Widths are remembered so a layout stays put between risks.
     // Drag the grid around whether rows are open for editing or not.
     ov.querySelectorAll('.rg-wrap').forEach(w => makeDragScrollable(w));
+    // Put the view back where it was. Without this every click that
+    // redraws — opening a row, ticking Portal — threw you to the far left.
+    const _newWrap = ov.querySelector('.rg-wrap');
+    if (_newWrap && (_keepX || _keepY)) {
+      _newWrap.scrollLeft = _keepX;
+      _newWrap.scrollTop = _keepY;
+    }
+    if (_riskTight) {
+      requestAnimationFrame(() => {
+        const w = ov.querySelector('.rg-wrap');
+        const keep = w ? w.scrollLeft : 0;
+        _riskCompressColumns(ov.querySelector('table.rg'));
+        if (w) w.scrollLeft = keep;
+      });
+    }
     // After layout, so the matrix above it has its real height.
     requestAnimationFrame(() => _riskFitGrid(ov));
     if (!ov._riskFitBound) {
@@ -17577,6 +17596,58 @@ function openRiskSchedule(riskId) {
     if (tr) tr.scrollIntoView({ block: 'center' });
   } catch (_) {}
 }
+function _riskCompressColumns(table) {
+  if (!table) return;
+  const ths = Array.from(table.querySelectorAll('thead th'));
+  if (!ths.length) return;
+  // Risk and Plan hold sentences. Everything else should be exactly as
+  // wide as its widest cell and not a pixel more.
+  const prose = new Set(['title', 'plan']);
+  const prev = ths.map(th => th.style.width);
+  const prevLayout = table.style.tableLayout;
+  const prevWidth = table.style.width;
+  let measured = null;
+  try {
+    table.classList.add('rg-measuring');
+    table.style.tableLayout = 'auto';
+    table.style.width = 'max-content';
+    ths.forEach(th => {
+      const k = th.dataset.rcol;
+      // Pin the prose columns narrow while measuring so they cannot
+      // dominate and starve the ones we are trying to size.
+      th.style.width = prose.has(k) ? '220px' : '';
+    });
+    void table.offsetWidth;
+    measured = ths.map(th => th.offsetWidth);
+  } catch (_) { measured = null; }
+  finally { table.classList.remove('rg-measuring'); }
+  if (!measured) {
+    ths.forEach((th, i) => { th.style.width = prev[i]; });
+    table.style.tableLayout = prevLayout;
+    table.style.width = prevWidth;
+    return;
+  }
+  table.style.tableLayout = 'fixed';
+  const GAP = 14;
+  let fixed = 0;
+  ths.forEach((th, i) => {
+    if (prose.has(th.dataset.rcol)) return;
+    const w = Math.max(38, measured[i] + GAP);
+    th.style.width = w + 'px';
+    th.style.minWidth = w + 'px';
+    fixed += w;
+  });
+  // Whatever is left goes to the two columns people actually read.
+  const avail = (table.parentElement && table.parentElement.clientWidth) || 0;
+  const proseThs = ths.filter(th => prose.has(th.dataset.rcol));
+  if (proseThs.length) {
+    const each = Math.max(240, Math.floor((avail - fixed) / proseThs.length));
+    proseThs.forEach(th => { th.style.width = each + 'px'; th.style.minWidth = each + 'px'; });
+    fixed += each * proseThs.length;
+  }
+  table.style.width = fixed + 'px';
+}
+
 function _riskTableHtml(scored) {
   const COLS = _riskColOrder(RISK_COLS).map(c => c.k !== 'done' ? c
     : Object.assign({}, c, { min: _riskEdit.size ? 108 : 0 }));
@@ -31930,6 +32001,13 @@ function makeDragScrollable(panel) {
       panel.classList.remove('is-panning');
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      // A drag is not a click. Eat the click this mouseup is about to
+      // produce, or letting go over a row opens it.
+      if (moved) {
+        const eat = (ce) => { ce.stopPropagation(); ce.preventDefault(); };
+        document.addEventListener('click', eat, true);
+        setTimeout(() => document.removeEventListener('click', eat, true), 0);
+      }
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);

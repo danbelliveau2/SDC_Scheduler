@@ -17476,3 +17476,10 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   min-height: 180px;
   max-height: none;   /* _riskFitGrid sets the real one */
 }
+
+/* While Compress measures: nothing may clip or wrap, or the measurement
+   comes back as the width of the truncation rather than the content. */
+.rg.rg-measuring td,
+.rg.rg-measuring th { white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important; }
+.rg.rg-measuring td.rg-title,
+.rg.rg-measuring td.rg-plan { white-space: normal !important; }
