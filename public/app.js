@@ -21293,12 +21293,18 @@ function _fitChrome(appZoom) {
   CHROME_SEL.forEach(sel => document.querySelectorAll(sel).forEach(el => { el.style.zoom = String(inv); }));
   const rail = document.getElementById('app-sidebar');
   if (!rail) return;
-  // Measure the rail at its natural size (rendered scale 1).
+  // Measure the CONTENT at rendered scale 1: top of the rail to the bottom
+  // of the scale control, which is the last thing in flow before the
+  // spacer. (scrollHeight on a top:0 / bottom:0 fixed element is the box,
+  // not the content — it would just report the window.)
   rail.style.zoom = String(inv);
   void rail.offsetHeight;
-  const natural = rail.scrollHeight;             // CSS px at rendered scale 1
-  const AVATAR_ZONE = 112;   // fixed-position signed-in avatar: bottom 58px + ~46px tall + air
-  const target = Math.min(natural, window.innerHeight - AVATAR_ZONE);
+  const ctl = rail.querySelector('.app-scale-ctl');
+  const natural = ctl ? (ctl.offsetTop + ctl.offsetHeight) : rail.scrollHeight;
+  // 75% of the window, on every window. Big screen: the rail grows to it.
+  // Small screen: it shrinks to it. Same share either way, and the bottom
+  // quarter is where the signed-in avatar lives.
+  const target = window.innerHeight * 0.75;
   // rendered = natural × appZoom × railZoom  →  solve for the zoom that
   // puts the bottom of the rail at the target, independent of appZoom.
   let z = natural > 0 ? target / (natural * appZoom) : inv;
