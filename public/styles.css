@@ -17594,3 +17594,9 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 .schedule-project-banner.banner-compact .schedule-project-name-pill { font-size: var(--fs-sm); padding: 2px 10px; }
 
 
+
+/* The project name is the one thing on the banner that should read from
+   across the room. Bigger, and never shrunk by banner-compact — that mode
+   tightens the BUTTONS, which were crowding it, not the name itself. */
+.schedule-project-name-pill { font-size: var(--fs-xl); padding: 4px 20px; }
+.schedule-project-banner.banner-compact .schedule-project-name-pill { font-size: var(--fs-xl); padding: 4px 20px; }
