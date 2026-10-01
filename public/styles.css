@@ -17580,3 +17580,15 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 .app-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 2px; }
 /* The readout says when the screen, not the person, picked the number. */
 #app-scale-pct.is-auto { color: var(--sdc-accent, #ffde51); }
+
+/* The banner's own buttons tighten before the whole app is zoomed down for
+   one crowded row. Same words, less air. */
+.schedule-project-banner.banner-compact .banner-right .toolbar-toggle-btn,
+.schedule-project-banner.banner-compact .banner-left .toolbar-toggle-btn,
+.schedule-project-banner.banner-compact .schedule-context-pills > * {
+  padding: 3px 7px;
+  font-size: var(--fs-xs);
+  letter-spacing: 0;
+}
+.schedule-project-banner.banner-compact .banner-right { gap: 4px; }
+.schedule-project-banner.banner-compact .schedule-project-name-pill { font-size: var(--fs-sm); padding: 2px 10px; }

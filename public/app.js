@@ -21292,13 +21292,26 @@ function _fitAppScale() {
   if (banner && banner.offsetParent !== null) {
     // The centre pill is absolutely positioned, so the banner never reports
     // overflow — it overlaps instead. Add the three zones up by hand.
-    let need = 0;
-    banner.querySelectorAll('.banner-zone').forEach(z => {
-      const inner = Array.from(z.children).reduce((n, c) => n + c.scrollWidth, 0);
-      need += Math.max(inner, z.scrollWidth) + 16;
-    });
+    const need = () => {
+      let n = 0;
+      banner.querySelectorAll('.banner-zone').forEach(z => {
+        const inner = Array.from(z.children).reduce((t, c) => t + c.scrollWidth, 0);
+        n += Math.max(inner, z.scrollWidth) + 16;
+      });
+      return n;
+    };
     const railW = rail ? rail.offsetWidth : 0;
-    if (need > 0) fit = Math.min(fit, (window.innerWidth - 8) / (railW + need));
+    const room = window.innerWidth - 8;
+    // Pass one: full-size buttons. If they would force the scale under what
+    // the rail needs, compact them and measure again.
+    banner.classList.remove('banner-compact');
+    let n = need();
+    if (n > 0 && room / (railW + n) < fit) {
+      banner.classList.add('banner-compact');
+      void banner.offsetWidth;
+      n = need();
+    }
+    if (n > 0) fit = Math.min(fit, room / (railW + n));
   }
   return Math.max(0.5, Math.min(1.5, fit));
 }
