@@ -17343,3 +17343,22 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 }
 .risk-paste-file input[type="file"] { font-size: var(--fs-sm); min-width: 0; }
 .risk-paste-or { color: var(--text-muted, #94a3b8); font-size: var(--fs-sm); white-space: nowrap; }
+
+/* A file input renders the BROWSER's button — grey, square, system font.
+   Hide it and drive it from a label so the control is ours like every
+   other button in the app. */
+.visually-hidden-file {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.risk-paste-choose { cursor: pointer; flex: 0 0 auto; }
+.visually-hidden-file:focus-visible + .risk-paste-choose {
+  outline: 2px solid var(--sdc-primary, #1574c4);
+  outline-offset: 2px;
+}
+.risk-paste-name {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-muted, #64748b); font-size: var(--fs-sm);
+}

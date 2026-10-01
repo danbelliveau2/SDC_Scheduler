@@ -69,6 +69,15 @@ One branch: `main`. Always pull first. Never commit and forget to push — the p
 
 ## Specific UX rules
 
+### Never ship a raw browser control
+**Verbatim:** *"I've said this a hundred times, so it should be saved in your rules, but like this choose file button doesn't match the feel of this app at all. Not the right color, it's not the right shape, right font."*
+
+A bare `<input type="file">` renders the BROWSER's button — grey, square, system font, system border radius. Same for an unstyled `<select>`, `<input type="date">` spinner, `confirm()`, `alert()` and `prompt()`. They all read as "this part isn't finished."
+
+- **File input:** hide the input (`.visually-hidden-file`), drive it from a `<label for="…">` styled `btn-primary`, and show the chosen filename in a muted span beside it. Pattern: `showRiskPasteDialog`.
+- **Dialogs:** `showConfirmDialog` / `showAlertDialog` / `showPromptDialog` / `showPasswordDialog`. Never the native ones.
+- **Anything new:** it uses the app's buttons, the app's font, the app's radius and the SDC palette — or it isn't done.
+
 ### Column widths in ANY grid
 **Verbatim:** *"Anytime you build a... any kind of grid for me, the columns have to all make sense for what they are. It's a description column. It's gotta fit the descriptions. Right? If it's a percent complete, it should be a small column."*
 

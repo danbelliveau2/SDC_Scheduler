@@ -16384,6 +16384,45 @@ function _riskFromPasted(p, people) {
   };
 }
 
+// A workbook to the tab-separated grid the paste box reads. SheetJS is
+// already on the page (index.html loads it for the Smartsheet import), so
+// this never leaves the browser. Falls back to the server for a browser
+// that could not load the CDN script.
+async function _sheetFileToText(file) {
+  const buf = await file.arrayBuffer();
+  if (typeof XLSX !== 'undefined' && XLSX && XLSX.read) {
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    // A binder has fifteen tabs; the one named for risk is the one meant.
+    const name = wb.SheetNames.find(n => /risk/i.test(n)) || wb.SheetNames[0];
+    if (!name) throw new Error('that file has no sheets in it');
+    if (wb.SheetNames.length > 1) showToast(`Read the "${name}" sheet.`, { kind: 'info' });
+    return _sheetRowsToText(XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', raw: false }));
+  }
+  // No SheetJS in the page — ask the server, which has its own copy.
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  const r = await fetch('/api/sheet-to-text', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data: btoa(binary) }),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok || !body.ok) throw new Error(body.error || ('the server could not read it (HTTP ' + r.status + ')'));
+  return body.text || '';
+}
+
+// Tabs and newlines inside a cell would break the grid this becomes.
+function _sheetRowsToText(rows) {
+  const TAB = String.fromCharCode(9);
+  return rows
+    .map(r => r.map(c => String(c == null ? '' : c).replace(/[\t\r\n]+/g, ' ').trim()).join(TAB))
+    .filter(line => line.split(TAB).join('').trim())
+    .join(String.fromCharCode(10));
+}
+
 function showRiskPasteDialog(onAdd) {
   document.getElementById('risk-paste-dialog')?.remove();
   const overlay = document.createElement('div');
@@ -16395,7 +16434,9 @@ function showRiskPasteDialog(onAdd) {
       <div class="modal-body">
         <div class="app-dialog-message">Select the rows in the spreadsheet — including the header line — and paste them here. Columns are matched by name: <strong>Risk</strong> is the only one that has to be there. Status, Severity, Suggested Next Step, Background, Owner and Category are used when present, and anything else on the row is kept as an update note.</div>
         <div class="risk-paste-file">
-          <input type="file" id="risk-paste-file" accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt" />
+          <input type="file" id="risk-paste-file" class="visually-hidden-file" accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt" />
+          <label class="btn-primary risk-paste-choose" for="risk-paste-file">Choose a file…</label>
+          <span class="risk-paste-name" id="risk-paste-name">No file chosen</span>
           <span class="risk-paste-or">or paste below</span>
         </div>
         <textarea class="release-text" id="risk-paste-text" rows="10" spellcheck="false" placeholder="Status&#9;Risk&#9;Severity&#9;Suggested Next Step&#9;Background"></textarea>
@@ -16434,39 +16475,22 @@ function showRiskPasteDialog(onAdd) {
   ta.addEventListener('paste', () => setTimeout(refresh, 0));
   overlay.querySelector('#risk-paste-file').addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
+    const nameEl = overlay.querySelector('#risk-paste-name');
+    if (nameEl) nameEl.textContent = file ? file.name : 'No file chosen';
     if (!file) return;
     prev.innerHTML = `<div class="risk-paste-count">Reading ${escapeHtml(file.name)}…</div>`;
     try {
       if (/\.(csv|tsv|txt)$/i.test(file.name)) {
         ta.value = await file.text();
       } else {
-        const buf = await file.arrayBuffer();
-        // btoa in chunks: a workbook is comfortably past the argument
-        // limit of String.fromCharCode applied to the whole array.
-        const bytes = new Uint8Array(buf);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i += 0x8000) {
-          binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-        }
-        const r = await fetch('/api/sheet-to-text', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: btoa(binary) }),
-        });
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok || !body.ok) throw new Error(body.error || ('HTTP ' + r.status));
-        ta.value = body.text || '';
-        if (body.sheets && body.sheets.length > 1) {
-          showToast(`Read the "${body.sheet}" sheet.`, { kind: 'info' });
-        }
+        ta.value = await _sheetFileToText(file);
       }
     } catch (err) {
       prev.innerHTML = `<div class="risk-paste-none">Could not read that file — ${escapeHtml(err.message || String(err))}</div>`;
       return;
     }
     refresh();
-  });
-  overlay.querySelector('[data-action="cancel"]').onclick = close;
+  });  overlay.querySelector('[data-action="cancel"]').onclick = close;
   okBtn.onclick = () => {
     const people = riskPeople();
     const added = parsed.map(p => _riskFromPasted(p, people));
