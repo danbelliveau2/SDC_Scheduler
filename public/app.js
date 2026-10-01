@@ -480,9 +480,7 @@ const BOARD_SHOW_ETC_EXTRAS = false;
 // assignee dropdowns) but is not drawn on the card. Names are matched
 // case-insensitively on the trimmed member name. Leave a department out of
 // this map to show its full roster.
-const BOARD_MEMBER_ALLOWLIST = {
-  growth: ['Riana Pulsford'],
-};
+const BOARD_MEMBER_ALLOWLIST = {};
 
 // The departments the Departments page actually shows. EVERY list on that page
 // walks this — the board cards AND the discipline tab strip above the resources
@@ -27250,9 +27248,10 @@ function renderTeam() {
     // dropdown — same allowlist, same ordering — so a name can't show on a card
     // and be missing from the dropdown (or vice versa). The card renders reals
     // and the PLACEHOLDERS stripe as two visual lists, hence two calls.
-    // includeInactive: the card is the headcount view and shows everyone.
-    const reals        = membersForDiscipline(disc.key, { includeInactive: true, placeholders: 'exclude' });
-    const placeholders = membersForDiscipline(disc.key, { includeInactive: true, placeholders: 'only' });
+    // Active members only — the roster mirrors the Employee table's active
+    // people, so deactivated (departed) staff drop off the card.
+    const reals        = membersForDiscipline(disc.key, { placeholders: 'exclude' });
+    const placeholders = membersForDiscipline(disc.key, { placeholders: 'only' });
     // Capacity math only counts reals (the cap helper filters placeholders too).
     const all = reals;
 
