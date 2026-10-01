@@ -16698,6 +16698,9 @@ function openRiskPlanModal(project) {
 
     const tightBtn = ov.querySelector('[data-rtight]');
     if (tightBtn) tightBtn.onclick = () => { _riskTight = !_riskTight; draw(); };
+    ov.querySelectorAll('[data-rscale]').forEach(b => {
+      b.onclick = () => _setRiskScale(_riskScale + (b.dataset.rscale === '+' ? 0.05 : -0.05), draw);
+    });
 
     // Drag the grip between two headings to resize that column. Widths are
     // remembered, so a layout someone tuned for their monitor stays tuned.
@@ -16929,6 +16932,17 @@ const _riskOpen = new Set();
 let _riskSort = 'score';
 let _riskDir = -1;            // -1 = biggest first, which is what score wants
 let _riskTight = false;       // Compress, same idea as the schedule toolbar
+// Type scale for the register, 60%-100%. Remembered per browser: it is a
+// function of the screen you are on, not of the project.
+let _riskScale = (() => {
+  const v = Number(localStorage.getItem('sdcRiskScale'));
+  return (v >= 0.6 && v <= 1) ? v : 1;
+})();
+function _setRiskScale(v, redraw) {
+  _riskScale = Math.round(Math.min(1, Math.max(0.6, v)) * 100) / 100;
+  try { localStorage.setItem('sdcRiskScale', String(_riskScale)); } catch (_) {}
+  if (redraw) redraw();
+}
 const _riskEdit = new Set();  // rows in edit mode — every cell editable at once
 let _riskWidths = {};         // dragged column widths, keyed by column
 let _riskSgWidths = {};       // and the same for the mitigation schedule
@@ -17613,6 +17627,8 @@ function _riskCompressColumns(table) {
     table.style.width = 'max-content';
     ths.forEach(th => {
       const k = th.dataset.rcol;
+      // Clear the floor. The whole point of Compress is to go under it.
+      th.style.minWidth = '0px';
       // Pin the prose columns narrow while measuring so they cannot
       // dominate and starve the ones we are trying to size.
       th.style.width = prose.has(k) ? '220px' : '';
@@ -17622,13 +17638,13 @@ function _riskCompressColumns(table) {
   } catch (_) { measured = null; }
   finally { table.classList.remove('rg-measuring'); }
   if (!measured) {
-    ths.forEach((th, i) => { th.style.width = prev[i]; });
+    ths.forEach((th, i) => { th.style.width = prev[i]; th.style.minWidth = ''; });
     table.style.tableLayout = prevLayout;
     table.style.width = prevWidth;
     return;
   }
   table.style.tableLayout = 'fixed';
-  const GAP = 14;
+  const GAP = 6;
   let fixed = 0;
   ths.forEach((th, i) => {
     if (prose.has(th.dataset.rcol)) return;
@@ -17743,7 +17759,12 @@ function _riskTableHtml(scored) {
     <div class="risk-reg-bar">
       <h3 class="risk-h3">Risk register <span class="risk-note">click a row to open it · drag a column heading to reorder</span></h3>
       <div class="risk-reg-tools">
-        <button type="button" class="risk-tool ${_riskTight ? 'is-on' : ''}" data-rtight title="Shrink the rows to fit more on screen">⇤ Compress</button>
+        <span class="risk-scale" title="Text size — smaller fits more of the register on one screen">
+          <button type="button" class="risk-tool risk-scale-btn" data-rscale="-" ${_riskScale <= 0.6 ? 'disabled' : ''}>−</button>
+          <span class="risk-scale-n">${Math.round(_riskScale * 100)}%</span>
+          <button type="button" class="risk-tool risk-scale-btn" data-rscale="+" ${_riskScale >= 1 ? 'disabled' : ''}>+</button>
+        </span>
+        <button type="button" class="risk-tool ${_riskTight ? 'is-on' : ''}" data-rtight title="Size every column to its widest value — Category tight to &quot;Supply chain&quot;, Complexity tight to &quot;Moderate&quot;">⇤ Compress</button>
         <button type="button" class="risk-tool" data-risk-paste title="Copy the rows out of a spreadsheet and paste them here — the columns are worked out from the header line.">⎘ Paste from a sheet</button>
         <button type="button" class="risk-tool is-primary" data-risk-add>+ Add risk</button>
       </div>
@@ -17751,7 +17772,7 @@ function _riskTableHtml(scored) {
 
     ${!scored.length ? `<p class="risk-plan-none">Nothing listed yet. Type the risks above, or load the standard machine-build set from the bottom left.</p>` : `
     <div class="rg-wrap">
-      <table class="rg ${_riskTight ? 'is-tight' : ''} ${anyPinned ? 'is-pinned' : ''}">
+      <table class="rg ${_riskTight ? 'is-tight' : ''} ${anyPinned ? 'is-pinned' : ''}" style="--rg-scale:${_riskScale}">
         <colgroup>${cols}</colgroup>
         <thead><tr>${head}</tr></thead>
         <tbody>${body}</tbody>

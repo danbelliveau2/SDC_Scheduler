@@ -17483,3 +17483,33 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 .rg.rg-measuring th { white-space: nowrap !important; overflow: visible !important; text-overflow: clip !important; }
 .rg.rg-measuring td.rg-title,
 .rg.rg-measuring td.rg-plan { white-space: normal !important; }
+
+/* ── Register type scale ──────────────────────────────────────────────────
+   One number drives every size in the table, so the whole register shrinks
+   together rather than the values going small while the headings stay big.
+   Paired with Compress: that takes the slack out of the columns, this takes
+   it out of the text, and between them twelve columns fit on one screen —
+   which is the actual ask. Scrolling sideways is the problem, not width. */
+.rg { font-size: calc(var(--fs-md) * var(--rg-scale, 1)); }
+.rg thead th { font-size: calc(var(--fs-2xs) * var(--rg-scale, 1)); }
+.rg tbody td { padding-top: calc(7px * var(--rg-scale, 1)); padding-bottom: calc(7px * var(--rg-scale, 1)); }
+.rg tbody textarea,
+.rg tbody input,
+.rg tbody select { font-size: calc(var(--fs-md) * var(--rg-scale, 1)); }
+.rg .rg-scoren { font-size: calc(var(--fs-lg) * var(--rg-scale, 1)); }
+.rg .rg-scorel,
+.rg .rg-resolved-chip,
+.rg .rg-planbadge { font-size: calc(var(--fs-2xs) * var(--rg-scale, 1)); }
+
+.risk-scale {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-right: 6px;
+}
+.risk-scale-btn { padding: 2px 8px !important; font-weight: var(--fw-extrabold); }
+.risk-scale-btn[disabled] { opacity: 0.4; cursor: default; }
+.risk-scale-n {
+  min-width: 38px; text-align: center;
+  font-size: var(--fs-xs); font-weight: var(--fw-bold);
+  color: var(--text-muted, #64748b);
+  font-variant-numeric: tabular-nums;
+}
