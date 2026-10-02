@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.6',
+    date: '2026-10-02',
+    notes: [
+      'Customers open their schedule the way we read it.',
+      '',
+      'CUSTOMER PORTAL:',
+      '   ▸ A customer\'s schedule now opens flattened and in date order (the ≡ button on) — no ENGINEERING / SHOP / TEARDOWN / INSTALL headers, rows sorted by start date — instead of grouped by department in stored order, which put lines like TESTING SHOP at the bottom of a section and made the same job look different from ours.',
+      '   ▸ Their choice sticks: once a customer turns ≡ off (or back on) it stays that way on their browser. Staff views are unchanged.',
+    ],
+  },
+  {
     version: '13.5',
     date: '2026-10-02',
     notes: [
