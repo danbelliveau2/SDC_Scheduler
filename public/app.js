@@ -22601,7 +22601,7 @@ function _commPlanDefaults(project) {
       { role: 'Engineering Lead',        name: '', email: '', phone: '', when: 'Design questions, technical decisions, drawings' },
       { role: 'Technician Lead',         name: '', email: '', phone: '', when: 'Build / shop-floor questions, assembly status' },
       { role: 'Debug Lead',              name: projectLead(project, 'debug') || '', email: '', phone: '', when: 'Machine debug, testing issues, on-site startup' },
-      { role: 'Sales / Account Manager', name: '', email: '', phone: '', when: 'Commercial questions, new scope, relationship' },
+      { role: 'Applications Engineer',   name: '', email: '', phone: '', when: 'Quoted and concepted the machine — scope, commercial questions, the early-phase history' },
     ],
     leadership: [
       { role: 'President',                     name: 'Dan Belliveau',    email: '', phone: '', when: 'Final escalation; anything that threatens the relationship or the business' },
@@ -22669,6 +22669,14 @@ async function openCommPlanModal(project) {
   const OLD_LEADERSHIP = 'VP of Operations|Patrick Morrison;ME Manager|Mike Czenszak;CE Manager|Tim Wilmot;Electrical Engineering Team Lead|Jason Perry;Sales Manager|Greg Merrill';
   const sig = (rows) => (rows || []).map(r => (r.role || '') + '|' + (r.name || '')).join(';');
   if (sig(plan.leadership) === OLD_LEADERSHIP) plan.leadership = d.leadership;
+  // Same for the project-team seed: Sales / Account Manager became
+  // Applications Engineer. A row somebody has filled is theirs.
+  (plan.sdc || []).forEach(r => {
+    if (r.role === 'Sales / Account Manager' && !(r.name || '').trim()) {
+      r.role = 'Applications Engineer';
+      r.when = 'Quoted and concepted the machine — scope, commercial questions, the early-phase history';
+    }
+  });
   if (typeof plan.notes !== 'string') plan.notes = '';
 
   const overlay = document.createElement('div');
@@ -22690,9 +22698,11 @@ async function openCommPlanModal(project) {
     [/engineerings*lead|engineer/i,                    ['mech', 'controls', 'service']],
     [/technician|build|shop|wir/i,                      ['build', 'wire', 'service']],
     [/debug/i,                                          ['pm', 'mech', 'controls']],
+    // Applications engineers are not one department on the roster.
+    [/application/i,                                    null],
     [/sales|account/i,                                  ['sales', 'growth']],
   ];
-  const discsFor = (role) => { const hit = DISC_FOR_ROLE.find(([re]) => re.test(String(role || ''))); return hit ? new Set(hit[1]) : null; };
+  const discsFor = (role) => { const hit = DISC_FOR_ROLE.find(([re]) => re.test(String(role || ''))); return (hit && hit[1]) ? new Set(hit[1]) : null; };
   const pick = (section, i, value, role) => {
     const allow = section === 'sdc' ? discsFor(role) : null;
     const list = allow ? roster.filter(m => allow.has(m.discipline)) : roster;
@@ -27233,10 +27243,7 @@ function openTeamMemberModal(member) {
           <div class="pr-label">Specialty / Level</div>
           <input type="text" id="tm-specialty-input" class="app-dialog-input" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" />
         </div>
-        <div class="pr-field">
-          <div class="pr-label">Role / title</div>
-          <input type="text" id="tm-title-input" class="app-dialog-input" value="${escapeHtml(m.title || '')}" placeholder="Sr. Mechanical Engineer" />
-        </div>
+        ${m.title ? `<div class="pr-field"><div class="pr-label">Role / title</div><div class="pr-static">${escapeHtml(m.title)} <span class="pr-muted">— from the employee report</span></div></div>` : ''}
         <div class="pr-field">
           <div class="pr-label">Email</div>
           <input type="email" id="tm-email-input" class="app-dialog-input" value="${escapeHtml(m.email || '')}" placeholder="name@sdcautomation.com" />
@@ -27277,15 +27284,14 @@ function openTeamMemberModal(member) {
     if (!name) { showErr('Name is required.'); return; }
     const discipline = discSelect.value;
     const specialty = specialtyInput.value.trim();
-    const title = (overlay.querySelector('#tm-title-input') || {}).value || '';
     const email = (overlay.querySelector('#tm-email-input') || {}).value || '';
     const is_lead = leadCheckbox.checked;
     const btn = overlay.querySelector('#tm-confirm-btn');
     btn.disabled = true;
     btn.textContent = isEdit ? 'Saving…' : 'Adding…';
     const result = isEdit
-      ? await api.team.update(m.id, { name, discipline, specialty, is_lead, title: title.trim(), email: email.trim() })
-      : await api.team.create({ name, discipline, specialty, is_lead, title: title.trim(), email: email.trim() });
+      ? await api.team.update(m.id, { name, discipline, specialty, is_lead, email: email.trim() })
+      : await api.team.create({ name, discipline, specialty, is_lead, email: email.trim() });
     if (result && result.error) {
       btn.disabled = false;
       btn.textContent = isEdit ? 'Save' : 'Add';
@@ -27336,8 +27342,7 @@ function renderTeam() {
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <span class="team-member-position" title="${escapeHtml(m.title || '')}">${escapeHtml(m.title || '')}</span>
-        ${ph ? '' : `<input type="text" class="team-member-field team-member-title" data-field="title" value="${escapeHtml(m.title || '')}" placeholder="Role / title" data-id="${m.id}" title="What they are called — fills the communication plan." />
-        <input type="email" class="team-member-field team-member-email" data-field="email" value="${escapeHtml(m.email || '')}" placeholder="email@sdcautomation.com" data-id="${m.id}" title="Where to reach them — fills the communication plan." />`}
+        ${ph ? '' : `<input type="email" class="team-member-field team-member-email" data-field="email" value="${escapeHtml(m.email || '')}" placeholder="email@sdcautomation.com" data-id="${m.id}" title="Where to reach them — fills the communication plan." />`}
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="team-member-edit-btn" data-action="edit-member" data-id="${m.id}" title="Edit details">✎</button>
       </li>`;
