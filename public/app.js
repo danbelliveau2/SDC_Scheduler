@@ -27335,7 +27335,7 @@ function renderTeam() {
         <span class="team-member-grip" title="Drag to reorder">⋮⋮</span>
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
-        <input type="text" class="team-member-specialty" list="dl-specialty-levels" value="${escapeHtml(m.specialty || '')}" placeholder="Level / specialty" data-id="${m.id}" title="Experience level (Level 1 / 2 / 3) or specialty tag — type anything." />
+        <span class="team-member-position" title="${escapeHtml(m.title || '')}">${escapeHtml(m.title || '')}</span>
         ${ph ? '' : `<input type="text" class="team-member-field team-member-title" data-field="title" value="${escapeHtml(m.title || '')}" placeholder="Role / title" data-id="${m.id}" title="What they are called — fills the communication plan." />
         <input type="email" class="team-member-field team-member-email" data-field="email" value="${escapeHtml(m.email || '')}" placeholder="email@sdcautomation.com" data-id="${m.id}" title="Where to reach them — fills the communication plan." />`}
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>

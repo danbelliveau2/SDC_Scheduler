@@ -74,9 +74,45 @@ const DEPT_LABEL_TO_CODE = {
 };
 const SYNCED_DISCIPLINES = new Set(Object.values(DEPT_LABEL_TO_CODE));
 
+// Fallback for people whose `discipline` is blank but whose Paylocity-style
+// `department` is filled in (hand-added TEMP hires, e.g. Lahu Shedole:
+// department "Mechanical Engineering", discipline empty). EXACT department
+// names only, and only departments where every person already carries one
+// matching discipline. Deliberately left out: "Mechanical Build /
+// Manufacturing" (mixes Builders and Manufacturing Operations), "Electrical
+// Engineering", "Manufacturing", "Service", "Mechanical Build" — ambiguous.
+// A set-but-unmapped discipline (e.g. "AI") never falls back.
+const DEPARTMENT_TO_CODE = {
+  'mechanical engineering': 'mech',
+  'controls engineering': 'controls',
+  'electrical build': 'wire',
+  'machine wiring': 'wire',
+  'project management': 'pm',
+  'project execution / project management': 'pm',
+  'service engineering': 'service',
+  'growth / business development': 'growth',
+  'business development': 'growth',
+};
+
+// paylocityId → { department, positionTitle }, read straight from the shared
+// Employee table (the HTTP feed doesn't carry either). Fail-soft: no connection
+// → no department fallback and no position titles, the rest of the sync runs.
+async function fetchEtcFields() {
+  const byId = new Map();
+  if (!isEtcSharedConfigured()) return byId;
+  try {
+    const [rows] = await etcQuery('SELECT paylocityId, department, positionTitle FROM sdc_etc_planner.Employee');
+    for (const r of rows) if (r.paylocityId) byId.set(String(r.paylocityId), { department: r.department || null, positionTitle: String(r.positionTitle || '').trim() || null });
+  } catch (e) {
+    console.error('[team] department/position lookup unavailable:', e.message);
+  }
+  return byId;
+}
+
 async function syncTeamFromPlanner(pool, io, opts = {}) {
   if (!planner.CONFIGURED) return { ok: false, reason: 'ETC Planner not configured' };
   const employees = await planner.getEmployees();
+  const etc = opts.etc || await fetchEtcFields();
   const [team] = await pool.query('SELECT * FROM team_members');
   const byKey = new Map(team.map(t => [normEtcName(t.name), t]));
   const isPh = (n) => /placeholder/i.test(n || '');
@@ -88,19 +124,23 @@ async function syncTeamFromPlanner(pool, io, opts = {}) {
     if (!e.name || isPh(e.name)) continue;
     const key = normEtcName(e.name);
     const cur = people.get(key);
-    const disc = DEPT_LABEL_TO_CODE[String(e.discipline || '').trim().toLowerCase()] || null;
-    const cand = { name: e.name, active: !!e.active, disc };
+    const extra = etc.get(String(e.paylocityId)) || {};
+    const label = String(e.discipline || '').trim().toLowerCase();
+    const disc = label
+      ? (DEPT_LABEL_TO_CODE[label] || null)
+      : (DEPARTMENT_TO_CODE[String(extra.department || '').trim().toLowerCase()] || null);
+    const cand = { name: e.name, active: !!e.active, disc, position: extra.positionTitle || null };
     if (!cur || (cand.active && !cur.active) || (cand.active === cur.active && !cur.disc && cand.disc)) people.set(key, cand);
   }
 
-  const changes = { created: [], moved: [], activated: [], deactivated: [] };
+  const changes = { created: [], moved: [], activated: [], deactivated: [], titled: [] };
   for (const [key, p] of people) {
     const row = byKey.get(key);
     if (p.active && p.disc) {
       if (!row) {
         if (!opts.dryRun) {
           const [[maxRow]] = await pool.query('SELECT COALESCE(MAX(sort_order),0) AS m FROM team_members WHERE discipline = ?', [p.disc]);
-          await pool.query('INSERT INTO team_members (name, discipline, sort_order, active) VALUES (?, ?, ?, 1)', [p.name, p.disc, maxRow.m + 1]);
+          await pool.query('INSERT INTO team_members (name, discipline, sort_order, active, title) VALUES (?, ?, ?, 1, ?)', [p.name, p.disc, maxRow.m + 1, p.position]);
         }
         changes.created.push(`${p.name} → ${p.disc}`);
       } else {
@@ -110,13 +150,19 @@ async function syncTeamFromPlanner(pool, io, opts = {}) {
           if (!opts.dryRun) await pool.query('UPDATE team_members SET active = 1, discipline = ? WHERE id = ?', [wantDisc, row.id]);
           (row.active ? changes.moved : changes.activated).push(`${p.name}: ${row.discipline} → ${wantDisc}`);
         }
+        // Position title mirrors ETC's positionTitle. A blank ETC title never
+        // erases what's on the board (stays blank if it was blank).
+        if (p.position && row.title !== p.position && (SYNCED_DISCIPLINES.has(row.discipline) || SHARED_TEAM_DISCIPLINES.has(row.discipline))) {
+          if (!opts.dryRun) await pool.query('UPDATE team_members SET title = ? WHERE id = ?', [p.position, row.id]);
+          changes.titled.push(`${p.name}: ${p.position}`);
+        }
       }
     } else if (!p.active && row && row.active && SYNCED_DISCIPLINES.has(row.discipline)) {
       if (!opts.dryRun) await pool.query('UPDATE team_members SET active = 0 WHERE id = ?', [row.id]);
       changes.deactivated.push(`${p.name} (${row.discipline})`);
     }
   }
-  const n = changes.created.length + changes.moved.length + changes.activated.length + changes.deactivated.length;
+  const n = changes.created.length + changes.moved.length + changes.activated.length + changes.deactivated.length + changes.titled.length;
   if (n && io && !opts.dryRun) io.emit('team:updated');
   return {
     ok: true, dryRun: !!opts.dryRun, changed: n, changes,
