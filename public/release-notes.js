@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.7',
+    date: '2026-10-02',
+    notes: [
+      'The portal is its own thing, a customer requirements list, and one Lists button.',
+      '',
+      'PORTAL:',
+      '   ▸ In the portal you are in the portal: the left rail stays but goes blank (click the SDC logo to come back), the tab strip starts empty and shows only schedules you open from the portal — for the customer you are on — and any schedule opened there is the customer view: no staff toolbar, no filters, no over-allocation red, unflattened, with line numbers and who is assigned to each row.',
+      '   ▸ Two things on by default for a customer: the project summary card and the financial milestones. The card\'s toggle works there.',
+      '   ▸ ★ CUSTOMER REQUIREMENTS on every portal, right under Event status: what the job needs from the customer, needed by, the day it was checked off, and the variance between the two.',
+      '   ▸ The communication plan is one card with its sections inside, grids fitted to the page. Cadence dates can follow a schedule row and move with it.',
+      '   ▸ The app-scale control is on the portal header too.',
+      '',
+      'SCHEDULE:',
+      '   ▸ ★ CUSTOMER REQUIREMENTS list: what the customer owes the job, each with the date we need it by. Under ☰ Lists, right-click any line to move it there, the 👤 bracket shows it under the build in SDC yellow. Right-click a requirement to give it a section; flattened, they sort in by date.',
+      '   ▸ ☰ Lists: the risk schedule, the controls list, standard events and customer requirements behind one button on the banner. Inside a list it reads "Back to schedule".',
+      '   ▸ Nothing on the banner sits under anything else — buttons tighten, then scale, until there is clear air around the project name.',
+      '   ▸ The app-scale control (− 85% +) moved from the rail to the toolbar beside Zoom. Every page opens at 85%; move it for the visit. Changing it refits the chart and the toolbar never runs off the screen.',
+      '   ▸ The project summary card goes away when its toggle is off — in every list view and on an empty chart.',
+    ],
+  },
+  {
     version: '13.6',
     date: '2026-10-02',
     notes: [

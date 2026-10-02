@@ -238,22 +238,22 @@ body {
 /* ── App-scale control (sidebar bottom) — − / % / + . The % button doubles
    as reset-to-100. Muted like the rev pill; brightens on hover. ── */
 .app-scale-ctl {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
   gap: 2px;
-  /* Big bottom margin clears the floating signed-in avatar (position:fixed,
-     bottom 58px + ~46px tall) so the control sits right ABOVE it. */
-  margin: 4px 6px 6px;
+  margin: 0;
+  flex: 0 0 auto;
 }
 .app-scale-ctl button {
-  border: 1px solid rgba(255,255,255,0.18);
-  background: rgba(255,255,255,0.06);
-  color: rgba(255,255,255,0.55);
-  font-size: 10px;
-  font-weight: 700;
+  border: 1px solid #c8d5e3;
+  background: #fff;
+  color: #4b5e70;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
   line-height: 1;
-  padding: 3px 5px;
+  height: 30px;
+  padding: 0 8px;
   border-radius: 5px;
   cursor: pointer;
 }
@@ -1642,7 +1642,6 @@ body.customer-view .schedule-divider,
 body.customer-view #btn-add,
 body.customer-view #btn-add-action,
 body.customer-view .legend,
-body.customer-view #project-stats-popup,
 /* The signed-in user pill (avatar + name) is position:fixed, so it does not
    just sit on screen - it prints, landing in the middle of the schedule.
    Nobody wants their own initials stamped on a customer PDF. */
@@ -1686,9 +1685,9 @@ body.customer-view .schedule-project-name-pill {
    which would kill the user's ability to collapse/expand sections in
    customer view (and was the bug behind the "I can't toggle sections"
    feedback). */
-body.customer-view #tasks-table col:not([data-col="name"]):not([data-col="start"]):not([data-col="finish"]),
-body.customer-view #tasks-table tr:not(.group-header) th:not([data-col="name"]):not([data-col="start"]):not([data-col="finish"]),
-body.customer-view #tasks-table tr:not(.group-header) td:not([data-col="name"]):not([data-col="start"]):not([data-col="finish"]) {
+body.customer-view #tasks-table col:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]),
+body.customer-view #tasks-table tr:not(.group-header) th:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]),
+body.customer-view #tasks-table tr:not(.group-header) td:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]) {
   display: none !important;
 }
 /* Keep the grid as TIGHT as possible so the Gantt has every available pixel.
@@ -8368,7 +8367,7 @@ body.share-link-view #btn-customer-view-exit,
 body.share-link-view #btn-customer-view-flatten,
 body.share-link-view .app-sidebar,
 body.share-link-view .sdc-auth-pill,
-body.share-link-view .app-scale-ctl { display: none !important; }
+body.share-link-view .sdc-auth-pill-unused { display: none !important; }
 /* The sidebar is gone here — reclaim its reserved 90px so the page starts at
    the left edge like a normal website (no dead gray strip). */
 body.share-link-view { margin-left: 0 !important; }
@@ -15090,8 +15089,9 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
 
 /* Documents menu on the schedule toolbar. */
 .schedule-docs-wrap { position: relative; display: inline-block; }
-#docs-menu { position: absolute; top: calc(100% + 4px); right: 0; left: auto; z-index: 60; min-width: 216px; }
-#docs-menu button {
+#docs-menu, #lists-menu { position: absolute; top: calc(100% + 4px); right: 0; left: auto; z-index: 60; min-width: 216px; }
+#lists-menu button.is-active { font-weight: var(--fw-bold); color: var(--sdc-primary, #1574c4); }
+#docs-menu button, #lists-menu button {
   display: block;
   width: 100%;
   text-align: left;
@@ -17802,3 +17802,64 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 .pcp-empty { color: var(--text-muted); font-style: italic; }
 .pcp-mail { color: var(--sdc-primary, #1574c4); text-decoration: none; }
 .pcp-mail:hover { text-decoration: underline; }
+
+.cp-ro-date { font-variant-numeric: tabular-nums; }
+
+/* The customer sees who is on each row — ME 1 means something when it says
+   who the ME is. Hugs the name; placeholders read as the quiet italics they are. */
+body.customer-view #tasks-table th[data-col="assignee"],
+body.customer-view #tasks-table td[data-col="assignee"] { min-width: 110px; white-space: nowrap; padding-left: 6px; padding-right: 6px; }
+
+/* Line numbers stay in the customer view — a row has a number to point at.
+   The drag grip does not. */
+body.customer-view #tasks-table td[data-col="line"] .row-drag { display: none !important; }
+body.customer-view #tasks-table th[data-col="line"],
+body.customer-view #tasks-table td[data-col="line"] { min-width: 34px; padding-left: 4px; padding-right: 4px; }
+
+
+/* ── The customer list: SDC yellow, the customer's colour everywhere else ── */
+.gantt .bar-wrapper.is-cust-item text,
+.gantt .bar-wrapper.is-cust-item .bar-label { fill: #92400e !important; font-weight: var(--fw-bold); }
+.gantt .bar-wrapper.is-cust-item .bar { fill: #fde68a; }
+tr.cust-item-row td[data-col="name"],
+tbody tr.cust-item-row .name-cell-main,
+tbody tr.cust-item-row.is-action .name-cell-main,
+tbody tr.cust-item-row.is-overdue .name-cell-main,
+tbody tr.cust-item-row.is-overdue .name-cell-dur { color: #92400e; }
+/* Portal: their list. */
+.portal-grid.pci td { padding: 7px 10px; }
+.portal-grid.pci tr.is-done .pcp-t { color: var(--text-muted); text-decoration: line-through; }
+.pci-st { display: inline-block; font-size: var(--fs-2xs); font-weight: var(--fw-bold); padding: 1px 8px; border-radius: 999px; background: var(--surface-alt, #f1f5f9); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.pci-st.is-done { background: #dcfce7; color: #166534; }
+.pci-st.is-late { background: #fee2e2; color: #b91c1c; }
+
+
+/* In the portal the rail stays, blank: the logo (which takes you back to the
+   app) and nothing else. No navigation, no revision badge, no sign-in pill. */
+body.portal-mode .app-sidebar .app-sidebar-icon,
+body.portal-mode .app-sidebar .app-sidebar-sep,
+body.portal-mode .sdc-auth-pill { visibility: hidden !important; }
+body.portal-mode #app-sidebar-logo { cursor: pointer; }
+/* The share-link floating copy of the scale control is gone; the control
+   sits in the toolbar beside Zoom for everyone. */
+body.share-link-view .app-scale-ctl.share-floating { position: static; }
+
+/* The scale control on the portal header: same control, dressed for the
+   dark band, top right where the schedule keeps it. */
+.portal-bar .app-scale-ctl { margin-left: auto; }
+.portal-bar .app-scale-ctl button { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.28); color: #fff; }
+.portal-bar .app-scale-ctl button:hover { background: rgba(255,255,255,0.16); }
+
+/* The communication plan is one document: one card, sections inside it. */
+.pcp-card { border: 1px solid var(--border, #e2e8f0); border-radius: 10px; background: var(--surface, #fff); padding: 6px 16px 16px; }
+.pcp-card .pcp-block + .pcp-block { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-soft, #eef1f5); }
+.pcp-card .portal-team-proj { padding: 10px 0 0; }
+.pcp-card .pcp-title { margin: 14px 0 6px; }
+.pcp-card .portal-grid-wrap { border-radius: 6px; }
+.pcp-card .pcp-title:first-child { margin-top: 10px; }
+
+.pci-var { font-variant-numeric: tabular-nums; }
+.pci-var.is-late { color: #b91c1c; font-weight: var(--fw-bold); }
+.pci-var.is-early { color: #166534; font-weight: var(--fw-bold); }
+.pci-var.is-ontime { color: #166534; }
+.pci-none { font-style: italic; }

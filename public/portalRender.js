@@ -482,6 +482,65 @@ function _portalDueTableHtml(units) {
   </section>`;
 }
 
+// ── Customer requirements ─────────────────────────────────────────────
+// The customer list from the schedule, as the customer reads it: what the
+// job needs from them, by when, when it actually came, and the variance.
+function _portalCustomerListHtml(projects) {
+  if (!projects.length) return '';
+  const COLS = [
+    { key: 'item',   label: 'Requirement', w: 420 },
+    { key: 'due',    label: 'Needed by',   w: 110, min: 100 },
+    { key: 'done',   label: 'Completed',   w: 110, min: 100 },
+    { key: 'var',    label: 'Variance',    w: 110, min: 100, title: 'Completed against needed by — late is red, early is green' },
+    { key: 'status', label: 'Status',      w: 100, min: 90 },
+  ];
+  const today = _ymdLocal(new Date());
+  const days = (a, b) => Math.round((new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 86400000);
+  const span = (d) => Math.abs(d) < 7 ? Math.abs(d) + 'd' : (Math.round(Math.abs(d) / 7 * 10) / 10) + 'w';
+  const blocks = projects.map(p => {
+    const rows = (state.tasks || []).filter(t => t.project === p && t.phase_group === CUSTOMER_GROUP && (t.name || '').trim())
+      .sort((a, b) => String(a.end_date || '').localeCompare(String(b.end_date || '')) || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+    const key = String(p).replace(/[^a-z0-9]/gi, '').slice(0, 40);
+    const head = projects.length > 1 ? `<div class="portal-team-proj">${escapeHtml(p)}</div>` : '';
+    if (!rows.length) return `<div class="portal-teamblock">${head}<p class="portal-note pci-none">No items assigned yet.</p></div>`;
+    const body = rows.map(t => {
+      const pct = Number(t.progress) || 0;
+      const done = pct >= 100;
+      const due = t.end_date || t.start_date || '';
+      const when = done ? (t.completed_on || '') : '';
+      const late = !done && due && due < today;
+      let variance = '—', vCls = '';
+      if (done && when && due) {
+        const d = days(when, due);
+        variance = d === 0 ? 'on time' : span(d) + (d > 0 ? ' late' : ' early');
+        vCls = d > 0 ? ' is-late' : d < 0 ? ' is-early' : ' is-ontime';
+      } else if (late) {
+        variance = span(days(today, due)) + ' overdue';
+        vCls = ' is-late';
+      }
+      const st = done ? '<span class="pci-st is-done">Done</span>'
+        : late ? '<span class="pci-st is-late">Past due</span>'
+        : (pct > 0 && !isMilestoneLike(t)) ? `<span class="pci-st">${pct}%</span>`
+        : '<span class="pci-st">Open</span>';
+      return `<tr class="${done ? 'is-done' : ''}">
+        <td><span class="pcp-t">${escapeHtml(t.name)}</span></td>
+        <td><span class="pcp-t pcp-level">${escapeHtml(portalDate(due) || '—')}</span></td>
+        <td><span class="pcp-t pcp-level">${escapeHtml(portalDate(when) || '—')}</span></td>
+        <td><span class="pcp-t pci-var${vCls}">${escapeHtml(variance)}</span></td>
+        <td>${st}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="portal-teamblock">${head}
+      ${_portalGridHtml('pci-' + key, COLS, body, 'pci', 'item').replace(/<div class="pg-tools">[\s\S]*?<\/div>\s*/, '')}
+    </div>`;
+  }).join('');
+  return `<section class="portal-block">
+    <h2 class="portal-h2">Customer requirements</h2>
+    <p class="portal-note">What the job needs from your side and the date we need it by. When an item is checked off we record the day, and the variance says how it landed against the date.</p>
+    ${blocks}
+  </section>`;
+}
+
 // ── Communication plan ──────────────────────────────────────────────────
 // Read-only on the portal: who to call on both sides, the escalation ladder
 // and the meeting cadence. The SDC side is the company standard with this
@@ -539,7 +598,7 @@ function _portalCommPlanHtml(projects) {
   const blocks = projects.map(p => {
     const plan = _portalCpCache[p];
     const key = String(p).replace(/[^a-z0-9]/gi, '').slice(0, 40);
-    if (!plan) return `<div class="portal-teamblock"><p class="portal-note">Loading the communication plan…</p></div>`;
+    if (!plan) return `<div class="pcp-block"><p class="portal-note">Loading the communication plan…</p></div>`;
     const d = _commPlanDefaults(p);
     const leadership = (std && std.leadership) || d.leadership;
     const sdc = ((std && std.sdc) || d.sdc).map(r => {
@@ -560,10 +619,10 @@ function _portalCommPlanHtml(projects) {
     mine.forEach((r, idx) => { if (!used.has(idx)) customer.push(r); });
     const cadence = (plan.cadence && plan.cadence.length) ? plan.cadence : d.cadence;
     const cadRows = cadence.map(r => `<tr>
-      <td>${txt(r.name)}</td><td>${txt(portalDate(r.date) || r.date)}</td><td>${txt(r.frequency)}</td>
+      <td>${txt(r.name)}</td><td>${txt(portalDate(cadenceDateFor(p, r)) || cadenceDateFor(p, r))}</td><td>${txt(r.frequency)}</td>
       <td>${txt(r.when)}</td><td>${txt(r.format)}</td><td>${txt(r.owner)}</td><td>${txt(r.audience)}</td>
     </tr>`).join('');
-    return `<div class="portal-teamblock">
+    return `<div class="pcp-block">
       ${projects.length > 1 ? `<div class="portal-team-proj">${escapeHtml(p)}</div>` : ''}
       <div class="pcp-title">SDC leadership <span>where an issue goes once the project team has not settled it — level 1 first</span></div>
       ${grid('pcp-lead-' + key, cols('Escalate to them for…'), peopleRows(leadership), 'when')}
@@ -577,7 +636,7 @@ function _portalCommPlanHtml(projects) {
   }).join('');
   return `<section class="portal-block">
     <h2 class="portal-h2">Communication plan</h2>
-    ${blocks}
+    <div class="pcp-card">${blocks}</div>
   </section>`;
 }
 

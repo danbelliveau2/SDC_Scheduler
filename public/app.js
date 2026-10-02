@@ -898,7 +898,8 @@ function buildCanonicalTaskOrder() {
   for (const t of aboveSectionTasks) order.push(t.id);
   // Line numbers have to agree with the rows on screen, so the events are
   // placed by date here exactly as the grid places them.
-  const _evtOn = !state.scheduleView?.eventsMode && !!state.scheduleView?.eventsOverlay;
+  const _evtOn = !state.scheduleView?.eventsMode && !state.scheduleView?.customerMode
+    && !!(state.scheduleView?.eventsOverlay || state.scheduleView?.customerOverlay);
   const _evtFlat = state.scheduleView?.flatten || isPersonalMode();
   const _evtByDate = (_evtOn && _evtFlat) ? standardEventsByDateSection(filtered) : {};
   // Unflattened, only the ones placed by hand move; the rest stay in the
@@ -983,7 +984,7 @@ function buildCanonicalTaskOrder() {
   // against the same map every other row uses.
   const seen = new Set(order);
   state.tasks
-    .filter(t => (t.phase_group === RISK_GROUP || t.phase_group === CONTROLS_GROUP || t.phase_group === EVENTS_GROUP) && !seen.has(t.id))
+    .filter(t => (t.phase_group === RISK_GROUP || t.phase_group === CONTROLS_GROUP || t.phase_group === EVENTS_GROUP || t.phase_group === CUSTOMER_GROUP) && !seen.has(t.id))
     .sort((a, b) => String(a.sub_department || '').localeCompare(String(b.sub_department || ''))
       || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
     .forEach(t => order.push(t.id));
@@ -1173,7 +1174,7 @@ function relevantDisciplinesForTask(task) {
   // purchasing, finance, whoever. The section guardrail below exists to stop
   // a trade landing on an engineering row; it has nothing to say here, so
   // every department is offered.
-  if (task.phase_group === EVENTS_GROUP) return DISCIPLINES.map(d => d.key);
+  if (task.phase_group === EVENTS_GROUP || task.phase_group === CUSTOMER_GROUP) return DISCIPLINES.map(d => d.key);
   const pg  = task.phase_group;
   const dep = task.department;
   const sub = task.sub_department;
@@ -1806,6 +1807,10 @@ function applyFilters(tasks, opts = {}) {
     return tasks.filter(t => t.phase_group === CONTROLS_GROUP
       && (!project || t.project === project));
   }
+  if (!skipViewMode && state.scheduleView && state.scheduleView.customerMode) {
+    return tasks.filter(t => t.phase_group === CUSTOMER_GROUP
+      && (!project || t.project === project));
+  }
   if (!skipViewMode && state.scheduleView && state.scheduleView.riskMode) {
     // Risk mode is its own view of its own rows. Behind / Ahead / Hide done
     // / assignee / search all belong to the build, and leaving them applied
@@ -1827,6 +1832,10 @@ function applyFilters(tasks, opts = {}) {
     // Standard events are the same deal: off the build until S is on.
     if (!(state.scheduleView && state.scheduleView.eventsOverlay)) {
       tasks = tasks.filter(t => t.phase_group !== EVENTS_GROUP);
+    }
+    // And the customer list, until 👤 is on.
+    if (!(state.scheduleView && state.scheduleView.customerOverlay)) {
+      tasks = tasks.filter(t => t.phase_group !== CUSTOMER_GROUP);
     }
   }
   const qf = quick || {};
@@ -2179,7 +2188,7 @@ function cellHtml(t, key) {
       // running daily total over 100% somewhere in its span — flag the cell so the user
       // sees in the Schedule view that this person can't actually accomplish all their
       // higher-priority work plus this one.
-      const over = state.overAllocatedTaskIds && state.overAllocatedTaskIds.has(t.id);
+      const over = state.overAllocatedTaskIds && state.overAllocatedTaskIds.has(t.id) && !document.body.classList.contains('customer-view');
       const ph = isPlaceholder(t.assignee);
       const classes = [cls];
       if (over) classes.push('over-allocated');
@@ -2249,7 +2258,7 @@ function rowColorKey(task) {
   if (task.phase_group === CONTROLS_GROUP) return 'controls';
   // No department of their own; the kickoff palette reads as "about the
   // job" which is exactly what these are.
-  if (task.phase_group === EVENTS_GROUP) return 'kickoff';
+  if (task.phase_group === EVENTS_GROUP || task.phase_group === CUSTOMER_GROUP) return 'kickoff';
   // Sub-department wins. The sub-depts named 'engineering' / 'shop' (section 50
   // INSTALL has them) share the combined eng/shop palette so they read like
   // section 40's dept-only engineering/shop.
@@ -2468,7 +2477,8 @@ function rowHtml(t, depth = 0) {
   // The two side lists carry their colour in the grid as well as the chart,
   // so a row reads the same on both sides of the divider.
   const listCls = t.phase_group === EVENTS_GROUP ? ' std-event-row'
-    : t.phase_group === CONTROLS_GROUP ? ' ctrl-item-row' : '';
+    : t.phase_group === CONTROLS_GROUP ? ' ctrl-item-row'
+    : t.phase_group === CUSTOMER_GROUP ? ' cust-item-row' : '';
   return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}${listCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
 }
 
@@ -2528,8 +2538,17 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = nu
 // its own. Mirrors where the unflattened walk parks each one.
 // The section a standard event has been placed in, or '' for one that has
 // not been placed.
+// A standard event or a customer requirement can be given a section, so it
+// shows there (not in the list at the bottom) when its bracket is on.
+function _sideListOn(t) {
+  const sv = state.scheduleView || {};
+  if (!t) return false;
+  if (t.phase_group === EVENTS_GROUP) return !!sv.eventsOverlay;
+  if (t.phase_group === CUSTOMER_GROUP) return !!sv.customerOverlay;
+  return false;
+}
 function eventSectionKey(t) {
-  if (!t || t.phase_group !== EVENTS_GROUP) return '';
+  if (!t || (t.phase_group !== EVENTS_GROUP && t.phase_group !== CUSTOMER_GROUP)) return '';
   const sub = String(t.sub_department || '');
   const i = sub.indexOf(':');
   if (i < 0) return '';
@@ -2541,7 +2560,8 @@ async function setEventSection(id, sectionKey) {
   const t = state.tasks.find(x => x.id === id);
   if (!t) return;
   pushSectionUndo(t, 'Set the section for "' + (t.name || 'event') + '"');
-  const sub = sectionKey ? (EVENTS_SUB + ':' + sectionKey) : EVENTS_SUB;
+  const base = t.phase_group === CUSTOMER_GROUP ? CUSTOMER_SUB : EVENTS_SUB;
+  const sub = sectionKey ? (base + ':' + sectionKey) : base;
   try {
     await api.update(id, { sub_department: sub });
   } catch (e) {
@@ -2555,14 +2575,15 @@ async function setEventSection(id, sectionKey) {
     return;
   }
   const g = HIERARCHY.find(x => x.key === sectionKey);
-  showToast(g ? ('Shows under ' + g.label + ' when S is on.')
-              : 'No section — shows at the bottom when S is on.',
+  const br = t.phase_group === CUSTOMER_GROUP ? '👤' : 'S';
+  showToast(g ? ('Shows under ' + g.label + ' when ' + br + ' is on.')
+              : ('No section — shows at the bottom when ' + br + ' is on.'),
             { kind: 'success' });
 }
 
 function standardEventsByDateSection(filtered) {
   const out = {};
-  const evts = filtered.filter(t => t.phase_group === EVENTS_GROUP);
+  const evts = filtered.filter(_sideListOn);
   if (!evts.length) return out;
   // Each section's date span, taken from the rows already in it.
   const spans = [];
@@ -2641,7 +2662,7 @@ function renderTable() {
   const empty = document.getElementById('empty-state');
 
   const _listMode = !!(state.scheduleView &&
-    (state.scheduleView.eventsMode || state.scheduleView.controlsMode));
+    (state.scheduleView.eventsMode || state.scheduleView.controlsMode || state.scheduleView.customerMode));
   if (filtered.length === 0 && !_listMode) {
     tbody.innerHTML = '';
     if (empty) {
@@ -2892,10 +2913,12 @@ function renderTable() {
   if (controlsMode) html += _controlsSectionRowsHtml(filtered, collapsedGroups);
   const eventsMode = !!(state.scheduleView && state.scheduleView.eventsMode);
   if (eventsMode) html += _eventsSectionRowsHtml(filtered, collapsedGroups);
+  const customerMode = !!(state.scheduleView && state.scheduleView.customerMode);
+  if (customerMode) html += _customerSectionRowsHtml(filtered, collapsedGroups);
   // Flattened, the events sort into the sections by date (see
   // standardEventsByDateSection). Unflattened they keep their own section
   // at the end, because there is no department to tuck them under.
-  const _evtOn = !eventsMode && !!(state.scheduleView && state.scheduleView.eventsOverlay);
+  const _evtOn = !eventsMode && !customerMode && !!(state.scheduleView && (state.scheduleView.eventsOverlay || state.scheduleView.customerOverlay));
   const _evtByDate = (_evtOn && flattenEffective) ? standardEventsByDateSection(filtered) : {};
   // Unflattened, only the ones placed by hand move; the rest stay in the
   // list at the bottom.
@@ -2924,7 +2947,7 @@ function renderTable() {
       || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
     for (const t of rows) html += inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, 1);
   }
-  for (const group of ((riskMode || controlsMode || eventsMode || mFilter || _miniFlat) ? [] : HIERARCHY)) {
+  for (const group of ((riskMode || controlsMode || eventsMode || customerMode || mFilter || _miniFlat) ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     // In a mini schedule most sections have nothing in them; a column of
@@ -3105,8 +3128,13 @@ function renderTable() {
   }
   // Standard events close the schedule. They belong to the job rather than
   // to a department, so there is no sub-section to tuck them under.
-  if (!riskMode && !controlsMode && !eventsMode && !Object.keys(_evtByDate).length) {
+  if (!riskMode && !controlsMode && !eventsMode && !customerMode && !Object.keys(_evtByDate).length) {
     html += _eventsSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
+  }
+  // The customer's list closes it out — theirs, not a department's.
+  if (!riskMode && !controlsMode && !eventsMode && !customerMode
+      && !(flattenEffective && state.scheduleView && state.scheduleView.customerOverlay)) {
+    html += _customerSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
   }
 
   tbody.innerHTML = html;
@@ -4466,6 +4494,9 @@ function isTaskInCollapsedGroup(task) {
 function renderGantt() {
   const container = document.getElementById('gantt-container');
   if (!container) return;
+  // The summary card answers to its own toggle, whatever the chart shows —
+  // including an empty chart, which returns before the drawers below run.
+  try { renderProjectStatsPopup(); } catch (_) {}
   const empty = document.getElementById('gantt-empty');
   // Same task ordering as the grid so rows align side-by-side. Tasks inside a
   // collapsed group are dropped here so the Gantt mirrors the grid's visibility.
@@ -4476,7 +4507,7 @@ function renderGantt() {
   // need bars. Without it they were dropped as ''leftovers from an old data
   // structure'' and the Gantt sat empty in risk mode even though every row
   // had dates.
-  const validSectionKeys = new Set([...HIERARCHY.map(g => g.key), RISK_GROUP, CONTROLS_GROUP, EVENTS_GROUP]);
+  const validSectionKeys = new Set([...HIERARCHY.map(g => g.key), RISK_GROUP, CONTROLS_GROUP, EVENTS_GROUP, CUSTOMER_GROUP]);
   // v4.50: when NOT in sortByStart mode, use the GRID's canonical order
   // (buildCanonicalTaskOrder) so the Gantt bars sort the same way the
   // grid rows do — Receipt of PO at top, Backlog under it, section 10
@@ -4575,7 +4606,10 @@ function renderGantt() {
     // items green. Not the lime — that is reserved for the spine anchors.
     if (t.phase_group === EVENTS_GROUP)   classes.push('is-std-event');
     if (t.phase_group === CONTROLS_GROUP) classes.push('is-ctrl-item');
-    if (state.overAllocatedTaskIds.has(t.id)) classes.push('over-allocated');
+    if (t.phase_group === CUSTOMER_GROUP) classes.push('is-cust-item');
+    // Over-allocation is our staffing problem, not the customer's: the
+    // customer view shows behind-schedule, never over-allocated.
+    if (state.overAllocatedTaskIds.has(t.id) && !document.body.classList.contains('customer-view')) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
       id: String(t.id),
@@ -7216,6 +7250,11 @@ function drawMilestoneDiamonds() {
       // anchors and a controls line is not one.
       dFill = '#86efac';  // green-300
       dStroke = '#16a34a'; // green-600
+      dStrokeW = '1.5';
+    } else if (task.phase_group === CUSTOMER_GROUP) {
+      // The customer's items: SDC yellow, the customer's colour everywhere else.
+      dFill = '#fde68a';
+      dStroke = '#b45309';
       dStrokeW = '1.5';
     } else if (task.is_action) {
       dFill = '#3a8edc';  // SDC primary lighter
@@ -12918,8 +12957,10 @@ function renderProjectTabs() {
     || state.view === 'portal';
   let visibleList = state.openProjects.slice();
   if (inPortal) {
+    // Only schedules opened FROM the portal, for the customer it is on. The
+    // tabs you have open in the app stay yours; the portal starts with none.
     const cust = _portalCustomer || '';
-    visibleList = visibleList.filter(p => p && projectCustomerName(p) === cust);
+    visibleList = visibleList.filter(p => p && _portalOpened.has(p) && projectCustomerName(p) === cust);
   }
   const templatesFirst = [
     visibleList.find(p => p === ''),
@@ -15935,13 +15976,19 @@ function syncSalesModeUI() {
 // overflows — detect that and zoom the whole bar down until everything fits.
 // Text just gets proportionally smaller; nothing ever clips.
 function fitScheduleToolbar() {
+  // applyAppScale sets the toolbar's counter-zoom (1 / app scale) so the
+  // row holds one size on a screen. Measure at THAT zoom and, if the row
+  // still runs past the window, scale it down from there — never from 1,
+  // which threw the counter-zoom away and let the row walk off the screen.
   try { applyAppScale(); } catch (_) {}
   const bar = document.querySelector('.schedule-toolbar');
   if (!bar) return;
-  bar.style.zoom = '';
+  const base = 1 / _appScale();
+  bar.style.zoom = String(base);
+  void bar.offsetWidth;
   const need = bar.scrollWidth;
   const have = bar.clientWidth;
-  if (need > have && need > 0) bar.style.zoom = Math.max(0.6, have / need);
+  if (need > have && need > 0) bar.style.zoom = String(Math.max(0.5, base * (have / need)));
 }
 // Tabs render at natural width so full names read whenever there's room;
 // when a row overflows, .tabs-tight clamps its tabs back to equal width +
@@ -16054,6 +16101,8 @@ function render(opts = {}) {
   try { syncRiskModeButtons(); } catch (_) {}
   try { syncControlsButtons(); } catch (_) {}
   try { syncEventsButtons(); } catch (_) {}
+  try { syncCustomerButtons(); } catch (_) {}
+  try { syncListsButton(); } catch (_) {}
   try { reconcileActiveMini(); syncMiniButton(); wireMiniMenu(); } catch (_) {}
 
   // Opening a project should not need three clicks to become readable. When
@@ -17273,6 +17322,117 @@ function _controlsSectionRowsHtml(filtered, collapsedGroups, opts) {
   }
   return html;
 }
+// ── Customer list ───────────────────────────────────────────────────────
+// What the CUSTOMER owes the job — drawings to approve, parts to send, a
+// room to clear — each with the date we need it by. Their own list beside
+// the build, brought onto it with the 👤 bracket, and shown to the
+// customer on the portal as their list of responsibilities.
+const CUSTOMER_GROUP = 'CUST';
+const CUSTOMER_SUB = 'customer-list';
+const CUSTOMER_ORIGIN_KEY = 'customer_origin';
+
+function customerItems(project) {
+  return state.tasks
+    .filter(t => t.project === project && t.phase_group === CUSTOMER_GROUP)
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+function _customerOrigins() {
+  return (state.settings && state.settings[CUSTOMER_ORIGIN_KEY]) || {};
+}
+async function moveToCustomerList(id) {
+  const t = state.tasks.find(x => x.id === id);
+  if (!t || t.phase_group === CUSTOMER_GROUP) return;
+  state.settings = state.settings || {};
+  const map = state.settings[CUSTOMER_ORIGIN_KEY] = { ..._customerOrigins() };
+  map[String(t.id)] = { phase_group: t.phase_group || null, department: t.department || null, sub_department: t.sub_department || null, sort_order: Number(t.sort_order) || 0 };
+  try { await api.putSetting(CUSTOMER_ORIGIN_KEY, map); } catch (_) {}
+  pushSectionUndo(t, 'Move "' + (t.name || 'task') + '" to the customer list');
+  const sibs = customerItems(t.project);
+  const sort = sibs.length ? (Number(sibs[sibs.length - 1].sort_order) || 0) + 1 : 1;
+  try {
+    await api.update(id, { phase_group: CUSTOMER_GROUP, department: null, sub_department: CUSTOMER_SUB, sort_order: sort });
+  } catch (e) { showToast(e.message || 'Could not move the line.', { kind: 'error' }); return; }
+  await loadTasks();
+  showToast('Moved to the customer requirements. Turn on 👤 to see it here.', { kind: 'success' });
+}
+async function moveOutOfCustomerList(id) {
+  pushSectionUndo(state.tasks.find(x => x.id === id), 'Move back to the schedule');
+  const home = _customerOrigins()[String(id)] || { phase_group: 'kickoff', department: null, sub_department: null };
+  try {
+    await api.update(id, {
+      phase_group: home.phase_group || 'kickoff',
+      department: home.department || null,
+      sub_department: home.sub_department || null,
+      sort_order: home.sort_order != null ? home.sort_order : undefined,
+    });
+  } catch (e) { showToast(e.message || 'Could not move the line.', { kind: 'error' }); return; }
+  const map = { ..._customerOrigins() }; delete map[String(id)];
+  state.settings = state.settings || {}; state.settings[CUSTOMER_ORIGIN_KEY] = map;
+  try { await api.putSetting(CUSTOMER_ORIGIN_KEY, map); } catch (_) {}
+  await loadTasks();
+  showToast('Moved back to the schedule.', { kind: 'success' });
+}
+function _customerSectionRowsHtml(filtered, collapsedGroups, opts) {
+  const project = state.filters.project || '';
+  const cols = state.layout.columnOrder.length;
+  const overlay = !!(opts && opts.overlay);
+  if (overlay && !(state.scheduleView && state.scheduleView.customerOverlay)) return '';
+  const rows = filtered.filter(t => t.phase_group === CUSTOMER_GROUP)
+    .filter(t => !overlay || !eventSectionKey(t))
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+  if (overlay && !rows.length) return '';
+  const path = groupPath(CUSTOMER_GROUP, null, CUSTOMER_SUB);
+  const collapsed = collapsedGroups.has(path);
+  let html = headerRowHtml(1, 'CUSTOMER REQUIREMENTS', path, collapsed, { 'section-key': 'customer-list' });
+  if (collapsed) return html;
+  for (const t of rows) html += rowHtml(t, 2);
+  if (!rows.length && project) {
+    for (let i = 0; i < 3; i++) {
+      html += `<tr class="list-blank-row" data-add-list="customer"><td colspan="${cols}">
+        <span class="list-blank-hint">Click to add a line</span></td></tr>`;
+    }
+    html += `<tr class="ctrl-add-row"><td colspan="${cols}">
+      <span class="risk-mode-hint">Nothing here yet — right-click a line on the schedule and pick “Move to customer requirements”, or click a blank line above.</span>
+    </td></tr>`;
+  }
+  return html;
+}
+function syncListsButton() {
+  const btn = document.getElementById('btn-lists');
+  if (!btn) return;
+  const sv = state.scheduleView || {};
+  const on = sv.riskMode ? '⚠ Risk schedule' : sv.controlsMode ? '⚙ Controls list'
+    : sv.eventsMode ? '★ Standard events' : sv.customerMode ? '👤 Customer requirements' : '';
+  btn.textContent = on ? '← Back to schedule' : '☰ Lists ▾';
+  btn.title = on
+    ? 'You are looking at the ' + on.replace(/^\S+\s/, '') + '. Back to the build — sections 05 / 10 / 40 / 50.'
+    : 'The job\'s side lists — the risk schedule, the controls list, standard events and the customer list. One at a time, instead of the build.';
+  btn.classList.toggle('is-active', !!on);
+}
+function syncCustomerButtons() {
+  const on = !!(state.scheduleView && state.scheduleView.customerMode);
+  const btn = document.getElementById('btn-customer-mode');
+  if (btn) {
+    btn.textContent = on ? '← Back to schedule' : '👤 Customer requirements';
+    btn.title = on
+      ? 'Back to the build — sections 05 / 10 / 40 / 50.'
+      : 'What the customer owes this job — approvals, parts, site work — each with the date we need it by. Shown to them on the portal.';
+    btn.classList.toggle('is-active', on);
+  }
+  const ov = document.getElementById('btn-view-customer');
+  if (ov) {
+    const project = state.filters.project || '';
+    const n = project ? customerItems(project).length : 0;
+    ov.classList.toggle('hidden', on || !project);
+    const showing = !!(state.scheduleView && state.scheduleView.customerOverlay);
+    ov.classList.toggle('is-active', showing);
+    ov.title = showing
+      ? 'Hide the customer list again.'
+      : (n ? 'Show the ' + n + ' customer item' + (n === 1 ? '' : 's') + ' under the build.'
+           : 'Nothing on the customer list yet — right-click any line to move it here.');
+  }
+}
+
 // ── Standard project events ─────────────────────────────────────────────
 // The things that happen on every job and belong to nobody's department:
 // send the marketing videos, get the spare parts list out, the standing
@@ -17376,7 +17536,7 @@ async function moveOutOfStandardEvents(id) {
 function placedEventsBySection(filtered) {
   const out = {};
   for (const t of filtered) {
-    if (t.phase_group !== EVENTS_GROUP) continue;
+    if (!_sideListOn(t)) continue;
     const key = eventSectionKey(t);
     if (!key) continue;
     (out[key] ||= []).push(t);
@@ -18015,6 +18175,9 @@ const PORTAL_ANCHORS = [
 ];
 
 let _portalCustomer = null;
+// Schedules opened from the portal this visit. The portal's tab strip shows
+// these and nothing else — never the tabs open in the app behind it.
+const _portalOpened = new Set();
 // Set from ?customer= (staff preview) OR a real customer-session cookie —
 // when locked, the portal shows one customer and offers no way to look at
 // another.
@@ -18190,6 +18353,11 @@ function renderPortal() {
                  title="Create, reset, or disable ${escapeHtml(cust)}'s login for the customer portal (portal.sdcautomation.com).">Manage login</button>`}
           <span class="portal-bar-meta">${units.length} machine${units.length === 1 ? '' : 's'} · ${projects.length} project${projects.length === 1 ? '' : 's'}</span>
         </div>
+        <div class="app-scale-ctl portal-scale" title="App scale — size the page to this screen.">
+          <button type="button" data-scale="minus" title="Scale the page down">−</button>
+          <button type="button" data-scale="pct" title="Click to reset to the default (85%)">${Math.round(_appScale() * 100)}%</button>
+          <button type="button" data-scale="plus" title="Scale the page up">+</button>
+        </div>
 
       </div>
     </header>
@@ -18203,9 +18371,13 @@ function renderPortal() {
     ${_portalRiskHtml(scopeProjects)}
     ${_portalTeamHtml(scopeProjects)}
     ${_portalWorkHtml(scopeProjects, _portalMachine)}
+    ${_portalCustomerListHtml(scopeProjects)}
     ${_portalCommPlanHtml(scopeProjects)}`}
   `;
   _wirePortal(root);
+  // The tab strip shows only this customer's schedules. The customer can
+  // change here, so the strip is redrawn with the page.
+  try { renderProjectTabs(); } catch (_) {}
 }
 
 // Committed vs current FAT, nothing else. Ship and SAT fall out of the
@@ -18243,6 +18415,7 @@ function _portalPhaseOf(t) {
   if (t.phase_group === RISK_GROUP) return 'Risk mitigation';
   if (t.phase_group === CONTROLS_GROUP) return 'Controls list';
   if (t.phase_group === EVENTS_GROUP) return 'Standard events';
+  if (t.phase_group === CUSTOMER_GROUP) return 'Customer requirements';
   return byGroup(t.phase_group) || 'Other';
 }
 
@@ -18519,6 +18692,7 @@ function makeGridResizable(table, storeKey) {
 
 function portalOpenSchedule(project, machine) {
   state._portalReturn = _portalCustomer || null;
+  _portalOpened.add(project);
   if (!state.openProjects.includes(project)) state.openProjects.push(project);
   state.filters.project = project;
   // The whole job, as scheduled: no machine filter unless a machine was
@@ -18550,6 +18724,10 @@ function portalBackFromSchedule() {
 }
 
 function _wirePortal(root) {
+  root.querySelectorAll('[data-scale]').forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.scale;
+    setAppScale(k === 'minus' ? _appScale() - 0.10 : k === 'plus' ? _appScale() + 0.10 : APP_SCALE_DEFAULT);
+  }));
   // Pick a project: the page becomes that project. Pick it again to step
   // back out to all of them.
   root.querySelectorAll('[data-pick-proj]').forEach(row => {
@@ -18613,9 +18791,11 @@ function _wirePortal(root) {
   try {
     _wirePortalGrids(root);
     // The plan's grids open compressed and lined up, like the plan itself.
-    const pcp = root.querySelectorAll('table.pcp[data-grid]');
-    pcp.forEach(t => _portalCompressGrid(t));
-    _portalAlignFirstCol(pcp);
+    root.querySelectorAll('table.pcp[data-grid], table.pci[data-grid]').forEach(t => _portalCompressGrid(t));
+    // Only the plan's people grids share a first column. The customer list's
+    // first column is its sentence column — lining up to it handed every
+    // Role column the whole table.
+    _portalAlignFirstCol(root.querySelectorAll('table.pcp[data-grid]'));
   } catch (_) {}
   root.querySelector('[data-portal-login-manage]')?.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -20725,15 +20905,13 @@ function handleRowContextMenu(e) {
   // Checked before anything else because in an empty list there is no row
   // and no header under the pointer to find.
   const _sv = state.scheduleView || {};
-  if ((_sv.eventsMode || _sv.controlsMode) && !e.target.closest('tr[data-id]')) {
+  if ((_sv.eventsMode || _sv.controlsMode || _sv.customerMode) && !e.target.closest('tr[data-id]')) {
     e.preventDefault();
-    const inEvents = !!_sv.eventsMode;
+    const grp = _sv.eventsMode ? EVENTS_GROUP : _sv.customerMode ? CUSTOMER_GROUP : CONTROLS_GROUP;
+    const sub = _sv.eventsMode ? EVENTS_SUB : _sv.customerMode ? CUSTOMER_SUB : CONTROLS_SUB;
     showContextMenu(e.clientX, e.clientY, [{
       label: '＋ Add task',
-      onClick: () => createTaskInSection(
-        inEvents ? EVENTS_GROUP : CONTROLS_GROUP,
-        null,
-        inEvents ? EVENTS_SUB : CONTROLS_SUB),
+      onClick: () => createTaskInSection(grp, null, sub),
     }]);
     return;
   }
@@ -20808,6 +20986,9 @@ function handleRowContextMenu(e) {
     items.push(task.phase_group === EVENTS_GROUP
       ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfStandardEvents(id) }
       : { label: '★ Move to standard events', onClick: () => moveToStandardEvents(id) });
+    items.push(task.phase_group === CUSTOMER_GROUP
+      ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfCustomerList(id) }
+      : { label: '👤 Move to customer requirements', onClick: () => moveToCustomerList(id) });
     // Mini schedules this line is in, and the ones it could join.
     const _minis = Object.keys(miniSchedules()).sort((a, b) => a.localeCompare(b));
     if (_minis.length) {
@@ -20823,7 +21004,7 @@ function handleRowContextMenu(e) {
     // Which section this event shows under when S is on. Without one it
     // sits in the list at the bottom, and the only way to move it was to
     // flatten the whole schedule.
-    if (task.phase_group === EVENTS_GROUP) {
+    if (task.phase_group === EVENTS_GROUP || task.phase_group === CUSTOMER_GROUP) {
       const cur = eventSectionKey(task);
       items.push({ separator: true });
       HIERARCHY.forEach(g => {
@@ -21339,16 +21520,10 @@ function moveTaskInline(id, x, y) {
 // fixed-position popups placed from mouse coordinates divide by the scale
 // (see showContextMenu / _confirmPredChange / _jhpTipMove).
 const APP_SCALE_DEFAULT = 0.85;  // Dan: "what is 85% right now, be the default"
-function _appScale() {
-  try {
-    if (!localStorage.getItem('sdcAppScaleReset2')) {
-      localStorage.removeItem('sdcAppScale');
-      localStorage.setItem('sdcAppScaleReset2', '1');
-    }
-  } catch (_) {}
-  const v = Number(localStorage.getItem('sdcAppScale'));
-  return (v >= 0.5 && v <= 1.5) ? v : APP_SCALE_DEFAULT;
-}
+// Every page opens at the default (Dan: "any page you open always opens
+// 85%"). Move it from there for this visit; a reload starts over.
+let _appScaleCur = APP_SCALE_DEFAULT;
+function _appScale() { return _appScaleCur; }
 const CHROME_SEL = ['#project-tab-bar', '.schedule-toolbar', '#schedule-project-banner'];
 function _fitChrome(appZoom) {
   const inv = 1 / appZoom;
@@ -21380,36 +21555,59 @@ function _fitChrome(appZoom) {
 function applyAppScale() {
   const s = _appScale();
   document.body.style.zoom = String(s);
-  const pct = document.getElementById('app-scale-pct');
-  if (pct) { pct.textContent = Math.round(s * 100) + '%'; pct.title = 'App scale. Click to reset to the default.'; pct.classList.remove('is-auto'); }
+  document.querySelectorAll('#app-scale-pct, [data-scale="pct"]').forEach(pct => { pct.textContent = Math.round(s * 100) + '%'; pct.title = 'App scale. Click to reset to the default.'; pct.classList.remove('is-auto'); });
   try { _fitChrome(s); } catch (_) {}
-  // The banner's own buttons tighten when the row is too wide for the
-  // screen; the scale itself is not touched.
-  try {
-    const banner = document.getElementById('schedule-project-banner');
-    const rail = document.getElementById('app-sidebar');
-    if (banner && banner.offsetParent !== null) {
-      const need = () => { let n = 0; banner.querySelectorAll('.banner-zone').forEach(z => { const inner = Array.from(z.children).reduce((t, c) => t + c.scrollWidth, 0); n += Math.max(inner, z.scrollWidth) + 16; }); return n; };
-      const railW = rail ? rail.getBoundingClientRect().width / s : 0;
-      banner.classList.remove('banner-compact');
-      if ((railW + need()) * s > window.innerWidth - 8) banner.classList.add('banner-compact');
-    }
-  } catch (_) {}
+  try { fitBanner(); } catch (_) {}
+}
+// Nothing on the banner may sit under anything else. The name is pinned to
+// the centre; the two button zones close in on it from either side. First
+// the buttons tighten (banner-compact); if they still reach the name, both
+// zones scale down until there is clear air between them and it.
+function fitBanner() {
+  const banner = document.getElementById('schedule-project-banner');
+  if (!banner || banner.offsetParent === null) return;
+  const L = banner.querySelector('.banner-left');
+  const C = banner.querySelector('.banner-center');
+  const R = banner.querySelector('.banner-right');
+  if (!L || !C || !R) return;
+  const GAP = 10;
+  banner.classList.remove('banner-compact');
+  L.style.zoom = ''; R.style.zoom = '';
+  const clear = () => {
+    const l = L.getBoundingClientRect(), c = C.getBoundingClientRect(), r = R.getBoundingClientRect();
+    // A zone with nothing in it has no edge to collide with.
+    const lRight = L.children.length ? Math.max(...Array.from(L.children).map(e => e.getBoundingClientRect().right)) : l.left;
+    const rLeft = R.children.length ? Math.min(...Array.from(R.children).map(e => e.getBoundingClientRect().left)) : r.right;
+    return lRight + GAP <= c.left && c.right + GAP <= rLeft;
+  };
+  if (clear()) return;
+  banner.classList.add('banner-compact');
+  if (clear()) return;
+  // Scale the zones. Room for the zones is the banner minus the name and
+  // its air; what they need is what their buttons measure at full size.
+  const width = (z) => Array.from(z.children).reduce((t, e) => t + e.offsetWidth, 0) + 6 * Math.max(0, z.children.length - 1);
+  const need = width(L) + width(R);
+  const room = banner.clientWidth - C.offsetWidth - 2 * GAP - 36;
+  if (need <= 0 || room <= 0) return;
+  const k = Math.max(0.6, Math.min(1, room / need));
+  L.style.zoom = String(k); R.style.zoom = String(k);
 }
 function setAppScale(s) {
   s = Math.round(Math.min(1.5, Math.max(0.5, s)) * 20) / 20;
-  try { localStorage.setItem('sdcAppScale', String(s)); } catch (_) {}
-  applyAppScale();
+  _appScaleCur = s;
+  // Everything that fits itself to the screen fits again at the new scale.
+  fitScheduleToolbar();
+  try { fitProjectTabRows(); } catch (_) {}
   // The Gantt sizes itself off pixel measurements — re-render + re-align
   // after the layout re-scales so bars stay glued to their grid rows.
   try { renderGantt(); } catch (_) {}
   try { if (state.view === 'team') renderResources(); } catch (_) {}
-  // Customer share view: re-fit after the scale change so the whole project
-  // stays in view at the new size.
-  if (document.body.classList.contains('share-link-view')) {
-    setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 250);
-  }
+  // A new scale is a new screen: refit the chart to it, every time (Dan).
+  setTimeout(() => { try { if (state.view === 'schedule') zoomToFit(); } catch (_) {} }, 250);
 }
+document.getElementById('app-sidebar-logo')?.addEventListener('click', () => {
+  if (document.body.classList.contains('portal-mode')) setView('projects');
+});
 (function initAppScale() {
   applyAppScale();
   // 10% steps — big, decisive bumps (5% felt like fiddling).
@@ -22701,6 +22899,25 @@ function _commPlanDefaults(project) {
   };
 }
 
+// A cadence line can follow a schedule row — the kickoff meetings are rows
+// on every schedule — so its date moves when the schedule moves. A line
+// with no row picked and no date typed is matched by name once.
+const CADENCE_AUTO_LINK = [
+  [/internal.*kick/i, /internal.*kick/i],
+  [/external.*kick/i, /external.*kick|customer.*kick|kick.*customer/i],
+];
+function cadenceLinkedTask(project, r) {
+  const rows = (state.tasks || []).filter(t => t.project === project && (t.name || '').trim());
+  if (r.link_task_id) return rows.find(t => t.id === Number(r.link_task_id)) || null;
+  if (String(r.date || '').trim()) return null;
+  const rule = CADENCE_AUTO_LINK.find(([line]) => line.test(r.name || ''));
+  return rule ? (rows.find(t => rule[1].test(t.name || '')) || null) : null;
+}
+function cadenceDateFor(project, r) {
+  const t = cadenceLinkedTask(project, r);
+  return t ? (t.end_date || t.start_date || '') : (r.date || '');
+}
+
 // Phone numbers read as 440-223-7822 however they were typed: ten digits
 // get the dashes, a leading 1 is dropped, an extension rides along.
 function formatPhone(v) {
@@ -22899,7 +23116,8 @@ async function openCommPlanModal(project) {
   };
   const CAD_COLS = [
     { key: 'name',      label: 'Communication',  w: 210 },
-    { key: 'date',      label: 'Date',           w: 140, min: 138, title: 'When it happened — or the date it is set for' },
+    { key: 'link',      label: 'From schedule',  w: 220, min: 200, title: 'Pick the schedule row this date follows — it stays current as the schedule moves. Leave it blank to type a date.' },
+    { key: 'date',      label: 'Date',           w: 140, min: 120, title: 'When it happened — or the date it is set for' },
     { key: 'frequency', label: 'Frequency',      w: 110, min: 110 },
     { key: 'when',      label: 'When',           w: 150, min: 150, title: 'The standing slot — e.g. Tuesdays 9:00 AM ET' },
     { key: 'format',    label: 'Format',         w: 170 },
@@ -22908,16 +23126,26 @@ async function openCommPlanModal(project) {
   ];
   const cadenceTable = () => {
     const FREQ = ['Once', 'Weekly', 'Biweekly', 'As needed'];
-    const rows = plan.cadence.map((r, i) => `<tr>
+    const schedRows = (state.tasks || []).filter(t => t.project === project && (t.name || '').trim())
+      .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+    const rows = plan.cadence.map((r, i) => {
+      const linked = cadenceLinkedTask(project, r);
+      const linkSel = `<select class="cp-link" data-cp="cadence.${i}.link_task_id"><option value="">— type a date —</option>${schedRows.map(t =>
+        `<option value="${t.id}"${linked && linked.id === t.id ? ' selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}</select>`;
+      const dateCell = linked
+        ? `<span class="cp-ro cp-ro-date" title="From the schedule row — moves with it">${escapeHtml(portalDate(linked.end_date || linked.start_date) || '—')}</span><textarea hidden data-cp="cadence.${i}.date">${escapeHtml(r.date || '')}</textarea>`
+        : `<input type="date" class="cp-date" data-cp="cadence.${i}.date" value="${/^\d{4}-\d{2}-\d{2}$/.test(String(r.date || '')) ? r.date : ''}">`;
+      return `<tr>
       <td>${inp('cadence', i, 'name', r.name, 'Meeting / update')}</td>
-      <td><input type="date" class="cp-date" data-cp="cadence.${i}.date" value="${/^d{4}-d{2}-d{2}$/.test(String(r.date || '')) ? r.date : ''}"></td>
+      <td>${linkSel}</td>
+      <td>${dateCell}</td>
       <td><select data-cp="cadence.${i}.frequency" class="cp-freq">${FREQ.map(o =>
         `<option value="${o}"${(r.frequency || '') === o ? ' selected' : ''}>${o}</option>`).join('')}${FREQ.includes(r.frequency || '') ? '' : `<option value="${escapeHtml(r.frequency || '')}" selected>${escapeHtml(r.frequency || '—')}</option>`}</select></td>
       <td>${inp('cadence', i, 'when', r.when, 'e.g. Tuesdays 9:00 AM')}</td>
       <td>${inp('cadence', i, 'format', r.format, 'Teams / email')}</td>
       <td>${inp('cadence', i, 'owner', r.owner, 'SDC PM')}</td>
       <td>${inp('cadence', i, 'audience', r.audience, 'Who attends')}</td>
-    </tr>`).join('');
+    </tr>`; }).join('');
     return _portalGridHtml('cp-cadence', CAD_COLS, rows, 'cp-table', 'audience')
       .replace('<table ', '<table data-cp-section="cadence" ');
   };
@@ -23024,6 +23252,16 @@ async function openCommPlanModal(project) {
         wire();
       });
     });
+    overlay.querySelectorAll('select.cp-link').forEach(el => {
+      el.addEventListener('change', () => {
+        readPlan();
+        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
+        wire();
+        savePlan();
+      });
+    });
+    // A line matched by name keeps that row from now on.
+    (plan.cadence || []).forEach(r => { if (!r.link_task_id) { const t = cadenceLinkedTask(project, r); if (t) r.link_task_id = t.id; } });
     overlay.querySelectorAll('[data-cp$=".phone"]').forEach(el => {
       el.addEventListener('blur', () => { const v = formatPhone(el.value); if (v !== el.value) { el.value = v; savePlan(); } });
     });
@@ -23094,6 +23332,10 @@ async function openCommPlanModal(project) {
       const grids = overlay.querySelectorAll('table.cp-table[data-grid]');
       grids.forEach(t => _portalCompressGrid(t));
       _portalAlignFirstCol(grids);
+      // Heights were measured at the pre-compress widths, where a value
+      // could wrap; measure again now the columns are final so every row
+      // in a table is the same height.
+      overlay.querySelectorAll('.cp-table textarea:not([hidden])').forEach(_cpGrow);
     } catch (_) {}
     overlay.querySelector('.cp-close-btn')?.addEventListener('click', close);
   };
@@ -26332,10 +26574,11 @@ function memberForSignedInUser() {
 function clearListModes() {
   const sv = state.scheduleView;
   if (!sv) return;
-  if (!sv.riskMode && !sv.controlsMode && !sv.eventsMode) return;
+  if (!sv.riskMode && !sv.controlsMode && !sv.eventsMode && !sv.customerMode) return;
   sv.riskMode = false;
   sv.controlsMode = false;
   sv.eventsMode = false;
+  sv.customerMode = false;
   saveScheduleView();
 }
 
@@ -31152,6 +31395,18 @@ function setView(view) {
   if (view === 'portal') document.body.classList.add('portal-mode');
   else if (view !== 'schedule') document.body.classList.remove('portal-mode');
   state.view = view;
+  // The portal is its own thing. Any schedule shown while in it — opened
+  // from the portal page or from a tab — is the customer view, with the
+  // customer's defaults. Leaving the portal for a staff page puts the
+  // staff view back.
+  if (view === 'schedule' && document.body.classList.contains('portal-mode')) {
+    document.body.classList.add('portal-schedule');
+    try { enterCustomerView(); } catch (_) {}
+  } else if (view !== 'schedule' && view !== 'portal') {
+    document.body.classList.remove('portal-schedule');
+    try { exitCustomerView(); } catch (_) {}
+  }
+
   // Survive reloads: F5 / Ctrl+Shift+R reopens the view you were on instead
   // of always dumping you back on the schedule.
   try { localStorage.setItem('sdcActiveView', view); } catch (_) {}
@@ -31538,6 +31793,8 @@ function loadScheduleView() {
       riskMode: false,
       controlsMode: false,
       eventsMode:    !!saved.eventsMode,
+      customerMode:  !!saved.customerMode,
+      customerOverlay: !!saved.customerOverlay,
       // Absent means never toggled, which means on.
       showProjectStats: saved.showProjectStats !== false,
       eventsOverlay: !!saved.eventsOverlay,
@@ -31574,10 +31831,12 @@ function saveScheduleView() {
 // browser and theirs started unflattened. Only applies while nothing is
 // saved: once the customer toggles ≡ themselves, saveScheduleView() writes
 // their choice and that wins from then on. Staff never call this.
+// Dan, 2026-10-02: a customer's schedule opens the way the schedule is
+// built — sections and all. The ≡ button is there if they want it flat.
 function applyCustomerScheduleDefault() {
   try { if (localStorage.getItem(SCHED_VIEW_KEY)) return; } catch (_) {}
-  state.scheduleView.flatten = true;
-  state.scheduleView.sortByStart = true;
+  state.scheduleView.flatten = false;
+  state.scheduleView.sortByStart = false;
 }
 function applyScheduleView() {
   // Refresh the View pill in the toolbar so its three icons reflect the current
@@ -31617,6 +31876,8 @@ function syncViewPill() {
   setActive('btn-view-stats', sv.showProjectStats !== false);
   try { syncControlsButtons(); } catch (_) {}
   try { syncEventsButtons(); } catch (_) {}
+  try { syncCustomerButtons(); } catch (_) {}
+  try { syncListsButton(); } catch (_) {}
 }
 
 // True when the visible task set spans 2+ distinct machine tags. Drives
@@ -32929,6 +33190,17 @@ const CUSTOMER_OVERLAYS_OFF = {
   showInlineAlloc: false, // α who is allocated what
   showBarMeta: false,     // % allocation and duration on the bars
   showArrowLags: false,   // ↔ lag and lead
+  // A customer's schedule opens the way it is built. ≡ is theirs to press.
+  flatten: false,
+  sortByStart: false,
+  // Two things on by default for a customer: the summary card and the
+  // financial milestones (state.showFinancials, set by the portal). The side
+  // lists and the baseline stay off until asked for.
+  showProjectStats: true,
+  customerOverlay: false,
+  controlsOverlay: false,
+  eventsOverlay: false,
+  riskOverlay: false,
 };
 function enterCustomerView() {
   if (document.body.classList.contains('customer-view')) return;
@@ -33395,6 +33667,9 @@ function exitCustomerView() {
       state.scheduleView[k] = state._cvSavedOverlays[k];
     });
     state._cvSavedOverlays = null;
+    // A ≡ pressed inside the customer view wrote the saved preference; the
+    // staff view we just put back is what should be saved.
+    try { saveScheduleView(); } catch (_) {}
   }
   if (state._cvSavedRowH != null) {
     state.layout.rowHeight = state._cvSavedRowH;
@@ -34346,10 +34621,35 @@ async function init() {
   });
   document.getElementById('btn-events-mode')?.addEventListener('click', () => {
     state.scheduleView.eventsMode = !state.scheduleView.eventsMode;
-    // The three list views are alternatives, not layers.
+    // The list views are alternatives, not layers.
     if (state.scheduleView.eventsMode) {
       state.scheduleView.riskMode = false;
       state.scheduleView.controlsMode = false;
+      state.scheduleView.customerMode = false;
+    }
+    saveScheduleView();
+    render();
+    try { zoomToFit(); } catch (_) {}
+  });
+  document.getElementById('btn-view-customer')?.addEventListener('click', () => {
+    if (state.scheduleView.customerMode) {
+      state.scheduleView.customerMode = false;
+      state.scheduleView.customerOverlay = true;
+      saveScheduleView();
+      render();
+      try { zoomToFit(); } catch (_) {}
+      return;
+    }
+    state.scheduleView.customerOverlay = !state.scheduleView.customerOverlay;
+    saveScheduleView();
+    render();
+  });
+  document.getElementById('btn-customer-mode')?.addEventListener('click', () => {
+    state.scheduleView.customerMode = !state.scheduleView.customerMode;
+    if (state.scheduleView.customerMode) {
+      state.scheduleView.riskMode = false;
+      state.scheduleView.controlsMode = false;
+      state.scheduleView.eventsMode = false;
     }
     saveScheduleView();
     render();
@@ -34358,7 +34658,7 @@ async function init() {
   document.getElementById('btn-controls-mode')?.addEventListener('click', () => {
     state.scheduleView.controlsMode = !state.scheduleView.controlsMode;
     // The two views are alternatives, not layers.
-    if (state.scheduleView.controlsMode) { state.scheduleView.riskMode = false; state.scheduleView.eventsMode = false; }
+    if (state.scheduleView.controlsMode) { state.scheduleView.riskMode = false; state.scheduleView.eventsMode = false; state.scheduleView.customerMode = false; }
     saveScheduleView();
     render();
     try { zoomToFit(); } catch (_) {}
@@ -34431,11 +34731,11 @@ async function init() {
       const blank = e.target.closest('[data-add-list]');
       if (!blank) return;
       e.preventDefault();
-      const inEvents = blank.dataset.addList === 'events';
+      const kind = blank.dataset.addList;
       createTaskInSection(
-        inEvents ? EVENTS_GROUP : CONTROLS_GROUP,
+        kind === 'events' ? EVENTS_GROUP : kind === 'customer' ? CUSTOMER_GROUP : CONTROLS_GROUP,
         null,
-        inEvents ? EVENTS_SUB : CONTROLS_SUB);
+        kind === 'events' ? EVENTS_SUB : kind === 'customer' ? CUSTOMER_SUB : CONTROLS_SUB);
     });
   // Remember the row the user last touched — Ctrl+C / X / V act on it.
   // Capture phase, so it still registers when a cell handler stops propagation.
@@ -34771,6 +35071,25 @@ async function init() {
   // Back to the portal. Only meaningful when we got here FROM the portal,
   // which is what the portal-schedule body class marks.
   // Documents menu on the schedule toolbar.
+  // ☰ Lists — the four side lists behind one button. In a list, the button
+  // is the way back to the build.
+  const listsBtn = document.getElementById('btn-lists');
+  const listsMenu = document.getElementById('lists-menu');
+  if (listsBtn && listsMenu) {
+    listsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const sv = state.scheduleView || {};
+      if (sv.riskMode || sv.controlsMode || sv.eventsMode || sv.customerMode) {
+        clearListModes();
+        render();
+        try { zoomToFit(); } catch (_) {}
+        return;
+      }
+      listsMenu.classList.toggle('hidden');
+    });
+    document.addEventListener('click', () => listsMenu.classList.add('hidden'));
+    listsMenu.querySelectorAll('button').forEach(b => b.addEventListener('click', () => listsMenu.classList.add('hidden')));
+  }
   const docsBtn = document.getElementById('btn-docs');
   const docsMenu = document.getElementById('docs-menu');
   if (docsBtn && docsMenu) {
@@ -34959,11 +35278,6 @@ async function init() {
           // since the sidebar it lives in is hidden here. Their setting
           // saves in their own browser, sized to their screen.
           setTimeout(() => { try { zoomToFit(); } catch (_) {} }, 700);
-          const ctl = document.querySelector('.app-scale-ctl');
-          if (ctl && !ctl.classList.contains('share-floating')) {
-            ctl.classList.add('share-floating');
-            document.body.appendChild(ctl);
-          }
         }
       };
       setTimeout(() => _enterShareCustomer(5), 400);
