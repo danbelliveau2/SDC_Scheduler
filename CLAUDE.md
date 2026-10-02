@@ -45,8 +45,8 @@ One branch: `main`. Always pull first. Never commit and forget to push — the p
 
 ## Hard rules (no exceptions)
 
-1. **NEVER bump the rev in `public/release-notes.js`.**
-   Only Dan updates the rev. Verbatim from Dan: *"you only update rev when i say no other tiems."* You break things and call it a new release. Don't.
+1. **EVERY push to GitHub is a release — bump the rev in `public/release-notes.js` and write the notes.**
+   Changed 2026-10-02. Verbatim from Dan: *"anytime you push to GitHub, you should be releasing a new revision and updating."* Newest entry first; `version`, `date`, `notes[]` in the house style already in the file (a one-line headline, then sections in CAPS with ▸ bullets written for the people who use the app, not for developers). The rail's Rev badge reads the first entry. The old rule was the opposite — only Dan bumped the rev — and it meant 207 commits shipped under one revision number with nothing written down.
 
 2. **NEVER tell Dan to open dev tools or check the console.**
    Verbatim: *"I'm not fucking doing this dev tools bullshit. I'm not doing it."* Use visible alerts, in-app diagnostics, or just fix it.

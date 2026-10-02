@@ -21299,8 +21299,9 @@ function _fitChrome(appZoom) {
   // not the content — it would just report the window.)
   rail.style.zoom = String(inv);
   void rail.offsetHeight;
-  const ctl = rail.querySelector('.app-scale-ctl');
-  const natural = ctl ? (ctl.offsetTop + ctl.offsetHeight) : rail.scrollHeight;
+  // Last thing in flow before the spacer is the revision button now.
+  const last = rail.querySelector('#btn-revision') || rail.querySelector('.app-scale-ctl');
+  const natural = last ? (last.offsetTop + last.offsetHeight) : rail.scrollHeight;
   // 75% of the window, on every window. Big screen: the rail grows to it.
   // Small screen: it shrinks to it. Same share either way, and the bottom
   // quarter is where the signed-in avatar lives.
