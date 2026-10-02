@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.9',
+    date: '2026-10-02',
+    notes: [
+      'The customer portal wears the SDC rail.',
+      '',
+      'PORTAL:',
+      '   ▸ Customers now see the same navy rail down the left side as in the app, with the SDC logo at the top — instead of the page starting at the screen edge.',
+      '   ▸ It is just the mark: no icons, no links, and the logo does nothing when clicked.',
+    ],
+  },
+  {
     version: '13.8',
     date: '2026-10-02',
     notes: [
