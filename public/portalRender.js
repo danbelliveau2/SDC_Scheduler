@@ -195,21 +195,33 @@ function portalTeam(project, rows) {
     load[a] = (load[a] || 0) + 1;
   });
 
-  const pm = projectLead(project, 'pm');
-  const dbg = projectLead(project, 'debug');
   const groups = {};
   const push = (disc, person) => { (groups[disc] = groups[disc] || []).push(person); };
 
-  if (pm) push('pm', { name: pm, note: 'Project manager', lead: true });
-  if (dbg) push('pm', { name: dbg, note: 'Lead engineer', lead: true });
+  // The four leads named on the schedule, each under their own department.
+  // One person holding two roles (engineering and debug, usually) is one
+  // card that says both.
+  const NOTE = { pm: 'Project manager', eng: 'Engineering lead', shop: 'Shop lead', debug: 'Debug lead', apps: 'Applications engineer' };
+  const leads = {};
+  ['pm', 'eng', 'shop', 'debug', 'apps'].forEach(k => {
+    const n = projectLead(project, k);
+    if (!n) return;
+    (leads[n] = leads[n] || []).push(NOTE[k]);
+  });
+  Object.keys(leads).forEach(n => {
+    const m = byName[n];
+    const disc = (m && PORTAL_ROLE_ORDER.includes(m.discipline)) ? m.discipline : (m && m.discipline === 'growth') ? 'sales' : 'pm';
+    push(disc, { name: n, note: leads[n].join(' · '), lead: true });
+  });
 
   Object.keys(load)
-    .filter(n => n !== pm && n !== dbg)
+    .filter(n => !leads[n])
     .sort((a, b) => load[b] - load[a] || a.localeCompare(b))
     .forEach(n => {
       const m = byName[n];
       const disc = (m && PORTAL_ROLE_ORDER.includes(m.discipline)) ? m.discipline : 'other';
-      push(disc, { name: n, note: (m && m.specialty) || '', lead: false });
+      // The title comes from the Departments roster (the employee report).
+      push(disc, { name: n, note: (m && (m.title || m.specialty)) || '', lead: false });
     });
 
   return PORTAL_ROLE_ORDER
@@ -225,7 +237,7 @@ function _portalTeamHtml(projects) {
     if (!team.length) return '';
     return `<div class="portal-teamblock">
       ${projects.length > 1 ? `<div class="portal-team-proj">${escapeHtml(p)}</div>` : ''}
-      ${team.map(g => `<div class="portal-team-group">
+      ${team.map(g => { const d = (typeof DISCIPLINE_BY_KEY !== 'undefined' && DISCIPLINE_BY_KEY[g.key]) || null; return `<div class="portal-team-group" data-disc="${g.key}"${d ? ` style="--dc:${d.color};--dt:${d.text}"` : ''}>
         <div class="portal-team-role">${escapeHtml(g.label)}</div>
         <div class="portal-team-people">
           ${g.people.map(x => `<div class="portal-person ${x.lead ? 'is-lead' : ''}">
@@ -234,7 +246,7 @@ function _portalTeamHtml(projects) {
             ${x.note ? `<span class="pp-role">${escapeHtml(x.note)}</span>` : ''}</span>
           </div>`).join('')}
         </div>
-      </div>`).join('')}
+      </div>`; }).join('')}
     </div>`;
   }).filter(Boolean).join('');
   if (!blocks) return '';
@@ -470,6 +482,105 @@ function _portalDueTableHtml(units) {
   </section>`;
 }
 
+// ── Communication plan ──────────────────────────────────────────────────
+// Read-only on the portal: who to call on both sides, the escalation ladder
+// and the meeting cadence. The SDC side is the company standard with this
+// job's leads from the schedule footer; the customer side and the cadence
+// are the project's own plan.
+const _portalCpCache = {};
+function _portalEnsureCommPlans(projects) {
+  const need = projects.filter(p => !(p in _portalCpCache));
+  if (!need.length) return;
+  need.forEach(p => { _portalCpCache[p] = null; });   // in flight
+  Promise.all(need.map(p => fetch(`/api/project/${encodeURIComponent(p)}/quote`)
+    .then(r => (r.ok ? r.json() : {})).catch(() => ({}))
+    .then(q => { _portalCpCache[p] = (q && q.comm_plan) || {}; })))
+    .then(() => { if (state.view === 'portal') { try { renderPortal(); } catch (_) {} } });
+}
+function _portalCommPlanHtml(projects) {
+  if (!projects.length) return '';
+  _portalEnsureCommPlans(projects);
+  const std = (state.settings && state.settings.comm_plan_standard) || null;
+  const roster = (state.team || []).filter(m => m && m.name);
+  const byName = (n) => roster.find(m => m.name.trim().toLowerCase() === String(n || '').trim().toLowerCase()) || null;
+  const LEVEL_HINT = 'Escalation level — work through 1 before 2, 2 before 3.';
+  const cols = (last) => [
+    { key: 'role',  label: 'Role',  w: 170 },
+    { key: 'name',  label: 'Name',  w: 170, min: 140 },
+    { key: 'email', label: 'Email', w: 220, min: 200 },
+    { key: 'phone', label: 'Phone', w: 120, min: 125 },
+    { key: 'level', label: 'Level', w: 64,  min: 56, title: LEVEL_HINT },
+    { key: 'when',  label: last,    w: 330 },
+  ];
+  const CAD = [
+    { key: 'name',      label: 'Communication',  w: 210 },
+    { key: 'date',      label: 'Date',           w: 110, min: 100 },
+    { key: 'frequency', label: 'Frequency',      w: 110, min: 100 },
+    { key: 'when',      label: 'When',           w: 150, min: 120 },
+    { key: 'format',    label: 'Format',         w: 170 },
+    { key: 'owner',     label: 'Led by',         w: 140 },
+    { key: 'audience',  label: "Who's involved", w: 280 },
+  ];
+  const txt = (v, cls) => `<span class="pcp-t${cls ? ' ' + cls : ''}">${escapeHtml(v || '—')}</span>`;
+  const peopleRows = (rows) => rows.map(r => {
+    const m = byName(r.name);
+    const email = (m && m.email) || r.email || '';
+    return `<tr>
+      <td>${txt(r.role)}</td>
+      <td>${r.name ? txt(r.name) : '<span class="pcp-t pcp-empty">Not assigned yet</span>'}</td>
+      <td>${email ? `<a class="pcp-mail" href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>` : txt('')}</td>
+      <td>${txt(r.phone)}</td>
+      <td>${txt(r.level, 'pcp-level')}</td>
+      <td>${txt(r.when)}</td>
+    </tr>`;
+  }).join('');
+  // No toolbar on the portal — the grids come up compressed on their own.
+  const grid = (id, c, body, prose) => _portalGridHtml(id, c, body, 'pcp', prose).replace(/<div class="pg-tools">[\s\S]*?<\/div>\s*/, '');
+  const blocks = projects.map(p => {
+    const plan = _portalCpCache[p];
+    const key = String(p).replace(/[^a-z0-9]/gi, '').slice(0, 40);
+    if (!plan) return `<div class="portal-teamblock"><p class="portal-note">Loading the communication plan…</p></div>`;
+    const d = _commPlanDefaults(p);
+    const leadership = (std && std.leadership) || d.leadership;
+    const sdc = ((std && std.sdc) || d.sdc).map(r => {
+      const k = COMM_LEAD_ROW[r.role];
+      const name = k ? (projectLead(p, k) || '') : (r.name || '');
+      const m = byName(name);
+      return Object.assign({}, r, { name, email: m ? m.email : (k ? '' : r.email), phone: (k && !name) ? '' : r.phone });
+    });
+    const custStd = (std && std.customer) || d.customer.map(r => ({ role: r.role, when: r.when }));
+    const mine = plan.customer || [];
+    const used = new Set();
+    const customer = custStd.map(sr => {
+      const i = mine.findIndex((r, idx) => !used.has(idx) && (r.role || '') === sr.role);
+      const r = i >= 0 ? mine[i] : {};
+      if (i >= 0) used.add(i);
+      return { role: sr.role, when: sr.when, name: r.name || '', email: r.email || '', phone: r.phone || '', level: r.level || '' };
+    });
+    mine.forEach((r, idx) => { if (!used.has(idx)) customer.push(r); });
+    const cadence = (plan.cadence && plan.cadence.length) ? plan.cadence : d.cadence;
+    const cadRows = cadence.map(r => `<tr>
+      <td>${txt(r.name)}</td><td>${txt(portalDate(r.date) || r.date)}</td><td>${txt(r.frequency)}</td>
+      <td>${txt(r.when)}</td><td>${txt(r.format)}</td><td>${txt(r.owner)}</td><td>${txt(r.audience)}</td>
+    </tr>`).join('');
+    return `<div class="portal-teamblock">
+      ${projects.length > 1 ? `<div class="portal-team-proj">${escapeHtml(p)}</div>` : ''}
+      <div class="pcp-title">SDC leadership <span>where an issue goes once the project team has not settled it — level 1 first</span></div>
+      ${grid('pcp-lead-' + key, cols('Escalate to them for…'), peopleRows(leadership), 'when')}
+      <div class="pcp-title">SDC project team <span>your first call — by what it is about</span></div>
+      ${grid('pcp-sdc-' + key, cols('Contact for…'), peopleRows(sdc), 'when')}
+      <div class="pcp-title">Your team</div>
+      ${grid('pcp-cust-' + key, cols('Contact for…'), peopleRows(customer), 'when')}
+      <div class="pcp-title">Communication cadence</div>
+      ${grid('pcp-cad-' + key, CAD, cadRows, 'audience')}
+    </div>`;
+  }).join('');
+  return `<section class="portal-block">
+    <h2 class="portal-h2">Communication plan</h2>
+    ${blocks}
+  </section>`;
+}
+
 // ── Grid shell (resizable columns, shared by due/money/work tables) ──────
 
 const PORTAL_WORK_COLS = [
@@ -492,14 +603,19 @@ function _portalColWidths(gridId, cols) {
   return out;
 }
 
-function _portalGridHtml(gridId, cols, bodyHtml, extraClass) {
+// prose: the column that takes whatever width is left after Compress. The
+// first column when not named.
+function _portalGridHtml(gridId, cols, bodyHtml, extraClass, prose) {
   const w = _portalColWidths(gridId, cols);
   const total = cols.reduce((n, c) => n + w[c.key], 0);
-  const colTags = cols.map(c => `<col data-pcol="${c.key}" style="width:${w[c.key]}px">`).join('');
+  const colTags = cols.map(c => `<col data-pcol="${c.key}" data-pw="${c.w}"${c.min ? ` data-pmin="${c.min}"` : ''} style="width:${w[c.key]}px">`).join('');
   const head = cols.map(c =>
-    `<th data-pcol="${c.key}">${escapeHtml(c.label)}<span class="pw-grip" data-pgrip="${c.key}"></span></th>`).join('');
-  return `<div class="portal-grid-wrap">
-    <table class="portal-grid ${extraClass || ''}" data-grid="${escapeHtml(gridId)}" style="width:${total}px">
+    `<th data-pcol="${c.key}"${c.title ? ` title="${escapeHtml(c.title)}"` : ''}>${escapeHtml(c.label)}<span class="pw-grip" data-pgrip="${c.key}"></span></th>`).join('');
+  return `<div class="pg-tools">
+    <button type="button" class="risk-tool" data-pcompress title="Size every column to its widest value; the long-text column takes what is left so nothing scrolls">⇤ Compress</button>
+  </div>
+  <div class="portal-grid-wrap">
+    <table class="portal-grid ${extraClass || ''}" data-grid="${escapeHtml(gridId)}"${prose ? ` data-prose="${escapeHtml(prose)}"` : ''} style="width:${total}px">
       <colgroup>${colTags}</colgroup>
       <thead><tr>${head}</tr></thead>
       <tbody>${bodyHtml}</tbody>
@@ -533,7 +649,150 @@ function _fitPortalGrid(table) {
   }
 }
 
+// ⇤ Compress for a portal grid — the same idea as the risk register. Every
+// column that holds a value is sized to the widest value in it (ink, plus the
+// cell's own padding); the first column holds the sentences and takes
+// whatever the wrap has left, so the grid fills the panel with no sideways
+// scroll. Below 140px it stops shrinking and the text wraps instead.
+function _portalCompressGrid(table) {
+  if (!table) return;
+  const wrap = table.parentElement;
+  const cols = Array.from(table.querySelectorAll('col[data-pcol]'));
+  const ths = Array.from(table.querySelectorAll('thead th[data-pcol]'));
+  if (!wrap || !cols.length || cols.length !== ths.length) return;
+  const PROSE = table.dataset.prose || cols[0].dataset.pcol;
+  const prev = { layout: table.style.tableLayout, width: table.style.width, cols: cols.map(c => c.style.width) };
+  // Rows that carry values. Work grids mark theirs; any other grid's body rows count.
+  const dataRows = () => { const r = table.querySelectorAll('tbody tr.pw-row'); return r.length ? r : table.querySelectorAll('tbody tr'); };
+  // Text inside a control has no text node to measure — measure the string
+  // in the control's own font instead.
+  let probe = _portalCompressGrid._probe;
+  if (!probe || !probe.isConnected) {
+    probe = _portalCompressGrid._probe = document.createElement('span');
+    probe.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;white-space:pre;pointer-events:none;';
+    document.body.appendChild(probe);
+  }
+  const Z = (table.offsetWidth > 0) ? (table.getBoundingClientRect().width / table.offsetWidth) || 1 : 1;
+  const textW = (el, text) => {
+    const cs = getComputedStyle(el);
+    ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'textTransform'].forEach(k => { probe.style[k] = cs[k]; });
+    probe.textContent = String(text || '');
+    return probe.getBoundingClientRect().width / Z + (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  };
+  let measured = null, pad = 24;
+  try {
+    table.classList.add('pg-measuring');
+    table.style.tableLayout = 'auto';
+    table.style.width = 'max-content';
+    cols.forEach(c => { c.style.width = ''; });
+    void table.offsetWidth;
+    const padOf = (el) => { if (!el) return 0; const cs = getComputedStyle(el); return (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0); };
+    // The cell padding that applies — a header's or a body cell's, whichever
+    // is wider — plus a hair so nothing sits flush against the edge.
+    pad = Math.max(padOf((dataRows()[0] || {}).firstElementChild), padOf(ths[0])) + 4;
+    const inkRight = (cell) => {
+      const base = cell.getBoundingClientRect().left;
+      let right = base;
+      const walk = (node, padR) => {
+        if (node.nodeType === 3) {
+          if (!node.textContent.trim()) return;
+          const r = document.createRange(); r.selectNodeContents(node);
+          for (const b of r.getClientRects()) if (b.right + padR > right) right = b.right + padR;
+        } else if (node.nodeType === 1) {
+          if (node.classList && node.classList.contains('pw-grip')) return;
+          if (node.hidden || getComputedStyle(node).display === 'none') return;
+          // Text inside a padded block needs that block's right padding too.
+          if (node !== cell) padR = parseFloat(getComputedStyle(node).paddingRight) || 0;
+          const tag = node.tagName;
+          if (tag === 'TEXTAREA' || tag === 'INPUT') {
+            const r = node.getBoundingClientRect().left + textW(node, node.value || node.placeholder) * Z;
+            if (r > right) right = r; return;
+          }
+          if (tag === 'SELECT') {
+            const t = node.selectedOptions && node.selectedOptions[0] ? node.selectedOptions[0].textContent : '';
+            const r = node.getBoundingClientRect().left + (textW(node, t) + 22) * Z;   // + the arrow
+            if (r > right) right = r; return;
+          }
+          // A bar or other wordless element counts by its box.
+          if (!node.textContent.trim()) { const b = node.getBoundingClientRect(); if (b.right > right) right = b.right; return; }
+          node.childNodes.forEach(ch => walk(ch, padR));
+        }
+      };
+      walk(cell, 0);
+      return (right - base) / Z;
+    };
+    measured = ths.map((th, i) => {
+      // The prose column's heading still has to fit on one line.
+      if (th.dataset.pcol === PROSE) { table.dataset.proseMin = Math.ceil(inkRight(th) + pad); return 0; }
+      let w = inkRight(th);
+      dataRows().forEach(tr => {
+        const td = tr.children[i];
+        if (td) w = Math.max(w, inkRight(td));
+      });
+      return Math.ceil(w);
+    });
+  } catch (_) { measured = null; }
+  finally {
+    table.classList.remove('pg-measuring');
+    table.style.tableLayout = prev.layout || '';
+    table.style.width = prev.width || '';
+    cols.forEach((c, i) => { c.style.width = prev.cols[i]; });
+  }
+  if (!measured) return;
+  cols.forEach((c, i) => {
+    if (c.dataset.pcol === PROSE) return;
+    c.style.width = Math.max(Number(c.dataset.pmin) || 40, measured[i] + pad + 2) + 'px';
+  });
+  _portalFitProse(table);
+}
+
+// The prose column takes whatever the wrap has left; the table never runs
+// past the wrap. Called after Compress and after the first columns of a set
+// of grids are lined up.
+function _portalFitProse(table) {
+  const wrap = table.parentElement;
+  const cols = Array.from(table.querySelectorAll('col[data-pcol]'));
+  if (!wrap || !cols.length) return;
+  const PROSE = table.dataset.prose || cols[0].dataset.pcol;
+  const prose = cols.find(c => c.dataset.pcol === PROSE) || cols[0];
+  const sum = () => cols.reduce((n, c) => n + (parseFloat(c.style.width) || 0), 0);
+  const fixed = cols.reduce((n, c) => n + (c === prose ? 0 : (parseFloat(c.style.width) || 0)), 0);
+  const floor = Math.max(140, Number(table.dataset.proseMin) || 0);
+  prose.style.width = Math.max(floor, (wrap.clientWidth - 2) - fixed) + 'px';
+  table.style.width = sum() + 'px';
+  // Correct against the rendered table, not the plan.
+  for (let pass = 0; pass < 3; pass++) {
+    const over = table.offsetWidth - wrap.clientWidth;
+    if (over <= 0) break;
+    const next = Math.max(floor, (parseFloat(prose.style.width) || 0) - over - 1);
+    if (next === parseFloat(prose.style.width)) break;
+    prose.style.width = next + 'px';
+    table.style.width = sum() + 'px';
+  }
+  table.dataset.userSized = '1';
+  const out = {};
+  cols.forEach(c => { out[c.dataset.pcol] = parseFloat(c.style.width) || 120; });
+  try { localStorage.setItem('sdcPortalCols:' + table.dataset.grid, JSON.stringify(out)); } catch (_) {}
+}
+
+// Grids stacked on a page read as one when their first columns line up.
+// Every grid's first column takes the widest first column among them.
+function _portalAlignFirstCol(tables) {
+  const first = (t) => t.querySelector('col[data-pcol]');
+  const list = Array.from(tables).filter(t => first(t));
+  if (list.length < 2) return;
+  const w = Math.max(...list.map(t => parseFloat(first(t).style.width) || 0));
+  list.forEach(t => { first(t).style.width = w + 'px'; _portalFitProse(t); });
+}
+
 function _wirePortalGrids(root) {
+  root.querySelectorAll('.pg-tools').forEach(bar => {
+    const wrap = bar.nextElementSibling;
+    const table = wrap && wrap.querySelector('table[data-grid]');
+    if (!table) return;
+    const c = bar.querySelector('[data-pcompress]');
+    if (c) c.onclick = () => _portalCompressGrid(table);
+  });
   root.querySelectorAll('table[data-grid]').forEach(table => {
     let saved = null;
     try { saved = localStorage.getItem('sdcPortalCols:' + table.dataset.grid); } catch (_) {}
@@ -633,8 +892,9 @@ const PORTAL_ROLES = {
   service: 'Service',
   mfgops:  'Manufacturing',
   ops:     'Operations',
+  sales:   'Sales / Applications',
 };
-const PORTAL_ROLE_ORDER = ['pm', 'mech', 'controls', 'build', 'wire', 'service', 'mfgops', 'ops', 'other'];
+const PORTAL_ROLE_ORDER = ['pm', 'mech', 'controls', 'build', 'wire', 'sales', 'service', 'mfgops', 'ops', 'other'];
 
 // How far back "completed recently" looks. A month by default.
 const PORTAL_RECENT_WINDOWS = [

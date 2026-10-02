@@ -450,11 +450,27 @@ function resolveFinancialTrigger(ref, tasksById, tasksForProject) {
   return shift === 0 ? baseDate : addBusinessDays(baseDate, shift);
 }
 
+// A payment milestone with no trigger set still has a name that says what
+// it is tied to — "Receipt of PO", "Acceptance at SDC (FAT)" — so it takes
+// that release's date rather than sitting undated at the bottom.
+function finAnchorFromName(name) {
+  const n = String(name || '').toLowerCase();
+  const paren = n.match(/\(([^)]+)\)/);
+  if (paren && FIN_TRIGGER_ALIASES[paren[1].trim()]) return FIN_TRIGGER_ALIASES[paren[1].trim()];
+  if (/receipt of po|\bpo\b|down payment/.test(n)) return 'receipt_of_po';
+  if (/\bfat\b|acceptance at sdc/.test(n)) return 'fat';
+  if (/\bsat\b|acceptance at customer/.test(n)) return 'sat';
+  if (/power[- ]?up/.test(n)) return 'machine_power_up';
+  if (/\bship/.test(n)) return 'ship_machine';
+  return null;
+}
 function financialDueDate(f, tasksById, tasksForProject) {
   const viaPredecessor = resolveFinancialTrigger(f.predecessors, tasksById, tasksForProject);
   if (viaPredecessor) return viaPredecessor;
-  if (f.sync_to_anchor) {
-    const t = tasksForProject.find(x => inferredAnchorKey(x) === f.sync_to_anchor);
+  const anchorKey = f.sync_to_anchor || finAnchorFromName(f.name);
+  if (anchorKey) {
+    const same = tasksForProject.filter(x => inferredAnchorKey(x) === anchorKey);
+    const t = same.find(x => (x.machine || '') === (f.machine || '')) || same.find(x => !x.machine) || same[0];
     if (t) return t.end_date || t.start_date || null;
   }
   return f.due_date || null;
@@ -549,15 +565,22 @@ function portalMoney(financials, tasksById, tasksForProject) {
         due: when, dueText: fmtDate(when), status, machine: machine || null,
       };
     })
-    .sort((a, b) => (a.due ? 0 : 1) - (b.due ? 0 : 1) || String(a.due || '').localeCompare(String(b.due || '')));
+    // Soonest first. A milestone with no date keeps its place in the
+    // release order — it sorts with the dated one before it — rather than
+    // falling to the bottom and putting FAT above Receipt of PO.
+    .map((r, i) => Object.assign(r, { _i: i }))
+    .map((r, i, all) => { let k = r.due || ''; for (let j = i; j >= 0 && !k; j--) k = all[j].due || ''; return Object.assign(r, { _k: k }); })
+    .sort((a, b) => String(a._k).localeCompare(String(b._k)) || a._i - b._i)
+    .map(r => { delete r._i; delete r._k; return r; });
 }
 
 // ── Risk plan (public/app.js riskPlan / riskBand / riskTaskList) ────────────
 
+// Chance (1-3) × impact (1-3): 9 is the worst a risk can score.
 function riskBand(score) {
-  if (score >= 12) return { key: 'critical', label: 'Very high' };
-  if (score >= 8) return { key: 'high', label: 'High' };
-  if (score >= 4) return { key: 'medium', label: 'Medium' };
+  if (score >= 9) return { key: 'critical', label: 'Very high' };
+  if (score >= 6) return { key: 'high', label: 'High' };
+  if (score >= 3) return { key: 'medium', label: 'Medium' };
   return { key: 'low', label: 'Low' };
 }
 

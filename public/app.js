@@ -2813,15 +2813,11 @@ function renderTable() {
         const checkBtn = !isBacklog
           ? `<span class="name-cell-pills"><button type="button" class="name-milestone-check ${isDone ? 'is-done' : ''}" data-toggle-milestone data-task-id="${t.id}" title="${isDone ? 'Mark not complete' : 'Mark complete'}">${isDone ? '✓' : ''}</button></span>`
           : '';
-        // Machine identity wins over the generic anchor green on the pill:
-        // on a multi-machine project the pill IS the machine label, so it
-        // carries that machine's stable color (see machineAccentStyle). The
-        // done/not-done signal stays where it always was — the ✓ box on the
-        // right — plus a ✓ glyph inside the pill so recoloring doesn't cost
-        // us the completion cue. Shared anchors (no machine) keep the green.
-        const hasMachineAccent = !!(t.machine && !isBacklog && shouldShowMachineVisuals());
-        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}${hasMachineAccent ? ' is-machine' : ''}`;
-        const chipDone = hasMachineAccent && isDone ? '<span class="anchor-done-check">✓</span>' : '';
+        // The pill is always the key-milestone green. The machine is said by
+        // the M1 / M2 badge beside it and the row's rail — the pill's colour
+        // means "key milestone", nothing else (Dan: "they should stay green").
+        const chipCls = `anchor-name-chip${isBacklog ? ' backlog-chip' : ''}${backlogExpired ? ' is-expired' : ''}`;
+        const chipDone = '';
         // Multi-machine: prepend the M1/M2/M3 pill on anchor rows too, so
         // M2.FAT visually reads as "M2" before the green FAT chip. Hidden
         // on single-machine projects + when the M view-pill is off.
@@ -11878,6 +11874,11 @@ function renderProjectsPage() {
   )].sort((a, b) => a.localeCompare(b));
 
   const favSet = new Set(state.favoriteProjects || []);
+  // List, or cards by customer. Remembered per browser.
+  if (!state._projectsView) {
+    try { state._projectsView = localStorage.getItem('sdcProjectsView') || 'list'; } catch (_) { state._projectsView = 'list'; }
+  }
+  const cardsView = state._projectsView === 'cards';
 
   // Workspace accent colors for visual differentiation
   const WS_ACCENT = { Active: '#1574c4', Sales: '#d97706', Closed: '#94a3b8' };
@@ -11929,6 +11930,24 @@ function renderProjectsPage() {
     </div>`;
   };
 
+  // One card per customer, the customer's jobs inside it. Same rows as the
+  // list (same click, right-click, OPEN and star), so nothing has to be
+  // learned twice; the card just hides the columns its heading already says.
+  const customerCards = (projects) => {
+    const byCust = new Map();
+    projects.forEach(p => {
+      const c = String((state.projectsIndex[p] && state.projectsIndex[p].customer) || '').trim() || '';
+      if (!byCust.has(c)) byCust.set(c, []);
+      byCust.get(c).push(p);
+    });
+    const names = [...byCust.keys()].sort((a, b) => (!a) - (!b) || a.localeCompare(b));
+    return `<div class="projects-cust-grid">${names.map(c => `
+      <div class="projects-cust-card">
+        <div class="projects-cust-head"><span class="projects-cust-name">${escapeHtml(c || 'No customer')}</span><span class="projects-cust-n">${byCust.get(c).length}</span></div>
+        ${byCust.get(c).map(rowHtml).join('')}
+      </div>`).join('')}</div>`;
+  };
+
   const workspaceSection = (ws) => {
     const projects = byWs[ws];
     const templates = projects.filter(isTemplateProject);
@@ -11962,7 +11981,7 @@ function renderProjectsPage() {
           ` : ''}
           ${nonTemplates.length === 0
             ? `<div class="projects-workspace-empty">${(searchQ || custFilter) ? 'No matches.' : 'No schedules yet — use the "+ New" button to start one.'}</div>`
-            : nonTemplates.map(rowHtml).join('')}
+            : cardsView ? customerCards(nonTemplates) : nonTemplates.map(rowHtml).join('')}
         </div>
       </div>
     `;
@@ -12000,6 +12019,10 @@ function renderProjectsPage() {
         <option value="">All customers</option>
         ${customerOptions.map(c => `<option value="${escapeHtml(c)}"${c === custFilter ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
       </select>
+      <span class="projects-view-toggle" role="group" aria-label="Layout">
+        <button type="button" data-pview="list" class="${cardsView ? '' : 'is-on'}" title="One row per schedule">List</button>
+        <button type="button" data-pview="cards" class="${cardsView ? 'is-on' : ''}" title="A card per customer, their jobs inside">By customer</button>
+      </span>
     </div>
     ${WORKSPACES.map(workspaceSection).join('')}
   `;
@@ -12022,6 +12045,13 @@ function renderProjectsPage() {
       renderProjectsPage();
     });
   }
+  root.querySelectorAll('[data-pview]').forEach(b => {
+    b.addEventListener('click', () => {
+      state._projectsView = b.dataset.pview;
+      try { localStorage.setItem('sdcProjectsView', state._projectsView); } catch (_) {}
+      renderProjectsPage();
+    });
+  });
   const customerFilterSelect = root.querySelector('.projects-customer-filter');
   if (customerFilterSelect) {
     customerFilterSelect.addEventListener('change', () => {
@@ -12843,26 +12873,26 @@ function renderScheduleLeads() {
   if (!box) return;
   const project = state.filters.project;
   if (!project) { box.innerHTML = ''; return; }
-  // PM = only the Project Management team. Debug lead = a PM or an engineer
-  // (mechanical or controls) — Dan's spec.
-  const peopleIn = (discs) => state.team
-    .filter(m => m.active !== 0 && !isPlaceholder(m.name) && discs.includes(m.discipline))
-    .map(m => m.name)
-    .sort((a, b) => a.localeCompare(b));
-  const sel = (role, icon, label, people) => {
+  const sel = (role, label) => {
     const cur = projectLead(project, role);
+    const groups = leadGroups(role);
+    const opt = (n) => `<option value="${escapeHtml(n)}" ${n === cur ? 'selected' : ''}>${escapeHtml(n)}</option>`;
     // Keep a stale assignee visible even if they left the pool — otherwise
     // the select silently shows the wrong person.
-    const opts = (cur && !people.includes(cur)) ? [cur, ...people] : people;
-    return `<label class="schedule-lead" title="${label} for ${escapeHtml(project)} — shared with everyone; drives the Departments PM filter.">${icon} ${label}
+    const stray = (cur && !groups.some(g => g.people.includes(cur))) ? opt(cur) : '';
+    // One department: a flat list. Several: a header row per department.
+    const body = groups.length > 1
+      ? groups.map(g => `<optgroup label="${escapeHtml(g.label)}">${g.people.map(opt).join('')}</optgroup>`).join('')
+      : groups.flatMap(g => g.people).map(opt).join('');
+    return `<label class="schedule-lead" title="${label} for ${escapeHtml(project)} — shared with everyone; the communication plan and the portal read it.">${label}
       <select data-lead-role="${role}">
-        <option value="">—</option>
-        ${opts.map(n => `<option value="${escapeHtml(n)}" ${n === cur ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+        <option value="">Not assigned yet</option>
+        ${stray}${body}
       </select>
     </label>`;
   };
-  box.innerHTML = sel('pm', '👤', 'PM', peopleIn(['pm']))
-                + sel('debug', '🛠', 'Debug lead', peopleIn(['pm', 'mech', 'controls']));
+  // Five leads in one strip: a short label each, the full name in the tooltip.
+  box.innerHTML = LEAD_ROLES.map(r => sel(r.key, r.label.replace(' lead', ''))).join('');
   box.querySelectorAll('select[data-lead-role]').forEach(s => {
     s.addEventListener('change', () => setProjectLead(project, s.dataset.leadRole, s.value));
   });
@@ -13996,26 +14026,22 @@ function showProjectTabMenu(x, y, project) {
   // 2b) Ownership — PM + Debug lead, picked from the active team. Shared
   //     server-side (settings.project_leads); the Departments page filters
   //     its timeline by PM and shows the per-PM dashboard from these.
-  const leadItem = (role, icon, label) => {
+  const leadItem = (role, label) => {
     const cur = projectLead(project, role);
-    // PM = Project Management team only; Debug lead = PM or engineer
-    // (mech/controls). Same pools as the footer selectors.
-    const discs = role === 'pm' ? ['pm'] : ['pm', 'mech', 'controls'];
     return {
-      label: `${icon} ${label}: ${cur || '—'}`,
+      label: `${label}: ${cur || 'Not assigned yet'}`,
       onClick: () => {
-        const people = state.team
-          .filter(m => m.active !== 0 && !isPlaceholder(m.name) && discs.includes(m.discipline))
-          .map(m => m.name)
-          .sort((a, b) => a.localeCompare(b));
-        const picks = people.map(n => ({
-          label: (n === cur ? '✓ ' : '') + n,
-          onClick: () => setProjectLead(project, role, n),
-        }));
-        if (cur) {
-          picks.push({ separator: true });
-          picks.push({ label: `Clear ${label.toLowerCase()}`, danger: true, onClick: () => setProjectLead(project, role, '') });
-        }
+        const groups = leadGroups(role);
+        const picks = [];
+        groups.forEach(g => {
+          if (groups.length > 1) picks.push({ header: true, label: g.label });
+          g.people.forEach(n => picks.push({
+            label: (n === cur ? '✓ ' : '') + n,
+            onClick: () => setProjectLead(project, role, n),
+          }));
+        });
+        picks.push({ separator: true });
+        picks.push({ label: (cur ? '' : '✓ ') + 'Not assigned yet', danger: !!cur, onClick: () => setProjectLead(project, role, '') });
         showContextMenu(x, y, picks);
       },
     };
@@ -14037,8 +14063,7 @@ function showProjectTabMenu(x, y, project) {
       if (v != null) setProjectCustomer(project, v);
     },
   });
-  items.push(leadItem('pm', '👤', 'PM'));
-  items.push(leadItem('debug', '🛠', 'Debug lead'));
+  LEAD_ROLES.forEach(r => items.push(leadItem(r.key, r.label)));
   // Live customer link — Smartsheet-style: a URL the customer keeps open,
   // always showing the LIVE customer view of this one project, read-only,
   // no login. Copy it, send it, revoke it when the project closes.
@@ -16183,40 +16208,29 @@ let _execThenBy = 'number';
 // you pick a chance. It is an input, not a third multiplier: the score stays
 // chance x impact, because difficulty already expresses itself through the
 // chance you pick. Multiplying it in would count the same judgement twice.
-// Ten levels, because everything on this register is already a new or custom
-// station - "have we built it before" is not a question worth asking here.
-// The label is the number so the column stays narrow and sorts naturally;
-// the hint says what that level means for a station nobody has built yet.
+// Three levels on every scale — Low, Medium, High. Scoring a risk in a
+// Monday meeting does not get finer than that, and three words everyone
+// already uses beat five that need a legend.
+// 1. How complex is this station, relative to the rest of the job?
 const RISK_DIFFICULTY = [
-  { v: 1, label: '1 Low',        hint: 'Least complex of the stations on this register' },
-  { v: 2, label: '2 Fairly low', hint: 'Below average complexity for this job' },
-  { v: 3, label: '3 Moderate',   hint: 'Middle of the road for this job' },
-  { v: 4, label: '4 High',       hint: 'Above average complexity for this job' },
-  { v: 5, label: '5 Very high',  hint: 'Most complex of the stations on this register' },
+  { v: 1, label: 'Low',    hint: 'Straightforward for this job' },
+  { v: 2, label: 'Medium', hint: 'Middle of the road for this job' },
+  { v: 3, label: 'High',   hint: 'Among the most complex stations on this job' },
 ];
-
-// 2. Given that difficulty, what is the chance it does not work to the level
-//    we need, in the time we have, and the schedule moves because of it?
-//
-// The old labels asked "how likely" without ever saying likely to do WHAT, so
-// everyone scoring a risk answered a slightly different question.
+// 2. Chance it does not work to the level we need, in the time we have, and
+//    the schedule moves because of it.
 const RISK_LIKELIHOOD = [
-  { v: 1, label: 'Rare',           hint: 'It will work. We are confident it costs us no schedule time.' },
-  { v: 2, label: 'Unlikely',       hint: 'Probably works first time; any shortfall is absorbed without moving a date.' },
-  { v: 3, label: 'Possible',       hint: 'Even odds it falls short of what we need and costs us time.' },
-  { v: 4, label: 'Likely',         hint: 'Expect it to fall short and cost us time unless we act now.' },
-  { v: 5, label: 'Almost certain', hint: 'It is already not working well enough, and already costing us time.' },
+  { v: 1, label: 'Low',    hint: 'It will work. We are confident it costs us no schedule time.' },
+  { v: 2, label: 'Medium', hint: 'Even odds it falls short of what we need and costs us time.' },
+  { v: 3, label: 'High',   hint: 'Expect it to fall short and cost us time unless we act now.' },
 ];
-// Plain time. "How much schedule does this cost us" is a number of days or
-// weeks, and everyone in the shop already thinks in those units.
-// Days, weeks, months. Anything finer is false precision — nobody scoring a
-// risk in a Monday meeting can tell "a week" from "weeks".
+// 3. If it happens and we do nothing, how hard does the schedule get hit?
 const RISK_SEVERITY = [
-  { v: 1, label: 'Days',   hint: 'Days - absorbed inside the float we have.' },
-  { v: 2, label: 'Weeks',  hint: 'Weeks - an internal date slips.' },
-  { v: 3, label: 'Months', hint: 'Months - FAT moves, or we are into redesign.' },
+  { v: 1, label: 'Low',    hint: 'Days - absorbed inside the float we have.' },
+  { v: 2, label: 'Medium', hint: 'Weeks - an internal date slips.' },
+  { v: 3, label: 'High',   hint: 'Months - FAT moves, or we are into redesign.' },
 ];
-// Score = likelihood × severity. The bands are the usual 5×5 split.
+// Score = chance × impact, 1 to 9.
 // A machine build fails in a small number of recognisable ways. A free-text
 // category told nobody anything; these are the buckets SDC jobs actually
 // land in, and they make the register sortable and comparable across jobs.
@@ -16224,8 +16238,8 @@ const RISK_SEVERITY = [
 // Scope and spec collapse into Technical (we know the scope — the question is
 // whether the thing works), and install/site sits past the date we are
 // managing to.
-const RISK_CATEGORIES = ['Technical', 'Supply chain', 'Resource', 'Safety'];
-// Chance (1-5) x impact (1-3), so 15 is the worst a risk can score.
+const RISK_CATEGORIES = ['Technical', 'Supply chain', 'Resource', 'Safety', 'All'];
+// Chance (1-3) x impact (1-3), so 9 is the worst a risk can score.
 // Shared with the customer portal (public/portalCalc.js) — same bands
 // on both sides.
 function riskBand(score) {
@@ -16253,13 +16267,21 @@ function _riskOwnerSel(val, attrs) {
 function riskPlan(project) {
   const map = (state.settings && state.settings.risk_plans) || {};
   const rec = map[project];
-  return (rec && Array.isArray(rec.risks)) ? rec.risks : [];
+  const risks = (rec && Array.isArray(rec.risks)) ? rec.risks : [];
+  // Complexity and Chance used to run 1-5. A plan saved before the change
+  // is folded onto Low / Medium / High once; saving it marks it done.
+  if (rec && !rec.scale3) {
+    const fold = (v) => { const n = Number(v); return !n ? v : n >= 4 ? 3 : n === 3 ? 2 : 1; };
+    risks.forEach(r => { r.diff = fold(r.diff); r.l = fold(r.l); if (Number(r.s) > 3) r.s = 3; });
+    rec.scale3 = true;
+  }
+  return risks;
 }
 
 async function saveRiskPlan(project, risks) {
   state.settings = state.settings || {};
   const map = state.settings.risk_plans = state.settings.risk_plans || {};
-  if (risks && risks.length) map[project] = { risks, updatedAt: new Date().toISOString() };
+  if (risks && risks.length) map[project] = { risks, updatedAt: new Date().toISOString(), scale3: true };
   else delete map[project];
   try { await api.putSetting('risk_plans', map); }
   catch (e) { showToast('Could not save: ' + (e.message || e), { kind: 'error' }); }
@@ -16379,9 +16401,15 @@ function _riskScaleValue(text, opts) {
   if (!t) return null;
   const exact = opts.find(o => String(o.label).toLowerCase() === t);
   if (exact) return exact.v;
-  const worded = opts.find(o => String(o.label).toLowerCase().replace(/^d+s*/, '') === t);
+  const worded = opts.find(o => String(o.label).toLowerCase().replace(/^\d+\s*/, '') === t);
   if (worded) return worded.v;
-  const n = Number(t.match(/^d+/));
+  // Older sheets: 1-5 numbers, "Rare … Almost certain", "Days / Weeks / Months".
+  const OLD = { rare: 1, unlikely: 1, possible: 2, likely: 3, 'almost certain': 3, days: 1, weeks: 2, months: 3,
+    'fairly low': 1, moderate: 2, 'very high': 3 };
+  const bare = t.replace(/^\d+\s*/, '');
+  if (OLD[bare] != null) return OLD[bare];
+  const n = Number(t.match(/^\d+/));
+  if (n >= 1 && n <= 5) return n >= 4 ? 3 : n === 3 ? 2 : 1;
   return opts.some(o => o.v === n) ? n : null;
 }
 
@@ -16590,8 +16618,8 @@ function openRiskPlanModal(project) {
       // Impact used to be a 5-point scale; anything saved above 3 predates
       // that and is clamped rather than left scoring off the top of the matrix.
       if (Number(r.s) > 3) r.s = 3;
-      if (Number(r.diff) > 5) r.diff = 5;
-      if (Number(r.l) > 5) r.l = 5;
+      if (Number(r.diff) > 3) r.diff = 3;
+      if (Number(r.l) > 3) r.l = 3;
       const score = (Number(r.l) || 0) * (Number(r.s) || 0);
       return Object.assign({}, r, { score, band: riskBand(score) });
     }));
@@ -16645,7 +16673,7 @@ function openRiskPlanModal(project) {
     ov.querySelector('[data-risk-close]').onclick = close;
     const addRisk = () => {
       const nid = 'new_' + Date.now();
-      risks.push({ id: nid, title: '', cat: '', diff: 3, l: 3, s: 2, mitigation: '', owner: '', show: false, hasPlan: false, actions: [] });
+      risks.push({ id: nid, title: '', cat: '', diff: 2, l: 2, s: 2, mitigation: '', owner: '', show: false, hasPlan: false, actions: [] });
       // A new risk arrives ready to fill in — every cell editable, no
       // double-clicking your way through it field by field.
       _riskEdit.add(nid);
@@ -16734,13 +16762,6 @@ function openRiskPlanModal(project) {
     });
 
     const tightBtn = ov.querySelector('[data-rtight]');
-    ov.querySelectorAll('[data-rwidthreset]').forEach(b => {
-      b.onclick = () => {
-        _riskWidths = {};
-        try { localStorage.removeItem('sdcRiskColWidths'); } catch (_) {}
-        draw();
-      };
-    });
     if (tightBtn) tightBtn.onclick = () => {
       // One shot: measure, write the widths, redraw. Not a mode — there is
       // nothing to get stuck in, and a column drag afterwards just
@@ -16913,6 +16934,11 @@ function openRiskPlanModal(project) {
 
   };
   draw();
+  // Compressed is how the register opens — after the first draw has sized
+  // the panel (two frames: _riskFitGrid runs on the first).
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    try { _riskCompressColumns(ov.querySelector('table.rg'), draw); } catch (_) {}
+  }));
 }
 
 function _riskStepsHtml() {
@@ -17022,12 +17048,12 @@ const RISK_COLS = [
   { k: 'n',       label: '#',        min: 34,  share: 0,   sort: null },
   { k: 'title',   label: 'Risk',     min: 150, share: 3,   sort: 'title' },
   { k: 'cat',     label: 'Category', min: 92,  share: 1,   sort: 'cat' },
-  { k: 'diff',    label: 'Complexity', min: 112, share: 0.7, sort: 'diff',
-    hint: 'How complex is this station? 1 = low, 5 = very high. Everything here is new or custom, so the question is how complex THIS one is relative to the rest. Answer it before Chance.' },
-  { k: 'l',       label: 'Chance',   min: 100, share: 1,   sort: 'l',
+  { k: 'diff',    label: 'Complexity', sub: 'of station', min: 112, share: 0.7, sort: 'diff',
+    hint: 'How complex is this station? Low, Medium or High. Everything here is new or custom, so the question is how complex THIS one is relative to the rest. Answer it before Chance.' },
+  { k: 'l',       label: 'Chance',   sub: 'of happening', min: 100, share: 1,   sort: 'l',
     hint: 'Chance it does not work to the level we need, in the time we have, and the schedule moves.' },
-  { k: 's',       label: 'Impact',   min: 66,  share: 0.6, sort: 's',
-    hint: 'If it happens and we do nothing about it, how much schedule time does it cost?' },
+  { k: 's',       label: 'Impact',   sub: 'schedule', min: 66,  share: 0.6, sort: 's',
+    hint: 'If it happens and we do nothing about it, how hard does the schedule get hit? Low = days, Medium = weeks, High = months.' },
   { k: 'score',   label: 'Score',    min: 74,  share: 0.6, sort: 'score' },
   { k: 'owner',   label: 'Owner',    min: 104, share: 1,   sort: 'owner' },
   { k: 'plan',    label: 'Plan',     min: 150, share: 2.5, sort: null },
@@ -17695,6 +17721,8 @@ function _riskCompressColumns(table, redraw) {
       if (!k || PROSE.includes(k)) return 0;
       // Ink width of a cell: furthest right any text or control reaches,
       // measured from the cell's left edge. Padding is NOT in it.
+      // Rects are screen px under the app's CSS zoom; widths are layout px.
+      const Z = (table.offsetWidth > 0) ? (table.getBoundingClientRect().width / table.offsetWidth) || 1 : 1;
       const inkRight = (cell) => {
         const base = cell.getBoundingClientRect().left;
         let right = base;
@@ -17715,7 +17743,7 @@ function _riskCompressColumns(table, redraw) {
           }
         };
         walk(cell);
-        return right - base;
+        return (right - base) / Z;
       };
       let w = inkRight(th);
       table.querySelectorAll('tbody tr').forEach(tr => {
@@ -17734,11 +17762,37 @@ function _riskCompressColumns(table, redraw) {
   // The padding a cell actually draws with, counted once rather than
   // guessed at.
   const PAD = 0;
+  // A column that turns into a dropdown when the row is edited has to hold
+  // its widest option plus the arrow, or editing shows "Me…" and "S…".
+  // Measured in the grid's own font, read mode or not.
+  const floors = {};
+  try {
+    // Measured in the dropdown's own font. In read mode there is no dropdown
+    // on the page, so a throwaway one supplies the font.
+    let sample = table.querySelector('tbody select');
+    let tmp = null;
+    if (!sample) { tmp = document.createElement('select'); tmp.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;'; (table.querySelector('tbody') || table).appendChild(tmp); sample = tmp; }
+    const cs = getComputedStyle(sample);
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;white-space:pre;pointer-events:none;';
+    ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing'].forEach(p => { probe.style[p] = cs[p]; });
+    document.body.appendChild(probe);
+    const Zf = (table.offsetWidth > 0) ? (table.getBoundingClientRect().width / table.offsetWidth) || 1 : 1;
+    const widest = (labels) => Math.max(0, ...labels.map(t => { probe.textContent = String(t || ''); return probe.getBoundingClientRect().width / Zf; }));
+    const SELECT_CHROME = 42;   // the select's own padding, border and arrow
+    floors.cat   = widest(RISK_CATEGORIES) + SELECT_CHROME;
+    floors.diff  = widest(RISK_DIFFICULTY.map(o => o.label)) + SELECT_CHROME;
+    floors.l     = widest(RISK_LIKELIHOOD.map(o => o.label)) + SELECT_CHROME;
+    floors.s     = widest(RISK_SEVERITY.map(o => o.label)) + SELECT_CHROME;
+    floors.owner = widest(riskPeople().concat('Unassigned')) + SELECT_CHROME;
+    probe.remove();
+    if (tmp) tmp.remove();
+  } catch (_) {}
   let fixed = 0;
   ths.forEach((th, i) => {
     const k = th.dataset.rcol;
     if (!k || PROSE.includes(k)) return;
-    const w = Math.max(16, measured[i] + PAD);
+    const w = Math.ceil(Math.max(16, measured[i] + PAD, floors[k] || 0));
     _riskWidths[k] = w;
     fixed += w;
   });
@@ -17786,10 +17840,11 @@ function _riskTableHtml(scored) {
     // own labels and the register reads as a page of ellipses.
     const mw = (c.min && !_riskWidths[c.k]) ? ` style="min-width:${c.min}px"` : '';
     const tip = c.hint ? ` title="${escapeHtml(c.hint)}"` : '';
-    if (!c.sort) return `<th class="rg-${c.k}" data-rcol="${c.k}"${mw}${tip}>${c.label ? `<span class="rg-plain">${escapeHtml(c.label)}</span>` : ''}${grip}</th>`;
+    const lbl = escapeHtml(c.label) + (c.sub ? `<small class="rg-sub">${escapeHtml(c.sub)}</small>` : '');
+    if (!c.sort) return `<th class="rg-${c.k}" data-rcol="${c.k}"${mw}${tip}>${c.label ? `<span class="rg-plain">${lbl}</span>` : ''}${grip}</th>`;
     const on = _riskSort === c.sort;
     return `<th class="rg-${c.k} ${on ? 'is-sorted' : ''}" data-rcol="${c.k}" draggable="true"${mw}${tip}>${grip}
-      <button type="button" data-rsort="${c.sort}">${escapeHtml(c.label)}<span class="rg-arrow">${on ? (_riskDir < 0 ? '▾' : '▴') : ''}</span></button>
+      <button type="button" data-rsort="${c.sort}"><span class="rg-lbl">${lbl}</span><span class="rg-arrow">${on ? (_riskDir < 0 ? '▾' : '▴') : ''}</span></button>
     </th>`;
   }).join('');
 
@@ -17876,7 +17931,6 @@ function _riskTableHtml(scored) {
           <span class="risk-scale-n">${Math.round(_riskScale * 100)}%</span>
           <button type="button" class="risk-tool risk-scale-btn" data-rscale="+" ${_riskScale >= 1 ? 'disabled' : ''}>+</button>
         </span>
-        <button type="button" class="risk-tool" data-rwidthreset title="Put every column back to its default width">↺ Reset widths</button>
         <button type="button" class="risk-tool" data-rtight title="Size every column to its widest value — Category tight to &quot;Supply chain&quot;, Complexity tight to &quot;Moderate&quot;">⇤ Compress</button>
         <button type="button" class="risk-tool" data-risk-paste title="Copy the rows out of a spreadsheet and paste them here — the columns are worked out from the header line.">⎘ Paste from a sheet</button>
         <button type="button" class="risk-tool is-primary" data-risk-add>+ Add risk</button>
@@ -18148,7 +18202,8 @@ function renderPortal() {
     ${_portalMoneyHtml(scopeProjects, _portalMachine)}
     ${_portalRiskHtml(scopeProjects)}
     ${_portalTeamHtml(scopeProjects)}
-    ${_portalWorkHtml(scopeProjects, _portalMachine)}`}
+    ${_portalWorkHtml(scopeProjects, _portalMachine)}
+    ${_portalCommPlanHtml(scopeProjects)}`}
   `;
   _wirePortal(root);
 }
@@ -18466,11 +18521,12 @@ function portalOpenSchedule(project, machine) {
   state._portalReturn = _portalCustomer || null;
   if (!state.openProjects.includes(project)) state.openProjects.push(project);
   state.filters.project = project;
-  const machines = _finProjectMachines(project);
-  const openOn = machine || (machines.length > 1 ? _finBaseMachine(machines) : '');
-  state.filters.machinesSubset = openOn ? [openOn] : [];
+  // The whole job, as scheduled: no machine filter unless a machine was
+  // asked for by name, no machine colouring, no baseline overlay.
+  state.filters.machinesSubset = machine ? [machine] : [];
   state.showFinancials = true;
-  state.showBaseline = true;
+  state.showBaseline = false;
+  if (state.scheduleView) state.scheduleView.showMachineColors = false;
   try { saveProjectTabs(); } catch (_) {}
   try { saveMachinesSubset(project); } catch (_) {}
   document.body.classList.add('portal-mode');
@@ -18554,7 +18610,13 @@ function _wirePortal(root) {
       renderPortal();
     });
   });
-  try { _wirePortalGrids(root); } catch (_) {}
+  try {
+    _wirePortalGrids(root);
+    // The plan's grids open compressed and lined up, like the plan itself.
+    const pcp = root.querySelectorAll('table.pcp[data-grid]');
+    pcp.forEach(t => _portalCompressGrid(t));
+    _portalAlignFirstCol(pcp);
+  } catch (_) {}
   root.querySelector('[data-portal-login-manage]')?.addEventListener('click', (e) => {
     e.stopPropagation();
     manageCustomerLogin(_portalCustomer);
@@ -21372,6 +21434,14 @@ function showContextMenu(x, y, items) {
       menu.appendChild(hr);
       continue;
     }
+    // A header — names the group of items under it, not clickable.
+    if (item && item.header) {
+      const h = document.createElement('div');
+      h.className = 'context-menu-header';
+      h.textContent = item.label;
+      menu.appendChild(h);
+      continue;
+    }
     const btn = document.createElement('button');
     btn.type = 'button';
     if (item.danger) btn.classList.add('danger');
@@ -22597,19 +22667,20 @@ function _hoursBreakdownToBudget(hb) {
 function _commPlanDefaults(project) {
   return {
     sdc: [
+      { role: 'Applications Engineer',   name: projectLead(project, 'apps') || '', email: '', phone: '', when: 'Quoted and concepted the machine — scope, commercial questions, the early-phase history' },
       { role: 'Project Manager',         name: projectLead(project, 'pm') || '', email: '', phone: '', when: 'First stop for everything — schedule, status, coordination' },
-      { role: 'Engineering Lead',        name: '', email: '', phone: '', when: 'Design questions, technical decisions, drawings' },
-      { role: 'Technician Lead',         name: '', email: '', phone: '', when: 'Build / shop-floor questions, assembly status' },
+      { role: 'Engineering Lead',        name: projectLead(project, 'eng') || '', email: '', phone: '', when: 'Design questions, technical decisions, drawings' },
+      { role: 'Shop Lead',               name: projectLead(project, 'shop') || '', email: '', phone: '', when: 'Build / shop-floor questions, assembly status' },
       { role: 'Debug Lead',              name: projectLead(project, 'debug') || '', email: '', phone: '', when: 'Machine debug, testing issues, on-site startup' },
-      { role: 'Applications Engineer',   name: '', email: '', phone: '', when: 'Quoted and concepted the machine — scope, commercial questions, the early-phase history' },
     ],
     leadership: [
-      { role: 'President',                     name: 'Dan Belliveau',    email: '', phone: '', when: 'Final escalation; anything that threatens the relationship or the business' },
+      { role: 'President',                     name: 'Daniel Belliveau', email: '', phone: '', when: 'Final escalation; anything that threatens the relationship or the business' },
       { role: 'VP of Operations',              name: 'Patrick Morrison', email: '', phone: '', when: 'Escalation beyond the project team; commercial disputes' },
       { role: 'Project Execution Manager',     name: 'Mike Gast',        email: '', phone: '', when: 'Escalation from the project manager; schedule and delivery' },
       { role: 'ME Manager',                    name: 'Mike Czenszak',    email: '', phone: '', when: 'Mechanical engineering escalation' },
       { role: 'CE Manager',                    name: 'Tim Wilmot',       email: '', phone: '', when: 'Controls engineering escalation' },
       { role: 'Sales & Relationship Manager',  name: 'Greg Merrill',     email: '', phone: '', when: 'Commercial questions, new scope, the relationship' },
+      { role: 'Procurement Lead',              name: 'Pat Laffey',       email: '', phone: '', when: 'Purchased parts, vendor lead times, PO status' },
     ],
     customer: [
       { role: 'Project Manager',          name: '', email: '', phone: '', when: 'Schedule, status, coordination on the customer side' },
@@ -22617,26 +22688,30 @@ function _commPlanDefaults(project) {
       { role: 'Purchasing',               name: '', email: '', phone: '', when: 'POs, invoices, change-quote paperwork' },
       { role: 'Plant / Facility Contact', name: '', email: '', phone: '', when: 'Site access, utilities, install windows' },
     ],
+    // Four communications carry a project: two kickoffs, the standing
+    // meeting, and everything in between. Frequency is picked, not typed —
+    // Weekly or Biweekly is the real choice on the recurring one.
     cadence: [
-      { name: 'Project Kickoff',        frequency: 'Once — after PO',      when: '',              format: 'Teams / on-site', owner: 'SDC PM',          audience: 'Both project teams' },
-      { name: 'Status Update',          frequency: 'Weekly',               when: '',              format: 'Email + Teams',   owner: 'SDC PM',          audience: 'Customer PM + stakeholders' },
-      { name: 'Design Review',          frequency: 'At design milestones', when: '',              format: 'Teams',           owner: 'SDC Engineering', audience: 'Customer engineering' },
-      { name: 'FAT',                    frequency: 'At FAT date',          when: '',              format: 'On-site at SDC',  owner: 'SDC PM',          audience: 'Customer team' },
-      { name: 'Issue (happening now)',  frequency: 'Same day',             when: 'As it happens', format: 'Phone, then email', owner: 'Whoever finds it', audience: 'Both PMs — escalate below' },
-      { name: 'Risk (could happen)',    frequency: 'Raised at status update', when: '',           format: 'Status update + risk list', owner: 'SDC PM', audience: 'Both project teams' },
-    ],
-    escalation_sdc: [
-      { level: '1', who: 'Project Manager',     when: 'Day-to-day issues, schedule questions' },
-      { level: '2', who: 'Engineering Manager', when: 'Unresolved after 3 business days, scope changes' },
-      { level: '3', who: 'SDC Ownership',       when: 'Commercial disputes, major schedule slips' },
-    ],
-    escalation_customer: [
-      { level: '1', who: 'Project Manager',            when: 'Day-to-day issues, schedule questions' },
-      { level: '2', who: 'Engineering Manager',        when: 'Unresolved after 3 business days, scope changes' },
-      { level: '3', who: 'Plant / Program Management', when: 'Commercial disputes, major schedule slips' },
+      { name: 'Internal project kickoff',  frequency: 'Once',      when: 'After PO',    format: 'In person at SDC',       owner: 'SDC PM', audience: 'SDC project team' },
+      { name: 'External project kickoff',  frequency: 'Once',      when: 'After PO',    format: 'Teams / on-site',        owner: 'SDC PM', audience: 'SDC + customer project teams' },
+      { name: 'Recurring project meeting', frequency: 'Weekly',    when: '',            format: 'Teams',                  owner: 'SDC PM', audience: 'Both project teams' },
+      { name: 'Day-to-day communication',  frequency: 'As needed', when: 'As it comes', format: 'Email / Teams / phone',  owner: 'Project team', audience: 'Both PMs' },
     ],
     notes: '',
   };
+}
+
+// Phone numbers read as 440-223-7822 however they were typed: ten digits
+// get the dashes, a leading 1 is dropped, an extension rides along.
+function formatPhone(v) {
+  const raw = String(v || '').trim();
+  if (!raw) return '';
+  const m = raw.match(/^(.*?)(?:\s*(?:x|ext\.?|extension)\s*(\d+))?$/i);
+  let digits = (m ? m[1] : raw).replace(/\D/g, '');
+  const ext = m && m[2] ? ' x' + m[2] : '';
+  if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
+  if (digits.length !== 10) return raw;
+  return digits.slice(0, 3) + '-' + digits.slice(3, 6) + '-' + digits.slice(6) + ext;
 }
 
 async function openCommPlanModal(project) {
@@ -22652,23 +22727,22 @@ async function openCommPlanModal(project) {
   const plan = quote.comm_plan && typeof quote.comm_plan === 'object'
     ? quote.comm_plan
     : _commPlanDefaults(project);
-  // Migrate the old combined escalation table (one row carried both sides)
-  // into the per-side ladders.
-  if (Array.isArray(plan.escalation)) {
-    plan.escalation_sdc = plan.escalation.map(r => ({ level: r.level, who: r.sdc, when: r.when }));
-    plan.escalation_customer = plan.escalation.map(r => ({ level: r.level, who: r.customer, when: r.when }));
-    delete plan.escalation;
-  }
+  // The escalation ladders are gone — the Level column carries that now.
+  delete plan.escalation; delete plan.escalation_sdc; delete plan.escalation_customer;
   // Older saved plans might miss a section — backfill so render never breaks.
   const d = _commPlanDefaults(project);
-  for (const k of ['sdc', 'leadership', 'customer', 'cadence', 'escalation_sdc', 'escalation_customer']) {
+  for (const k of ['sdc', 'leadership', 'customer', 'cadence']) {
     if (!Array.isArray(plan[k])) plan[k] = d[k];
   }
+  // A plan still carrying the first cadence seed, untouched, takes the new one.
+  const OLD_CADENCE = 'Project Kickoff;Status Update;Design Review;FAT;Issue (happening now);Risk (could happen)';
+  if ((plan.cadence || []).map(r => r.name || '').join(';') === OLD_CADENCE) plan.cadence = d.cadence;
   // The first leadership seed had the wrong people on it. A plan still
   // carrying exactly that seed, untouched, takes the corrected one.
   const OLD_LEADERSHIP = 'VP of Operations|Patrick Morrison;ME Manager|Mike Czenszak;CE Manager|Tim Wilmot;Electrical Engineering Team Lead|Jason Perry;Sales Manager|Greg Merrill';
   const sig = (rows) => (rows || []).map(r => (r.role || '') + '|' + (r.name || '')).join(';');
-  if (sig(plan.leadership) === OLD_LEADERSHIP) plan.leadership = d.leadership;
+  const PREV_LEADERSHIP = 'President|Dan Belliveau;VP of Operations|Patrick Morrison;Project Execution Manager|Mike Gast;ME Manager|Mike Czenszak;CE Manager|Tim Wilmot;Sales & Relationship Manager|Greg Merrill';
+  if (sig(plan.leadership) === OLD_LEADERSHIP || sig(plan.leadership) === PREV_LEADERSHIP) plan.leadership = d.leadership;
   // Same for the project-team seed: Sales / Account Manager became
   // Applications Engineer. A row somebody has filled is theirs.
   (plan.sdc || []).forEach(r => {
@@ -22676,7 +22750,60 @@ async function openCommPlanModal(project) {
       r.role = 'Applications Engineer';
       r.when = 'Quoted and concepted the machine — scope, commercial questions, the early-phase history';
     }
+    if (r.role === 'Technician Lead') r.role = 'Shop Lead';
   });
+  // SDC leadership and the SDC project team are the standard for every job,
+  // kept once (settings.comm_plan_standard). A project's plan carries only
+  // its own customer side, cadence and notes. The first plan opened after
+  // this change donates its SDC rows as the standard.
+  const STD_KEY = 'comm_plan_standard';
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  state.settings = state.settings || {};
+  const std = state.settings[STD_KEY];
+  // The customer side: the roles and what you contact them for are the
+  // standard; the names, emails, phones and levels are this project's.
+  const custStd = (rows) => (rows || []).map(r => ({ role: r.role || '', when: r.when || '' }));
+  const stdOf = () => ({ leadership: clone(plan.leadership), sdc: clone(plan.sdc), customer: custStd(plan.customer) });
+  if (std && Array.isArray(std.leadership) && Array.isArray(std.sdc)) {
+    plan.leadership = clone(std.leadership);
+    plan.sdc = clone(std.sdc);
+    if (Array.isArray(std.customer)) {
+      const mine = plan.customer || [];
+      const used = new Set();
+      const rows = std.customer.map(sr => {
+        const i = mine.findIndex((r, idx) => !used.has(idx) && (r.role || '') === sr.role);
+        const r = i >= 0 ? mine[i] : {};
+        if (i >= 0) used.add(i);
+        return { role: sr.role, when: sr.when, name: r.name || '', email: r.email || '', phone: r.phone || '', level: r.level || '', _std: true };
+      });
+      mine.forEach((r, idx) => { if (!used.has(idx)) rows.push(r); });   // this project's own extra contacts stay
+      plan.customer = rows;
+    } else {
+      std.customer = custStd(plan.customer);
+      (plan.customer || []).forEach(r => { r._std = true; });
+      api.putSetting(STD_KEY, std).catch(() => {});
+    }
+  } else {
+    state.settings[STD_KEY] = stdOf();
+    (plan.customer || []).forEach(r => { r._std = true; });
+    api.putSetting(STD_KEY, state.settings[STD_KEY]).catch(() => {});
+  }
+  // Apps / Sales leads the list now. A saved plan with that row elsewhere
+  // moves it to the front.
+  if (Array.isArray(plan.sdc)) {
+    const ai = plan.sdc.findIndex(r => r.role === 'Applications Engineer');
+    if (ai > 0) plan.sdc.unshift(plan.sdc.splice(ai, 1)[0]);
+  }
+  // The lead rows mirror the schedule footer — always. Our side of the
+  // plan is filled out there; in here only the customer's side is typed.
+  const LEAD_ROW = COMM_LEAD_ROW;
+  (plan.sdc || []).forEach(r => {
+    const k = LEAD_ROW[r.role];
+    if (k) { r.name = projectLead(project, k) || ''; if (!r.name) { r.email = ''; r.phone = ''; } }
+  });
+  // The roster spells it Daniel.
+  (plan.leadership || []).forEach(r => { if (r.name === 'Dan Belliveau') r.name = 'Daniel Belliveau'; });
+  ['leadership', 'sdc', 'customer'].forEach(k => (plan[k] || []).forEach(r => { r.phone = formatPhone(r.phone); }));
   if (typeof plan.notes !== 'string') plan.notes = '';
 
   const overlay = document.createElement('div');
@@ -22691,24 +22818,17 @@ async function openCommPlanModal(project) {
   // name and the role and email arrive with it.
   const roster = (state.team || []).filter(m => m && m.name && m.active !== 0 && !isPlaceholder(m.name));
   const byName = (n) => roster.find(m => m.name.trim().toLowerCase() === String(n || '').trim().toLowerCase()) || null;
-  // Which departments can fill a given role. Leadership rows and anything
-  // unrecognised fall through to everyone.
-  const DISC_FOR_ROLE = [
-    [/projects*manager|pm|execution/i,            ['pm']],
-    [/engineerings*lead|engineer/i,                    ['mech', 'controls', 'service']],
-    [/technician|build|shop|wir/i,                      ['build', 'wire', 'service']],
-    [/debug/i,                                          ['pm', 'mech', 'controls']],
-    // Applications engineers are not one department on the roster.
-    [/application/i,                                    null],
-    [/sales|account/i,                                  ['sales', 'growth']],
-  ];
-  const discsFor = (role) => { const hit = DISC_FOR_ROLE.find(([re]) => re.test(String(role || ''))); return (hit && hit[1]) ? new Set(hit[1]) : null; };
-  const pick = (section, i, value, role) => {
-    const allow = section === 'sdc' ? discsFor(role) : null;
-    const list = allow ? roster.filter(m => allow.has(m.discipline)) : roster;
+  // Every row offers everyone, grouped by department in the company's order:
+  // PM first, then ME, CE, builders, electricians, then the rest.
+  const DISC_ORDER = DISCIPLINES.map(d => d.key);
+  const pick = (section, i, value) => {
     const groups = {};
-    list.forEach(m => { (groups[m.discipline] ||= []).push(m); });
-    const opts = Object.keys(groups).map(k => {
+    roster.forEach(m => { (groups[m.discipline] ||= []).push(m); });
+    const keys = Object.keys(groups).sort((a, b) => {
+      const ia = DISC_ORDER.indexOf(a), ib = DISC_ORDER.indexOf(b);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    const opts = keys.map(k => {
       const d = DISCIPLINE_BY_KEY[k];
       const label = d ? d.label : k;
       const items = groups[k].slice().sort((a, b) => ((!!b.is_lead) - (!!a.is_lead)) || (a.sort_order || 0) - (b.sort_order || 0))
@@ -22720,39 +22840,92 @@ async function openCommPlanModal(project) {
   };
   const inp = (section, i, field, value, placeholder) =>
     `<textarea rows="1" data-cp="${section}.${i}.${field}" placeholder="${escapeHtml(placeholder || '')}" autocomplete="off" spellcheck="false">${escapeHtml(value || '')}</textarea>`;
-  const delBtn = (section, i) =>
-    `<button type="button" class="cp-del" data-cp-del="${section}.${i}" title="Remove this row">×</button>`;
 
-  const peopleTable = (section, title, cls) => `
-    <div class="cp-people-col">
+  // Escalation level on our side only: 1 is the first call, 2 is where you
+  // go once 1 is exhausted, and so on. Several people can share a level.
+  // The customer's side has no ladder — it is their list, not ours.
+  const levelSel = (section, i, value) => `<select data-cp="${section}.${i}.level" class="cp-level" title="Escalation level — work through 1 before 2, 2 before 3. Several people can share a level.">
+    <option value="">—</option>${[1, 2, 3, 4, 5].map(n => `<option value="${n}"${String(value || '') === String(n) ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
+  // Same six columns on all three tables, so they line up and read as one
+  // directory. Contact for… takes whatever width is left after Compress.
+  const LEVEL_HINT = 'Escalation level — work through 1 before 2, 2 before 3. Several people can share a level.';
+  const CP_COLS = [
+    { key: 'role',  label: 'Role',  w: 170 },
+    { key: 'name',  label: 'Name',  w: 170, min: 140 },
+    { key: 'email', label: 'Email', w: 220, min: 200 },
+    { key: 'phone', label: 'Phone', w: 120, min: 125 },
+    { key: 'level', label: 'Level', w: 64,  min: 56, title: LEVEL_HINT },
+    { key: 'when',  label: 'Contact for…', w: 330, title: 'What this person is the contact FOR — which situations go to them.' },
+  ];
+  let _cpEditStd = false;
+  const peopleTable = (section, title, cls) => {
+    const locked = section !== 'customer' && !_cpEditStd;
+    const cols = CP_COLS.map(c => (c.key === 'when' && section === 'leadership')
+      ? Object.assign({}, c, { label: 'Escalate to them for…', title: 'Leadership is where an issue goes once the project team has not been able to settle it. Which kinds of issue escalate to this person.' })
+      : c);
+    const rows = plan[section].map((r, i) => {
+      const m = section !== 'customer' ? byName(r.name) : null;
+      // A lead row: the role IS the row, the name comes from the footer.
+      const leadKey = section === 'sdc' ? LEAD_ROW[r.role] : null;
+      const ro = (field, shown, placeholder) => `<span class="cp-ro">${escapeHtml(shown || '')}</span>${inp(section, i, field, shown, placeholder).replace('<textarea', '<textarea hidden')}`;
+      const cell = (field, value, placeholder) => locked ? ro(field, value, placeholder) : inp(section, i, field, value, placeholder);
+      // On the customer side the role and the reason are the standard; a
+      // contact this project added itself is typed in full.
+      const stdText = section === 'customer' && r._std && !_cpEditStd;
+      const roleCell = leadKey ? ro('role', r.role) : m ? ro('role', m.title || r.role) : stdText ? ro('role', r.role) : cell('role', r.role, 'Role');
+      const nameCell = leadKey
+        ? (r.name ? ro('name', r.name) : `<span class="cp-ro cp-ro-empty" title="Pick the ${escapeHtml(r.role.toLowerCase())} in the schedule footer">Not assigned yet</span>`)
+        : locked ? ro('name', r.name)
+        : section !== 'customer' ? pick(section, i, r.name, r.role) : inp(section, i, 'name', r.name, 'Name');
+      const emailCell = m ? ro('email', m.email || r.email) : cell('email', r.email, 'name@company.com');
+      const levelCell = locked
+        ? `<span class="cp-ro cp-ro-level">${escapeHtml(r.level || '—')}</span><textarea hidden data-cp="${section}.${i}.level">${escapeHtml(r.level || '')}</textarea>`
+        : levelSel(section, i, r.level);
+      return `<tr${leadKey ? ' class="cp-lead-row"' : ''}>
+        <td>${roleCell}</td>
+        <td>${nameCell}</td>
+        <td>${emailCell}</td>
+        <td>${cell('phone', r.phone, '')}</td>
+        <td>${levelCell}</td>
+        <td>${stdText ? ro('when', r.when) : cell('when', r.when, section === 'leadership' ? 'Which issues escalate to them' : 'Which situations go to them')}</td>
+      </tr>`;
+    }).join('');
+    const grid = _portalGridHtml('cp-' + section, cols, rows, 'cp-table' + (locked ? ' cp-locked' : ''), 'when')
+      .replace('<table ', `<table data-cp-section="${section}" `);
+    return `<div class="cp-people-col">
       <div class="cp-table-title ${cls}">${escapeHtml(title)}</div>
-      <table class="cp-table">
-        <colgroup><col style="width:19%"><col style="width:17%"><col style="width:20%"><col style="width:12%"><col style="width:28%"><col style="width:4%"></colgroup>
-        <thead><tr><th>Role</th><th>Name</th><th>Email</th><th>Phone</th><th title="What this person is the contact FOR — which situations go to them.">Contact for…</th><th></th></tr></thead>
-        <tbody>
-          ${plan[section].map((r, i) => { const m = (section === 'sdc' || section === 'leadership') ? byName(r.name) : null; return `<tr>
-            <td>${m ? `<span class="cp-ro">${escapeHtml(m.title || r.role || '')}</span>${inp(section, i, 'role', m.title || r.role, 'Role').replace('<textarea', '<textarea hidden')}` : inp(section, i, 'role', r.role, 'Role')}</td>
-            <td>${(section === 'sdc' || section === 'leadership') ? pick(section, i, r.name, r.role) : inp(section, i, 'name', r.name, 'Name')}</td>
-            <td>${m ? `<span class="cp-ro">${escapeHtml(m.email || r.email || '')}</span>${inp(section, i, 'email', m.email || r.email, 'name@company.com').replace('<textarea', '<textarea hidden')}` : inp(section, i, 'email', r.email, 'name@company.com')}</td>
-            <td>${inp(section, i, 'phone', r.phone, '')}</td>
-            <td>${inp(section, i, 'when', r.when, 'Which situations go to them')}</td>
-            <td>${delBtn(section, i)}</td>
-          </tr>`; }).join('')}
-          <tr class="cp-blank-row">
-            <td><input type="text" data-cp-new="${section}.role" placeholder="+ Add someone — role…" autocomplete="off"></td>
-            <td>${(section === 'sdc' || section === 'leadership') ? pick(section, 'new', '').replace(`data-cp="${section}.new.name" data-cp-pick="1"`, `data-cp-new="${section}.name"`) : `<input type="text" data-cp-new="${section}.name" placeholder="Name" autocomplete="off">`}</td>
-            <td><input type="text" data-cp-new="${section}.email" placeholder="Email" autocomplete="off"></td>
-            <td><input type="text" data-cp-new="${section}.phone" placeholder="Phone" autocomplete="off"></td>
-            <td><input type="text" data-cp-new="${section}.when" placeholder="Contact for…" autocomplete="off"></td>
-            <td></td>
-          </tr>
-        </tbody>
-      </table>
+      ${grid}
     </div>`;
+  };
+  const CAD_COLS = [
+    { key: 'name',      label: 'Communication',  w: 210 },
+    { key: 'date',      label: 'Date',           w: 140, min: 138, title: 'When it happened — or the date it is set for' },
+    { key: 'frequency', label: 'Frequency',      w: 110, min: 110 },
+    { key: 'when',      label: 'When',           w: 150, min: 150, title: 'The standing slot — e.g. Tuesdays 9:00 AM ET' },
+    { key: 'format',    label: 'Format',         w: 170 },
+    { key: 'owner',     label: 'Led by',         w: 140 },
+    { key: 'audience',  label: "Who's involved", w: 280 },
+  ];
+  const cadenceTable = () => {
+    const FREQ = ['Once', 'Weekly', 'Biweekly', 'As needed'];
+    const rows = plan.cadence.map((r, i) => `<tr>
+      <td>${inp('cadence', i, 'name', r.name, 'Meeting / update')}</td>
+      <td><input type="date" class="cp-date" data-cp="cadence.${i}.date" value="${/^d{4}-d{2}-d{2}$/.test(String(r.date || '')) ? r.date : ''}"></td>
+      <td><select data-cp="cadence.${i}.frequency" class="cp-freq">${FREQ.map(o =>
+        `<option value="${o}"${(r.frequency || '') === o ? ' selected' : ''}>${o}</option>`).join('')}${FREQ.includes(r.frequency || '') ? '' : `<option value="${escapeHtml(r.frequency || '')}" selected>${escapeHtml(r.frequency || '—')}</option>`}</select></td>
+      <td>${inp('cadence', i, 'when', r.when, 'e.g. Tuesdays 9:00 AM')}</td>
+      <td>${inp('cadence', i, 'format', r.format, 'Teams / email')}</td>
+      <td>${inp('cadence', i, 'owner', r.owner, 'SDC PM')}</td>
+      <td>${inp('cadence', i, 'audience', r.audience, 'Who attends')}</td>
+    </tr>`).join('');
+    return _portalGridHtml('cp-cadence', CAD_COLS, rows, 'cp-table', 'audience')
+      .replace('<table ', '<table data-cp-section="cadence" ');
+  };
 
   const bodyHtml = () => `
-    <p class="pr-muted pr-edithint">Who's who on both sides, how this project communicates, and where issues escalate. <strong>Saves as you type</strong> — shared with everyone on this project.</p>
-    <div class="pr-field"><div class="pr-label">Project team directory</div>
+    <p class="pr-muted pr-edithint">Who's who on both sides and how this project communicates. <strong>Saves as you type.</strong> The customer side and the cadence belong to this project; SDC leadership and the SDC project team are the standard for every job — names on the project team come from the schedule footer.</p>
+    <div class="pr-field"><div class="pr-label cp-dir-label">Project team directory
+      <button type="button" class="risk-tool${_cpEditStd ? ' is-on' : ''}" data-cp-editstd title="SDC leadership and the SDC project team are the same on every job. Edit them here once.">${_cpEditStd ? '✓ Done editing SDC standard' : '✎ Edit SDC standard'}</button></div>
       <div class="cp-people">
         ${peopleTable('leadership', 'SDC leadership', 'cp-side-sdc')}
       ${peopleTable('sdc', 'SDC project team', 'cp-side-sdc')}
@@ -22760,43 +22933,7 @@ async function openCommPlanModal(project) {
       </div>
     </div>
     <div class="pr-field"><div class="pr-label">Communication cadence <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— what happens, how often, and who runs it</span></div>
-      <table class="cp-table cp-cadence">
-        <colgroup><col style="width:18%"><col style="width:14%"><col style="width:15%"><col style="width:14%"><col style="width:15%"><col style="width:20%"><col style="width:4%"></colgroup>
-        <thead><tr><th>Communication</th><th>Frequency</th><th title="The standing slot — e.g. Tuesdays 9:00 AM ET">When</th><th>Format</th><th>Led by</th><th>Audience</th><th></th></tr></thead>
-        <tbody>
-          ${plan.cadence.map((r, i) => `<tr>
-            <td>${inp('cadence', i, 'name', r.name, 'Meeting / update')}</td>
-            <td>${inp('cadence', i, 'frequency', r.frequency, 'Weekly / biweekly')}</td>
-            <td>${inp('cadence', i, 'when', r.when, 'e.g. Tuesdays 9:00 AM')}</td>
-            <td>${inp('cadence', i, 'format', r.format, 'Teams / email')}</td>
-            <td>${inp('cadence', i, 'owner', r.owner, 'SDC PM')}</td>
-            <td>${inp('cadence', i, 'audience', r.audience, 'Who attends')}</td>
-            <td>${delBtn('cadence', i)}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-      <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="cadence">+ Add communication</button>
-    </div>
-    <div class="pr-field"><div class="pr-label">Escalation paths <span class="pr-muted" style="text-transform:none;letter-spacing:0;font-weight:400;">— each side has its own ladder; issues climb one level at a time</span></div>
-      <div class="cp-people">
-        ${['escalation_sdc', 'escalation_customer'].map(section => `
-        <div class="cp-people-col">
-          <div class="cp-table-title ${section === 'escalation_sdc' ? 'cp-side-sdc' : 'cp-side-customer'}">${section === 'escalation_sdc' ? 'SDC escalation' : 'Customer escalation'}</div>
-          <table class="cp-table cp-escalation">
-            <colgroup><col style="width:10%"><col style="width:34%"><col style="width:52%"><col style="width:4%"></colgroup>
-            <thead><tr><th>Level</th><th>Contact</th><th>When to escalate</th><th></th></tr></thead>
-            <tbody>
-              ${plan[section].map((r, i) => `<tr>
-                <td class="cp-level">${inp(section, i, 'level', r.level, String(i + 1))}</td>
-                <td>${inp(section, i, 'who', r.who, 'Role / name')}</td>
-                <td>${inp(section, i, 'when', r.when, 'What triggers this level')}</td>
-                <td>${delBtn(section, i)}</td>
-              </tr>`).join('')}
-            </tbody>
-          </table>
-          <button type="button" class="btn-ghost btn-tight cp-add" data-cp-add="${section}">+ Add level</button>
-        </div>`).join('')}
-      </div>
+      ${cadenceTable()}
     </div>
     <div class="pr-field"><div class="pr-label">Notes</div>
       <textarea class="cp-notes" data-cp-notes placeholder="Anything else the team should know — customer preferences, time zones, site rules…">${escapeHtml(plan.notes || '')}</textarea>
@@ -22810,10 +22947,8 @@ async function openCommPlanModal(project) {
   // Resizable window — native browser resize grip (bottom-right corner).
   // The size the user drags to is remembered per browser and restored on
   // the next open.
-  let savedSize = null;
-  try { savedSize = JSON.parse(localStorage.getItem('sdcCommPlanSize') || 'null'); } catch (_) {}
-  const startW = savedSize && savedSize.w ? Math.min(savedSize.w, window.innerWidth - 30) : Math.min(1560, window.innerWidth * 0.96);
-  const startH = savedSize && savedSize.h ? Math.min(savedSize.h, window.innerHeight - 30) : Math.round(window.innerHeight * 0.9);
+  const startW = window.innerWidth - 24;
+  const startH = window.innerHeight - 24;
   overlay.innerHTML = `
     <div class="modal-card cp-card" style="max-width: none; width: ${startW}px; height: ${startH}px;">
       <div class="modal-head">
@@ -22825,23 +22960,11 @@ async function openCommPlanModal(project) {
   document.body.appendChild(overlay);
   overlay.querySelector('.modal-close').addEventListener('click', close);
   overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
-  // Persist the dragged size (debounced) so it opens that way next time.
-  try {
-    const card = overlay.querySelector('.cp-card');
-    let t = null;
-    new ResizeObserver(() => {
-      clearTimeout(t);
-      t = setTimeout(() => {
-        try { localStorage.setItem('sdcCommPlanSize', JSON.stringify({ w: Math.round(card.offsetWidth), h: Math.round(card.offsetHeight) })); } catch (_) {}
-      }, 400);
-    }).observe(card);
-  } catch (_) {}
-
   // Read every input back into the plan object.
   const readPlan = () => {
     overlay.querySelectorAll('[data-cp]').forEach(el => {
       const [section, i, field] = el.dataset.cp.split('.');
-      if (plan[section] && plan[section][Number(i)]) plan[section][Number(i)][field] = el.value;
+      if (plan[section] && plan[section][Number(i)]) plan[section][Number(i)][field] = field === 'phone' ? formatPhone(el.value) : el.value;
     });
     const notes = overlay.querySelector('[data-cp-notes]');
     if (notes) plan.notes = notes.value;
@@ -22862,6 +22985,10 @@ async function openCommPlanModal(project) {
         await fetch(`/api/project/${encodeURIComponent(project)}/quote`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(q),
         });
+        if (_cpEditStd) {
+          state.settings[STD_KEY] = stdOf();
+          await api.putSetting(STD_KEY, state.settings[STD_KEY]);
+        }
         if (statusEl) statusEl.textContent = 'Saved ✓';
       } catch (_) {
         if (statusEl) statusEl.textContent = 'Could not save — check the connection.';
@@ -22897,54 +23024,77 @@ async function openCommPlanModal(project) {
         wire();
       });
     });
+    overlay.querySelectorAll('[data-cp$=".phone"]').forEach(el => {
+      el.addEventListener('blur', () => { const v = formatPhone(el.value); if (v !== el.value) { el.value = v; savePlan(); } });
+    });
     overlay.querySelectorAll('[data-cp], [data-cp-notes]').forEach(el => {
       el.addEventListener('input', savePlan);
       el.addEventListener('input', () => _cpGrow(el));
       _cpGrow(el);
     });
     _cpPan();
-    overlay.querySelectorAll('[data-cp-add]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        readPlan();
-        const section = btn.dataset.cpAdd;
-        const blank = section === 'cadence' ? { name: '', frequency: '', when: '', format: '', owner: '', audience: '' }
-          : section.startsWith('escalation') ? { level: String(plan[section].length + 1), who: '', when: '' }
-          : { role: '', name: '', email: '', phone: '', when: '' };
-        plan[section].push(blank);
-        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
-        wire();
-        savePlan();
+    // Right-click any grid: add a row below the one you clicked (or at the
+    // end from the heading), remove the row you are on. The SDC side offers
+    // that only while the standard is being edited.
+    overlay.querySelectorAll('.cp-table[data-cp-section]').forEach(tbl => {
+      tbl.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        const section = tbl.dataset.cpSection;
+        const tr = e.target.closest('tbody tr');
+        const at = tr ? tr.sectionRowIndex : -1;
+        const row = at >= 0 ? plan[section][at] : null;
+        const isLead = !!(row && section === 'sdc' && LEAD_ROW[row.role]) || !!(row && section === 'customer' && row._std && !_cpEditStd);
+        const redraw = () => { overlay.querySelector('#cp-body').innerHTML = bodyHtml(); wire(); savePlan(); };
+        const locked = (section === 'sdc' || section === 'leadership') && !_cpEditStd;
+        if (locked) {
+          showContextMenu(e.clientX, e.clientY, [{ label: '✎ Edit SDC standard', onClick: () => { _cpEditStd = true; overlay.querySelector('#cp-body').innerHTML = bodyHtml(); wire(); } }]);
+          return;
+        }
+        const blankFor = () => section === 'cadence'
+          ? { name: '', date: '', frequency: 'Weekly', when: '', format: '', owner: '', audience: '' }
+          : { role: '', name: '', email: '', phone: '', level: '', when: '' };
+        const items = [{
+          label: (section === 'cadence' ? '+ Add communication' : '+ Add someone') + (row ? ' below' : ''),
+          onClick: () => {
+            readPlan();
+            const blank = blankFor();
+            plan[section].splice(at >= 0 ? at + 1 : plan[section].length, 0, blank);
+            redraw();
+            const idx = plan[section].indexOf(blank);
+            const first = overlay.querySelector(`[data-cp="${section}.${idx}.${section === 'cadence' ? 'name' : 'role'}"]`);
+            if (first && !first.hidden) first.focus();
+          },
+        }];
+        if (row && !isLead) {
+          items.push({ separator: true });
+          items.push({ label: `Remove ${(row.name || row.role || 'this row').trim()}`, danger: true, onClick: () => {
+            readPlan();
+            plan[section].splice(at, 1);
+            redraw();
+          } });
+        }
+        showContextMenu(e.clientX, e.clientY, items);
       });
     });
-    // Always-there blank row at the bottom of each people table — type in it
-    // and (on blur) it becomes a real row with a fresh blank underneath.
-    overlay.querySelectorAll('input[data-cp-new]').forEach(el => {
-      el.addEventListener('change', () => {
-        const section = el.dataset.cpNew.split('.')[0];
-        const vals = {};
-        let any = false;
-        overlay.querySelectorAll(`input[data-cp-new^="${section}."]`).forEach(x => {
-          vals[x.dataset.cpNew.split('.')[1]] = x.value;
-          if (x.value.trim()) any = true;
-        });
-        if (!any) return;
-        readPlan();
-        plan[section].push({ role: '', name: '', email: '', phone: '', when: '', ...vals });
-        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
-        wire();
-        savePlan();
-      });
+    overlay.querySelector('[data-cp-editstd]')?.addEventListener('click', () => {
+      _cpEditStd = !_cpEditStd;
+      readPlan();
+      overlay.querySelector('#cp-body').innerHTML = bodyHtml();
+      wire();
+      if (!_cpEditStd) {
+        // Leaving edit: the standard is what is on screen now.
+        (plan.customer || []).forEach(r => { r._std = true; });
+        state.settings[STD_KEY] = stdOf();
+        api.putSetting(STD_KEY, state.settings[STD_KEY]).catch(() => {});
+      }
     });
-    overlay.querySelectorAll('[data-cp-del]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        readPlan();
-        const [section, i] = btn.dataset.cpDel.split('.');
-        plan[section].splice(Number(i), 1);
-        overlay.querySelector('#cp-body').innerHTML = bodyHtml();
-        wire();
-        savePlan();
-      });
-    });
+    try {
+      _wirePortalGrids(overlay);
+      // Compressed is the default — every open, every redraw.
+      const grids = overlay.querySelectorAll('table.cp-table[data-grid]');
+      grids.forEach(t => _portalCompressGrid(t));
+      _portalAlignFirstCol(grids);
+    } catch (_) {}
     overlay.querySelector('.cp-close-btn')?.addEventListener('click', close);
   };
   wire();
@@ -25481,10 +25631,12 @@ function signedInMember() {
 //                      hand out).
 //   Everyone else    — the tasks with their name on them.
 const EXEC_TEAM = [
+  'daniel belliveau',
   'dan belliveau',
+  'lisa andreani',
+  'stephen belliveau',
+  'ashley cohen',
   'patrick morrison',
-  'isa',
-  'andriani',
 ];
 // Matches a full name, or a first name on its own for the entries above
 // that are given that way.
@@ -27685,11 +27837,40 @@ function _resTaskStatus(t) {
   return drift < 0 ? 'behind' : 'ontrack';
 }
 
-// ── Project leads (PM / Debug lead) ─────────────────────────────────────────
+// ── Project leads (PM / Engineering / Shop / Debug) ─────────────────────────
 // Stored server-side in the settings key 'project_leads' so everyone sees the
-// same assignments:  { "<project>": { pm: "Name", debug: "Name" } }
-// Assigned from the project tab's right-click menu; the Departments page
-// filters its timeline by PM and shows the PM mini-dashboard from this map.
+// same assignments:  { "<project>": { pm, eng, shop, debug } }
+// Set from the schedule footer or the project tab's right-click menu. The
+// Departments page filters its timeline by PM; the communication plan and
+// the portal's SDC Team read all four.
+const LEAD_ROLES = [
+  // Who sold it and concepted it — first, because that is where the job began.
+  // Dan and Steve concept machines too, so the executives are in this list.
+  { key: 'apps',  label: 'Apps / Sales',     discs: ['sales', 'growth', 'exec'] },
+  { key: 'pm',    label: 'PM',               discs: ['pm'] },
+  { key: 'eng',   label: 'Engineering lead', discs: ['mech', 'controls'] },
+  { key: 'shop',  label: 'Shop lead',        discs: ['build', 'wire'] },
+  // Usually the engineering lead again, sometimes not.
+  { key: 'debug', label: 'Debug lead',       discs: ['pm', 'mech', 'controls'] },
+];
+// People who can hold a role, one group per department in the role's list
+// order (Mechanical before Controls, Builders before Electricians).
+// Which communication-plan role mirrors which schedule lead.
+const COMM_LEAD_ROW = { 'Project Manager': 'pm', 'Engineering Lead': 'eng', 'Shop Lead': 'shop', 'Debug Lead': 'debug', 'Applications Engineer': 'apps' };
+function leadGroups(role) {
+  const discs = (LEAD_ROLES.find(r => r.key === role) || {}).discs || [];
+  return discs.map(d => ({
+    key: d,
+    label: (DISCIPLINE_BY_KEY[d] || { label: d }).label,
+    people: (state.team || [])
+      .filter(m => m.active !== 0 && !isPlaceholder(m.name) && m.discipline === d)
+      .map(m => m.name)
+      .sort((a, b) => a.localeCompare(b)),
+  })).filter(g => g.people.length);
+}
+function leadPeople(role) {
+  return leadGroups(role).flatMap(g => g.people);
+}
 function projectLead(project, role) {
   const map = (state.settings && state.settings.project_leads) || {};
   const rec = map[project];
@@ -27700,12 +27881,13 @@ async function setProjectLead(project, role, name) {
   const map = state.settings.project_leads = state.settings.project_leads || {};
   const rec = map[project] = map[project] || {};
   if (name) rec[role] = name; else delete rec[role];
-  if (!rec.pm && !rec.debug) delete map[project];
+  if (!LEAD_ROLES.some(r => rec[r.key])) delete map[project];
+  const label = (LEAD_ROLES.find(r => r.key === role) || { label: role }).label;
   try {
     await api.putSetting('project_leads', map);
     showToast(name
-      ? `${role === 'pm' ? 'PM' : 'Debug lead'} for ${project}: ${name}`
-      : `Cleared the ${role === 'pm' ? 'PM' : 'debug lead'} on ${project}.`);
+      ? `${label} for ${project}: ${name}`
+      : `Cleared the ${label.toLowerCase()} on ${project}.`);
   } catch (e) {
     showToast('Could not save: ' + (e.message || e), { kind: 'error' });
   }

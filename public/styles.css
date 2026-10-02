@@ -267,7 +267,7 @@ body {
    Projects page — full-page list of workspaces with collapsible sections.
    ========================================================================== */
 .projects-page {
-  max-width: 920px;
+  max-width: 1480px;
   margin: 0 auto;
   padding: 24px 24px 80px;
 }
@@ -4711,30 +4711,9 @@ tbody tr.anchor-row td {
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.22);
 }
 
-/* ── Machine-identified pills ───────────────────────────────────────────────
-   On multi-machine projects the anchor pill carries the MACHINE's color
-   instead of the shared anchor green, so M1's spine rows never get confused
-   with M2's. The color comes from getMachineColor() — the same deterministic
-   default cycle (M1 = SDC Blue, M2 = SDC Yellow, M3 = SDC Green, …) plus any
-   per-project override the user picked, persisted in localStorage. Same
-   machine, same color, every render and every reload.
-
-   IMPORTANT: machine color means MACHINE ONLY. Schedule status lives in the
-   ✓ box, the % progress pill and the red/blue drift chips — none of which
-   this touches. Text color is computed by YIQ contrast (pickContrastText) so
-   both the light SDC yellows and the dark navy stay readable. */
-.anchor-name-chip.is-machine {
-  background: var(--mach, #1574c4);
-  color: var(--mach-text, #ffffff);
-  border-color: var(--mach-border, rgba(15, 23, 42, 0.35));
-}
-/* Machine pills replace the green done-state, so the completion signal moves
-   inside the pill as a leading ✓ (the row's ✓ box still shows it too). */
-.anchor-name-chip.is-machine .anchor-done-check {
-  color: inherit;
-  margin-right: 4px;
-  opacity: 0.9;
-}
+/* The key-milestone pill is always the anchor green. On a multi-machine
+   project the machine is said by the M1 / M2 badge beside it and the row's
+   coloured rail — never by recolouring the pill. */
 /* Row-level cue: colored left rail, machine-tinted spine rules, faint wash.
    All deliberately quieter than the pill. */
 tbody tr.anchor-row.has-machine-accent td {
@@ -4759,7 +4738,7 @@ tbody tr.anchor-row.has-machine-accent:hover td {
    The default anchor chip's lime green = "scheduled / upcoming"; this darker
    solid green clearly reads as "hit, done, behind us". Applied to the chip in
    the grid AND a matching solid diamond in the Gantt (.bar.milestone-done). */
-tbody tr.anchor-row.is-done .anchor-name-chip:not(.is-machine) {
+tbody tr.anchor-row.is-done .anchor-name-chip {
   background: #74C415;            /* solid emerald — pops against the lime "scheduled" green */
   /* v12.9: was #f0fdf4 (near-white) on #74C415 — a 2.08:1 contrast ratio, well
      under the 4.5:1 AA floor, which is why the completed pills read as a
@@ -8286,7 +8265,7 @@ body[data-view="setup"] #btn-add { display: none; }
   min-width: 640px;
   min-height: 380px;
   max-width: 98vw !important;
-  max-height: 96vh;
+  max-height: calc(100vh - 24px);
 }
 .cp-card .modal-head { flex: 0 0 auto; }
 .cp-card .modal-body { flex: 1 1 auto; overflow: auto; }
@@ -8359,8 +8338,6 @@ body[data-view="setup"] #btn-add { display: none; }
 .cp-add { margin-top: 4px; }
 /* The always-there "add someone" blank row — dashed top edge + muted
    placeholders so it reads as an invitation, not an empty record. */
-.cp-blank-row td { border-top: 1px dashed var(--border-strong, #cbd5e1); background: #fafcff; }
-.cp-blank-row input::placeholder { color: #9db4c8; font-style: italic; }
 .cp-notes {
   width: 100%;
   min-height: 64px;
@@ -13566,7 +13543,19 @@ html, body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grays
   border: 1px solid var(--border-strong, #cbd5e1);
   border-radius: 6px;
   background: #fff;
-  max-width: 180px;
+  max-width: 150px;
+}
+/* Five leads share the strip now, so they sit closer. */
+.schedule-leads { gap: 10px; }
+.schedule-lead select { max-width: 140px; }
+/* A header row inside a right-click menu: names the group under it. */
+.context-menu-header {
+  padding: 6px 12px 2px;
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: var(--fw-bold);
+  color: var(--text-muted);
 }
 
 
@@ -14422,9 +14411,9 @@ textarea:focus-visible,
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 1180px;
+  max-width: var(--portal-w, 1720px);
   margin: 0 auto;
-  padding: 13px 34px 0;
+  padding: 13px 20px 0;
 }
 .portal-logo { height: 22px; width: auto; display: block; }
 .portal-rule-word {
@@ -14442,7 +14431,7 @@ textarea:focus-visible,
   justify-content: space-between;
   gap: 24px;
   flex-wrap: wrap;
-  max-width: 1480px;
+  max-width: var(--portal-w, 1720px);
   margin: 0 auto;
   padding: 10px 20px 20px;
 }
@@ -14501,7 +14490,7 @@ textarea:focus-visible,
 .portal-kpi.is-alert .v { color: #ff9d95; }
 
 .portal-block, .portal-picked, .portal-machine, .portal-assign, .portal-empty {
-  max-width: 1480px;
+  max-width: var(--portal-w, 1720px);
   margin-left: auto;
   margin-right: auto;
 }
@@ -15845,7 +15834,7 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
   min-width: 760px;
   min-height: 420px;
   max-width: 99vw;
-  max-height: 96vh;
+  max-height: calc(100vh - 24px);
 }
 /* The native resize grip sits over the footer, so give it somewhere to live. */
 .risk-overlay .risk-foot { padding-right: 34px; }
@@ -15896,6 +15885,9 @@ body.portal-schedule .customer-view-back:hover { filter: brightness(1.35); }
 .rg thead th.is-dragging { opacity: 0.45; }
 .rg thead th.is-drop { box-shadow: inset 3px 0 0 var(--sdc-green, #74c415); }
 .rg-plain { display: block; padding: 9px 10px; color: rgba(255,255,255,0.78); }
+/* The second line under a heading: "Complexity / of station". */
+.rg-sub { display: block; font-size: 0.85em; font-weight: var(--fw-regular); letter-spacing: 0.04em; text-transform: none; opacity: 0.7; }
+.rg thead th button { align-items: flex-start; }
 
 
 /* ── Values read as values, not as a page of controls ─────────────────────── */
@@ -16464,7 +16456,7 @@ body.customer-view #btn-add-machine { display: none !important; }
    with it. It sits above every scoped section because all of them answer
    to it. */
 .portal-picked {
-  max-width: 1440px;
+  max-width: var(--portal-w, 1720px);
   margin: 18px auto 4px;
   display: flex;
   align-items: center;
@@ -16667,11 +16659,12 @@ body.customer-view #btn-add-machine { display: none !important; }
   color: var(--text-muted);
   font-weight: var(--fw-bold);
   padding: 10px 12px;
-  background: var(--surface-alt, #f1f5f9);
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
+  background: var(--sdc-dark, #061d39);
+  color: rgba(255,255,255,0.78);
+  border-bottom: 0;
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .portal-grid td {
   padding: 9px 12px;
@@ -16679,9 +16672,14 @@ body.customer-view #btn-add-machine { display: none !important; }
   font-size: var(--fs-md);
   vertical-align: middle;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
+/* Measuring for Compress: every cell on one line so its ink width is the
+   width it needs. */
+.portal-grid.pg-measuring th,
+.portal-grid.pg-measuring td { white-space: nowrap !important; overflow: visible !important; }
+.pg-tools { display: flex; justify-content: flex-end; gap: 8px; margin: 0 0 8px; }
 .portal-grid tbody tr:last-child td { border-bottom: 0; }
 /* The grip sits on the boundary it moves. */
 .pw-grip {
@@ -17654,4 +17652,153 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
    DOM (hidden) so the plan still saves it. .cp-table textarea sets
    display:block, which overrode [hidden] and drew the field twice — the
    "VP of Operations, VP of Operations" row. */
+/* A lead row's name is set in the schedule footer, not here. */
+.cp-ro-empty { color: var(--text-muted); font-style: italic; font-weight: var(--fw-regular); }
+/* Escalation level: one digit, centred, in the same control as the pickers. */
+.cp-table select.cp-level { text-align: center; font-weight: var(--fw-bold); }
 .cp-table textarea[hidden] { display: none !important; }
+/* SDC Team: the department's schedule colour lives in its heading and the
+   rule under it, and in the names of the people. No tinted card — the
+   heading and its rule are what tie the names to the department. */
+.portal-team-group { margin: 0 0 18px; padding: 0; border: 0; background: none; }
+.portal-team-group:last-child { margin-bottom: 0; }
+.portal-team-role {
+  display: inline-block;   /* the rule runs under the words and stops */
+  font-size: var(--fs-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: var(--fw-extrabold);
+  color: var(--dt, #1e293b);
+  margin: 0 0 10px;
+  padding: 0 0 5px;
+  border: 0;
+  border-bottom: 2px solid var(--dc, #94a3b8);
+}
+.portal-team-role::before { display: none; }
+.portal-team-group .pp-name { color: var(--dt, var(--text)); }
+.portal-team-group .pp-avatar { border-color: var(--dc, var(--border)); background: #fff; color: var(--dt, var(--text-muted)); }
+.portal-team-group .portal-person.is-lead .pp-avatar { background: var(--dt, var(--sdc-dark)); border-color: var(--dt, var(--sdc-dark)); color: #fff; }
+.portal-team-group .portal-person.is-lead .pp-role { color: var(--dt, var(--sdc-primary)); }
+
+/* Departments board: the title stays on the person's row, beside the name,
+   and wraps to a second line when it is long instead of ending in "…". */
+.team-member-position {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.15;
+  flex: 1 1 50%;
+}
+.team-member-name { flex: 1 1 42%; }
+
+
+/* ── Projects page: list / by-customer toggle and the customer cards ───── */
+.projects-view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  flex: 0 0 auto;
+  border-left: 1px solid var(--border, #e2e8f0);
+  padding-left: 10px;
+}
+.projects-view-toggle button {
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.projects-view-toggle button:hover { color: var(--sdc-primary, #1574c4); }
+.projects-view-toggle button.is-on { background: var(--sdc-dark, #061d39); color: #fff; }
+.projects-cust-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+  padding: 12px 16px 16px;
+}
+.projects-cust-card {
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  overflow: hidden;
+  align-self: start;
+}
+.projects-cust-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-alt, #f1f5f9);
+  border-bottom: 2px solid var(--sdc-dark, #061d39);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--sdc-dark, #061d39);
+}
+.projects-cust-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.projects-cust-n {
+  flex: 0 0 auto;
+  font-size: var(--fs-2xs);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--sdc-dark, #061d39);
+  color: #fff;
+}
+.projects-cust-card .projects-row { padding: 6px 10px; border-radius: 0; }
+.projects-cust-card .projects-row:last-child { border-bottom: 0; }
+.projects-cust-card .projects-row-customer,
+.projects-cust-card .projects-row-statuscell { display: none; }
+.projects-cust-card .projects-row-name { white-space: normal; }
+
+
+/* ── Communication plan on the shared grid shell ─────────────────────────
+   Same grips, Compress and Reset as the portal and the risk register. The
+   cells keep the plan's own controls, so the grid's cell padding comes off
+   and the textarea / picker padding is the only padding. */
+.portal-grid.cp-table td { padding: 0; vertical-align: top; }
+.portal-grid.cp-table th { padding: 8px 10px; }
+.cp-people .pg-tools, .pr-field .pg-tools { margin: 0 0 6px; }
+.cp-people-col + .cp-people-col { margin-top: 16px; }
+.cp-dir-label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cp-dir-label .risk-tool { text-transform: none; letter-spacing: 0; }
+/* Locked SDC rows read as a directory, not a form. */
+.cp-table.cp-locked .cp-ro { color: var(--text, #1f2937); }
+.cp-ro-level { text-align: center; font-weight: var(--fw-bold); }
+
+
+/* Plan grids: the Compress button shares the title line so the grid does
+   not spend a row on a toolbar. */
+.cp-people-col { position: relative; }
+.cp-people-col .pg-tools { position: absolute; right: 0; top: -6px; margin: 0; }
+.cp-people-col .pg-tools .risk-tool, .pr-field .pg-tools .risk-tool { padding: 3px 10px; font-size: var(--fs-sm); }
+.pr-field { position: relative; }
+.pr-field > .pg-tools { position: absolute; right: 0; top: -8px; margin: 0; }
+.cp-people-col + .cp-people-col { margin-top: 12px; }
+
+/* Cadence: the date a kickoff happened, in the row like everything else. */
+.cp-table input.cp-date { width: 100%; border: none; background: transparent; padding: 4px 8px; font: inherit; font-size: var(--fs-md); color: var(--text, #1f2937); box-sizing: border-box; }
+.cp-table input.cp-date:focus { outline: none; background: #eef5fb; box-shadow: inset 0 0 0 1px var(--sdc-primary, #1574c4); }
+
+
+/* ── Portal: communication plan ──────────────────────────────────────────── */
+.pcp-title {
+  margin: 16px 0 6px;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-extrabold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sdc-dark, #061d39);
+}
+.pcp-title span { margin-left: 8px; font-weight: var(--fw-regular); text-transform: none; letter-spacing: 0; color: var(--text-muted); }
+.portal-grid.pcp td { padding: 6px 10px; }
+.pcp-t { display: block; }
+.pcp-level { text-align: center; font-weight: var(--fw-bold); }
+.pcp-empty { color: var(--text-muted); font-style: italic; }
+.pcp-mail { color: var(--sdc-primary, #1574c4); text-decoration: none; }
+.pcp-mail:hover { text-decoration: underline; }
