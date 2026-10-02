@@ -31565,6 +31565,20 @@ function saveScheduleView() {
     }));
   } catch {}
 }
+// A customer (portal session or share link) opens the schedule flattened and
+// in date order — the way the SDC side reads it — instead of grouped under
+// ENGINEERING / SHOP / TEARDOWN headers in stored order, which put rows like
+// TESTING SHOP at the bottom of their section while the same job looked
+// different internally. The view preference lives in localStorage, which is
+// per browser, so a staff member's saved ≡ never reached the customer's
+// browser and theirs started unflattened. Only applies while nothing is
+// saved: once the customer toggles ≡ themselves, saveScheduleView() writes
+// their choice and that wins from then on. Staff never call this.
+function applyCustomerScheduleDefault() {
+  try { if (localStorage.getItem(SCHED_VIEW_KEY)) return; } catch (_) {}
+  state.scheduleView.flatten = true;
+  state.scheduleView.sortByStart = true;
+}
 function applyScheduleView() {
   // Refresh the View pill in the toolbar so its three icons reflect the current
   // toggle state. Critical path stays in the Quick filters popover (renderFilters).
@@ -34911,6 +34925,7 @@ async function init() {
         _portalProjects = [];
         _portalMachine = null;
         document.body.classList.add('share-link-view');
+        applyCustomerScheduleDefault();
         setView('portal'); // already calls renderPortal() itself — see setView's 'portal' branch
         return;
       }
@@ -34928,6 +34943,7 @@ async function init() {
       // activate #view-projects, a customer would otherwise be shown the
       // internal project LIST with their schedule painted into a hidden node.
       document.body.classList.add('share-link-view');
+      applyCustomerScheduleDefault();
       setView('schedule');
       render();
       // enterCustomerView measures the settled layout — at boot the first
