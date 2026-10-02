@@ -7,10 +7,11 @@ window.RELEASE_NOTES = [
     version: '13.6',
     date: '2026-10-02',
     notes: [
-<<<<<<< HEAD
       'Portal grids that fill the page, and a communication plan with the right people on it.',
       '',
       'PORTAL:',
+      '   ▸ A customer\'s schedule now opens flattened and in date order (the ≡ button on) — no ENGINEERING / SHOP / TEARDOWN / INSTALL headers, rows sorted by start date — instead of grouped by department in stored order, which put lines like TESTING SHOP at the bottom of a section and made the same job look different from ours.',
+      '   ▸ Their choice sticks: once a customer turns ≡ off (or back on) it stays that way on their browser. Staff views are unchanged.',
       '   ▸ Opening a job from the portal shows the whole schedule as planned: no machine filter, no machine colouring, no baseline overlay.',
       '   ▸ Payment milestones always carry a date — one with no trigger set takes the date of the release its name says (Receipt of PO, FAT, SAT) — and they read soonest first, in the release\'s own order.',
       '   ▸ The communication plan is on the portal, at the bottom under Event status, in the plan\'s own order: the SDC project team with this job\'s leads, SDC leadership with the escalation levels, the customer\'s own contacts, and the cadence. Emails are links.',
@@ -47,13 +48,6 @@ window.RELEASE_NOTES = [
       '   ▸ Phone numbers read 440-223-7822 however they were typed.',
       '   ▸ Every grid in the plan is the house grid: drag a column edge and only that column moves, ⇤ Compress sizes each column to its content and is how every grid opens — one line per value, the first column the same width on all four grids. The plan opens at the size of the window. The × column is gone — right-click a row to add below it or remove it.',
       '   ▸ SDC leadership and the SDC project team are the standard for every job, filled in once. They open locked; "Edit SDC standard" unlocks them, and what you set there is what every project shows. The customer table\'s roles and reasons are standard too; its names, emails, phones and levels are the part you fill in per job. All three tables share the same six columns.',
-=======
-      'Customers open their schedule the way we read it.',
-      '',
-      'CUSTOMER PORTAL:',
-      '   ▸ A customer\'s schedule now opens flattened and in date order (the ≡ button on) — no ENGINEERING / SHOP / TEARDOWN / INSTALL headers, rows sorted by start date — instead of grouped by department in stored order, which put lines like TESTING SHOP at the bottom of a section and made the same job look different from ours.',
-      '   ▸ Their choice sticks: once a customer turns ≡ off (or back on) it stays that way on their browser. Staff views are unchanged.',
->>>>>>> 214ac12d90cc90182aed5b4be1226a22e4829c3a
     ],
   },
   {
