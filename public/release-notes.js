@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.8',
+    date: '2026-10-02',
+    notes: [
+      'The customer portal opens every time, even on a browser that visited earlier today.',
+      '',
+      'PORTAL:',
+      '   ▸ Fixed: a customer who had the portal open earlier could land on "Loading projects…" and stay there after we shipped changes. Their browser kept an older copy of two portal files while loading the new page. Both files now reload fresh.',
+      '   ▸ Nothing to do on the customer side — a normal reload picks it up.',
+    ],
+  },
+  {
     version: '13.7',
     date: '2026-10-02',
     notes: [
