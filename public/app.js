@@ -21813,6 +21813,7 @@ function setAppScale(s) {
   setTimeout(() => { try { if (state.view === 'schedule') zoomToFit(); } catch (_) {} }, 250);
 }
 document.getElementById('app-sidebar-logo')?.addEventListener('click', () => {
+  if (document.body.classList.contains('customer-session')) return;   // a customer's logo is a mark, not a link
   if (document.body.classList.contains('portal-mode')) setView('projects');
 });
 (function initAppScale() {
@@ -35488,7 +35489,7 @@ async function init() {
         _portalCustomer = customerName;
         _portalProjects = [];
         _portalMachine = null;
-        document.body.classList.add('share-link-view');
+        document.body.classList.add('share-link-view', 'customer-session');
         applyCustomerScheduleDefault();
         setView('portal'); // already calls renderPortal() itself — see setView's 'portal' branch
         return;

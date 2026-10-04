@@ -4,7 +4,7 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
-    version: '13.8',
+    version: '13.10',
     date: '2026-10-04',
     notes: [
       'My work shows what is left to do, and one bar says who you are.',
@@ -22,6 +22,28 @@ window.RELEASE_NOTES = [
       '   ▸ The Project column on My work is read-only — right-click a row and the first item is "Open <project>", which takes you to that schedule; the person stays signed in. The Assigned To column is off here: the page already says who.',
       '   ▸ Opening a person compresses the grid to their rows — no "Nick Pars…" — and the dead strip after Finish is gone.',
       '   ▸ One bar instead of two: the schedule banner says "Signed in as …" with Switch person (leadership) and Sign out, or offers "Sign in to see your work". The yellow strip is gone.',
+    ],
+  },
+  {
+    version: '13.9',
+    date: '2026-10-02',
+    notes: [
+      'The customer portal wears the SDC rail.',
+      '',
+      'PORTAL:',
+      '   ▸ Customers now see the same navy rail down the left side as in the app, with the SDC logo at the top — instead of the page starting at the screen edge.',
+      '   ▸ It is just the mark: no icons, no links, and the logo does nothing when clicked.',
+    ],
+  },
+  {
+    version: '13.8',
+    date: '2026-10-02',
+    notes: [
+      'The customer portal opens every time, even on a browser that visited earlier today.',
+      '',
+      'PORTAL:',
+      '   ▸ Fixed: a customer who had the portal open earlier could land on "Loading projects…" and stay there after we shipped changes. Their browser kept an older copy of two portal files while loading the new page. Both files now reload fresh.',
+      '   ▸ Nothing to do on the customer side — a normal reload picks it up.',
     ],
   },
   {

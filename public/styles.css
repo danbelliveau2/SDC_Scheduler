@@ -17843,6 +17843,15 @@ body.portal-mode .app-sidebar .app-sidebar-icon,
 body.portal-mode .app-sidebar .app-sidebar-sep,
 body.portal-mode .sdc-auth-pill { visibility: hidden !important; }
 body.portal-mode #app-sidebar-logo { cursor: pointer; }
+/* A real customer session keeps the rail too — the SDC mark and nothing else.
+   share-link-view hides the rail for single-project share links; this brings it
+   back (and its 90px) for the signed-in portal, with no icons and a logo that
+   does nothing. */
+body.customer-session { margin-left: var(--rail-w, 90px) !important; }
+body.customer-session .app-sidebar { display: flex !important; }
+body.customer-session .app-sidebar > :not(.app-sidebar-top) { display: none !important; }
+body.customer-session .app-sidebar-top { border-bottom: 0; }
+body.customer-session #app-sidebar-logo { pointer-events: none; cursor: default; }
 /* The share-link floating copy of the scale control is gone; the control
    sits in the toolbar beside Zoom for everyone. */
 body.share-link-view .app-scale-ctl.share-floating { position: static; }
