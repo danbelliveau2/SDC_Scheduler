@@ -4,6 +4,27 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.8',
+    date: '2026-10-04',
+    notes: [
+      'My work shows what is left to do, and one bar says who you are.',
+      '',
+      'SCHEDULE:',
+      '   ▸ The Gantt-only Zoom dropdown is gone — it moved the chart without the grid. The − 85% + scale moves both together; ⛶ fits the chart and ↕ fits the rows, as before.',
+      '',
+      'MY WORK:',
+      '   ▸ Finished work is hidden by default — the page is what is still to do, and zoom-to-fit frames that.',
+      '   ▸ Every task assigned to the person shows, on every job. The aggregate schedule\'s project subset (saved on the browser) was following people into My work and cutting a page of eleven rows down to the two on the one job it held; My work ignores it now. The quick filters and the search are cleared on the way in and put back on the way out.',
+      '   ▸ The chart zooms to fit the person\'s work; if that leaves today off the screen it frames from today instead — today a quarter in, the work ahead across the rest.',
+      '   ▸ A page is one person\'s work — never a team\'s or everyone\'s. Who can open whose: leadership anyone, a department lead anyone on their team, everyone else themselves. Switch person on the banner.',
+      '   ▸ My work stays on whoever it was on. Click off to a schedule and back and the same person is there — no signing in again. Your login is matched to the roster by email first, so Dan and Daniel are the same person.',
+      '   ▸ ⊟ ROLL UP REPEATS: the same task on the same job for the same person — eleven Test Engineer 1 stints across a duplicate-machine job — reads as one line, "Test Engineer 1 × 11": the stints are drawn as their own bars side by side on that row, a hairline between them. Where two stints overlap — the person booked twice — that stretch is painted red. Click the line to open them. On by default; the switch is on the banner. Nothing in the data moves.',
+      '   ▸ The Project column on My work is read-only — right-click a row and the first item is "Open <project>", which takes you to that schedule; the person stays signed in. The Assigned To column is off here: the page already says who.',
+      '   ▸ Opening a person compresses the grid to their rows — no "Nick Pars…" — and the dead strip after Finish is gone.',
+      '   ▸ One bar instead of two: the schedule banner says "Signed in as …" with Switch person (leadership) and Sign out, or offers "Sign in to see your work". The yellow strip is gone.',
+    ],
+  },
+  {
     version: '13.7',
     date: '2026-10-02',
     notes: [

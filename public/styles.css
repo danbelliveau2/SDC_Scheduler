@@ -7043,6 +7043,9 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
    cell at once via the [data-col="pred"] attribute. */
 body.personal-mode #tasks-table [data-col="pred"] { display: none !important; }
 body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !important; }
+/* The page is one person; a column saying who would say it again. */
+body.personal-mode #tasks-table [data-col="assignee"] { display: none !important; }
+body.personal-mode #tasks-colgroup col[data-col="assignee"] { display: none !important; }
 
 /* Personal-mode banner on the main Schedule view — visible only when
    signed in via the Actions tab person picker. Sticky-feel strip above the
@@ -17863,3 +17866,18 @@ body.share-link-view .app-scale-ctl.share-floating { position: static; }
 .pci-var.is-early { color: #166534; font-weight: var(--fw-bold); }
 .pci-var.is-ontime { color: #166534; }
 .pci-none { font-style: italic; }
+
+/* My work identity on the banner, where the sign-in button was. */
+.banner-signin-who { font-size: var(--fs-md); color: var(--text); white-space: nowrap; margin-right: 4px; }
+.banner-signin-who b { font-weight: var(--fw-extrabold); color: var(--sdc-dark, #061d39); }
+.banner-left-extra { display: flex; align-items: center; gap: 6px; }
+
+
+/* ── Roll up repeats (My work) ─────────────────────────────────────────── */
+tr.rollup-row { cursor: pointer; }
+tr.rollup-row td[data-col="name"] .name-cell-main { font-weight: var(--fw-extrabold); }
+tr.rollup-row.is-open td { background: #f1f5f9; }
+tr.rollup-member td[data-col="name"] { padding-left: 22px; }
+tr.rollup-member td { color: var(--text-muted); }
+.gantt .bar-wrapper.is-rollup .bar { fill-opacity: 0.04; stroke-dasharray: 3 3; stroke-opacity: 0.5; }
+.gantt .bar-wrapper.is-rollup .bar-progress { display: none; }

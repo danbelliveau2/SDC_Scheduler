@@ -1008,7 +1008,7 @@ function updateLineNumbersAndPreds() {
   // Stamp each currently-visible row's line cell with its canonical line number.
   const taskRows = Array.from(tbody.querySelectorAll('tr[data-id]'));
   taskRows.forEach(tr => {
-    const id = Number(tr.dataset.id);
+    const id = Number(tr.dataset.id) || Number(tr.dataset.lineOf);
     const line = lineByTaskId[id];
     const numEl = tr.querySelector('td[data-col="line"] .line-num');
     if (numEl && line != null) numEl.textContent = String(line);
@@ -1775,6 +1775,68 @@ function milestoneFilterActive() {
   return f.milestoneType || (f.quick && f.quick.milestones ? 'any' : '');
 }
 
+// ── Roll up repeats (My work) ────────────────────────────────────────────
+// Eleven "Test Engineer 1" rows on one job, one person, one after another,
+// read as eleven lines. Rolled up they are one line — "Test Engineer 1 × 11"
+// — spanning first start to last finish, with the real stints painted on
+// the bar so the gaps show. Click the line to open the eleven under it.
+// A display rule only: nothing in the data moves.
+const _rollupOpen = new Set();
+let _rollupGroups = {};
+function rollupOn() {
+  if (!isPersonalMode()) return false;
+  try { return localStorage.getItem('sdcMyWorkRollup') !== '0'; } catch (_) { return true; }
+}
+function rollupRepeats(list) {
+  _rollupGroups = {};
+  if (!rollupOn()) return list;
+  const keyOf = (t) => [t.project || '', String(t.name || '').trim().toLowerCase(), t.assignee || '', t.is_milestone ? 'm' : 't'].join('|');
+  const byKey = new Map();
+  for (const t of list) {
+    if (!t.start_date || !t.end_date || inferredAnchorKey(t)) continue;
+    const k = keyOf(t);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(t);
+  }
+  const groupOfFirst = new Map();   // first member id → group row
+  const member = new Map();         // member id → key
+  byKey.forEach((arr, k) => {
+    if (arr.length < 2) return;
+    arr.sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)) || a.id - b.id);
+    const first = arr[0];
+    const open = _rollupOpen.has(k);
+    const days = arr.reduce((n, t) => n + (Number(t.duration_days) || 0), 0);
+    const pct = Math.round(arr.reduce((n, t) => n + (Number(t.progress) || 0), 0) / arr.length);
+    const group = Object.assign({}, first, {
+      id: 'grp:' + k, _rollup: true, _key: k, _members: arr, _open: open,
+      name: (first.name || '') + ' × ' + arr.length,
+      start_date: arr[0].start_date,
+      end_date: arr.reduce((e, t) => (t.end_date > e ? t.end_date : e), arr[0].end_date),
+      duration_days: days, progress: pct,
+      predecessors: null, duration_link_task_id: null, join_prev: 0, notes: '',
+      completed_on: null,
+    });
+    _rollupGroups[k] = group;
+    groupOfFirst.set(first.id, group);
+    arr.forEach(t => member.set(t.id, k));
+  });
+  if (!member.size) return list;
+  const out = [];
+  for (const t of list) {
+    const k = member.get(t.id);
+    if (!k) { out.push(t); continue; }
+    const g = _rollupGroups[k];
+    if (groupOfFirst.get(t.id) === g) out.push(g);
+    // Open: the members follow their group line, in date order.
+    if (g._open) out.push(Object.assign({}, t, { _member: k }));
+  }
+  return out;
+}
+function toggleRollup(key) {
+  if (_rollupOpen.has(key)) _rollupOpen.delete(key); else _rollupOpen.add(key);
+  render();
+}
+
 function applyFilters(tasks, opts = {}) {
   const { search, project, phase, assignee, quick, projectsSubset, machinesSubset } = state.filters;
   // ignoreMachineSubset: when computing canonical line numbers, we want
@@ -1849,7 +1911,10 @@ function applyFilters(tasks, opts = {}) {
   const subset = Array.isArray(projectsSubset) ? projectsSubset : [];
   // Subset only applies on the All-projects view (no single-project filter
   // active). Empty subset = no filter; non-empty = whitelist.
-  const useSubset = !project && subset.length > 0;
+  // The projects subset belongs to the aggregate schedule. It is saved on the
+  // browser, so it followed people into My work and cut a page of eleven
+  // rows down to the two on the one job in the subset. My work is every job.
+  const useSubset = !project && subset.length > 0 && !state.myWork;
   const subsetSet = useSubset ? new Set(subset) : null;
   // Machine subset: only meaningful inside a SINGLE project tab. Non-empty
   // means "show ONLY tasks belonging to these machines" — shared
@@ -1881,7 +1946,7 @@ function applyFilters(tasks, opts = {}) {
   // reference them as predecessors. Soften the strict rule during clone.
   const cloneSoftenFilter = !!state.cloneMode;
   const machineSet = useMachineFilter ? new Set(machSubset) : null;
-  return tasks.filter(t => {
+  const _out = tasks.filter(t => {
     if (project && t.project !== project) return false;
     if (useSubset && !subsetSet.has(t.project)) return false;
     // Machine subset filter:
@@ -1973,6 +2038,7 @@ function applyFilters(tasks, opts = {}) {
     }
     return true;
   });
+  return skipViewMode ? _out : rollupRepeats(_out);
 }
 
 function phaseChip(phaseKey) {
@@ -2479,7 +2545,9 @@ function rowHtml(t, depth = 0) {
   const listCls = t.phase_group === EVENTS_GROUP ? ' std-event-row'
     : t.phase_group === CONTROLS_GROUP ? ' ctrl-item-row'
     : t.phase_group === CUSTOMER_GROUP ? ' cust-item-row' : '';
-  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}${listCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}">${cells}</tr>`;
+  const rollCls = t._rollup ? (t._open ? ' rollup-row is-open' : ' rollup-row') : t._member ? ' rollup-member' : '';
+  const rollAttr = t._rollup ? ` data-rollup="${escapeHtml(t._key)}" data-line-of="${t._members[0].id}" title="${t._members.length} stints — click to ${t._open ? 'close' : 'open'} them"` : '';
+  return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}${listCls}${rollCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}"${rollAttr}>${cells}</tr>`;
 }
 
 function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = null) {
@@ -3679,6 +3747,9 @@ function enterCellEdit(td, taskId, col) {
   if (td.querySelector('input, select, textarea')) return;
   const task = state.tasks.find(t => t.id === taskId);
   if (!task) return;
+  // On My work the Project column says where a row lives; it is not a
+  // thing to retype. Right-click the row to open that schedule.
+  if (col === 'project' && state.myWork) return;
   // A predecessor-linked task's dates are governed by the link. Clicking a
   // Start/Finish date pops a small in-app confirm; on yes, the calendar opens
   // and the predecessor KEEPS its type (FS/SS/FF/SF) — only its lag/lead shifts
@@ -4491,6 +4562,77 @@ function isTaskInCollapsedGroup(task) {
   return paths.some(p => collapsedGroups.has(p));
 }
 
+// On a roll-up bar, paint each stint the group holds — same colour as the
+// bar, solid — over the faint full span, so the gaps between stints show.
+// A roll-up line shows its stints as real bars, side by side on the one
+// row — the library's single span is kept only as a hairline between them.
+function drawRollupSegments() {
+  try {
+    const svg = document.querySelector('#gantt-container svg');
+    if (!svg) return;
+    const dayAfter = (d) => new Date(new Date(d + 'T00:00:00Z').getTime() + 86400000).toISOString().slice(0, 10);
+    Object.values(_rollupGroups).forEach(g => {
+      const wrap = svg.querySelector('.bar-wrapper[data-id="' + CSS.escape(g.id) + '"]');
+      const bar = wrap && wrap.querySelector('.bar');
+      if (!bar) return;
+      const x = +bar.getAttribute('x'), y = +bar.getAttribute('y');
+      const w = +bar.getAttribute('width'), h = +bar.getAttribute('height');
+      const s0 = new Date(g.start_date + 'T00:00:00Z').getTime();
+      const total = Math.max(1, workDayOffset(dayAfter(g.end_date), s0));
+      const fill = getComputedStyle(bar).fill || '#1574c4';
+      const stroke = getComputedStyle(bar).stroke;
+      const spans = [];
+      g._members.forEach(m => {
+        const a = workDayOffset(m.start_date, s0);
+        const b = Math.max(a + 1, workDayOffset(dayAfter(m.end_date), s0));
+        spans.push([a, b]);
+        const r = document.createElementNS(SVG_NS, 'rect');
+        r.setAttribute('x', x + w * (a / total));
+        r.setAttribute('y', y);
+        r.setAttribute('width', Math.max(3, w * ((b - a) / total)));
+        r.setAttribute('height', h);
+        r.setAttribute('rx', 3);
+        r.setAttribute('fill', fill);
+        r.setAttribute('fill-opacity', '0.55');
+        r.setAttribute('stroke', stroke && stroke !== 'none' ? stroke : '#64748b');
+        r.setAttribute('stroke-width', '1.2');
+        r.setAttribute('class', 'rollup-seg');
+        r.setAttribute('pointer-events', 'none');
+        wrap.appendChild(r);
+      });
+      // Where two stints overlap, the person is booked twice: paint that
+      // stretch red on top, so the clash reads before the bars do.
+      spans.sort((p, q) => p[0] - q[0]);
+      const clashes = [];
+      for (let i = 0; i < spans.length; i++) {
+        for (let j = i + 1; j < spans.length; j++) {
+          const lo = Math.max(spans[i][0], spans[j][0]);
+          const hi = Math.min(spans[i][1], spans[j][1]);
+          if (hi > lo) clashes.push([lo, hi]);
+        }
+      }
+      clashes.sort((p, q) => p[0] - q[0]);
+      const merged = [];
+      clashes.forEach(([lo, hi]) => { const last = merged[merged.length - 1]; if (last && lo <= last[1]) last[1] = Math.max(last[1], hi); else merged.push([lo, hi]); });
+      merged.forEach(([lo, hi]) => {
+        const r = document.createElementNS(SVG_NS, 'rect');
+        r.setAttribute('x', x + w * (lo / total));
+        r.setAttribute('y', y - 1);
+        r.setAttribute('width', Math.max(3, w * ((hi - lo) / total)));
+        r.setAttribute('height', h + 2);
+        r.setAttribute('rx', 3);
+        r.setAttribute('fill', '#dc2626');
+        r.setAttribute('fill-opacity', '0.45');
+        r.setAttribute('stroke', '#b91c1c');
+        r.setAttribute('stroke-width', '1.5');
+        r.setAttribute('class', 'rollup-clash');
+        r.setAttribute('pointer-events', 'none');
+        wrap.appendChild(r);
+      });
+    });
+  } catch (_) { /* cosmetic — the render chain must continue */ }
+}
+
 function renderGantt() {
   const container = document.getElementById('gantt-container');
   if (!container) return;
@@ -4607,6 +4749,7 @@ function renderGantt() {
     if (t.phase_group === EVENTS_GROUP)   classes.push('is-std-event');
     if (t.phase_group === CONTROLS_GROUP) classes.push('is-ctrl-item');
     if (t.phase_group === CUSTOMER_GROUP) classes.push('is-cust-item');
+    if (t._rollup) classes.push('is-rollup');
     // Over-allocation is our staffing problem, not the customer's: the
     // customer view shows behind-schedule, never over-allocated.
     if (state.overAllocatedTaskIds.has(t.id) && !document.body.classList.contains('customer-view')) classes.push('over-allocated');
@@ -4746,6 +4889,7 @@ function renderGantt() {
   try { drawBarMeta(); } catch (_) {}
   try { fixChainLabels(); } catch (_) {}
   try { drawMachineBorders(); } catch (_) {}
+  try { drawRollupSegments(); } catch (_) {}
   try { pinGanttDateAxis(); } catch (_) {}   // re-pin dates at the current scroll
   try { renderProjectStatsPopup(); } catch (_) {}
   // Montserrat loads async and is wider than the fallback — if labels were
@@ -4847,10 +4991,9 @@ function compressGanttToWorkDays() {
     // Track each bar's old + new x so the downstream drawers can be told.
     state._workDayMap = { pxPerDay, ganttStart };
 
-    const visibleById = new Map((state._visibleTasks || state.tasks).map(x => [x.id, x]));
+    const visibleById = new Map((state._visibleTasks || state.tasks).map(x => [String(x.id), x]));
     for (const wrap of svg.querySelectorAll('.bar-wrapper')) {
-      const id = Number(wrap.dataset.id);
-      const t = visibleById.get(id);
+      const t = visibleById.get(String(wrap.dataset.id));
       if (!t || !t.start_date) continue;
       const startOff = wdo(t.start_date);
       const endOff   = t.end_date ? wdo(t.end_date) : startOff;
@@ -7017,6 +7160,49 @@ function zoomToFitPersonal() {
   const requiredPxPerDay = target / (projectDays + PAD_DAYS);
   state.zoomPercent = Math.max(ZOOM_FIT_MIN, Math.min(ZOOM_FIT_MAX, (requiredPxPerDay / 20) * 100));
   renderActionsPersonGantt();
+}
+
+// My work's chart: today a quarter in from the left, the work ahead across
+// the rest. Zoom-to-fit framed two far-off rows so tightly that today was
+// nowhere on screen; a person's page reads from today forward, like the
+// Departments timeline does. All in the past → plain zoom-to-fit.
+// My work's chart: zoom to fit is the default. If the fit leaves today off
+// the screen — everything on the page is months out — frame from today
+// instead: today a quarter in, the work ahead across the rest.
+function frameMyWork() {
+  const panel = document.getElementById('schedule-gantt');
+  if (!panel) return;
+  try { zoomToFit(); } catch (_) {}
+  const todayVisible = () => {
+    const line = document.querySelector('#gantt-container .today-line');
+    const scroller = getGanttScroller();
+    if (!line || !scroller) return true;
+    const x = Number(line.getAttribute('x1')) || 0;
+    return x >= scroller.scrollLeft + 20 && x <= scroller.scrollLeft + scroller.clientWidth - 20;
+  };
+  requestAnimationFrame(() => {
+    if (todayVisible()) return;
+    const target = Math.max(300, panel.clientWidth - 24);
+    const rows = applyFilters(state.tasks).filter(t => t.start_date && t.end_date);
+    if (!rows.length) return;
+    const today = _ymdLocal(new Date());
+    const maxEnd = rows.reduce((e, t) => (t.end_date > e ? t.end_date : e), rows[0].end_date);
+    if (maxEnd <= today) return;
+    const todayMs = new Date(today + 'T00:00:00Z').getTime();
+    const aheadDays = Math.max(10, workDayOffset(maxEnd, todayMs));
+    const TODAY_AT = 0.25;
+    const usable = Math.max(50, target * (1 - TODAY_AT) - 140);
+    state.zoomPercent = Math.max(ZOOM_FIT_MIN, Math.min(ZOOM_FIT_MAX, ((usable / aheadDays) / 20) * 100));
+    renderGantt();
+    const place = () => {
+      const line = document.querySelector('#gantt-container .today-line');
+      const scroller = getGanttScroller();
+      if (!line || !scroller) return;
+      scroller.scrollLeft = Math.max(0, (Number(line.getAttribute('x1')) || 0) - target * TODAY_AT);
+    };
+    place();
+    requestAnimationFrame(place);
+  });
 }
 
 function zoomToFit() {
@@ -13163,11 +13349,11 @@ function renderProjectTabs() {
   // "Save all tasks as one project" rescue button alongside the label.
   const banner = document.getElementById('schedule-project-center');
   if (banner) {
-    if (isPersonalMode()) {
-      // Personal-mode banner is the .schedule-personal-banner above the
-      // toolbar — this one stays empty so the layout doesn't double up.
-      banner.innerHTML = '';
-    } else if (!state.filters.project) {
+    // Signed in or not, My work and the aggregate schedule share this branch:
+    // the identity (Signed in as … / Switch person / Sign out) lives in the
+    // left zone here. The old personal-mode branch emptied the banner and
+    // left a signed-in page with no way to switch or sign out.
+    if (!state.filters.project) {
       // Multi-project filter — PM view.
       const subset = Array.isArray(state.filters.projectsSubset) ? state.filters.projectsSubset : [];
       const subsetCount = subset.length;
@@ -13190,7 +13376,9 @@ function renderProjectTabs() {
       // Personal mode draws its own banner above the toolbar, so reaching
       // here with My work on means we could not tell who you are. Say so,
       // rather than letting an empty grid look like a broken page.
-      const pillText = state.myWork ? '👤 My work' : 'All projects';
+      const _whoNow = (state.myWork && _actionsPageState && _actionsPageState.personId != null)
+        ? (state.team || []).find(m => m.id === _actionsPageState.personId) : null;
+      const pillText = state.myWork ? ('👤 ' + (_whoNow ? _whoNow.name : 'My work')) : 'All projects';
       banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(pillText)}</span>`;
       const leftZone = document.querySelector('.banner-left');
       let extra = document.getElementById('banner-left-extra');
@@ -13203,11 +13391,25 @@ function renderProjectTabs() {
       // The projects subset picker belongs to the aggregate view, where a
       // PM narrows to the jobs they run. On My work the scope is already
       // you.
-      const signInHtml = state.myWork
-        ? `<button type="button" class="banner-signin-btn" id="btn-my-work-signin">Sign in to see your work</button>`
-        : '';
+      // Signed in: who, with Switch person (leadership) and Sign out. Not
+      // signed in: the one button. One bar, not two.
+      const who = (state.myWork && _actionsPageState && _actionsPageState.personId != null)
+        ? (state.team || []).find(m => m.id === _actionsPageState.personId) : null;
+      const signInHtml = !state.myWork ? ''
+        : who
+          ? `<span class="banner-signin-who">${isExecMember(memberForSignedInUser()) && !isExecMember(who) ? 'Viewing' : 'Signed in as'} <b>${escapeHtml(who.name)}</b></span>
+             ${canChooseWho() ? '<button type="button" class="toolbar-toggle-btn" id="btn-my-work-switch" title="Open someone else’s page.">Switch person</button>' : ''}
+             <button type="button" class="toolbar-toggle-btn" id="btn-my-work-signout" title="Sign out — My work goes blank until someone signs in">× Sign out</button>
+             <button type="button" class="toolbar-toggle-btn${rollupOn() ? ' is-active' : ''}" id="btn-my-work-rollup" title="Roll repeats up: the same task on the same job, one after another, reads as one line — click it to open the stints.">⊟ Roll up repeats</button>`
+          : `<button type="button" class="banner-signin-btn" id="btn-my-work-signin">Sign in to see your work</button>`;
       if (extra) extra.innerHTML = state.myWork ? signInHtml : projectsFilterHtml;
       document.getElementById('btn-my-work-signin')?.addEventListener('click', () => showMyWorkSignIn());
+      document.getElementById('btn-my-work-switch')?.addEventListener('click', () => showMyWorkSignIn());
+      document.getElementById('btn-my-work-signout')?.addEventListener('click', signOutMyWork);
+      document.getElementById('btn-my-work-rollup')?.addEventListener('click', () => {
+        try { localStorage.setItem('sdcMyWorkRollup', rollupOn() ? '0' : '1'); } catch (_) {}
+        render();
+      });
       if (!state.myWork) wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
@@ -20942,13 +21144,18 @@ function handleRowContextMenu(e) {
   const id = Number(tr.dataset.id);
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
-  const items = [
+  const items = [];
+  if (state.myWork && task && task.project) {
+    items.push({ label: '→ Open ' + task.project, primary: true, onClick: () => openScheduleFromMyWork(task.project) });
+    items.push({ separator: true });
+  }
+  items.push(
     { label: '＋ Add task below', onClick: () => createTaskBelow(id) },
     { label: '＋ Add action below', onClick: () => createTaskBelow(id, true) },
     { separator: true },
     { label: '⧉ Copy line', onClick: () => gridCopyRows([id], 'copy') },
     { label: '✂ Cut line', onClick: () => gridCopyRows([id], 'cut') },
-  ];
+  );
   if (_gridClipboard && _gridClipboard.rows.length) {
     const n = _gridClipboard.rows.length;
     items.push({
@@ -25889,25 +26096,14 @@ function isExecMember(member) {
   return EXEC_TEAM.includes(full) || EXEC_TEAM.includes(full.split(' ')[0]);
 }
 
+// A page is ONE person's work. Leadership and department leads get to pick
+// whose page (see canChooseWho / showMyWorkSignIn); the page itself never
+// widens to a team or to everyone (Dan: "I get this massive page of
+// everything — that's not what I want").
 function personalScopeMatch(t, member) {
-  // Executive leadership: everybody's work, on every job. Rows still sitting
-  // on a placeholder are not anybody's work yet, and they are the bulk of
-  // what made the old all-projects view unreadable — this is "see anyone",
-  // not "see every line in the database".
-  if (isExecMember(member)) return !!t.assignee && !isPlaceholder(t.assignee);
   if (!member) return true;
-  if (member.discipline === 'pm') {
-    return projectLead(t.project, 'pm') === member.name;
-  }
-  if (member.is_lead) {
-    const team = new Set((state.team || [])
-      .filter(m => m.discipline === member.discipline)
-      .map(m => m.name));
-    if (team.has(t.assignee)) return true;
-    // Work that belongs to the discipline but has not been handed out yet.
-    const sameDiscipline = disciplineForSection(t.department, t.sub_department) === member.discipline;
-    return sameDiscipline && (!t.assignee || isPlaceholder(t.assignee));
-  }
+  // A PM is not assigned tasks; their work is the jobs they run.
+  if (member.discipline === 'pm') return projectLead(t.project, 'pm') === member.name;
   return t.assignee === member.name;
 }
 
@@ -25915,7 +26111,7 @@ function personalScopeMatch(t, member) {
 // of PO, FAT, Ship, SAT) are the most useful rows on the page. For an
 // individual they are noise across a dozen jobs.
 function personalShowsAnchors(member) {
-  return !!member && (isExecMember(member) || member.discipline === 'pm' || !!member.is_lead);
+  return !!member && member.discipline === 'pm';
 }
 
 function personalFilterPass(task, todayISO) {
@@ -26559,6 +26755,8 @@ function memberForSignedInUser() {
   if (!u) return null;
   const roster = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
   if (!roster.length) return null;
+  const mail = String(u.email || '').trim().toLowerCase();
+  if (mail) { const byMail = roster.find(m => String(m.email || '').trim().toLowerCase() === mail); if (byMail) return byMail; }
   const byName = _personNameKey(u.name);
   const hit = byName && roster.find(m => _personNameKey(m.name) === byName);
   if (hit) return hit;
@@ -26600,16 +26798,27 @@ function setPersonalPerson(id) {
 function canChooseWho() {
   const authed = memberForSignedInUser();
   if (!authed) return true;      // nothing to enforce — no identity to hold them to
-  return isExecMember(authed);   // leadership looks at anyone
+  return isExecMember(authed) || !!authed.is_lead;   // leadership: anyone; a lead: their team
+}
+// The people a signed-in user may open: everyone for leadership and for a
+// browser with no login, their own department for a lead.
+function choosableRoster() {
+  const roster = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
+  const authed = memberForSignedInUser();
+  if (!authed || isExecMember(authed)) return roster;
+  if (authed.is_lead) return roster.filter(m => m.discipline === authed.discipline || m.id === authed.id);
+  return roster.filter(m => m.id === authed.id);
 }
 
 // The sign-in list. Grouped by department because that is how people find
 // themselves in a list of sixty names, leads first inside each group.
 function showMyWorkSignIn() {
   if (!canChooseWho()) { openMyWork(); return; }
-  const roster = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
+  const roster = choosableRoster();
   if (!roster.length) { showAlertDialog({ title: 'My work', message: 'The team list has not loaded yet. Give it a moment and try again.' }); return; }
-  const exec = isExecMember(memberForSignedInUser());
+  const authed = memberForSignedInUser();
+  const exec = isExecMember(authed);
+  const lead = !exec && !!(authed && authed.is_lead);
   const GROUPS = [
     ['pm', 'Project Mgmt'], ['mech', 'Mech Eng'], ['controls', 'Controls Eng'],
     ['build', 'Build'], ['wire', 'Wire'],
@@ -26632,11 +26841,13 @@ function showMyWorkSignIn() {
   overlay.className = 'modal-overlay app-dialog-overlay';
   overlay.innerHTML = `
     <div class="modal-card app-dialog">
-      <div class="modal-head"><h2>👤 ${exec ? 'View anyone' : 'My work'}</h2></div>
+      <div class="modal-head"><h2>👤 ${exec ? 'View anyone' : lead ? 'View your team' : 'My work'}</h2></div>
       <div class="modal-body">
         <div class="app-dialog-message">${exec
           ? 'You are on the leadership team, so you can open anyone’s page. Their tasks, actions and notes, across every job.'
-          : 'Who are you? Your page shows every job you are on — tasks, actions and notes. A department lead sees the whole team.'}</div>
+          : lead
+            ? 'You lead this department, so you can open anyone on it. Their tasks, actions and notes, across every job.'
+            : 'Who are you? Your page shows every job you are on — tasks, actions and notes.'}</div>
         <select class="app-dialog-input" id="my-work-person">
           <option value="">Pick a name…</option>
           ${groupHtml}
@@ -26677,16 +26888,19 @@ function openMyWork() {
   // The portal is its own world. Nothing here reaches into it.
   if (state.view === 'portal' || document.body.classList.contains('portal-mode')) return;
   setMyWork(true);
-  const me = memberForSignedInUser();
-  if (me) { setPersonalPerson(me.id); routePersonalMode(me.id); return; }
-  // Signed out, or an account with no matching team member. The page is
-  // blank rather than everyone's — showing every row to someone we cannot
-  // name is the failure this tab was built to stop.
+  // Whoever the page was on last stays on it — yourself, or the person a
+  // leader switched to. Leaving for a schedule and coming back is not a
+  // sign-out. With nobody remembered, the login says who you are.
   const remembered = _actionsPageState && _actionsPageState.personId;
   if (remembered != null && (state.team || []).some(m => m.id === remembered)) {
     routePersonalMode(remembered);
     return;
   }
+  const me = memberForSignedInUser();
+  if (me) { setPersonalPerson(me.id); routePersonalMode(me.id); return; }
+  // Signed out, or an account with no matching team member. The page is
+  // blank rather than everyone's — showing every row to someone we cannot
+  // name is the failure this tab was built to stop.
   setPersonalPerson(null);
   state.filters.project = '';
   state.filters.assignee = '';
@@ -26704,6 +26918,7 @@ const PERSONAL_VIEW_ON = {
   flatten: true,          // ≡ no dept / sub-dept headers
   sortByStart: true,      // ≡ in date order, which is how a week reads
   showInlineAlloc: true,  // α how loaded each line is
+  hideCompleted: true,    // what is left to do, not what is done
 };
 const PERSONAL_VIEW_OFF = {
   showDeptHours: false,   // Δ quoted vs scheduled — a whole-job number
@@ -26737,6 +26952,10 @@ function applyPersonalViewDefaults() {
       milestones: !!(f0.quick && f0.quick.milestones),
       overallocated: !!(f0.quick && f0.quick.overallocated),
     };
+    // Every quick filter and the search box. A "Behind" left on from the
+    // build was quietly cutting a person's page down to two rows.
+    saved._quick = Object.assign({}, f0.quick || {});
+    saved._search = f0.search || '';
     state._pmSavedView = saved;
   }
   Object.keys(PERSONAL_VIEW_ON).forEach(k => { state.scheduleView[k] = PERSONAL_VIEW_ON[k]; });
@@ -26746,7 +26965,8 @@ function applyPersonalViewDefaults() {
   state.showBaseline = true;      // baseline overlay comes on
   const f = state.filters || {};
   f.milestoneType = '';
-  if (f.quick) { f.quick.milestones = false; f.quick.overallocated = false; }
+  if (f.quick) Object.keys(f.quick).forEach(k => { f.quick[k] = false; });
+  f.search = '';
   saveScheduleView();
   try { syncViewPill(); } catch (_) {}
   try { syncBaselineButtons(); } catch (_) {}
@@ -26761,6 +26981,11 @@ function restorePersonalViewDefaults() {
     });
     state.showFinancials = !!saved._showFinancials;
     state.showBaseline = !!saved._showBaseline;
+    if (saved._quick) {
+      const f = state.filters || {};
+      if (f.quick) Object.assign(f.quick, saved._quick);
+      if (saved._search != null) f.search = saved._search;
+    }
     if (saved._fin) {
       const f = state.filters || {};
       f.milestoneType = saved._fin.milestoneType;
@@ -26806,10 +27031,13 @@ function routePersonalMode(personId) {
       // it at the fitted zoom. Without this render the fit measured the
       // PREVIOUS person's chart and cut the new rows off the right edge.
       render({ deferGantt: true });
+      // A fresh person is a fresh set of columns: compress them to what is
+      // there, so nothing reads as "1…" or "Nick Pars…".
+      try { compressColumns(); } catch (_) {}
       // Two frames: one for the grid to land, one for the split panel to
       // settle at its real width before the fit measures it.
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        try { zoomToFit(); } catch (_) {}
+        try { frameMyWork(); } catch (_) {}
       }));
       return;
     }
@@ -27075,38 +27303,46 @@ function renderMiniBanner() {
   return true;
 }
 
+// From a My work row to the schedule it is on. The person stays signed in;
+// the My work tab brings them straight back.
+function openScheduleFromMyWork(project) {
+  if (!project) return;
+  if (isPersonalMode()) {
+    state.filters.assignee = '';
+    restorePersonalViewDefaults();
+    document.body.classList.remove('personal-mode');
+  }
+  setMyWork(false);
+  clearListModes();
+  if (!state.openProjects.includes(project)) state.openProjects.push(project);
+  state.filters.project = project;
+  loadMachinesSubset(project);
+  loadMachineColors(project);
+  recordRecentProject(project);
+  saveProjectTabs();
+  setView('schedule');
+  render();
+}
+// Sign out of My work: the page goes blank until someone signs in.
+function signOutMyWork() {
+  setPersonalPerson(null);
+  setMyWork(true);
+  state.filters.project = '';
+  state.filters.assignee = '';
+  applyPersonalViewDefaults();
+  document.body.classList.remove('personal-mode');
+  setView('schedule');
+  render();   // grid AND chart together, always
+}
 function renderPersonalBanner() {
   const el = document.getElementById('schedule-personal-banner');
   if (!el) return;
   // A pick in progress owns this bar — it is the only way out of the mode.
   if (renderMiniBanner()) return;
-  if (!isPersonalMode()) { el.hidden = true; el.innerHTML = ''; return; }
-  const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
-  if (!member) { el.hidden = true; el.innerHTML = ''; return; }
-  // Banner is minimal — just identity + sign-out. All filters live in the
-  // regular Filters popover, no duplication.
-  // Leadership gets a way to move between people without signing out
-  // first; everyone else is simply themselves.
-  const canSwitch = canChooseWho();
-  const viewingSomeoneElse = isExecMember(memberForSignedInUser());
-  el.innerHTML = `
-    <span class="spb-label">${viewingSomeoneElse ? 'Viewing:' : 'Signed in as:'}</span>
-    <span class="spb-name">${escapeHtml(member.name)}</span>
-    ${canSwitch ? `<button type="button" class="spb-switch" id="spb-switch" title="Open someone else’s page.">Switch person</button>` : ''}
-    <button type="button" class="spb-clear" id="spb-clear" title="Sign out — My work goes blank until someone signs in">× Sign out</button>
-  `;
-  el.hidden = false;
-  el.querySelector('#spb-switch')?.addEventListener('click', () => showMyWorkSignIn());
-  el.querySelector('#spb-clear').addEventListener('click', () => {
-    setPersonalPerson(null);
-    setMyWork(true);
-    state.filters.project = '';
-    state.filters.assignee = '';
-    applyPersonalViewDefaults();
-    document.body.classList.remove('personal-mode');
-    setView('schedule');
-    render();   // grid AND chart together, always
-  });
+  // Identity lives on the schedule banner now (Signed in as … / Switch
+  // person / Sign out), so this strip only ever shows the mini-pick.
+  el.hidden = true; el.innerHTML = '';
+  return;
 }
 
 // v4.63: stats strip + name banner for the picked person. Hidden when no one
@@ -31934,6 +32170,9 @@ function effectiveVisibleCols() {
   const visible = new Set(state.layout.visibleCols);
   if (state.filters.project) visible.delete('project');
   else visible.add('project');
+  // My work hides Pred (CSS). Counting it anyway gave the table a width it
+  // did not use — the dead strip after Finish.
+  if (document.body.classList.contains('personal-mode')) { visible.delete('pred'); visible.delete('assignee'); }
   return visible;
 }
 
@@ -34701,6 +34940,12 @@ async function init() {
     else if (state.joinPick) handleJoinPickClick(e);
   }, true);
   tbodyEl.addEventListener('click', handleCellClick);
+  tbodyEl.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr.rollup-row');
+    if (!tr || e.target.closest('input, select, textarea, button, a')) return;
+    e.preventDefault();
+    toggleRollup(tr.dataset.rollup);
+  });
   tbodyEl.addEventListener('dblclick', (e) => {
     if (state.cloneMode) { handleCloneModeRowDblClick(e); return; }
     // Milestone duration slot (invisible ghost) — double-click to type a
