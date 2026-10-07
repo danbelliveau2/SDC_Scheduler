@@ -29374,27 +29374,6 @@ function setFocusedMember(memberId) {
   renderTeamFocusBanner();
 }
 
-// Work email per team member, for the banner's email + "Message on Teams" button.
-// Value is the email, or null when the person has no linked Reports account;
-// a missing key means "not looked up yet". A failed lookup is left uncached so
-// focusing the person again retries it.
-const teamContactCache = new Map();
-const teamContactPending = new Set();
-
-function ensureTeamContact(memberId) {
-  if (teamContactCache.has(memberId) || teamContactPending.has(memberId)) return;
-  teamContactPending.add(memberId);
-  fetch(`/api/team/${memberId}/contact`)
-    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-    .then(d => {
-      teamContactCache.set(memberId, d.email || null);
-      // The banner has moved on if focus changed while the lookup was in flight.
-      if (state.resources.focusMemberId === memberId) renderTeamFocusBanner();
-    })
-    .catch(() => {})
-    .finally(() => teamContactPending.delete(memberId));
-}
-
 // Teams deep link: opens a 1:1 chat with that person (desktop app if installed,
 // otherwise Teams on the web).
 function teamsChatUrl(email) {
@@ -29418,9 +29397,9 @@ function renderTeamFocusBanner() {
   const member = (state.team || []).find(m => m.id === id);
   if (!member) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
   const disc = DISCIPLINE_BY_KEY[member.discipline];
-  // undefined = still looking up; null = no linked account (show nothing).
-  const email = teamContactCache.get(id);
-  if (email === undefined) ensureTeamContact(id);
+  // The email typed on the person's roster card (team_members.email). No email
+  // → neither the address nor the Teams button is shown.
+  const email = String(member.email || '').trim();
   banner.classList.remove('hidden');
   banner.style.background = disc?.color || '#e2e8f0';
   banner.style.color      = disc?.text  || '#0f172a';
@@ -31572,6 +31551,9 @@ async function loadTeam() {
   // list, and the Schedule grid's inline-edit dropdown reads state.team at click time
   // anyway — so we just re-render the active view.
   render();
+  // The focus banner shows the focused person's email; it is not part of
+  // render(), so redraw it here or an email edited on their card stays stale.
+  renderTeamFocusBanner();
 }
 
 // ---------- Wiring ----------

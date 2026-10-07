@@ -196,30 +196,6 @@ module.exports = function createRouter(deps) {
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
 
-  // One person's work email, for the focus banner's "Message on Teams" button.
-  // The email is the login email of the Reports account whose employeeId is this
-  // person's Employee id (team_members.employee_id → User.employeeId). A person
-  // with no linked account — or no shared-DB connection — answers { email: null }
-  // and the banner simply omits the email and the button.
-  //
-  // Its own endpoint, looked up one person at a time, and NOT in SHARE_GET_PATHS
-  // (server.js): customer share links must never be able to read this. Fail-soft:
-  // any error is logged and answered as "no email" so the banner degrades to what
-  // it showed before.
-  router.get('/api/team/:id/contact', async (req, res) => {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid team member id.' });
-    try {
-      const [[member]] = await pool.query('SELECT employee_id FROM team_members WHERE id = ?', [id]);
-      if (!member || member.employee_id == null || !isEtcSharedConfigured()) return res.json({ email: null });
-      const [rows] = await etcQuery('SELECT email FROM sdc_etc_planner.`User` WHERE employeeId = ? LIMIT 1', [member.employee_id]);
-      res.json({ email: rows[0]?.email || null });
-    } catch (e) {
-      console.error(`[team] contact lookup for team member #${id} failed:`, e.message);
-      res.json({ email: null });
-    }
-  });
-
   router.post('/api/team', requireRole('editor'), async (req, res) => {
     try {
       const name = (req.body.name || '').trim();
