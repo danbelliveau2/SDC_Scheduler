@@ -29374,6 +29374,33 @@ function setFocusedMember(memberId) {
   renderTeamFocusBanner();
 }
 
+// Work email per team member, for the banner's email + "Message on Teams" button.
+// Value is the email, or null when the person has no linked Reports account;
+// a missing key means "not looked up yet". A failed lookup is left uncached so
+// focusing the person again retries it.
+const teamContactCache = new Map();
+const teamContactPending = new Set();
+
+function ensureTeamContact(memberId) {
+  if (teamContactCache.has(memberId) || teamContactPending.has(memberId)) return;
+  teamContactPending.add(memberId);
+  fetch(`/api/team/${memberId}/contact`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+    .then(d => {
+      teamContactCache.set(memberId, d.email || null);
+      // The banner has moved on if focus changed while the lookup was in flight.
+      if (state.resources.focusMemberId === memberId) renderTeamFocusBanner();
+    })
+    .catch(() => {})
+    .finally(() => teamContactPending.delete(memberId));
+}
+
+// Teams deep link: opens a 1:1 chat with that person (desktop app if installed,
+// otherwise Teams on the web).
+function teamsChatUrl(email) {
+  return `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(email)}`;
+}
+
 // v4.64: small strip above the Resources timeline that names the focused
 // person + offers a Clear button. Hidden when no one is focused.
 function renderTeamFocusBanner() {
@@ -29391,6 +29418,9 @@ function renderTeamFocusBanner() {
   const member = (state.team || []).find(m => m.id === id);
   if (!member) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
   const disc = DISCIPLINE_BY_KEY[member.discipline];
+  // undefined = still looking up; null = no linked account (show nothing).
+  const email = teamContactCache.get(id);
+  if (email === undefined) ensureTeamContact(id);
   banner.classList.remove('hidden');
   banner.style.background = disc?.color || '#e2e8f0';
   banner.style.color      = disc?.text  || '#0f172a';
@@ -29398,6 +29428,8 @@ function renderTeamFocusBanner() {
     <span class="team-focus-banner-label">Focused on</span>
     <strong>${escapeHtml(member.name)}</strong>
     ${disc ? `<span class="team-focus-banner-disc">${escapeHtml(disc.label)}</span>` : ''}
+    ${email ? `<span class="team-focus-banner-email">${escapeHtml(email)}</span>
+    <a class="team-focus-banner-teams" href="${escapeHtml(teamsChatUrl(email))}" target="_blank" rel="noopener noreferrer" title="Open a Teams chat with ${escapeHtml(member.name)}">Message on Teams</a>` : ''}
     <button type="button" class="team-focus-banner-clear" title="Show the whole discipline again">× Clear focus</button>
   `;
   banner.querySelector('.team-focus-banner-clear').addEventListener('click', () => {

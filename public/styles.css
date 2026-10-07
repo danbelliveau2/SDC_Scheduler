@@ -6612,6 +6612,21 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
   letter-spacing: 0.04em;
   opacity: 0.7;
 }
+.team-focus-banner-email {
+  font-size: var(--fs-sm);
+  opacity: 0.85;
+}
+.team-focus-banner-teams {
+  background: rgba(255,255,255,0.5);
+  border: 1px solid currentColor;
+  color: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-decoration: none;
+}
+.team-focus-banner-teams:hover { background: white; }
 .team-focus-banner-clear {
   margin-left: auto;
   background: rgba(255,255,255,0.5);
