@@ -4,6 +4,30 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.11',
+    date: '2026-10-07',
+    notes: [
+      'Finished rows never vanish silently, and a PM\'s page is their own work.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Fixed: a schedule could come up as three milestones — 1160 showed Mech 1 Release, Machine PowerUp and FAT and nothing else, with no filter claiming the other 34 rows. Three causes, all closed: My work\'s person filter stayed on after you left it for a job (only key milestones survive it), My work\'s hide-complete default was being saved as the staff view, and a browser that remembered My work kept it on while a job was open. Opening any job now turns My work off and drops its person filter; My work never saves its view.',
+      '   ▸ Row filters are for the visit, never remembered: Hide complete and Critical path only always start OFF when the app opens. A filter that comes back on its own is how rows went missing.',
+      '',
+      'TOOLBAR, REBUILT:',
+      '   ▸ One line of labelled groups: Layout (Grid / Both / Gantt, Combined, Columns, Layouts, undo / redo), PM (allocation, lag labels, bar labels, quoted vs scheduled), Timeline (flatten, money, machines, baseline), Lists (risk, controls, standard events, customer requirements), and Scale at the right over Documents. The same 20px inset on both edges.',
+      '   ▸ One scale. The toolbar, the banner and the grid sit at the same app scale — the toolbar no longer holds itself at 100% while the rest of the page is at 85%. Every control is 30px tall. Two text sizes on purpose: Grid / Both / Gantt, the dropdowns, Views and Documents at 13px; the Rows chips and Compress at 11px. The PM, Timeline and Lists groups start at the Gantt\'s left edge and follow the divider; the project name starts on the same line as them, a size larger.',
+      '   ▸ Rows filters are chips on the banner, directly under Layout: All (the default) · Behind · Ahead · Over-allocated · Complete · Hide complete. Complete shows only finished rows; Hide complete takes them out. Natural size, and with Compress they stay inside the grid pane. No Filters dropdown, no search.',
+      '   ▸ Compress sits on the banner under PM. Zoom to fit and fit height sit on the banner right, over the chart they fit.',
+      '   ▸ Views ▾ replaces Lists and Mini: the schedule views (Build, Risk schedule, Controls list, Standard events, Customer requirements), the summary card and critical path toggles, the milestone picker, For Customer mode, and the mini schedules — each with a portal tick that shows it to the customer.',
+      '   ▸ Documents ▾ gains Job Details as its last item. The summary card has no icon: right-click the card to hide it, Views brings it back.',
+      '   ▸ Anything that drops rows is lit on the Rows bar while it is on — Critical path only, Milestones only — and one click turns it off. A quiet grey count beside the chips says how many rows are out (14 rows hidden); All brings them back. Nothing disappears silently.',
+      '   ▸ Customer view: Layout (panes and Combined) and Timeline, Views scoped to shared mini schedules, Documents with the Communication Plan and Risk Mitigation Plan. Excel and PDF buttons retired.',
+      '',
+      'MY WORK:',
+      '   ▸ A PM\'s page is their own rows — the actions with their name on them — not every row of every job they run. Blank if nothing is theirs. PMs can open anyone on the execution teams (mechanical, controls, build, wire) to see who is working on what.',
+    ],
+  },
+  {
     version: '13.10',
     date: '2026-10-04',
     notes: [

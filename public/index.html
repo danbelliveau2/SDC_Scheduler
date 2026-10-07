@@ -8,11 +8,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20261004-96955" />
+  <link rel="stylesheet" href="styles.css?v=20261007-77931" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
-  <link rel="stylesheet" href="service-ui.css?v=20261004-93507" />
+  <link rel="stylesheet" href="service-ui.css?v=20261007-93507" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -283,149 +283,79 @@
                [◎ Baseline ▾] | [🔍 Zoom ▾] | [⛶ Zoom to fit]
              Vertical dividers between every adjacent group.
              Quote vs Schedule lives in the bottom footer. -->
+        <!-- ONE toolbar line, in labelled groups (Dan, Oct 2026 redesign):
+             Layout · PM · Timeline · Lists … Scale. Rows filters live on the
+             banner under Layout; Compress on the banner under PM; the summary
+             card has no icon (right-click the card; Views brings it back). -->
         <div class="schedule-toolbar">
-          <!-- Shown ONLY when this schedule was opened from the SDC Projects
-               Reports app (?job=…&ret=…) — see _applyEtcJobDeepLink(). The link
-               opens in a new tab, so browser Back has no entry to return to;
-               this navigates to the exact report URL (filters and all) that was
-               handed over. Hidden by default for everyone else. -->
           <button id="btn-etc-back" class="toolbar-toggle-btn hidden" type="button" title="Return to the Projects Reports page you came from">← Back to report</button>
 
-          <div class="dropdown" id="columns-dropdown">
-            <button id="btn-columns" class="toolbar-toggle-btn" type="button" title="Show, hide, or reorder grid columns. Drag rows in the menu to reorder them in the grid.">Show/hide columns ▾</button>
-            <div id="columns-menu" class="dropdown-menu hidden"></div>
-          </div>
-
-          <button id="btn-compress-cols" class="toolbar-toggle-btn" type="button" title="Shrink every visible column to the smallest width that still fits its content — frees up room for the Gantt.">⇤ Compress</button>
-
-          <div class="dropdown" id="col-views-dropdown">
-            <button id="btn-col-views" class="toolbar-toggle-btn" type="button" title="Saved column views — save the current column setup (which columns, widths, fonts) under a name and switch between setups in one click.">Views ▾</button>
-            <div id="col-views-menu" class="dropdown-menu hidden"></div>
-          </div>
-
-          <div class="toolbar-divider"></div>
-
-          <button id="btn-undo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↺</button>
-          <button id="btn-redo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↻</button>
-
-          <div class="toolbar-divider"></div>
-
-          <button id="btn-save" class="toolbar-toggle-btn" type="button" title="Edits save automatically as you make them. Click to force-save and retry anything that didn't save.">💾 Saved</button>
-
-          <div class="toolbar-divider"></div>
-
-          <!-- Content mode dropdown — defaults to Combined (the usual view).
-               Schedule and Actions are alternate modes you can switch to
-               but almost never need. Replaced the 3-button seg-control. -->
-          <div class="dropdown" id="mode-dropdown">
-            <button id="btn-mode-menu" class="toolbar-toggle-btn" type="button" title="Content mode — what kinds of rows show. Combined is the default; pick Schedule or Actions to filter.">Combined ▾</button>
-            <div id="mode-menu" class="dropdown-menu hidden"></div>
+          <div class="tb-group tb-layout" id="tb-layout" data-cap="Layout">
+            <div class="seg-control" id="pane-seg" title="Pick which panes are visible: Grid only, Both, or Gantt only.">
+              <button class="seg-btn" type="button" data-pane="grid"  title="Grid only — hide the Gantt, show the editable table at full width.">Grid</button>
+              <button class="seg-btn" type="button" data-pane="both"  title="Both panes — grid on the left, Gantt on the right (draggable divider).">Both</button>
+              <button class="seg-btn" type="button" data-pane="gantt" title="Gantt only — hide the grid, show the chart at full width.">Gantt</button>
+            </div>
+            <div class="dropdown" id="mode-dropdown">
+              <button id="btn-mode-menu" class="toolbar-toggle-btn" type="button" title="Content mode — what kinds of rows show. Combined is the default; pick Schedule or Actions to filter.">Combined ▾</button>
+              <div id="mode-menu" class="dropdown-menu hidden"></div>
+            </div>
+            <div class="dropdown" id="columns-dropdown">
+              <button id="btn-columns" class="toolbar-toggle-btn" type="button" title="Show, hide, or reorder grid columns. Drag rows in the menu to reorder them in the grid.">Columns ▾</button>
+              <div id="columns-menu" class="dropdown-menu hidden"></div>
+            </div>
+            <div class="dropdown" id="col-views-dropdown">
+              <button id="btn-col-views" class="toolbar-toggle-btn" type="button" title="Saved column layouts — save the current column setup (which columns, widths, fonts) under a name and switch between setups in one click.">Layouts ▾</button>
+              <div id="col-views-menu" class="dropdown-menu hidden"></div>
+            </div>
+            <button id="btn-undo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Undo the last task edit. Stack holds the last 20 changes.">↺</button>
+            <button id="btn-redo" class="toolbar-icon-btn toolbar-icon-round" type="button" disabled title="Redo the last undone edit. Cleared when you make a new edit.">↻</button>
           </div>
 
           <div class="toolbar-divider"></div>
 
-          <!-- Pane layout seg-control: Grid / Both / Gantt. Visible buttons,
-               click directly (no dropdown). -->
-          <div class="seg-control" id="pane-seg" title="Pick which panes are visible: Grid only, Both, or Gantt only.">
-            <button class="seg-btn" type="button" data-pane="grid"  title="Grid only — hide the Gantt, show the editable table at full width.">Grid</button>
-            <button class="seg-btn" type="button" data-pane="both"  title="Both panes — grid on the left, Gantt on the right (draggable divider).">Both</button>
-            <button class="seg-btn" type="button" data-pane="gantt" title="Gantt only — hide the grid, show the chart at full width.">Gantt</button>
+          <div class="tb-group tb-pm" id="tb-pm" data-cap="PM">
+            <div class="view-bracket">
+              <button id="btn-view-alloc-pre"  class="view-bracket-icon" type="button" title="Show the allocation % before each task name in the grid (e.g. '85%  Configure Machine - 1w').">α</button>
+              <button id="btn-view-lags"       class="view-bracket-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
+              <button id="btn-view-bar-meta"   class="view-bracket-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below.">%</button>
+              <button id="btn-view-dept-hours" class="view-bracket-icon" type="button" title="Show QUOTED vs SCHEDULED hours on each department subheader — scheduled (from durations) under DUR, quoted (from the Project Release budget) under %COM, and an over/under-scheduled chip in the Assigned To area.">Δ</button>
+            </div>
           </div>
 
-          <div class="toolbar-divider"></div>
-
-          <!-- View toggle bracket — Smartsheet-style. Thick outer borders frame the
-               group; thin inner dividers separate each toggle. Tooltips on every
-               button explain what each one does. -->
-          <div class="view-bracket" id="view-pill">
-            <button id="btn-view-flatten"    class="view-bracket-icon" type="button" title="Flatten + sort by start date — hide sub-section headers, render tasks directly under section 10 / 40 / 50, AND sort within each section by start date.">≡</button>
-            <button id="btn-view-alloc-pre"  class="view-bracket-icon" type="button" title="Show the allocation % before each task name in the grid (e.g. '85%  Configure Machine - 1w').">α</button>
-            <button id="btn-view-financials" class="view-bracket-icon" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$</button>
-            <button id="btn-view-lags"       class="view-bracket-icon" type="button" title="Show ±N wks lag labels on Gantt arrows when a predecessor carries a lag of one week or more.">↔</button>
-            <button id="btn-view-bar-meta"   class="view-bracket-icon" type="button" title="Show task ALLOCATION % above each bar and DURATION (wks) below.">%</button>
-            <button id="btn-view-machine"    class="view-bracket-icon" type="button" title="Highlight which machine each row belongs to — colored pill in the grid + matching border on the Gantt bar. Auto-hides on single-machine projects.">M</button>
-            <!-- Risk lines. Shows the mitigation work under the build; WHICH risks
-                 is the selection made with the Risks pills in the risk schedule. -->
-            <button id="btn-risk-overlay" class="view-bracket-icon" type="button" title="Show the risk mitigation lines under the build.">R</button>
-            <!-- Controls items. Same idea as R: the controls team’s list,
-                 shown under the build when you want it against the work. -->
-            <button id="btn-view-controls" class="view-bracket-icon" type="button" title="Show the controls team’s items under the build.">C</button>
-            <!-- Standard project events. Same idea as C: the standing items
-                 every job carries (marketing videos, spare parts list) live
-                 in their own list and come onto the build when you ask. -->
-            <button id="btn-view-events" class="view-bracket-icon" type="button" title="Show the standard project events on this job.">S</button>
-            <!-- The customer's list: what they owe the job, by when. -->
-            <button id="btn-view-customer" class="view-bracket-icon" type="button" title="Show the customer's responsibilities under the build."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><circle cx="8" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 14c.6-3 2.6-4.5 5.5-4.5s4.9 1.5 5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
-            <button id="btn-view-dept-hours" class="view-bracket-icon" type="button" title="Show QUOTED vs SCHEDULED hours on each department subheader — scheduled (from durations) under DUR, quoted (from the Project Release budget) under %COM, and an over/under-scheduled chip in the Assigned To area.">Δ</button>
-            <button id="btn-view-stats" class="view-bracket-icon" type="button" title="Project summary card — duration, % complete, FAT and the penalty date, quoted against scheduled. Floats over the top-right of the chart; click to put it away."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><line x1="4.5" y1="6" x2="11.5" y2="6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="4.5" y1="8.5" x2="11.5" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="4.5" y1="11" x2="9" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
-            <button id="btn-view-baseline" class="view-bracket-icon" type="button" title="Baseline overlay — dashed plan-of-record outlines + ahead/behind chips vs the baseline. Click to toggle; right-click to set, reset, or turn off the baseline."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.8" fill="currentColor"/></svg></button>
+          <div class="tb-group tb-timeline" id="tb-timeline" data-cap="Timeline">
+            <div class="view-bracket" id="view-pill">
+              <button id="btn-view-flatten"    class="view-bracket-icon" type="button" title="Flatten + sort by start date — hide sub-section headers, render tasks directly under section 10 / 40 / 50, AND sort within each section by start date.">≡</button>
+              <button id="btn-view-financials" class="view-bracket-icon" type="button" title="Overlay financial milestones on the Gantt as $ diamonds.">$</button>
+              <button id="btn-view-machine"    class="view-bracket-icon" type="button" title="Highlight which machine each row belongs to — colored pill in the grid + matching border on the Gantt bar. Auto-hides on single-machine projects.">M</button>
+              <button id="btn-view-baseline" class="view-bracket-icon" type="button" title="Baseline overlay — dashed plan-of-record outlines + ahead/behind chips vs the baseline. Click to toggle; right-click to set, reset, or turn off the baseline."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.8" fill="currentColor"/></svg></button>
+            </div>
           </div>
 
-          <div class="toolbar-divider"></div>
-
-          <!-- Filters dropdown — restored as a dropdown with text labels.
-               Hover the button to see the active-count chip; click to open the
-               popover with all filters as labelled chips. -->
-          <!-- Mini schedules — a named handful of lines out of this
-               schedule, so one flow can be read without the other eighty
-               rows. A lens: the lines keep their real row numbers and
-               never leave the build. -->
-          <div class="schedule-mini-wrap">
-            <button id="btn-mini" class="toolbar-toggle-btn hidden" type="button">◫ <span class="mini-btn-label">Mini</span> ▾</button>
-            <div id="mini-menu" class="dropdown-menu mini-menu hidden"></div>
+          <div class="tb-group tb-lists" id="tb-lists" data-cap="Lists">
+            <div class="view-bracket">
+              <button id="btn-risk-overlay" class="view-bracket-icon" type="button" title="Show the risk mitigation lines under the build.">R</button>
+              <button id="btn-view-controls" class="view-bracket-icon" type="button" title="Show the controls team’s items under the build.">C</button>
+              <button id="btn-view-events" class="view-bracket-icon" type="button" title="Show the standard project events on this job.">S</button>
+              <button id="btn-view-customer" class="view-bracket-icon" type="button" title="Show the customer's requirements under the build."><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" style="display:block;margin:auto;"><circle cx="8" cy="5" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2.5 14c.6-3 2.6-4.5 5.5-4.5s4.9 1.5 5.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+            </div>
           </div>
 
-          <div class="schedule-project-filters">
-            <button id="btn-filters" class="toolbar-toggle-btn" type="button" title="Filter the schedule. For Customer mode also lives here.">⌕ Filters <span class="filter-chip-count" id="filter-chip-count" hidden></span> ▾</button>
-            <div id="filters-popover" class="filters-popover hidden"></div>
-          </div>
-
-          <!-- Auto-save status indicator -->
+          <button id="btn-save" class="toolbar-toggle-btn tb-quiet" type="button" title="Edits save automatically as you make them. Click to force-save and retry anything that didn't save.">💾 Saved</button>
           <span id="save-indicator" class="save-indicator" title="All changes are saved automatically to the server"></span>
-
-          <!-- Straight through to this job in SDC Reports — hours, parts cost
-               and procurement readiness. Label and status filled in by
-               renderScheduleProcurement(). -->
-          <!-- Documents for the active project. Project Release and the
-               Communication Plan live here on the SCHEDULE, which is where
-               they are filled in; the portal only reports what they feed. -->
           <input id="import-file-input" type="file" accept=".xlsx,.csv" style="display:none" />
-
-          <div class="toolbar-divider"></div>
-
-          <!-- Flex gap pushes the right-edge tools to the far right. -->
           <div class="toolbar-flex-gap"></div>
-
-          <!-- Baseline actions menu — opened by RIGHT-clicking the ◉ pill in the
-               center block (the old "◎ Baseline ▾" dropdown button is gone;
-               left-click on the pill just toggles the overlay). -->
           <div id="baseline-menu" class="dropdown-menu hidden"></div>
 
-          <!-- The Gantt-only Zoom dropdown is gone (Dan): it moved the chart
-               without the grid. The app scale beside it moves both together;
-               ⛶ fits the chart, ↕ fits the rows. -->
-          <!-- App scale — uniform zoom of the ENTIRE interface so the layout
-               ratio stays identical on every screen. Saved per machine. Lives
-               beside the Gantt zoom so both zooms are in one place, and so the
-               customer has it too. -->
-          <div class="app-scale-ctl" title="App scale — resize the whole interface to fit this screen. Saved on this computer.">
-            <button id="app-scale-minus" type="button" title="Scale the app down">−</button>
-            <button id="app-scale-pct" type="button" title="Click to reset to the default (85%)">85%</button>
-            <button id="app-scale-plus" type="button" title="Scale the app up">+</button>
+          <div class="tb-group tb-scale" id="tb-scale" data-cap="Scale">
+            <div class="app-scale-ctl" title="App scale — resize the whole interface to fit this screen.">
+              <button id="app-scale-minus" type="button" title="Scale the app down">−</button>
+              <button id="app-scale-pct" type="button" title="Click to reset to the default (85%)">85%</button>
+              <button id="app-scale-plus" type="button" title="Scale the app up">+</button>
+            </div>
           </div>
 
-          <div class="toolbar-divider"></div>
-
-          <button id="btn-zoom-fit" class="btn-primary btn-fit" type="button" title="Zoom to fit — fit the Gantt's WIDTH to the project span">⛶</button>
-          <button id="btn-zoom-height" class="btn-primary btn-fit" type="button" title="Fit height — resize the rows so every task (and the Add buttons) fits the screen with no vertical scrolling. Adjust row height afterwards however you like.">↕</button>
-
-          <!-- Hidden legacy controls. The Zoom dropdown drives these under
-               the hood so existing handlers (#zoom-mode, #btn-zoom-in/out,
-               #btn-row-h-up/down, #btn-customer-view) still work. The View
-               dropdown button (#btn-view-mode / #view-mode-menu) is also
-               kept hidden so setupViewModeDropdown() and renderViewModeMenu()
-               can still target it — they no-op safely when the menu element
-               is present but never opened. -->
+          <!-- Hidden legacy controls, still driven by code. -->
           <div class="legacy-zoom-controls" hidden>
             <button id="btn-zoom-out" type="button">−</button>
             <select id="zoom-mode">
@@ -442,49 +372,54 @@
           </div>
         </div>
       </div>
-      <!-- The customer’s own buttons. They do not stay here: on entering the
-           customer presentation they move INTO the toolbar above, so there is
-           one row of controls rather than a second bar that resembles it.
-           This element is just where they live the rest of the time. -->
+      <!-- Customer-view controls. Back to portal and Exit ride the toolbar
+           when the view is on; Excel and PDF are retired (Dan). -->
       <div class="customer-view-tools" id="customer-view-tools">
         <button id="btn-portal-back" class="toolbar-toggle-btn customer-view-back" type="button" title="Back to the customer portal.">← Back to portal</button>
-        <button id="btn-customer-view-xls" class="toolbar-toggle-btn customer-view-xls" type="button" title="Download these rows as an Excel workbook — the same tasks and dates you see, as data you can re-sort and re-plan with.">↓ Excel</button>
-        <button id="btn-customer-view-print" class="toolbar-toggle-btn customer-view-print" type="button" title="Open the print dialog — choose “Save as PDF” as the destination for a PDF of exactly this view.">⎙ Save as PDF</button>
+        <button id="btn-customer-view-xls" class="toolbar-toggle-btn customer-view-xls hidden" type="button">↓ Excel</button>
+        <button id="btn-customer-view-print" class="toolbar-toggle-btn customer-view-print hidden" type="button">⎙ Save as PDF</button>
         <button id="btn-customer-view-exit" class="toolbar-toggle-btn customer-view-exit" type="button" title="Exit the customer presentation and return to the full editing layout.">✕ Exit customer view</button>
       </div>
-      <!-- Context row. Project name stays CENTRED; the pills that describe what
-           you are looking at sit left, and the per-project doors (risk schedule,
-           documents, job details) sit right. Equal flex on the outer zones is
-           what keeps the name centred regardless of what fills them. -->
+      <!-- The banner: Rows filters under Layout and Compress under PM on the
+           left (My work puts its identity there instead), the project name
+           in the centre, the fits + Views + Documents on the right. -->
       <div class="schedule-project-banner" id="schedule-project-banner">
         <div class="banner-zone banner-left">
           <div class="schedule-context-pills" id="schedule-context-pills"></div>
+          <div class="view-bracket banner-rows" id="banner-rows" title="Which rows are in. All is the default."></div>
+          <span class="rows-hidden-count" id="rows-hidden-count" title="Rows the lit chip is keeping out. All brings them back."></span>
+          <button id="btn-compress-cols" class="toolbar-toggle-btn" type="button" title="Shrink every visible column to the smallest width that still fits its content — frees up room for the Gantt.">⇤ Compress</button>
         </div>
         <div class="banner-zone banner-center" id="schedule-project-center">
           <span class="schedule-project-name-pill schedule-project-label">All projects</span>
         </div>
         <div class="banner-zone banner-right">
-          <!-- The job's side lists, one dropdown. Each is a view of its own
-               rows instead of the build; while one is open the button reads
-               "Back to schedule" and one click brings the build back. -->
+          <button id="btn-zoom-fit" class="btn-primary btn-fit" type="button" title="Zoom to fit — fit the Gantt's WIDTH to the project span">⛶</button>
+          <button id="btn-zoom-height" class="btn-primary btn-fit" type="button" title="Fit height — resize the rows so every task fits the screen with no vertical scrolling.">↕</button>
+          <div class="toolbar-divider"></div>
           <div class="schedule-docs-wrap schedule-lists-wrap">
-            <button id="btn-lists" class="toolbar-toggle-btn" type="button">☰ Lists ▾</button>
-            <div id="lists-menu" class="dropdown-menu hidden">
+            <button id="btn-lists" class="toolbar-toggle-btn" type="button">⊞ Views ▾</button>
+            <div id="lists-menu" class="dropdown-menu views-menu hidden">
+              <div class="views-title">The schedule</div>
+              <button id="btn-build-mode" type="button">Build</button>
               <button id="btn-risk-mode" type="button"></button>
               <button id="btn-controls-mode" type="button"></button>
               <button id="btn-events-mode" type="button"></button>
               <button id="btn-customer-mode" type="button"></button>
+              <div id="views-dynamic"></div>
+              <div id="mini-menu" class="views-minis"></div>
             </div>
           </div>
           <div class="schedule-docs-wrap">
-            <button id="btn-docs" class="toolbar-toggle-btn" type="button" title="Project documents — Project Release, Communication Plan and the Risk Mitigation Plan for this project.">▤ Documents ▾</button>
+            <button id="btn-docs" class="toolbar-toggle-btn" type="button" title="Project documents — Project Release, Communication Plan, Risk Mitigation Plan, and the job in SDC Reports.">▤ Documents ▾</button>
             <div id="docs-menu" class="dropdown-menu hidden">
               <button type="button" data-doc="release">📄 Project Release…</button>
               <button type="button" data-doc="comm">📇 Communication Plan…</button>
               <button type="button" data-doc="risk">⚠ Risk Mitigation Plan…</button>
+              <button type="button" data-doc="job">📊 Job Details (Reports) ↗</button>
             </div>
           </div>
-          <button id="schedule-procurement" type="button" class="schedule-proc-drawer toolbar-toggle-btn"></button>
+          <button id="schedule-procurement" type="button" class="schedule-proc-drawer toolbar-toggle-btn hidden"></button>
         </div>
       </div>
       <div class="schedule-split" id="schedule-split">
@@ -1165,9 +1100,9 @@
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->
-  <script src="auth-ui.js?v=20261004-30428"></script>
-  <script src="phases.js?v=20261004-16872"></script>
-  <script src="release-notes.js?v=20261004-53951"></script>
+  <script src="auth-ui.js?v=20261007-30428"></script>
+  <script src="phases.js?v=20261007-16872"></script>
+  <script src="release-notes.js?v=20261007-68974"></script>
   <!-- The Portal tab's analytics math (percent complete, milestones, risk
        banding, machine attribution, anchor dedup, ...) — the SAME file the
        customer-facing portal's server code requires directly (routes/portal.js).
@@ -1180,20 +1115,20 @@
        app.js keeps its own customer picker / Manage-login / SDC aggregate
        view — none of that is in this shared file, on purpose. -->
   <script src="portalRender.js?v=20260929-18929"></script>
-  <script src="app.js?v=20261004-68203"></script>
+  <script src="app.js?v=20261007-55505"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
        loadCommentCounts, and initCommentsUI are available to app.js. -->
-  <script src="comments-ui.js?v=20261004-49557"></script>
+  <script src="comments-ui.js?v=20261007-49557"></script>
   <!-- Service module (Service Log replacement). Self-contained page; app.js
        calls window.renderServicePage() from setView('service'). Loaded after
        app.js so showToast / showConfirmDialog exist by the time it runs. -->
-  <script src="service-ui.js?v=20261004-85110"></script>
+  <script src="service-ui.js?v=20261007-85110"></script>
   <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
        broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
-  <script src="realtime-ui.js?v=20261004-01515"></script>
+  <script src="realtime-ui.js?v=20261007-01515"></script>
   <!-- Phase 4.1: "who's editing" presence pills, top-right under the user pill. -->
-  <script src="presence-ui.js?v=20261004-29517"></script>
+  <script src="presence-ui.js?v=20261007-29517"></script>
 </body>
 </html>

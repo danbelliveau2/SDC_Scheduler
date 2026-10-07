@@ -3205,6 +3205,21 @@ function renderTable() {
     html += _customerSectionRowsHtml(filtered, collapsedGroups, { overlay: true });
   }
 
+  // Rows left out by a filter are counted, quietly, beside the Rows chips
+  // that took them out. The chips are the way back (Dan: no Show all row).
+  try {
+    const n = document.getElementById('rows-hidden-count');
+    let text = '';
+    const projectNow = state.filters.project;
+    if (n && projectNow && (rowsFilterActive() || activeMiniName())) {
+      const side = new Set([RISK_GROUP, CONTROLS_GROUP, EVENTS_GROUP, CUSTOMER_GROUP]);
+      const all = state.tasks.filter(t => t.project === projectNow && (t.name || '').trim() && !side.has(t.phase_group) && !inferredAnchorKey(t));
+      const shown = new Set(filtered.filter(t => !inferredAnchorKey(t)).map(t => t.id));
+      const hiddenN = all.filter(t => !shown.has(t.id)).length;
+      if (hiddenN > 0) text = hiddenN + (hiddenN === 1 ? ' row hidden' : ' rows hidden');
+    }
+    if (n) n.textContent = text;
+  } catch (_) {}
   tbody.innerHTML = html;
   if (state.layout) applyColumnVisibility();
 
@@ -5863,6 +5878,13 @@ function renderProjectStatsPopup() {
     popup = document.createElement('div');
     popup.id = 'project-stats-popup';
     popup.className = 'project-stats-popup';
+    popup.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY, [{ label: 'Hide the summary card', onClick: () => {
+        state.scheduleView.showProjectStats = false; saveScheduleView(); render();
+        showToast('Summary card hidden. Views ▾ brings it back.', { kind: 'info' });
+      } }]);
+    });
     split.appendChild(popup);
   }
   // Single-machine view? Then Duration / Complete / FAT all scope to
@@ -8391,6 +8413,8 @@ function loadProjectTabs() {
   const savedActive = sessionStorage.getItem('sdcActiveProject');
   state.filters.project = (savedActive != null && state.openProjects.includes(savedActive))
     ? savedActive : '';
+  // A remembered job beats a remembered My work (see render()).
+  if (state.filters.project && state.myWork) { try { setMyWork(false); } catch (_) {} }
   let savedTemplates = [];
   try { savedTemplates = JSON.parse(localStorage.getItem('sdcTemplateProjects') || '[]'); } catch {}
   state.templateProjects = Array.isArray(savedTemplates) ? savedTemplates : [];
@@ -13414,9 +13438,14 @@ function renderProjectTabs() {
     } else {
       const p = state.filters.project;
       banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
+      // The Rows chips on the banner say which rows are in (Hide complete
+      // lights when finished rows are out). Nothing else goes in the extra.
       const extraOne = document.getElementById('banner-left-extra');
       if (extraOne) extraOne.innerHTML = '';
     }
+    // The chips follow the project: drawn on every banner render, not just
+    // when a toggle flips, or a fresh tab opens with none.
+    try { renderRowsChips(); } catch (_) {}
   }
 
   // The ETO and Power BI chips are gone. The ETO one only ever reported on
@@ -16178,19 +16207,51 @@ function syncSalesModeUI() {
 // overflows — detect that and zoom the whole bar down until everything fits.
 // Text just gets proportionally smaller; nothing ever clips.
 function fitScheduleToolbar() {
-  // applyAppScale sets the toolbar's counter-zoom (1 / app scale) so the
-  // row holds one size on a screen. Measure at THAT zoom and, if the row
-  // still runs past the window, scale it down from there — never from 1,
-  // which threw the counter-zoom away and let the row walk off the screen.
+  // One scale for the whole page (Dan, 10/07): the toolbar is at the app
+  // scale like the banner and the grid under it — no counter-zoom. It only
+  // shrinks from there if the row would run past the window.
   try { applyAppScale(); } catch (_) {}
   const bar = document.querySelector('.schedule-toolbar');
   if (!bar) return;
-  const base = 1 / _appScale();
-  bar.style.zoom = String(base);
+  const base = 1;
+  bar.style.zoom = '';
   void bar.offsetWidth;
   const need = bar.scrollWidth;
   const have = bar.clientWidth;
   if (need > have && need > 0) bar.style.zoom = String(Math.max(0.5, base * (have / need)));
+  try { alignToolbarToGantt(); } catch (_) {}
+  try { fitRowsChips(); } catch (_) {}
+}
+// The PM / Timeline / Lists groups sit over the chart they act on: they
+// start a little inside the Gantt's left edge, wherever the divider is
+// (Dan, 10/07). When the grid is too wide for that, they stay put.
+function alignToolbarToGantt() {
+  const pm = document.getElementById('tb-pm');
+  const gantt = document.getElementById('schedule-gantt');
+  const bar = document.querySelector('.schedule-toolbar');
+  if (!pm || !gantt || !bar) return;
+  pm.style.marginLeft = '';
+  // Grid-only (no chart): the groups sit in their natural place and the
+  // name goes back to the centre.
+  const centre0 = document.getElementById('schedule-project-center');
+  if (centre0) { centre0.classList.remove('is-left'); centre0.style.left = ''; }
+  if (gantt.offsetParent === null || gantt.getBoundingClientRect().width < 40) return;
+  const bw = bar.getBoundingClientRect().width;
+  const zb = (bar.offsetWidth > 0 && bw > 0) ? (bw / bar.offsetWidth) : 1;
+  const want = gantt.getBoundingClientRect().left + 14 * zb;
+  const dx = (want - pm.getBoundingClientRect().left) / zb;
+  if (dx > 0) pm.style.marginLeft = Math.round(dx) + 'px';
+  // The project name starts on the same line as the PM group above it,
+  // not centred (Dan, 10/07). The centre zone is absolute inside the
+  // banner, so its left is the PM group's left in banner pixels.
+  const centre = document.getElementById('schedule-project-center');
+  const banner = document.getElementById('schedule-project-banner');
+  if (centre && banner) {
+    const bz = (banner.offsetWidth > 0) ? (banner.getBoundingClientRect().width / banner.offsetWidth) || 1 : 1;
+    const left = (pm.getBoundingClientRect().left - banner.getBoundingClientRect().left) / bz;
+    centre.classList.add('is-left');
+    centre.style.left = Math.round(left) + 'px';
+  }
 }
 // Tabs render at natural width so full names read whenever there's room;
 // when a row overflows, .tabs-tight clamps its tabs back to equal width +
@@ -16273,6 +16334,12 @@ function syncRiskStateToProject() {
 }
 
 function render(opts = {}) {
+  // My work is one person across every job; a project tab is one job. The
+  // two cannot both be on. A browser that remembered My work and then
+  // opened a job (boot, a report link, a project picker) was rendering the
+  // job with My work still set: no Rows chips, hide-complete from the
+  // person's page, thirty finished rows gone (Dan, 10/07). The project wins.
+  if (state.myWork && state.filters.project) { try { setMyWork(false); } catch (_) {} }
   try { syncRiskStateToProject(); } catch (_) {}
   try { syncSalesModeUI(); } catch (_) {}
   try { fitScheduleToolbar(); } catch (_) {}
@@ -17599,13 +17666,58 @@ function _customerSectionRowsHtml(filtered, collapsedGroups, opts) {
   }
   return html;
 }
+function renderViewsMenu() {
+  const dyn = document.getElementById('views-dynamic');
+  if (!dyn) return;
+  const sv = state.scheduleView || {};
+  const cv = document.body.classList.contains('customer-view');
+  const build = document.getElementById('btn-build-mode');
+  if (build) build.classList.toggle('is-active', !(sv.riskMode || sv.controlsMode || sv.eventsMode || sv.customerMode) && !activeMiniName());
+  const row = (id, label, on, title) => `<label class="views-row" title="${escapeHtml(title || '')}"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}><span>${escapeHtml(label)}</span></label>`;
+  dyn.innerHTML = `
+    <div class="views-title">On the chart</div>
+    ${row('views-stats', 'Summary card', sv.showProjectStats !== false, 'The project summary card over the chart. Right-click the card to hide it.')}
+    ${cv ? '' : row('views-crit', 'Critical path', !!sv.criticalPath, 'Highlight the critical path.')}
+    ${cv ? '' : row('views-crit-only', 'Critical path only', !!sv.criticalOnly, 'Show only the critical path.')}
+    ${cv ? '' : `<div class="views-title">Milestones</div>
+    <select id="views-milestone-type" class="views-select">
+      <option value="">Off — the full schedule</option>
+      ${MILESTONE_TYPES.map(m => `<option value="${m.key}" ${milestoneFilterActive() === m.key ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
+    </select>`}
+    ${(cv || document.body.classList.contains('portal-schedule')) ? '' : `<div class="views-title">Presentation</div>${row('views-customer', 'For Customer mode', false, 'Show this schedule the way the customer sees it.')}`}
+  `;
+  dyn.querySelector('#views-stats')?.addEventListener('change', (e) => {
+    state.scheduleView.showProjectStats = !!e.target.checked; saveScheduleView(); render();
+  });
+  dyn.querySelector('#views-crit')?.addEventListener('change', (e) => {
+    state.scheduleView.criticalPath = !!e.target.checked;
+    if (!e.target.checked) state.scheduleView.criticalOnly = false;
+    saveScheduleView(); applyScheduleView(); render(); renderViewsMenu();
+  });
+  dyn.querySelector('#views-crit-only')?.addEventListener('change', (e) => {
+    state.scheduleView.criticalOnly = !!e.target.checked;
+    if (e.target.checked) state.scheduleView.criticalPath = true;
+    saveScheduleView(); applyScheduleView(); render(); renderViewsMenu();
+  });
+  dyn.querySelector('#views-milestone-type')?.addEventListener('change', (e) => {
+    state.filters.milestoneType = e.target.value || '';
+    if (state.filters.quick) state.filters.quick.milestones = false;
+    render(); try { zoomToFit(); } catch (_) {}
+  });
+  dyn.querySelector('#views-customer')?.addEventListener('change', (e) => {
+    if (!state.filters.project) { e.target.checked = false; showAlertDialog('Pick a project tab first — customer view is per-project.'); return; }
+    document.getElementById('lists-menu')?.classList.add('hidden');
+    enterCustomerView();
+  });
+  try { renderMiniMenu(); } catch (_) {}
+}
 function syncListsButton() {
   const btn = document.getElementById('btn-lists');
   if (!btn) return;
   const sv = state.scheduleView || {};
   const on = sv.riskMode ? '⚠ Risk schedule' : sv.controlsMode ? '⚙ Controls list'
     : sv.eventsMode ? '★ Standard events' : sv.customerMode ? '👤 Customer requirements' : '';
-  btn.textContent = on ? '← Back to schedule' : '☰ Lists ▾';
+  btn.textContent = on ? '← Back to schedule' : '⊞ Views ▾';
   btn.title = on
     ? 'You are looking at the ' + on.replace(/^\S+\s/, '') + '. Back to the build — sections 05 / 10 / 40 / 50.'
     : 'The job\'s side lists — the risk schedule, the controls list, standard events and the customer list. One at a time, instead of the build.';
@@ -17805,43 +17917,53 @@ function syncMiniButton() {
 function renderMiniMenu() {
   const menu = document.getElementById('mini-menu');
   if (!menu) return;
-  const names = Object.keys(miniSchedules()).sort((a, b) => a.localeCompare(b));
+  const cv = document.body.classList.contains('customer-view');
+  const names = Object.keys(miniSchedules()).sort((a, b) => a.localeCompare(b))
+    .filter(n => !cv || miniShared(n));
   const active = activeMiniName();
   const rows = names.map(n => {
     const count = (miniSchedules()[n] || []).length;
+    const shared = miniShared(n);
     return `<div class="mini-menu-row${n === active ? ' is-on' : ''}" data-mini="${escapeHtml(n)}">
       <button type="button" class="mini-menu-pick" data-mini-show="${escapeHtml(n)}">
         <span class="mini-menu-tick">${n === active ? '✓' : ''}</span>
         <span class="mini-menu-name">${escapeHtml(n)}</span>
         <span class="mini-menu-count">${count}</span>
       </button>
+      ${cv ? '' : `<button type="button" class="mini-menu-act mini-share${shared ? ' is-on' : ''}" data-mini-share="${escapeHtml(n)}" title="${shared ? 'Shown on the customer portal. Click to keep it ours.' : 'Ours only. Click to show it on the customer portal.'}">${shared ? '☑ portal' : '☐ portal'}</button>
       <button type="button" class="mini-menu-act" data-mini-edit="${escapeHtml(n)}" title="Change which lines are in it.">Edit lines</button>
       <button type="button" class="mini-menu-act" data-mini-rename="${escapeHtml(n)}" title="Rename.">Rename</button>
-      <button type="button" class="mini-menu-act is-danger" data-mini-del="${escapeHtml(n)}" title="Delete the mini schedule. The lines themselves are untouched.">Delete</button>
+      <button type="button" class="mini-menu-act is-danger" data-mini-del="${escapeHtml(n)}" title="Delete the mini schedule. The lines themselves are untouched.">Delete</button>`}
     </div>`;
   }).join('');
   menu.innerHTML = `
-    <div class="mini-menu-head">Mini schedules</div>
+    <div class="views-title">${cv ? 'Mini schedules shared with you' : 'Mini schedules'}</div>
     ${active ? `<button type="button" class="mini-menu-all" data-mini-show="">← Back to the whole schedule</button>` : ''}
-    ${rows || `<div class="mini-menu-empty">None yet. Make one and click the lines that belong together — they keep their real row numbers, and nothing moves.</div>`}
-    <button type="button" class="mini-menu-new" id="mini-menu-new">＋ New mini schedule…</button>`;
+    ${rows || (cv ? '' : `<div class="mini-menu-empty">None yet. Make one and click the lines that belong together — they keep their real row numbers, and nothing moves.</div>`)}
+    ${cv ? '' : `<button type="button" class="mini-menu-new" id="mini-menu-new">＋ New mini schedule…</button>`}`;
 }
 
+const MINI_SHARED_KEY = 'mini_shared';
+function miniShared(name, project) {
+  const all = (state.settings && state.settings[MINI_SHARED_KEY]) || {};
+  return !!((all[project || state.filters.project || ''] || {})[name]);
+}
+async function setMiniShared(name, on) {
+  const project = state.filters.project || '';
+  state.settings = state.settings || {};
+  const all = state.settings[MINI_SHARED_KEY] = Object.assign({}, state.settings[MINI_SHARED_KEY] || {});
+  const mine = all[project] = Object.assign({}, all[project] || {});
+  if (on) mine[name] = true; else delete mine[name];
+  try { await api.putSetting(MINI_SHARED_KEY, all); } catch (e) { showToast('Could not save: ' + (e.message || e), { kind: 'error' }); }
+}
 function wireMiniMenu() {
-  const btn = document.getElementById('btn-mini');
   const menu = document.getElementById('mini-menu');
-  if (!btn || !menu || btn._miniWired) return;
-  btn._miniWired = true;
-  const close = () => menu.classList.add('hidden');
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const open = menu.classList.contains('hidden');
-    if (open) { renderMiniMenu(); menu.classList.remove('hidden'); } else close();
-  });
-  document.addEventListener('mousedown', (e) => {
-    if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) close();
-  });
+  if (!menu || menu._miniWired) return;
+  menu._miniWired = true;
+  const close = () => document.getElementById('lists-menu')?.classList.add('hidden');
   menu.addEventListener('click', async (e) => {
+    const share = e.target.closest('[data-mini-share]');
+    if (share) { e.stopPropagation(); await setMiniShared(share.dataset.miniShare, !miniShared(share.dataset.miniShare)); renderMiniMenu(); return; }
     const show = e.target.closest('[data-mini-show]');
     if (show) { close(); setActiveMini(show.dataset.miniShow); return; }
     const edit = e.target.closest('[data-mini-edit]');
@@ -21731,10 +21853,14 @@ const APP_SCALE_DEFAULT = 0.85;  // Dan: "what is 85% right now, be the default"
 // 85%"). Move it from there for this visit; a reload starts over.
 let _appScaleCur = APP_SCALE_DEFAULT;
 function _appScale() { return _appScaleCur; }
-const CHROME_SEL = ['#project-tab-bar', '.schedule-toolbar', '#schedule-project-banner'];
+// Only the tab bar holds its size against the app scale (with the rail).
+// The toolbar and the banner scale WITH the grid under them — one scale on
+// the schedule page, every control the same size (Dan, 10/07).
+const CHROME_SEL = ['#project-tab-bar'];
 function _fitChrome(appZoom) {
   const inv = 1 / appZoom;
   CHROME_SEL.forEach(sel => document.querySelectorAll(sel).forEach(el => { el.style.zoom = String(inv); }));
+  document.querySelectorAll('.schedule-toolbar, #schedule-project-banner').forEach(el => { el.style.zoom = ''; });
   const rail = document.getElementById('app-sidebar');
   if (!rail) return;
   // Measure the CONTENT at rendered scale 1: top of the rail to the bottom
@@ -21782,9 +21908,14 @@ function fitBanner() {
   L.style.zoom = ''; R.style.zoom = '';
   const clear = () => {
     const l = L.getBoundingClientRect(), c = C.getBoundingClientRect(), r = R.getBoundingClientRect();
-    // A zone with nothing in it has no edge to collide with.
-    const lRight = L.children.length ? Math.max(...Array.from(L.children).map(e => e.getBoundingClientRect().right)) : l.left;
-    const rLeft = R.children.length ? Math.min(...Array.from(R.children).map(e => e.getBoundingClientRect().left)) : r.right;
+    // A zone with nothing in it has no edge to collide with. Hidden
+    // children measure at 0,0 — the hidden procurement button was putting
+    // the right zone's edge at the window's left and forcing compact
+    // (10px text on Compress / Views / Documents) on every screen.
+    const vis = (z) => Array.from(z.children).filter(e => e.offsetParent !== null && e.getBoundingClientRect().width > 0);
+    const lk = vis(L), rk = vis(R);
+    const lRight = lk.length ? Math.max(...lk.map(e => e.getBoundingClientRect().right)) : l.left;
+    const rLeft = rk.length ? Math.min(...rk.map(e => e.getBoundingClientRect().left)) : r.right;
     return lRight + GAP <= c.left && c.right + GAP <= rLeft;
   };
   if (clear()) return;
@@ -21792,7 +21923,7 @@ function fitBanner() {
   if (clear()) return;
   // Scale the zones. Room for the zones is the banner minus the name and
   // its air; what they need is what their buttons measure at full size.
-  const width = (z) => Array.from(z.children).reduce((t, e) => t + e.offsetWidth, 0) + 6 * Math.max(0, z.children.length - 1);
+  const width = (z) => { const k = Array.from(z.children).filter(e => e.offsetParent !== null); return k.reduce((t, e) => t + e.offsetWidth, 0) + 6 * Math.max(0, k.length - 1); };
   const need = width(L) + width(R);
   const room = banner.clientWidth - C.offsetWidth - 2 * GAP - 36;
   if (need <= 0 || room <= 0) return;
@@ -26101,18 +26232,19 @@ function isExecMember(member) {
 // whose page (see canChooseWho / showMyWorkSignIn); the page itself never
 // widens to a team or to everyone (Dan: "I get this massive page of
 // everything — that's not what I want").
+// A page is ONE person's work — the rows with their name on them. That
+// includes a PM: their own actions, not every row of every job they run
+// (Dan: "way too many line items"). Who they may LOOK at is canChooseWho.
 function personalScopeMatch(t, member) {
   if (!member) return true;
-  // A PM is not assigned tasks; their work is the jobs they run.
-  if (member.discipline === 'pm') return projectLead(t.project, 'pm') === member.name;
   return t.assignee === member.name;
 }
 
 // A PM or a lead is watching whole projects, so the spine anchors (Receipt
 // of PO, FAT, Ship, SAT) are the most useful rows on the page. For an
 // individual they are noise across a dozen jobs.
-function personalShowsAnchors(member) {
-  return !!member && member.discipline === 'pm';
+function personalShowsAnchors() {
+  return false;   // spine anchors are a job's, not a person's
 }
 
 function personalFilterPass(task, todayISO) {
@@ -26784,6 +26916,16 @@ function clearListModes() {
 function setMyWork(on) {
   state.myWork = !!on;
   try { localStorage.setItem('sdcMyWork', on ? '1' : '0'); } catch (_) {}
+  // Every way out of My work puts the staff view back, not just the ones
+  // that remembered to.
+  if (!on && state._pmSavedView) { try { restorePersonalViewDefaults(); } catch (_) {} }
+  // The person filter is My work's and only My work's. Left behind on a
+  // job it kept every row but the key milestones: 1160 came up as three
+  // lines, All lit, nothing claiming the other 34 (Dan, 10/07).
+  if (!on) {
+    if (state.filters) state.filters.assignee = '';
+    document.body.classList.remove('personal-mode');
+  }
 }
 
 function setPersonalPerson(id) {
@@ -26799,14 +26941,17 @@ function setPersonalPerson(id) {
 function canChooseWho() {
   const authed = memberForSignedInUser();
   if (!authed) return true;      // nothing to enforce — no identity to hold them to
-  return isExecMember(authed) || !!authed.is_lead;   // leadership: anyone; a lead: their team
+  // Leadership: anyone. A PM: anyone on the execution teams. A lead: their team.
+  return isExecMember(authed) || authed.discipline === 'pm' || !!authed.is_lead;
 }
+const EXECUTION_TEAMS = ['mech', 'controls', 'build', 'wire'];
 // The people a signed-in user may open: everyone for leadership and for a
 // browser with no login, their own department for a lead.
 function choosableRoster() {
   const roster = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0);
   const authed = memberForSignedInUser();
   if (!authed || isExecMember(authed)) return roster;
+  if (authed.discipline === 'pm') return roster.filter(m => EXECUTION_TEAMS.includes(m.discipline) || m.id === authed.id);
   if (authed.is_lead) return roster.filter(m => m.discipline === authed.discipline || m.id === authed.id);
   return roster.filter(m => m.id === authed.id);
 }
@@ -26819,7 +26964,8 @@ function showMyWorkSignIn() {
   if (!roster.length) { showAlertDialog({ title: 'My work', message: 'The team list has not loaded yet. Give it a moment and try again.' }); return; }
   const authed = memberForSignedInUser();
   const exec = isExecMember(authed);
-  const lead = !exec && !!(authed && authed.is_lead);
+  const pm = !exec && !!(authed && authed.discipline === 'pm');
+  const lead = !exec && !pm && !!(authed && authed.is_lead);
   const GROUPS = [
     ['pm', 'Project Mgmt'], ['mech', 'Mech Eng'], ['controls', 'Controls Eng'],
     ['build', 'Build'], ['wire', 'Wire'],
@@ -26842,10 +26988,12 @@ function showMyWorkSignIn() {
   overlay.className = 'modal-overlay app-dialog-overlay';
   overlay.innerHTML = `
     <div class="modal-card app-dialog">
-      <div class="modal-head"><h2>👤 ${exec ? 'View anyone' : lead ? 'View your team' : 'My work'}</h2></div>
+      <div class="modal-head"><h2>👤 ${exec ? 'View anyone' : pm ? 'View the execution teams' : lead ? 'View your team' : 'My work'}</h2></div>
       <div class="modal-body">
         <div class="app-dialog-message">${exec
           ? 'You are on the leadership team, so you can open anyone’s page. Their tasks, actions and notes, across every job.'
+          : pm
+            ? 'You run projects, so you can open anyone on the execution teams — mechanical, controls, build and wire — to see who is working on what.'
           : lead
             ? 'You lead this department, so you can open anyone on it. Their tasks, actions and notes, across every job.'
             : 'Who are you? Your page shows every job you are on — tasks, actions and notes.'}</div>
@@ -26904,6 +27052,7 @@ function openMyWork() {
   // name is the failure this tab was built to stop.
   setPersonalPerson(null);
   state.filters.project = '';
+  try { saveProjectTabs(); } catch (_) {}
   state.filters.assignee = '';
   applyPersonalViewDefaults();
   document.body.classList.remove('personal-mode');
@@ -27012,6 +27161,9 @@ function routePersonalMode(personId) {
       // Personal view spans ALL projects for this person — drop the project
       // filter so they see everything on their plate.
       state.filters.project = '';
+      // Remember that: a reload with the last JOB still stored as active
+      // would open the job instead of this page (loadProjectTabs).
+      try { saveProjectTabs(); } catch (_) {}
       // Personal view is most useful as Combined (tasks + actions together).
       if (state.scheduleView) {
         state.scheduleView.actionsMode = 'combined';
@@ -31998,7 +32150,11 @@ function loadScheduleView() {
       sortByStart:   !!saved.sortByStart,
       ganttOnly:     !!saved.ganttOnly,
       criticalPath:  !!saved.criticalPath,
-      criticalOnly:  !!saved.criticalOnly,
+      // Row filters (critical path only, hide complete) are for the visit,
+      // like the Rows chips they light. They are never restored: a filter
+      // that comes back on its own is how a schedule opened with thirty
+      // finished rows gone and nothing on screen saying why (Dan, 10/07).
+      criticalOnly:  false,
       // Default ON when never saved before. Falsey-check would default to
       // OFF on first load, which would surprise users who saw the labels
       // in v3.52 and expect them on after upgrading.
@@ -32039,9 +32195,8 @@ function loadScheduleView() {
       actionsMode: (['schedule', 'combined', 'actions'].includes(saved.actionsMode)
         ? saved.actionsMode
         : 'combined'),
-      // View → Hide completed items. OFF by default — completed tasks stay
-      // visible with the lime outline + hash pattern until the user opts in.
-      hideCompleted: !!saved.hideCompleted,
+      // Rows → Hide complete. Always OFF on open (see criticalOnly above).
+      hideCompleted: false,
       // H view-pill: per-department quoted-vs-scheduled hours on the grid
       // subheaders. OFF by default — opt-in readout.
       showDeptHours: !!saved.showDeptHours,
@@ -32051,6 +32206,11 @@ function loadScheduleView() {
   }
 }
 function saveScheduleView() {
+  // My work's view (flatten, hide completed, …) is a per-visit overlay on
+  // the staff view, never the saved one. Persisting it here was how a
+  // schedule came up with every finished row gone — hide completed had
+  // followed someone out of My work and stuck.
+  if (state.myWork) return;
   try {
     localStorage.setItem(SCHED_VIEW_KEY, JSON.stringify({
       ...state.scheduleView,
@@ -32093,6 +32253,87 @@ function applyScheduleView() {
 // The flatten icon represents the COMBINED flatten + sortByStart toggle —
 // active iff BOTH flags are on (so the icon doesn't look on when only half
 // the linked pair is active, e.g. from settings persisted before v3.58).
+// ── Rows: which rows are in. Chips on the banner under Layout, sized to it.
+// All is the default and lights whenever nothing else is on. Complete shows
+// only finished rows; Hide complete takes them out; they are a pair.
+function rowsFilterActive() {
+  const q = (state.filters && state.filters.quick) || {};
+  const sv = state.scheduleView || {};
+  return !!(q.behind || q.ahead || q.overallocated || q.showCompleted || q.assigned || q.milestones
+    || state.filters.milestoneType || sv.hideCompleted || sv.criticalOnly
+    || (state.filters.project && state.filters.assignee));
+}
+function clearRowFilters() {
+  const q = state.filters.quick || (state.filters.quick = {});
+  Object.keys(q).forEach(k => { q[k] = false; });
+  state.filters.milestoneType = '';
+  state.filters.assignee = '';
+  if (state.scheduleView) { state.scheduleView.hideCompleted = false; state.scheduleView.criticalOnly = false; }
+  saveScheduleView();
+}
+function renderRowsChips() {
+  const el = document.getElementById('banner-rows');
+  if (!el) return;
+  // A person's page has no row filters (My work clears them); the customer
+  // view has none either. The banner shows identity / nothing instead.
+  const show = !!state.filters.project && !state.myWork && !document.body.classList.contains('customer-view');
+  el.classList.toggle('hidden', !show);
+  if (!show) { el.innerHTML = ''; return; }
+  const q = (state.filters && state.filters.quick) || {};
+  const sv = state.scheduleView || {};
+  const chips = [
+    ['all',   'All',            !rowsFilterActive()],
+    ['behind','Behind',         !!q.behind],
+    ['ahead', 'Ahead',          !!q.ahead],
+    ['over',  'Over-allocated', !!q.overallocated],
+    ['done',  'Complete',       !!q.showCompleted],
+    ['hide',  'Hide complete',  !!sv.hideCompleted],
+  ];
+  // Picked in Views, shown here while on. Click turns it off.
+  if (sv.criticalOnly) chips.push(['crit', 'Critical path only', true]);
+  if (milestoneFilterActive()) chips.push(['ms', 'Milestones only', true]);
+  if (q.assigned) chips.push(['asg', 'Assigned only', true]);
+  if (state.filters.assignee) chips.push(['who', 'Only ' + state.filters.assignee, true]);
+  el.innerHTML = chips.map(([k, label, on]) =>
+    `<button type="button" class="view-bracket-icon${on ? ' is-active' : ''}" data-row="${k}">${label}</button>`).join('');
+  el.querySelectorAll('[data-row]').forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.row;
+    const q = state.filters.quick || (state.filters.quick = {});
+    if (k === 'all') clearRowFilters();
+    else if (k === 'behind') q.behind = !q.behind;
+    else if (k === 'ahead') q.ahead = !q.ahead;
+    else if (k === 'over') q.overallocated = !q.overallocated;
+    else if (k === 'done') { q.showCompleted = !q.showCompleted; if (q.showCompleted) state.scheduleView.hideCompleted = false; saveScheduleView(); }
+    else if (k === 'hide') { state.scheduleView.hideCompleted = !state.scheduleView.hideCompleted; if (state.scheduleView.hideCompleted) q.showCompleted = false; saveScheduleView(); }
+    else if (k === 'crit') { state.scheduleView.criticalOnly = false; saveScheduleView(); }
+    else if (k === 'ms') { state.filters.milestoneType = ''; q.milestones = false; }
+    else if (k === 'asg') { q.assigned = false; }
+    else if (k === 'who') { state.filters.assignee = ''; document.body.classList.remove('personal-mode'); }
+    render();
+  }));
+  fitRowsChips();
+}
+// The chips run exactly as wide as the Layout group above them.
+function fitRowsChips() {
+  // The chips are natural size, the same size as every other control. The
+  // Rows bar plus Compress stays inside the grid pane under it: if the pane
+  // is narrower than that, the chip text steps down (12px → 10px) first.
+  const el = document.getElementById('banner-rows');
+  if (!el || el.classList.contains('hidden')) return;
+  el.style.width = ''; el.style.marginLeft = '';
+  const chips = [...el.querySelectorAll('button')];
+  chips.forEach(c => { c.style.fontSize = ''; });
+  const pane = document.getElementById('schedule-grid');
+  const comp = document.getElementById('btn-compress-cols');
+  if (!pane || pane.offsetParent === null) return;
+  const host = el.parentElement || el;
+  const hw = host.getBoundingClientRect().width;
+  const zb = (host.offsetWidth > 0 && hw > 0) ? (hw / host.offsetWidth) : 1;
+  const avail = (pane.getBoundingClientRect().right - el.getBoundingClientRect().left) / zb;
+  const need = () => el.offsetWidth + (comp && comp.offsetParent !== null ? comp.offsetWidth + 10 : 0);
+  let fsz = 11;
+  while (fsz > 9.5 && need() > avail) { fsz -= 0.5; chips.forEach(c => { c.style.fontSize = fsz + 'px'; }); }
+}
 function syncViewPill() {
   const setActive = (id, on) => {
     const el = document.getElementById(id);
@@ -32115,6 +32356,7 @@ function syncViewPill() {
   try { syncEventsButtons(); } catch (_) {}
   try { syncCustomerButtons(); } catch (_) {}
   try { syncListsButton(); } catch (_) {}
+  try { renderRowsChips(); } catch (_) {}
 }
 
 // True when the visible task set spans 2+ distinct machine tags. Drives
@@ -33090,7 +33332,7 @@ function setupSplitDivider() {
       // otherwise a dead strip flashes after the last column until mouseup.
       if (!dividerRaf) {
         dividerRaf = true;
-        requestAnimationFrame(() => { applyColWidths(); dividerRaf = false; });
+        requestAnimationFrame(() => { applyColWidths(); try { alignToolbarToGantt(); fitRowsChips(); } catch (_) {} dividerRaf = false; });
       }
     };
     const onUp = () => {
@@ -33347,6 +33589,7 @@ function _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols, lay
 // are ours (what each person is allocated, quoted-versus-scheduled hours off
 // the Project Release budget, lag and lead).
 const CUSTOMER_TOOLBAR_OFF = [
+  'tb-pm', 'tb-lists', 'banner-rows', 'btn-compress-cols',
   // The column picker goes because the customer presentation already
   // decides the columns; the rest of this row is theirs to use.
   'columns-dropdown',
@@ -33362,7 +33605,7 @@ const CUSTOMER_TOOLBAR_OFF = [
 // time and move INTO the toolbar here, so there is one row of controls rather
 // than a second bar that resembles it. Back-to-portal reads with the other
 // navigation on the left; take-it-with-you reads with zoom on the right.
-const CUSTOMER_TOOLBAR_TAIL = ['btn-customer-view-xls', 'btn-customer-view-print', 'btn-customer-view-exit'];
+const CUSTOMER_TOOLBAR_TAIL = ['btn-customer-view-exit'];
 
 function applyCustomerToolbar(on) {
   const bar = document.querySelector('.schedule-toolbar');
@@ -35331,10 +35574,21 @@ async function init() {
         try { zoomToFit(); } catch (_) {}
         return;
       }
+      if (listsMenu.classList.contains('hidden')) { try { renderViewsMenu(); } catch (_) {} }
       listsMenu.classList.toggle('hidden');
     });
     document.addEventListener('click', () => listsMenu.classList.add('hidden'));
-    listsMenu.querySelectorAll('button').forEach(b => b.addEventListener('click', () => listsMenu.classList.add('hidden')));
+    // Picking a schedule view closes the menu; the live controls (toggles,
+    // the milestone picker, mini-schedule actions) keep it open.
+    listsMenu.querySelectorAll(':scope > button').forEach(b => b.addEventListener('click', () => listsMenu.classList.add('hidden')));
+    listsMenu.querySelector('#views-dynamic')?.addEventListener('click', (e) => e.stopPropagation());
+    listsMenu.querySelector('#mini-menu')?.addEventListener('click', (e) => e.stopPropagation());
+    document.getElementById('btn-build-mode')?.addEventListener('click', () => {
+      clearListModes();
+      try { setActiveMini(''); } catch (_) {}
+      render();
+      try { zoomToFit(); } catch (_) {}
+    });
   }
   const docsBtn = document.getElementById('btn-docs');
   const docsMenu = document.getElementById('docs-menu');
@@ -35351,6 +35605,7 @@ async function init() {
         if (!p) { showToast('Pick a project tab first — documents are per-project.', { kind: 'error' }); return; }
         if (b.dataset.doc === 'release') { if (isSalesView()) openQuoteCompareModal(p); else openProjectReleaseModal(p); }
         else if (b.dataset.doc === 'comm') openCommPlanModal(p);
+        else if (b.dataset.doc === 'job') document.getElementById('schedule-procurement')?.click();
         else if (b.dataset.doc === 'risk') openRiskPlanModal(p);
       });
     });

@@ -17612,8 +17612,10 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
 /* The project name is the one thing on the banner that should read from
    across the room. Bigger, and never shrunk by banner-compact — that mode
    tightens the BUTTONS, which were crowding it, not the name itself. */
-.schedule-project-name-pill { font-size: var(--fs-xl); padding: 4px 20px; }
-.schedule-project-banner.banner-compact .schedule-project-name-pill { font-size: var(--fs-xl); padding: 4px 20px; }
+.schedule-project-name-pill { font-size: 18px; padding: 4px 20px; }
+.schedule-project-banner.banner-compact .schedule-project-name-pill { font-size: 18px; padding: 4px 20px; }
+/* The name lines up with the PM group over the Gantt (alignToolbarToGantt). */
+.banner-center.is-left { transform: none; justify-content: flex-start; }
 
 /* ── Contact details on the Departments board ─────────────────────────────
    Role and email live on each person here — the roster is the directory.
@@ -17890,3 +17892,62 @@ tr.rollup-member td[data-col="name"] { padding-left: 22px; }
 tr.rollup-member td { color: var(--text-muted); }
 .gantt .bar-wrapper.is-rollup .bar { fill-opacity: 0.04; stroke-dasharray: 3 3; stroke-opacity: 0.5; }
 .gantt .bar-wrapper.is-rollup .bar-progress { display: none; }
+
+
+/* ── Toolbar redesign (Oct 2026): one line of labelled groups ─────────────
+   Layout · PM · Timeline · Lists … Scale. Captions ride above each group,
+   centred; the same 20px inset on both edges, toolbar and banner alike. */
+.schedule-toolbar { align-items: flex-end; padding: 18px 20px 6px !important; }
+.schedule-project-banner { padding-left: 20px !important; padding-right: 20px !important; }
+.tb-group { position: relative; display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.tb-group::before {
+  content: attr(data-cap);
+  position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-weight: var(--fw-extrabold, 800); letter-spacing: .12em; text-transform: uppercase;
+  color: #94a3b8; white-space: nowrap; pointer-events: none;
+}
+.tb-scale { justify-content: center; }
+.tb-quiet { opacity: 0.7; }
+.schedule-toolbar .toolbar-divider { align-self: center; }
+
+/* Rows chips on the banner: words, not glyphs; sized by fitRowsChips. */
+.banner-rows { display: inline-flex; flex: 0 0 auto; }
+.banner-rows.hidden { display: none; }
+.banner-rows .view-bracket-icon { min-width: 0; width: auto; flex: 0 0 auto; padding: 0 10px; font-size: var(--fs-md); font-weight: var(--fw-semibold); white-space: nowrap; }
+/* One scale: the icon pills, the chips, the dropdowns, the fits — all 30px
+   tall with 12px text. The project name is the one thing that reads bigger. */
+.view-bracket-icon { font-size: var(--fs-base); }
+/* Two text sizes, deliberately (Dan, 10/07): the controls that pick a view
+   — Grid / Both / Gantt, the dropdowns, Views, Documents, the fits — read
+   at 13px; the Rows chips and Compress, which only trim the grid, at 11px. */
+.schedule-toolbar .seg-btn, .schedule-toolbar .toolbar-toggle-btn, .schedule-toolbar .toolbar-icon-btn,
+.schedule-project-banner .banner-right .toolbar-toggle-btn, .schedule-project-banner .btn-fit { font-size: var(--fs-base); }
+.banner-rows .view-bracket-icon, .schedule-project-banner #btn-compress-cols { font-size: var(--fs-sm); font-weight: var(--fw-semibold); letter-spacing: 0; }
+.schedule-toolbar .seg-btn { padding: 5px 10px; }
+.schedule-toolbar .seg-control { align-self: center; }
+.banner-left { gap: 10px; }
+
+/* Views menu: the schedule views, then the live controls, then the minis. */
+.views-menu { min-width: 300px; padding: 6px; }
+.views-title { font-size: 10px; font-weight: var(--fw-extrabold, 800); letter-spacing: .1em; text-transform: uppercase; color: #94a3b8; padding: 8px 10px 4px; }
+.views-menu > button.is-active { font-weight: var(--fw-bold); color: var(--sdc-primary, #1574c4); }
+.views-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 13px; color: var(--text); cursor: pointer; border-radius: 6px; }
+.views-row:hover { background: #eef5fb; }
+.views-row input { accent-color: var(--sdc-primary, #1574c4); }
+.views-select { display: block; width: calc(100% - 20px); margin: 2px 10px 6px; font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid #c8d5e3; border-radius: 6px; background: #fff; color: var(--text); }
+.views-minis .mini-menu-row { margin: 0 4px; }
+.mini-share.is-on { color: var(--sdc-primary, #1574c4); font-weight: var(--fw-bold); }
+
+/* Rows left out by a filter are announced at the top of the grid. */
+.rows-hidden-count { font-size: 11px; color: #94a3b8; white-space: nowrap; align-self: center; }
+.rows-hidden-count:empty { display: none; }
+body.customer-view .rows-hidden-count { display: none !important; }
+
+/* Customer view: Layout + Timeline, Views + Documents. The rest is ours. */
+body.customer-view #tb-pm, body.customer-view #tb-lists,
+body.customer-view #columns-dropdown, body.customer-view #col-views-dropdown,
+body.customer-view #btn-undo, body.customer-view #btn-redo, body.customer-view #btn-save,
+body.customer-view #banner-rows, body.customer-view #btn-compress-cols,
+body.customer-view #btn-customer-view-xls, body.customer-view #btn-customer-view-print,
+body.customer-view #docs-menu [data-doc="job"] { display: none !important; }
+#schedule-procurement.hidden { display: none !important; }
