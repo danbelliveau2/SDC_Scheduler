@@ -7066,6 +7066,18 @@ function getGanttScroller() {
   return document.querySelector('#gantt-container .gantt-container');
 }
 
+// Fit height (the banner's ↕) is a pose for one zoom at one scale. Any
+// change to either puts the rows back to the height they had before it
+// (Dan, 10/07: 85% came in NOT filling the screen; after a fit, 75% then
+// 85% must look like that again). Returns true when it did something.
+function endFitHeightPose() {
+  if (!state._fitHeightOn) return false;
+  state._fitHeightOn = false;
+  const h = Number(state._preFitRowH) || ROW_H_DEFAULT;
+  state.layout.rowHeight = Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, Math.round(h)));
+  try { applyRowHeight(); saveLayout(); } catch (_) {}
+  return true;
+}
 function setZoom(percent) {
   // Upper bound is the stepper ceiling, EXCEPT when zoom-to-fit has already
   // put us above it - then the current zoom is the ceiling, so the first
@@ -7073,6 +7085,10 @@ function setZoom(percent) {
   const ceiling = Math.max(ZOOM_MAX, state.zoomPercent || 0);
   const next = Math.max(ZOOM_MIN, Math.min(ceiling, percent));
   if (Math.abs(next - state.zoomPercent) < 0.01) return;
+  // Rows fitted to the page go back to their normal height the moment the
+  // zoom changes — the fit was for THAT zoom (Dan, 10/07). The chart is
+  // re-rendered below either way.
+  endFitHeightPose();
 
   // Capture the DATE under the viewport center BEFORE we re-render. We can't
   // just scale pixel positions linearly (the old code did `factor * oldCenterPx`)
@@ -21948,6 +21964,10 @@ function fitBanner() {
 function setAppScale(s) {
   s = Math.round(Math.min(1.5, Math.max(0.5, s)) * 20) / 20;
   _appScaleCur = s;
+  // A new scale is a new screen: rows fitted to the old one go back first.
+  // Clicking the 85% readout while already at 85% lands here too, so it
+  // doubles as the way back to the default look (Dan).
+  endFitHeightPose();
   // Everything that fits itself to the screen fits again at the new scale.
   fitScheduleToolbar();
   try { fitProjectTabRows(); } catch (_) {}
@@ -33575,6 +33595,7 @@ function _launchCustomerExport(selectedIds, anchorCount, fitRows, extraCols, lay
         const theadH  = thead ? thead.offsetHeight : 30;
         const availH  = window.innerHeight - tableTop - footerH - 4;
         const target  = Math.max(ROW_H_MIN, Math.floor((availH - theadH) / bodyRows.length));
+        state._fitHeightOn = false;   // dragged by hand: the fit-height pose is over
         state.layout.rowHeight = target;
         applyRowHeight();
         saveLayout();
@@ -35393,6 +35414,14 @@ async function init() {
     const addBtn = document.getElementById('btn-add');
     const bodyRows = document.querySelectorAll('#tasks-tbody tr');
     if (!grid || !table || bodyRows.length === 0) return;
+    // Fit height is a pose, not a setting: the next zoom change puts the
+    // rows back to what they were (Dan, 10/07). Remember that height —
+    // the one from before the FIRST fit if the button is pressed twice.
+    const preFitH = state._fitHeightOn ? state._preFitRowH : state.layout.rowHeight;
+    // Marked on NOW, so a fit that bails part-way (too many rows for the
+    // screen) still hands the rows back on the next zoom change.
+    state._fitHeightOn = true;
+    state._preFitRowH = preFitH;
     // Reset every scroll position first so measurements are in true
     // viewport coordinates.
     grid.scrollTop = 0;
@@ -35653,8 +35682,9 @@ async function init() {
   // percentage label is updated by setRowHeight via updateRowHeightLabel().
   const rowHUp   = document.getElementById('btn-row-h-up');
   const rowHDown = document.getElementById('btn-row-h-down');
-  if (rowHUp)   rowHUp  .addEventListener('click', () => setRowHeight(state.layout.rowHeight + ROW_H_STEP));
-  if (rowHDown) rowHDown.addEventListener('click', () => setRowHeight(state.layout.rowHeight - ROW_H_STEP));
+  // A chosen height ends the fit-height pose (see btn-zoom-height).
+  if (rowHUp)   rowHUp  .addEventListener('click', () => { state._fitHeightOn = false; setRowHeight(state.layout.rowHeight + ROW_H_STEP); });
+  if (rowHDown) rowHDown.addEventListener('click', () => { state._fitHeightOn = false; setRowHeight(state.layout.rowHeight - ROW_H_STEP); });
 
   // Wheel inside the Gantt = continuous multiplicative zoom (~6% per wheel tick), rAF-throttled.
   // Scroll wheel BACK (toward user / deltaY > 0) zooms IN. Scroll forward zooms OUT.

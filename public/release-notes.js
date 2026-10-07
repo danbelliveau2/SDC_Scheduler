@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.13',
+    date: '2026-10-07',
+    notes: [
+      'Fit height is a pose, not a setting.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Fit height (↕) sizes the rows so the whole schedule fills the screen with no scrolling. The moment you change the zoom or the app scale after that — the stepper, the wheel, − / + on Scale — the rows go back to their normal height. The fit was for that zoom at that scale; a new one starts clean. Clicking the 85% readout puts the default look back, and changing the row height by hand ends the fit the same way.',
+    ],
+  },
+  {
     version: '13.12',
     date: '2026-10-07',
     notes: [
