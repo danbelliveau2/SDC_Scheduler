@@ -23397,6 +23397,17 @@ async function openCommPlanModal(project) {
   });
   // The roster spells it Daniel.
   (plan.leadership || []).forEach(r => { if (r.name === 'Dan Belliveau') r.name = 'Daniel Belliveau'; });
+  // Our people's email and phone come from the roster (Departments →
+  // Contact details). The roster wins over anything typed here (Dan,
+  // 10/07: "make sure to use these phone numbers").
+  ['leadership', 'sdc'].forEach(k => (plan[k] || []).forEach(r => {
+    if (!r.name) return;
+    const m = (state.team || []).find(x => x.name === r.name);
+    if (!m) return;
+    if (m.email) r.email = m.email;
+    const ph = memberPhone(m);
+    if (ph) r.phone = ph;
+  }));
   ['leadership', 'sdc', 'customer'].forEach(k => (plan[k] || []).forEach(r => { r.phone = formatPhone(r.phone); }));
   if (typeof plan.notes !== 'string') plan.notes = '';
 
@@ -23472,6 +23483,13 @@ async function openCommPlanModal(project) {
         : locked ? ro('name', r.name)
         : section !== 'customer' ? pick(section, i, r.name, r.role) : inp(section, i, 'name', r.name, 'Name');
       const emailCell = m ? ro('email', m.email || r.email) : cell('email', r.email, 'name@company.com');
+      // A roster person's phone is the roster's: shown, not typed. Nobody
+      // on the roster with no number reads "No phone number assigned" —
+      // Departments → Contact details is where it gets one.
+      const rosterPhone = m ? memberPhone(m) : '';
+      const phoneCell = !m ? cell('phone', r.phone, '')
+        : rosterPhone ? ro('phone', rosterPhone)
+        : ro('phone', '').replace('<span class="cp-ro"></span>', '<span class="cp-ro cp-ro-empty" title="Add their number on the Departments board (Contact details)">No phone number assigned</span>');
       const levelCell = locked
         ? `<span class="cp-ro cp-ro-level">${escapeHtml(r.level || '—')}</span><textarea hidden data-cp="${section}.${i}.level">${escapeHtml(r.level || '')}</textarea>`
         : levelSel(section, i, r.level);
@@ -23479,7 +23497,7 @@ async function openCommPlanModal(project) {
         <td>${roleCell}</td>
         <td>${nameCell}</td>
         <td>${emailCell}</td>
-        <td>${cell('phone', r.phone, '')}</td>
+        <td>${phoneCell}</td>
         <td>${levelCell}</td>
         <td>${stdText ? ro('when', r.when) : cell('when', r.when, section === 'leadership' ? 'Which issues escalate to them' : 'Which situations go to them')}</td>
       </tr>`;
@@ -23620,7 +23638,7 @@ async function openCommPlanModal(project) {
         const m = byName(sel.value);
         if (row) {
           row.name = sel.value;
-          if (m) { if (m.title) row.role = m.title; if (m.email) row.email = m.email; }
+          if (m) { if (m.title) row.role = m.title; if (m.email) row.email = m.email; const ph = memberPhone(m); if (ph) row.phone = ph; }
         }
         savePlan();
         // Redraw the way the modal already does it — there is no named
@@ -28070,6 +28088,10 @@ function openTeamMemberModal(member) {
           <div class="pr-label">Email</div>
           <input type="email" id="tm-email-input" class="app-dialog-input" value="${escapeHtml(m.email || '')}" placeholder="name@sdcautomation.com" />
         </div>
+        <div class="pr-field">
+          <div class="pr-label">Phone</div>
+          <input type="tel" id="tm-phone-input" class="app-dialog-input" value="${escapeHtml(memberPhone(m))}" placeholder="No phone number" />
+        </div>
         <div class="pr-field tm-checkbox-row">
           <input type="checkbox" id="tm-lead-checkbox" ${m.is_lead ? 'checked' : ''} />
           <label for="tm-lead-checkbox">Department lead</label>
@@ -28107,6 +28129,7 @@ function openTeamMemberModal(member) {
     const discipline = discSelect.value;
     const specialty = specialtyInput.value.trim();
     const email = (overlay.querySelector('#tm-email-input') || {}).value || '';
+    const phone = (overlay.querySelector('#tm-phone-input') || {}).value || '';
     const is_lead = leadCheckbox.checked;
     const btn = overlay.querySelector('#tm-confirm-btn');
     btn.disabled = true;
@@ -28120,6 +28143,10 @@ function openTeamMemberModal(member) {
       showErr(result.error);
       return;
     }
+    try {
+      const pid = isEdit ? m.id : (result && (result.id || (result.member && result.member.id)));
+      if (pid != null) await setMemberPhone(pid, phone);
+    } catch (_) {}
     await loadTeam();
     close();
   });
@@ -28142,7 +28169,7 @@ function renderTeam() {
     tools.className = 'team-contact-tools';
     grid.parentNode.insertBefore(tools, grid);
   }
-  tools.innerHTML = `<button type="button" class="toolbar-toggle-btn ${showContact ? 'is-active' : ''}" id="btn-team-contact" title="Show each person’s role and email on the board. These fill the communication plan.">✉ Contact details</button>`;
+  tools.innerHTML = `<button type="button" class="toolbar-toggle-btn ${showContact ? 'is-active' : ''}" id="btn-team-contact" title="Show each person’s email and phone on the board. These fill the communication plan.">✉ Contact details</button>`;
   tools.querySelector('#btn-team-contact').onclick = () => {
     const on = !grid.classList.contains('show-contact');
     try { localStorage.setItem('sdcTeamContact', on ? '1' : '0'); } catch (_) {}
@@ -28164,7 +28191,7 @@ function renderTeam() {
         ${leadStar}
         <input type="text" class="team-member-name" value="${escapeHtml(m.name)}" data-id="${m.id}" />
         <span class="team-member-position" title="${escapeHtml(m.title || '')}">${escapeHtml(m.title || '')}</span>
-        ${ph ? '' : `<input type="email" class="team-member-field team-member-email" data-field="email" value="${escapeHtml(m.email || '')}" placeholder="email@sdcautomation.com" data-id="${m.id}" title="Where to reach them — fills the communication plan." />`}
+        ${ph ? '' : `<div class="team-member-contact"><input type="email" class="team-member-field team-member-email" data-field="email" value="${escapeHtml(m.email || '')}" placeholder="No email — click to add" data-id="${m.id}" title="Email — fills the communication plan." /><input type="tel" class="team-member-field team-member-phone" data-field="phone" value="${escapeHtml(memberPhone(m))}" placeholder="No phone number — click to add" data-id="${m.id}" title="Phone — fills the communication plan." /></div>`}
         <button type="button" class="team-member-lead-toggle" data-action="toggle-lead" data-id="${m.id}" title="${m.is_lead ? 'Remove as lead' : 'Set as lead'}">${m.is_lead ? '★' : '☆'}</button>
         <button type="button" class="team-member-edit-btn" data-action="edit-member" data-id="${m.id}" title="Edit details">✎</button>
       </li>`;
@@ -28294,6 +28321,7 @@ function renderTeam() {
     input.addEventListener('blur', async () => {
       const v = input.value.trim();
       if (v === original) return;
+      if (field === 'phone') { await setMemberPhone(id, v); input.value = memberPhone({ id }); return; }
       await api.team.update(id, { [field]: v });
       await loadTeam();
     });
@@ -28508,6 +28536,21 @@ function _resTaskStatus(t) {
 }
 
 // ── Project leads (PM / Engineering / Shop / Debug) ─────────────────────────
+// Phones live beside the roster in settings.team_phones { id → "440-991-1053" }.
+// The team table has no phone column and the backend is Abhi's; the
+// setting is shared, so everyone sees the same numbers. Seeded 2026-10-07
+// from the Teams users export (Dan).
+function memberPhone(m) {
+  if (!m) return '';
+  const map = (state.settings && state.settings.team_phones) || {};
+  return formatPhone(map[String(m.id)] || '');
+}
+async function setMemberPhone(id, v) {
+  const map = state.settings.team_phones = state.settings.team_phones || {};
+  const f = formatPhone(v);
+  if (f) map[String(id)] = f; else delete map[String(id)];
+  await api.putSetting('team_phones', map);
+}
 // Stored server-side in the settings key 'project_leads' so everyone sees the
 // same assignments:  { "<project>": { pm, eng, shop, debug } }
 // Set from the schedule footer or the project tab's right-click menu. The

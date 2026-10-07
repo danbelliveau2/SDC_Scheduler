@@ -4,6 +4,20 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.15',
+    date: '2026-10-07',
+    notes: [
+      'Everyone\'s email and phone, on the roster and in the communication plan.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ Contact details now reads name on line 1, email on line 2, phone on line 3. Click either line to edit it; the ✎ dialog has a Phone field too. A person with no number shows No phone number in grey — click it to type one.',
+      '   ▸ Phones and emails were loaded from the Teams users export (55 phones; Josh Belliveau\'s email corrected to joshbelliveau@). Shop-floor and wire staff have no desk line in that export — type theirs in when you have them.',
+      '',
+      'COMMUNICATION PLAN:',
+      '   ▸ Our people\'s email and phone are the roster\'s, always — picking a name, the lead rows and the SDC standard rows all read from Departments → Contact details, in the plan and on the portal. Someone on the roster with no number shows No phone number assigned; add it on the Departments board and it appears everywhere.',
+    ],
+  },
+  {
     version: '13.14',
     date: '2026-10-07',
     notes: [

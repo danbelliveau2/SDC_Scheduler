@@ -17630,8 +17630,10 @@ body.mini-picking #tasks-tbody tr[data-id]:hover td { background: color-mix(in s
   background: transparent; color: var(--text-muted, #64748b);
   padding: 1px 5px; min-width: 0;
 }
-#team-grid.show-contact .team-member-title { flex: 1 1 120px; }
-#team-grid.show-contact .team-member-email { flex: 1 1 160px; }
+/* Name on line 1, email on line 2, phone on line 3 (Dan, 10/07). */
+#team-grid .team-member-contact { display: none; flex: 1 1 100%; flex-direction: column; gap: 1px; padding-left: 26px; }
+#team-grid.show-contact .team-member-contact { display: flex; }
+#team-grid.show-contact .team-member-contact .team-member-field { display: block; width: 100%; max-width: 260px; text-align: left; }
 #team-grid.show-contact .team-member-field:hover,
 #team-grid.show-contact .team-member-field:focus { border-color: var(--border, #e2e8f0); background: #fff; color: var(--text, #1f2937); outline: none; }
 #team-grid.show-contact .team-member { flex-wrap: wrap; }
@@ -17966,3 +17968,6 @@ body.customer-view #tb-machines { display: none !important; }
 .schedule-context-pills .machine-tab.is-done.is-active { border-color: var(--anchor-fill, #befa4f); }
 .schedule-context-pills .machine-done-check { color: #5a9a00; font-weight: var(--fw-extrabold, 800); margin-right: 4px; font-size: var(--fs-sm); }
 .schedule-context-pills .machine-tab.is-done.is-active .machine-done-check { color: var(--anchor-fill, #befa4f); }
+
+/* An empty contact line says so in grey italics, not in a number that looks real. */
+#team-grid.show-contact .team-member-contact .team-member-field::placeholder { color: #a3b1c2; font-style: italic; }

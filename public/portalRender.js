@@ -584,11 +584,14 @@ function _portalCommPlanHtml(projects) {
   const peopleRows = (rows) => rows.map(r => {
     const m = byName(r.name);
     const email = (m && m.email) || r.email || '';
+    // Our people's phone is the roster's (Departments → Contact details).
+    const phone = m ? ((typeof memberPhone === 'function' && memberPhone(m)) || '') : (r.phone || '');
+    const phoneCell = phone ? txt(phone) : (m && r.name) ? '<span class="pcp-t pcp-empty">No phone number assigned</span>' : txt('');
     return `<tr>
       <td>${txt(r.role)}</td>
       <td>${r.name ? txt(r.name) : '<span class="pcp-t pcp-empty">Not assigned yet</span>'}</td>
       <td>${email ? `<a class="pcp-mail" href="mailto:${escapeHtml(email)}">${escapeHtml(email)}</a>` : txt('')}</td>
-      <td>${txt(r.phone)}</td>
+      <td>${phoneCell}</td>
       <td>${txt(r.level, 'pcp-level')}</td>
       <td>${txt(r.when)}</td>
     </tr>`;
