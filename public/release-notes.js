@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.14',
+    date: '2026-10-07',
+    notes: [
+      'Portal: the project name is back where it belongs.',
+      '',
+      'CUSTOMER PORTAL:',
+      '   ▸ Fixed: on a schedule opened from the portal the project name sat half off the left edge of the page. The name lines up with the first toolbar group over the chart — Timeline, when the PM group is hidden for a customer — exactly as it does on the staff side.',
+    ],
+  },
+  {
     version: '13.13',
     date: '2026-10-07',
     notes: [

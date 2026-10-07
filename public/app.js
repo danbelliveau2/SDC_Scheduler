@@ -16257,31 +16257,34 @@ function fitScheduleToolbar() {
 // start a little inside the Gantt's left edge, wherever the divider is
 // (Dan, 10/07). When the grid is too wide for that, they stay put.
 function alignToolbarToGantt() {
-  const pm = document.getElementById('tb-pm');
   const gantt = document.getElementById('schedule-gantt');
   const bar = document.querySelector('.schedule-toolbar');
-  if (!pm || !gantt || !bar) return;
-  pm.style.marginLeft = '';
+  if (!gantt || !bar) return;
+  // The first VISIBLE group of the three. Customer view hides PM, and a
+  // hidden element measures at the window's left — which put the name
+  // off the page in the portal (Dan, 10/07).
+  const groups = ['tb-pm', 'tb-timeline', 'tb-lists'].map(id => document.getElementById(id)).filter(Boolean);
+  groups.forEach(g => { g.style.marginLeft = ''; });
+  const anchor = groups.find(g => g.offsetParent !== null && g.getBoundingClientRect().width > 0);
   // Grid-only (no chart): the groups sit in their natural place and the
   // name goes back to the centre.
-  const centre0 = document.getElementById('schedule-project-center');
-  if (centre0) { centre0.classList.remove('is-left'); centre0.style.left = ''; }
-  if (gantt.offsetParent === null || gantt.getBoundingClientRect().width < 40) return;
+  const centre = document.getElementById('schedule-project-center');
+  if (centre) { centre.classList.remove('is-left'); centre.style.left = ''; }
+  if (!anchor || gantt.offsetParent === null || gantt.getBoundingClientRect().width < 40) return;
   const bw = bar.getBoundingClientRect().width;
   const zb = (bar.offsetWidth > 0 && bw > 0) ? (bw / bar.offsetWidth) : 1;
   const want = gantt.getBoundingClientRect().left + 14 * zb;
-  const dx = (want - pm.getBoundingClientRect().left) / zb;
-  if (dx > 0) pm.style.marginLeft = Math.round(dx) + 'px';
-  // The project name starts on the same line as the PM group above it,
-  // not centred (Dan, 10/07). The centre zone is absolute inside the
-  // banner, so its left is the PM group's left in banner pixels.
-  const centre = document.getElementById('schedule-project-center');
+  const dx = (want - anchor.getBoundingClientRect().left) / zb;
+  if (dx > 0) anchor.style.marginLeft = Math.round(dx) + 'px';
+  // The project name starts on the same line as that group, not centred
+  // (Dan, 10/07). The centre zone is absolute inside the banner, so its
+  // left is the group's left in banner pixels.
   const banner = document.getElementById('schedule-project-banner');
   if (centre && banner) {
     const bz = (banner.offsetWidth > 0) ? (banner.getBoundingClientRect().width / banner.offsetWidth) || 1 : 1;
-    const left = (pm.getBoundingClientRect().left - banner.getBoundingClientRect().left) / bz;
+    const left = (anchor.getBoundingClientRect().left - banner.getBoundingClientRect().left) / bz;
     centre.classList.add('is-left');
-    centre.style.left = Math.round(left) + 'px';
+    centre.style.left = Math.max(0, Math.round(left)) + 'px';
   }
 }
 // Tabs render at natural width so full names read whenever there's room;
