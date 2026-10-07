@@ -17951,3 +17951,18 @@ body.customer-view #banner-rows, body.customer-view #btn-compress-cols,
 body.customer-view #btn-customer-view-xls, body.customer-view #btn-customer-view-print,
 body.customer-view #docs-menu [data-doc="job"] { display: none !important; }
 #schedule-procurement.hidden { display: none !important; }
+
+/* Machines on the toolbar, top right, before Scale. The group caption says
+   what they are, so the inline MACHINES: label goes; the group hides itself
+   when there is nothing to switch between. Customers never see it. */
+.tb-machines { margin-right: 14px; }
+.tb-machines .schedule-context-pills { flex: 0 0 auto; overflow: visible; display: inline-flex; }
+.tb-machines .machine-tab-label { display: none; }
+.tb-machines:has(> .schedule-context-pills[hidden]), .tb-machines:has(> .schedule-context-pills:empty) { display: none; }
+body.customer-view #tb-machines { display: none !important; }
+
+/* A machine past its FAT: lime outline (the finished-bar colour) and a check. */
+.schedule-context-pills .machine-tab.is-done { border: 2px solid var(--anchor-fill, #befa4f); padding: 2px 9px; }
+.schedule-context-pills .machine-tab.is-done.is-active { border-color: var(--anchor-fill, #befa4f); }
+.schedule-context-pills .machine-done-check { color: #5a9a00; font-weight: var(--fw-extrabold, 800); margin-right: 4px; font-size: var(--fs-sm); }
+.schedule-context-pills .machine-tab.is-done.is-active .machine-done-check { color: var(--anchor-fill, #befa4f); }

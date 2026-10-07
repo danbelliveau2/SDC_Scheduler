@@ -4,6 +4,20 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.12',
+    date: '2026-10-07',
+    notes: [
+      'Machines move up to the toolbar. The banner\'s two rows never shift.',
+      '',
+      'TOOLBAR:',
+      '   ▸ The machine pills (All · M1 · M2 …) sit on the toolbar\'s right side, before Scale, under a Machines caption. They used to sit on the banner and pushed the Rows chips and the project name across the screen on multi-machine jobs.',
+      '   ▸ The + Add another machine button is gone — it took more room than the machines did. Right-click any machine pill (or All) → Add another machine.',
+      '   ▸ A machine past its FAT reads as done: when that machine\'s FAT is marked complete, its pill gets the lime outline the finished bars wear and a ✓ before its name. The FAT is the test — not every line checked off.',
+      '   ▸ In the risk schedule the same spot carries the risk groups, captioned Risks.',
+      '   ▸ Customers never see the machine pills.',
+    ],
+  },
+  {
     version: '13.11',
     date: '2026-10-07',
     notes: [

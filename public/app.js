@@ -13549,6 +13549,9 @@ function renderMachineSubTabs() {
   if (legacy) { legacy.hidden = true; legacy.innerHTML = ''; }
   const bar = document.getElementById('schedule-context-pills');
   if (!bar) return;
+  // The toolbar group's caption names what the pills are.
+  const grp = document.getElementById('tb-machines');
+  if (grp) grp.dataset.cap = (state.scheduleView && state.scheduleView.riskMode) ? 'Risks' : 'Machines';
   const activeProject = state.filters.project;
   if (!activeProject || state.view !== 'schedule') { bar.hidden = true; bar.innerHTML = ''; return; }
   // Risk mode puts its own pills in this strip. Same control, same feel as
@@ -13580,13 +13583,17 @@ function renderMachineSubTabs() {
   // All pills look identical so on/off state is obvious. Per-machine
   // colors only show in the grid/Gantt — the sub-tab strip stays neutral
   // (right-click any pill to change its color or delete it).
-  const pillHtml = (label, active, dataAttr) =>
-    `<button type="button" class="machine-tab ${active ? 'is-active' : ''}" ${dataAttr}>${escapeHtml(label)}</button>`;
+  // A machine is done when ITS FAT is marked complete — not when every
+  // line is checked off (Dan, 10/07). Done pills get the lime outline the
+  // finished bars wear, and a check before the name.
+  const projTasks = (state.tasks || []).filter(t => t.project === activeProject);
+  const machineDone = (m) => projTasks.some(t => t.machine === m && inferredAnchorKey(t) === 'fat' && Number(t.progress) >= 100);
+  const pillHtml = (label, active, dataAttr, done) =>
+    `<button type="button" class="machine-tab ${active ? 'is-active' : ''}${done ? ' is-done' : ''}" ${dataAttr}${done ? ' data-done="1"' : ''}>${done ? '<span class="machine-done-check" aria-hidden="true">✓</span>' : ''}${escapeHtml(label)}</button>`;
   bar.innerHTML = `
     <span class="machine-tab-label">Machines:</span>
     ${pillHtml('All', isAllActive, 'data-machine-all="1"')}
-    ${machines.map(m => pillHtml(m, !isAllActive && subsetSet.has(m), `data-machine="${escapeHtml(m)}" title="Click to toggle ${escapeHtml(m)} (right-click for color / delete)"`)).join('')}
-    <button type="button" class="machine-tab-action" id="btn-add-machine" title="Add another machine — clone an existing one and pick which lines to include + which connect to the source.">+ Add another machine</button>
+    ${machines.map(m => pillHtml(m, !isAllActive && subsetSet.has(m), `data-machine="${escapeHtml(m)}" title="${machineDone(m) ? escapeHtml(m) + ' is done — its FAT is complete. ' : ''}Click to toggle ${escapeHtml(m)}. Right-click: color, add lines, add another machine, delete."`, machineDone(m))).join('')}
   `;
   // CRITICAL: clear the `hidden` attribute that earlier render calls set
   // (e.g. when clone mode was active, when the project had no machines,
@@ -13664,6 +13671,12 @@ function wireMachineSubTabButtons() {
           enterMachineCloneMode(others[0] || 'M1', m, { addToExisting: true });
         },
       });
+      // Adding a machine lives here, not as a button: the button took
+      // more room than the machines did (Dan, 10/07).
+      items.push({
+        label: '＋ Add another machine…',
+        onClick: () => openAddMachineDialog(),
+      });
       items.push({ separator: true });
       items.push({
         label: `Delete machine ${m} (all its tasks)`,
@@ -13673,10 +13686,12 @@ function wireMachineSubTabButtons() {
       showContextMenu(e.clientX, e.clientY, items);
     });
   });
-  // + Add another machine — single entry point. Cloning flow.
-  const addBtn = bar.querySelector('#btn-add-machine');
-  if (addBtn) {
-    addBtn.addEventListener('click', () => openAddMachineDialog());
+  // The All pill has the one thing that is not about a single machine.
+  if (allBtn) {
+    allBtn.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(e.clientX, e.clientY, [{ label: '＋ Add another machine…', onClick: () => openAddMachineDialog() }]);
+    });
   }
 }
 
