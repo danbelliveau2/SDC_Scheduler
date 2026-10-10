@@ -30226,6 +30226,12 @@ function setFocusedMember(memberId) {
   renderTeamFocusBanner();
 }
 
+// Teams deep link: opens a 1:1 chat with that person (desktop app if installed,
+// otherwise Teams on the web).
+function teamsChatUrl(email) {
+  return `https://teams.microsoft.com/l/chat/0/0?users=${encodeURIComponent(email)}`;
+}
+
 // v4.64: small strip above the Resources timeline that names the focused
 // person + offers a Clear button. Hidden when no one is focused.
 function renderTeamFocusBanner() {
@@ -30243,6 +30249,9 @@ function renderTeamFocusBanner() {
   const member = (state.team || []).find(m => m.id === id);
   if (!member) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
   const disc = DISCIPLINE_BY_KEY[member.discipline];
+  // The email typed on the person's roster card (team_members.email). No email
+  // → neither the address nor the Teams button is shown.
+  const email = String(member.email || '').trim();
   banner.classList.remove('hidden');
   banner.style.background = disc?.color || '#e2e8f0';
   banner.style.color      = disc?.text  || '#0f172a';
@@ -30250,6 +30259,8 @@ function renderTeamFocusBanner() {
     <span class="team-focus-banner-label">Focused on</span>
     <strong>${escapeHtml(member.name)}</strong>
     ${disc ? `<span class="team-focus-banner-disc">${escapeHtml(disc.label)}</span>` : ''}
+    ${email ? `<span class="team-focus-banner-email">${escapeHtml(email)}</span>
+    <a class="team-focus-banner-teams" href="${escapeHtml(teamsChatUrl(email))}" target="_blank" rel="noopener noreferrer" title="Open a Teams chat with ${escapeHtml(member.name)}">Message on Teams</a>` : ''}
     <button type="button" class="team-focus-banner-clear" title="Show the whole discipline again">× Clear focus</button>
   `;
   banner.querySelector('.team-focus-banner-clear').addEventListener('click', () => {
@@ -32392,6 +32403,9 @@ async function loadTeam() {
   // list, and the Schedule grid's inline-edit dropdown reads state.team at click time
   // anyway — so we just re-render the active view.
   render();
+  // The focus banner shows the focused person's email; it is not part of
+  // render(), so redraw it here or an email edited on their card stays stale.
+  renderTeamFocusBanner();
 }
 
 // ---------- Wiring ----------
