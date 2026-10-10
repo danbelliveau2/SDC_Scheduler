@@ -779,12 +779,97 @@ function predDisplay(predString, maps) {
     const m = s.trim().match(/^(\d+)(.*)$/);
     if (!m) return s.trim().toUpperCase();
     const id = Number(m[1]);
+    // Another job's task wins the look-up: ids are global, lines are not.
+    const _other = (!maps) ? crossPredTask(id) : null;
+    if (_other) {
+      // 🔗1172 15SS +2W — the link, the job, and the line it is on THERE
+      // (Dan, 10/10). Purple in the grid (predDisplayHtml), plain here.
+      const suffix = String(m[2] || '').trim().toUpperCase();
+      const ln = lineInProject(_other.id, _other.project);
+      return '🔗' + jobNumberOf(_other.project) + ' ' + (ln != null ? ln : '?') + (suffix ? suffix.replace(/^(FS|SS|FF|SF)/, '$1') : '');
+    }
     const line = byId[id];
-    // If we don't know the line, render nothing for this entry instead of
-    // "?id" — a question mark in the predecessor column is just noise.
-    if (line == null) return '';
+    if (line == null && !maps) {
+      const t = (state.tasks || []).find(x => x.id === id);
+      if (t && t.project) {
+        const suffix = String(m[2] || '').trim().toUpperCase();
+        const ln = lineInProject(t.id, t.project);
+        return '🔗' + jobNumberOf(t.project) + ' ' + (ln != null ? ln : '?') + suffix;
+      }
+    }
+    if (line == null) {
+      // Not a line on THIS schedule. A task on another job reads as
+      // "↗1163 · Robot" so nobody mistakes it for a line here (Dan, 10/09).
+      // Predecessors store task ids, and ids are global, so the dates
+      // already follow it — the server's cascade reads every task.
+      const other = crossPredTask(id);
+      if (other) {
+        const suffix = String(m[2] || '').trim().toUpperCase();
+        return '↗' + jobNumberOf(other.project) + ' · ' + String(other.name || '').slice(0, 28) + (suffix && suffix !== 'FS' ? ' (' + suffix + ')' : '');
+      }
+      // Unknown id: render nothing rather than "?id".
+      return '';
+    }
     return (line + m[2]).toUpperCase();
   }).filter(Boolean).join(', ');
+}
+// The grid's Pred cell: same text, with the cross-schedule entries in purple.
+function predDisplayHtml(predString) {
+  if (!predString) return '';
+  return String(predString).split(',').map(x => {
+    const raw = x.trim(); if (!raw) return '';
+    const text = predDisplay(raw);
+    if (!text) return '';
+    return text.charAt(0) === '🔗' || text.indexOf('🔗') === 0 ? '<span class="pred-x">' + escapeHtml(text) + '</span>' : escapeHtml(text);
+  }).filter(Boolean).join(', ');
+}
+// A task's canonical line number on ITS OWN schedule (not the one open).
+// Built the same way as this page's numbers, with the filters that could
+// hide rows switched off, and cached until the grid renders again.
+let _otherLineCache = {};
+function lineInProject(taskId, project) {
+  if (!project) return null;
+  if (!_otherLineCache[project]) {
+    const f = state.filters, sv = state.scheduleView || {};
+    const snap = { p: f.project, mw: state.myWork, a: f.assignee, ms: f.machinesSubset, q: f.quick, mt: f.milestoneType, hc: sv.hideCompleted, co: sv.criticalOnly, s: f.search };
+    const map = {};
+    try {
+      f.project = project; state.myWork = false; f.assignee = ''; f.machinesSubset = []; f.quick = {}; f.milestoneType = ''; f.search = '';
+      sv.hideCompleted = false; sv.criticalOnly = false;
+      buildCanonicalTaskOrder().forEach((id, i) => { map[id] = i + 1; });
+    } catch (_) { /* leave the map empty: the cell shows ? */ }
+    finally {
+      f.project = snap.p; state.myWork = snap.mw; f.assignee = snap.a; f.machinesSubset = snap.ms; f.quick = snap.q; f.milestoneType = snap.mt; f.search = snap.s;
+      sv.hideCompleted = snap.hc; sv.criticalOnly = snap.co;
+    }
+    _otherLineCache[project] = map;
+  }
+  const v = _otherLineCache[project][taskId];
+  return v == null ? null : v;
+}
+// Hover text for the Pred cell: the full story behind each entry.
+function predTitle(predString) {
+  if (!predString) return '';
+  return String(predString).split(',').map(x => {
+    const p = parsePredecessor(x.trim()); if (!p) return '';
+    const t = (state.tasks || []).find(y => y.id === p.id); if (!t) return '';
+    const lag = p.lagDays ? ' ' + (p.lagDays > 0 ? '+' : '') + (p.lagDays / 7) + 'w' : '';
+    const where = t.project && t.project !== state.filters.project
+      ? 'Linked to ' + t.project + ', line ' + (lineInProject(t.id, t.project) != null ? lineInProject(t.id, t.project) : '?') + ': '
+      : 'Line ' + (lineByTaskId[t.id] != null ? lineByTaskId[t.id] : '?') + (state.filters.project ? '' : ' (' + jobNumberOf(t.project) + ')') + ': ';
+    return where + (t.name || '') + ' (' + p.type + lag + ')';
+  }).filter(Boolean).join(String.fromCharCode(10));
+}
+// The task a predecessor id points at when it is on a different job.
+function crossPredTask(id) {
+  if (!state.filters.project) return null;   // My work: every line is numbered on this page
+  const t = (state.tasks || []).find(x => x.id === Number(id));
+  return (t && t.project && t.project !== state.filters.project) ? t : null;
+}
+// True when any predecessor of this task lives on another schedule.
+function hasCrossPred(task) {
+  if (!task || !task.predecessors) return false;
+  return String(task.predecessors).split(',').some(s => { const p = parsePredecessor(s.trim()); return p && !!crossPredTask(p.id); });
 }
 function predParse(displayString, maps) {
   const byLine = (maps && maps.byLine) || taskIdByLine;
@@ -1000,6 +1085,7 @@ function updateLineNumbersAndPreds() {
   const canonicalOrder = buildCanonicalTaskOrder();
   lineByTaskId = {};
   taskIdByLine = {};
+  _otherLineCache = {};
   canonicalOrder.forEach((id, i) => {
     const line = i + 1;
     lineByTaskId[id] = line;
@@ -1019,7 +1105,8 @@ function updateLineNumbersAndPreds() {
     const task = state.tasks.find(t => t.id === id);
     const cell = tr.querySelector('td[data-col="pred"]');
     if (cell && !cell.classList.contains('editing')) {
-      cell.textContent = predDisplay(task?.predecessors || '');
+      cell.innerHTML = predDisplayHtml(task?.predecessors || '');
+      cell.title = predTitle(task?.predecessors || '');
     }
   });
   // v4.39: fill in duration-link badges with a 🔗 emoji + source line.
@@ -1707,6 +1794,9 @@ function taskScheduleDelta(task) {
   // Sales schedules: nothing is sold yet, so there's no commitment to be
   // ahead of or behind — no drift chips anywhere.
   if (isSalesProjectTask(task)) return 0;
+  // Controls-list items are reviews and kickoffs tied to the build, not a
+  // commitment of their own — no ahead / behind chip (Dan, 10/10).
+  if (task.phase_group === CONTROLS_GROUP) return 0;
   // Effective progress, not stored progress — Backlog rows auto-derive their
   // % from the calendar (stored progress stays 0), which made a long-finished
   // Backlog scream "-40w" while its pill showed a green ✓.
@@ -1885,10 +1975,14 @@ function applyFilters(tasks, opts = {}) {
       && (!subs || subs.has(t.sub_department)));
   }
   if (!skipViewMode) {
+    // My work: a line on the controls list or in a risk plan is still that
+    // person's work. Aman's Emulate3D lines live on the controls list and
+    // his page came up empty (Dan, 10/09). The brackets gate the BUILD view.
+    const _personalPage = isPersonalMode();
     const over = riskOverlaySubDepts();
-    tasks = tasks.filter(t => t.phase_group !== RISK_GROUP || over.has(t.sub_department));
+    tasks = tasks.filter(t => t.phase_group !== RISK_GROUP || _personalPage || over.has(t.sub_department));
     // Controls items stay off the build until the C toggle asks for them.
-    if (!(state.scheduleView && state.scheduleView.controlsOverlay)) {
+    if (!(state.scheduleView && state.scheduleView.controlsOverlay) && !_personalPage) {
       tasks = tasks.filter(t => t.phase_group !== CONTROLS_GROUP);
     }
     // Standard events are the same deal: off the build until S is on.
@@ -1985,7 +2079,7 @@ function applyFilters(tasks, opts = {}) {
     // Scope filter. What counts as "mine" depends on the role — see
     // personalScopeMatch. Still strict: reassign a task away and it leaves
     // the view on the next render, no stale leftovers.
-    if (personal && _me) {
+    if (personal && (_me || myWorkDept())) {
       if (!personalScopeMatch(t, _me) && !inferredAnchorKey(t)) return false;
     } else if (assignee && t.assignee !== assignee && !inferredAnchorKey(t)) {
       return false;
@@ -2241,13 +2335,16 @@ function cellHtml(t, key) {
       // tell duplicates apart at a glance. Suppressed when the project
       // has only one machine (no point) OR when the M view-pill is off.
       // Color comes from getMachineColor (user-pickable, SDC palette).
+      // My work: the job number rides on the Gantt bar (renderGantt), not
+      // in the grid — Dan, 10/07. Right-click a row → Open <job>.
+      const projChip = '';
       let machineChip = '';
       if (t.machine && shouldShowMachineVisuals()) {
         const c = getMachineColor(t.project, t.machine);
         const style = `background:${c.hex};color:${c.text};border-color:${c.hex};`;
         machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="${style}">${escapeHtml(t.machine)}</span> `;
       }
-      return `<td class="${classes.join(' ')}" data-col="name">${allocPre}${dashSep}<span class="name-cell-main">${machineChip}${escapeHtml(t.name)}${driftChip}${releaseIconHtml(t)}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
+      return `<td class="${classes.join(' ')}" data-col="name" title="${escapeHtml(t.name || '')}">${allocPre}${dashSep}<span class="name-cell-main">${projChip}${machineChip}${escapeHtml(t.name)}${driftChip}${releaseIconHtml(t)}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
@@ -2800,7 +2897,9 @@ function renderTable() {
   // Personal mode (signed in as a specific person on Actions tab) forces
   // flatten — there's no point in showing dept / sub-dept headers when the
   // whole view is one person who typically lives in one department.
-  const flattenEffective = state.scheduleView.flatten || isPersonalMode();
+  // The ≡ toggle decides, My work included (Dan, 10/10): on, one list by
+  // date; off, the phases and departments come back.
+  const flattenEffective = !!state.scheduleView.flatten;
   const flatBySection = {};
   if (flattenEffective) {
     for (const t of filtered) {
@@ -3015,7 +3114,20 @@ function renderTable() {
       || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
     for (const t of rows) html += inferredAnchorKey(t) ? anchorRowHtml(t) : rowHtml(t, 1);
   }
-  for (const group of ((riskMode || controlsMode || eventsMode || customerMode || mFilter || _miniFlat) ? [] : HIERARCHY)) {
+  // A whole department on My work: one person after the other.
+  const _deptScope = (!riskMode && !controlsMode && !eventsMode && !customerMode && !mFilter && !_miniFlat) ? myWorkDept() : '';
+  if (_deptScope) html += _personSectionRowsHtml(filtered, collapsedGroups, _deptScope);
+  // A person's page, flattened: their work in date order and nothing else —
+  // no phases, no list section (Dan, 10/10: 'there is no phases').
+  const _personFlat = !_deptScope && !riskMode && !controlsMode && !eventsMode && !customerMode && !mFilter && !_miniFlat && isPersonalMode() && flattenEffective;
+  if (_personFlat) {
+    const rows = filtered.filter(t => !inferredAnchorKey(t)).slice().sort((a, b) =>
+      String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
+      || String(a.project || '').localeCompare(String(b.project || ''))
+      || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+    for (const t of rows) html += rowHtml(t, 1);
+  }
+  for (const group of ((riskMode || controlsMode || eventsMode || customerMode || mFilter || _miniFlat || _deptScope || _personFlat) ? [] : HIERARCHY)) {
     const gPath = groupPath(group.key);
     const gCollapsed = collapsedGroups.has(gPath);
     // In a mini schedule most sections have nothing in them; a column of
@@ -3220,7 +3332,26 @@ function renderTable() {
     }
     if (n) n.textContent = text;
   } catch (_) {}
+  if (state.myWork && !myWorkDept() && isPersonalMode()) {
+    // Lines from the controls list and the risk plans — real work, just not
+    // in a build section — close the page in date order. (Flattened, they
+    // are already in the one list above.)
+    const _side = new Set([CONTROLS_GROUP, RISK_GROUP]);
+    const _extra = _personFlat ? [] : filtered.filter(t => _side.has(t.phase_group) && !String(t.id).startsWith('grp:'))
+      .sort((a, b) => String(a.start_date || '\uffff').localeCompare(String(b.start_date || '\uffff')) || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+    if (_extra.length) {
+      const _p = groupPath('who-side');
+      html += headerRowHtml(0, 'CONTROLS LIST & RISK PLAN ITEMS', _p, collapsedGroups.has(_p), { 'section-key': 'who-side' });
+      if (!collapsedGroups.has(_p)) for (const t of _extra) html += rowHtml(t, 1);
+    }
+    const _me = signedInMember();
+    if (_me && !isPlaceholder(_me.name)) html += _whoAllocRowHtml(_me);
+  }
   tbody.innerHTML = html;
+  tbody.querySelectorAll('[data-open-project]').forEach(ch => ch.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openScheduleFromMyWork(ch.dataset.openProject);
+  }));
   if (state.layout) applyColumnVisibility();
 
   updateLineNumbersAndPreds();
@@ -3774,6 +3905,10 @@ function enterCellEdit(td, taskId, col) {
     const single = preds.length === 1 ? parsePredecessor(preds[0]) : null;
     if (single) { single.lagBd = _predLagBd(preds[0]); _confirmPredChange(td, task, single, col); return; }
     // Multiple predecessors — ambiguous which lag to shift; fall through to a normal edit.
+  }
+  if (col === 'pred' && hasCrossPred(task)) {
+    showToast('This line is linked to a task on another schedule. Right-click the row to change or remove the link.', { kind: 'info' });
+    return;
   }
   const original = currentCellValue(task, col);
   const input = createEditInput(col, original, task);
@@ -4581,6 +4716,180 @@ function isTaskInCollapsedGroup(task) {
 // bar, solid — over the faint full span, so the gaps between stints show.
 // A roll-up line shows its stints as real bars, side by side on the one
 // row — the library's single span is kept only as a hairline between them.
+// My work, whole department: a thick dotted rule across the chart where
+// each person's block begins — the same break the grid draws (Dan, 10/07).
+// Bars sit at their grid row's offsetTop (alignGanttToGrid), so the header
+// row's offsetTop is the rule's y. Plain <line>s, appended last.
+function drawPersonDividers() {
+  try {
+    const svg = document.querySelector('#gantt-container svg');
+    if (!svg) return;
+    svg.querySelectorAll('.sdc-who-divider').forEach(e => e.remove());
+    if (!myWorkDept()) return;
+    const rows = document.querySelectorAll('#tasks-tbody tr.who-row');
+    if (rows.length < 2) return;
+    const NS = 'http://www.w3.org/2000/svg';
+    const W = Math.max(+svg.getAttribute('width') || 0, svg.getBoundingClientRect().width || 0, 4000);
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('class', 'sdc-who-divider');
+    rows.forEach((tr, i) => {
+      if (i === 0) return;
+      const y = tr.offsetTop;
+      const line = document.createElementNS(NS, 'line');
+      line.setAttribute('x1', '0'); line.setAttribute('x2', String(W));
+      line.setAttribute('y1', String(y)); line.setAttribute('y2', String(y));
+      line.setAttribute('stroke', '#94a3b8'); line.setAttribute('stroke-width', '3');
+      line.setAttribute('stroke-dasharray', '2 7'); line.setAttribute('stroke-linecap', 'round');
+      g.appendChild(line);
+    });
+    svg.appendChild(g);
+  } catch (_) { /* cosmetic — the chain must continue */ }
+}
+// Red spans where a person is booked past 100%, drawn at their Allocation
+// row's height — the same spans the Departments timeline shows. Plain
+// <rect> + <text> (inline font, see the SVG text rule), appended last.
+function drawPersonAllocStrips() {
+  try {
+    const svg = document.querySelector('#gantt-container svg');
+    if (!svg) return;
+    svg.querySelectorAll('.sdc-who-alloc').forEach(e => e.remove());
+    if (!state.myWork || !state.gantt || !state.gantt.gantt_start) return;
+    const rows = document.querySelectorAll('#tasks-tbody tr.who-alloc-row');
+    if (!rows.length) return;
+    const g0 = state.gantt;
+    const cw = g0.options.column_width;
+    const mode = g0.options.view_mode || 'Week';
+    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+    const pxPerDay = cw / step;
+    const dateOf = (d) => new Date(_ALLOC_EPOCH.getTime() + d * 86400000).toISOString().slice(0, 10);
+    const NS = 'http://www.w3.org/2000/svg';
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('class', 'sdc-who-alloc');
+    const H = 10;
+    // Readable, not tiny (Dan, 10/08): the Allocation row is tall enough
+    // for a label line over the band. Each overlap is written once at the
+    // milestone-label size — "10/12 – 10/16 · 170%" — centred over its
+    // span. Labels that would collide step down to a second line; a third
+    // collision keeps the span (hover for its dates) and drops the text.
+    const FS = 11, CH = 6.3;                       // px per character at 11px bold
+    rows.forEach(tr => {
+      const name = tr.dataset.whoAlloc;
+      const { over } = personAllocSegments(name);
+      const top = tr.offsetTop, rh = tr.offsetHeight;
+      const y = top + rh - H - 3;                   // the band sits at the bottom
+      const lanes = [top + 12, top + 24].filter(ly => ly < y - 1);
+      const laneRight = lanes.map(() => -Infinity);
+      over.forEach(seg => {
+        const x1 = workDayOffset(dateOf(seg.startDay), g0.gantt_start) * pxPerDay;
+        const x2 = (workDayOffset(dateOf(seg.endDay), g0.gantt_start) + 1) * pxPerDay;
+        const w = x2 - x1;
+        if (!(w > 0.5) || !Number.isFinite(x1)) return;
+        const overBy = Math.min(200, Math.max(0, seg.total - 100));
+        const light = 70 - (overBy / 200) * 32;
+        const dA = _allocShort(dateOf(seg.startDay)), dB = _allocShort(dateOf(seg.endDay));
+        const full = fmtDate(dateOf(seg.startDay)) + (seg.startDay === seg.endDay ? '' : ' – ' + fmtDate(dateOf(seg.endDay)));
+        const rect = document.createElementNS(NS, 'rect');
+        rect.setAttribute('x', String(x1)); rect.setAttribute('y', String(y));
+        rect.setAttribute('width', String(w)); rect.setAttribute('height', String(H));
+        rect.setAttribute('rx', '2'); rect.setAttribute('fill', 'hsl(0 74% ' + light + '%)');
+        const tip = document.createElementNS(NS, 'title');
+        tip.textContent = 'OVER-ALLOCATED — ' + seg.total + '% · ' + full;
+        rect.appendChild(tip);
+        g.appendChild(rect);
+        const str = (seg.startDay === seg.endDay ? dA : dA + ' – ' + dB) + ' · ' + seg.total + '%';
+        const tw = str.length * CH;
+        const cx = x1 + w / 2;
+        const left = cx - tw / 2, right = cx + tw / 2;
+        const li = lanes.findIndex((ly, i) => left > laneRight[i] + 8);
+        if (li < 0) return;                        // no room on either line
+        laneRight[li] = right;
+        const t = document.createElementNS(NS, 'text');
+        t.setAttribute('x', String(cx)); t.setAttribute('y', String(lanes[li]));
+        t.setAttribute('text-anchor', 'middle'); t.setAttribute('fill', '#9f1239');
+        t.style.fontFamily = 'sans-serif'; t.style.fontSize = FS + 'px'; t.style.fontWeight = '700';
+        t.setAttribute('paint-order', 'stroke'); t.setAttribute('stroke', 'rgba(255,255,255,0.92)');
+        t.setAttribute('stroke-width', '3'); t.setAttribute('stroke-linejoin', 'round');
+        t.textContent = str;
+        const tt = document.createElementNS(NS, 'title'); tt.textContent = full + ' · ' + seg.total + '%';
+        t.appendChild(tt);
+        g.appendChild(t);
+        // A thin tick from the label down to its span, so a label that is
+        // wider than a one-day span still points at the right place.
+        const tick = document.createElementNS(NS, 'line');
+        tick.setAttribute('x1', String(cx)); tick.setAttribute('x2', String(cx));
+        tick.setAttribute('y1', String(lanes[li] + 2)); tick.setAttribute('y2', String(y));
+        tick.setAttribute('stroke', '#9f1239'); tick.setAttribute('stroke-width', '1'); tick.setAttribute('stroke-dasharray', '2 2');
+        g.appendChild(tick);
+      });
+    });
+    svg.appendChild(g);
+  } catch (_) { /* cosmetic — the chain must continue */ }
+}
+function renderAllocCards() {
+  try {
+    const pane = document.getElementById('schedule-gantt');
+    if (!pane) return;
+    pane.querySelectorAll('.alloc-card').forEach(e => e.remove());
+    const sv = state.scheduleView || {};
+    if (!sv.showOverlaps || sv.riskMode) return;
+    if (document.body.classList.contains('customer-view') && !document.body.classList.contains('portal-partner')) return;
+    const svg = document.querySelector('#gantt-container svg');
+    if (!svg || pane.offsetParent === null) return;
+    // Screen px → the pane's own px (the app scale), THEN add the row's
+    // offsetTop, which is already in the pane's px. Mixing the two put the
+    // card further down the page the lower the person sat (Dan, 10/08).
+    const pz = (pane.offsetWidth > 0) ? (pane.getBoundingClientRect().width / pane.offsetWidth) || 1 : 1;
+    const svgTop = (svg.getBoundingClientRect().top - pane.getBoundingClientRect().top) / pz + pane.scrollTop;
+    const fmtRange = (seg) => {
+      const a = _allocDate(seg.startDay), b = _allocDate(seg.endDay);
+      return a === b ? _allocShort(a) : _allocShort(a) + ' – ' + _allocShort(b);
+    };
+    const rowsHtml = (over) => over.map(seg => '<button type="button" class="alloc-card-row" data-goto-date="' + _allocDate(seg.startDay) + '" title="Click to scroll the chart there">'
+      + '<span class="alloc-card-when">' + escapeHtml(fmtRange(seg)) + '</span>'
+      + '<span class="alloc-card-pct" style="background:' + _allocColor(seg.total) + '">' + seg.total + '%</span></button>').join('');
+    const mount = (card) => {
+      card.querySelectorAll('[data-goto-date]').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); scrollGanttToDate(b.dataset.gotoDate); }));
+      pane.appendChild(card);
+    };
+    if (state.myWork) {
+      // One card per person, pinned at the top right of their block: a
+      // little below the rule that separates them from the person above.
+      const rows = document.querySelectorAll('#tasks-tbody tr.who-alloc-row');
+      rows.forEach(ar => {
+        const name = ar.dataset.whoAlloc;
+        const { over, peak } = personAllocSegments(name);
+        if (!over.length) return;
+        const head = document.querySelector('#tasks-tbody tr.who-row[data-who="' + CSS.escape(name) + '"]');
+        // A single person's page has no header row: the card still has to
+        // clear the pinned date axis at the top of the chart (Dan, 10/10).
+        const axisH = (document.querySelector('#tasks-table thead') || {}).offsetHeight || 60;
+        const blockTop = head ? head.offsetTop : axisH;
+        const avail = ar.offsetTop - blockTop - 12;
+        if (avail < 30) return;
+        const card = document.createElement('div');
+        card.className = 'alloc-card';
+        card.style.top = Math.round(svgTop + blockTop + 8) + 'px';
+        card.style.maxHeight = Math.round(avail) + 'px';
+        card.innerHTML = '<div class="alloc-card-head">' + escapeHtml(name) + ' <span>' + over.length + ' overlap' + (over.length === 1 ? '' : 's') + ' · peak ' + peak + '%</span></div>' + rowsHtml(over);
+        mount(card);
+      });
+      return;
+    }
+    // A job: one card, the people on it who are booked past 100% anywhere.
+    const project = state.filters.project;
+    if (!project) return;
+    const names = [...new Set((state.tasks || []).filter(t => t.project === project && t.assignee && !isPlaceholder(t.assignee)).map(t => t.assignee))].sort();
+    const blocks = names.map(n => ({ n, ...personAllocSegments(n) })).filter(x => x.over.length);
+    const card = document.createElement('div');
+    card.className = 'alloc-card alloc-card-job';
+    const stats = document.getElementById('project-stats-popup');
+    const below = stats ? (stats.offsetTop + stats.offsetHeight + 8) : 68;
+    card.style.top = below + 'px';
+    card.innerHTML = '<div class="alloc-card-head">Overlaps <span>' + (blocks.length ? blocks.length + (blocks.length === 1 ? ' person' : ' people') + ' past 100%' : 'nobody on this job is past 100%') + '</span></div>'
+      + blocks.map(x => '<div class="alloc-card-who">' + escapeHtml(x.n) + ' <span>peak ' + x.peak + '%</span></div>' + rowsHtml(x.over)).join('');
+    mount(card);
+  } catch (_) { /* cosmetic — the chain must continue */ }
+}
 function drawRollupSegments() {
   try {
     const svg = document.querySelector('#gantt-container svg');
@@ -4771,7 +5080,8 @@ function renderGantt() {
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
       id: String(t.id),
-      name: t.name,
+      // My work spans every job: the bar says which one (1160 · HMI).
+      name: (state.myWork && t.project) ? (jobNumberOf(t.project) + ' · ' + t.name) : t.name,
       start: t.start_date,
       end: t.end_date,
       // Backlog rows: progress derived from today's position; everything
@@ -4905,6 +5215,9 @@ function renderGantt() {
   try { fixChainLabels(); } catch (_) {}
   try { drawMachineBorders(); } catch (_) {}
   try { drawRollupSegments(); } catch (_) {}
+  try { drawPersonDividers(); } catch (_) {}
+  try { drawPersonAllocStrips(); } catch (_) {}
+  try { renderAllocCards(); } catch (_) {}
   try { pinGanttDateAxis(); } catch (_) {}   // re-pin dates at the current scroll
   try { renderProjectStatsPopup(); } catch (_) {}
   // Montserrat loads async and is wider than the fallback — if labels were
@@ -5863,11 +6176,26 @@ function renderProjectStatsPopup() {
   // In risk mode this box is about a project spine that is not on screen,
   // and it floats over the chart. Take it down.
   const _sv = state.scheduleView || {};
+  const _restore = split.querySelector('#project-stats-restore');
   if (_sv.riskMode || _sv.showProjectStats === false) {
     const gone = split.querySelector('#project-stats-popup');
     if (gone) gone.remove();
+    // Hidden by right-click, it comes back from the same corner: a small
+    // pill where the card was (Dan, 10/08: "some small button in the top
+    // right"). Not in risk mode, My work or the customer view.
+    const want = _sv.showProjectStats === false && !_sv.riskMode && !!state.filters.project && !state.myWork
+      && !document.body.classList.contains('customer-view');
+    if (want && !_restore) {
+      const pill = document.createElement('button');
+      pill.type = 'button'; pill.id = 'project-stats-restore'; pill.className = 'project-stats-restore';
+      pill.title = 'Show the summary card';
+      pill.textContent = '▸ Summary';
+      pill.addEventListener('click', () => { state.scheduleView.showProjectStats = true; saveScheduleView(); render(); });
+      split.appendChild(pill);
+    } else if (!want && _restore) _restore.remove();
     return;
   }
+  if (_restore) _restore.remove();
   let popup = split.querySelector('#project-stats-popup');
   const project = state.filters.project;
   if (!project) {
@@ -5882,7 +6210,7 @@ function renderProjectStatsPopup() {
       e.preventDefault();
       showContextMenu(e.clientX, e.clientY, [{ label: 'Hide the summary card', onClick: () => {
         state.scheduleView.showProjectStats = false; saveScheduleView(); render();
-        showToast('Summary card hidden. Views ▾ brings it back.', { kind: 'info' });
+        showToast('Summary card hidden. The ▸ Summary pill in that corner brings it back.', { kind: 'info' });
       } }]);
     });
     split.appendChild(popup);
@@ -6987,6 +7315,11 @@ function alignGanttToGrid() {
   // clipBarLabels/drawBarMeta — the label cascade owns final positions, so
   // fixing them here was too early and got overridden.)
 
+  // The person rules follow the rows they were measured from: redraw them
+  // whenever the bars are re-aligned to the grid.
+  try { drawPersonDividers(); } catch (_) {}
+  try { drawPersonAllocStrips(); } catch (_) {}
+  try { renderAllocCards(); } catch (_) {}
   // Clear any old custom stripes — keep the gantt background plain white.
   const oldStripes = ganttSvg.querySelector('.sdc-row-stripes');
   if (oldStripes) oldStripes.remove();
@@ -7566,7 +7899,9 @@ function clipBarLabels() {
     const fontSize = Math.max(8, Math.min(12, barH - 2));
     label.style.fontSize = fontSize + 'px';
 
-    const fullText = task.name || '';
+    // My work: the bar names the job too (1160 · HMI). task may be the
+    // grid's record (has .project) or frappe's (already prefixed, no .project).
+    const fullText = ((state.myWork && task.project) ? (jobNumberOf(task.project) + ' · ') : '') + (task.name || '');
     // Measure unconstrained.
     label.textContent = fullText;
     label.classList.remove('bar-label-outside');
@@ -7926,6 +8261,9 @@ function drawCustomArrows() {
 
   // Clean any previous frappe-gantt arrows and our group from prior renders.
   svg.querySelectorAll(':scope > .arrow').forEach(el => el.remove());
+  // My work: one person's (or one team's) lines across many jobs. The
+  // predecessor arrows would tie unrelated jobs together — none drawn (Dan, 10/08).
+  if (state.myWork) { svg.querySelectorAll('.sdc-arrows').forEach(g => g.remove()); return; }
   let group = svg.querySelector('.sdc-arrows');
   if (group) group.remove();
   group = document.createElementNS(SVG_NS, 'g');
@@ -8502,8 +8840,12 @@ function isTemplateProject(p) {
 // Fixed list of workspaces for v4.7. Order here is also the display order in
 // the picker. Adding a new workspace just means dropping its name into this
 // array — assignments live in state.projectWorkspaces keyed by project name.
-const WORKSPACES = ['Active', 'Sales', 'On Hold', 'Closed'];
+const WORKSPACES = ['Active', 'Sales', 'Test', 'On Hold', 'Closed'];
 const DEFAULT_WORKSPACE = 'Active';
+// What a workspace is called on screen. Test schedules are sandboxes — a
+// new PM learning the tool, a what-if — and never count as work (Dan, 10/07).
+const WS_LABEL = { Active: 'Active Projects', Test: 'Test schedules' };
+function wsLabel(ws) { return WS_LABEL[ws] || ws; }
 
 // Sales (pre-quote) and On Hold (paused — e.g. 1152) projects are excluded
 // from every WORK view: resource timeline, Departments rollups, Invoicing,
@@ -8511,7 +8853,7 @@ const DEFAULT_WORKSPACE = 'Active';
 // schedules stay fully editable. Right-click a project → "Move to On Hold".
 function projectWorkOff(p) {
   const ws = projectWorkspace(p);
-  return ws === 'Sales' || ws === 'On Hold';
+  return ws === 'Sales' || ws === 'On Hold' || ws === 'Test';
 }
 
 // Get the workspace a project belongs to. Falls back to the default for any
@@ -8605,6 +8947,15 @@ function syncBaselineButtons() {
   const btn = document.getElementById('btn-view-baseline');
   if (!btn) return;
   const project = state.filters.project;
+  // My work spans jobs: the button is a plain show / hide for the overlay.
+  if (isPersonalMode()) {
+    btn.classList.toggle('is-active', !!state.showBaseline);
+    btn.disabled = false;
+    btn.title = state.showBaseline
+      ? 'Baseline overlay is ON — dashed plan-of-record outlines and ahead / behind chips. Click to hide.'
+      : 'Baseline overlay — show the dashed plan-of-record outlines and ahead / behind chips on this page. Click to show.';
+    return;
+  }
   const has = projectHasBaseline(project);
   btn.classList.toggle('is-active', !!state.showBaseline && has);
   btn.disabled = !project;
@@ -10934,7 +11285,7 @@ function renderShopPartsPage() {
   const openCount = all.filter(r => !r.part_complete).length;
 
   const teamNames = (state.team || []).filter(m => !isPlaceholder(m.name) && m.active !== 0).map(m => m.name).sort();
-  const projOpts = Array.isArray(state.tasks) ? uniqueValues('project').filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales') : [];
+  const projOpts = Array.isArray(state.tasks) ? uniqueValues('project').filter(p => !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p))) : [];
   const jobOpts = [...new Set([...all.map(r => r.job).filter(Boolean), ...projOpts])].sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
   const pmVals  = [...new Set(all.map(r => r.pm).filter(Boolean))].sort();
   const engVals = [...new Set(all.map(r => r.engineer).filter(Boolean))].sort();
@@ -12222,7 +12573,7 @@ function renderProjectsPage() {
     const isExpanded = !!expanded[ws];
     // New schedules start in Active or Sales — On Hold/Closed are places
     // projects get MOVED to (right-click → Move to …), not born in.
-    const allowsNew = ws === 'Active' || ws === 'Sales';
+    const allowsNew = ws === 'Active' || ws === 'Sales' || ws === 'Test';
     const wsTmpl = templates.length === 1 ? templates[0]
       : templates.find(t => !/duplicate/i.test(t)) || templates[0] || null;
     // Generic label — the dialog itself offers this workspace's templates,
@@ -12233,7 +12584,7 @@ function renderProjectsPage() {
       <div class="projects-workspace projects-ws-${ws.toLowerCase()}${isExpanded ? ' is-expanded' : ''}" data-workspace="${escapeHtml(ws)}">
         <button class="projects-workspace-head" data-action="toggle" type="button">
           <span class="projects-workspace-caret">▶</span>
-          <span class="projects-workspace-name">${escapeHtml(ws)}</span>
+          <span class="projects-workspace-name">${escapeHtml(wsLabel(ws))}</span>
           <span class="projects-workspace-count">${displayCount}</span>
         </button>
         <div class="projects-workspace-body">
@@ -13186,7 +13537,8 @@ function renderProjectTabs() {
     // Only schedules opened FROM the portal, for the customer it is on. The
     // tabs you have open in the app stay yours; the portal starts with none.
     const cust = _portalCustomer || '';
-    visibleList = visibleList.filter(p => p && _portalOpened.has(p) && projectCustomerName(p) === cust);
+    const partnerTab = (p) => p === '' && state.myWork && !!portalPartner(cust) && myWorkDept() === portalPartner(cust).dept;
+    visibleList = visibleList.filter(p => partnerTab(p) || (p && _portalOpened.has(p) && projectCustomerName(p) === cust));
   }
   const templatesFirst = [
     visibleList.find(p => p === ''),
@@ -13208,7 +13560,9 @@ function renderProjectTabs() {
       && (isAll ? !!state.myWork : (!isPersonalMode() && (state.filters.project || '') === p));
     const isTemplate = isTemplateProject(p);
     const _mwMember = isAll ? signedInMember() : null;
+    const _mwDept = isAll ? myWorkDept() : '';
     const label = !isAll ? p
+      : (_mwDept && deptViewInfo(_mwDept)) ? '👤 ' + deptViewInfo(_mwDept).label
       : _mwMember ? '👤 ' + _mwMember.name
       : '👤 My work';
     // All-projects pseudo-tab has no close button (it's a special permanent
@@ -13418,7 +13772,9 @@ function renderProjectTabs() {
       // rather than letting an empty grid look like a broken page.
       const _whoNow = (state.myWork && _actionsPageState && _actionsPageState.personId != null)
         ? (state.team || []).find(m => m.id === _actionsPageState.personId) : null;
-      const pillText = state.myWork ? ('👤 ' + (_whoNow ? _whoNow.name : 'My work')) : 'All projects';
+      const _deptNow = state.myWork ? myWorkDept() : '';
+      const _deptLabel = _deptNow && deptViewInfo(_deptNow) ? deptViewInfo(_deptNow).label : '';
+      const pillText = state.myWork ? ('👤 ' + (_deptLabel || (_whoNow ? _whoNow.name : 'My work'))) : 'All projects';
       banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(pillText)}</span>`;
       const leftZone = document.querySelector('.banner-left');
       let extra = document.getElementById('banner-left-extra');
@@ -13436,8 +13792,8 @@ function renderProjectTabs() {
       const who = (state.myWork && _actionsPageState && _actionsPageState.personId != null)
         ? (state.team || []).find(m => m.id === _actionsPageState.personId) : null;
       const signInHtml = !state.myWork ? ''
-        : who
-          ? `<span class="banner-signin-who">${isExecMember(memberForSignedInUser()) && !isExecMember(who) ? 'Viewing' : 'Signed in as'} <b>${escapeHtml(who.name)}</b></span>
+        : (who || _deptLabel)
+          ? `<span class="banner-signin-who">${_deptLabel ? 'Viewing' : (isExecMember(memberForSignedInUser()) && !isExecMember(who) ? 'Viewing' : 'Signed in as')} <b>${escapeHtml(_deptLabel || who.name)}</b></span>
              ${canChooseWho() ? '<button type="button" class="toolbar-toggle-btn" id="btn-my-work-switch" title="Open someone else’s page.">Switch person</button>' : ''}
              <button type="button" class="toolbar-toggle-btn" id="btn-my-work-signout" title="Sign out — My work goes blank until someone signs in">× Sign out</button>
              <button type="button" class="toolbar-toggle-btn${rollupOn() ? ' is-active' : ''}" id="btn-my-work-rollup" title="Roll repeats up: the same task on the same job, one after another, reads as one line — click it to open the stints.">⊟ Roll up repeats</button>`
@@ -13871,9 +14227,14 @@ function handleJoinPickClick(e) {
   const pick = state.tasks.find(x => x.id === Number(tr.dataset.id));
   const head = state.tasks.find(x => x.id === jp.headId);
   if (!pick || !head || pick.id === head.id) return true;
-  if (pick.is_milestone || inferredAnchorKey(pick) || pick.is_action || pick.join_prev
-      || pick.project !== head.project || (pick.machine || '') !== (head.machine || '')) {
-    showToast('That line can\'t be joined — pick a regular task on the same machine.', { kind: 'info' });
+  // Same job and the same person (or no one yet) — that is the whole rule
+  // (Dan, 10/10). A different machine is fine; a milestone or an anchor is
+  // not a bar to join.
+  const samePerson = !head.assignee || !pick.assignee || head.assignee === pick.assignee;
+  if (pick.is_milestone || inferredAnchorKey(pick) || pick.is_action || pick.join_prev || pick.project !== head.project || !samePerson) {
+    showToast(!samePerson
+      ? `"${pick.name}" is ${pick.assignee}'s line — join lines that belong to the same person.`
+      : 'Pick a regular task on this job to join — not a milestone or a key date.', { kind: 'info' });
     return true;
   }
   (async () => {
@@ -13905,7 +14266,8 @@ function renderMachineCloneBanner() {
   if (!el) return;
   const cm = state.cloneMode;
   if (!cm) {
-    // The banner element is shared with join-pick mode — keep its banner up.
+    // The banner element is shared with join-pick and predecessor-pick modes.
+    if (state.xpredPick) { renderXpredPickBanner(); return; }
     if (state.joinPick) { renderJoinPickBanner(); return; }
     el.hidden = true; el.innerHTML = ''; return;
   }
@@ -14318,10 +14680,10 @@ function showProjectTabMenu(x, y, project) {
   }
   for (const ws of WORKSPACES.filter(w => w !== curWs)) {
     items.push({
-      label: `📁 Move to ${ws === 'Active' ? 'Active Projects' : ws}`,
+      label: `📁 Move to ${wsLabel(ws)}`,
       onClick: () => {
         setProjectWorkspace(project, ws);
-        showToast(`${project} moved to ${ws === 'Active' ? 'Active Projects' : ws}`, { kind: 'success' });
+        showToast(`${project} moved to ${wsLabel(ws)}`, { kind: 'success' });
         if (state.view === 'projects') renderProjectsPage();
       },
     });
@@ -16281,10 +16643,32 @@ function alignToolbarToGantt() {
   // left is the group's left in banner pixels.
   const banner = document.getElementById('schedule-project-banner');
   if (centre && banner) {
-    const bz = (banner.offsetWidth > 0) ? (banner.getBoundingClientRect().width / banner.offsetWidth) || 1 : 1;
-    const left = (anchor.getBoundingClientRect().left - banner.getBoundingClientRect().left) / bz;
-    centre.classList.add('is-left');
-    centre.style.left = Math.max(0, Math.round(left)) + 'px';
+    const GAP = 12;
+    const vis = (z) => Array.from(z.children).filter(e => e.offsetParent !== null && e.getBoundingClientRect().width > 0);
+    const Lz = banner.querySelector('.banner-left');
+    const Rz = banner.querySelector('.banner-right');
+    // Nothing sits under the name (Dan). On My work the banner's left side
+    // — chips, Compress, who is signed in, Switch, Sign out, Roll up — can
+    // run past the PM group, so the name steps right to clear it.
+    const place = () => {
+      const bz = (banner.offsetWidth > 0) ? (banner.getBoundingClientRect().width / banner.offsetWidth) || 1 : 1;
+      const bl = banner.getBoundingClientRect().left;
+      const lk = Lz ? vis(Lz) : [];
+      const lRight = lk.length ? Math.max(...lk.map(e => e.getBoundingClientRect().right)) : -Infinity;
+      const want = Math.max(anchor.getBoundingClientRect().left, lRight + GAP);
+      centre.classList.add('is-left');
+      centre.style.left = Math.max(0, Math.round((want - bl) / bz)) + 'px';
+    };
+    // Measure the zones at full size first; fitBanner may have shrunk them
+    // against a name that is about to move.
+    banner.classList.remove('banner-compact');
+    if (Lz) Lz.style.zoom = ''; if (Rz) Rz.style.zoom = '';
+    place();
+    // If that pushes the name into the right-hand buttons, tighten the
+    // zones the usual way (fitBanner) and place it again.
+    const rk = Rz ? vis(Rz) : [];
+    const rLeft = rk.length ? Math.min(...rk.map(e => e.getBoundingClientRect().left)) : Infinity;
+    if (centre.getBoundingClientRect().right + GAP > rLeft) { try { fitBanner(); } catch (_) {} place(); }
   }
 }
 // Tabs render at natural width so full names read whenever there's room;
@@ -17593,6 +17977,91 @@ async function moveOutOfControlsList(id) {
 }
 
 
+// My work, whole department: a header per person (leads first, the
+// placeholder — unassigned work — last), their open lines under it in date
+// order. Collapses like any section.
+function _personSectionRowsHtml(filtered, collapsedGroups, key) {
+  const cols = state.layout.columnOrder.length;
+  const members = deptMembers(key);
+  const byName = new Map(members.map(m => [m.name, []]));
+  filtered.forEach(t => { if (byName.has(t.assignee)) byName.get(t.assignee).push(t); });
+  const cmp = (a, b) => String(a.start_date || '\uffff').localeCompare(String(b.start_date || '\uffff'))
+    || String(a.project || '').localeCompare(String(b.project || ''))
+    || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0);
+  let html = '';
+  // A group that spans departments (ALTEN) reads department by department:
+  // a section header, then its people. One department: no header.
+  const discOrder = DISCIPLINES.map(d => d.key);
+  const discs = [...new Set(members.map(m => m.discipline))].sort((a, b) => discOrder.indexOf(a) - discOrder.indexOf(b));
+  const ordered = discs.length > 1 ? discs.flatMap(d => members.filter(m => m.discipline === d)) : members;
+  let lastDisc = null;
+  for (const m of ordered) {
+    if (discs.length > 1 && m.discipline !== lastDisc) {
+      lastDisc = m.discipline;
+      const d = DISCIPLINE_BY_KEY[m.discipline];
+      const dpath = groupPath('who-dept', null, m.discipline);
+      html += headerRowHtml(0, (d ? d.label : m.discipline).toUpperCase(), dpath, collapsedGroups.has(dpath), { 'section-key': 'who-dept-' + m.discipline });
+    }
+    if (discs.length > 1 && collapsedGroups.has(groupPath('who-dept', null, m.discipline))) continue;
+    const rows = (byName.get(m.name) || []).sort(cmp);
+    const ph = isPlaceholder(m.name);
+    if (ph && !rows.length) continue;   // no unassigned work: no empty bucket
+    const path = groupPath('who', null, 'p' + m.id);
+    const collapsed = collapsedGroups.has(path);
+    const label = (ph ? 'Unassigned · ' + m.name : m.name) + (m.is_lead ? ' ★' : '');
+    html += `<tr class="group-header level-0 who-row${collapsed ? ' collapsed' : ''}${ph ? ' is-unassigned' : ''}" data-path="${escapeHtml(path)}" data-section-key="who-${m.id}" data-who="${escapeHtml(m.name)}">
+      <td colspan="${cols}"><span class="group-caret">${collapsed ? '▸' : '▾'}</span><span class="who-pill">👤 ${escapeHtml(label)}</span><span class="who-count">${rows.length} ${rows.length === 1 ? 'line' : 'lines'}</span></td>
+    </tr>`;
+    if (collapsed) continue;
+    if (!rows.length) html += `<tr class="who-empty-row"><td colspan="${cols}"><span class="risk-mode-hint">Nothing open.</span></td></tr>`;
+    for (const t of rows) html += rowHtml(t, 1);
+    // The allocation banner closes each real person's block (Dan, 10/07:
+    // "the allocation matters here"). A placeholder has no capacity.
+    if (!ph) html += _whoAllocRowHtml(m);
+  }
+  return html;
+}
+// A person's load over time, the Departments-timeline way: every dated,
+// unfinished line of theirs on a real job, summed per calendar day. Days
+// are counted from a fixed epoch so the Gantt can turn them back into dates.
+const _ALLOC_EPOCH = new Date('2020-01-06T00:00:00Z');   // a Monday
+function personAllocSegments(name) {
+  const tasks = (state.tasks || []).filter(t =>
+    t.assignee === name && t.start_date && t.end_date && !t.is_milestone &&
+    !isTemplateProject(t.project) && !projectWorkOff(t.project) &&
+    (Number(t.progress) || 0) < 100);
+  const segs = computeLoadSegments(tasks, _ALLOC_EPOCH);
+  const over = segs.filter(x => x.total > 100);
+  const peak = over.length ? Math.max(...over.map(x => x.total)) : 0;
+  return { segs, over, peak };
+}
+// The grid row that carries the strip: one per person, under their lines.
+// The Gantt paints the red spans at this row's height (drawPersonAllocStrips).
+const _allocExpanded = new Set();   // people whose chip list is fully open
+const ALLOC_CHIPS_SHOWN = 8;
+function _allocDate(d) { return new Date(_ALLOC_EPOCH.getTime() + d * 86400000).toISOString().slice(0, 10); }
+function _allocShort(iso) { return fmtDate(iso).replace(/\/\d\d$/, ''); }
+function _allocColor(total) { const over = Math.min(200, Math.max(0, total - 100)); return 'hsl(0 74% ' + (70 - (over / 200) * 32) + '%)'; }
+function _whoAllocRowHtml(m) {
+  const cols = state.layout.columnOrder.length;
+  const { over, peak } = personAllocSegments(m.name);
+  const n = over.length;
+  const note = n ? `${n} overlap${n === 1 ? '' : 's'} · peak ${peak}%` : 'no overlaps';
+  return `<tr class="who-alloc-row${n ? ' is-over' : ''}" data-who-alloc="${escapeHtml(m.name)}">
+    <td colspan="${cols}"><span class="who-alloc-label">Allocation</span><span class="who-alloc-note">${escapeHtml(note)}</span></td>
+  </tr>`;
+}
+// Scroll the chart so this date sits in the middle of the view.
+function scrollGanttToDate(dateStr) {
+  const g = state.gantt; const sc = getGanttScroller();
+  if (!g || !g.gantt_start || !sc || !dateStr) return;
+  const cw = g.options.column_width; const mode = g.options.view_mode || 'Week';
+  const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+  const x = workDayOffset(dateStr, g.gantt_start) * (cw / step);
+  // Plain assignment: scrollTo({behavior:'smooth'}) is a no-op on this scroller.
+  sc.scrollLeft = Math.max(0, x - sc.clientWidth / 2);
+  try { pinGanttDateAxis(); } catch (_) {}
+}
 function _controlsSectionRowsHtml(filtered, collapsedGroups, opts) {
   const project = state.filters.project || '';
   const cols = state.layout.columnOrder.length;
@@ -18555,6 +19024,81 @@ let _portalProjects = [];
 const _portalOpen = new Set();
 const _portalFinLoading = new Set();   // projects whose financials are in flight
 
+// Partners on the portal: not a customer with jobs, a contractor whose
+// people are on ours. Their page lists every assignment of every member,
+// so ALTEN can see their team's deadlines from a shared link (Dan, 10/08).
+const PORTAL_PARTNERS = [{ name: 'ALTEN', dept: 'alten' }];
+function portalPartner(name) { return PORTAL_PARTNERS.find(p => p.name === name) || null; }
+let _portalPartnerStay = false;   // true after Back: show the landing, do not reopen
+// The partner's schedule: the department view (by department, then by
+// person) in the customer view, with the portal's own toolbar. The same
+// page Dan sees for a department on My work — Dan, 10/08.
+function portalOpenPartnerSchedule(partner) {
+  state._portalReturn = _portalCustomer || null;
+  _portalPartnerStay = true;
+  if (!state.openProjects.includes('')) state.openProjects.unshift('');
+  state.showFinancials = false;
+  state.showBaseline = false;
+  if (state.scheduleView) { state.scheduleView.riskMode = false; state.scheduleView.showMachineColors = false; }
+  document.body.classList.add('portal-mode');
+  document.body.classList.add('portal-schedule');
+  document.body.classList.add('portal-partner');
+  routePersonalDept(partner.dept);
+  try { enterCustomerView(); } catch (_) {}
+}
+function portalPartnerBody(partner) {
+  const members = deptMembers(partner.dept);
+  const discOrder = DISCIPLINES.map(d => d.key);
+  const discs = [...new Set(members.map(m => m.discipline))].sort((a, b) => discOrder.indexOf(a) - discOrder.indexOf(b));
+  const groups = discs.map(k => {
+    const d = DISCIPLINE_BY_KEY[k];
+    const names = members.filter(m => m.discipline === k).map(m => escapeHtml(m.name)).join(', ');
+    return `<div class="portal-partner-dept"><b>${escapeHtml(d ? d.label : k)}</b> ${names}</div>`;
+  }).join('');
+  return `<main class="portal-partner">
+    <p class="portal-note portal-partner-intro">The ${escapeHtml(partner.name)} team's schedule: every open assignment on SDC jobs, by department and by person, on the same chart SDC plans on.</p>
+    <p><button type="button" class="portal-docbtn" data-portal-partner-open="${escapeHtml(partner.name)}">Open the ${escapeHtml(partner.name)} schedule →</button></p>
+    ${groups || '<p class="portal-note">No one is in this group yet.</p>'}
+  </main>`;
+}
+function _portalPartnerBodyUnused(partner) {
+  const today = new Date().toISOString().slice(0, 10);
+  const members = deptMembers(partner.dept);
+  const cols = [
+    { key: 'task',   label: 'Task',     w: 240, min: 160 },
+    { key: 'job',    label: 'Job',      w: 260, min: 160 },
+    { key: 'start',  label: 'Start',    w: 90,  min: 80 },
+    { key: 'finish', label: 'Finish',   w: 90,  min: 80 },
+    { key: 'pct',    label: 'Done',     w: 60,  min: 56 },
+    { key: 'state',  label: 'Status',   w: 100, min: 90 },
+  ];
+  const txt = (v, cls) => `<span class="pcp-t${cls ? ' ' + cls : ''}">${escapeHtml(v || '—')}</span>`;
+  const STATE = { complete: 'Complete', behind: 'Behind', running: 'In progress', notStarted: 'Not started' };
+  const blocks = members.map(m => {
+    const rows = (state.tasks || []).filter(t => t.assignee === m.name && t.start_date && t.end_date
+        && !isTemplateProject(t.project) && !projectWorkOff(t.project) && (Number(t.progress) || 0) < 100)
+      .sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)) || String(a.project).localeCompare(String(b.project)));
+    const body = rows.map(t => {
+      const st = _portalRowState(t, today);
+      return `<tr class="prow-${st}">
+        <td>${txt(t.name)}</td><td>${txt(t.project)}</td>
+        <td>${txt(portalDate(t.start_date))}</td><td>${txt(portalDate(t.end_date))}</td>
+        <td>${txt((Number(t.progress) || 0) + '%')}</td><td>${txt(STATE[st] || st, 'pstate-' + st)}</td>
+      </tr>`;
+    }).join('');
+    const grid = rows.length
+      ? _portalGridHtml('partner-' + m.id, cols, body, 'pcp', 'task').replace(/<div class="pg-tools">[\s\S]*?<\/div>\s*/, '')
+      : '<p class="portal-note">Nothing open.</p>';
+    return `<section class="pcp-block portal-partner-block">
+      <h2 class="portal-partner-name">${escapeHtml(m.name)} <span>${rows.length} open line${rows.length === 1 ? '' : 's'}${m.title ? ' · ' + escapeHtml(m.title) : ''}</span></h2>
+      ${grid}
+    </section>`;
+  }).join('');
+  return `<main class="portal-partner">
+    <p class="portal-note portal-partner-intro">Every open assignment for the ${escapeHtml(partner.name)} team on SDC jobs, in start-date order. Finish is the date SDC needs it by.</p>
+    ${blocks || '<p class="portal-note">No one is in this group yet.</p>'}
+  </main>`;
+}
 function portalCustomerList() {
   const counts = {};
   // CONFIRMED only. The name parser guesses a customer out of the project
@@ -18567,7 +19111,9 @@ function portalCustomerList() {
     if (!c) return;
     counts[c] = (counts[c] || 0) + 1;
   });
-  return Object.keys(counts).sort((a, b) => a.localeCompare(b)).map(c => ({ name: c, n: counts[c] }));
+  const list = Object.keys(counts).sort((a, b) => a.localeCompare(b)).map(c => ({ name: c, n: counts[c] }));
+  PORTAL_PARTNERS.forEach(p => { if (deptMembers(p.dept).length) list.push({ name: p.name, n: 0, partner: true }); });
+  return list;
 }
 
 // A machine is a deliverable with its own FAT. Projects with no machine
@@ -18680,9 +19226,13 @@ function renderPortal() {
 
 
   const isSdc = _portalCustomer === PORTAL_SDC;
-  const pickerItems = [{ name: PORTAL_SDC }].concat(customers).map(c =>
-    `<button type="button" class="pdash-picker-item portal-cust-item${c.name === cust ? ' is-on' : ''}"
-      data-portal-pick="${escapeHtml(c.name)}">${escapeHtml(c.name)}${c.n ? `<span class="portal-cust-n">${c.n}</span>` : ''}</button>`).join('');
+  const pickItem = (c) => `<button type="button" class="pdash-picker-item portal-cust-item${c.name === cust ? ' is-on' : ''}"
+      data-portal-pick="${escapeHtml(c.name)}">${escapeHtml(c.name)}${c.n ? `<span class="portal-cust-n">${c.n}</span>` : ''}</button>`;
+  // SDC and the partners up top, a rule, then the customers (Dan, 10/08).
+  const partners = customers.filter(c => c.partner), plainCustomers = customers.filter(c => !c.partner);
+  const pickerItems = [{ name: PORTAL_SDC }].concat(partners).map(pickItem).join('')
+    + (partners.length && plainCustomers.length ? '<div class="portal-pick-rule"></div>' : '')
+    + plainCustomers.map(pickItem).join('');
 
   // One linear band: mark, then the customer picker AS the headline, then the
   // two numbers. The earlier version stacked a title over a subtitle with the
@@ -18713,7 +19263,7 @@ function renderPortal() {
         </div>
         <div class="app-scale-ctl portal-scale" title="App scale — size the page to this screen.">
           <button type="button" data-scale="minus" title="Scale the page down">−</button>
-          <button type="button" data-scale="pct" title="Click to reset to the default (85%)">${Math.round(_appScale() * 100)}%</button>
+          <button type="button" data-scale="pct" title="Click for your default scale">${Math.round(_appScale() * 100)}%</button>
           <button type="button" data-scale="plus" title="Scale the page up">+</button>
         </div>
 
@@ -19075,6 +19625,10 @@ function portalOpenSchedule(project, machine) {
 function portalBackFromSchedule() {
   try { exitCustomerView(); } catch (_) {}
   document.body.classList.remove('portal-schedule');
+  document.body.classList.remove('portal-partner');
+  // A partner's schedule is My work underneath; leaving it ends that.
+  if (state.myWork) { try { setMyWork(false); } catch (_) {} }
+  _portalPartnerStay = true;
   const back = state._portalReturn;
   state._portalReturn = null;
   if (back) _portalCustomer = back;
@@ -19084,7 +19638,7 @@ function portalBackFromSchedule() {
 function _wirePortal(root) {
   root.querySelectorAll('[data-scale]').forEach(b => b.addEventListener('click', () => {
     const k = b.dataset.scale;
-    setAppScale(k === 'minus' ? _appScale() - 0.10 : k === 'plus' ? _appScale() + 0.10 : APP_SCALE_DEFAULT);
+    setAppScale(k === 'minus' ? _appScale() - 0.05 : k === 'plus' ? _appScale() + 0.05 : appScaleDefault());
   }));
   // Pick a project: the page becomes that project. Pick it again to step
   // back out to all of them.
@@ -19194,12 +19748,25 @@ function _wirePortal(root) {
         e.stopPropagation();
         _portalCustomer = b.dataset.portalPick;
         _portalProjects = []; _portalMachine = null; _portalCleared = false;
+        _portalPartnerStay = false;
         state._portalPickerOpen = false;
         renderPortal();
       });
     });
   }
 
+  // A partner's page: the header stays, the customer body goes.
+  const _partner = portalPartner(_portalCustomer);
+  if (_partner) {
+    Array.from(root.children).forEach(c => { if (!c.classList.contains('portal-head')) c.remove(); });
+    root.insertAdjacentHTML('beforeend', portalPartnerBody(_partner));
+    const meta = root.querySelector('.portal-bar-meta');
+    const n = deptMembers(_partner.dept).length;
+    if (meta) meta.textContent = n + (n === 1 ? ' person' : ' people');
+    root.querySelectorAll('[data-portal-partner-open]').forEach(b => b.addEventListener('click', () => portalOpenPartnerSchedule(_partner)));
+    // Picked (or deep-linked): straight to the schedule. Back lands here.
+    if (!_portalPartnerStay) { portalOpenPartnerSchedule(_partner); return; }
+  }
   root.querySelectorAll('[data-prisk]').forEach(b => {
     b.addEventListener('click', () => {
       const id = b.dataset.prisk;
@@ -20161,7 +20728,7 @@ function renderPersonalNotes(el) {
   if (!member) { el.style.display = 'none'; return; }
   el.style.display = '';
   const projects = uniqueValues('project')
-    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales');
+    .filter(p => !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p)));
   const missing = projects.filter(p => !state.projectNotes[p]);
   if (missing.length) {
     el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes for you</span><span class="notes-count">loading…</span></div>`;
@@ -21256,6 +21823,132 @@ async function deleteTaskById(id) {
 // Right-click on a group header → "Add task here" creates a task directly in that
 // section (including phase-group level for cross-cutting tasks like Perform FAT).
 // Right-click on a task row → "Move to section…" or "Delete task".
+// Pick a task on another schedule as this line's predecessor. The list is
+// the assignee's work on every other job (their personal schedule, minus
+// this job), in date order; no assignee → everyone's dated lines elsewhere.
+// FS by default; the type and lag can be changed afterwards the usual way.
+// Pick a predecessor on another schedule BY CLICKING IT on the person's
+// own My work page (Dan, 10/09: "open the My Work portal, click a line,
+// click the relationship"). The page is the real one — grid, chart, every
+// job — with a banner across the top; click a line, choose FS / SS / FF /
+// SF, say the lag, and you are back on the schedule you came from.
+function enterCrossPredPick(task) {
+  const who = (task.assignee || '').trim();
+  const member = who ? (state.team || []).find(m => m.name === who && !isPlaceholder(m.name)) : null;
+  if (!member) {
+    showToast(who ? `${who} is not on the roster, so there is no page to pick from. Assign the line to someone on the Departments board first.`
+                  : 'Assign this line to someone first — the predecessor is picked from their page.', { kind: 'info' });
+    return;
+  }
+  state.xpredPick = { taskId: task.id, taskName: task.name || 'this line', project: task.project, who: member.name };
+  document.body.classList.add('xpred-pick-mode');
+  setMyWork(true);
+  setPersonalPerson(member.id);
+  routePersonalMode(member.id);
+  // My work hides finished lines by default; a predecessor can be one.
+  if (state.scheduleView) state.scheduleView.hideCompleted = false;
+  render();
+}
+function exitCrossPredPick(goBack) {
+  const xp = state.xpredPick;
+  state.xpredPick = null;
+  document.body.classList.remove('xpred-pick-mode');
+  document.getElementById('xpred-pop')?.remove();
+  if (goBack && xp && xp.project) openScheduleFromMyWork(xp.project);
+  else render();
+}
+// A small floating pill over the chart, not a banner (Dan, 10/10). It
+// shares nothing with the clone strip; render() calls this through
+// renderMachineCloneBanner, which keeps the strip hidden meanwhile.
+function renderXpredPickBanner() {
+  const strip = document.getElementById('machine-clone-banner');
+  if (strip) { strip.hidden = true; strip.innerHTML = ''; }
+  const host = document.getElementById('schedule-split') || document.body;
+  let pop = document.getElementById('xpred-pop');
+  const xp = state.xpredPick;
+  if (!xp) { if (pop) pop.remove(); return; }
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'xpred-pop';
+    pop.className = 'xpred-pop';
+    pop.innerHTML = `
+      <div class="xpred-pop-title">↗ Predecessor for <b></b> <span class="xpred-pop-job"></span></div>
+      <div class="xpred-pop-row">
+        <input type="text" id="xp-input" class="app-dialog-input" placeholder="Line number here, e.g. 23FS +1w" autocomplete="off" />
+        <button type="button" class="btn-primary" id="xp-link">Link</button>
+        <button type="button" class="btn-ghost" id="xp-cancel">Cancel</button>
+      </div>
+      <div class="xpred-pop-hint">Type a line number from this page with the type and lag as in the grid — 23, 23SS +2w, 23FF -1w. Clicking a line drops its number in.</div>`;
+    host.appendChild(pop);
+    const inp = pop.querySelector('#xp-input');
+    inp.addEventListener('input', () => { if (state.xpredPick) state.xpredPick.typed = inp.value; });
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitCrossPred(); } });
+    pop.querySelector('#xp-link').addEventListener('click', commitCrossPred);
+    pop.querySelector('#xp-cancel').addEventListener('click', () => exitCrossPredPick(true));
+    setTimeout(() => inp.focus(), 0);
+  }
+  pop.querySelector('.xpred-pop-title b').textContent = xp.taskName;
+  pop.querySelector('.xpred-pop-job').textContent = '(' + jobNumberOf(xp.project) + ' · ' + xp.who + "'s page)";
+  const inp = pop.querySelector('#xp-input');
+  if (inp && inp.value !== (xp.typed || '')) inp.value = xp.typed || '';
+}
+// Save what was typed in the pick banner: this page's line numbers → task
+// ids (taskIdByLine is the page's own canonical numbering), type and lag
+// kept as typed. Several at once are fine, comma-separated.
+async function commitCrossPred() {
+  const xp = state.xpredPick;
+  if (!xp) return;
+  const typed = (xp.typed || '').trim();
+  if (!typed) { showToast('Type the line number first — click a line to take its number.', { kind: 'info' }); return; }
+  const task = state.tasks.find(x => x.id === xp.taskId);
+  if (!task) { exitCrossPredPick(true); return; }
+  const bad = [], add = [];
+  typed.split(',').map(x => x.trim()).filter(Boolean).forEach(tok => {
+    const m = tok.match(/^(\d+)(.*)$/);
+    const id = m ? taskIdByLine[Number(m[1])] : null;
+    if (!id || id === task.id) { bad.push(tok); return; }
+    const stored = (String(id) + (m[2] || '').trim().toUpperCase()).replace(/^(\d+)(FS|SS|FF|SF)?\s*([+-])\s*/, '$1$2 $3');
+    if (!parsePredecessor(stored)) { bad.push(tok); return; }
+    add.push({ id, stored });
+  });
+  if (bad.length) { showToast('Could not read: ' + bad.join(', ') + ' — use a line number from this page, e.g. 23FS +1w.', { kind: 'error' }); return; }
+  const addIds = new Set(add.map(a => a.id));
+  const keep = String(task.predecessors || '').split(',').map(x => x.trim()).filter(Boolean)
+    .filter(x => { const p = parsePredecessor(x); return !(p && addIds.has(p.id)); });
+  add.forEach(a => keep.push(a.stored));
+  pushUndoSnapshot(task, ['predecessors'], 'Link predecessor from another schedule');
+  try { await api.update(task.id, { predecessors: keep.join(', ') }); }
+  catch (err) { showToast(err.message || 'Could not save the link.', { kind: 'error' }); return; }
+  await loadTasks();
+  exitCrossPredPick(true);
+  const names = add.map(a => { const t = state.tasks.find(x => x.id === a.id); return t ? '"' + t.name + '" on ' + jobNumberOf(t.project) : a.stored; });
+  showToast(`${task.name || 'The line'} now follows ${names.join(' and ')}.`, { kind: 'success' });
+}
+function handleXpredPickClick(e) {
+  const xp = state.xpredPick;
+  if (!xp) return false;
+  if (e.target.closest('tr.group-header')) return false;   // sections still open / close
+  e.preventDefault(); e.stopPropagation();
+  if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+  const tr = e.target.closest('tr[data-id]');
+  if (!tr) return true;
+  const pickedId = Number(tr.dataset.id);
+  const pick = state.tasks.find(x => x.id === pickedId);
+  if (!pick) return true;
+  if (pick.id === xp.taskId) { showToast('That is the line itself — pick the one it should follow.', { kind: 'info' }); return true; }
+  const line = lineByTaskId[pick.id];
+  if (line == null) { showToast('Open the rolled-up line first (click it), then pick one stint.', { kind: 'info' }); return true; }
+  // Keep whatever relationship / lag is already typed; swap the number.
+  const cur = (xp.typed || '').trim();
+  const parts = cur ? cur.split(',').map(x => x.trim()).filter(Boolean) : [];
+  const last = parts.length ? parts[parts.length - 1] : '';
+  const suffix = (last.match(/^\d*(.*)$/) || [])[1] || '';
+  parts[parts.length ? parts.length - 1 : 0] = String(line) + suffix;
+  xp.typed = parts.join(', ');
+  const inp = document.getElementById('xp-input');
+  if (inp) { inp.value = xp.typed; inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+  return true;
+}
 function handleRowContextMenu(e) {
   // Standard-events / controls list: the whole panel IS the list, so a
   // right-click anywhere in it — on the hint row, under the last row, or
@@ -21300,168 +21993,130 @@ function handleRowContextMenu(e) {
   const id = Number(tr.dataset.id);
   const task = state.tasks.find(t => t.id === id);
   const cx = e.clientX, cy = e.clientY;
+  // Regrouped (Dan, 10/10): the line's name on top, then THIS LINE (add,
+  // copy, cut, paste, another like it), LINKS (join, predecessor on another
+  // schedule), WHERE IT LIVES (section, machine, list), minis, then
+  // Comments and Delete. Bigger text, plain words, a hint on the right.
   const items = [];
+  const isAnchor = !!(task && inferredAnchorKey(task));
+  if (task) {
+    const subBits = [];
+    if (task.project && (state.myWork || !state.filters.project)) subBits.push(jobNumberOf(task.project));
+    if (task.machine) subBits.push(task.machine);
+    items.push({ title: task.name || 'Line', sub: subBits.join(' · ') });
+  }
   if (state.myWork && task && task.project) {
-    items.push({ label: '→ Open ' + task.project, primary: true, onClick: () => openScheduleFromMyWork(task.project) });
-    items.push({ separator: true });
+    items.push({ label: '→ Open ' + jobNumberOf(task.project) + ' · ' + task.project, primary: true, onClick: () => openScheduleFromMyWork(task.project) });
   }
-  items.push(
-    { label: '＋ Add task below', onClick: () => createTaskBelow(id) },
-    { label: '＋ Add action below', onClick: () => createTaskBelow(id, true) },
-    { separator: true },
-    { label: '⧉ Copy line', onClick: () => gridCopyRows([id], 'copy') },
-    { label: '✂ Cut line', onClick: () => gridCopyRows([id], 'cut') },
-  );
-  if (_gridClipboard && _gridClipboard.rows.length) {
-    const n = _gridClipboard.rows.length;
-    items.push({
-      label: `📋 Paste ${n === 1 ? 'line' : n + ' lines'} below`,
-      onClick: () => gridPasteBelow(id),
-    });
+  // ── THIS LINE ── one action per row, every row a button (Dan, 10/10:
+  // "make it obvious what you can click").
+  items.push({ header: true, label: 'This line' });
+  if (task && !isAnchor) {
+    items.push({ label: '⧉ Duplicate line', hint: 'same task, next person', onClick: () => addAdditionalResource(id) });
   }
-  items.push({ separator: true });
-  // Person-transition joins — show two back-to-back tasks as ONE line with
-  // ONE person. Explicit via right-click; split undoes it.
-  if (task && !task.is_milestone && !inferredAnchorKey(task) && !task.is_action) {
-    if (_chainMap[id] && (_chainMap[id] || []).length > 1) {
-      items.push({ label: '⛓ Split into separate lines', onClick: async () => {
-        for (const tid of _chainMap[id].slice(1)) {
-          try { await api.update(tid, { join_prev: 0 }); } catch (_) {}
-        }
-        await loadTasks();
-      }});
-    } else {
-      // Pick the other line ON THE GRID (same select-a-row feel as building
-      // another machine) — rows gray out, click the one to join.
-      items.push({ label: '⛓ Join with another line…', onClick: () => enterJoinPickMode(task) });
-    }
-  }
-  if (task && !(task.is_milestone || inferredAnchorKey(task))) {
-    items.push({ label: '＋ Add additional resource', onClick: () => addAdditionalResource(id) });
-  }
-  // The controls list is built out of the schedule. An anchor is part of the
-  // spine and cannot leave it.
-  if (task && !inferredAnchorKey(task)) {
-    items.push({ separator: true });
-    items.push(task.phase_group === CONTROLS_GROUP
-      ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfControlsList(id) }
-      : { label: '⚙ Move to controls list', onClick: () => moveToControlsList(id) });
-    items.push(task.phase_group === EVENTS_GROUP
-      ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfStandardEvents(id) }
-      : { label: '★ Move to standard events', onClick: () => moveToStandardEvents(id) });
-    items.push(task.phase_group === CUSTOMER_GROUP
-      ? { label: '↩ Move back to the schedule', onClick: () => moveOutOfCustomerList(id) }
-      : { label: '👤 Move to customer requirements', onClick: () => moveToCustomerList(id) });
-    // Mini schedules this line is in, and the ones it could join.
-    const _minis = Object.keys(miniSchedules()).sort((a, b) => a.localeCompare(b));
-    if (_minis.length) {
-      items.push({ separator: true });
-      _minis.forEach(n => {
-        const inIt = (miniSchedules()[n] || []).map(Number).includes(id);
-        items.push({
-          label: (inIt ? '✓ ' : '   ') + '◫ ' + n,
-          onClick: () => (inIt ? miniRemoveTask(n, id) : miniAddTask(n, id)),
-        });
-      });
-    }
-    // Which section this event shows under when S is on. Without one it
-    // sits in the list at the bottom, and the only way to move it was to
-    // flatten the whole schedule.
-    if (task.phase_group === EVENTS_GROUP || task.phase_group === CUSTOMER_GROUP) {
-      const cur = eventSectionKey(task);
-      items.push({ separator: true });
-      HIERARCHY.forEach(g => {
-        items.push({
-          label: (cur === g.key ? '✓ ' : '   ') + g.label,
-          onClick: () => setEventSection(id, cur === g.key ? '' : g.key),
-        });
-      });
-      if (cur) items.push({ label: '   No section — keep it in the list', onClick: () => setEventSection(id, '') });
-    }
-  }
-  // Key-milestone promotion — any MILESTONE row can become a key milestone
-  // (green chip + anchor diamond, same format as PO / Mech 1 / FAT). Custom
-  // keys are per-row ('custom_<id>') so they never collide with the built-in
-  // spine anchors; demote via the same menu.
-  if (task && task.is_milestone && !inferredAnchorKey(task)) {
-    items.push({ label: '⭐ Make key milestone', onClick: async () => {
+  items.push({ label: '＋ Add a line below', onClick: () => createTaskBelow(id) });
+  items.push({ label: '＋ Add an action below', onClick: () => createTaskBelow(id, true) });
+  items.push({ label: '⧉ Copy', onClick: () => gridCopyRows([id], 'copy') });
+  items.push({ label: '✂ Cut', hint: 'then Paste below another line', onClick: () => gridCopyRows([id], 'cut') });
+  const clipN = (_gridClipboard && _gridClipboard.rows.length) || 0;
+  items.push({ label: clipN ? `📋 Paste ${clipN === 1 ? 'the line' : clipN + ' lines'} below` : '📋 Paste below', hint: clipN ? '' : 'copy or cut a line first', disabled: !clipN, onClick: () => gridPasteBelow(id) });
+  if (task && task.is_milestone && !isAnchor) {
+    items.push({ label: '⭐ Make it a key milestone', hint: 'green pill, shown to the customer', onClick: async () => {
       try { await api.update(id, { anchor_key: 'custom_' + id }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
       await loadTasks();
     }});
   } else if (task && String(task.anchor_key || '').startsWith('custom_')) {
-    items.push({ label: '⭐ Remove key-milestone status', onClick: async () => {
+    items.push({ label: '⭐ No longer a key milestone', onClick: async () => {
       try { await api.update(id, { anchor_key: null }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
       await loadTasks();
     }});
   }
-  items.push({ label: 'Move to section…', onClick: () => moveTaskInline(id, cx, cy) });
-  // Assign / reassign the row to a machine — no more "copy to machine and
-  // delete the original" dance for rows that never got a machine tag.
-  if (task && task.project) {
-    const projMachines = Array.from(new Set(
-      state.tasks.filter(t => t.project === task.project && t.machine).map(t => t.machine)
-    )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    if (projMachines.length) {
-      items.push({ label: `🔧 Machine: ${task.machine || '— none'}…`, onClick: () => {
-        const picks = projMachines.map(mm => ({
-          label: `${task.machine === mm ? '✓ ' : ''}${mm}`,
-          onClick: async () => {
-            try { await api.update(id, { machine: mm }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
-            await loadTasks();
-          },
-        }));
-        picks.push({ separator: true });
-        picks.push({ label: 'No machine (shared row)', onClick: async () => {
-          try { await api.update(id, { machine: null }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
+  items.push({ label: '💬 Comments…', onClick: () => { if (typeof openCommentPanel === 'function') openCommentPanel({ id, name: (task && task.name) || `Task #${id}`, project: (state.filters && state.filters.project) || (task && task.project) || '' }); } });
+  items.push({ label: '🗑 Delete this line', danger: true, onClick: () => deleteTaskById(id) });
+  // ── LINKS ──
+  if (task && !isAnchor) {
+    items.push({ header: true, label: 'Links' });
+    if (!task.is_milestone && !task.is_action) {
+      if (_chainMap[id] && (_chainMap[id] || []).length > 1) {
+        items.push({ label: '⛓ Split into separate lines', onClick: async () => {
+          for (const tid of _chainMap[id].slice(1)) { try { await api.update(tid, { join_prev: 0 }); } catch (_) {} }
           await loadTasks();
         }});
-        showContextMenu(cx, cy, picks);
+      } else {
+        items.push({ label: '⛓ Join with another line', hint: 'one person, one bar', more: true, onClick: () => enterJoinPickMode(task) });
+      }
+    }
+    if (task.project) {
+      items.push({ label: '↗ Predecessor on another schedule', hint: 'from their My work page', more: true, onClick: () => enterCrossPredPick(task) });
+      if (hasCrossPred(task)) {
+        items.push({ label: '↗ Remove the other-schedule link', onClick: async () => {
+          const keep = String(task.predecessors || '').split(',').map(x => x.trim()).filter(Boolean)
+            .filter(x => { const p = parsePredecessor(x); return !(p && crossPredTask(p.id)); });
+          pushUndoSnapshot(task, ['predecessors'], 'Unlink from another schedule');
+          try { await api.update(task.id, { predecessors: keep.join(', ') || null }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
+          await loadTasks();
+        } });
+      }
+    }
+    if (task.dates_locked) {
+      items.push({ label: '🔓 Unlock the dates', hint: 'follow the predecessors again', onClick: async () => {
+        try { await api.update(id, { dates_locked: 0 }); await loadTasks(); showToast('Dates unlocked — recomputed from predecessors.'); }
+        catch (err) { showToast(err.message || 'Unlock failed', { kind: 'error' }); }
       }});
     }
   }
-  // Copy to another machine — for filling in rows the user missed during
-  // the original clone (e.g. M1.FAT didn't get clicked into M2). Lists
-  // every OTHER machine in the project as a target.
-  if (task && task.project) {
-    const allMachines = Array.from(new Set(
-      (state.tasks || []).filter(t => t.project === task.project && t.machine).map(t => t.machine)
-    )).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    const otherMachines = allMachines.filter(m => m !== task.machine);
-    if (otherMachines.length > 0) {
-      items.push({
-        label: 'Copy to another machine',
-        onClick: () => copyTaskToMachineInline(id, cx, cy, otherMachines),
+  // ── WHERE IT LIVES ──
+  if (task && !isAnchor) {
+    items.push({ header: true, label: 'Where it lives' });
+    const inList = task.phase_group === CONTROLS_GROUP ? 'Controls list'
+      : task.phase_group === EVENTS_GROUP ? 'Standard events'
+      : task.phase_group === CUSTOMER_GROUP ? 'Customer requirements' : '';
+    const g = HIERARCHY.find(x => x.key === task.phase_group);
+    const d = g && (g.departments || []).find(x => x.key === task.department);
+    const where = inList || (g ? g.label + (d ? ' · ' + d.label : '') : 'No section');
+    items.push({ label: '▤ Section', hint: where, more: true, onClick: () => moveTaskInline(id, cx, cy) });
+    if (task.project) {
+      const projMachines = Array.from(new Set(state.tasks.filter(t => t.project === task.project && t.machine).map(t => t.machine)))
+        .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
+      if (projMachines.length) {
+        items.push({ label: '🔧 Machine', hint: task.machine || 'shared', more: true, onClick: () => {
+          const picks = [{ title: task.name || 'Line', sub: 'which machine' }].concat(projMachines.map(mm => ({
+            label: `${task.machine === mm ? '✓ ' : ''}${mm}`,
+            onClick: async () => { try { await api.update(id, { machine: mm }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); } await loadTasks(); },
+          })));
+          picks.push({ separator: true });
+          picks.push({ label: 'Shared — every machine', onClick: async () => { try { await api.update(id, { machine: null }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); } await loadTasks(); } });
+          showContextMenu(cx, cy, picks);
+        }});
+        const otherMachines = projMachines.filter(m => m !== task.machine);
+        if (otherMachines.length) items.push({ label: '⧉ Copy to another machine', more: true, onClick: () => copyTaskToMachineInline(id, cx, cy, otherMachines) });
+      }
+    }
+    if (inList) {
+      items.push({ label: '↩ Back to the build', hint: 'out of the ' + inList.toLowerCase(), onClick: () => (task.phase_group === CONTROLS_GROUP ? moveOutOfControlsList(id) : task.phase_group === EVENTS_GROUP ? moveOutOfStandardEvents(id) : moveOutOfCustomerList(id)) });
+    } else {
+      items.push({ label: '☰ Put in a list', hint: 'controls · events · customer', more: true, onClick: () => showContextMenu(cx, cy, [
+        { title: task.name || 'Line', sub: 'which list' },
+        { label: '⚙ Controls list', onClick: () => moveToControlsList(id) },
+        { label: '★ Standard events', onClick: () => moveToStandardEvents(id) },
+        { label: '👤 Customer requirements', onClick: () => moveToCustomerList(id) },
+      ]) });
+    }
+    if (task.phase_group === EVENTS_GROUP || task.phase_group === CUSTOMER_GROUP) {
+      const cur = eventSectionKey(task);
+      items.push({ header: true, label: 'Shows in section' });
+      HIERARCHY.forEach(gg => items.push({ label: (cur === gg.key ? '✓ ' : '') + gg.label, onClick: () => setEventSection(id, cur === gg.key ? '' : gg.key) }));
+      if (cur) items.push({ label: 'No section — only in the list', onClick: () => setEventSection(id, '') });
+    }
+    const _minis = Object.keys(miniSchedules()).sort((x, y) => x.localeCompare(y));
+    if (_minis.length) {
+      items.push({ header: true, label: 'Mini schedules' });
+      _minis.forEach(n => {
+        const inIt = (miniSchedules()[n] || []).map(Number).includes(id);
+        items.push({ label: (inIt ? '✓ ' : '') + '◫ ' + n, onClick: () => (inIt ? miniRemoveTask(n, id) : miniAddTask(n, id)) });
       });
     }
   }
-  if (typeof openCommentPanel === 'function') {
-    items.push({
-      label: '💬 Comments…',
-      onClick: () => {
-        let taskName = `Task #${id}`;
-        try {
-          if (task && task.name) taskName = task.name;
-        } catch (_) {}
-        const project = (state.filters?.project) || '';
-        openCommentPanel({ id, name: taskName, project });
-      },
-    });
-  }
-  if (task && task.dates_locked) {
-    items.push({
-      label: '🔓 Unlock dates (recompute from predecessors)',
-      onClick: async () => {
-        try {
-          await api.update(id, { dates_locked: 0 });
-          await loadTasks();
-          if (typeof showToast === 'function') showToast('Dates unlocked — recomputed from predecessors.');
-        } catch (e) {
-          if (typeof showToast === 'function') showToast(e.message || 'Unlock failed', { kind: 'error' });
-        }
-      },
-    });
-  }
-  items.push({ label: 'Delete task', danger: true, onClick: () => deleteTaskById(id) });
   showContextMenu(cx, cy, items);
 }
 
@@ -21577,6 +22232,26 @@ function defaultPlaceholderForNewTask(t) {
 // for anchors and rows that live above section 10). sort_order is set
 // to clicked + 0.5 so the new row lands immediately below in the
 // rendered grid. Opens in name-edit mode so the user can type the name.
+// A line born with no machine on a job that has several is invisible on
+// every per-machine view — and nobody notices until "why don't I see it?"
+// (Dan, 10/09). Ask right where the line appeared.
+function promptMachineForNewLine(createdId) {
+  const t = state.tasks.find(x => x.id === createdId);
+  if (!t || t.machine || !t.project) return;
+  const machines = Array.from(new Set(state.tasks.filter(x => x.project === t.project && x.machine).map(x => x.machine)))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  if (machines.length < 2) return;
+  const tr = document.querySelector(`tr[data-id="${createdId}"]`);
+  const r = tr ? tr.getBoundingClientRect() : { left: 240, bottom: 200 };
+  const picks = machines.map(mm => ({ label: '🔧 ' + mm, onClick: async () => {
+    try { await api.update(createdId, { machine: mm }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
+    await loadTasks();
+  } }));
+  picks.push({ separator: true });
+  picks.push({ label: 'Shared — every machine (no machine)', onClick: () => {} });
+  showToast('New line: which machine is it for? Pick one, or Shared.', { kind: 'info' });
+  showContextMenu(Math.round(r.left + 120), Math.round(r.bottom + 2), picks);
+}
 async function createTaskBelow(taskId, asAction) {
   const t = state.tasks.find(x => x.id === taskId);
   if (!t) return;
@@ -21617,6 +22292,7 @@ async function createTaskBelow(taskId, asAction) {
   syncUndoButton();
   syncRedoButton();
   try { await loadTasks(); } catch (_) {}
+  try { promptMachineForNewLine(created.id); } catch (_) {}
   const newTr = document.querySelector(`tr[data-id="${created.id}"]`);
   if (newTr) {
     newTr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -21837,6 +22513,7 @@ async function createTaskInSection(g, d, s) {
   const machine = subset.length === 1 ? subset[0] : null;
   const created = await api.create({ name: 'New task', phase_group: g, department: d, sub_department: s, project, machine, assignee: defaultPlaceholderForNewTask({ phase_group: g, department: d, sub_department: s }) || null });
   await loadTasks();
+  try { promptMachineForNewLine(created.id); } catch (_) {}
   const tr = document.querySelector(`tr[data-id="${created.id}"]`);
   if (!tr) return;
   tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -21883,9 +22560,25 @@ function moveTaskInline(id, x, y) {
 // fixed-position popups placed from mouse coordinates divide by the scale
 // (see showContextMenu / _confirmPredChange / _jhpTipMove).
 const APP_SCALE_DEFAULT = 0.85;  // Dan: "what is 85% right now, be the default"
+// Each person picks their own default (Dan, 10/10): right-click Default to
+// make the current scale yours. Remembered in this browser.
+function appScaleDefault() {
+  try { const v = Number(localStorage.getItem('sdcAppScaleDefault')); if (v >= 0.5 && v <= 1.5) return Math.round(v * 20) / 20; } catch (_) {}
+  return APP_SCALE_DEFAULT;
+}
+function setAppScaleDefault(v) {
+  const s = Math.round(Math.min(1.5, Math.max(0.5, v)) * 20) / 20;
+  try { localStorage.setItem('sdcAppScaleDefault', String(s)); } catch (_) {}
+  syncScaleDefaultButton();
+  return s;
+}
+function syncScaleDefaultButton() {
+  const b = document.getElementById('app-scale-default');
+  if (b) { b.textContent = 'Default ' + Math.round(appScaleDefault() * 100) + '%'; b.classList.toggle('is-active', Math.abs(_appScale() - appScaleDefault()) < 0.001); }
+}
 // Every page opens at the default (Dan: "any page you open always opens
 // 85%"). Move it from there for this visit; a reload starts over.
-let _appScaleCur = APP_SCALE_DEFAULT;
+let _appScaleCur = appScaleDefault();
 function _appScale() { return _appScaleCur; }
 // Only the tab bar holds its size against the app scale (with the rail).
 // The toolbar and the banner scale WITH the grid under them — one scale on
@@ -21922,6 +22615,7 @@ function _fitChrome(appZoom) {
 function applyAppScale() {
   const s = _appScale();
   document.body.style.zoom = String(s);
+  try { syncScaleDefaultButton(); } catch (_) {}
   document.querySelectorAll('#app-scale-pct, [data-scale="pct"]').forEach(pct => { pct.textContent = Math.round(s * 100) + '%'; pct.title = 'App scale. Click to reset to the default.'; pct.classList.remove('is-auto'); });
   try { _fitChrome(s); } catch (_) {}
   try { fitBanner(); } catch (_) {}
@@ -21988,9 +22682,34 @@ document.getElementById('app-sidebar-logo')?.addEventListener('click', () => {
 (function initAppScale() {
   applyAppScale();
   // 10% steps — big, decisive bumps (5% felt like fiddling).
-  document.getElementById('app-scale-minus')?.addEventListener('click', () => setAppScale(_appScale() - 0.10));
-  document.getElementById('app-scale-plus')?.addEventListener('click', () => setAppScale(_appScale() + 0.10));
-  document.getElementById('app-scale-pct')?.addEventListener('click', () => setAppScale(APP_SCALE_DEFAULT));
+  document.getElementById('app-scale-minus')?.addEventListener('click', () => setAppScale(_appScale() - 0.05));
+  document.getElementById('app-scale-plus')?.addEventListener('click', () => setAppScale(_appScale() + 0.05));
+  const _toDefault = () => {
+    if (state.layout && state.layout.rowHeight !== ROW_H_DEFAULT) { state.layout.rowHeight = ROW_H_DEFAULT; try { applyRowHeight(); saveLayout(); } catch (_) {} }
+    setAppScale(appScaleDefault());
+  };
+  const _defBtn = document.getElementById('app-scale-default');
+  if (_defBtn) {
+    _defBtn.addEventListener('click', _toDefault);
+    _defBtn.addEventListener('contextmenu', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const cur = Math.round(_appScale() * 100);
+      showContextMenu(e.clientX, e.clientY, [
+        { title: 'Your default scale', sub: Math.round(appScaleDefault() * 100) + '% now' },
+        { label: `Make ${cur}% my default`, primary: true, onClick: () => { setAppScaleDefault(_appScale()); showToast(`Default is ${cur}% on this computer.`, { kind: 'success' }); } },
+        { label: 'Type a number…', onClick: async () => {
+          const v = await showPromptDialog({ title: 'Default scale', message: 'Percent, 50 to 150. Every page opens at this on this computer.', value: String(Math.round(appScaleDefault() * 100)), okLabel: 'Save' });
+          if (v == null) return;
+          const n = Number(String(v).replace(/[^0-9.]/g, ''));
+          if (!(n >= 50 && n <= 150)) { showToast('Between 50 and 150, please.', { kind: 'error' }); return; }
+          setAppScaleDefault(n / 100); showToast(`Default is ${Math.round(appScaleDefault() * 100)}% on this computer.`, { kind: 'success' });
+        } },
+        { label: 'Back to 85%', onClick: () => { setAppScaleDefault(APP_SCALE_DEFAULT); showToast('Default is 85% again.', { kind: 'info' }); } },
+      ]);
+    });
+    syncScaleDefaultButton();
+  }
+  document.getElementById('app-scale-pct')?.addEventListener('click', _toDefault);
 })();
 
 function showContextMenu(x, y, items) {
@@ -22007,6 +22726,33 @@ function showContextMenu(x, y, items) {
       const hr = document.createElement('hr');
       hr.className = 'context-menu-sep';
       menu.appendChild(hr);
+      continue;
+    }
+    // The title row — what this menu is about (the line's name, its job).
+    if (item && item.title) {
+      const t = document.createElement('div');
+      t.className = 'context-menu-title';
+      t.textContent = item.title;
+      if (item.sub) { const sp = document.createElement('span'); sp.textContent = item.sub; t.appendChild(sp); }
+      menu.appendChild(t);
+      continue;
+    }
+    // A row of small buttons side by side — the common actions, compact.
+    if (item && Array.isArray(item.row)) {
+      const row = document.createElement('div');
+      row.className = 'cm-row';
+      item.row.forEach(it => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = it.label;
+        if (it.title) b.title = it.title;
+        if (it.danger) b.classList.add('danger');
+        if (it.primary) b.classList.add('primary');
+        if (it.disabled) { b.disabled = true; b.classList.add('is-disabled'); }
+        b.addEventListener('click', () => { if (it.disabled) return; menu.remove(); it.onClick(); });
+        row.appendChild(b);
+      });
+      menu.appendChild(row);
       continue;
     }
     // A header — names the group of items under it, not clickable.
@@ -22034,9 +22780,28 @@ function showContextMenu(x, y, items) {
     const labelSpan = document.createElement('span');
     labelSpan.textContent = item.label;
     btn.appendChild(labelSpan);
-    btn.addEventListener('click', () => { menu.remove(); item.onClick(); });
+    if (item.hint) { const h = document.createElement('span'); h.className = 'cm-hint'; h.textContent = item.hint; btn.appendChild(h); }
+    if (item.more) { const c = document.createElement('span'); c.className = 'cm-more'; c.textContent = '›'; btn.appendChild(c); }
+    if (item.disabled) { btn.disabled = true; btn.classList.add('is-disabled'); }
+    btn.addEventListener('click', () => { if (item.disabled) return; menu.remove(); item.onClick(); });
     menu.appendChild(btn);
   }
+  // Movable (Dan, 10/10: "I should be able to drag it away"). The title row
+  // is the handle; a menu with no title gets a small grip at the top.
+  let handle = menu.querySelector('.context-menu-title');
+  if (!handle) { handle = document.createElement('div'); handle.className = 'context-menu-grip'; handle.title = 'Drag to move'; menu.insertBefore(handle, menu.firstChild); }
+  handle.classList.add('cm-handle');
+  handle.addEventListener('mousedown', (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    const z = _appScale();
+    const r = menu.getBoundingClientRect();
+    const dx = ev.clientX - r.left, dy = ev.clientY - r.top;
+    const move = (e2) => { menu.style.left = ((e2.clientX - dx) / z) + 'px'; menu.style.top = ((e2.clientY - dy) / z) + 'px'; };
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
   document.body.appendChild(menu);
   // Clamp into the viewport so a right-click near the right/bottom edge doesn't
   // render the menu (or its bottom items) off-screen. Mirrors showConfirmAt.
@@ -26291,7 +27056,45 @@ function isExecMember(member) {
 // A page is ONE person's work — the rows with their name on them. That
 // includes a PM: their own actions, not every row of every job they run
 // (Dan: "way too many line items"). Who they may LOOK at is canChooseWho.
+// Whole-department view on My work (Dan, 10/07): one page, one person
+// after the other, the department's placeholder last as the unassigned
+// work. The scope is the department's roster names.
+function myWorkDept() {
+  return (state.myWork && _actionsPageState && _actionsPageState.deptKey) || '';
+}
+// The department views: the delivery teams, and the ALTEN group — the
+// contract engineers (settings.alten_members, ticked on the Departments
+// board's ✎ dialog). Dan, 10/08.
+const DEPT_VIEW_KEYS = ['mech', 'controls', 'build', 'wire', 'service'];
+const DEPT_VIEWS_EXTRA = { alten: { key: 'alten', label: 'ALTEN group' } };
+function deptViewInfo(key) { return DISCIPLINE_BY_KEY[key] || DEPT_VIEWS_EXTRA[key] || null; }
+function altenIds() { const v = state.settings && state.settings.alten_members; return Array.isArray(v) ? v.map(Number) : []; }
+async function setAltenMember(id, on) {
+  const ids = altenIds().filter(x => x !== Number(id));
+  if (on) ids.push(Number(id));
+  state.settings.alten_members = ids;
+  await api.putSetting('alten_members', ids);
+}
+function deptMembers(key) {
+  const ph = (m) => (isPlaceholder(m.name) ? 1 : 0);
+  const sortFn = (a, b) => (ph(a) - ph(b)) || ((!!b.is_lead) - (!!a.is_lead)) || ((a.sort_order || 0) - (b.sort_order || 0)) || String(a.name).localeCompare(String(b.name));
+  if (key === 'alten') {
+    const ids = new Set(altenIds());
+    return (state.team || []).filter(m => ids.has(Number(m.id))).sort(sortFn);   // active or not: they are on the contract
+  }
+  return (state.team || []).filter(m => m.discipline === key && m.active !== 0).sort(sortFn);
+}
+let _deptNamesCache = { key: '', n: -1, set: null };
+function deptNames(key) {
+  const n = (state.team || []).length;
+  if (_deptNamesCache.key !== key || _deptNamesCache.n !== n || !_deptNamesCache.set) {
+    _deptNamesCache = { key, n, set: new Set(deptMembers(key).map(m => m.name)) };
+  }
+  return _deptNamesCache.set;
+}
 function personalScopeMatch(t, member) {
+  const dk = myWorkDept();
+  if (dk) return deptNames(dk).has(t.assignee);
   if (!member) return true;
   return t.assignee === member.name;
 }
@@ -26373,7 +27176,7 @@ function renderActionsPage() {
   // are pre-quote work where the user explicitly doesn't want staffing
   // assignments — same exclusions used by the Departments dashboard.
   const projects = uniqueValues('project')
-    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+    .filter(p => !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p)))
     .sort();
   const people   = Array.from(new Set((state.tasks || []).filter(t => t.is_action).map(t => t.assignee).filter(Boolean))).sort();
   const prevQaProj  = projSel?.value || '';
@@ -26743,7 +27546,7 @@ function renderActionsKeyInfo() {
   const host = document.getElementById('actions-keyinfo');
   if (!host) return;
   const projects = uniqueValues('project')
-    .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+    .filter(p => !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p)))
     .sort();
   const missing = projects.filter(p => !state.projectNotes[p]);
   if (missing.length) {
@@ -26979,7 +27782,9 @@ function setMyWork(on) {
   // job it kept every row but the key milestones: 1160 came up as three
   // lines, All lit, nothing claiming the other 34 (Dan, 10/07).
   if (!on) {
+    if (state.xpredPick) { state.xpredPick = null; document.body.classList.remove('xpred-pick-mode'); document.getElementById('xpred-pop')?.remove(); }
     if (state.filters) state.filters.assignee = '';
+    if (_actionsPageState) _actionsPageState.deptKey = '';   // remembered in localStorage, back on return
     document.body.classList.remove('personal-mode');
   }
 }
@@ -27038,6 +27843,14 @@ function showMyWorkSignIn() {
     .join('');
   const rest = roster.filter(m => !used.has(m.id))
     .map(m => `<option value="${m.id}"${m.id === cur ? ' selected' : ''}>${escapeHtml(m.name)}</option>`).join('');
+  // Whole departments: leadership any, a PM the execution teams, a lead
+  // their own. One page, one person after the other, unassigned work last.
+  const deptKeys = exec ? DEPT_VIEW_KEYS.concat(['alten'])
+    : pm ? DEPT_VIEW_KEYS.filter(k => EXECUTION_TEAMS.includes(k)).concat(['alten'])
+    : (lead && authed) ? [authed.discipline].filter(k => DEPT_VIEW_KEYS.includes(k)) : [];
+  const curDept = _actionsPageState && _actionsPageState.deptKey;
+  const deptHtml = deptKeys.map(k => deptViewInfo(k)).filter(Boolean)
+    .map(d => `<option value="dept:${d.key}"${curDept === d.key ? ' selected' : ''}>${escapeHtml(d.label)}</option>`).join('');
   document.getElementById('my-work-signin')?.remove();
   const overlay = document.createElement('div');
   overlay.id = 'my-work-signin';
@@ -27055,6 +27868,7 @@ function showMyWorkSignIn() {
             : 'Who are you? Your page shows every job you are on — tasks, actions and notes.'}</div>
         <select class="app-dialog-input" id="my-work-person">
           <option value="">Pick a name…</option>
+          ${deptHtml ? `<optgroup label="Department view">${deptHtml}</optgroup>` : ''}
           ${groupHtml}
           ${rest ? `<optgroup label="Other">${rest}</optgroup>` : ''}
         </select>
@@ -27068,9 +27882,11 @@ function showMyWorkSignIn() {
   const sel = overlay.querySelector('#my-work-person');
   const close = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
   const go = () => {
-    const id = sel.value ? Number(sel.value) : null;
-    if (id == null) { sel.focus(); return; }
+    const v = sel.value;
+    if (!v) { sel.focus(); return; }
     close();
+    if (v.indexOf('dept:') === 0) { routePersonalDept(v.slice(5)); return; }
+    const id = Number(v);
     setMyWork(true);
     setPersonalPerson(id);
     routePersonalMode(id);
@@ -27093,6 +27909,9 @@ function openMyWork() {
   // The portal is its own world. Nothing here reaches into it.
   if (state.view === 'portal' || document.body.classList.contains('portal-mode')) return;
   setMyWork(true);
+  // A department that was open last stays open.
+  let dk = ''; try { dk = localStorage.getItem('sdcActionsDept') || ''; } catch (_) {}
+  if (dk && deptViewInfo(dk)) { routePersonalDept(dk); return; }
   // Whoever the page was on last stays on it — yourself, or the person a
   // leader switched to. Leaving for a schedule and coming back is not a
   // sign-out. With nobody remembered, the login says who you are.
@@ -27108,7 +27927,7 @@ function openMyWork() {
   // name is the failure this tab was built to stop.
   setPersonalPerson(null);
   state.filters.project = '';
-  try { saveProjectTabs(); } catch (_) {}
+  try { sessionStorage.setItem('sdcActiveProject', ''); } catch (_) {}   // not the tab list — at boot it may not be loaded yet
   state.filters.assignee = '';
   applyPersonalViewDefaults();
   document.body.classList.remove('personal-mode');
@@ -27125,6 +27944,7 @@ const PERSONAL_VIEW_ON = {
   sortByStart: true,      // ≡ in date order, which is how a week reads
   showInlineAlloc: true,  // α how loaded each line is
   hideCompleted: true,    // what is left to do, not what is done
+  showOverlaps: true,     // ⚠ one card per person: where they are over 100%
 };
 const PERSONAL_VIEW_OFF = {
   showDeptHours: false,   // Δ quoted vs scheduled — a whole-job number
@@ -27168,7 +27988,7 @@ function applyPersonalViewDefaults() {
   Object.keys(PERSONAL_VIEW_OFF).forEach(k => { state.scheduleView[k] = PERSONAL_VIEW_OFF[k]; });
   // The two that live outside scheduleView.
   state.showFinancials = false;   // $ — every job's money, across a person's week
-  state.showBaseline = true;      // baseline overlay comes on
+  state.showBaseline = false;     // baseline overlay OFF until asked (Dan, 10/08) — ◎ turns it on
   const f = state.filters || {};
   f.milestoneType = '';
   if (f.quick) Object.keys(f.quick).forEach(k => { f.quick[k] = false; });
@@ -27207,7 +28027,26 @@ function restorePersonalViewDefaults() {
   }
 }
 
+function routePersonalDept(key) {
+  const d = deptViewInfo(key);
+  if (!d) return;
+  setMyWork(true);
+  _actionsPageState.deptKey = key;
+  try { localStorage.setItem('sdcActionsDept', key); } catch (_) {}
+  state.filters.assignee = '';
+  applyPersonalViewDefaults();
+  state.filters.project = '';
+  try { sessionStorage.setItem('sdcActiveProject', ''); } catch (_) {}   // not the tab list — at boot it may not be loaded yet
+  if (state.scheduleView) state.scheduleView.actionsMode = 'combined';
+  document.body.classList.add('personal-mode');
+  setView('schedule');
+  render({ deferGantt: true });
+  requestAnimationFrame(() => requestAnimationFrame(() => { try { frameMyWork(); } catch (_) {} }));
+}
 function routePersonalMode(personId) {
+  // A person's page, not a department's.
+  if (_actionsPageState) _actionsPageState.deptKey = '';
+  try { localStorage.removeItem('sdcActionsDept'); } catch (_) {}
   if (personId != null) {
     setMyWork(true);
     const member = (state.team || []).find(m => m.id === personId);
@@ -27218,8 +28057,9 @@ function routePersonalMode(personId) {
       // filter so they see everything on their plate.
       state.filters.project = '';
       // Remember that: a reload with the last JOB still stored as active
-      // would open the job instead of this page (loadProjectTabs).
-      try { saveProjectTabs(); } catch (_) {}
+      // would open the job instead of this page (loadProjectTabs). Only the
+      // active job — writing the whole tab list here emptied it at boot.
+      try { sessionStorage.setItem('sdcActiveProject', ''); } catch (_) {}
       // Personal view is most useful as Combined (tasks + actions together).
       if (state.scheduleView) {
         state.scheduleView.actionsMode = 'combined';
@@ -27266,6 +28106,7 @@ function routePersonalMode(personId) {
 // work. Clicking the personal tab re-applies the assignee filter and
 // flips this back to true.
 function isPersonalMode() {
+  if (myWorkDept()) return !state.filters.project;
   if (!_actionsPageState || _actionsPageState.personId == null) return false;
   const member = (state.team || []).find(m => m.id === _actionsPageState.personId);
   if (!member) return false;
@@ -27514,6 +28355,11 @@ function renderMiniBanner() {
 
 // From a My work row to the schedule it is on. The person stays signed in;
 // the My work tab brings them straight back.
+// "1160_Y Site Automation" → "1160"; "Kim Test" → "Kim Test" (no number).
+function jobNumberOf(project) {
+  const m = String(project || '').match(/^\s*(\d{3,})/);
+  return m ? m[1] : String(project || '').split(/[_]/)[0].trim().slice(0, 14);
+}
 function openScheduleFromMyWork(project) {
   if (!project) return;
   if (isPersonalMode()) {
@@ -28093,6 +28939,10 @@ function openTeamMemberModal(member) {
           <input type="tel" id="tm-phone-input" class="app-dialog-input" value="${escapeHtml(memberPhone(m))}" placeholder="No phone number" />
         </div>
         <div class="pr-field tm-checkbox-row">
+          <input type="checkbox" id="tm-alten-checkbox" ${altenIds().includes(Number(m.id)) ? 'checked' : ''} />
+          <label for="tm-alten-checkbox">ALTEN group (contract engineer)</label>
+        </div>
+        <div class="pr-field tm-checkbox-row">
           <input type="checkbox" id="tm-lead-checkbox" ${m.is_lead ? 'checked' : ''} />
           <label for="tm-lead-checkbox">Department lead</label>
         </div>
@@ -28146,6 +28996,8 @@ function openTeamMemberModal(member) {
     try {
       const pid = isEdit ? m.id : (result && (result.id || (result.member && result.member.id)));
       if (pid != null) await setMemberPhone(pid, phone);
+      const altenBox = overlay.querySelector('#tm-alten-checkbox');
+      if (pid != null && altenBox && altenBox.checked !== altenIds().includes(Number(pid))) await setAltenMember(pid, altenBox.checked);
     } catch (_) {}
     await loadTeam();
     close();
@@ -29461,7 +30313,7 @@ function renderResources() {
     // Active projects only — drop templates (scaffolding) and Sales-workspace
     // schedules (pre-quote) so "All projects" means real, active work.
     const projects = [...new Set(state.tasks.map(t => t.project).filter(Boolean))]
-      .filter(p => !isTemplateProject(p) && projectWorkspace(p) !== 'Sales')
+      .filter(p => !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p)))
       .sort();
     projSel.innerHTML = '<option value="">All projects</option>' +
       projects.map(p => `<option value="${escapeHtml(p)}" ${state.resources.project === p ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
@@ -31998,12 +32850,16 @@ function pinGanttDateAxis() {
     // of the SVG, so they are no longer inside the .date group this function
     // used to move. That left them BELOW the white header rect (invisible) and
     // unpinned (they scrolled away with the bars). Both symptoms, one cause.
+    // One group holds the whole axis. Per scroll frame that is ONE transform
+    // and at most one re-append — the old loop re-appended hundreds of date
+    // labels every frame, which is what made a long schedule crawl (Dan, 10/10).
+    let pin = svg.querySelector(':scope > g.sdc-axis-pin');
+    if (!pin) { pin = document.createElementNS('http://www.w3.org/2000/svg', 'g'); pin.setAttribute('class', 'sdc-axis-pin'); svg.appendChild(pin); }
     for (const sel of ['.grid-header', '.date', '.lower-text', '.upper-text', '.sdc-weekday-letter-group']) {
-      svg.querySelectorAll(sel).forEach(el => {
-        el.setAttribute('transform', `translate(0, ${y})`);
-        if (el.parentNode !== svg || el !== svg.lastElementChild) svg.appendChild(el);
-      });
+      svg.querySelectorAll(sel).forEach(el => { if (el.parentNode !== pin) { el.removeAttribute('transform'); pin.appendChild(el); } });
     }
+    pin.setAttribute('transform', `translate(0, ${y})`);
+    if (pin !== svg.lastElementChild) svg.appendChild(pin);
   } catch (_) { /* cosmetic — never break scrolling */ }
 }
 
@@ -32012,21 +32868,28 @@ function setupScrollSync() {
   const grid = document.getElementById('schedule-grid');
   const gantt = document.getElementById('schedule-gantt');
   if (!grid || !gantt) return;
-  let lock = false;
+  // No lock. Setting a scrollTop that is already equal fires nothing, so
+  // each side just copies the other when they differ. The old lock was
+  // released in a requestAnimationFrame — when a frame did not come (busy
+  // page, hidden tab) it stayed set and the grid stopped following the
+  // chart. The axis pin is throttled to one call per frame, with a timer
+  // behind it so it always lands.
+  let pinQueued = false;
+  const queuePin = () => {
+    if (pinQueued) return;
+    pinQueued = true;
+    const run = () => { pinQueued = false; pinGanttDateAxis(); };
+    requestAnimationFrame(run);
+    setTimeout(() => { if (pinQueued) run(); }, 50);
+  };
   grid.addEventListener('scroll', () => {
-    if (lock) return;
-    lock = true;
-    gantt.scrollTop = grid.scrollTop;
-    pinGanttDateAxis();
-    requestAnimationFrame(() => { lock = false; });
-  });
+    if (Math.abs(gantt.scrollTop - grid.scrollTop) > 0.5) gantt.scrollTop = grid.scrollTop;
+    queuePin();
+  }, { passive: true });
   gantt.addEventListener('scroll', () => {
-    if (lock) return;
-    lock = true;
-    grid.scrollTop = gantt.scrollTop;
-    pinGanttDateAxis();
-    requestAnimationFrame(() => { lock = false; });
-  });
+    if (Math.abs(grid.scrollTop - gantt.scrollTop) > 0.5) grid.scrollTop = gantt.scrollTop;
+    queuePin();
+  }, { passive: true });
 }
 
 // ---------- Layout (grid width, column widths, gantt visible) ----------
@@ -32106,7 +32969,11 @@ function loadLayout() {
     if (saved.colWidths) { delete saved.colWidths.start; delete saved.colWidths.finish; delete saved.colWidths.completed; }
   }
 
-  const rh = Number(saved.rowHeight) || ROW_H_DEFAULT;
+  let rh = Number(saved.rowHeight) || ROW_H_DEFAULT;
+  // The old Fit height shrank rows to a few pixels and saved it; nothing put
+  // it back, and every bar on every schedule stayed tiny (Dan, 10/10).
+  // A height that small never came from the + / − steps: back to 26.
+  if (rh < ROW_H_DEFAULT - 6) rh = ROW_H_DEFAULT;
   // Default visible columns for a fresh install / first open — the clean layout:
   // #, Task, Assigned To, Start, Finish, Predecessors, Completed, Comments.
   // Allocation / Duration / % Complete live as pills inside the Task column;
@@ -32281,6 +33148,9 @@ function loadScheduleView() {
       // H view-pill: per-department quoted-vs-scheduled hours on the grid
       // subheaders. OFF by default — opt-in readout.
       showDeptHours: !!saved.showDeptHours,
+      // ⚠ Overlaps card (Timeline bracket). Off on a job unless turned on;
+      // My work turns it on for the visit (PERSONAL_VIEW_ON).
+      showOverlaps: !!saved.showOverlaps,
     };
   } catch {
     return { flatten: false, sortByStart: false, ganttOnly: false, criticalPath: false, criticalOnly: false, showArrowLags: true, showBarMeta: false, showInlineAlloc: true, actionsMode: 'combined', hideCompleted: false, showMachineColors: true, showDeptHours: false, riskMode: false, riskOverlay: false, controlsMode: false, controlsOverlay: false, eventsMode: false, eventsOverlay: false, showProjectStats: true };
@@ -32355,9 +33225,8 @@ function clearRowFilters() {
 function renderRowsChips() {
   const el = document.getElementById('banner-rows');
   if (!el) return;
-  // A person's page has no row filters (My work clears them); the customer
-  // view has none either. The banner shows identity / nothing instead.
-  const show = !!state.filters.project && !state.myWork && !document.body.classList.contains('customer-view');
+  // A job or a person's page; the customer view has none.
+  const show = (!!state.filters.project || !!state.myWork) && !document.body.classList.contains('customer-view');
   el.classList.toggle('hidden', !show);
   if (!show) { el.innerHTML = ''; return; }
   const q = (state.filters && state.filters.quick) || {};
@@ -32374,7 +33243,8 @@ function renderRowsChips() {
   if (sv.criticalOnly) chips.push(['crit', 'Critical path only', true]);
   if (milestoneFilterActive()) chips.push(['ms', 'Milestones only', true]);
   if (q.assigned) chips.push(['asg', 'Assigned only', true]);
-  if (state.filters.assignee) chips.push(['who', 'Only ' + state.filters.assignee, true]);
+  // On My work the person IS the page, not a filter.
+  if (state.filters.assignee && !state.myWork) chips.push(['who', 'Only ' + state.filters.assignee, true]);
   el.innerHTML = chips.map(([k, label, on]) =>
     `<button type="button" class="view-bracket-icon${on ? ' is-active' : ''}" data-row="${k}">${label}</button>`).join('');
   el.querySelectorAll('[data-row]').forEach(b => b.addEventListener('click', () => {
@@ -32432,6 +33302,7 @@ function syncViewPill() {
   // chips/borders actually paint.
   setActive('btn-view-machine', sv.showMachineColors !== false);
   setActive('btn-view-dept-hours', sv.showDeptHours);
+  setActive('btn-view-overlaps',   sv.showOverlaps);
   setActive('btn-view-stats', sv.showProjectStats !== false);
   try { syncControlsButtons(); } catch (_) {}
   try { syncEventsButtons(); } catch (_) {}
@@ -32494,9 +33365,9 @@ function effectiveVisibleCols() {
   const visible = new Set(state.layout.visibleCols);
   if (state.filters.project) visible.delete('project');
   else visible.add('project');
-  // My work hides Pred (CSS). Counting it anyway gave the table a width it
-  // did not use — the dead strip after Finish.
-  if (document.body.classList.contains('personal-mode')) { visible.delete('pred'); visible.delete('assignee'); }
+  // My work hides Assigned To (the page IS the person); Pred stays — it is
+  // how one person's work gets chained across jobs (Dan, 10/10).
+  if (document.body.classList.contains('personal-mode')) { visible.delete('assignee'); visible.add('pred'); }
   return visible;
 }
 
@@ -32582,6 +33453,7 @@ function setupColumnFontMenu() {
 // the true rendered need with fonts, pills, and padding all included. The old
 // clone-based approach inherited table-layout:fixed and distributed the pane
 // width EQUALLY across columns — the exact opposite of compressing.
+const NAME_COL_MAX = 560;   // layout px — about 60 characters of description
 function compressColumns() {
   const table = document.getElementById('tasks-table');
   if (!table) return;
@@ -32613,7 +33485,11 @@ function compressColumns() {
       });
       next[k] = Math.max(24, need + GAP);
     }
-    next.name = Math.max(220, _measureNameColNeed(table));
+    // One long description (a service request title) was pushing the whole
+    // grid across the screen (Dan, 10/07). The Task column stops at
+    // NAME_COL_MAX; past that the text clips with an ellipsis.
+    const nameNeed = _measureNameColNeed(table);
+    next.name = nameNeed > 0 ? Math.max(300, Math.min(NAME_COL_MAX, nameNeed)) : (state.layout.colWidths.name || 300);
     Object.assign(state.layout.colWidths, next);
   } catch (_) {
     state.layout.colWidths = original; // measurement failed — leave layout untouched
@@ -32648,7 +33524,7 @@ function _measureNameColNeed(table) {
 function fitGridPaneToColumns() {
   const table = document.getElementById('tasks-table');
   if (table) {
-    const need = _measureNameColNeed(table);
+    const need = Math.min(NAME_COL_MAX, _measureNameColNeed(table));
     if (need > (state.layout.colWidths.name || 0)) state.layout.colWidths.name = need;
   }
   applyColWidths();
@@ -34962,6 +35838,7 @@ async function init() {
   wireViewToggle('btn-view-machine',    'showMachineColors');
   wireViewToggle('btn-view-dept-hours', 'showDeptHours');
   wireViewToggle('btn-view-stats',       'showProjectStats');
+  wireViewToggle('btn-view-overlaps',    'showOverlaps');
   syncViewPill();
 
   // Baseline — dropdown menu. The menu rebuilds on every open so its items
@@ -34988,7 +35865,18 @@ async function init() {
       const project = state.filters.project;
       const has = projectHasBaseline(project);
       const items = [];
-      if (!project) {
+      if (isPersonalMode()) {
+        // My work: the overlay is a plain show / hide across every job here.
+        items.push({
+          label: state.showBaseline ? '☑ Show baseline overlay (on)' : '☐ Show baseline overlay (off)',
+          hint: 'Dashed plan-of-record outlines and ahead / behind chips on every line that has a baseline.',
+          onClick: () => {
+            state.showBaseline = !state.showBaseline;
+            syncBaselineButtons();
+            renderGantt();
+          },
+        });
+      } else if (!project) {
         items.push({ label: '(Open a project tab first)', disabled: true });
       } else if (!has) {
         items.push({
@@ -35100,7 +35988,11 @@ async function init() {
       e.stopPropagation();
       if (!baseMenu.classList.contains('hidden')) { closeBaselineMenu(); return; }
       const project = state.filters.project;
-      if (!project) return;
+      // My work: a plain show / hide across every job on the page.
+      if (!project) {
+        if (isPersonalMode()) { state.showBaseline = !state.showBaseline; syncBaselineButtons(); renderGantt(); }
+        return;
+      }
       if (!projectHasBaseline(project)) { openBaselineMenu(); return; }
       state.showBaseline = !state.showBaseline;
       saveScheduleView();
@@ -35263,6 +36155,7 @@ async function init() {
       return;
     }
     if (state.cloneMode) handleCloneModeRowClick(e);
+    else if (state.xpredPick) handleXpredPickClick(e);
     else if (state.joinPick) handleJoinPickClick(e);
   }, true);
   tbodyEl.addEventListener('click', handleCellClick);
@@ -35448,112 +36341,44 @@ async function init() {
   // so it all fits in the viewport. Wheel-zoom still works for finer adjustments.
   document.getElementById('btn-zoom-fit').addEventListener('click', zoomToFit);
 
-  // ↕ Fit height — one-shot: recompute the ROW HEIGHT so the whole grid
-  // (every row + the Add task/action buttons under it) ends exactly at the
-  // bottom of the window, above the Notes/Procurement bars. Tiny rows on a
-  // laptop, taller rows on a big monitor — the entire schedule is visible
-  // with no vertical scrolling. The normal zoom / row-height controls keep
-  // working afterwards if the result is too small to read.
+  // ↕ Fit height — set the APP SCALE so every row fits the window with no
+  // vertical scrolling (Dan, 10/10: "all you should be doing is change the
+  // scale"). The Scale readout shows the result, so − / + from there keep
+  // their meaning and 85% always looks like 85%. Rows keep their height.
   document.getElementById('btn-zoom-height')?.addEventListener('click', () => {
     const grid = document.getElementById('schedule-grid');
     const table = document.getElementById('tasks-table');
-    const addBtn = document.getElementById('btn-add');
-    const bodyRows = document.querySelectorAll('#tasks-tbody tr');
-    if (!grid || !table || bodyRows.length === 0) return;
-    // Fit height is a pose, not a setting: the next zoom change puts the
-    // rows back to what they were (Dan, 10/07). Remember that height —
-    // the one from before the FIRST fit if the button is pressed twice.
-    const preFitH = state._fitHeightOn ? state._preFitRowH : state.layout.rowHeight;
-    // Marked on NOW, so a fit that bails part-way (too many rows for the
-    // screen) still hands the rows back on the next zoom change.
-    state._fitHeightOn = true;
-    state._preFitRowH = preFitH;
-    // Reset every scroll position first so measurements are in true
-    // viewport coordinates.
-    grid.scrollTop = 0;
-    window.scrollTo(0, 0);
-    // The hard bottom of usable screen = top of the FIXED Notes/Procurement
-    // bar stack (getBoundingClientRect works on fixed elements — the old
-    // offsetParent visibility check always failed for position:fixed and
-    // aimed at the wrong bottom). The in-flow footer (Project Release row)
-    // sits between the grid and those bars, so its height comes off too.
-    const stack = document.getElementById('schedule-drawer-stack');
-    const stackRect = stack ? stack.getBoundingClientRect() : null;
-    const stackTop = (stackRect && stackRect.height > 0) ? stackRect.top : window.innerHeight;
-    // THE bottom line (per Dan): the TOP of the gray footer bar that holds
-    // the Project Release button. The grid's last line should sit exactly on
-    // it. Fall back to the drawer-bar stack / window when the footer's gone.
-    const footer = document.getElementById('schedule-footer');
-    const footerRect = footer ? footer.getBoundingClientRect() : null;
-    const bottomLineY = (footerRect && footerRect.height > 0)
-      ? footerRect.top
-      : Math.min(stackTop, window.innerHeight);
-    const target = bottomLineY - 4;
-    // Phase 1 — coarse: drive the ADD-BUTTONS row's bottom toward that line.
-    // Section-header rows don't scale with --row-h, so each pass re-measures
-    // the real remaining gap instead of trusting one divide.
-    const contentBottom = () => (addBtn || table).getBoundingClientRect().bottom;
-    for (let i = 0; i < 14; i++) {
-      const gap = target - contentBottom();
-      if (Math.abs(gap) <= 3) break;
-      const step = Math.trunc(gap / bodyRows.length) || (gap > 0 ? 1 : -1);
-      const before = state.layout.rowHeight;
-      setRowHeight(before + step);
-      if (state.layout.rowHeight === before) break; // ROW_H_MIN/MAX clamp
-    }
-    // Phase 2 — the actual requirement is NO SCROLLING. Whatever the
-    // measurements said, check scrollability directly (the grid pane AND the
-    // page) and shrink 1px at a time until nothing scrolls. This is the
-    // guarantee the measurement math kept failing to give.
-    // "No scrolling" must hold for the GANTT pane too — its SVG height comes
-    // from rounded bar metrics, so it can run a few px taller than the grid
-    // and end up scrollable on its own (which breaks row alignment).
-    const ganttPane = document.getElementById('schedule-gantt');
-    if (ganttPane) ganttPane.scrollTop = 0;
-    // ZERO tolerance on the panes — even 1px of overflow shows a scrollbar
-    // and lets the Gantt drift out of row alignment. The page check keeps a
-    // 2px cushion (some browsers report a permanent 1px there).
-    const scrolls = () =>
-      grid.scrollHeight > grid.clientHeight ||
-      (ganttPane && ganttPane.scrollHeight > ganttPane.clientHeight) ||
-      (document.scrollingElement && document.scrollingElement.scrollHeight > window.innerHeight + 2);
-    let guard = 40;
-    while (scrolls() && guard-- > 0) {
-      const before = state.layout.rowHeight;
-      setRowHeight(before - 1);
-      if (state.layout.rowHeight === before) break; // at ROW_H_MIN — can't shrink further
-    }
-    if (scrolls()) {
-      showToast('Too many rows to fit this screen even at minimum row height — collapse some sections and try again.', { kind: 'info' });
-      return;
-    }
-    // Phase 3 — no wasted space either: GROW 1px at a time until scrolling
-    // would appear, then step back one. End state is always "the biggest
-    // rows that still fit with zero scrolling", no matter what the target
-    // math above thought.
-    guard = 60;
-    while (!scrolls() && guard-- > 0) {
-      const before = state.layout.rowHeight;
-      setRowHeight(before + 1);
-      if (state.layout.rowHeight === before) break; // at ROW_H_MAX — screen is bigger than max rows
-    }
-    if (scrolls()) setRowHeight(state.layout.rowHeight - 1);
-    // Micro-pass — the integer steps above stop one whole row-height step
-    // short (adding 1px × every data row would overflow). Fractional pixel
-    // row heights are fine in CSS, so spread the remaining slack across the
-    // rows to land flush, then back off in 0.25px steps if scrolling appears.
-    const applyFractional = (h) => {
-      state.layout.rowHeight = Math.max(ROW_H_MIN, Math.min(ROW_H_MAX, h));
-      applyRowHeight();
-      if (state.gantt) renderGantt();
+    if (!grid || !table || !document.querySelectorAll('#tasks-tbody tr').length) return;
+    // Anything still fitted the old way (rows) goes back first.
+    try { endFitHeightPose(); } catch (_) {}
+    const fitOnce = () => {
+      // Content height in layout px (unaffected by zoom); the pane's visible
+      // height is layout px too, so the ratio is the scale change needed.
+      const add = document.getElementById('btn-add');
+      const extra = add && add.offsetParent !== null ? add.offsetHeight + 10 : 8;
+      const need = table.offsetHeight + extra;
+      const have = grid.clientHeight;
+      if (!(need > 0) || !(have > 0)) return false;
+      const cur = _appScale();
+      let next = cur * (have / need);
+      // Down to the 5% step that still fits, between 50% and 150% — a short
+      // schedule scales UP to fill the window (Dan, 10/10).
+      next = Math.floor(next * 20) / 20;
+      next = Math.max(0.5, Math.min(1.5, next));
+      if (Math.abs(next - cur) < 0.001) return false;
+      setAppScale(next);
+      return true;
     };
-    for (let i = 0; i < 6; i++) {
-      const gap = target - contentBottom();
-      if (gap <= 3) break;
-      applyFractional(state.layout.rowHeight + gap / bodyRows.length);
-    }
-    let microGuard = 12;
-    while (scrolls() && microGuard-- > 0) applyFractional(state.layout.rowHeight - 0.25);
+    // The toolbar and banner shrink with the page, so the pane gets taller
+    // as the scale drops: measure again once after the first pass lands.
+    const say = () => {
+      const pct = Math.round(_appScale() * 100);
+      const still = grid.scrollHeight > grid.clientHeight + 1;
+      showToast(still
+        ? `Scaled to ${pct}% — the floor — and the schedule still runs past the window. Collapse some sections to fit the rest.`
+        : `Scaled to ${pct}% so every row fits. Use − / + on Scale from here; the 85% readout puts the default back.`, { kind: 'info' });
+    };
+    if (fitOnce()) setTimeout(() => { fitOnce(); say(); }, 320); else say();
     saveLayout();
   });
 

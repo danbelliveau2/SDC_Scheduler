@@ -1686,8 +1686,8 @@ body.customer-view .schedule-project-name-pill {
    customer view (and was the bug behind the "I can't toggle sections"
    feedback). */
 body.customer-view #tasks-table col:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]),
-body.customer-view #tasks-table tr:not(.group-header) th:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]),
-body.customer-view #tasks-table tr:not(.group-header) td:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]) {
+body.customer-view #tasks-table tr:not(.group-header):not(.who-alloc-row):not(.who-empty-row) th:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]),
+body.customer-view #tasks-table tr:not(.group-header):not(.who-alloc-row):not(.who-empty-row) td:not([data-col="line"]):not([data-col="name"]):not([data-col="assignee"]):not([data-col="start"]):not([data-col="finish"]) {
   display: none !important;
 }
 /* Keep the grid as TIGHT as possible so the Gantt has every available pixel.
@@ -7041,8 +7041,6 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
    person across many projects — predecessors are intra-project relationships
    that don't carry meaning here. Hides both the header cell and every body
    cell at once via the [data-col="pred"] attribute. */
-body.personal-mode #tasks-table [data-col="pred"] { display: none !important; }
-body.personal-mode #tasks-colgroup col[data-col="pred"] { display: none !important; }
 /* The page is one person; a column saying who would say it again. */
 body.personal-mode #tasks-table [data-col="assignee"] { display: none !important; }
 body.personal-mode #tasks-colgroup col[data-col="assignee"] { display: none !important; }
@@ -17971,3 +17969,271 @@ body.customer-view #tb-machines { display: none !important; }
 
 /* An empty contact line says so in grey italics, not in a number that looks real. */
 #team-grid.show-contact .team-member-contact .team-member-field::placeholder { color: #a3b1c2; font-style: italic; }
+
+/* My work: the job number rides in front of the task; the Project column
+   and the Lists group (nothing to list across jobs) are gone. */
+body.personal-mode #tasks-table [data-col="project"] { display: none !important; }
+body.personal-mode #tasks-colgroup col[data-col="project"] { display: none !important; }
+body.personal-mode #tb-lists { display: none !important; }
+.name-proj-chip-unused {
+  display: inline-block; vertical-align: middle; margin-right: 2px;
+  padding: 0 5px; border-radius: 4px;
+  font-size: 9px; font-weight: var(--fw-extrabold, 800); letter-spacing: .04em; line-height: 14px;
+  background: #e8eef5; color: #3a5068; cursor: pointer;
+}
+.name-proj-chip:hover { background: var(--sdc-primary, #1574c4); color: #fff; }
+
+/* My work, whole department: each person opens with a name pill (the
+   machine-pill look) and a thick dotted rule across the grid; the Gantt
+   draws the same rule (drawPersonDividers). */
+#tasks-table tr.who-row td { border-top: 3px dotted #94a3b8 !important; background: #f6f9fc; padding: 5px 8px; }
+#tasks-table tr.who-row:first-child td { border-top: 0 !important; }
+#tasks-table tr.who-row .group-caret { margin-right: 6px; }
+#tasks-table tr.who-row .who-pill {
+  display: inline-flex; align-items: center; gap: 4px; vertical-align: middle;
+  padding: 2px 11px; border-radius: 12px;
+  background: var(--sdc-primary, #1574c4); color: #fff; border: 1px solid var(--sdc-primary, #1574c4);
+  font-size: var(--fs-sm); font-weight: var(--fw-bold); letter-spacing: .01em; text-transform: none;
+}
+#tasks-table tr.who-row.is-unassigned .who-pill { background: #fff; color: #3a5068; border: 1px dashed #94a3b8; }
+#tasks-table tr.who-row .who-count { margin-left: 8px; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: #94a3b8; text-transform: none; letter-spacing: 0; }
+
+/* My work: the Allocation banner under each person. The Gantt paints the
+   red spans at this row's height (drawPersonAllocStrips). */
+#tasks-table tr.who-alloc-row td {
+  height: 16px; padding: 0 8px; background: #fbfcfe; border-top: 1px dashed #d6dee8;
+  font-size: 9px; font-weight: var(--fw-extrabold, 800); letter-spacing: .08em; text-transform: uppercase; color: #94a3b8;
+}
+#tasks-table tr.who-alloc-row .who-alloc-note { margin-left: 8px; font-weight: var(--fw-semibold); letter-spacing: 0; text-transform: none; }
+#tasks-table tr.who-alloc-row.is-over .who-alloc-note { color: #64748b; font-weight: var(--fw-bold); }
+
+/* Allocation row: one dated chip per overlap; click jumps the chart. */
+/* Tall enough for two label lines over the band on the chart. */
+#tasks-table tr.who-alloc-row td { height: 40px; padding: 0 8px; white-space: nowrap; line-height: 40px; vertical-align: middle; }
+#tasks-table tr.who-alloc-row .who-alloc-chip {
+  display: inline-block; vertical-align: middle; margin: 1px 0 1px 5px; padding: 0 6px; border: 0; border-radius: 3px;
+  font: inherit; font-size: 9px; font-weight: var(--fw-extrabold, 800); letter-spacing: 0; text-transform: none; line-height: 14px;
+  color: #fff; cursor: pointer; white-space: nowrap;
+}
+#tasks-table tr.who-alloc-row .who-alloc-chip:hover { outline: 2px solid #0a2540; outline-offset: 0; }
+#tasks-table tr.who-alloc-row .who-alloc-more {
+  display: inline-block; vertical-align: middle; margin-left: 6px; padding: 0 6px; border: 1px solid #c8d5e3; border-radius: 3px; background: #fff;
+  font: inherit; font-size: 9px; font-weight: var(--fw-bold); letter-spacing: 0; text-transform: none; line-height: 14px; color: var(--sdc-primary, #1574c4); cursor: pointer;
+}
+/* Compress has a ceiling on the Task column; past it the description clips. */
+#tasks-table td[data-col="name"] .name-cell-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ⚠ Overlaps card: top right of each person's block on the chart. Small,
+   like the summary card, and scrollable when a person has many. */
+.alloc-card {
+  position: absolute; right: 14px; z-index: 7; width: 176px; overflow: auto;
+  background: var(--surface, #fff); border: 2px solid var(--anchor-fill, #befa4f); border-radius: 8px; box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+  padding: 4px 6px 5px; font-size: 10px; line-height: 1.25; box-sizing: border-box;
+}
+.alloc-card-job { max-height: 46vh; }
+.alloc-card-head { font-size: 9px; font-weight: var(--fw-extrabold, 800); letter-spacing: .06em; text-transform: uppercase; color: #3a5068; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.alloc-card-who { margin: 4px 0 1px; font-size: 9px; font-weight: var(--fw-extrabold, 800); letter-spacing: .04em; text-transform: uppercase; color: #3a5068; border-top: 1px solid #e2e8f0; padding-top: 3px; }
+.alloc-card-who span { font-weight: var(--fw-semibold); letter-spacing: 0; text-transform: none; color: #64748b; }
+.alloc-card-head span { font-weight: var(--fw-semibold); letter-spacing: 0; text-transform: none; color: #64748b; }
+.alloc-card-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; padding: 1px 2px; border: 0; background: none; font: inherit; color: var(--text, #1f2937); cursor: pointer; border-radius: 4px; text-align: left; }
+.alloc-card-row:hover { background: #eef5fb; }
+.alloc-card-when { font-weight: var(--fw-bold); white-space: nowrap; }
+.alloc-card-pct { flex: 0 0 auto; min-width: 34px; text-align: center; padding: 0 5px; border-radius: 3px; color: #fff; font-weight: var(--fw-extrabold, 800); font-size: 9px; line-height: 14px; }
+
+/* The summary card, hidden: a small pill in its corner brings it back. */
+.project-stats-restore {
+  position: absolute; top: 68px; right: 14px; z-index: 8;
+  padding: 2px 9px; border: 1px solid var(--anchor-fill, #befa4f); border-radius: 10px; background: #fff;
+  font: inherit; font-size: 10px; font-weight: var(--fw-bold); letter-spacing: .04em; color: #3a5068; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+}
+.project-stats-restore:hover { background: #f4fbe6; }
+
+/* Portal, a partner's page (ALTEN): one block per person, their open lines. */
+.portal-partner { padding: 8px 24px 40px; }
+.portal-partner-intro { margin: 0 0 14px; }
+.portal-partner-block { margin: 0 0 18px; }
+.portal-partner-name { margin: 0 0 6px; font-size: var(--fs-lg); font-weight: var(--fw-extrabold, 800); color: var(--sdc-dark, #061d39); }
+.portal-partner-name span { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: #64748b; margin-left: 8px; }
+.portal-partner .pstate-behind { color: #b91c1c; font-weight: var(--fw-bold); }
+.portal-partner .pstate-running { color: #1574c4; font-weight: var(--fw-bold); }
+
+/* Portal picker: SDC and the partners, a rule, then the customers. */
+.portal-pick-rule { border-top: 1px dashed #c8d5e3; margin: 5px 6px; }
+.portal-partner-dept { margin: 4px 0; font-size: var(--fs-md); color: var(--text, #1f2937); }
+.portal-partner-dept b { display: inline-block; min-width: 170px; color: #3a5068; }
+/* A partner's schedule in the customer view: the identity row is ours. */
+body.customer-view #banner-left-extra { display: none !important; }
+
+/* Customer view keeps the Allocation band rows (the column-hiding rule
+   above would collapse their single spanning cell). */
+body.customer-view #tasks-table tr.who-alloc-row td,
+body.customer-view #tasks-table tr.who-empty-row td { display: table-cell !important; }
+/* The ⚠ Overlaps toggle is a partner's (ALTEN), never a customer's. */
+body.customer-view:not(.portal-partner) #btn-view-overlaps { display: none !important; }
+body.customer-view:not(.portal-partner) #tasks-table tr.who-alloc-row { display: none !important; }
+
+/* Department headers in a mixed group (ALTEN): a bigger pill in the
+   department's colour with the lime edge; mech blue, controls green. */
+#tasks-table tr[data-section-key^="who-dept-"] td { padding: 6px 8px 4px; background: #fff; }
+#tasks-table tr.group-header[data-section-key^="who-dept-"] td .group-label {
+  display: inline; padding: 0; border: 0; border-radius: 0; background: transparent;
+  font-size: 13px !important; font-weight: var(--fw-extrabold, 800); letter-spacing: .06em; color: #1e293b;
+}
+#tasks-table tr.group-header[data-section-key="who-dept-mech"] td .group-label     { color: #1e3a8a; }
+#tasks-table tr.group-header[data-section-key="who-dept-controls"] td .group-label { color: #14532d; }
+#tasks-table tr.group-header[data-section-key="who-dept-build"] td .group-label    { color: #7c2d12; }
+#tasks-table tr.group-header[data-section-key="who-dept-wire"] td .group-label     { color: #713f12; }
+#tasks-table tr.group-header[data-section-key="who-dept-service"] td .group-label  { color: #134e4a; }
+
+/* My work (a person, a department, a partner): the predecessor arrows tie
+   lines across jobs that have nothing to do with each other here. Gone. */
+body.personal-mode .gantt .sdc-arrows, body.personal-mode .gantt .arrow,
+body.personal-mode .gantt .arrow-lag-pill { display: none !important; }
+
+/* A predecessor on another schedule: the ↗ reads as "not a line here". */
+#tasks-table td[data-col="pred"] { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xpred-card { width: min(640px, 94vw); }
+.xpred-type { display: flex; gap: 18px; align-items: center; margin: 8px 0 10px; font-size: var(--fs-md); color: var(--text-muted, #64748b); }
+.xpred-type select, .xpred-type input { font: inherit; font-size: var(--fs-md); padding: 4px 8px; border: 1px solid #c8d5e3; border-radius: 6px; background: #fff; color: var(--text); margin-left: 6px; }
+.xpred-type input { width: 64px; }
+.xpred-list { max-height: 52vh; overflow: auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 4px; }
+.xpred-job { font-size: 10px; font-weight: var(--fw-extrabold, 800); letter-spacing: .06em; text-transform: uppercase; color: #3a5068; padding: 8px 8px 3px; }
+.xpred-row { display: grid; grid-template-columns: 1fr auto 44px; gap: 10px; align-items: center; width: 100%; text-align: left; padding: 5px 8px; border: 0; border-radius: 6px; background: none; font: inherit; font-size: var(--fs-md); color: var(--text); cursor: pointer; }
+.xpred-row:hover { background: #eef5fb; }
+.xpred-row.is-linked { background: #f4fbe6; }
+.xpred-row.is-linked .xpred-name::after { content: '  ↗ linked'; color: #5a9a00; font-size: 10px; font-weight: var(--fw-bold); }
+.xpred-dates { color: var(--text-muted, #64748b); white-space: nowrap; }
+.xpred-pct { text-align: right; color: var(--text-muted, #64748b); }
+
+
+/* Predecessor pick mode on My work: every line is a target. */
+body.xpred-pick-mode #tasks-tbody tr[data-id] { cursor: pointer; }
+body.xpred-pick-mode #tasks-tbody tr[data-id]:hover td { background: #eef5fb !important; }
+body.xpred-pick-mode #tasks-tbody tr[data-id] td[data-col] { user-select: none; }
+body.xpred-pick-mode .machine-clone-banner { background: var(--sdc-primary, #1574c4); }
+
+/* Pick banner: the predecessor is typed here, against this page's line numbers. */
+.machine-clone-banner .mcb-input { font: inherit; font-size: var(--fs-md); padding: 4px 10px; border: 1px solid rgba(255,255,255,0.6); border-radius: 6px; background: #fff; color: var(--text); width: 170px; margin-left: 8px; }
+.machine-clone-banner .mcb-btn-primary { background: var(--sdc-accent, #ffde51); color: #061d39; border-color: var(--sdc-accent, #ffde51); font-weight: var(--fw-extrabold, 800); }
+
+/* Predecessor pill: floats over the chart, low and centred, out of the way. */
+.xpred-pop {
+  position: absolute; left: 50%; bottom: 56px; transform: translateX(-50%); z-index: 9;
+  width: min(560px, 90%); padding: 10px 14px 9px; box-sizing: border-box;
+  background: #fff; border: 2px solid var(--sdc-primary, #1574c4); border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.22);
+}
+.xpred-pop-title { font-size: var(--fs-md); color: var(--text, #1f2937); margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xpred-pop-job { color: #64748b; }
+.xpred-pop-row { display: flex; gap: 8px; align-items: center; }
+.xpred-pop-row .app-dialog-input { flex: 1 1 auto; margin: 0; }
+.xpred-pop-hint { margin-top: 6px; font-size: var(--fs-xs); color: #94a3b8; }
+
+/* A predecessor on another schedule: purple, with the link and the job. */
+#tasks-table td[data-col="pred"] .pred-x { color: #6d28d9; font-weight: var(--fw-bold); }
+
+/* ── Right-click menu, redone (Dan, 10/10): a card in the app's own style —
+   bigger text, named groups, the SDC blue edge. Applies to every menu. ── */
+.context-menu {
+  border: 2px solid var(--sdc-primary, #1574c4);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(6, 29, 57, 0.22);
+  padding: 8px;
+  min-width: 260px;
+  gap: 1px;
+}
+.context-menu button {
+  padding: 7px 12px;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+  border-radius: 8px;
+  line-height: 1.25;
+}
+.context-menu button:hover { background: #eef5fb; }
+.context-menu button.danger { color: #b91c1c; }
+.context-menu button.danger:hover { background: #fef2f2; }
+.context-menu-header {
+  padding: 8px 12px 3px;
+  font-size: 10px; font-weight: var(--fw-extrabold, 800); letter-spacing: .1em; text-transform: uppercase; color: #94a3b8;
+}
+.context-menu-title {
+  padding: 4px 12px 8px; margin: -2px -2px 4px; border-bottom: 1px solid #e2e8f0;
+  font-size: var(--fs-base); font-weight: var(--fw-extrabold, 800); color: var(--sdc-dark, #061d39);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 360px;
+}
+.context-menu-title span { font-weight: var(--fw-semibold); color: #64748b; margin-left: 6px; }
+.context-menu-sep { margin: 6px 4px; }
+.context-menu button .cm-hint { margin-left: auto; padding-left: 14px; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: #94a3b8; white-space: nowrap; }
+
+.context-menu button.is-disabled { opacity: .5; cursor: default; }
+.context-menu button.is-disabled:hover { background: transparent; }
+
+/* Side-by-side buttons inside the right-click card. */
+.context-menu .cm-row { display: flex; gap: 6px; padding: 2px 4px; }
+.context-menu .cm-row button {
+  flex: 1 1 0; justify-content: center; padding: 6px 8px;
+  border: 1px solid #c8d5e3; border-radius: 8px; background: #fff; font-size: var(--fs-md); white-space: nowrap;
+}
+.context-menu .cm-row button:hover { background: #eef5fb; border-color: #94a3b8; }
+.context-menu .cm-row button.primary { border-color: var(--sdc-primary, #1574c4); }
+.context-menu .cm-row button.danger { border-color: #fecaca; }
+.context-menu .cm-row button.danger:hover { background: #fef2f2; border-color: #f87171; }
+.context-menu .cm-row button.is-disabled, .context-menu .cm-row button.is-disabled:hover { background: #f8fafc; border-color: #e2e8f0; color: #94a3b8; }
+
+/* Every row is a button and looks like one; headers are labels on a band. */
+.context-menu button {
+  border: 1px solid #dbe4ee; background: #fbfdff; margin: 1px 0;
+  padding: 6px 12px; font-size: var(--fs-md);
+}
+.context-menu button:hover { background: #eef5fb; border-color: #94a3b8; }
+.context-menu button.primary { background: #eaf3fc; border-color: var(--sdc-primary, #1574c4); }
+.context-menu button.danger { border-color: #fecaca; background: #fff; }
+.context-menu button.danger:hover { background: #fef2f2; border-color: #f87171; }
+.context-menu button.is-disabled, .context-menu button.is-disabled:hover { background: #f8fafc; border-color: #eef2f6; color: #94a3b8; }
+.context-menu-header {
+  margin: 6px -4px 2px; padding: 5px 14px; background: #f1f5f9; border-radius: 6px;
+  color: #64748b; font-size: 10px; letter-spacing: .12em;
+}
+.context-menu-title { padding: 2px 10px 8px; }
+.context-menu button .cm-more { margin-left: 8px; color: #94a3b8; font-size: 15px; line-height: 1; }
+.context-menu button .cm-hint + .cm-more { margin-left: 8px; }
+
+/* Right-click card, pass four: headers are pills (the lime edge the project
+   name wears), the choices under them are plain rows. Drag it by the title,
+   resize it by the corner. */
+.context-menu { resize: both; overflow: auto; max-height: 92vh; max-width: 92vw; min-width: 280px; }
+.context-menu button { border: 0; background: transparent; margin: 0; padding: 6px 12px 6px 16px; }
+.context-menu button:hover { background: #eef5fb; }
+.context-menu button.primary { background: transparent; }
+.context-menu button.danger { background: transparent; }
+.context-menu button.danger:hover { background: #fef2f2; }
+.context-menu button.is-disabled, .context-menu button.is-disabled:hover { background: transparent; color: #94a3b8; }
+.context-menu-header {
+  display: inline-block; align-self: flex-start;
+  margin: 10px 4px 4px; padding: 3px 14px; border-radius: 14px;
+  background: #fff; border: 2px solid var(--anchor-fill, #befa4f);
+  color: var(--sdc-dark, #061d39); font-size: 11px; font-weight: var(--fw-extrabold, 800); letter-spacing: .08em; text-transform: uppercase;
+}
+.context-menu-title.cm-handle, .context-menu-grip.cm-handle { cursor: move; user-select: none; }
+.context-menu-grip { height: 10px; margin: -2px 40% 4px; border-radius: 4px; background: repeating-linear-gradient(90deg, #cbd5e1 0 3px, transparent 3px 6px); }
+.context-menu-title { background: #f6f9fc; margin: -8px -8px 6px; padding: 10px 14px; border-radius: 10px 10px 0 0; border-bottom: 1px solid #e2e8f0; }
+
+/* Default scale button, left of − / %. Lit when the scale is at your default. */
+.app-scale-default { font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-bold); letter-spacing: .02em; padding: 0 9px; height: 26px; margin-right: 6px; border: 1px solid #c8d5e3; border-radius: 7px; background: #fff; color: #4b5e70; cursor: pointer; white-space: nowrap; }
+.app-scale-default:hover { background: #eef5fb; }
+.app-scale-default.is-active { border-color: var(--sdc-primary, #1574c4); color: var(--sdc-primary, #1574c4); }
+
+/* Group names: a solid underline, not a pill — pills look clickable (Dan, 10/10). */
+.context-menu-header {
+  display: block; align-self: stretch; margin: 12px 4px 4px; padding: 0 0 4px 4px; border: 0; border-radius: 0; background: transparent;
+  border-bottom: 2px solid var(--sdc-dark, #061d39); color: var(--sdc-dark, #061d39);
+  font-size: 11px; font-weight: var(--fw-extrabold, 800); letter-spacing: .08em; text-transform: uppercase;
+}
+/* The underline wins over the older header rules above. */
+.context-menu .context-menu-header { border: 0 !important; border-bottom: 3px solid var(--sdc-dark, #061d39) !important; border-radius: 0 !important; background: transparent !important; }
+/* A little colour back (Dan, 10/10): SDC blue labels and underline, lime
+   under the title. */
+.context-menu .context-menu-header { color: var(--sdc-primary, #1574c4) !important; border-bottom-color: var(--sdc-primary, #1574c4) !important; }
+.context-menu-title { border-bottom: 3px solid var(--anchor-fill, #befa4f); background: #f6f9fc; }
+.context-menu button .cm-more { color: var(--sdc-primary, #1574c4); }
