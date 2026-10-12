@@ -111,7 +111,7 @@ A bare `<input type="file">` renders the BROWSER's button — grey, square, syst
 - **Grid row stays normal.** No row-wide hash, no row-wide lime border. Just the green-check % pill.
 - **Gantt bar: lime green outline + diagonal lime hash lines through the bar.** Description label stays readable.
 - **NO ahead/behind drift chip on done tasks.** Baseline feature already covers finish-variance.
-- **NO over-allocation warning on done tasks.** Marked complete means the work got done, so whether the resource "was available" is settled. Done rows are still booked into the allocation day-map (the person really was busy), they just never get flagged.
+- **NO over-allocation warning on done tasks, and done tasks book nothing.** Rule as of 2026-10-12 (Dan): over-allocation is a person's OPEN lines on real jobs (no templates, no Sales / Test / On Hold / Closed), summed per day. Every line on a day over 100% is over-allocated for THAT day only — both lines, not just the lower priority — and the Gantt paints a red band across just those days (`drawOverAllocSpans`). Verbatim: *"if it's not the only assignment, then it can't be red… there's times where a task is red and times where a task isn't red."* The old whole-bar red is gone.
 - **Completed column exists in the grid** — shows `completed_on` date. Server auto-stamps when progress → 100, clears when it drops below.
 
 ### Backlog

@@ -4,6 +4,18 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.20',
+    date: '2026-10-12',
+    notes: [
+      'Over-allocation is honest now: only the days that are over, on every line that shares them.',
+      '',
+      'SCHEDULE:',
+      '   ▸ A line is over-allocated only on the days the person is booked past 100% by their open lines on real jobs. Nothing finished, nothing on a template or a Sales / Test / On Hold / Closed schedule counts — if their page shows nothing else, the line cannot be red.',
+      '   ▸ Every line on an over day wears it, not just the lower priority: Vision over Test Engineer 1 marks both, for the same days.',
+      '   ▸ On the Gantt the red is a band across just those days, the description still readable through it. Hover for the dates and the percent. The whole-bar red is gone. The Assigned To cell stays red and its hover lists the days.',
+    ],
+  },
+  {
     version: '13.19',
     date: '2026-10-12',
     notes: [

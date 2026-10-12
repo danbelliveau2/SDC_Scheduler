@@ -2357,7 +2357,7 @@ function cellHtml(t, key) {
       if (over) classes.push('over-allocated');
       if (ph)   classes.push('placeholder-assignee');
       const title = over
-        ? 'title="Over-allocated — earlier-priority tasks already fill this person\'s capacity"'
+        ? `title="${escapeHtml('Over-allocated ' + overAllocSpans(t.id).map(x => fmtDate(x.from) + (x.from === x.to ? '' : ' – ' + fmtDate(x.to)) + ' (' + x.peak + '%)').join(', ') + ' — more than 100% booked on those days')}"`
         : (ph ? 'title="Placeholder — replace with a real team member when staffing this task"' : '');
       return `<td class="${classes.join(' ')}" data-col="assignee" ${title}>${escapeHtml(t.assignee || '')}</td>`;
     }
@@ -4659,11 +4659,9 @@ function injectPhaseStyles() {
   // Over-allocated overrides — listed before critical so the critical-path outline
   // wins when both apply (so a critical+over-allocated task still reads as on the
   // critical path).
-  const overAlloc = `
-    .gantt .bar-wrapper.over-allocated .bar { fill: #fee2e2; stroke: #dc2626; stroke-width: 2; }
-    .gantt .bar-wrapper.over-allocated .bar-progress { fill: #dc2626; opacity: 0.45; }
-    .gantt .bar-wrapper.over-allocated .bar-label { fill: #b91c1c; font-weight: var(--fw-extrabold); }
-  `;
+  // The whole-bar red is gone (Dan, 10/12: "it's not all or nothing"):
+  // drawOverAllocSpans paints only the days that are over.
+  const overAlloc = '';
 
   // Critical path — bars and milestone diamonds on the binding chain from Receipt
   // of PO to FAT get a BOLD red outline (3.5px). The fill stays whatever the
@@ -5247,6 +5245,7 @@ function renderGantt() {
   try { wireMyWorkBarHover(); } catch (_) {}
   try { drawScheduleStatus(); } catch (_) {}
   try { drawDoneHashOverlay(); } catch (_) {}
+  try { drawOverAllocSpans(); } catch (_) {}
   try { drawWeekdayLetters(); } catch (_) {}
   try { drawFinancialOverlay(); } catch (_) {}
   try { drawPenaltyClauseLine(); } catch (_) {}
@@ -5696,6 +5695,58 @@ function drawWeekdayLetters() {
 // The pattern is defined once per render in <defs> and reused by every
 // overlay rect. The overlay sits ABOVE the bar + bar-progress but BELOW
 // the bar-label, so the task name stays readable on top.
+// The over-allocated days of a bar, and only those: a red band across the
+// bar for each span, the description still readable through it. Appended
+// to the wrapper (never insertBefore), inline math (no URL refs).
+function drawOverAllocSpans() {
+  try {
+    const svg = document.querySelector('#gantt-container .gantt');
+    if (!svg) return;
+    svg.querySelectorAll('.sdc-over-span').forEach(el => el.remove());
+    if (document.body.classList.contains('customer-view')) return;
+    if (!state.gantt || !state.gantt.gantt_start || !_overAllocSpans.size) return;
+    const g0 = state.gantt;
+    const cw = g0.options.column_width;
+    const mode = g0.options.view_mode || 'Week';
+    const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
+    const pxPerDay = cw / step;
+    for (const task of (state._visibleTasks || state.tasks)) {
+      const spans = overAllocSpans(task.id);
+      if (!spans.length) continue;
+      const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
+      const bar = wrap && wrap.querySelector('.bar');
+      if (!bar) continue;
+      const x = +bar.getAttribute('x'), y = +bar.getAttribute('y');
+      const w = +bar.getAttribute('width'), h = +bar.getAttribute('height');
+      if (!(w > 0 && h > 0)) continue;
+      // Measured against the bar's own ends, so a span that is the whole
+      // line covers exactly the bar, whatever the chart's end-day convention.
+      const padL = x - workDayOffset(task.start_date, g0.gantt_start) * pxPerDay;
+      const padR = (x + w) - workDayOffset(task.end_date, g0.gantt_start) * pxPerDay;
+      if (!Number.isFinite(padL) || !Number.isFinite(padR)) continue;
+      spans.forEach(sp => {
+        let x1 = workDayOffset(sp.from, g0.gantt_start) * pxPerDay + padL;
+        let x2 = workDayOffset(sp.to, g0.gantt_start) * pxPerDay + padR;
+        if (!Number.isFinite(x1) || !Number.isFinite(x2)) return;
+        x1 = Math.max(x, x1); x2 = Math.min(x + w, x2);
+        if (!(x2 - x1 > 0.5)) return;
+        const r = document.createElementNS(SVG_NS, 'rect');
+        r.setAttribute('class', 'sdc-over-span');
+        r.setAttribute('x', String(x1)); r.setAttribute('y', String(y));
+        r.setAttribute('width', String(x2 - x1)); r.setAttribute('height', String(h));
+        r.setAttribute('rx', '2');
+        r.setAttribute('fill', 'rgba(220,38,38,0.22)');
+        r.setAttribute('stroke', '#dc2626'); r.setAttribute('stroke-width', '2');
+        r.style.pointerEvents = 'none';
+        const tip = document.createElementNS(SVG_NS, 'title');
+        tip.textContent = 'Over-allocated ' + fmtDate(sp.from) + (sp.from === sp.to ? '' : ' – ' + fmtDate(sp.to)) + ' · ' + sp.peak + '% booked';
+        r.appendChild(tip);
+        wrap.appendChild(r);
+      });
+    }
+  } catch (_) { /* cosmetic — the chain must continue */ }
+}
+
 function drawDoneHashOverlay() {
   // Diagonal stripes via SVG diagonal-line elements. Each completed bar
   // gets a group of 45° lines that span its bounds. No clipPath — we use
@@ -32526,45 +32577,57 @@ async function loadTasks() {
   }
 }
 
-// Walk each assignee's tasks in priority order, building a day → cumulative-alloc map.
-// A task is "over-allocated" if its allocation, ADDED on top of higher-priority tasks
-// already on the books, would push the day total over 100% anywhere in its span.
-// This is what drives the bold-red assignee cell in the Schedule grid: priority 1 tasks
-// always fit, priority N tasks only fit if priorities 1..N-1 left enough headroom.
+// Over-allocation, the rule as of 10/12 (Dan): a person's OPEN lines on
+// real jobs, summed per day. Any day over 100% is over-allocated, and EVERY
+// line on that day wears it — not the lower-priority one alone — and only
+// for those days. A line is never red because of work that is finished,
+// on a template, or on a Sales / Test / On Hold / Closed schedule: none of
+// that shows on the person's page, so none of it may colour what does.
+// Returns the ids with at least one over day; the days themselves are in
+// _overAllocSpans (id → [{ from, to, peak }]) for the chart and the cell.
+let _overAllocSpans = new Map();
+function overAllocSpans(id) { return _overAllocSpans.get(Number(id)) || _overAllocSpans.get(String(id)) || []; }
 function computeOverAllocatedTasks(tasks) {
   const flagged = new Set();
+  const spans = new Map();
   const byAssignee = {};
   for (const t of tasks) {
     if (!t.assignee || !t.start_date || !t.end_date || t.is_milestone) continue;
-    // Placeholders aren't real people — they're role-stand-ins on templates. A
-    // placeholder showing up on every task in a section is expected (that's its job)
-    // and shouldn't paint everything red.
     if (isPlaceholder(t.assignee)) continue;
+    if (!t.project || isTemplateProject(t.project) || projectWorkOff(t.project) || projectIsInactive(t.project)) continue;
+    if (getEffectiveProgress(t) >= 100) continue;
     const a = t.allocation == null ? 90 : Number(t.allocation);
     if (!a || a <= 0) continue;
     (byAssignee[t.assignee] ||= []).push(t);
   }
+  const DAY = 86400000;
   for (const list of Object.values(byAssignee)) {
-    // Sort by priority asc, then id asc as a stable tiebreaker so two priority-1 tasks
-    // get a deterministic walk order.
-    list.sort((x, y) => (x.priority || 1) - (y.priority || 1) || x.id - y.id);
+    if (list.length < 2) continue;                 // alone, nothing can overlap
     const allocByDay = new Map();
+    const span = (t) => [new Date(t.start_date + 'T00:00:00Z').getTime(), new Date(t.end_date + 'T00:00:00Z').getTime()];
     for (const t of list) {
       const a = t.allocation == null ? 90 : Number(t.allocation);
-      const startMs = new Date(t.start_date + 'T00:00:00Z').getTime();
-      const endMs   = new Date(t.end_date   + 'T00:00:00Z').getTime();
-      let pushesOver = false;
-      for (let d = startMs; d <= endMs; d += 86400000) {
-        if ((allocByDay.get(d) || 0) + a > 100) { pushesOver = true; break; }
+      const [s0, e0] = span(t);
+      for (let d = s0; d <= e0; d += DAY) allocByDay.set(d, (allocByDay.get(d) || 0) + a);
+    }
+    for (const t of list) {
+      const [s0, e0] = span(t);
+      const out = [];
+      let cur = null;
+      for (let d = s0; d <= e0; d += DAY) {
+        const total = allocByDay.get(d) || 0;
+        if (total > 100) {
+          if (cur && cur.toMs === d - DAY) { cur.toMs = d; cur.peak = Math.max(cur.peak, total); }
+          else { if (cur) out.push(cur); cur = { fromMs: d, toMs: d, peak: total }; }
+        }
       }
-      if (pushesOver && getEffectiveProgress(t) < 100) flagged.add(t.id);
-      // Always book this task into the running map — even if it pushes over, we still
-      // count it for downstream priorities so they see the realistic load.
-      for (let d = startMs; d <= endMs; d += 86400000) {
-        allocByDay.set(d, (allocByDay.get(d) || 0) + a);
-      }
+      if (cur) out.push(cur);
+      if (!out.length) continue;
+      flagged.add(t.id);
+      spans.set(t.id, out.map(x => ({ from: new Date(x.fromMs).toISOString().slice(0, 10), to: new Date(x.toMs).toISOString().slice(0, 10), peak: x.peak })));
     }
   }
+  _overAllocSpans = spans;
   return flagged;
 }
 async function loadTeam() {
