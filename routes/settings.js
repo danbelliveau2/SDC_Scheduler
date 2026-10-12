@@ -1,4 +1,5 @@
 'use strict';
+const { customerScope } = require('../lib/customerScope');
 const { Router } = require('express');
 
 module.exports = function createRouter(deps) {
@@ -31,9 +32,13 @@ module.exports = function createRouter(deps) {
       if (scopeProject || req.shareCustomer) {
         for (const key of ['risk_plans', 'project_leads']) {
           if (!out[key] || typeof out[key] !== 'object') continue;
-          const allowed = scopeProject
-            ? new Set([scopeProject])
-            : new Set((await pool.query('SELECT name FROM projects WHERE customer = ?', [req.shareCustomer]))[0].map(r => r.name));
+          // A partner (ALTEN) reads no job's risk plan or leads: its scope is people, not jobs.
+          let allowed;
+          if (scopeProject) allowed = new Set([scopeProject]);
+          else {
+            const scope = await customerScope(pool, req.shareCustomer);
+            allowed = new Set(scope.partner ? [] : scope.projects);
+          }
           const filtered = {};
           for (const proj of Object.keys(out[key])) {
             if (allowed.has(proj)) filtered[proj] = out[key][proj];

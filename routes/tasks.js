@@ -1,4 +1,5 @@
 'use strict';
+const { customerScope } = require('../lib/customerScope');
 const { Router } = require('express');
 
 const FIELDS = ['name', 'project', 'phase', 'phase_group', 'department', 'sub_department', 'assignee', 'start_date', 'end_date', 'duration_days', 'predecessors', 'is_milestone', 'progress', 'allocation', 'priority', 'notes', 'sort_order', 'anchor_key', 'baseline_start_date', 'baseline_end_date', 'duration_link_task_id', 'is_action', 'dates_locked', 'completed_on', 'machine', 'join_prev'];
@@ -114,12 +115,18 @@ module.exports = function createRouter(deps) {
       if (req.shareProject) {
         [tasks] = await pool.query('SELECT * FROM tasks WHERE project = ? ORDER BY sort_order, id', [req.shareProject]);
       } else if (req.shareCustomer) {
-        [tasks] = await pool.query(
-          `SELECT t.* FROM tasks t
-           JOIN projects p ON p.name = t.project
-           WHERE p.customer = ? ORDER BY t.sort_order, t.id`,
-          [req.shareCustomer]
-        );
+        // A customer's own jobs; a partner (ALTEN) gets only the rows assigned
+        // to its members. See lib/customerScope.js.
+        const scope = await customerScope(pool, req.shareCustomer);
+        if (scope.partner) {
+          [tasks] = scope.assignees.length
+            ? await pool.query('SELECT * FROM tasks WHERE assignee IN (?) ORDER BY sort_order, id', [scope.assignees])
+            : [[]];
+        } else {
+          [tasks] = scope.projects.length
+            ? await pool.query('SELECT * FROM tasks WHERE project IN (?) ORDER BY sort_order, id', [scope.projects])
+            : [[]];
+        }
       } else {
         [tasks] = await pool.query('SELECT * FROM tasks ORDER BY sort_order, id');
       }

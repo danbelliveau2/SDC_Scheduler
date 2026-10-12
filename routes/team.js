@@ -1,4 +1,5 @@
 'use strict';
+const { customerScope } = require('../lib/customerScope');
 const { Router } = require('express');
 const planner = require('../lib/plannerClient');
 const { isEtcSharedConfigured, etcQuery } = require('../lib/mysqlDb');
@@ -191,7 +192,13 @@ module.exports = function createRouter(deps) {
 
   router.get('/api/team', async (req, res) => {
     try {
-      const [rows] = await pool.query('SELECT * FROM team_members ORDER BY discipline, sort_order, name');
+      // A partner's session (ALTEN) sees only its own people — not the roster.
+      const scope = req.shareCustomer ? await customerScope(pool, req.shareCustomer) : null;
+      const [rows] = scope && scope.partner
+        ? (scope.memberIds.length
+            ? await pool.query('SELECT * FROM team_members WHERE id IN (?) ORDER BY discipline, sort_order, name', [scope.memberIds])
+            : [[]])
+        : await pool.query('SELECT * FROM team_members ORDER BY discipline, sort_order, name');
       res.json(rows);
     } catch (e) { res.status(503).json({ error: e.message }); }
   });

@@ -4,6 +4,19 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.18',
+    date: '2026-10-12',
+    notes: [
+      'ALTEN can sign in to the portal, and nobody gets stuck on an empty page.',
+      '',
+      'PORTAL:',
+      '   ▸ ALTEN\'s login now works. They land on their own page — the team, and Sign out — and open the ALTEN schedule from there: their five people\'s assignments, by department and by person, and nothing else on any job. No money, no risk plans, no other jobs\' leads.',
+      '   ▸ A customer is matched to their jobs the way the app does it: the customer you set on a project wins, then the one the sync found, ignoring capitals. Existing customers see exactly what they saw before.',
+      '   ▸ Every page a customer can land on with nothing to show says so in plain words and has a Sign out button. Before, an account with no schedules sat on "No schedules came back" with no way out.',
+      '   ▸ Customers open faster: the portal no longer tries to create missing milestone rows on every load, which a read-only login can never do.',
+    ],
+  },
+  {
     version: '13.17',
     date: '2026-10-12',
     notes: [

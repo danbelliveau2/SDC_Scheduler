@@ -19338,7 +19338,10 @@ const _portalFinLoading = new Set();   // projects whose financials are in fligh
 // people are on ours. Their page lists every assignment of every member,
 // so ALTEN can see their team's deadlines from a shared link (Dan, 10/08).
 const PORTAL_PARTNERS = [{ name: 'ALTEN', dept: 'alten' }];
-function portalPartner(name) { return PORTAL_PARTNERS.find(p => p.name === name) || null; }
+function portalPartner(name) {
+  const n = String(name == null ? '' : name).trim().toLowerCase();
+  return PORTAL_PARTNERS.find(p => p.name.toLowerCase() === n) || null;
+}
 let _portalPartnerStay = false;   // true after Back: show the landing, do not reopen
 // The partner's schedule: the department view (by department, then by
 // person) in the customer view, with the portal's own toolbar. The same
@@ -19460,6 +19463,20 @@ function isMilestoneLike(t) { return PortalCalc.isMilestoneLike(t); }
 // portalWork, _portalInitials, portalDate, portalFatVariance, portalSlip,
 // _portalMachineLabel now live in public/portalRender.js.
 
+// A real customer who lands on a page with nothing to show still needs a way
+// out — and a message that says what to do, not what the server did.
+async function _portalSignOut(e) {
+  if (e) e.stopPropagation();
+  try { await fetch('/portal/api/logout', { method: 'POST' }); } catch (_) {}
+  location.href = '/';
+}
+function _portalDeadEnd(root, title, bodyHtml) {
+  const out = _portalRealCustomerSession
+    ? `<p><button type="button" class="portal-docbtn" data-portal-signout>Sign out</button></p>` : '';
+  root.innerHTML = `<div class="portal-empty"><h1>${title}</h1>${bodyHtml}${out}</div>`;
+  root.querySelector('[data-portal-signout]')?.addEventListener('click', _portalSignOut);
+}
+
 function renderPortal() {
   const root = document.getElementById('portal-page');
   if (!root) return;
@@ -19467,11 +19484,13 @@ function renderPortal() {
   // not arrived yet. Saying "no customers" then is a lie that reads as broken.
   if (!state.tasks || !state.tasks.length) {
     const waiting = !state._tasksLoadedAt;
-    root.innerHTML = waiting
-      ? `<div class="portal-empty"><h1>Customer Portal</h1><p>Loading projects…</p></div>`
-      : `<div class="portal-empty"><h1>Customer Portal</h1>
-          <p>No schedules came back from the server, so there is nothing to show yet.</p>
-          <p><button type="button" class="portal-docbtn" data-portal-retry="1">Try again</button></p></div>`;
+    const mine = _portalRealCustomerSession;
+    _portalDeadEnd(root, mine && _portalLockedCustomer ? 'Project Portal' : 'Customer Portal', waiting
+      ? '<p>Loading projects…</p>'
+      : (mine
+          ? `<p>There are no schedules on ${escapeHtml(_portalLockedCustomer || 'this account')} yet. Your contact at SDC can tell you when they are ready.</p>`
+          : '<p>No schedules came back from the server, so there is nothing to show yet.</p>')
+      + (waiting ? '' : '<p><button type="button" class="portal-docbtn" data-portal-retry="1">Try again</button></p>'));
     const again = root.querySelector('[data-portal-retry]');
     if (again) again.addEventListener('click', async () => {
       try { await loadTasks(); } catch (_) {}
@@ -19482,13 +19501,11 @@ function renderPortal() {
   const customers = portalCustomerList();
 
   if (_portalLockedCustomer === ' unknown') {
-    root.innerHTML = `<div class="portal-empty"><h1>Project Portal</h1>
-      <p>This link is not valid. Ask your contact at SDC for a new one.</p></div>`;
+    _portalDeadEnd(root, 'Project Portal', '<p>This link is not valid. Ask your contact at SDC for a new one.</p>');
     return;
   }
   if (_portalLockedCustomer && !customers.some(c => c.name === _portalLockedCustomer)) {
-    root.innerHTML = `<div class="portal-empty"><h1>Project Portal</h1>
-      <p>No projects are linked to ${escapeHtml(_portalLockedCustomer)} yet.</p></div>`;
+    _portalDeadEnd(root, 'Project Portal', `<p>No projects are linked to ${escapeHtml(_portalLockedCustomer)} yet. Your contact at SDC can tell you when they are ready.</p>`);
     return;
   }
   if (!customers.length && _portalCustomer !== PORTAL_SDC) {
@@ -20027,11 +20044,7 @@ function _wirePortal(root) {
   // the sdc_customer_session cookie server-side, same endpoint the old
   // standalone portal page used, then a full reload so server.js's
   // snap.get('/') sees no cookie and serves the login page again.
-  root.querySelector('[data-portal-signout]')?.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    try { await fetch('/portal/api/logout', { method: 'POST' }); } catch (_) {}
-    location.href = '/';
-  });
+  root.querySelector('[data-portal-signout]')?.addEventListener('click', _portalSignOut);
   // One more pass after layout settles: on first paint the wrapper can
   // still be measuring, and a fit against a stale width is no fit at all.
   setTimeout(() => {
@@ -32444,12 +32457,21 @@ async function loadTasks() {
   // Backfill anchors for every project that doesn't yet have them. Runs once per page
   // load — subsequent loads see the rows (or a duplicate row) and skip.
   try {
-    const projects = uniqueValues('project');
-    let backfilled = false;
-    for (const p of projects) {
-      if (await ensureAnchorsForProject(p)) backfilled = true;
+    // A share link or a customer's portal login is read-only: the server
+    // refuses every create, one round trip per missing anchor per job, and the
+    // customer waits through all of them before anything shows.
+    let readOnlySession = !!(window.sdcAuth && window.sdcAuth.shareMode);
+    if (!readOnlySession) {
+      try { readOnlySession = !!(await window.sdcAuth.customerSessionCheck).isCustomer; } catch (_) {}
     }
-    if (backfilled) raw = await api.list();
+    if (!readOnlySession) {
+      const projects = uniqueValues('project');
+      let backfilled = false;
+      for (const p of projects) {
+        if (await ensureAnchorsForProject(p)) backfilled = true;
+      }
+      if (backfilled) raw = await api.list();
+    }
   } catch (_) { /* anchor backfill is non-critical — show tasks even if it fails */ }
   state.tasks = dedupAnchors(raw);
   // A load that came back — empty or not — is not the same as one still in
@@ -36824,13 +36846,18 @@ async function init() {
     // that function, built for the staff-preview case, and a real session
     // takes the identical branch.
     try {
-      const { isCustomer, customerName } = await (window.sdcAuth && window.sdcAuth.customerSessionCheck || Promise.resolve({ isCustomer: false }));
+      let { isCustomer, customerName } = await (window.sdcAuth && window.sdcAuth.customerSessionCheck || Promise.resolve({ isCustomer: false }));
+      // An account typed "Alten" is still the partner the portal calls ALTEN.
+      if (isCustomer && portalPartner(customerName)) customerName = portalPartner(customerName).name;
       if (isCustomer && customerName) {
         _portalLockedCustomer = customerName;
         _portalRealCustomerSession = true;
         _portalCustomer = customerName;
         _portalProjects = [];
         _portalMachine = null;
+        // A partner (ALTEN) lands on its own page — header, team, Sign out —
+        // and opens the schedule from there, rather than being dropped inside it.
+        if (portalPartner(customerName)) _portalPartnerStay = true;
         document.body.classList.add('share-link-view', 'customer-session');
         applyCustomerScheduleDefault();
         setView('portal'); // already calls renderPortal() itself — see setView's 'portal' branch

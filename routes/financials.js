@@ -1,4 +1,5 @@
 'use strict';
+const { customerScope } = require('../lib/customerScope');
 const { Router } = require('express');
 
 // 'machine' — per-machine payment terms on multi-machine projects (M1/M2/…);
@@ -53,8 +54,10 @@ module.exports = function createRouter(deps) {
       // project asked for gets nothing rather than every project's numbers.
       if (req.shareCustomer) {
         if (!project) return res.json([]);
-        const [[owns]] = await pool.query('SELECT 1 FROM projects WHERE name = ? AND customer = ?', [project, req.shareCustomer]);
-        if (!owns) return res.status(403).json({ error: 'Not your project.' });
+        const scope = await customerScope(pool, req.shareCustomer);
+        // A partner has no jobs of its own, so no money either.
+        if (scope.partner) return res.json([]);
+        if (!scope.projects.includes(project)) return res.status(403).json({ error: 'Not your project.' });
       }
       // Keep milestones in step with the schedule at the point every consumer
       // (Project Release, Invoicing, the Gantt overlay, the dashboards) reads

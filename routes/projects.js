@@ -1,4 +1,5 @@
 'use strict';
+const { customerScope } = require('../lib/customerScope');
 const { Router } = require('express');
 const XLSX = require('xlsx');
 
@@ -451,9 +452,15 @@ module.exports = function createRouter(deps) {
       // share link (req.shareProject) never calls this route today (the
       // schedule view already knows which one project it's showing), so no
       // separate branch for it.
-      const [rows] = req.shareCustomer
-        ? await pool.query('SELECT * FROM projects WHERE customer = ? ORDER BY name ASC', [req.shareCustomer])
-        : await pool.query('SELECT * FROM projects ORDER BY name ASC');
+      let rows;
+      if (req.shareCustomer) {
+        const scope = await customerScope(pool, req.shareCustomer);
+        [rows] = scope.projects.length
+          ? await pool.query('SELECT * FROM projects WHERE name IN (?) ORDER BY name ASC', [scope.projects])
+          : [[]];
+      } else {
+        [rows] = await pool.query('SELECT * FROM projects ORDER BY name ASC');
+      }
       res.json(rows);
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
