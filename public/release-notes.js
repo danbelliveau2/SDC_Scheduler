@@ -4,6 +4,28 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.21',
+    date: '2026-10-12',
+    notes: [
+      'Split a line\'s allocation into sections, scrolling that follows the wheel, and the Departments page keeps your place.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ The page keeps your place: scroll down, go look at a job, come back and the grid is where you left it. Each department remembers its own spot for the visit.',
+      '   ▸ A department\'s page lights the Departments tab, not My work. The My work tab reads your name again.',
+      '',
+      'MY WORK:',
+      '   ▸ My work is a person\'s page. The department views are gone from Switch person — they live on the Departments tab now.',
+      '   ▸ A person\'s page lists their work the way their Departments section does. Controls-list and risk-plan lines sit only in the section at the bottom, with a count, collapsed until you open it — they were showing twice, once in the main list and again below.',
+      '   ▸ A line can follow a line on this schedule AND one on another. Type the local predecessor in the Pred cell as always; add the other with right-click → Predecessor on another schedule, which keeps what is in the cell. The cell stays editable afterwards: it edits only this schedule\'s predecessors, and the link rides along. Right-click → Remove link takes the link off.',
+      '   ▸ Predecessor on another schedule: Esc cancels and takes you back to the schedule, same as Cancel on the pill. The hover tip on a bar says what a click does while you are picking.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Split the allocation: one line, one bar, but the person\'s share changes along the way — two weeks at 100%, a week at 20% while they are pulled onto something else, then 100% again — instead of breaking the work into separate lines. Right-click the line → Split the allocation, or click a split line\'s allocation pill. The editor shows what the line was up top — 6W at 85% = 204 h — then the new total, which you can change, then three sections: so many weeks at such a share, in half-weeks like everything else, with the hours each one is worth and the new total of hours against the old (they should match, and it says when they do not). Change the total and the last section takes the difference; a longer total moves the finish. Add a fourth section if you want one. The pill reads 100·20·100%, the bar shows a divider where the share changes with the lighter stretches faded and the share written on each, and every allocation count — overlaps, the Allocation band, Workload — uses the share for the day.',
+      '   ▸ Right-click → Remove a predecessor lists each one the line follows, on this schedule or another, and takes off just the one you pick.',
+      '   ▸ Fixed: on a long schedule the chart ran behind the wheel and kept drifting after your hand stopped. The date axis used to be moved inside the chart on every scroll step, which redrew every bar every step. It now sits in its own thin layer over the chart, so a scroll moves the picture and nothing else.',
+    ],
+  },
+  {
     version: '13.20',
     date: '2026-10-12',
     notes: [

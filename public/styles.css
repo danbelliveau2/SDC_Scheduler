@@ -18369,3 +18369,36 @@ body.dept-sched-hidden .dept-panel { flex: 1 1 auto; max-height: none; }
 .dept-cal-past .dept-cal-item span { display: inline; margin-left: 5px; }
 .dept-cal-past-label { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .06em; text-transform: uppercase; color: #b42318; margin-right: 4px; }
 .dept-cal-more { font-size: var(--fs-xs); color: #b42318; }
+
+/* The Gantt's date axis: its own small SVG laid over the chart, moved by
+   one transform per scroll. Nothing inside the chart changes while you
+   scroll. */
+#schedule-gantt { position: relative; }
+.sdc-axis-overlay { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; will-change: transform; line-height: 0; }
+.sdc-axis-svg { display: block; overflow: visible; }
+
+/* Split allocation: the pill reads the shares; the editor is a stretch per row. */
+.name-cell-alloc-pre.is-split { color: var(--sdc-primary, #1574c4); font-weight: var(--fw-extrabold, 800); letter-spacing: .02em; }
+.alloc-split-card { width: min(92vw, 520px); }
+.alloc-split-now { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: #eaf3fc; border-left: 4px solid var(--sdc-primary, #1574c4); }
+.alloc-split-now-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.alloc-split-total { padding-top: 6px; border-top: 1px dashed #c8d5e3; }
+.alloc-split-match { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .04em; text-transform: uppercase; padding: 2px 9px; border-radius: 10px; }
+.alloc-split-match.is-same { background: var(--anchor-fill, #befa4f); color: var(--sdc-dark, #061d39); }
+.alloc-split-match.is-off { background: #fdeaea; color: #b42318; }
+.alloc-split-h { font-size: var(--fs-sm); color: var(--text-muted, #64748b); font-weight: var(--fw-bold); text-align: right; white-space: nowrap; }
+.alloc-split-now-name { font-weight: var(--fw-extrabold, 800); color: var(--sdc-dark, #061d39); }
+.alloc-split-now-val { font-size: var(--fs-md); color: var(--sdc-dark, #061d39); }
+.alloc-split-now-val b { color: var(--sdc-primary, #1574c4); }
+.alloc-split-now-dates { font-size: var(--fs-sm); color: var(--text-muted, #64748b); margin-left: auto; }
+.alloc-split-rows { display: flex; flex-direction: column; gap: 8px; }
+.alloc-split-row { display: grid; grid-template-columns: 92px 118px 24px 118px 56px 34px; gap: 10px; align-items: center; }
+.alloc-split-sec { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .08em; text-transform: uppercase; color: var(--sdc-primary, #1574c4); }
+.alloc-split-wk, .alloc-split-pct { display: flex; align-items: center; gap: 6px; font-weight: var(--fw-extrabold, 800); color: var(--sdc-dark, #061d39); }
+.alloc-split-row .app-dialog-input { margin: 0; width: 76px; padding: 6px 8px; text-align: right; font-weight: var(--fw-bold); }
+.alloc-split-at { text-align: center; color: var(--text-muted, #64748b); font-size: var(--fs-sm); }
+.alloc-split-last { font-size: var(--fs-base); }
+.alloc-split-x { font: inherit; width: 30px; height: 30px; border: 1px solid #dbe4ee; border-radius: 7px; background: #fff; color: #64748b; cursor: pointer; }
+.alloc-split-x:hover { background: #fef2f2; border-color: #f87171; color: #b91c1c; }
+.alloc-split-x[disabled] { opacity: .35; cursor: default; }
+.alloc-split-add { margin-top: 8px; }
