@@ -28,7 +28,7 @@
     root.innerHTML = `
       <div class="cp-login-wrap">
         <div class="cp-login-card">
-          <img src="/img/sdc-logo-white.svg" class="cp-login-logo" alt="SDC">
+          <img src="/img/sdc-logo.svg" class="cp-login-logo" alt="SDC">
           <h1>Project Portal</h1>
           <form id="cp-login-form">
             <div class="cp-field"><label>Username</label><input type="text" name="username" autocomplete="username" required autofocus></div>

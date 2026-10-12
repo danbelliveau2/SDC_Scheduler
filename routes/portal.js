@@ -32,15 +32,17 @@ const bcrypt = require('bcryptjs');
 const {
   signCustomerToken, setCustomerSessionCookie, clearCustomerSessionCookie, requireCustomerAuth,
 } = require('../lib/customerAuth');
-const { createRateLimiter, clientIp } = require('../lib/rateLimit');
+const { createFailureLimiter, clientIp } = require('../lib/rateLimit');
 
 // Tighter than the service form's public intake (8/hr): the username here
 // is a customer name, which is guessable, so a brute-force attempt only
-// needs to try passwords. 5 attempts / 15 min per IP is a real speed bump
-// without locking out someone who fat-fingers their password twice.
+// needs to try passwords. 5 WRONG passwords / 15 min per IP is a real speed bump
+// without locking out someone who fat-fingers their password twice. Only
+// failures count: signing in correctly (and signing back in after Sign out)
+// never uses up the allowance, and a correct sign-in clears it.
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_RATE_MAX = Number(process.env.PORTAL_LOGIN_RATE_MAX || 5);
-const rateLimited = createRateLimiter({ windowMs: LOGIN_WINDOW_MS });
+const loginFailures = createFailureLimiter({ windowMs: LOGIN_WINDOW_MS });
 
 module.exports = function createPortalRouter({ pool }) {
   const router = Router();
@@ -48,7 +50,7 @@ module.exports = function createPortalRouter({ pool }) {
   router.post('/portal/api/login', async (req, res) => {
     try {
       const ip = clientIp(req);
-      if (rateLimited(ip, LOGIN_RATE_MAX)) {
+      if (loginFailures.blocked(ip, LOGIN_RATE_MAX)) {
         return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.', code: 'RATE_LIMITED' });
       }
       const username = String(req.body?.username || '').trim();
@@ -62,11 +64,12 @@ module.exports = function createPortalRouter({ pool }) {
       // Same generic error whether the username doesn't exist or the
       // password is wrong — a distinct "no such user" message lets an
       // attacker enumerate valid customer logins for free.
-      const bad = () => res.status(401).json({ error: 'Incorrect username or password.', code: 'BAD_CREDENTIALS' });
+      const bad = () => { loginFailures.fail(ip); return res.status(401).json({ error: 'Incorrect username or password.', code: 'BAD_CREDENTIALS' }); };
       if (!account) return bad();
       const ok = await bcrypt.compare(password, account.password_hash);
       if (!ok) return bad();
 
+      loginFailures.clear(ip);
       await pool.query('UPDATE customer_accounts SET last_login_at = NOW() WHERE id = ?', [account.id]);
       const token = signCustomerToken(account);
       setCustomerSessionCookie(res, token);

@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.19',
+    date: '2026-10-12',
+    notes: [
+      'The portal sign-in no longer locks you out for signing in, and it wears our blue.',
+      '',
+      'PORTAL:',
+      '   ▸ Fixed: after a few sign-ins in a row the login said "Too many attempts" even with the right password. Only wrong passwords count now, and a correct sign-in clears them. Five wrong passwords from one place in 15 minutes still pauses sign-in from that place.',
+      '   ▸ The SDC mark and "Steven Douglas Corp." on the sign-in page are our blue instead of orange.',
+    ],
+  },
+  {
     version: '13.18',
     date: '2026-10-12',
     notes: [

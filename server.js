@@ -224,6 +224,7 @@ if (SNAPSHOT_PUBLIC_PORT) {
   snap.get('/portal.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal.css')));
   snap.get('/portal-app.js', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'portal-app.js')));
   snap.get('/img/sdc-logo-white.svg', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'img', 'sdc-logo-white.svg')));
+  snap.get('/img/sdc-logo.svg', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'img', 'sdc-logo.svg')));
   // Scoped to /portal/api only — a request falling through to `app` below
   // must reach it with its body stream untouched, so `app`'s own
   // express.json() (already in its middleware chain) is the one that reads it.

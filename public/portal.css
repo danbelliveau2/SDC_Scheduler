@@ -29,7 +29,7 @@ body {
 /* ── Login ── */
 .cp-login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
 .cp-login-card { width: 100%; max-width: 360px; background: #fff; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.08); padding: 32px; }
-.cp-login-logo { height: 32px; margin-bottom: 8px; filter: invert(1); }
+.cp-login-logo { height: 32px; margin-bottom: 8px; }
 .cp-login-card h1 { font-size: 18px; margin: 0 0 20px; font-weight: 800; }
 .cp-field { margin-bottom: 14px; }
 .cp-field label { display: block; font-size: 12px; font-weight: 600; color: var(--cp-muted); margin-bottom: 4px; }
