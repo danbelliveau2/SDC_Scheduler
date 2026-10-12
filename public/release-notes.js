@@ -4,6 +4,37 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.17',
+    date: '2026-10-12',
+    notes: [
+      'The Departments page rebuilt around the work week, the FAT we sold beside every job, and which FATs are behind the quote.',
+      '',
+      'PROJECTS:',
+      '   ▸ FAT behind the quote, above Key Dates: every active job (and machine) whose scheduled FAT lands after the FAT we sold — project, quoted FAT, scheduled FAT, how far behind, and where the quoted date came from (Receipt of PO + sold delivery weeks, or the FAT baseline). Furthest behind first. Click a row to open the job. The same house grid as the rest: compress, drag a column edge.',
+      '   ▸ Sales, Test schedules, On Hold and Closed come in collapsed every time; Active opens. Expand one and it stays open for the visit.',
+      '   ▸ The FAT grid wears SDC colours and sits at the size of its columns instead of across the whole screen. Drag a column edge and the box grows.',
+      '',
+      'SCHEDULE:',
+      '   ▸ The FAT we sold sits beside the job\'s name: Quoted FAT and the date (Receipt of PO + the sold delivery weeks from the Project Release, or the FAT baseline). It turns light red when the schedule\'s FAT lands later, with the scheduled date and how many weeks behind. Hover for every machine. On a multi-machine job the machine pills get the same light red edge until that machine is done. Ours only — the customer page is unchanged.',
+      '   ▸ Editing a cell: one click selects the whole value — type to replace it, Enter or a click anywhere else saves, Escape puts it back. Double-click puts the cursor at the end of the text so you can arrow around. The second click of a double-click no longer has to land exactly on the text; anywhere in the cell keeps the editor open.',
+      '',
+      'MY WORK:',
+      '   ▸ The job rides beside each bar, to the left, bold in SDC blue — 1163, or 1130-M1 on a job with more than one machine; the bar itself says only the task. Click a bar to open that job\'s schedule. Hover for the job, the task and its start → finish dates in SDC colours; the tip leaves with the mouse. The grey chart popup that would not go away is gone.',
+      '',
+      'MY WORK:',
+      '   ▸ Predecessor on another schedule offers only the person\'s open lines. Finished ones were in the list too, and nothing starts after work that is already done.',
+      '   ▸ One click on a bar opens that job\'s schedule, as the hover tip says. It took a double-click before.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ The Departments tab is a department\'s page now: its schedule on top (everyone\'s work one after another, the Allocation band, Overlaps, the unassigned work last) and the week underneath. Hide the schedule and the week takes the whole page.',
+      '   ▸ Pick the department at the top of the lower half: Engineering (mechanical + controls together), Mechanical, Controls, Shop (builders + electricians together), Builders, Electricians, Service. The same two cards for any of them. Engineering and Shop are in the Switch person list too.',
+      '   ▸ Workload: one list, a bar per person — average allocation over the work week (ends Friday; Saturday and Sunday count toward the week after). Over 100% runs into the red past the mark; nothing scheduled says so, with when their next line starts. Grouped by department on Engineering and Shop. Click a person for their page. This week, Next 2 weeks or Next 4 weeks.',
+      '   ▸ Coming due is a calendar: Monday to Friday, a row per week, the department\'s lines on the day they are due, behind ones tinted. Past due sits above it. Click a line to open the job.',
+      '   ▸ The resource timeline, the donut wheels and the Mechanical releases card are gone. The SDC Team board is still there behind Team roster →.',
+      '   ▸ Workload is real now: each person\'s allocation summed over the business days their lines cover in the window, averaged over the window\'s business days, across every active job. It used to follow a project picker that had moved to the Invoicing page, which is why most people showed zero. A line past its end and not finished still counts: the unfinished share of its duration, starting now.',
+    ],
+  },
+  {
     version: '13.16',
     date: '2026-10-10',
     notes: [

@@ -3780,11 +3780,9 @@ function enterPillEdit(pill, taskId, col) {
   // the pill editor would just sit there even though the user clearly
   // wanted to dismiss it. A document-level mousedown listener catches the
   // click ANYWHERE outside the input and finalizes (commits) — same as if
-  // they'd hit Enter.
-  const onOutsideMousedown = (e) => {
-    if (input.contains(e.target)) return;
-    finalize(true);
-  };
+  // they'd hit Enter. Clicks INSIDE the pill keep the editor open (lenient
+  // double-click, see cellEditMousedown).
+  const onOutsideMousedown = cellEditMousedown(pill, input, () => finalize(true));
   const finalize = async (commit) => {
     if (done) return;
     done = true;
@@ -3795,6 +3793,7 @@ function enterPillEdit(pill, taskId, col) {
     }
     await loadTasks();
   };
+  input.addEventListener('dblclick', (e) => { e.preventDefault(); caretToEnd(input); });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); finalize(true); }
     else if (e.key === 'Escape') { e.preventDefault(); finalize(false); }
@@ -3883,6 +3882,38 @@ function enterDurationLinkPickMode(sourceTaskId) {
 }
 
 
+// v13.17: cell-editor click rules (Dan). ONE click opens the editor with the
+// whole value selected — type to replace, Enter or click anywhere else saves,
+// Escape puts it back. A DOUBLE click puts the caret at the END of the text
+// so you can arrow around. The double-click is lenient: while an editor is
+// open, a mousedown anywhere inside the same cell (not just on the narrow
+// input) keeps the editor open and moves the caret to the end, so a second
+// click that lands beside the input no longer dismisses it. Only a mousedown
+// OUTSIDE the cell commits. Returns the capture-phase document listener.
+function cellEditMousedown(container, input, commit) {
+  return (e) => {
+    if (!container.contains(e.target)) { commit(); return; }
+    // Date pickers and dropdowns: leave the browser control alone.
+    if (input.type === 'date' || input.tagName === 'SELECT') return;
+    const onInput = input.contains(e.target);
+    // Comments textarea: the mouse may place the caret / drag-select freely.
+    if (onInput && input.tagName === 'TEXTAREA') return;
+    // First click directly on the input: let the browser place the caret.
+    // Second click of a double-click (detail 2) or a click beside the input:
+    // keep focus, no word-selection, caret to the end.
+    if (onInput && e.detail < 2) return;
+    e.preventDefault();
+    caretToEnd(input);
+  };
+}
+function caretToEnd(input) {
+  try {
+    input.focus();
+    const n = (input.value || '').length;
+    input.setSelectionRange(n, n);
+  } catch (_) { /* date / select inputs have no selection range */ }
+}
+
 function enterCellEdit(td, taskId, col) {
   // Already editing this cell — bail. TEXTAREA must be in this list: the
   // comments editor is a <textarea>, and without it every click inside the
@@ -3951,10 +3982,8 @@ function enterCellEdit(td, taskId, col) {
   // v4.25: same click-outside dismissal as enterPillEdit — blur misses
   // clicks on non-focusable SVG Gantt elements, so we attach an explicit
   // document-level mousedown listener that commits on any outside click.
-  const onOutsideMousedown = (e) => {
-    if (input.contains(e.target)) return;
-    finalize(true);
-  };
+  // Clicks inside the cell keep the editor open (see cellEditMousedown).
+  const onOutsideMousedown = cellEditMousedown(td, input, () => finalize(true));
   const finalize = async (commit) => {
     if (done) return;
     done = true;
@@ -3972,6 +4001,8 @@ function enterCellEdit(td, taskId, col) {
   // cursor (deselecting), typing inserts at the cursor like a normal field.
   // (We deliberately do NOT force-wipe on first keystroke — that nuked the value
   // even after the user had repositioned to append, e.g. adding "+2W" to "3FF".)
+  // A double-click lands the caret at the END of the text (no word selection).
+  input.addEventListener('dblclick', (e) => { e.preventDefault(); caretToEnd(input); });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       // Comments textarea: plain Enter = new line; Ctrl/Cmd+Enter commits.
@@ -5080,8 +5111,9 @@ function renderGantt() {
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
       id: String(t.id),
-      // My work spans every job: the bar says which one (1160 · HMI).
-      name: (state.myWork && t.project) ? (jobNumberOf(t.project) + ' · ' + t.name) : t.name,
+      // My work spans every job: the job number rides ABOVE the bar
+      // (drawMyWorkJobLabels); the bar itself carries only the task name.
+      name: t.name,
       start: t.start_date,
       end: t.end_date,
       // Backlog rows: progress derived from today's position; everything
@@ -5136,6 +5168,11 @@ function renderGantt() {
     padding,
     header_height: 38,
     on_click: (task) => {
+      // v13.17 My work: a click on a bar OPENS that job's schedule.
+      if (state.myWork) {
+        const rec = state.tasks.find(t => String(t.id) === String(task.id));
+        if (rec && rec.project) { openScheduleFromMyWork(rec.project); return; }
+      }
       const tr = document.querySelector(`tr[data-id="${task.id}"]`);
       if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     },
@@ -5206,6 +5243,8 @@ function renderGantt() {
   try { drawMilestoneDiamonds(); } catch (_) {}
   try { drawMilestoneLabels(); } catch (_) {}
   try { clipBarLabels(); } catch (_) {}
+  try { drawMyWorkJobLabels(); } catch (_) {}
+  try { wireMyWorkBarHover(); } catch (_) {}
   try { drawScheduleStatus(); } catch (_) {}
   try { drawDoneHashOverlay(); } catch (_) {}
   try { drawWeekdayLetters(); } catch (_) {}
@@ -7899,9 +7938,9 @@ function clipBarLabels() {
     const fontSize = Math.max(8, Math.min(12, barH - 2));
     label.style.fontSize = fontSize + 'px';
 
-    // My work: the bar names the job too (1160 · HMI). task may be the
-    // grid's record (has .project) or frappe's (already prefixed, no .project).
-    const fullText = ((state.myWork && task.project) ? (jobNumberOf(task.project) + ' · ') : '') + (task.name || '');
+    // v13.17: the bar carries ONLY the task name. On My work the job number
+    // is painted above the bar by drawMyWorkJobLabels().
+    const fullText = task.name || '';
     // Measure unconstrained.
     label.textContent = fullText;
     label.classList.remove('bar-label-outside');
@@ -7955,6 +7994,130 @@ function clipBarLabels() {
     // Outside labels render the full task name — no tooltip needed.
     const t = wrap.querySelector('title');
     if (t) t.remove();
+  }
+}
+
+// v13.17 My work: the job sits BESIDE each bar — to the LEFT, bold SDC blue
+// with a white halo — so it never lands on the bar below. On a job with more
+// than one machine the tag carries the machine too (1130-M1). If there is no
+// room on the left the tag goes to the right, past the bar's own outside
+// label when the name did not fit inside. Re-drawn on every render; SVG text
+// needs its font inline.
+function myWorkJobTag(task) {
+  let tag = jobNumberOf(task.project);
+  if (task.machine) {
+    const machines = new Set((state.tasks || []).filter(t => t.project === task.project && t.machine).map(t => t.machine));
+    if (machines.size > 1) tag += '-' + String(task.machine).replace(/machine\s*/i, 'M').replace(/\s+/g, '');
+  }
+  return tag;
+}
+function drawMyWorkJobLabels() {
+  const svg = document.querySelector('#gantt-container .gantt');
+  if (!svg) return;
+  svg.querySelectorAll('.mywork-job-label').forEach(el => el.remove());
+  if (!state.myWork) return;
+  for (const task of (state._visibleTasks || state.tasks)) {
+    if (task.is_milestone || !task.project) continue;
+    const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
+    const bar = wrap && wrap.querySelector('.bar');
+    if (!bar) continue;
+    const barX = +bar.getAttribute('x');
+    const barY = +bar.getAttribute('y');
+    const barW = +bar.getAttribute('width');
+    const barH = +bar.getAttribute('height');
+    const text = document.createElementNS(SVG_NS, 'text');
+    text.setAttribute('class', 'mywork-job-label');
+    text.setAttribute('y', barY + barH / 2);
+    text.setAttribute('dominant-baseline', 'central');
+    text.setAttribute('fill', '#1574c4');
+    text.setAttribute('pointer-events', 'none');
+    text.setAttribute('paint-order', 'stroke');
+    text.setAttribute('stroke', 'rgba(255,255,255,0.95)');
+    text.setAttribute('stroke-width', '3');
+    text.setAttribute('stroke-linejoin', 'round');
+    text.style.fontFamily = 'sans-serif';
+    text.style.fontSize = '11px';
+    text.style.fontWeight = '800';
+    text.textContent = myWorkJobTag(task);
+    wrap.appendChild(text);
+    let w = 0;
+    try { w = text.getBBox().width; } catch (_) { w = 0; }
+    if (!w) w = text.textContent.length * 7;   // not laid out yet (hidden panel): estimate
+    const GAP = 6;
+    if (barX - GAP - w >= 2) {
+      text.setAttribute('x', barX - GAP);
+      text.setAttribute('text-anchor', 'end');
+    } else {
+      // No room on the left: go right, clear of an outside name label.
+      let x = barX + barW + GAP;
+      const nameLabel = wrap.querySelector('.bar-label.bar-label-outside');
+      if (nameLabel && nameLabel.getAttribute('text-anchor') === 'start') {
+        try { x = Math.max(x, nameLabel.getBBox().x + nameLabel.getBBox().width + GAP); } catch (_) {}
+      }
+      text.setAttribute('x', x);
+      text.setAttribute('text-anchor', 'start');
+    }
+  }
+}
+
+// v13.17 My work: hover a bar → a small SDC-coloured tip with the job, the
+// task and its start → finish dates. Hover only: it follows the mouse and
+// disappears the moment the pointer leaves the bar, so it can never stick.
+// (frappe-gantt's own click popup is hidden by CSS — it only went away on a
+// click on the chart background, which nobody finds.)
+function wireMyWorkBarHover() {
+  const svg = document.querySelector('#gantt-container .gantt');
+  if (!svg || !state.myWork) return;
+  let tip = document.getElementById('mywork-bar-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'mywork-bar-tip';
+    tip.className = 'mywork-bar-tip';
+    document.body.appendChild(tip);
+  }
+  const hide = () => { tip.style.display = 'none'; };
+  hide();
+  const place = (e) => {
+    const pad = 14;
+    let x = e.clientX + pad, y = e.clientY + pad;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+    if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+  };
+  for (const task of (state._visibleTasks || state.tasks)) {
+    const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
+    if (!wrap || wrap._myWorkHoverWired) continue;
+    wrap._myWorkHoverWired = true;
+    wrap.addEventListener('mouseenter', (e) => {
+      const rec = state.tasks.find(t => String(t.id) === String(task.id)) || task;
+      const job = rec.project ? jobNumberOf(rec.project) : '';
+      const start = fmtDate(rec.start_date), end = fmtDate(rec.end_date);
+      tip.innerHTML =
+        `<div class="mywork-bar-tip-job">${escapeHtml(job)}${job ? ' · ' : ''}${escapeHtml(rec.name || '')}</div>` +
+        `<div class="mywork-bar-tip-dates"><span>${escapeHtml(start)}</span> → <span>${escapeHtml(end)}</span></div>` +
+        `<div class="mywork-bar-tip-hint">click to open the schedule</div>`;
+      tip.style.display = 'block';
+      place(e);
+    });
+    wrap.addEventListener('mousemove', place);
+    wrap.addEventListener('mouseleave', hide);
+    // A single click opens the job (Dan, 10/12: "when I click it, it
+    // doesn't actually open the schedule"). frappe-gantt 0.6 only fires its
+    // click callback on a DOUBLE click; a single click just opened its own
+    // popup, which is hidden. A press that moved more than a few pixels is
+    // a drag, not a click.
+    let downAt = null;
+    wrap.addEventListener('mousedown', (e) => { hide(); downAt = (e.button === 0) ? { x: e.clientX, y: e.clientY } : null; });
+    wrap.addEventListener('click', (e) => {
+      if (!state.myWork) return;
+      if (downAt && (Math.abs(e.clientX - downAt.x) > 4 || Math.abs(e.clientY - downAt.y) > 4)) { downAt = null; return; }
+      downAt = null;
+      if (document.body.classList.contains('join-pick-mode') || document.body.classList.contains('xpred-pick-mode')) return;
+      const rec = state.tasks.find(t => String(t.id) === String(task.id)) || task;
+      if (rec && rec.project) { e.stopPropagation(); hide(); openScheduleFromMyWork(rec.project); }
+    });
   }
 }
 
@@ -8783,7 +8946,9 @@ function loadProjectTabs() {
   try { savedExpanded = JSON.parse(localStorage.getItem('sdcProjectsExpanded') || '{}'); } catch {}
   // Active defaults to expanded. Merge saved on top — so explicit { Active: false } from
   // the user overrides the default, but a blank {} (first load) still shows Active open.
-  state._projectsExpanded = { Active: true, ...((savedExpanded && typeof savedExpanded === 'object') ? savedExpanded : {}) };
+  // Active open, every other section collapsed — every time (Dan, 10/10).
+  // Expanding one lasts for the visit; the saved map is no longer replayed.
+  state._projectsExpanded = { Active: true };
   // Favorites + Recents are per-browser localStorage lists of project names.
   let favs = [];
   try { favs = JSON.parse(localStorage.getItem('sdcFavoriteProjects') || '[]'); } catch {}
@@ -9239,7 +9404,7 @@ function projectIsInactive(p) {
 function _pdashRerender() {
   if (state.view === 'invoicing') { try { renderInvoicingPage(); } catch (_) {} return; }
   try { renderDeptProjectRollup(); } catch (_) {}
-  try { renderTeamDashboard(); } catch (_) {}
+
 }
 function _deptSelectedProjects() {
   // null = never picked (default to ALL) vs [] = explicitly "None".
@@ -12570,7 +12735,9 @@ function renderProjectsPage() {
     let nonTemplates = projects.filter(p => !isTemplateProject(p));
     if (searchQ) nonTemplates = nonTemplates.filter(p => p.toLowerCase().includes(searchQ));
     if (custFilter) nonTemplates = nonTemplates.filter(p => (state.projectsIndex[p] && state.projectsIndex[p].customer) === custFilter);
-    const isExpanded = !!expanded[ws];
+    // Active opens unless it was closed this visit; everything else stays
+    // shut unless opened this visit (Dan, 10/10).
+    const isExpanded = expanded[ws] != null ? !!expanded[ws] : ws === 'Active';
     // New schedules start in Active or Sales — On Hold/Closed are places
     // projects get MOVED to (right-click → Move to …), not born in.
     const allowsNew = ws === 'Active' || ws === 'Sales' || ws === 'Test';
@@ -12644,11 +12811,17 @@ function renderProjectsPage() {
   `;
   // Key Dates calendar renders into a SIBLING of the (max-width-capped)
   // projects list so it can use the full page width.
+  if (!document.getElementById('projects-fatlate')) {
+    const fl = document.createElement('div');
+    fl.id = 'projects-fatlate';
+    root.parentElement.appendChild(fl);
+  }
   if (!document.getElementById('projects-keydates')) {
     const kd = document.createElement('div');
     kd.id = 'projects-keydates';
     root.parentElement.appendChild(kd);
   }
+  try { renderProjectsFatLate(); } catch (_) {}
   try { renderProjectsKeyDates(); } catch (_) {}
 
   // Search input — filter rows in real-time without a full re-render
@@ -12790,6 +12963,135 @@ function _keyDatesRange() {
   const d2 = new Date(d); d2.setMonth(d2.getMonth() + 2);
   const to = localStorage.getItem('sdcKeyDatesTo') || ym(d2);
   return { from, to };
+}
+// ── FAT behind the quote (Projects page, above Key Dates) ──────────────────
+// Every active job (and machine) whose scheduled FAT lands after the FAT we
+// sold. Quoted FAT = Receipt of PO + sold delivery weeks (the Project
+// Release / quote; machine 2+ from the release's machine tabs), or the
+// FAT's baseline when no delivery weeks are set. Same numbers as the
+// summary card's FAT row. Dan, 10/10.
+// Every FAT on one job against the FAT we sold: { rows, pending }. A row per
+// FAT (base machine first): quoted, scheduled, days (+ = behind), wks, basis.
+// pending = the quote has not been fetched yet.
+function _fatQuoteRowsFor(p) {
+  const rows = [];
+  if (!p || isTemplateProject(p) || projectWorkOff(p)) return { rows, pending: false };
+  const tasks = state.tasks.filter(t => t.project === p);
+  const po = tasks.find(t => inferredAnchorKey(t) === 'receipt_of_po');
+  const fats = tasks.filter(t => inferredAnchorKey(t) === 'fat' && t.start_date);
+  if (!fats.length) return { rows, pending: false };
+  if (!(p in state.projectQuotes)) return { rows, pending: true };
+  {
+    const quote = state.projectQuotes[p] || null;
+    const rel = quote && quote.project_release ? quote.project_release : null;
+    const machines = Array.from(new Set(tasks.filter(t => t.machine).map(t => t.machine))).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    const soldFor = (m) => {
+      const isBase = !m || machines.length < 2 || m === machines[0];
+      let dw = null;
+      if (rel) { const sc = !isBase ? (rel.machines && rel.machines[m]) : rel; if (sc && sc.delivery_weeks != null) dw = Number(sc.delivery_weeks); }
+      if (isBase && dw == null && quote && Number.isFinite(Number(quote.sold_delivery_weeks))) dw = Number(quote.sold_delivery_weeks);
+      return (Number.isFinite(dw) && dw > 0) ? dw : null;
+    };
+    fats.forEach(fat => {
+      let quoted = null;
+      const soldW = soldFor(fat.machine);
+      if (po && po.start_date && soldW) {
+        const t = new Date(po.start_date + 'T00:00:00'); t.setDate(t.getDate() + Math.round(soldW * 7));
+        quoted = t.toISOString().slice(0, 10);
+      } else if (fat.baseline_start_date) quoted = fat.baseline_start_date;
+      if (!quoted) return;
+      const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(quoted + 'T00:00:00')) / 86400000);
+      const wks = days === 0 ? 0 : (Math.round((Math.abs(days) / 7) * 2) / 2 || 0.5);
+      rows.push({ project: p, machine: fat.machine || '', quoted, scheduled: fat.start_date, days, wks, done: Number(fat.progress) >= 100, basis: soldW ? 'PO + ' + soldW + 'w sold' : 'baseline' });
+    });
+    rows.sort((a, b) => (machines.indexOf(a.machine) - machines.indexOf(b.machine)));
+  }
+  return { rows, pending: false };
+}
+function _fatLateRows() {
+  const { allProjects } = _deptSelectedProjects();
+  const rows = [];
+  let pending = 0;
+  allProjects.forEach(p => {
+    const r = _fatQuoteRowsFor(p);
+    if (r.pending) { pending++; return; }
+    r.rows.forEach(x => { if (x.days > 0) rows.push(x); });
+  });
+  rows.sort((a, b) => b.days - a.days || a.project.localeCompare(b.project));
+  return { rows, pending };
+}
+// The FAT we sold, beside the job's name on our schedule (Dan, 10/10: "we're
+// contracted to a specific delivery — it should be front and center"). Light
+// red when the schedule's FAT lands later than the quoted one. Not for the
+// customer page, not on My work.
+const _fatChipLoading = new Set();
+function fatQuoteChipHtml(p) {
+  if (!p || state.myWork || document.body.classList.contains('customer-view')) return '';
+  const info = _fatQuoteRowsFor(p);
+  if (info.pending) {
+    if (!_fatChipLoading.has(p)) {
+      _fatChipLoading.add(p);
+      loadProjectQuote(p).catch(() => { state.projectQuotes[p] = null; })
+        .then(() => { _fatChipLoading.delete(p); if (state.filters.project === p && state.view === 'schedule') { try { renderProjectTabs(); } catch (_) {} } });
+    }
+    return '';
+  }
+  if (!info.rows.length) return '';
+  const r = info.rows[0];
+  const late = r.days > 0 && !r.done;
+  const story = (x) => (x.machine ? x.machine + ' — ' : '') + 'quoted FAT ' + fmtDate(x.quoted) + ' (' + x.basis + '), scheduled ' + fmtDate(x.scheduled)
+    + (x.done ? ', complete' : x.days > 0 ? ', ' + x.wks + 'w behind the quote' : x.days < 0 ? ', ' + x.wks + 'w ahead' : ', on the date');
+  const tip = info.rows.map(story).join(String.fromCharCode(10));
+  return '<span class="fat-quote-chip' + (late ? ' is-late' : '') + '" title="' + escapeHtml(tip) + '"><span class="fqc-label">Quoted FAT</span> <b>' + escapeHtml(fmtDate(r.quoted)) + '</b>'
+    + (late ? '<span class="fqc-late">schedule ' + escapeHtml(fmtDate(r.scheduled)) + ' · +' + r.wks + 'w</span>' : '') + '</span>';
+}
+function renderProjectsFatLate() {
+  const root = document.getElementById('projects-fatlate');
+  if (!root) return;
+  const { rows, pending } = _fatLateRows();
+  // Quotes load per job on demand; fetch the missing ones once and redraw.
+  if (pending && !state._fatLateLoading) {
+    state._fatLateLoading = true;
+    const { allProjects } = _deptSelectedProjects();
+    const need = allProjects.filter(p => !isTemplateProject(p) && !projectWorkOff(p) && !(p in state.projectQuotes));
+    Promise.all(need.map(p => loadProjectQuote(p).catch(() => { state.projectQuotes[p] = null; })))
+      .then(() => { state._fatLateLoading = false; if (state.view === 'projects') renderProjectsFatLate(); });
+  }
+  const cols = [
+    { key: 'project',   label: 'Project',       w: 330, min: 200 },
+    { key: 'quoted',    label: 'Quoted FAT',    w: 104, min: 96, title: 'Receipt of PO + the sold delivery weeks, or the FAT baseline' },
+    { key: 'scheduled', label: 'Scheduled FAT', w: 118, min: 100 },
+    { key: 'late',      label: 'Behind by',     w: 90, min: 80 },
+    { key: 'basis',     label: 'Quoted from',   w: 128, min: 110 },
+  ];
+  const txt = (v, cls) => `<span class="pcp-t${cls ? ' ' + cls : ''}">${escapeHtml(v || '—')}</span>`;
+  const body = rows.map(r => `<tr data-fatlate-open="${escapeHtml(r.project)}" title="Open ${escapeHtml(r.project)}">
+      <td>${txt(r.project + (r.machine ? ' · ' + r.machine : ''))}</td>
+      <td>${txt(fmtDate(r.quoted))}</td><td>${txt(fmtDate(r.scheduled), 'fatlate-sched')}</td>
+      <td>${txt('+' + r.wks + 'w', 'fatlate-late')}</td><td>${txt(r.basis)}</td>
+    </tr>`).join('');
+  const grid = rows.length
+    ? _portalGridHtml('fat-late', cols, body, 'pcp fatlate-grid', 'project').replace(/<div class="pg-tools">[\s\S]*?<\/div>\s*/, '')
+    : `<p class="portal-note">${pending ? 'Checking the quotes…' : 'Every scheduled FAT is on or ahead of the date we sold.'}</p>`;
+  root.innerHTML = `
+    <div class="pdash-section fatlate-section" style="margin-top:26px;">
+      <div class="pdash-section-head">
+        <h2>⚠ FAT behind the quote</h2>
+        <span class="pdash-section-sub">every job whose scheduled FAT is later than the FAT we sold — furthest behind first${pending ? ' · still checking ' + pending + ' quote' + (pending === 1 ? '' : 's') : ''}</span>
+      </div>
+      ${grid}
+    </div>`;
+  // Sized to its columns, not the screen (Dan, 10/10: "it doesn't have to
+  // be across the whole screen"). Drag a column edge and the box grows.
+  root.querySelectorAll('table[data-grid]').forEach(t => { t.dataset.userSized = '1'; });
+  try { _wirePortalGrids(root); } catch (_) {}
+  root.querySelectorAll('[data-fatlate-open]').forEach(tr => tr.addEventListener('click', () => {
+    const p = tr.dataset.fatlateOpen;
+    if (!state.openProjects.includes(p)) state.openProjects.push(p);
+    setMyWork(false); clearListModes(); state.filters.project = p;
+    try { saveProjectTabs(); } catch (_) {}
+    setView('schedule');
+  }));
 }
 function renderProjectsKeyDates() {
   const root = document.getElementById('projects-keydates');
@@ -12958,10 +13260,12 @@ function renderProjectsKeyDates() {
   root.querySelector('[data-kd-from]')?.addEventListener('change', (e) => {
     if (e.target.value) localStorage.setItem('sdcKeyDatesFrom', e.target.value);
     renderProjectsKeyDates();
+    try { renderProjectsFatLate(); } catch (_) {}
   });
   root.querySelector('[data-kd-to]')?.addEventListener('change', (e) => {
     if (e.target.value) localStorage.setItem('sdcKeyDatesTo', e.target.value);
     renderProjectsKeyDates();
+    try { renderProjectsFatLate(); } catch (_) {}
   });
 
   // Chip toggles — at least one always stays on.
@@ -12972,6 +13276,7 @@ function renderProjectsKeyDates() {
       if (cur.has(k)) { if (cur.size > 1) cur.delete(k); } else cur.add(k);
       try { localStorage.setItem('sdcKeyDatesAnchors', JSON.stringify([...cur])); } catch (_) {}
       renderProjectsKeyDates();
+    try { renderProjectsFatLate(); } catch (_) {}
     });
   });
   // Project name click → jump to that schedule.
@@ -13613,8 +13918,8 @@ function renderProjectTabs() {
         <span class="project-tab-label">⌂ Portal</span>
       </button>` : '';
   const deptTabHtml = inPortal ? '' : `
-      <button class="project-tab is-dept${state.view === 'team' ? ' active' : ''}" data-dept-tab="1" type="button" draggable="false"
-        title="Departments — team, resource timeline, milestones. Keeps your place when you switch away and back.">
+      <button class="project-tab is-dept${(state.view === 'team' || (state.view === 'schedule' && !!myWorkDept())) ? ' active' : ''}" data-dept-tab="1" type="button" draggable="false"
+        title="Departments — a department’s schedule, who has nothing and who has too much this week, and what is coming due.">
         <span class="project-tab-label">Departments</span>
       </button>
       <button class="project-tab is-dept is-inv${state.view === 'invoicing' ? ' active' : ''}" data-inv-tab="1" type="button" draggable="false"
@@ -13640,7 +13945,7 @@ function renderProjectTabs() {
 
   // Departments tab — just navigates; it's not a project (no project filter,
   // no context menu, no drag).
-  wrap.querySelector('.project-tab.is-dept:not(.is-inv)')?.addEventListener('click', () => setView('team'));
+  wrap.querySelector('.project-tab.is-dept:not(.is-inv)')?.addEventListener('click', () => routeDepartmentsTab());
   wrap.querySelector('.project-tab.is-inv')?.addEventListener('click', () => setView('invoicing'));
   wrap.querySelector('.project-tab.is-portal')?.addEventListener('click', portalBackFromSchedule);
 
@@ -13809,7 +14114,7 @@ function renderProjectTabs() {
       if (!state.myWork) wireBannerProjectsFilter();
     } else {
       const p = state.filters.project;
-      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>`;
+      banner.innerHTML = `<span class="schedule-project-name-pill schedule-project-label">${escapeHtml(p)}</span>${fatQuoteChipHtml(p)}`;
       // The Rows chips on the banner say which rows are in (Hide complete
       // lights when finished rows are out). Nothing else goes in the extra.
       const extraOne = document.getElementById('banner-left-extra');
@@ -13960,8 +14265,12 @@ function renderMachineSubTabs() {
   // finished bars wear, and a check before the name.
   const projTasks = (state.tasks || []).filter(t => t.project === activeProject);
   const machineDone = (m) => projTasks.some(t => t.machine === m && inferredAnchorKey(t) === 'fat' && Number(t.progress) >= 100);
+  // Behind the quote (Dan, 10/10): a machine whose scheduled FAT is later
+  // than the FAT we sold wears a light red edge until it is done.
+  let _lateMachines = new Set();
+  try { _lateMachines = new Set(_fatQuoteRowsFor(activeProject).rows.filter(r => r.days > 0 && !r.done && r.machine).map(r => r.machine)); } catch (_) {}
   const pillHtml = (label, active, dataAttr, done) =>
-    `<button type="button" class="machine-tab ${active ? 'is-active' : ''}${done ? ' is-done' : ''}" ${dataAttr}${done ? ' data-done="1"' : ''}>${done ? '<span class="machine-done-check" aria-hidden="true">✓</span>' : ''}${escapeHtml(label)}</button>`;
+    `<button type="button" class="machine-tab ${active ? 'is-active' : ''}${done ? ' is-done' : ''}${!done && _lateMachines.has(label) ? ' is-late' : ''}" ${dataAttr}${done ? ' data-done="1"' : ''}>${done ? '<span class="machine-done-check" aria-hidden="true">✓</span>' : ''}${escapeHtml(label)}</button>`;
   bar.innerHTML = `
     <span class="machine-tab-label">Machines:</span>
     ${pillHtml('All', isAllActive, 'data-machine-all="1"')}
@@ -16779,6 +17088,7 @@ function render(opts = {}) {
   } else if (state.view === 'team') {
     renderTeam();
   }
+  try { renderDeptPanel(); } catch (_) {}
   try { refreshFinancialsButtonState(); } catch (_) {}
   try { renderProjectNotes(); } catch (_) {}
   try { renderScheduleProcurement(); } catch (_) {}
@@ -21845,8 +22155,9 @@ function enterCrossPredPick(task) {
   setMyWork(true);
   setPersonalPerson(member.id);
   routePersonalMode(member.id);
-  // My work hides finished lines by default; a predecessor can be one.
-  if (state.scheduleView) state.scheduleView.hideCompleted = false;
+  // Finished lines stay hidden (Dan, 10/12): nothing starts after work
+  // that is already done, so only their open lines are offered.
+  if (state.scheduleView) state.scheduleView.hideCompleted = true;
   render();
 }
 function exitCrossPredPick(goBack) {
@@ -27065,8 +27376,16 @@ function myWorkDept() {
 // The department views: the delivery teams, and the ALTEN group — the
 // contract engineers (settings.alten_members, ticked on the Departments
 // board's ✎ dialog). Dan, 10/08.
-const DEPT_VIEW_KEYS = ['mech', 'controls', 'build', 'wire', 'service'];
-const DEPT_VIEWS_EXTRA = { alten: { key: 'alten', label: 'ALTEN group' } };
+// Engineering (mech + controls) and Shop (build + wire) are views too —
+// Dan, 10/12: "I'm always looking at engineering versus shop."
+const DEPT_VIEW_KEYS = ['eng', 'mech', 'controls', 'shop', 'build', 'wire', 'service'];
+const DEPT_VIEWS_EXTRA = {
+  eng:   { key: 'eng',   label: 'Engineering', discs: ['mech', 'controls'] },
+  shop:  { key: 'shop',  label: 'Shop',        discs: ['build', 'wire'] },
+  alten: { key: 'alten', label: 'ALTEN group' },
+};
+// The disciplines a department view spans.
+function deptScopeDiscs(key) { const d = deptViewInfo(key); return (d && d.discs) || [key]; }
 function deptViewInfo(key) { return DISCIPLINE_BY_KEY[key] || DEPT_VIEWS_EXTRA[key] || null; }
 function altenIds() { const v = state.settings && state.settings.alten_members; return Array.isArray(v) ? v.map(Number) : []; }
 async function setAltenMember(id, on) {
@@ -27082,7 +27401,8 @@ function deptMembers(key) {
     const ids = new Set(altenIds());
     return (state.team || []).filter(m => ids.has(Number(m.id))).sort(sortFn);   // active or not: they are on the contract
   }
-  return (state.team || []).filter(m => m.discipline === key && m.active !== 0).sort(sortFn);
+  const discs = deptScopeDiscs(key);
+  return (state.team || []).filter(m => discs.includes(m.discipline) && m.active !== 0).sort(sortFn);
 }
 let _deptNamesCache = { key: '', n: -1, set: null };
 function deptNames(key) {
@@ -27846,7 +28166,7 @@ function showMyWorkSignIn() {
   // Whole departments: leadership any, a PM the execution teams, a lead
   // their own. One page, one person after the other, unassigned work last.
   const deptKeys = exec ? DEPT_VIEW_KEYS.concat(['alten'])
-    : pm ? DEPT_VIEW_KEYS.filter(k => EXECUTION_TEAMS.includes(k)).concat(['alten'])
+    : pm ? DEPT_VIEW_KEYS.filter(k => EXECUTION_TEAMS.includes(k) || k === 'eng' || k === 'shop').concat(['alten'])
     : (lead && authed) ? [authed.discipline].filter(k => DEPT_VIEW_KEYS.includes(k)) : [];
   const curDept = _actionsPageState && _actionsPageState.deptKey;
   const deptHtml = deptKeys.map(k => deptViewInfo(k)).filter(Boolean)
@@ -28027,6 +28347,14 @@ function restorePersonalViewDefaults() {
   }
 }
 
+// The Departments tab: the last department you looked at, Engineering the
+// first time. The schedule on top, the week underneath (renderDeptPanel).
+function routeDepartmentsTab() {
+  let k = '';
+  try { k = localStorage.getItem('sdcActionsDept') || ''; } catch (_) {}
+  if (!deptViewInfo(k) || k === 'alten') k = 'eng';
+  routePersonalDept(k);
+}
 function routePersonalDept(key) {
   const d = deptViewInfo(key);
   if (!d) return;
@@ -29624,336 +29952,156 @@ function assignProjectLanes(tasks) {
 // with a natural horizon (Upcoming, Available capacity, Over-allocated). Behind
 // schedule and Release dates have no window and ignore it. Scope = the projects
 // picked at the top of the page ∩ this discipline's members.
-function renderTeamDashboard() {
-  const disc = state.resources?.discipline;
-  if (!disc) return;
-  const discDef = DISCIPLINE_BY_KEY[disc] || { label: disc };
-
-  // Focused member (set from the team grid) narrows every card to one person.
-  const focusId = state.resources.focusMemberId;
-  const focusedMember = focusId != null ? state.team.find(m => m.id === focusId) : null;
-  const memberNames = focusedMember
-    ? new Set([focusedMember.name])
-    : new Set(state.team.filter(m => m.discipline === disc && m.active !== 0).map(m => m.name));
-
-  // Project scope follows the Gantt above: if a specific project is picked in
-  // the Gantt's project filter, the whole overview narrows to that one. Else it
-  // falls back to the rollup picker's selection. Templates + Sales are dropped.
-  const { selected } = _deptSelectedProjects();
-  const ganttProj = (state.resources && state.resources.project) || '';
-  const isExcluded = (p) => isTemplateProject(p) || projectWorkspace(p) === 'Sales';
-  const inScope = (p) => !isExcluded(p) && (ganttProj ? p === ganttProj : selected.includes(p));
-
-  // Time window (weeks), shared across the windowed cards. Each windowed card
-  // carries its own <select class="dept-window-select">; all read/write one value
-  // so they stay in sync. Mechanical releases has no window.
-  let weeks = parseInt(localStorage.getItem('sdcDeptTimeframeWeeks') || '8', 10);
-  if (![2, 4, 8, 12].includes(weeks)) weeks = 8;
-  const WINDOW_OPTS = [2, 4, 8, 12].map(w => `<option value="${w}">Next ${w} weeks</option>`).join('');
-  document.querySelectorAll('.dept-window-select').forEach(sel => {
-    if (sel.dataset.filled !== '1') { sel.innerHTML = WINDOW_OPTS; sel.dataset.filled = '1'; }
-    sel.value = String(weeks);
-    if (!sel.dataset.bound) {
-      sel.dataset.bound = '1';
-      sel.addEventListener('change', () => {
-        try { localStorage.setItem('sdcDeptTimeframeWeeks', sel.value); } catch (_) {}
-        renderTeamDashboard();
-      });
-    }
-  });
-
+// ── The department page's lower half (Dan, 10/12): the same two things
+//    for any department — everyone's workload this week, and what is coming
+//    due as a calendar. Engineering and Shop roll departments together.
+//    The week ends Friday; Saturday and Sunday belong to the week after.
+function _deptWindow(weeks) {
+  const isoLocal = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const todayMs   = today.getTime();
-  const todayISO  = today.toISOString().slice(0, 10);
-  const windowEnd = todayMs + weeks * 7 * 86400000;
+  const start = new Date(today);
+  if (start.getDay() === 6) start.setDate(start.getDate() + 2);
+  else if (start.getDay() === 0) start.setDate(start.getDate() + 1);
+  const monday = new Date(start); monday.setDate(monday.getDate() - (monday.getDay() - 1));
+  const end = new Date(start); end.setDate(end.getDate() + (5 - end.getDay()) + (weeks - 1) * 7);
+  return { todayISO: isoLocal(today), startISO: isoLocal(start), endISO: isoLocal(end), mondayISO: isoLocal(monday), isoLocal,
+    bizDays: businessDaysBetween(isoLocal(start), isoLocal(end)) || 1 };
+}
+function deptPanelWeeks() {
+  let w = 1;
+  try { w = parseInt(localStorage.getItem('sdcDeptWindowWeeks') || '1', 10); } catch (_) {}
+  return [1, 2, 4].includes(w) ? w : 1;
+}
+function renderDeptPanel() {
+  const panel = document.getElementById('dept-panel');
+  if (!panel) return;
+  const key = (state.view === 'schedule') ? myWorkDept() : '';
+  if (!key || key === 'alten') { panel.hidden = true; document.body.classList.remove('dept-sched-hidden'); return; }
+  panel.hidden = false;
+  let schedHidden = false;
+  try { schedHidden = localStorage.getItem('sdcDeptSchedHidden') === '1'; } catch (_) {}
+  document.body.classList.toggle('dept-sched-hidden', schedHidden);
 
-  const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
-  setText('dept-overview-sub', `${discDef.label} · ${selected.length} project${selected.length === 1 ? '' : 's'} selected`);
-  setText('dept-over-title', 'Over-allocated');
-  setText('dept-starting-title', `Starting in next ${weeks}w`);
-  setText('dept-ending-title', `Ending in next ${weeks}w`);
-  setText('dept-available-title', 'Current workload');
-
-  // ── Header chart · schedule-health donut over ACTIVE in-scope work. Done
-  //    tasks are excluded everywhere in the overview — they just pile up over
-  //    time and aren't actionable (per Dan). ──
-  const work = state.tasks.filter(t =>
-    inScope(t.project) && t.assignee && memberNames.has(t.assignee) &&
-    !t.is_milestone && !inferredAnchorKey(t) && (Number(t.progress) || 0) < 100);
-  const sc = deptStatusCounts(work, todayMs);
-  const statusLegend =
-    deptLegendDot(DEPT_STATUS_COLORS.behind, `Behind ${sc.behind}`) +
-    deptLegendDot(DEPT_STATUS_COLORS.ontime, `On-time ${sc.ontime}`) +
-    deptLegendDot(DEPT_STATUS_COLORS.ahead,  `Ahead ${sc.ahead}`);
-  const donutHtml = deptHealthDonutSvg(work, todayMs);
-
-  // ── Needs attention · three buckets: behind, unstaffed-but-started, over. ──
-  // 1) Behind schedule — REAL-assignee tasks with negative business-day drift
-  //    (placeholder tasks go to "Unstaffed" instead). Action items included.
-  const behind = state.tasks
-    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && !isPlaceholder(t.assignee) && inScope(t.project))
-    .map(t => ({ task: t, drift: taskScheduleDelta(t) }))
-    .filter(x => x.drift < 0)
-    .sort((a, b) => a.drift - b.drift);
-  // 2) Unstaffed & started — should be underway (start date reached, not done)
-  //    but it's parked on a placeholder, so no real person owns it = a risk.
-  const unstaffed = state.tasks
-    .filter(t => !t.is_milestone && (Number(t.progress) || 0) < 100 && inScope(t.project) &&
-      t.assignee && isPlaceholder(t.assignee) && memberNames.has(t.assignee) &&
-      t.start_date && t.start_date <= todayISO)
-    .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
-  // 3) Capacity scan over the window → over- + under-allocated REAL people.
-  const realMembers = (state.team || []).filter(m =>
-    m.discipline === disc && m.active !== 0 && !isPlaceholder(m.name) &&
-    (!focusedMember || m.id === focusedMember.id));
-  const windowDays = Math.max(1, Math.round((windowEnd - todayMs) / 86400000));
-  const overPeople = [], underPeople = [], memberLoads = [], loadByName = {};
-  for (const m of realMembers) {
-    const memTasks = state.tasks.filter(t =>
-      t.assignee === m.name && (Number(t.progress) || 0) < 100 &&
-      t.start_date && t.end_date && inScope(t.project)
-    ).filter(t => {
-      const s = new Date(t.start_date + 'T00:00:00').getTime();
-      const e = new Date(t.end_date + 'T00:00:00').getTime();
-      return e >= todayMs && s <= windowEnd; // overlaps the window
-    });
-    // Average daily allocation across the window (0 when no open tasks) — feeds
-    // both the under-allocated heuristic and the per-person availability donuts.
-    let totalAlloc = 0;
-    for (const t of memTasks) {
-      const s = Math.max(todayMs, new Date(t.start_date + 'T00:00:00').getTime());
-      const e = Math.min(windowEnd, new Date(t.end_date + 'T00:00:00').getTime());
-      if (e < s) continue;
-      const days = Math.round((e - s) / 86400000) + 1;
-      totalAlloc += (t.allocation == null ? 90 : Number(t.allocation)) * days;
+  const weeks = deptPanelWeeks();
+  const W = _deptWindow(weeks);
+  const winWord = weeks === 1 ? 'this week' : 'in the next ' + weeks + ' weeks';
+  const inScope = (p) => !!p && !isTemplateProject(p) && !projectWorkOff(p) && !projectIsInactive(p);
+  const members = deptMembers(key).filter(m => !isPlaceholder(m.name));
+  const names = new Set(members.map(m => m.name));
+  const discs = deptScopeDiscs(key);
+  const openDated = (state.tasks || []).filter(t => !t.is_milestone && (Number(t.progress) || 0) < 100 && t.start_date && t.end_date && inScope(t.project));
+  // Load = each line's allocation over the business days it covers inside
+  // the window, averaged over the window's business days. A line past its
+  // end and not done still counts for its unfinished share, starting now.
+  const loadOf = (name) => {
+    const mine = openDated.filter(t => t.assignee === name);
+    let sum = 0;
+    for (const t of mine) {
+      if (t.start_date > W.endISO) continue;
+      const alloc = t.allocation == null ? 90 : Number(t.allocation);
+      if (t.end_date < W.startISO) {
+        const dur = businessDaysBetween(t.start_date, t.end_date) || 1;
+        const rem = Math.max(1, Math.round(dur * (100 - (Number(t.progress) || 0)) / 100));
+        sum += Math.min(rem, W.bizDays) * alloc;
+        continue;
+      }
+      const s0 = t.start_date > W.startISO ? t.start_date : W.startISO;
+      const e0 = t.end_date < W.endISO ? t.end_date : W.endISO;
+      sum += (businessDaysBetween(s0, e0) || 0) * alloc;
     }
-    const avg = Math.round(totalAlloc / windowDays);
-    memberLoads.push(avg);
-    loadByName[m.name] = avg;
-    const lead = !!m.is_lead;
-    if (memTasks.length === 0) { underPeople.push({ name: m.name, load: 0, lead, reason: 'no open tasks' }); continue; }
-    const overlap = computeOverloadRegions(memTasks, today);
-    if (overlap.length > 0) {
-      // Keep the actual PERIODS (dates, not just the peak) — the overview
-      // card lists "over-allocated Aug 1 – Aug 8 · 170%" per person.
-      const periods = overlap.map(r => ({
-        from: new Date(todayMs + r.startDay * 86400000).toISOString().slice(0, 10),
-        to:   new Date(todayMs + r.endDay   * 86400000).toISOString().slice(0, 10),
-        peak: r.peak,
-      }));
-      overPeople.push({ name: m.name, peak: Math.max(...overlap.map(r => r.peak)), periods });
-      continue;
-    }
-    if (avg < 60) underPeople.push({ name: m.name, load: avg, lead, reason: `${avg}% load` });
-  }
-  // (Current workload shows EVERY member — see workloadPeople below — so the
-  // old lead-injection into underPeople is no longer needed.)
-
-  // Needs-attention visual — the health donut (moved here from the header) +
-  // three problem-count tiles, side by side.
-  const attnChart = document.getElementById('dept-chart-attention');
-  if (attnChart) {
-    const tiles = deptStatTilesHtml([
-      { label: 'Behind',    n: behind.length,    color: DEPT_STATUS_COLORS.behind },
-      { label: 'Unstaffed', n: unstaffed.length,  color: 'var(--sdc-primary, #1574c4)' },
-      { label: 'Over',      n: overPeople.length, color: 'var(--sdc-primary, #1574c4)' },
-    ]);
-    const donutBlock = donutHtml
-      ? `<div class="dept-attn-donut">${donutHtml}<div class="dept-chart-legend">${statusLegend}</div></div>`
-      : '';
-    attnChart.innerHTML = `<div class="dept-attn-row">${donutBlock}<div class="dept-attn-tiles">${tiles}</div></div>`;
-  }
-
-  renderDashboardList('dept-behind-body', behind, ({ task, drift }) => ({
-    project: task.project, name: task.name, assignee: task.assignee,
-    rightChip: deptVarChip(-drift), onClick: () => jumpToTask(task),
-  }), 'Nothing behind schedule. 🎉');
-  renderDashboardList('dept-unstaffed-body', unstaffed, t => ({
-    project: t.project, name: t.name, assignee: t.assignee,
-    rightChip: { text: `since ${fmtDate(t.start_date)}`, tone: 'danger' }, onClick: () => jumpToTask(t),
-  }), 'Nothing started without a real owner.');
-  // Over-allocated card — per person, list the exact PERIODS they're over
-  // (Dan: "he's over-allocated from this date to this date"), each with its
-  // own peak %. Person row keeps the overall peak chip.
-  const overBody = document.getElementById('dept-over-body');
-  if (overBody) {
-    overBody.innerHTML = overPeople.length === 0
-      ? `<p class="dashboard-empty">No one over-allocated in this window.</p>`
-      : overPeople.map(p => `
-        <div class="dashboard-row dashboard-row-person is-over">
-          <span class="dashboard-row-name">${escapeHtml(p.name)}</span>
-          <span class="dashboard-chip chip-danger">peak ${p.peak}%</span>
-        </div>
-        ${p.periods.map(x => `
-          <div class="dashboard-row dept-over-period" title="${escapeHtml(`${p.name} is over-allocated ${fmtDate(x.from)} – ${fmtDate(x.to)} (peak ${x.peak}%)`)}">
-            <span class="dept-over-dates">${escapeHtml(fmtDate(x.from))} – ${escapeHtml(fmtDate(x.to))}</span>
-            <span class="dashboard-chip chip-danger">${x.peak}%</span>
-          </div>`).join('')}`).join('');
-  }
-  // Current workload — a card per person (5 across): name + a donut of their
-  // current allocation % over the window. EVERY member of the discipline
-  // shows — busy and over-allocated people included — so this list always
-  // matches the team grid above (it used to show only the under-allocated,
-  // which silently dropped whoever was actually loaded). Lead first.
-  const workloadPeople = realMembers
-    .map(m => ({ name: m.name, load: loadByName[m.name] || 0, lead: !!m.is_lead }))
-    .sort((a, b) => (b.lead ? 1 : 0) - (a.lead ? 1 : 0));
-  deptRenderWorkloadCards('dept-available-body',
-    workloadPeople,
-    'No team members in this discipline.');
-  // Utilization gauge — average team load across the window (one rollup number).
-  const deptUtil = memberLoads.length ? Math.round(memberLoads.reduce((a, b) => a + b, 0) / memberLoads.length) : 0;
-  const gaugeEl = document.getElementById('dept-chart-available');
-  if (gaugeEl) gaugeEl.innerHTML = realMembers.length ? deptUtilGaugeSvg(deptUtil) : '';
-
-  // ── Upcoming · starting / ending within the window (by date). ──
-  const starting = state.tasks
-    .filter(t => (!t.is_milestone || t.is_action) && t.assignee && memberNames.has(t.assignee) && t.start_date && inScope(t.project))
-    .filter(t => { const s = new Date(t.start_date + 'T00:00:00').getTime(); return s >= todayMs && s <= windowEnd; })
-    .sort((a, b) => (a.start_date || '').localeCompare(b.start_date || ''));
-  renderDashboardList('dept-starting-body', starting, t => {
-    const alloc = t.allocation == null ? 90 : Number(t.allocation);
-    const dur = durationLabel(t);
-    return {
-      project: t.project, name: t.name,
-      assignee: `${t.assignee}${dur ? ' · ' + dur : ''} · ${alloc}%`,
-      rightChip: { text: fmtDate(t.start_date), tone: 'info' }, onClick: () => jumpToTask(t),
-    };
-  }, `Nothing starting in the next ${weeks} weeks.`);
-  // Upcoming visual — a timeline dot per task starting in the window (hover = name),
-  // so you see WHEN work lands and which task it is, not just a count.
-  const upChart = document.getElementById('dept-chart-upcoming');
-  if (upChart) upChart.innerHTML = deptUpcomingTimelineSvg(starting, todayMs, windowEnd);
-
-  const ending = state.tasks
-    .filter(t => (!t.is_milestone || t.is_action) && (Number(t.progress) || 0) < 100 && t.assignee && memberNames.has(t.assignee) && t.end_date && inScope(t.project))
-    .filter(t => { const e = new Date(t.end_date + 'T00:00:00').getTime(); return e >= todayMs && e <= windowEnd; })
-    .sort((a, b) => (a.end_date || '').localeCompare(b.end_date || ''));
-  renderDashboardList('dept-ending-body', ending, t => {
-    const drift = taskScheduleDelta(t); // business-day drift; negative = behind
-    const pct = Math.max(0, Math.min(100, Number(t.progress) || 0));
-    return {
-      project: t.project, name: t.name,
-      assignee: `${t.assignee} · ${pct}% · due ${fmtDate(t.end_date)}`,
-      rightChip: deptVarChip(-drift), onClick: () => jumpToTask(t),
-    };
-  }, `Nothing ending in the next ${weeks} weeks.`);
-
-  // ── Release dates · discipline-aware, all in date order, late in red. ──
-  // Mechanical shows EVERY release (Mech 1/2/3…): mech_release_1 is an anchor,
-  // but Mech 2 / Mech 3 are plain milestone tasks, so match both. Other
-  // disciplines fall back to their single key anchor across the projects.
-  // The bottom-right "completion" card is discipline-specific:
-  //   mech     → all mechanical releases (Mech 1/2/3 — anchor + milestone names)
-  //   controls → software completion (tasks named "…software…")
-  //   build    → Power-Up (machine_power_up anchor)   ← builders work toward it
-  //   wire     → Power-Up (machine_power_up anchor)   ← electricians too
-  //   pm       → Ship Machine (ship_machine anchor)
-  const KEY_ANCHOR_BY_DISCIPLINE = {
-    pm:    { anchor: 'ship_machine',     title: 'Ship Machine' },
-    build: { anchor: 'machine_power_up', title: 'Power-Up' },
-    wire:  { anchor: 'machine_power_up', title: 'Power-Up' },
+    const next = mine.filter(t => t.start_date > W.endISO).map(t => t.start_date).sort()[0] || '';
+    return { avg: Math.round(sum / W.bizDays), next };
   };
-  let releaseTasks = [];
-  let releasesTitle = 'Release dates';
-  if (disc === 'mech') {
-    releasesTitle = 'Mechanical releases';
-    const isMechRelease = (t) =>
-      inferredAnchorKey(t) === 'mech_release_1' ||
-      (t.is_milestone && /mech\w*\s*\d*\s*release/i.test(t.name || ''));
-    releaseTasks = state.tasks.filter(t => inScope(t.project) && isMechRelease(t));
-  } else if (disc === 'controls') {
-    releasesTitle = 'Software completion';
-    releaseTasks = state.tasks.filter(t => inScope(t.project) && /software/i.test(t.name || ''));
-  } else {
-    const keyDef = KEY_ANCHOR_BY_DISCIPLINE[disc];
-    if (keyDef) {
-      releasesTitle = keyDef.title;
-      releaseTasks = state.tasks.filter(t => inferredAnchorKey(t) === keyDef.anchor && inScope(t.project));
-    }
+  const loads = members.map(m => Object.assign({ id: m.id, name: m.name, lead: !!m.is_lead, disc: m.discipline }, loadOf(m.name)));
+  const nOver = loads.filter(x => x.avg > 100).length, nNone = loads.filter(x => x.avg === 0).length;
+  const phNames = new Set((state.team || []).filter(m => discs.includes(m.discipline) && isPlaceholder(m.name)).map(m => m.name));
+  const unassigned = openDated.filter(t => phNames.has(t.assignee) && t.start_date <= W.endISO && t.end_date >= W.startISO).length;
+
+  // ── Scope tabs + window + the schedule toggle. ──
+  const SCOPES = [['eng', 'Engineering', true], ['mech', 'Mechanical'], ['controls', 'Controls'], null, ['shop', 'Shop', true], ['build', 'Builders'], ['wire', 'Electricians'], null, ['service', 'Service']];
+  const scopeHtml = SCOPES.map(x => x === null ? '<span class="dept-scope-gap"></span>'
+    : `<button type="button" class="dept-scope-btn${x[2] ? ' is-group' : ''}${key === x[0] ? ' is-active' : ''}" data-dept-scope="${x[0]}">${x[1]}</button>`).join('');
+  const d = deptViewInfo(key);
+  const bar = `<div class="dept-panel-bar">
+      <div class="dept-scope">${scopeHtml}</div>
+      <select class="dept-window-select" id="dept-panel-weeks" title="How far out to look. The week ends Friday; Saturday and Sunday count toward the week after.">
+        <option value="1"${weeks === 1 ? ' selected' : ''}>This week</option><option value="2"${weeks === 2 ? ' selected' : ''}>Next 2 weeks</option><option value="4"${weeks === 4 ? ' selected' : ''}>Next 4 weeks</option>
+      </select>
+      <span class="dept-panel-dates">${escapeHtml(fmtDate(W.startISO))} – ${escapeHtml(fmtDate(W.endISO))}</span>
+      <span class="dept-panel-spacer"></span>
+      <button type="button" class="toolbar-toggle-btn" id="dept-sched-toggle" title="${schedHidden ? 'Bring the schedule back above' : 'Hide the schedule and give the week the whole page'}">${schedHidden ? '▸ Show the schedule' : '▾ Hide the schedule'}</button>
+      <button type="button" class="toolbar-toggle-btn" id="dept-roster-btn" title="The SDC Team board: phones, emails, leads, the ALTEN tick.">Team roster →</button>
+    </div>`;
+
+  // ── Workload: one list, a bar each. ──
+  const order = DISCIPLINES.map(x => x.key);
+  const byDisc = discs.slice().sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  const loadRow = (x) => {
+    const fill = Math.min(x.avg, 100) / 150 * 100, over = Math.min(Math.max(x.avg - 100, 0), 50) / 150 * 100;
+    const note = x.avg === 0 ? (x.next ? 'nothing scheduled · next starts ' + fmtDate(x.next) : 'nothing scheduled') : x.avg > 100 ? 'over' : '';
+    return `<button type="button" class="dept-load-row${x.avg > 100 ? ' is-over' : x.avg === 0 ? ' is-none' : ''}" data-person="${x.id}" title="Open ${escapeHtml(x.name)}’s page">
+      <span class="dept-load-name">${x.lead ? '★ ' : ''}${escapeHtml(x.name)}</span>
+      <span class="dept-load-track"><span class="dept-load-fill" style="width:${fill}%"></span>${over ? `<span class="dept-load-over" style="left:${100 / 1.5}%;width:${over}%"></span>` : ''}<i class="dept-load-100"></i></span>
+      <span class="dept-load-pct">${x.avg}%</span>
+      <span class="dept-load-note">${escapeHtml(note)}</span>
+    </button>`;
+  };
+  let loadHtml = '';
+  for (const dk of byDisc) {
+    const rows = loads.filter(x => x.disc === dk).sort((a, b) => b.avg - a.avg || a.name.localeCompare(b.name));
+    if (!rows.length) continue;
+    if (byDisc.length > 1) loadHtml += `<div class="dept-load-dept">${escapeHtml((DISCIPLINE_BY_KEY[dk] || { label: dk }).label)}</div>`;
+    loadHtml += rows.map(loadRow).join('');
   }
-  // Hide-completed filter (default on). Bind once.
-  const hideDoneBox = document.getElementById('dept-releases-hide-done');
-  if (hideDoneBox) {
-    const stored = localStorage.getItem('sdcDeptHideDoneReleases');
-    const hideDone = stored == null ? true : stored === '1';
-    hideDoneBox.checked = hideDone;
-    if (!hideDoneBox.dataset.bound) {
-      hideDoneBox.dataset.bound = '1';
-      hideDoneBox.addEventListener('change', () => {
-        try { localStorage.setItem('sdcDeptHideDoneReleases', hideDoneBox.checked ? '1' : '0'); } catch (_) {}
-        renderTeamDashboard();
-      });
+  if (!loadHtml) loadHtml = '<p class="dashboard-empty">No one on this team yet.</p>';
+  const loadCard = `<section class="dept-card2 dept-load">
+      <header class="dept-card2-head"><h3>Workload</h3><span class="dept-card2-sub">average allocation ${escapeHtml(winWord)} · <b>${nOver}</b> over 100% · <b>${nNone}</b> with nothing${unassigned ? ' · <b>' + unassigned + '</b> unassigned line' + (unassigned === 1 ? '' : 's') : ''}</span></header>
+      <div class="dept-card2-body">${loadHtml}</div>
+    </section>`;
+
+  // ── Coming due: a calendar, Monday to Friday, a row per week. ──
+  const due = (state.tasks || []).filter(t => (!t.is_milestone || t.is_action) && (Number(t.progress) || 0) < 100 && names.has(t.assignee) && t.end_date && inScope(t.project));
+  const inWin = due.filter(t => t.end_date >= W.startISO && t.end_date <= W.endISO);
+  const past = due.filter(t => t.end_date < W.startISO).sort((a, b) => b.end_date.localeCompare(a.end_date));
+  const byDay = new Map();
+  inWin.forEach(t => { if (!byDay.has(t.end_date)) byDay.set(t.end_date, []); byDay.get(t.end_date).push(t); });
+  const item = (t) => { const late = taskScheduleDelta(t) < 0; return `<button type="button" class="dept-cal-item${late ? ' is-late' : ''}" data-task="${t.id}" title="${escapeHtml(t.project + ' — ' + (t.name || '') + ' · ' + t.assignee + ' · due ' + fmtDate(t.end_date))}"><b>${escapeHtml(jobNumberOf(t.project) || t.project)}</b> ${escapeHtml(t.name || '')}<span>${escapeHtml(t.assignee)}</span></button>`; };
+  const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+  let cal = '';
+  const cur = new Date(W.mondayISO + 'T00:00:00');
+  for (let w = 0; w < weeks; w++) {
+    cal += '<div class="dept-cal-week">';
+    for (let i = 0; i < 5; i++) {
+      const iso = W.isoLocal(cur);
+      const list = byDay.get(iso) || [];
+      const dim = iso < W.startISO;
+      cal += `<div class="dept-cal-day${iso === W.todayISO ? ' is-today' : ''}${dim ? ' is-dim' : ''}"><div class="dept-cal-date">${DOW[i]} ${escapeHtml(fmtDate(iso))}${list.length ? ` <em>${list.length}</em>` : ''}</div>${list.map(item).join('')}</div>`;
+      cur.setDate(cur.getDate() + 1);
     }
-    if (hideDone) releaseTasks = releaseTasks.filter(t => (Number(t.progress) || 0) < 100);
+    cal += '</div>';
+    cur.setDate(cur.getDate() + 2);
   }
-  releaseTasks.sort((a, b) =>
-    ((a.start_date || a.end_date || '') + '').localeCompare((b.start_date || b.end_date || '') + ''));
-  setText('dept-releases-title', releasesTitle);
-  const releaseItems = releaseTasks.map(t => {
-    const baseName = t.name || anchorLabelFor(inferredAnchorKey(t));
-    const done = (Number(t.progress) || 0) >= 100;
-    // Scheduled = the CURRENT schedule date (what the Schedule view shows).
-    // Baseline = the ORIGINAL date if the project was baselined, else null → N/A.
-    const current  = t.end_date || t.start_date || '';
-    const baseline = t.baseline_end_date || t.baseline_start_date || '';
-    const actual   = done ? (t.completed_on || current) : '';
-    // Variance reads against the original baseline (how far we slipped from plan);
-    // if there's no baseline, fall back to overdue-vs-today for not-done items.
-    const eff = done ? actual : current;
-    let chip;
-    if (baseline && eff) {
-      chip = deptVarChip(Math.round((new Date(eff + 'T00:00:00') - new Date(baseline + 'T00:00:00')) / 86400000));
-    } else if (!done && current && current < todayISO) {
-      chip = deptVarChip(Math.round((todayMs - new Date(current + 'T00:00:00').getTime()) / 86400000));
-    } else {
-      chip = done ? { text: 'done', tone: 'success' } : { text: 'on track', tone: 'info' };
-    }
-    return { id: t.id, project: t.project, name: baseName, done, current, baseline, actual, chip };
+  const pastHtml = past.length ? `<div class="dept-cal-past"><span class="dept-cal-past-label">Past due · ${past.length}</span>${past.slice(0, 12).map(item).join('')}${past.length > 12 ? `<span class="dept-cal-more">+${past.length - 12} more</span>` : ''}</div>` : '';
+  const dueCard = `<section class="dept-card2 dept-cal">
+      <header class="dept-card2-head"><h3>Coming due</h3><span class="dept-card2-sub"><b>${inWin.length}</b> line${inWin.length === 1 ? '' : 's'} due ${escapeHtml(winWord)}${past.length ? ' · <b>' + past.length + '</b> past due' : ''}</span></header>
+      <div class="dept-card2-body">${pastHtml}${cal}</div>
+    </section>`;
+
+  panel.innerHTML = bar + `<div class="dept-panel-body">${loadCard}${dueCard}</div>`;
+
+  // ── Wiring. ──
+  panel.querySelectorAll('[data-dept-scope]').forEach(b => b.addEventListener('click', () => { if (b.dataset.deptScope !== key) routePersonalDept(b.dataset.deptScope); }));
+  panel.querySelector('#dept-panel-weeks')?.addEventListener('change', (e) => { try { localStorage.setItem('sdcDeptWindowWeeks', e.target.value); } catch (_) {} renderDeptPanel(); });
+  panel.querySelector('#dept-sched-toggle')?.addEventListener('click', () => {
+    try { localStorage.setItem('sdcDeptSchedHidden', schedHidden ? '0' : '1'); } catch (_) {}
+    renderDeptPanel();
+    if (schedHidden) { try { renderGantt(); } catch (_) {} }   // the chart comes back at the right width
   });
-  deptRenderReleaseGrid('dept-releases-body', releaseItems,
-    `No ${releasesTitle.toLowerCase()} for the selected projects.`);
-  // Release timeline — a dot per release across the date axis, late dots stand out.
-  const relChart = document.getElementById('dept-chart-releases');
-  if (relChart) relChart.innerHTML = deptReleaseTimelineSvg(releaseTasks, todayMs);
+  panel.querySelector('#dept-roster-btn')?.addEventListener('click', () => setView('team'));
+  panel.querySelectorAll('[data-person]').forEach(b => b.addEventListener('click', () => routePersonalMode(Number(b.dataset.person))));
+  panel.querySelectorAll('[data-task]').forEach(b => b.addEventListener('click', () => { const t = (state.tasks || []).find(x => String(x.id) === b.dataset.task); if (t) { setMyWork(false); jumpToTask(t); } }));
 }
 
-// Releases grid — columns spread across the card width (Project / Release /
-// Scheduled / Done / variance) instead of stacked rows, so the wide card isn't
-// mostly blank. Same variance pill + ✓-when-done convention as everywhere else.
-function deptRenderReleaseGrid(bodyId, items, emptyText) {
-  const body = document.getElementById(bodyId);
-  if (!body) return;
-  if (!items || items.length === 0) {
-    body.innerHTML = `<p class="dashboard-empty">${escapeHtml(emptyText)}</p>`;
-    return;
-  }
-  const head = `<div class="dept-rel-row dept-rel-head">
-    <span>Project</span><span>Release</span><span>Scheduled</span><span>Done</span><span></span>
-  </div>`;
-  const rows = items.map((it, i) => `
-    <button type="button" class="dept-rel-row" data-i="${i}">
-      <span class="dept-rel-project" title="${escapeHtml(it.project || '')}">${escapeHtml(it.project || '—')}</span>
-      <span class="dept-rel-name"><span class="dept-rel-check">${it.done ? '✓' : ''}</span><span class="dept-rel-name-text">${escapeHtml(it.name)}</span></span>
-      <span class="dept-rel-date">
-        <span class="dept-rel-date-cur">${it.current ? fmtDate(it.current) : '—'}</span>
-        <span class="dept-rel-date-base">${it.baseline ? 'orig ' + fmtDate(it.baseline) : 'orig N/A'}</span>
-      </span>
-      <span class="dept-rel-date">${it.actual ? fmtDate(it.actual) : '—'}</span>
-      <span class="dept-rel-var"><span class="dashboard-chip chip-${it.chip.tone}">${escapeHtml(it.chip.text)}</span></span>
-    </button>`).join('');
-  body.innerHTML = `<div class="dept-rel-grid">${head}${rows}</div>`;
-  body.querySelectorAll('.dept-rel-row[data-i]').forEach(row => {
-    row.addEventListener('click', () => {
-      const it = items[Number(row.dataset.i)];
-      const t = it && state.tasks.find(x => x.id === it.id);
-      if (t) jumpToTask(t);
-    });
-  });
-}
-
-// Current-workload renderer — a grid of person cards (5 across): a donut of the
-// person's current allocation % over the window + their name beneath.
 function deptRenderWorkloadCards(bodyId, people, emptyText) {
   const body = document.getElementById(bodyId);
   if (!body) return;
@@ -30222,7 +30370,6 @@ function setFocusedMember(memberId) {
     }
   }
   renderResources();
-  renderTeamDashboard();
   renderTeamFocusBanner();
 }
 
@@ -30271,14 +30418,12 @@ function renderTeamFocusBanner() {
 function renderResources() {
   // Dashboard cards re-render alongside the resources timeline so they always
   // reflect the currently selected discipline.
-  renderTeamDashboard();
 
   const body = document.getElementById('resources-body');
   const empty = document.getElementById('resources-empty');
-  if (!body) return;
   // Captured BEFORE innerHTML replacement wipes it — same-view re-renders
   // restore this so background data loads never move the viewport.
-  const _prevScrollLeft = body.scrollLeft;
+  const _prevScrollLeft = body ? body.scrollLeft : 0;
 
   // Discipline tabs
   const discWrap = document.getElementById('resources-disciplines');
@@ -30287,9 +30432,16 @@ function renderResources() {
     discWrap.addEventListener('click', (e) => {
       const btn = e.target.closest('button[data-discipline]');
       if (!btn) return;
+      // The lit department again = open its schedule.
+      if (state.resources.discipline === btn.dataset.discipline && !document.getElementById('resources-body')) { routePersonalDept(btn.dataset.discipline); return; }
       state.resources.discipline = btn.dataset.discipline;
       renderResources();
     });
+  }
+  const openBtn = document.getElementById('btn-dept-open-schedule');
+  if (openBtn && !openBtn.dataset.bound) {
+    openBtn.dataset.bound = '1';
+    openBtn.addEventListener('click', () => routePersonalDept(state.resources.discipline));
   }
   if (discWrap) {
     // Resource timeline shows ONLY the teams that get assigned schedule work
@@ -30309,7 +30461,11 @@ function renderResources() {
               style="--disc-color:${d.color};--disc-text:${d.text}">
         ${escapeHtml(d.label)}
       </button>`).join('');
+    const cur = DISCIPLINE_BY_KEY[state.resources.discipline];
+    if (openBtn) openBtn.textContent = 'Open the ' + (cur ? cur.label : 'department') + ' schedule →';
   }
+  // The My work department pages replaced the resource timeline (Dan, 10/10).
+  if (!body) return;
 
   // Project filter — pull project names from the current task list
   const projSel = document.getElementById('resources-project');
@@ -36303,6 +36459,7 @@ async function init() {
         }
         sessionStorage.setItem('sdcTeamAuth', '1');
       }
+      if (v === 'team') { routeDepartmentsTab(); return; }
       setView(v);
     });
   });

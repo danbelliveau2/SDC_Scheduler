@@ -8,11 +8,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css" />
-  <link rel="stylesheet" href="styles.css?v=20261010-24375" />
+  <link rel="stylesheet" href="styles.css?v=20261012-13446" />
   <link rel="stylesheet" href="auth-ui.css?v=20260601-168" />
   <!-- Service module. Own stylesheet (all rules namespaced .svc-) so Service
        changes can never restyle the schedule by accident. -->
-  <link rel="stylesheet" href="service-ui.css?v=20261010-93507" />
+  <link rel="stylesheet" href="service-ui.css?v=20261012-93507" />
 </head>
 <body>
   <!-- Left sidebar — icon rail with section labels. Each icon navigates to
@@ -53,7 +53,7 @@
       </span>
       <span class="app-sidebar-label">Recents</span>
     </button>
-    <button class="app-sidebar-icon" data-view="team" type="button" title="Departments — team members + resource scheduling">
+    <button class="app-sidebar-icon" data-view="team" type="button" title="Departments — a department’s schedule, who has nothing and who has too much this week, and what is coming due">
       <!-- v4.45: org-chart icon (one node up top, two nodes underneath
            connected by lines) reads as "departments / team structure"
            more clearly than the 👥 emoji. Inline SVG so it picks up the
@@ -453,6 +453,10 @@
            bottom footer strip. Right-aligned, sits below the schedule split.
            Financial Milestones gets a peer button so PMs can jump straight
            to the billing editor without going through the Quote modal. -->
+      <!-- The Departments page's lower half: everyone's workload this week
+           and what is coming due, for the department the schedule above
+           shows. Built by renderDeptPanel(); hidden on any other page. -->
+      <div class="dept-panel" id="dept-panel" hidden></div>
       <div class="schedule-footer" id="schedule-footer">
         <!-- Project ownership — PM + Debug lead for the ACTIVE project, right in
              the footer so it's always visible (no right-click hunting). Saved
@@ -614,132 +618,6 @@
         <div class="team-grid" id="team-grid"></div>
       </div>
 
-      <section class="resources-section">
-        <div class="resources-toolbar">
-          <div class="resources-disciplines" id="resources-disciplines"></div>
-          <div class="resources-controls">
-            <label class="toolbar-toggle inverted">
-              <select id="resources-project"><option value="">All projects</option></select>
-            </label>
-            <label class="toolbar-toggle inverted" title="Filter the timeline to projects owned by one PM (set the PM by right-clicking a project tab on the Schedule).">
-              <select id="resources-pm"><option value="">All PMs</option></select>
-            </label>
-            <label class="toolbar-toggle inverted" title="Look at one person's timeline by itself.">
-              <select id="resources-person"><option value="">All people</option></select>
-            </label>
-            <div class="view-bracket resources-status-bracket" id="resources-status-filters" title="Show / hide tasks by status — click to toggle each.">
-              <button type="button" class="view-bracket-icon" data-status="zero">Not started</button>
-              <button type="button" class="view-bracket-icon" data-status="behind">Behind</button>
-              <button type="button" class="view-bracket-icon" data-status="ontrack">On track</button>
-              <button type="button" class="view-bracket-icon" data-status="done">Done</button>
-            </div>
-            <div class="zoom-controls" title="Zoom timeline (1-10, same scale as the Schedule Gantt)">
-              <button id="resources-zoom-out" class="btn-icon" type="button" title="Zoom out (step −1)">−</button>
-              <span class="zoom-display"><span id="resources-zoom-percent">Zoom 6/10</span><span id="resources-mode-label" class="zoom-mode">weeks</span></span>
-              <button id="resources-zoom-in" class="btn-icon" type="button" title="Zoom in (step +1)">+</button>
-            </div>
-            <button id="resources-zoom-fit" class="btn-ghost btn-tight" type="button">Fit</button>
-            <button id="resources-view-default" class="btn-ghost btn-tight" type="button" title="Back to the default view — zoom 5/10, rows 4/10, Today about ⅕ in from the left.">⌂ Default</button>
-            <button id="resources-expand" class="btn-ghost btn-tight" type="button" title="Fill this window with the resource calendar (Esc to exit).">⛶ Expand</button>
-            <button id="resources-popout" class="btn-ghost btn-tight" type="button" title="Open the resource calendar in its OWN browser tab — nothing else on the page.">↗ Pop out</button>
-            <div class="zoom-controls" title="Row height — drag the bar height up/down so rows mirror the Schedule grid.">
-              <button id="resources-row-shrink" class="btn-icon" type="button" title="Shorter rows">▾</button>
-              <span class="zoom-display"><span id="resources-row-height">16px</span><span class="zoom-mode">row</span></span>
-              <button id="resources-row-grow" class="btn-icon" type="button" title="Taller rows">▴</button>
-            </div>
-          </div>
-        </div>
-        <!-- PM mini-dashboard — one chip per PM (from settings.project_leads):
-             open + behind task counts across their projects; click = filter
-             the timeline to that PM's projects. Empty until PMs are assigned. -->
-        <div class="res-pm-dash" id="resources-pm-dash"></div>
-        <div class="resources-body" id="resources-body">
-          <p class="empty-state hidden" id="resources-empty">No team members in this discipline yet. Add them above.</p>
-        </div>
-        <div class="legend" id="resources-legend"></div>
-      </section>
-
-      <!-- Department overview (v7.6 rebuild) — one unified, SDC-colored section
-           below the resource Gantt. Replaced the old Behind/Coming-due/Key-dates
-           + Under/Over/Due-this-month card rows. A shared "Window" selector drives
-           the time-windowed cards (Upcoming, Available capacity, Over-allocated);
-           Behind schedule and Release dates have no natural window and ignore it.
-           Body is built by renderTeamDashboard() in app.js. -->
-      <section class="dept-overview" id="dept-overview">
-        <header class="dept-overview-head">
-          <div class="dept-overview-title">
-            <h2>Department Overview</h2>
-            <span class="dept-overview-sub" id="dept-overview-sub">Status for the selected projects.</span>
-          </div>
-        </header>
-        <div class="dept-overview-grid">
-          <!-- Needs attention: Behind schedule (no window) + Over-allocated (windowed). -->
-          <article class="dashboard-card dept-card" id="dept-card-attention">
-            <header class="dashboard-card-head">
-              <h3>⚠ Needs attention</h3>
-              <span class="dashboard-card-sub">Behind schedule and over-allocated people</span>
-              <select class="dept-window-select" title="Time window for over-allocated"></select>
-            </header>
-            <div class="dept-chart" id="dept-chart-attention"></div>
-            <div class="dashboard-card-body">
-              <div class="dept-subsection">
-                <h4 class="dept-subhead">Behind schedule</h4>
-                <div id="dept-behind-body"></div>
-              </div>
-              <div class="dept-subsection">
-                <h4 class="dept-subhead" id="dept-unstaffed-title">Unstaffed &amp; started</h4>
-                <div id="dept-unstaffed-body"></div>
-              </div>
-              <div class="dept-subsection">
-                <h4 class="dept-subhead" id="dept-over-title">Over-allocated</h4>
-                <div id="dept-over-body"></div>
-              </div>
-            </div>
-          </article>
-
-          <!-- Upcoming: starting / ending inside the window, by date. -->
-          <article class="dashboard-card dept-card" id="dept-card-upcoming">
-            <header class="dashboard-card-head">
-              <h3>🗓 Upcoming</h3>
-              <span class="dashboard-card-sub">Tasks starting or ending in the window</span>
-              <select class="dept-window-select" title="Time window"></select>
-            </header>
-            <div class="dept-chart" id="dept-chart-upcoming"></div>
-            <div class="dashboard-card-body dept-card-split">
-              <div class="dept-subsection">
-                <h4 class="dept-subhead" id="dept-starting-title">Starting soon</h4>
-                <div id="dept-starting-body"></div>
-              </div>
-              <div class="dept-subsection">
-                <h4 class="dept-subhead" id="dept-ending-title">Ending soon</h4>
-                <div id="dept-ending-body"></div>
-              </div>
-            </div>
-          </article>
-
-          <!-- Available capacity: people with light / no load in the window. -->
-          <article class="dashboard-card dept-card" id="dept-card-available">
-            <header class="dashboard-card-head">
-              <h3 id="dept-available-title">Current workload</h3>
-              <span class="dashboard-card-sub">Each person's current allocation across the window</span>
-              <select class="dept-window-select" title="Time window"></select>
-            </header>
-            <div class="dept-chart" id="dept-chart-available"></div>
-            <div class="dashboard-card-body" id="dept-available-body"></div>
-          </article>
-
-          <!-- Release dates: all mechanical releases (Mech 1/2/3…) in date order. -->
-          <article class="dashboard-card dept-card" id="dept-card-releases">
-            <header class="dashboard-card-head">
-              <h3 id="dept-releases-title">Release dates</h3>
-              <span class="dashboard-card-sub">In date order — late dates stand out</span>
-              <label class="dept-releases-filter"><input type="checkbox" id="dept-releases-hide-done" checked /> Hide completed</label>
-            </header>
-            <div class="dept-chart" id="dept-chart-releases"></div>
-            <div class="dashboard-card-body" id="dept-releases-body"></div>
-          </article>
-        </div>
-      </section>
     </section>
 
     <!-- Service — the Service Log replacement. Whole page (tabs, filters,
@@ -1106,9 +984,9 @@
   <!-- Phase 3 (Auth): wraps window.fetch + handles login modal. Loaded first
        so the auth Bearer token is attached to every subsequent /api/* fetch
        from app.js / comments-ui.js. -->
-  <script src="auth-ui.js?v=20261010-30428"></script>
-  <script src="phases.js?v=20261010-16872"></script>
-  <script src="release-notes.js?v=20261010-51228"></script>
+  <script src="auth-ui.js?v=20261012-30428"></script>
+  <script src="phases.js?v=20261012-16872"></script>
+  <script src="release-notes.js?v=20261012-45123"></script>
   <!-- The Portal tab's analytics math (percent complete, milestones, risk
        banding, machine attribution, anchor dedup, ...) — the SAME file the
        customer-facing portal's server code requires directly (routes/portal.js).
@@ -1121,20 +999,20 @@
        app.js keeps its own customer picker / Manage-login / SDC aggregate
        view — none of that is in this shared file, on purpose. -->
   <script src="portalRender.js?v=20261007-82769"></script>
-  <script src="app.js?v=20261010-24375"></script>
+  <script src="app.js?v=20261012-37013"></script>
   <!-- Phase 2 (Abhi port): per-row comment threads + @mentions. Watches the
        grid tbody for row mutations and re-injects 💬 badges; opens a slide-in
        panel for the active task. Loaded last so window.openCommentPanel,
        loadCommentCounts, and initCommentsUI are available to app.js. -->
-  <script src="comments-ui.js?v=20261010-49557"></script>
+  <script src="comments-ui.js?v=20261012-49557"></script>
   <!-- Service module (Service Log replacement). Self-contained page; app.js
        calls window.renderServicePage() from setView('service'). Loaded after
        app.js so showToast / showConfirmDialog exist by the time it runs. -->
-  <script src="service-ui.js?v=20261010-85110"></script>
+  <script src="service-ui.js?v=20261012-85110"></script>
   <!-- Phase 4 (Socket.io): live tasks:updated / team:updated / settings:updated
        broadcasts. realtime-ui.js attaches the listeners and debounces re-fetch. -->
-  <script src="realtime-ui.js?v=20261010-01515"></script>
+  <script src="realtime-ui.js?v=20261012-01515"></script>
   <!-- Phase 4.1: "who's editing" presence pills, top-right under the user pill. -->
-  <script src="presence-ui.js?v=20261010-29517"></script>
+  <script src="presence-ui.js?v=20261012-29517"></script>
 </body>
 </html>

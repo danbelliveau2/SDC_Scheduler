@@ -18252,3 +18252,120 @@ body.xpred-pick-mode .machine-clone-banner { background: var(--sdc-primary, #157
 .context-menu .context-menu-header { color: var(--sdc-primary, #1574c4) !important; border-bottom-color: var(--sdc-primary, #1574c4) !important; }
 .context-menu-title { border-bottom: 3px solid var(--anchor-fill, #befa4f); background: #f6f9fc; }
 .context-menu button .cm-more { color: var(--sdc-primary, #1574c4); }
+
+/* Projects page: FAT behind the quote. Rows open the job. */
+/* Hugs its columns; drag a column edge and the box grows, up to the screen. */
+.fatlate-section .portal-grid-wrap { display: inline-block; max-width: 100%; vertical-align: top; }
+/* SDC colours, not the portal's navy band. */
+.fatlate-grid th { background: #eaf3fc; color: var(--sdc-primary, #1574c4); border-bottom: 2px solid var(--sdc-primary, #1574c4); }
+.fatlate-grid td { color: var(--sdc-dark, #061d39); }
+.fatlate-grid tbody tr { cursor: pointer; }
+.fatlate-grid tbody tr:hover td { background: #eef5fb; }
+.fatlate-grid .fatlate-late { color: #b91c1c; font-weight: var(--fw-extrabold, 800); }
+.fatlate-grid .fatlate-sched { font-weight: var(--fw-bold); }
+
+/* Quoted FAT beside the job's name — ours, not the customer's. Light red
+   when the schedule's FAT lands later than the one we sold. */
+.fat-quote-chip {
+  display: inline-flex; align-items: baseline; gap: 6px; margin-left: 10px; padding: 3px 12px;
+  border: 1.5px solid #c8d5e3; border-radius: 14px; background: #fff;
+  font-size: var(--fs-sm); color: var(--sdc-dark, #061d39); white-space: nowrap; cursor: help;
+}
+.fat-quote-chip .fqc-label { font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted, #64748b); }
+.fat-quote-chip b { font-weight: var(--fw-extrabold, 800); }
+.fat-quote-chip.is-late { background: #fdeaea; border-color: #f3b4b4; }
+.fat-quote-chip.is-late .fqc-label { color: #b42318; }
+.fat-quote-chip .fqc-late { color: #b42318; font-weight: var(--fw-bold); }
+.fat-quote-chip .fqc-late::before { content: '·'; margin-right: 6px; color: #d9a3a3; }
+body.customer-view .fat-quote-chip { display: none; }
+/* A machine whose FAT is behind the quote. Done beats late (lime). */
+.schedule-context-pills .machine-tab.is-late { border: 2px solid #f3b4b4; padding: 2px 9px; background: #fdeaea; }
+.schedule-context-pills .machine-tab.is-late.is-active { background: #b42318; border-color: #b42318; color: #fff; }
+
+/* Departments: the department tabs + the schedule button where the resource
+   timeline used to be. */
+.dept-views { display: flex; align-items: center; gap: 14px; margin: 18px 22px 0; flex-wrap: wrap; }
+.dept-views-tabs { display: flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
+.dept-open-schedule { white-space: nowrap; }
+.dept-views-hint { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
+.dept-note { margin: 8px 2px 2px; font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
+button.dashboard-row-person { width: 100%; text-align: left; font: inherit; cursor: pointer; background: transparent; }
+button.dashboard-row-person:hover { background: #eef5fb; }
+.dept-card .dashboard-card-sub { display: block; }
+
+/* v13.17 — frappe-gantt's built-in click popup (dark grey, only dismissed by
+   a click on the chart background) is never used by the app. Hidden for good;
+   My work bars get their own hover tip instead. */
+#gantt-container .popup-wrapper { display: none !important; }
+
+/* v13.17 — My work bar hover tip: job + task in SDC blue, dates in SDC yellow.
+   Hover-only (follows the mouse, gone on mouseleave), so it cannot stick. */
+.mywork-bar-tip {
+  position: fixed; z-index: 10050; display: none; pointer-events: none;
+  min-width: 160px; max-width: 320px; padding: 8px 10px;
+  background: var(--sdc-dark, #061d39); color: #fff;
+  border: 1px solid var(--sdc-primary, #1574c4); border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(6, 29, 57, 0.35);
+  font-size: 12px; line-height: 1.35;
+}
+.mywork-bar-tip-job { color: #fff; font-weight: 700; }
+.mywork-bar-tip-dates { margin-top: 3px; color: #fff; font-variant-numeric: tabular-nums; }
+.mywork-bar-tip-dates span { color: var(--sdc-accent, #ffde51); font-weight: 700; }
+.mywork-bar-tip-hint { margin-top: 4px; font-size: 10px; color: rgba(255,255,255,0.6); }
+
+/* ── The Departments page: the department's schedule on top, the week
+      underneath. Hide the schedule and the week takes the page. ── */
+.dept-panel { flex: 0 0 auto; max-height: 40%; display: flex; flex-direction: column; min-height: 0; border-top: 3px solid var(--sdc-primary, #1574c4); background: #f6f9fc; overflow: hidden; }
+.dept-panel[hidden] { display: none; }
+body.dept-sched-hidden #view-schedule .schedule-split { display: none; }
+body.dept-sched-hidden .dept-panel { flex: 1 1 auto; max-height: none; }
+.dept-panel-bar { display: flex; align-items: center; gap: 12px; padding: 7px 16px; background: #fff; border-bottom: 1px solid #dce5ef; flex-wrap: wrap; }
+.dept-panel-spacer { flex: 1; }
+.dept-panel-dates { font-size: var(--fs-sm); color: var(--text-muted, #64748b); white-space: nowrap; }
+.dept-scope { display: flex; align-items: center; gap: 3px; background: var(--surface, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 8px; padding: 3px; }
+.dept-scope-gap { width: 1px; height: 18px; margin: 0 5px; background: #dce5ef; }
+.dept-scope-btn { font: inherit; font-size: var(--fs-md); font-weight: var(--fw-semibold); color: var(--text, #1f2937); background: transparent; border: 0; border-radius: 6px; padding: 5px 11px; cursor: pointer; white-space: nowrap; }
+.dept-scope-btn.is-group { font-weight: var(--fw-extrabold, 800); letter-spacing: .02em; }
+.dept-scope-btn:hover { background: #eef5fb; }
+.dept-scope-btn.is-active { background: var(--sdc-primary, #1574c4); color: #fff; }
+.dept-panel-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 16px; display: grid; grid-template-columns: minmax(380px, 2fr) minmax(0, 3fr); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .dept-panel-body { grid-template-columns: 1fr; } }
+.dept-card2 { background: #fff; border: 1px solid #dce5ef; border-radius: 10px; overflow: hidden; }
+.dept-card2-head { display: flex; align-items: baseline; gap: 10px; padding: 8px 14px; background: #f5f8fb; border-bottom: 1px solid #dce5ef; flex-wrap: wrap; }
+.dept-card2-head h3 { margin: 0; font-size: var(--fs-lg); color: var(--sdc-dark, #061d39); }
+.dept-card2-sub { font-size: var(--fs-sm); color: var(--text-muted, #64748b); }
+.dept-card2-sub b { color: var(--sdc-dark, #061d39); }
+.dept-card2-body { padding: 8px 12px 12px; }
+/* Workload rows. The track runs 0–150%; the mark is 100%. */
+.dept-load-dept { margin: 10px 2px 4px; font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .08em; text-transform: uppercase; color: var(--sdc-primary, #1574c4); border-bottom: 2px solid var(--sdc-primary, #1574c4); padding-bottom: 2px; }
+.dept-load-dept:first-child { margin-top: 2px; }
+.dept-load-row { display: grid; grid-template-columns: minmax(130px, 170px) 1fr 48px minmax(0, auto); align-items: center; gap: 10px; width: 100%; padding: 5px 6px; border: 0; border-bottom: 1px solid #eef2f6; background: transparent; font: inherit; text-align: left; cursor: pointer; border-radius: 6px; }
+.dept-load-row:hover { background: #eef5fb; }
+.dept-load-name { font-weight: var(--fw-semibold); color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dept-load-track { position: relative; height: 12px; border-radius: 6px; background: #e9eef4; overflow: hidden; }
+.dept-load-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--sdc-primary, #1574c4); border-radius: 6px 0 0 6px; }
+.dept-load-over { position: absolute; top: 0; bottom: 0; background: #d1495b; }
+.dept-load-100 { position: absolute; top: -2px; bottom: -2px; left: 66.667%; width: 2px; background: var(--sdc-dark, #061d39); opacity: .55; }
+.dept-load-pct { font-weight: var(--fw-extrabold, 800); font-variant-numeric: tabular-nums; text-align: right; color: var(--sdc-dark, #061d39); }
+.dept-load-row.is-over .dept-load-pct { color: #b42318; }
+.dept-load-row.is-none .dept-load-pct { color: var(--text-muted, #64748b); }
+.dept-load-note { font-size: var(--fs-xs); color: var(--text-muted, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dept-load-row.is-over .dept-load-note { color: #b42318; font-weight: var(--fw-bold); }
+/* Coming due, as a calendar. */
+.dept-cal-week { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 6px; }
+.dept-cal-day { min-height: 74px; background: #fafcfe; border: 1px solid #e6ecf3; border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+.dept-cal-day.is-today { border-color: var(--sdc-primary, #1574c4); box-shadow: inset 0 0 0 1px var(--sdc-primary, #1574c4); }
+.dept-cal-day.is-dim { opacity: .5; }
+.dept-cal-date { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted, #64748b); }
+.dept-cal-day.is-today .dept-cal-date { color: var(--sdc-primary, #1574c4); }
+.dept-cal-date em { font-style: normal; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: var(--anchor-fill, #befa4f); color: var(--sdc-dark, #061d39); }
+.dept-cal-item { display: block; width: 100%; text-align: left; font: inherit; font-size: var(--fs-sm); line-height: 1.25; padding: 4px 7px; border: 1px solid #d6e2ee; border-left: 3px solid var(--sdc-primary, #1574c4); border-radius: 5px; background: #fff; color: var(--sdc-dark, #061d39); cursor: pointer; }
+.dept-cal-item:hover { background: #eef5fb; }
+.dept-cal-item b { color: var(--sdc-primary, #1574c4); margin-right: 3px; }
+.dept-cal-item span { display: block; font-size: var(--fs-xs); color: var(--text-muted, #64748b); }
+.dept-cal-item.is-late { border-left-color: #d1495b; background: #fdf3f3; }
+.dept-cal-past { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; margin-bottom: 8px; background: #fdf3f3; border: 1px solid #f3c9c9; border-radius: 8px; }
+.dept-cal-past .dept-cal-item { display: inline-block; width: auto; }
+.dept-cal-past .dept-cal-item span { display: inline; margin-left: 5px; }
+.dept-cal-past-label { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .06em; text-transform: uppercase; color: #b42318; margin-right: 4px; }
+.dept-cal-more { font-size: var(--fs-xs); color: #b42318; }
