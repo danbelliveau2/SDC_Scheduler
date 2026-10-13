@@ -18373,32 +18373,52 @@ body.dept-sched-hidden .dept-panel { flex: 1 1 auto; max-height: none; }
 /* The Gantt's date axis: its own small SVG laid over the chart, moved by
    one transform per scroll. Nothing inside the chart changes while you
    scroll. */
-#schedule-gantt { position: relative; }
-.sdc-axis-overlay { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; will-change: transform; line-height: 0; }
-.sdc-axis-svg { display: block; overflow: visible; }
+/* The pane never scrolls sideways itself — that is the chart's inner
+   container's job. (The axis layer used to give it one.) */
+#schedule-gantt { position: relative; overflow-x: hidden; }
+.sdc-axis-overlay { position: absolute; left: 0; top: 0; width: 100%; z-index: 3; pointer-events: none; will-change: transform; line-height: 0; overflow: hidden; }
+.sdc-axis-svg { display: block; overflow: visible; will-change: transform; }
 
-/* Split allocation: the pill reads the shares; the editor is a stretch per row. */
+/* Split allocation: the pill reads the shares; the editor is one small
+   grid in the house style — the line as it is, the new total, a section
+   per row, same columns all the way down. Never a sideways scrollbar. */
 .name-cell-alloc-pre.is-split { color: var(--sdc-primary, #1574c4); font-weight: var(--fw-extrabold, 800); letter-spacing: .02em; }
-.alloc-split-card { width: min(92vw, 520px); }
-.alloc-split-now { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: #eaf3fc; border-left: 4px solid var(--sdc-primary, #1574c4); }
-.alloc-split-now-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.alloc-split-total { padding-top: 6px; border-top: 1px dashed #c8d5e3; }
-.alloc-split-match { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .04em; text-transform: uppercase; padding: 2px 9px; border-radius: 10px; }
-.alloc-split-match.is-same { background: var(--anchor-fill, #befa4f); color: var(--sdc-dark, #061d39); }
-.alloc-split-match.is-off { background: #fdeaea; color: #b42318; }
-.alloc-split-h { font-size: var(--fs-sm); color: var(--text-muted, #64748b); font-weight: var(--fw-bold); text-align: right; white-space: nowrap; }
-.alloc-split-now-name { font-weight: var(--fw-extrabold, 800); color: var(--sdc-dark, #061d39); }
-.alloc-split-now-val { font-size: var(--fs-md); color: var(--sdc-dark, #061d39); }
-.alloc-split-now-val b { color: var(--sdc-primary, #1574c4); }
-.alloc-split-now-dates { font-size: var(--fs-sm); color: var(--text-muted, #64748b); margin-left: auto; }
-.alloc-split-rows { display: flex; flex-direction: column; gap: 8px; }
-.alloc-split-row { display: grid; grid-template-columns: 92px 118px 24px 118px 56px 34px; gap: 10px; align-items: center; }
-.alloc-split-sec { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .08em; text-transform: uppercase; color: var(--sdc-primary, #1574c4); }
-.alloc-split-wk, .alloc-split-pct { display: flex; align-items: center; gap: 6px; font-weight: var(--fw-extrabold, 800); color: var(--sdc-dark, #061d39); }
-.alloc-split-row .app-dialog-input { margin: 0; width: 76px; padding: 6px 8px; text-align: right; font-weight: var(--fw-bold); }
-.alloc-split-at { text-align: center; color: var(--text-muted, #64748b); font-size: var(--fs-sm); }
-.alloc-split-last { font-size: var(--fs-base); }
-.alloc-split-x { font: inherit; width: 30px; height: 30px; border: 1px solid #dbe4ee; border-radius: 7px; background: #fff; color: #64748b; cursor: pointer; }
-.alloc-split-x:hover { background: #fef2f2; border-color: #f87171; color: #b91c1c; }
-.alloc-split-x[disabled] { opacity: .35; cursor: default; }
+.modal-overlay .modal-card.app-dialog.alloc-split-card { width: min(94vw, 740px); max-width: none; min-width: 0; }
+.alloc-split-card .modal-body { overflow-x: hidden; }
+.alloc-grid { width: 100%; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; border: 1px solid #dce5ef; border-radius: 8px; overflow: hidden; }
+.alloc-grid th { text-align: left; padding: 8px 10px; background: #eaf3fc; color: var(--sdc-primary, #1574c4); font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: .06em; text-transform: uppercase; border-bottom: 2px solid var(--sdc-primary, #1574c4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.alloc-grid td { padding: 7px 10px; border-bottom: 1px solid #eef2f6; font-size: var(--fs-md); color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.alloc-grid tbody tr:last-child td { border-bottom: 0; }
+.alloc-grid td.num { text-align: right; font-weight: var(--fw-bold); }
+.alloc-grid-name { font-weight: var(--fw-extrabold, 800); }
+.alloc-grid-name small { display: block; font-size: var(--fs-2xs); font-weight: var(--fw-semibold); color: var(--text-muted, #64748b); letter-spacing: .02em; }
+.alloc-grid-now td { background: #f6f9fc; }
+.alloc-grid-total td { background: #fff; border-bottom: 2px solid var(--sdc-primary, #1574c4); }
+.alloc-grid-sec-label { font-size: var(--fs-xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .08em; text-transform: uppercase; color: var(--sdc-primary, #1574c4); }
+.alloc-grid-in { width: 100%; box-sizing: border-box; font: inherit; font-weight: var(--fw-bold); text-align: right; padding: 5px 7px; border: 1px solid #c8d5e3; border-radius: 6px; background: #fff; color: var(--sdc-dark, #061d39); }
+.alloc-grid-in:focus { outline: none; border-color: var(--sdc-primary, #1574c4); box-shadow: 0 0 0 2px rgba(21,116,196,.18); }
+.alloc-grid-match { display: inline-block; margin-left: 6px; font-size: 9px; font-weight: var(--fw-extrabold, 800); letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border-radius: 9px; vertical-align: 1px; }
+.alloc-grid-match.is-same { background: var(--anchor-fill, #befa4f); color: var(--sdc-dark, #061d39); }
+.alloc-grid-match.is-off { background: #fdeaea; color: #b42318; }
+.alloc-grid-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+.alloc-grid-hint { font-size: var(--fs-xs); color: var(--text-muted, #64748b); }
 .alloc-split-add { margin-top: 8px; }
+
+/* A section that starts with another line's section: a tick in the Start
+   column; ticked, the pick happens on the grid itself. */
+.alloc-grid-start { white-space: normal; }
+.alloc-grid-chk { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-size: var(--fs-2xs); font-weight: var(--fw-bold); color: var(--sdc-primary, #1574c4); cursor: pointer; white-space: nowrap; }
+.alloc-grid-chk span { overflow: hidden; text-overflow: ellipsis; }
+.alloc-grid-chk input { margin: 0; width: 14px; height: 14px; flex: 0 0 14px; accent-color: var(--sdc-primary, #1574c4); cursor: pointer; }
+.alloc-grid-chk.is-on span { color: #6d28d9; }
+.alloc-grid-sec.is-meeting .alloc-grid-in[disabled] { background: #f1f5f9; color: #64748b; }
+.seclink-pop .seclink-hint { font-size: var(--fs-sm); color: var(--sdc-dark, #061d39); margin-right: 10px; }
+body.seclink-pick-mode #tasks-tbody tr[data-id] { cursor: pointer; }
+body.seclink-pick-mode #tasks-tbody tr[data-id]:hover td { background: #eaf3fc; }
+
+/* Unassigned work on a department's page: give it to someone, right on the line. */
+.assign-chip { display: inline-block; margin-left: 8px; padding: 1px 9px; border-radius: 10px; background: var(--sdc-primary, #1574c4); color: #fff; font-size: var(--fs-2xs); font-weight: var(--fw-extrabold, 800); letter-spacing: .04em; cursor: pointer; vertical-align: 1px; white-space: nowrap; }
+.assign-chip:hover { background: #0f5fa3; }
+
+/* A predecessor on one section of a split line. */
+.pred-sec { color: #6d28d9; font-weight: var(--fw-extrabold, 800); font-size: var(--fs-xs); cursor: help; }

@@ -4,6 +4,34 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.23',
+    date: '2026-10-13',
+    notes: [
+      'A split line is one bar in sections, a predecessor can be one section of it, unassigned work gets assigned from the Departments page, and the chart stays put.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ Unassigned work gets assigned from the page. Every line under Unassigned carries an Assign › chip; click it, or the bar on the chart, or right-click → Assign to someone, and pick a name from the department. The line moves to that person at once. Opening the job is still on the card underneath.',
+      '',
+      'MY WORK:',
+      '   ▸ Fixed: on a small bar the allocation pill sat on top of the job number to its left. The pill goes left of the job number now.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Split the allocation is one small grid now, the house way: the line as it is on the first row — weeks, share, hours, start, finish — the new total under it with the hours against the old, then a section per row in the same columns, each with the day it starts and the day it ends. No sideways scrollbar, no ✕ buttons: "− Take out the last section" under the grid takes it down to two — this time at one share, that time at another — and a section at 0W is taken out when you save. The column is Alloc, not Share.',
+      '   ▸ A predecessor can be one section of a split line. Type the line number in the Pred cell as always; if that line is split, a card asks which section — the whole line, Section 1, Section 2 — and the relationship you typed (FS, SS, FF, SF, with its lag) applies to that section instead of the whole line. The cell then reads "28FF -25D §2" and opens again as what you typed. Close the card without picking and nothing is saved. On the chart a section ends exactly where the next one starts.',
+      '   ▸ A section can start the same day as another line: tick "Starts with another line" under its start, then click that line right in the grid. A line with sections asks which one. The section begins when that one does and keeps to it if that line moves; the section before is sized to meet it to the day, and the line\'s length does not change. The tick then reads the line\'s name — untick to unlink. Three people coming back from another job on the same day is three ticks on one line.',
+      '   ▸ Done is per section: each section with an allocation has its own % complete — the first one finished, the second one a quarter in. A section at 0% allocation has none. The line\'s own % complete becomes the hours-weighted roll-up of the sections, and on a split line the % pill opens the sections instead of one number.',
+      '   ▸ On the chart a split line stays one bar: one outline around the whole of it, a solid divider where the share changes with the date above it, the lighter sections faded. Each section\'s share sits beside the task name, never on top of it. The whole-line pill no longer sits on top of them.',
+      '   ▸ The PM toggles: α shows the allocation on the grid AND on each bar of the Gantt; % shows the duration on each bar. On a split line each piece carries its own share and weeks under the same two toggles.',
+      '   ▸ Fixed: the red on a split line did not follow a change to a section\'s share until the page was reloaded. It updates the moment the split is saved, and the splits are read in at boot.',
+      '   ▸ Ahead and behind on a split line follow the sections. What is left of each working section, in hours, is carried forward through the sections\' own capacity: a section at 0% allocation has no work in it, so sitting in one is neither ahead nor behind, and a finished first section leaves the line on schedule until the next working section starts and its Done falls short. A first section still at 0% when its time is up is behind by exactly that work.',
+      '   ▸ The weekday letters (M T W Th F) live in the header band now, above the chart, like the months and dates. They were drawn on the chart itself and ran into the first row\'s labels when zoomed in.',
+      '   ▸ Fixed: scrolling sideways could slide the whole chart off to the left, a moving edge cutting through real bars with white past it and the dates still showing. The date-axis layer added last release was as wide as the chart and gave the pane a sideways scroll of its own. The layer is only as wide as the pane now and the pane cannot scroll sideways at all; only the chart does.',
+      '   ▸ Fixed: the right side of the chart could come up blank — dates and gridlines running on past the last bar while anything out there was cut off until you zoomed out. The chart now runs to the edge of the page and past the last label, and the date axis ends where the chart ends. The scroll room past the end is three months now (six before the start, as before), with the full grid, every line and every date, all the way to the end.',
+      '   ▸ Fixed: zooming the chart jumped the page back up. Redrawing the chart dropped its scroll to the top and the grid followed. Zoom stays exactly where you are now, on every page.',
+      '   ▸ Right-click a bar on the Gantt and the same card opens that a right-click on the grid row gives you: add a line below, copy, cut, paste, links, section, lists, split the allocation, delete. It used to hand you the browser menu.',
+    ],
+  },
+  {
     version: '13.22',
     date: '2026-10-13',
     notes: [

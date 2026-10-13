@@ -814,13 +814,25 @@ function predDisplay(predString, maps) {
   }).filter(Boolean).join(', ');
 }
 // The grid's Pred cell: same text, with the cross-schedule entries in purple.
-function predDisplayHtml(predString) {
+function predDisplayHtml(predString, taskId) {
   if (!predString) return '';
   return String(predString).split(',').map(x => {
     const raw = x.trim(); if (!raw) return '';
     const text = predDisplay(raw);
     if (!text) return '';
-    return text.charAt(0) === '🔗' || text.indexOf('🔗') === 0 ? '<span class="pred-x">' + escapeHtml(text) + '</span>' : escapeHtml(text);
+    // A link to one section of a split line reads "23 §2" (its finish) or
+    // "23 §2↑" (its start); hover for the story.
+    let sec = '';
+    if (taskId != null) {
+      const p = parsePredecessor(raw);
+      const info = p && predSectionOf(taskId, p.id);
+      if (info) {
+        const pt = (state.tasks || []).find(t => t.id === Number(p.id));
+        const tip = (pt ? pt.name : 'that line') + ' — section ' + info.sec;
+        sec = ' <span class="pred-sec" title="' + escapeHtml(tip) + '">§' + info.sec + '</span>';
+      }
+    }
+    return (text.charAt(0) === '🔗' || text.indexOf('🔗') === 0 ? '<span class="pred-x">' + escapeHtml(text) + '</span>' : escapeHtml(text)) + sec;
   }).filter(Boolean).join(', ');
 }
 // A task's canonical line number on ITS OWN schedule (not the one open).
@@ -876,6 +888,93 @@ function _predSplitCross(task) {
     (p && crossPredTask(p.id) ? cross : local).push(tok);
   });
   return { local, cross };
+}
+// ── A predecessor on ONE SECTION of a split line (Dan, 10/13: "make the
+//    predecessor the second half of this split task"). The server only
+//    knows start and finish of a whole line, so the stored token is a plain
+//    SS/FS with the lag that lands on the section's start or finish, and
+//    WHICH section it meant lives in settings.pred_sections, by task id:
+//    { [taskId]: { [predId]: { sec, at: 'start'|'end' } } }. When the split
+//    changes, the lags are re-derived so the link stays on the section. ──
+function predSectionMap() { return (state.settings && state.settings.pred_sections) || {}; }
+function predSectionOf(taskId, predId) { const m = predSectionMap()[String(taskId)]; return (m && m[String(predId)]) || null; }
+async function setPredSection(taskId, predId, info) {
+  const map = Object.assign({}, predSectionMap());
+  const row = Object.assign({}, map[String(taskId)] || {});
+  if (info) row[String(predId)] = info; else delete row[String(predId)];
+  if (Object.keys(row).length) map[String(taskId)] = row; else delete map[String(taskId)];
+  state.settings = state.settings || {};
+  state.settings.pred_sections = map;
+  try { await api.putSetting('pred_sections', map); } catch (_) {}
+}
+// The token that follows section `sec` of `pred` — its start (SS + offset)
+// or its finish (FS − what is left of the line after it) — plus any lag typed.
+// The relationship you typed (FS, SS, FF, SF), aimed at the section
+// instead of the whole line: types that hang off the line's START (SS, SF)
+// get the days from the start to the section's start; types off its
+// FINISH (FS, FF) get the days back from the finish to the section's finish.
+function sectionPredToken(pred, sec, type, lagBd) {
+  const segs = taskAllocSegments(pred);
+  const sg = segs[sec - 1];
+  if (!sg) return null;
+  const T = String(type || 'FS').toUpperCase();
+  let lag;
+  if (T === 'SS' || T === 'SF') lag = (businessDaysBetween(pred.start_date, sg.from) || 1) - 1 + (lagBd || 0);
+  else lag = -((businessDaysBetween(sg.to, pred.end_date) || 1) - 1) + (lagBd || 0);
+  return pred.id + T + (lag ? ' ' + (lag > 0 ? '+' : '') + lag + 'd' : '');
+}
+// The lag typed on a token, in business days ("+1w" = 5).
+function _typedLagBd(tok) {
+  const m = String(tok || '').match(/([+-]\s*\d+(?:\.\d+)?)\s*([wd])?\s*$/i);
+  if (!m) return 0;
+  const n = Number(m[1].replace(/\s+/g, ''));
+  return Math.round((m[2] || 'd').toLowerCase() === 'w' ? n * 5 : n);
+}
+// "Which part of it?" — the pick, on the card. Resolves 'whole', { sec, at },
+// or null when the card is closed without a choice.
+function pickPredSection(pred, x, y) {
+  return new Promise(resolve => {
+    const segs = taskAllocSegments(pred);
+    let done = false;
+    const pick = (v) => { done = true; resolve(v); };
+    const items = [{ title: 'Which section of “' + (pred.name || 'that line') + '”?', sub: 'the relationship you typed applies to it' }];
+    items.push({ label: 'The whole line', hint: fmtDate(pred.start_date) + ' – ' + fmtDate(pred.end_date), onClick: () => pick('whole') });
+    segs.forEach((sg, i) => {
+      items.push({ label: 'Section ' + (i + 1), hint: sg.alloc + '% · ' + fmtDate(sg.from) + ' – ' + fmtDate(sg.to), onClick: () => pick({ sec: i + 1 }) });
+    });
+    showContextMenu(x, y, items);
+    const poll = setInterval(() => { if (done) { clearInterval(poll); return; } if (!document.getElementById('row-context-menu')) { clearInterval(poll); pick(null); } }, 150);
+  });
+}
+// A split changed: every line that follows one of its sections gets its
+// lag re-derived so it still lands on that section.
+async function resyncSectionPreds(predId) {
+  const pred = (state.tasks || []).find(t => t.id === Number(predId));
+  if (!pred) return;
+  const map = predSectionMap();
+  for (const [tid, row] of Object.entries(map)) {
+    const info = row && row[String(predId)];
+    if (!info) continue;
+    const t = (state.tasks || []).find(x => String(x.id) === tid);
+    if (!t || !t.predecessors) continue;
+    const toks = String(t.predecessors).split(',').map(x => x.trim()).filter(Boolean);
+    let changed = false;
+    const next = toks.map(tok => { const p = parsePredecessor(tok); if (!p || Number(p.id) !== Number(predId)) return tok; const nt = sectionPredToken(pred, info.sec, info.type || (p.type || 'FS'), info.lag || 0); if (nt && nt !== tok) { changed = true; return nt; } return tok; });
+    if (changed) { try { await api.update(t.id, { predecessors: next.join(', ') }); } catch (_) {} }
+  }
+}
+// What the Pred cell opens with: this schedule's predecessors as line
+// numbers; a link to a section as the relationship and lag that were typed
+// (the stored lag is the derived one). Other-schedule links stay out.
+function predEditValue(task) {
+  return _predSplitCross(task).local.map(tok => {
+    const p = parsePredecessor(tok);
+    const info = p && predSectionOf(task.id, p.id);
+    if (!info) return predDisplay(tok);
+    const ln = lineByTaskId[Number(p.id)];
+    const lag = Number(info.lag) || 0;
+    return (ln != null ? ln : p.id) + (info.type || p.type || 'FS') + (lag ? ' ' + (lag > 0 ? '+' : '') + lag + 'd' : '');
+  }).join(', ');
 }
 // True when any predecessor of this task lives on another schedule.
 function hasCrossPred(task) {
@@ -1116,7 +1215,7 @@ function updateLineNumbersAndPreds() {
     const task = state.tasks.find(t => t.id === id);
     const cell = tr.querySelector('td[data-col="pred"]');
     if (cell && !cell.classList.contains('editing')) {
-      cell.innerHTML = predDisplayHtml(task?.predecessors || '');
+      cell.innerHTML = predDisplayHtml(task?.predecessors || '', task ? task.id : null);
       cell.title = predTitle(task?.predecessors || '');
     }
   });
@@ -1798,6 +1897,37 @@ function computeProjectStats(project, machine) {
 // future is just not started, not ahead. But once its start has passed with
 // no progress, it IS behind, so we show how far behind (full remaining work
 // projected from today lands past the scheduled end).
+function _splitScheduleDelta(task) {
+  const sp = allocSplits(task);
+  const segs = taskAllocSegments(task);
+  if (!sp || !segs.length) return 0;
+  let remaining = 0, anyDone = false;
+  segs.forEach((sg, i) => {
+    if (!(sg.alloc > 0)) return;
+    const days = businessDaysBetween(sg.from, sg.to) || 0;
+    const hours = days * 8 * sg.alloc / 100;
+    const pct = Math.max(0, Math.min(100, Number(sp[i] && sp[i].pct) || 0));
+    if (pct > 0) anyDone = true;
+    remaining += hours * (1 - pct / 100);
+  });
+  if (remaining <= 0.01) return 0;
+  const todayISO = snapToBusinessDay(new Date().toISOString().slice(0, 10), 1);
+  // Past the finish the work goes on at the last working section's rate.
+  const lastRate = ([...segs].reverse().find(x => x.alloc > 0) || { alloc: baseAlloc(task) || 90 }).alloc;
+  let d = todayISO < task.start_date ? task.start_date : todayISO, left = remaining, finish = d, guard = 0;
+  while (left > 0.001 && guard++ < 3000) {
+    const a = d <= task.end_date ? _allocAtSeg(segs, d, 0) : lastRate;
+    left -= 8 * a / 100;
+    finish = d;
+    d = addBusinessDays(d, 1);
+  }
+  let drift = 0;
+  if (finish < task.end_date) drift = Math.max(0, (businessDaysBetween(finish, task.end_date) || 0) - 1);
+  else if (finish > task.end_date) drift = -Math.max(0, (businessDaysBetween(task.end_date, finish) || 0) - 1);
+  // Not started anywhere: only ever behind, never ahead.
+  if (!anyDone && drift >= 0) return 0;
+  return drift;
+}
 function taskScheduleDelta(task) {
   if (!task || task.is_milestone || !task.start_date || !task.end_date) return 0;
   if (inferredAnchorKey(task)) return 0;
@@ -1813,6 +1943,13 @@ function taskScheduleDelta(task) {
   // Backlog scream "-40w" while its pill showed a green ✓.
   const actualPct = getEffectiveProgress(task);
   if (actualPct >= 100) return 0;  // Done — no drift chip.
+  // A split line is measured in hours, section by section (Dan, 10/13):
+  // what is left of each working section, carried forward through the
+  // sections' own capacity. A section at 0% allocation has no work in it,
+  // so time spent in it is neither ahead nor behind; a finished first
+  // section leaves the line on schedule until the next working section
+  // starts and its Done does not keep up.
+  if (allocSplits(task)) return _splitScheduleDelta(task);
   const totalDays = businessDaysBetween(task.start_date, task.end_date);
   if (!totalDays || totalDays <= 0) return 0;
   const remainingBD = Math.max(0, Math.round((1 - actualPct / 100) * totalDays));
@@ -2360,7 +2497,9 @@ function cellHtml(t, key) {
         const style = `background:${c.hex};color:${c.text};border-color:${c.hex};`;
         machineChip = `<span class="name-machine-chip" data-machine="${escapeHtml(t.machine)}" style="${style}">${escapeHtml(t.machine)}</span> `;
       }
-      return `<td class="${classes.join(' ')}" data-col="name" title="${escapeHtml(t.name || '')}">${allocPre}${dashSep}<span class="name-cell-main">${projChip}${machineChip}${escapeHtml(t.name)}${driftChip}${releaseIconHtml(t)}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
+      // Unassigned on a department's page: an Assign chip right on the line.
+      const assignChip = (myWorkDept() && isPlaceholder(t.assignee)) ? ` <span class="assign-chip" data-assign-task="${t.id}" title="Give this line to someone on the team">Assign ›</span>` : '';
+      return `<td class="${classes.join(' ')}" data-col="name" title="${escapeHtml(t.name || '')}">${allocPre}${dashSep}<span class="name-cell-main">${projChip}${machineChip}${escapeHtml(t.name)}${driftChip}${releaseIconHtml(t)}${assignChip}</span>${durEl}${rightWidget ? `<span class="name-cell-pills">${rightWidget}</span>` : ''}</td>`;
     }
     case 'assignee': {
       // When this task is over-allocated for its assignee — i.e. its priority pushes the
@@ -3375,9 +3514,9 @@ function renderTable() {
     if (_me && !isPlaceholder(_me.name)) html += _whoAllocRowHtml(_me);
   }
   tbody.innerHTML = html;
-  tbody.querySelectorAll('[data-open-project]').forEach(ch => ch.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openScheduleFromMyWork(ch.dataset.openProject);
+  tbody.querySelectorAll('[data-assign-task]').forEach(ch => ch.addEventListener('click', (e) => {
+    e.stopPropagation(); e.preventDefault();
+    showAssignCard(ch.dataset.assignTask, e.clientX, e.clientY);
   }));
   if (state.layout) applyColumnVisibility();
 
@@ -3744,7 +3883,7 @@ function handleCellClick(e) {
     const taskId = Number(pill.dataset.taskId);
     const col = pill.dataset.editCol;
     // A split line's share is edited stretch by stretch.
-    if (col === 'allocation') { const _t = state.tasks.find(t => t.id === taskId); if (_t && allocSplits(_t)) { showAllocSplitDialog(_t); return; } }
+    if (col === 'allocation' || col === 'progress') { const _t = state.tasks.find(t => t.id === taskId); if (_t && allocSplits(_t)) { showAllocSplitDialog(_t); return; } }
     enterPillEdit(pill, taskId, col);
     return;
   }
@@ -3970,9 +4109,7 @@ function enterCellEdit(td, taskId, col) {
   // predecessors on THIS schedule, and the link is put back on save
   // (Dan, 10/12: "keep it linked to the current schedule but also add a
   // second predecessor outside of it"). Right-click removes the link.
-  const original = (col === 'pred' && hasCrossPred(task))
-    ? predDisplay(_predSplitCross(task).local.join(', '))
-    : currentCellValue(task, col);
+  const original = (col === 'pred') ? predEditValue(task) : currentCellValue(task, col);
   const input = createEditInput(col, original, task);
   // v5.1: when editing the NAME column, swap ONLY the .name-cell-main span
   // for the input — don't wipe the whole td. That keeps the alloc, dur, and
@@ -4404,9 +4541,35 @@ async function saveCellEdit(id, col, value, task) {
       // Non-empty input that doesn't parse used to be dropped silently — tell
       // the user so a typo doesn't look like a successful save.
       if (rawPred && !parsedPred) showToast('Could not read that predecessor. Use e.g. "5FS" or "8FF -2w".', { kind: 'error' });
+      // A predecessor that is a split line asks which part of it (Dan,
+      // 10/13): the whole line, or one section's start or finish. The
+      // stored token is the plain SS/FS + lag the server understands; the
+      // section is remembered beside it and shown on the cell.
+      let _toks = parsedPred ? parsedPred.split(',').map(x => x.trim()).filter(Boolean) : [];
+      const _seen = new Set();
+      for (let i = 0; i < _toks.length; i++) {
+        const p = parsePredecessor(_toks[i]);
+        if (!p) continue;
+        _seen.add(String(p.id));
+        const target = (state.tasks || []).find(t => t.id === Number(p.id));
+        if (!target || !allocSplits(target) || taskAllocSegments(target).length < 2) { if (predSectionOf(task.id, p.id)) await setPredSection(task.id, p.id, null); continue; }
+        const cellEl = document.querySelector('tr[data-id="' + task.id + '"] td[data-col="pred"]');
+        const r = cellEl ? cellEl.getBoundingClientRect() : { left: 300, bottom: 300 };
+        const pick = await pickPredSection(target, r.left + 8, r.bottom + 2);
+        if (!pick) { showToast('Pick a section of “' + (target.name || 'that line') + '” — nothing was saved.', { kind: 'info' }); return; }
+        if (pick === 'whole') { if (predSectionOf(task.id, p.id)) await setPredSection(task.id, p.id, null); continue; }
+        // The section, the relationship and the lag YOU typed — so the cell
+        // opens again as what you typed, not the derived lag.
+        const info = { sec: pick.sec, type: p.type || 'FS', lag: _typedLagBd(_toks[i]) };
+        const nt = sectionPredToken(target, info.sec, info.type, info.lag);
+        if (nt) { _toks[i] = nt; await setPredSection(task.id, p.id, info); }
+      }
+      // Sections of lines no longer followed are forgotten.
+      const _old = predSectionMap()[String(task.id)] || {};
+      for (const pid of Object.keys(_old)) if (!_seen.has(pid)) await setPredSection(task.id, pid, null);
       // Links to other schedules are not typed here; they stay as they were.
       const _cross = _predSplitCross(task).cross;
-      data.predecessors = [parsedPred, ..._cross].filter(Boolean).join(', ') || null;
+      data.predecessors = [..._toks, ..._cross].filter(Boolean).join(', ') || null;
       break;
     }
     case 'progress': {
@@ -5019,6 +5182,7 @@ function drawRollupSegments() {
   } catch (_) { /* cosmetic — the render chain must continue */ }
 }
 
+let _ganttKeepY = 0;   // the chart's vertical scroll across a redraw
 function renderGantt() {
   const container = document.getElementById('gantt-container');
   if (!container) return;
@@ -5162,9 +5326,13 @@ function renderGantt() {
   // bring any edge bar into the center of the viewport.
   const minStart = Math.min(...filtered.map(t => new Date(t.start_date).getTime()));
   const maxEnd   = Math.max(...filtered.map(t => new Date(t.end_date).getTime()));
+  // Six months before the start; three months after the end (Dan, 10/13:
+  // "I don't need as much scroll over as I have now") — with the full
+  // grid, every line and every date, all the way to the end.
   const PAD_MS = 183 * 86400000; // ~6 months
+  const PAD_AFTER_MS = 92 * 86400000; // ~3 months
   const padBefore = new Date(minStart - PAD_MS).toISOString().slice(0, 10);
-  const padAfter  = new Date(maxEnd   + PAD_MS).toISOString().slice(0, 10);
+  const padAfter  = new Date(maxEnd   + PAD_AFTER_MS).toISOString().slice(0, 10);
   ganttTasks.unshift({ id: '_pad_before', name: '', start: padBefore, end: padBefore, progress: 0, dependencies: '', custom_class: 'phantom-pad' });
   ganttTasks.push   ({ id: '_pad_after',  name: '', start: padAfter,  end: padAfter,  progress: 0, dependencies: '', custom_class: 'phantom-pad' });
 
@@ -5189,6 +5357,10 @@ function renderGantt() {
   state.viewMode = mode;
   const oldScroller = document.querySelector('#gantt-container .gantt-container');
   const scrollLeft = oldScroller ? oldScroller.scrollLeft : 0;
+  // Emptying the chart drops its scroll to the top, and the grid followed
+  // it there on every zoom (Dan, 10/13: "it shouldn't move up and down at
+  // all"). Keep where you were; it is put back once the chart is drawn.
+  try { const gp = document.getElementById('schedule-gantt'), gr = document.getElementById('schedule-grid'); _ganttKeepY = Math.max(gp ? gp.scrollTop : 0, gr ? gr.scrollTop : 0); } catch (_) { _ganttKeepY = 0; }
   container.innerHTML = '';
   const { bar_height, padding } = getGanttBarMetrics();
   state.gantt = new Gantt(container, ganttTasks, {
@@ -5290,6 +5462,13 @@ function renderGantt() {
   try { drawPersonDividers(); } catch (_) {}
   try { drawPersonAllocStrips(); } catch (_) {}
   try { renderAllocCards(); } catch (_) {}
+  try {
+    const gp = document.getElementById('schedule-gantt'), gr = document.getElementById('schedule-grid');
+    if (gp && _ganttKeepY > 0) {
+      gp.scrollTop = _ganttKeepY;
+      if (gr && Math.abs(gr.scrollTop - _ganttKeepY) > 0.5) gr.scrollTop = _ganttKeepY;
+    }
+  } catch (_) {}
   try { pinGanttDateAxis(); } catch (_) {}   // re-pin dates at the current scroll
   try { renderProjectStatsPopup(); } catch (_) {}
   // Montserrat loads async and is wider than the fallback — if labels were
@@ -5574,13 +5753,26 @@ function compressGanttToWorkDays() {
     // Trim the SVG's right edge so we don't leave a giant empty gantt area
     // past the last bar. Compute the rightmost work-day x across all bars
     // and pad a couple of columns of breathing room.
+    // The rightmost ink of every bar wrapper — the bar, its label, its
+    // drift chip — not just the bar rect, so nothing past the last bar is
+    // cut off (Dan, 10/13: "items in that portion of the page are hidden").
+    // And never narrower than the pane: the chart runs to the edge of the
+    // page, always, with the axis and gridlines ending where it ends.
+    // The phantom pad after the end COUNTS: it is the six months of scroll
+    // room past the last bar, the same as before the start (Dan, 10/13:
+    // "I want to be able to scroll back, scroll forward").
     let maxRight = 0;
     for (const bar of svg.querySelectorAll('.bar')) {
       const r = (+bar.getAttribute('x') || 0) + (+bar.getAttribute('width') || 0);
       if (r > maxRight) maxRight = r;
     }
+    for (const wrap of svg.querySelectorAll('.bar-wrapper')) {
+      try { const bb = wrap.getBBox(); if (bb && bb.width > 0 && bb.x + bb.width > maxRight) maxRight = bb.x + bb.width; } catch (_) {}
+    }
     if (maxRight > 0) {
-      const newWidth = maxRight + pxPerWorkDay * 4;
+      const scroller = (typeof getGanttScroller === 'function' && getGanttScroller()) || null;
+      const paneW = scroller ? scroller.clientWidth : 0;
+      const newWidth = Math.max(maxRight + pxPerWorkDay * 4, paneW + 2);
       svg.setAttribute('width', String(newWidth));
       // Update the viewBox too, but ONLY if the SVG actually has one.
       // Reading svg.viewBox.baseVal on an SVG with no viewBox attribute hands
@@ -5626,8 +5818,11 @@ function drawWeekdayLetters() {
       : 12;
     if (pxPerDay < threshold) return;
 
-    const totalWidth = +svg.getAttribute('width') ||
-                       (svg.viewBox?.baseVal?.width) || 8000;
+    // To the chart's true end: its width, or the pad after the last bar if
+    // that is further (the width can still be settling when this runs).
+    const _padBar = svg.querySelector('.bar-wrapper[data-id="_pad_after"] .bar');
+    const totalWidth = Math.max(+svg.getAttribute('width') || (svg.viewBox?.baseVal?.width) || 8000,
+                                _padBar ? (+_padBar.getAttribute('x') || 0) + pxPerDay * 5 : 0);
     const totalDays = Math.ceil(totalWidth / pxPerDay) + 1;
 
     // Pin to the existing week-label y so the letters sit just below it.
@@ -5639,8 +5834,11 @@ function drawWeekdayLetters() {
     }
     // Push letters further below the header's bottom border so the line
     // doesn't visually clip the top of the glyphs.
-    const letterY = baselineY + 22;
-    const tickTop = letterY + 6;
+    // Inside the header band, never on the first row: the grid's header is
+    // 60px tall and row one starts right under it (Dan, 10/13: "the day of
+    // the week should be part of the header row, not the Gantt itself").
+    const letterY = Math.min(baselineY + 22, 54);
+    const tickTop = 60;
     const svgHeight = +svg.getAttribute('height') ||
                       (svg.viewBox?.baseVal?.height) || 800;
 
@@ -5760,7 +5958,7 @@ function drawOverAllocSpans() {
       if (!Number.isFinite(padL) || !Number.isFinite(padR)) continue;
       spans.forEach(sp => {
         let x1 = workDayOffset(sp.from, g0.gantt_start) * pxPerDay + padL;
-        let x2 = workDayOffset(sp.to, g0.gantt_start) * pxPerDay + padR;
+        let x2 = workDayOffset(addBusinessDays(sp.to, 1), g0.gantt_start) * pxPerDay + padL;
         if (!Number.isFinite(x1) || !Number.isFinite(x2)) return;
         x1 = Math.max(x, x1); x2 = Math.min(x + w, x2);
         if (!(x2 - x1 > 0.5)) return;
@@ -5811,9 +6009,25 @@ function drawAllocSplits() {
       g.setAttribute('class', 'sdc-alloc-split');
       g.style.pointerEvents = 'none';
       const top = Math.max(...segs.map(sg => sg.alloc), 1);
+      // One bar, in sections (Dan, 10/13: "it's still one task, so some
+      // way for it to be connected"): one outline around the whole bar, a
+      // solid divider where the share changes, the lighter sections faded,
+      // the date above each divider. Each section's label keeps clear of
+      // the task name — beside it, or not at all (hover has it).
+      const svv = state.scheduleView || {};
+      const showA = svv.showInlineAlloc !== false, showD = svv.showBarMeta === true;
+      const nameEl = wrap.querySelector('.bar-label');
+      let nb = null; try { nb = nameEl ? nameEl.getBBox() : null; } catch (_) { nb = null; }
+      const placeLabel = (text, px1, px2) => {
+        const tw = text.length * 4.6 + 4;
+        const free = (a, b) => !nb || nb.width <= 0 || (b <= nb.x - 2) || (a >= nb.x + nb.width + 2);
+        const cands = [px1 + 3, nb ? nb.x + nb.width + 4 : -1, nb ? nb.x - tw - 4 : -1];
+        for (const cx of cands) { if (cx < px1 + 2 || cx + tw > px2 - 2) continue; if (free(cx, cx + tw)) return cx; }
+        return null;
+      };
       segs.forEach((sg, i) => {
         let x1 = workDayOffset(sg.from, g0.gantt_start) * pxPerDay + padL;
-        let x2 = workDayOffset(sg.to, g0.gantt_start) * pxPerDay + padR;
+        let x2 = (i + 1 < segs.length) ? workDayOffset(segs[i + 1].from, g0.gantt_start) * pxPerDay + padL : x + w;
         if (!Number.isFinite(x1) || !Number.isFinite(x2)) return;
         x1 = Math.max(x, x1); x2 = Math.min(x + w, x2);
         if (!(x2 - x1 > 0.5)) return;
@@ -5828,19 +6042,40 @@ function drawAllocSplits() {
           const ln = document.createElementNS(SVG_NS, 'line');
           ln.setAttribute('x1', String(x1)); ln.setAttribute('x2', String(x1));
           ln.setAttribute('y1', String(y)); ln.setAttribute('y2', String(y + h));
-          ln.setAttribute('stroke', '#061d39'); ln.setAttribute('stroke-width', '1.5'); ln.setAttribute('stroke-dasharray', '3 2');
+          ln.setAttribute('stroke', '#061d39'); ln.setAttribute('stroke-width', '2');
           g.appendChild(ln);
+          const dt = document.createElementNS(SVG_NS, 'text');
+          dt.setAttribute('x', String(x1)); dt.setAttribute('y', String(y - 3));
+          dt.setAttribute('text-anchor', 'middle'); dt.setAttribute('fill', '#334155');
+          dt.style.fontFamily = 'sans-serif'; dt.style.fontSize = '8px'; dt.style.fontWeight = '800';
+          dt.setAttribute('paint-order', 'stroke'); dt.setAttribute('stroke', 'rgba(255,255,255,0.95)'); dt.setAttribute('stroke-width', '2.5'); dt.setAttribute('stroke-linejoin', 'round');
+          dt.textContent = _allocShort(sg.from);
+          g.appendChild(dt);
         }
-        if (x2 - x1 > 22) {
-          const t = document.createElementNS(SVG_NS, 'text');
-          t.setAttribute('x', String(x1 + 3)); t.setAttribute('y', String(y + 8));
-          t.setAttribute('fill', '#061d39');
-          t.style.fontFamily = 'sans-serif'; t.style.fontSize = '8px'; t.style.fontWeight = '800';
-          t.setAttribute('paint-order', 'stroke'); t.setAttribute('stroke', 'rgba(255,255,255,0.9)'); t.setAttribute('stroke-width', '2'); t.setAttribute('stroke-linejoin', 'round');
-          t.textContent = sg.alloc + '%';
-          g.appendChild(t);
+        if (showA || showD) {
+          const days = businessDaysBetween(sg.from, sg.to) || 0;
+          const wk = Math.round((days / 5) * 2) / 2;
+          const parts = []; if (showA) parts.push(sg.alloc + '%'); if (showD && wk > 0) parts.push(wk + 'w');
+          const text = parts.join(' · ');
+          const lx = text ? placeLabel(text, x1, x2) : null;
+          if (lx != null) {
+            const t = document.createElementNS(SVG_NS, 'text');
+            t.setAttribute('x', String(lx)); t.setAttribute('y', String(y + h / 2 + 3));
+            t.setAttribute('fill', '#061d39');
+            t.style.fontFamily = 'sans-serif'; t.style.fontSize = '8px'; t.style.fontWeight = '800';
+            t.setAttribute('paint-order', 'stroke'); t.setAttribute('stroke', 'rgba(255,255,255,0.9)'); t.setAttribute('stroke-width', '2'); t.setAttribute('stroke-linejoin', 'round');
+            t.textContent = text;
+            g.appendChild(t);
+          }
         }
       });
+      // The one outline, around the whole bar.
+      const box = document.createElementNS(SVG_NS, 'rect');
+      box.setAttribute('x', String(x)); box.setAttribute('y', String(y));
+      box.setAttribute('width', String(w)); box.setAttribute('height', String(h));
+      box.setAttribute('rx', '3'); box.setAttribute('fill', 'none');
+      box.setAttribute('stroke', '#061d39'); box.setAttribute('stroke-width', '1.5');
+      g.appendChild(box);
       const tip = document.createElementNS(SVG_NS, 'title');
       tip.textContent = 'Split allocation — ' + segs.map(sg => sg.alloc + '% ' + fmtDate(sg.from) + (sg.from === sg.to ? '' : ' – ' + fmtDate(sg.to))).join(', ');
       g.appendChild(tip);
@@ -6084,7 +6319,13 @@ function drawBarMeta() {
     el.style.transform = '';
     el.style.fill = '';
   });
-  if (state.scheduleView?.showBarMeta !== true) return;
+  // α (allocation) shows the share on the grid and on each bar; % shows
+  // the duration on each bar (Dan, 10/13: "allocation should be on both
+  // grid and Gantt, that filter").
+  const _sv = state.scheduleView || {};
+  const _allocOn = _sv.showInlineAlloc !== false;
+  const _durOn = _sv.showBarMeta === true;
+  if (!_allocOn && !_durOn) return;
 
   const group = document.createElementNS(SVG_NS, 'g');
   group.setAttribute('class', 'sdc-bar-meta');
@@ -6135,6 +6376,7 @@ function drawBarMeta() {
     if (task.is_milestone) continue;
     if (inferredAnchorKey(task)) continue;
     if (isBacklogTask(task)) continue;
+    if (allocSplits(task)) continue;   // a split line labels each section itself (drawAllocSplits)
     if (!task.start_date || !task.end_date) continue;
 
     const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
@@ -6165,8 +6407,8 @@ function drawBarMeta() {
     // text so any arrow segment passing through the label visually
     // disappears under it. Reads cleanly even when an arrow enters the
     // bar from the left right where our left-label sits.
-    const allocText = (alloc > 0) ? `${alloc}%` : '';
-    const durText   = (wks > 0)   ? `${wks}w`   : '';
+    const allocText = (_allocOn && alloc > 0) ? `${alloc}%` : '';
+    const durText   = (_durOn && wks > 0)     ? `${wks}w`   : '';
     if (!allocText && !durText) continue;
     const metaText = [allocText, durText].filter(Boolean).join(' · ');
 
@@ -6259,7 +6501,12 @@ function drawBarMeta() {
 
     // Move metaEl from inside-left to outside-left + swap halo for pill occluder.
     const moveMetaOutside = () => {
-      metaEl.setAttribute('x', String(barX - SAME_ROW_GAP));
+      // On My work the job number already sits left of a small bar: the
+      // pill goes left of THAT, never on top of it (Dan, 10/13).
+      let edge = barX;
+      const jobLbl = wrap.querySelector('.mywork-job-label');
+      if (jobLbl) { try { const jb = jobLbl.getBBox(); if (jb.width > 0 && jb.x < barX) edge = jb.x; } catch (_) {} }
+      metaEl.setAttribute('x', String(edge - SAME_ROW_GAP));
       metaEl.setAttribute('text-anchor', 'end');
       metaEl.removeAttribute('paint-order');
       metaEl.removeAttribute('stroke');
@@ -8250,7 +8497,7 @@ function wireMyWorkBarHover() {
       tip.innerHTML =
         `<div class="mywork-bar-tip-job">${escapeHtml(job)}${job ? ' · ' : ''}${escapeHtml(rec.name || '')}</div>` +
         `<div class="mywork-bar-tip-dates"><span>${escapeHtml(start)}</span> → <span>${escapeHtml(end)}</span></div>` +
-        `<div class="mywork-bar-tip-hint">${state.xpredPick ? 'click the line in the grid to make it the predecessor' : 'click to open the schedule'}</div>`;
+        `<div class="mywork-bar-tip-hint">${state.xpredPick ? 'click the line in the grid to make it the predecessor' : (myWorkDept() && (_assignTargets(task.id)[0] || {}).assignee && isPlaceholder(_assignTargets(task.id)[0].assignee)) ? 'click to give it to someone' : 'click to open the schedule'}</div>`;
       tip.style.display = 'block';
       place(e);
     });
@@ -8269,6 +8516,8 @@ function wireMyWorkBarHover() {
       downAt = null;
       if (document.body.classList.contains('join-pick-mode') || document.body.classList.contains('xpred-pick-mode')) return;
       const rec = state.tasks.find(t => String(t.id) === String(task.id)) || task;
+      const _asg = myWorkDept() ? _assignTargets(task.id) : [];
+      if (_asg.length && isPlaceholder(_asg[0].assignee)) { e.stopPropagation(); hide(); showAssignCard(task.id, e.clientX, e.clientY); return; }
       if (rec && rec.project) { e.stopPropagation(); hide(); openScheduleFromMyWork(rec.project); }
     });
   }
@@ -22491,6 +22740,9 @@ function handleRowContextMenu(e) {
   // ── THIS LINE ── one action per row, every row a button (Dan, 10/10:
   // "make it obvious what you can click").
   items.push({ header: true, label: 'This line' });
+  if (task && isPlaceholder(task.assignee)) {
+    items.push({ label: '👤 Assign to someone', hint: 'unassigned', primary: true, more: true, onClick: () => showAssignCard(task, cx, cy) });
+  }
   if (task && !isAnchor) {
     items.push({ label: '⧉ Duplicate line', hint: 'same task, next person', onClick: () => addAdditionalResource(id) });
   }
@@ -27428,6 +27680,9 @@ function applyHierarchyColors(hierarchyColors) {
 async function loadSettings() {
   const settings = await api.getSettings();
   state.settings = settings;
+  // Splits live in settings; the over-allocation set may have been built
+  // before they arrived.
+  try { if (state.tasks && state.tasks.length) state.overAllocatedTaskIds = computeOverAllocatedTasks(state.tasks); } catch (_) {}
   // Seed defaults for any new keys the saved settings haven't acquired yet so the rest of
   // the app can read them unconditionally.
   if (!state.settings.section_colors)    state.settings.section_colors    = { ...SECTION_COLOR_DEFAULTS };
@@ -28894,6 +29149,45 @@ function jobNumberOf(project) {
   const m = String(project || '').match(/^\s*(\d{3,})/);
   return m ? m[1] : String(project || '').split(/[_]/)[0].trim().slice(0, 14);
 }
+// Unassigned work on a department's page: a click gives it to someone
+// (Dan, 10/13: "that's the whole point of this"). The department's people,
+// lead first; the job underneath for when you need the schedule after all.
+// A row id, a task, or a rolled-up group → the real lines to assign.
+function _assignTargets(ref) {
+  if (!ref) return [];
+  if (typeof ref === 'string' || typeof ref === 'number') {
+    const id = String(ref);
+    if (id.startsWith('grp:')) { const g = _rollupGroups && _rollupGroups[id.slice(4)]; return g && g._members ? g._members.slice() : []; }
+    const t = (state.tasks || []).find(x => String(x.id) === id);
+    return t ? [t] : [];
+  }
+  if (ref._rollup && ref._members) return ref._members.slice();
+  return [ref];
+}
+function showAssignCard(ref, x, y) {
+  const targets = _assignTargets(ref);
+  if (!targets.length) return;
+  const task = targets[0];
+  const many = targets.length > 1;
+  const dk = myWorkDept();
+  const members = (dk ? deptMembers(dk) : (state.team || []).filter(m => m.active !== 0)).filter(m => !isPlaceholder(m.name));
+  const items = [{ title: 'Assign to…', sub: (task.name || 'this line') + (task.project ? ' · ' + (jobNumberOf(task.project) || task.project) : '') + (many ? ' · ' + targets.length + ' lines, one per machine' : '') }];
+  if (!members.length) items.push({ label: 'No one on this team yet', disabled: true, onClick() {} });
+  members.forEach(m => items.push({ label: '👤 ' + m.name, hint: m.is_lead ? 'lead' : '', onClick: async () => {
+    for (const t of targets) {
+      pushUndoSnapshot(t, ['assignee'], 'Assign to ' + m.name);
+      try { await api.update(t.id, { assignee: m.name }); }
+      catch (err) { showToast(err.message || 'Could not assign it.', { kind: 'error' }); return; }
+    }
+    await loadTasks();
+    showToast('“' + (task.name || 'The line') + '”' + (many ? ' (' + targets.length + ' lines)' : '') + ' is ' + m.name + '’s now.', { kind: 'success' });
+  } }));
+  if (task.project) {
+    items.push({ separator: true });
+    items.push({ label: '→ Open ' + (jobNumberOf(task.project) || '') + ' · ' + task.project, onClick: () => openScheduleFromMyWork(task.project) });
+  }
+  showContextMenu(x, y, items);
+}
 function openScheduleFromMyWork(project) {
   if (!project) return;
   if (isPersonalMode()) {
@@ -30033,9 +30327,23 @@ function allocSplits(task) {
   return (Array.isArray(sp) && sp.length > 1) ? sp : null;
 }
 function baseAlloc(task) { return task.allocation == null ? 90 : Number(task.allocation); }
-// [{ from, to, alloc }] in ISO dates covering start..end; one stretch at
-// the line's own allocation when there is no split.
-function taskAllocSegments(task) {
+// Where a linked section starts: the start of section `sec` on line
+// `task` (section 1 is the line's own start). Null when it cannot be found.
+function resolveSectionLink(link, depth) {
+  if (!link || !link.task) return null;
+  const other = (state.tasks || []).find(x => x.id === Number(link.task));
+  if (!other || !other.start_date) return null;
+  const segs = taskAllocSegments(other, (depth || 0) + 1);
+  const sg = segs[Math.max(0, (Number(link.sec) || 1) - 1)];
+  return sg ? sg.from : null;
+}
+// [{ from, to, alloc, link }] in ISO dates covering start..end; one stretch
+// at the line's own allocation when there is no split. A section with a
+// linked start (Dan, 10/13: "three people coming back at the same time")
+// begins the day that section on the other line begins, and the section
+// before it ends the business day before. The link only takes when it
+// lands after the previous section's start and inside the line.
+function taskAllocSegments(task, depth) {
   if (!task || !task.start_date || !task.end_date) return [];
   const sp = allocSplits(task);
   const base = baseAlloc(task);
@@ -30044,10 +30352,19 @@ function taskAllocSegments(task) {
   let cur = task.start_date;
   for (let i = 0; i < sp.length; i++) {
     const last = i === sp.length - 1;
+    let from = cur, linked = false;
+    if (i > 0 && sp[i].start && (depth || 0) < 4) {
+      const want = resolveSectionLink(sp[i].start, depth);
+      const prev = out[out.length - 1];
+      if (want && prev && want > prev.from && want <= task.end_date) {
+        prev.to = addBusinessDays(want, -1);
+        from = want; linked = true;
+      }
+    }
     const days = Math.max(1, Math.round(Number(sp[i].days) || 1));
-    let to = last ? task.end_date : addBusinessDays(cur, days - 1);
+    let to = last ? task.end_date : addBusinessDays(from, days - 1);
     if (!to || to > task.end_date) to = task.end_date;
-    out.push({ from: cur, to, alloc: Math.max(0, Math.min(100, Number(sp[i].alloc) || 0)) });
+    out.push({ from, to, alloc: Math.max(0, Math.min(100, Number(sp[i].alloc) || 0)), link: linked ? sp[i].start : null });
     if (to >= task.end_date) break;
     cur = addBusinessDays(to, 1);
     if (!cur || cur > task.end_date) break;
@@ -30067,62 +30384,149 @@ async function saveAllocSplit(task, segs) {
   if (segs && segs.length > 1) map[task.id] = segs; else delete map[task.id];
   state.settings = state.settings || {};
   state.settings.alloc_splits = map;
+  // The red follows the new shares at once (Dan, 10/13: "it didn't go unred").
+  try { state.overAllocatedTaskIds = computeOverAllocatedTasks(state.tasks); } catch (_) {}
+  try { await resyncSectionPreds(task.id); } catch (_) {}
   try { await api.putSetting('alloc_splits', map); }
   catch (err) { showToast(err.message || 'Could not save the split.', { kind: 'error' }); return false; }
   return true;
 }
-// The split editor (Dan, 10/12): what the line was up top — weeks at a
-// share, and the hours that is — then the new total, which you may change,
-// then three sections (a fourth if you want): so many weeks at such a
-// share, in half-weeks like everything else, with the hours each one is
-// worth and the new total of hours against the old, because they should
-// match. Every section is a field; the sections add up to the new total.
-// Stored as business days; a new total moves the finish.
+// The split editor (Dan, 10/13): one small grid, the house way. The line
+// as it is now on the first row — weeks, share, hours, start, finish —
+// the new total under it (yours to change; the hours against the old,
+// which should match), then a section per row in the same columns, each
+// with the day it starts and the day it ends. Weeks in halves. A section
+// at 0W is taken out on save. Stored as business days; a new total moves
+// the finish.
 function showAllocSplitDialog(task) {
   if (!task || !task.start_date || !task.end_date) { showToast('Give the line start and finish dates first.', { kind: 'info' }); return; }
   const wasD = businessDaysBetween(task.start_date, task.end_date) || 1;
   const wasW = Math.max(0.5, Math.round((wasD / 5) * 2) / 2);
   const base = baseAlloc(task);
-  const half = (w) => Math.max(0.5, Math.round(w * 2) / 2);
+  const half = (w) => Math.max(0, Math.round(w * 2) / 2);
   const fmtW = (w) => (Math.round(w * 2) / 2) + 'W';
   const hrs = (w, a) => Math.round(w * 40 * a / 100);
+  const daysOf = (w) => Math.max(0, Math.round(w * 5));
   const wasH = hrs(wasW, base);
-  let rows = (allocSplits(task) || []).map(x => ({ w: half((Number(x.days) || 1) / 5), a: Number(x.alloc) || 0 }));
+  // Done is per section (Dan, 10/13: "this section is done, now we're
+  // 25% through the second one"); a section at 0% allocation has none.
+  // The line's own % complete is the hours-weighted roll-up of them.
+  const pct0 = Math.max(0, Math.min(100, Math.round(Number(task.progress) || 0)));
+  let rows = (allocSplits(task) || []).map(x => ({ w: half((Number(x.days) || 1) / 5), a: Number(x.alloc) || 0, p: Math.max(0, Math.min(100, Math.round(Number(x.pct) || 0))), link: x.start || null }));
   if (!rows.length) {
-    const third = half(wasW / 3);
-    rows = [{ w: third, a: base }, { w: third, a: base }, { w: half(wasW - third * 2), a: base }];
+    const third = Math.max(0.5, half(wasW / 3));
+    rows = [{ w: third, a: base, p: pct0, link: null }, { w: third, a: base, p: pct0, link: null }, { w: Math.max(0.5, half(wasW - third * 2)), a: base, p: pct0, link: null }];
   }
-  const totalW = () => Math.round(rows.reduce((n, r) => n + r.w, 0) * 2) / 2;
+  // A linked section starts where that section on the other line starts;
+  // the section before it is sized to meet it, so its weeks are computed.
+  const linkDate = (i) => (i > 0 && rows[i].link) ? resolveSectionLink(rows[i].link, 0) : null;
+  // The link takes when it lands after the previous section's START (that
+  // section then ends the business day before, longer or shorter).
+  const settle = () => {
+    let cur = task.start_date, prevStart = null;
+    for (let i = 0; i < rows.length; i++) {
+      const want = linkDate(i);
+      if (want && prevStart && want > prevStart && want <= task.end_date) {
+        rows[i - 1].w = Math.max(0.5, half((businessDaysBetween(prevStart, addBusinessDays(want, -1)) || 1) / 5));
+        cur = want;
+      }
+      prevStart = cur;
+      if (i === rows.length - 1 && !touched) {
+        const left = businessDaysBetween(cur, task.end_date) || 1;
+        rows[i].w = Math.max(0.5, half(left / 5));
+      }
+      const d = daysOf(rows[i].w);
+      cur = d ? addBusinessDays(addBusinessDays(cur, d - 1), 1) : cur;
+    }
+  };
+  // The line's length changes only when the total or a section's weeks is
+  // typed; a link, a share or a Done never move the finish. Until then the
+  // last section is whatever is left of the line as it is.
+  let touched = false;
+  const totalW = () => touched ? Math.round(rows.reduce((n, r) => n + r.w, 0) * 2) / 2 : wasW;
   const totalH = () => rows.reduce((n, r) => n + hrs(r.w, r.a), 0);
+  const totalP = () => { const hs = rows.filter(r => r.a > 0 && r.w > 0); const H = hs.reduce((n, r) => n + hrs(r.w, r.a), 0); return H ? Math.round(hs.reduce((n, r) => n + hrs(r.w, r.a) * (r.p || 0), 0) / H) : 0; };
+  // Each section's first and last day, walked from the line's start.
+  const spans = () => {
+    settle();
+    const out = []; let cur = task.start_date, prevStart = null;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const want = linkDate(i);
+      if (want && prevStart && want > prevStart && want <= task.end_date) cur = want;
+      prevStart = cur;
+      const d = daysOf(r.w);
+      if (!d) { out.push({ s: '', f: '' }); continue; }
+      let f = addBusinessDays(cur, d - 1);
+      // Exact days: the section before a linked one ends the business day
+      // before the link; the last section ends on the finish when the
+      // total has not been changed.
+      const nextWant = (i + 1 < rows.length) ? linkDate(i + 1) : null;
+      if (nextWant && nextWant > cur && nextWant <= task.end_date) f = addBusinessDays(nextWant, -1);
+      else if (i === rows.length - 1 && !touched) f = task.end_date;
+      out.push({ s: cur, f });
+      cur = addBusinessDays(f, 1);
+    }
+    return out;
+  };
+  const linkLabel = (link) => {
+    const other = link && (state.tasks || []).find(x => x.id === Number(link.task));
+    if (!other) return 'Starts with another line';
+    return 'Starts with ' + (other.name || 'that line') + (allocSplits(other) ? ' · Section ' + (Number(link.sec) || 1) : '');
+  };
+  const totalFinish = () => { const d = daysOf(totalW()); return d ? addBusinessDays(task.start_date, d - 1) : task.start_date; };
+  const diffHtml = () => {
+    const d = totalH() - wasH;
+    if (d === 0) return '<span class="alloc-grid-match is-same">matches</span>';
+    return '<span class="alloc-grid-match is-off">' + (d > 0 ? '+' : '−') + Math.abs(d) + ' h</span>';
+  };
   document.getElementById('alloc-split-dialog')?.remove();
   const overlay = document.createElement('div');
   overlay.id = 'alloc-split-dialog';
   overlay.className = 'modal-overlay app-dialog-overlay';
-  const diffHtml = () => {
-    const d = totalH() - wasH;
-    if (d === 0) return '<span class="alloc-split-match is-same">matches</span>';
-    return '<span class="alloc-split-match is-off">' + (d > 0 ? '+' : '−') + Math.abs(d) + ' h ' + (d > 0 ? 'more' : 'less') + ' than before</span>';
-  };
+  const num = (k, v, i, extra) => `<input type="number" class="alloc-grid-in" data-k="${k}"${i != null ? ` data-i="${i}"` : ''} ${extra} value="${v}" />`;
   const draw = () => {
+    const sp = spans();
     overlay.innerHTML = `
       <div class="modal-card app-dialog alloc-split-card">
         <div class="modal-head"><h2>Split the allocation</h2></div>
         <div class="modal-body">
-          <div class="alloc-split-now">
-            <div class="alloc-split-now-line"><span class="alloc-split-now-name">${escapeHtml(task.name || 'This line')}</span><span class="alloc-split-now-dates">${escapeHtml(fmtDate(task.start_date))} – ${escapeHtml(fmtDate(task.end_date))}</span></div>
-            <div class="alloc-split-now-line"><span class="alloc-split-now-val">Was: <b>${fmtW(wasW)}</b> at <b>${base}%</b> = <b>${wasH} h</b></span></div>
-            <div class="alloc-split-now-line alloc-split-total"><span class="alloc-split-now-val">New total:</span><span class="alloc-split-wk"><input type="number" class="app-dialog-input" data-k="total" min="0.5" step="0.5" value="${totalW()}" /><b>W</b></span><span class="alloc-split-now-val">= <b data-total-h>${totalH()} h</b></span><span data-match>${diffHtml()}</span></div>
+          <table class="alloc-grid">
+            <colgroup><col style="width:130px"><col style="width:66px"><col style="width:66px"><col style="width:66px"><col style="width:112px"><col style="width:150px"><col style="width:86px"></colgroup>
+            <thead><tr><th>Line</th><th>Weeks</th><th>Alloc</th><th>Done</th><th>Hours</th><th>Start</th><th>Finish</th></tr></thead>
+            <tbody>
+              <tr class="alloc-grid-now">
+                <td class="alloc-grid-name" title="${escapeHtml(task.name || '')}">${escapeHtml(task.name || 'This line')}<small>as it is now</small></td>
+                <td class="num">${fmtW(wasW)}</td><td class="num">${base}%</td><td class="num">${pct0}%</td><td class="num">${wasH} h</td>
+                <td>${escapeHtml(fmtDate(task.start_date))}</td><td>${escapeHtml(fmtDate(task.end_date))}</td>
+              </tr>
+              <tr class="alloc-grid-total">
+                <td class="alloc-grid-name">New total<small>the sections added up</small></td>
+                <td class="num">${num('total', totalW(), null, 'min="0.5" step="0.5"')}</td>
+                <td class="num">—</td>
+                <td class="num" data-total-p>${totalP()}%</td>
+                <td class="num"><span data-total-h>${totalH()} h</span> <span data-match>${diffHtml()}</span></td>
+                <td>${escapeHtml(fmtDate(task.start_date))}</td><td data-total-f>${escapeHtml(fmtDate(totalFinish()))}</td>
+              </tr>
+              ${rows.map((r, i) => `
+              <tr class="alloc-grid-sec${rows[i + 1] && rows[i + 1].link ? ' is-meeting' : ''}" data-i="${i}">
+                <td class="alloc-grid-name"><span class="alloc-grid-sec-label">Section ${i + 1}</span></td>
+                <td class="num">${num('w', r.w, i, 'min="0" step="0.5"' + (rows[i + 1] && rows[i + 1].link && linkDate(i + 1) ? ' disabled title="Sized to meet the linked start of the next section"' : ''))}</td>
+                <td class="num">${num('a', Math.max(0, Math.min(100, Math.round(r.a) || 0)), i, 'min="0" max="100" step="5"')}</td>
+                <td class="num" data-pcell>${r.a > 0 ? num('p', r.p, i, 'min="0" max="100" step="5"') : '—'}</td>
+                <td class="num" data-h>${hrs(r.w, r.a)} h</td>
+                <td class="alloc-grid-start"><span data-s>${sp[i].s ? escapeHtml(fmtDate(sp[i].s)) : '—'}</span>${i > 0
+                  ? `<label class="alloc-grid-chk${r.link ? ' is-on' : ''}" title="${r.link ? escapeHtml(linkLabel(r.link)) + ' — untick to unlink' : 'Tick, then click the line in the grid this section should start with'}"><input type="checkbox" data-linkchk="${i}"${r.link ? ' checked' : ''} /><span>${escapeHtml(r.link ? linkLabel(r.link) : 'Starts with another line')}</span></label>`
+                  : ''}</td>
+                <td data-f>${sp[i].f ? escapeHtml(fmtDate(sp[i].f)) : '—'}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          <div class="alloc-grid-foot">
+            <button type="button" class="btn-ghost btn-tight" data-add>+ Add a section</button>
+            <button type="button" class="btn-ghost btn-tight" data-remove${rows.length <= 2 ? ' disabled' : ''} title="Two sections is the fewest — this time at one share, that time at another">− Take out the last section</button>
+            <span class="alloc-grid-hint">Weeks in halves. Change the new total and the last section takes the difference. A section at 0W is taken out when you save.</span>
           </div>
-          <div class="alloc-split-rows">${rows.map((r, i) => `
-            <div class="alloc-split-row" data-i="${i}">
-              <span class="alloc-split-sec">Section ${i + 1}</span>
-              <span class="alloc-split-wk"><input type="number" class="app-dialog-input" data-k="w" min="0.5" step="0.5" value="${r.w}" /><b>W</b></span>
-              <span class="alloc-split-at">at</span>
-              <span class="alloc-split-pct"><input type="number" class="app-dialog-input" data-k="a" min="0" max="100" step="5" value="${Math.max(0, Math.min(100, Math.round(r.a) || 0))}" /><b>%</b></span>
-              <span class="alloc-split-h" data-h>${hrs(r.w, r.a)} h</span>
-              <button type="button" class="alloc-split-x" data-del="${i}" title="Take this section out"${rows.length <= 2 ? ' disabled' : ''}>✕</button>
-            </div>`).join('')}</div>
-          <button type="button" class="btn-ghost btn-tight alloc-split-add" data-add>+ Add a section</button>
           <div class="app-dialog-error hidden"></div>
         </div>
         <div class="modal-foot">
@@ -30133,37 +30537,53 @@ function showAllocSplitDialog(task) {
       </div>`;
   };
   const read = () => {
-    overlay.querySelectorAll('.alloc-split-row').forEach(div => {
-      const i = Number(div.dataset.i);
-      const w = div.querySelector('[data-k="w"]'); const a = div.querySelector('[data-k="a"]');
-      if (w) rows[i].w = half(Number(w.value) || 0.5);
+    overlay.querySelectorAll('.alloc-grid-sec').forEach(tr => {
+      const i = Number(tr.dataset.i);
+      const w = tr.querySelector('[data-k="w"]'); const a = tr.querySelector('[data-k="a"]'); const p = tr.querySelector('[data-k="p"]');
+      if (w) rows[i].w = half(Number(w.value) || 0);
       if (a) rows[i].a = Math.max(0, Math.min(100, Math.round(Number(a.value) || 0)));
+      if (p) rows[i].p = Math.max(0, Math.min(100, Math.round(Number(p.value) || 0)));
     });
   };
-  // The totals and hours follow every keystroke without redrawing the fields.
+  // Hours, dates and the total follow every keystroke; the fields stay put.
   const refresh = () => {
-    overlay.querySelectorAll('.alloc-split-row').forEach(div => { const i = Number(div.dataset.i); div.querySelector('[data-h]').textContent = hrs(rows[i].w, rows[i].a) + ' h'; });
+    const sp = spans();
+    overlay.querySelectorAll('.alloc-grid-sec').forEach(tr => {
+      const i = Number(tr.dataset.i);
+      tr.querySelector('[data-h]').textContent = hrs(rows[i].w, rows[i].a) + ' h';
+      // A section sized by a link shows the weeks it was given.
+      const wIn = tr.querySelector('[data-k="w"]'); if (wIn && wIn.disabled) wIn.value = rows[i].w;
+      // Done appears with the allocation and goes with it.
+      const pc = tr.querySelector('[data-pcell]');
+      if (pc && ((rows[i].a > 0) !== !!pc.querySelector('input'))) pc.innerHTML = rows[i].a > 0 ? num('p', rows[i].p, i, 'min="0" max="100" step="5"') : '—';
+      tr.querySelector('[data-s]').textContent = sp[i].s ? fmtDate(sp[i].s) : '—';
+      tr.querySelector('[data-f]').textContent = sp[i].f ? fmtDate(sp[i].f) : '—';
+    });
     overlay.querySelector('[data-k="total"]').value = totalW();
     overlay.querySelector('[data-total-h]').textContent = totalH() + ' h';
     overlay.querySelector('[data-match]').innerHTML = diffHtml();
+    overlay.querySelector('[data-total-f]').textContent = fmtDate(totalFinish());
+    overlay.querySelector('[data-total-p]').textContent = totalP() + '%';
   };
   const done = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
   const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(); } };
   overlay.addEventListener('input', (e) => {
+    const err = overlay.querySelector('.app-dialog-error');
+    if (e.target.dataset.k === 'total' || e.target.dataset.k === 'w') touched = true;
     if (e.target.dataset.k === 'total') {
       // A new total: the last section takes the difference.
-      const want = half(Number(e.target.value) || 0.5);
+      const want = Math.max(0.5, half(Number(e.target.value) || 0.5));
       const others = rows.slice(0, -1).reduce((n, r) => n + r.w, 0);
-      const err = overlay.querySelector('.app-dialog-error');
       if (want - others < 0.5) { err.textContent = 'The first sections already add up to ' + fmtW(others) + ' — the total has to leave at least half a week for the last one.'; err.classList.remove('hidden'); return; }
       err.classList.add('hidden');
       rows[rows.length - 1].w = half(want - others);
-      overlay.querySelectorAll('.alloc-split-row [data-k="w"]')[rows.length - 1].value = rows[rows.length - 1].w;
+      const lastIn = overlay.querySelectorAll('.alloc-grid-sec [data-k="w"]')[rows.length - 1];
+      if (lastIn) lastIn.value = rows[rows.length - 1].w;
       refresh();
       return;
     }
     read();
-    overlay.querySelector('.app-dialog-error').classList.add('hidden');
+    err.classList.add('hidden');
     refresh();
   });
   overlay.addEventListener('click', async (e) => {
@@ -30171,30 +30591,111 @@ function showAllocSplitDialog(task) {
     const b = e.target.closest('button');
     if (!b) return;
     read();
-    if (b.dataset.add != null) { rows.push({ w: 0.5, a: rows[rows.length - 1].a }); draw(); return; }
-    if (b.dataset.del != null) { if (rows.length > 2) rows.splice(Number(b.dataset.del), 1); draw(); return; }
+    if (b.dataset.add != null) { rows.push({ w: 0.5, a: rows[rows.length - 1].a, p: 0, link: null }); draw(); return; }
+    if (b.dataset.remove != null) { if (rows.length > 2) { rows.pop(); touched = false; } draw(); return; }
     if (b.dataset.action === 'cancel') { done(); return; }
     if (b.dataset.action === 'clear') { if (await saveAllocSplit(task, null)) { done(); render(); showToast('One share again, the whole way.', { kind: 'info' }); } return; }
     if (b.dataset.action === 'ok') {
-      const segs = rows.map(r => ({ days: Math.max(1, Math.round(r.w * 5)), alloc: r.a }));
-      const newD = segs.reduce((n, x) => n + x.days, 0);
+      const kept = rows.filter(r => r.w >= 0.5);
+      if (kept.length < 2) { const err = overlay.querySelector('.app-dialog-error'); err.textContent = 'A split needs at least two sections with weeks in them.'; err.classList.remove('hidden'); return; }
+      settle();
+      // Days from the dates the grid shows, so a link lands on its day and
+      // an untouched total keeps the finish exactly where it is.
+      const sp2 = spans();
+      const segs = []; rows.forEach((r, i) => { if (r.w < 0.5) return; const d = (sp2[i].s && sp2[i].f) ? (businessDaysBetween(sp2[i].s, sp2[i].f) || 1) : Math.max(1, daysOf(r.w)); segs.push(Object.assign({ days: d, alloc: r.a, pct: r.a > 0 ? r.p : 0 }, r.link ? { start: r.link } : {})); });
+      const newD = touched ? segs.reduce((n, x) => n + x.days, 0) : wasD;
+      if (!touched) { const others = segs.slice(0, -1).reduce((n, x) => n + x.days, 0); segs[segs.length - 1].days = Math.max(1, wasD - others); }
       if (!(await saveAllocSplit(task, segs))) return;
-      // A different total is a different duration: the finish moves.
-      if (newD !== wasD) {
-        const startStr = task.start_date;
-        pushUndoSnapshot(task, ['duration_days', 'end_date'], 'Split the allocation — new total');
-        try { await api.update(task.id, { duration_days: newD, end_date: addBusinessDays(startStr, newD - 1) }); }
-        catch (err) { showToast(err.message || 'The split is saved, but the new total did not.', { kind: 'error' }); }
+      // A different total is a different duration: the finish moves. The
+      // line's % complete is the roll-up of the sections.
+      const upd = {};
+      if (newD !== wasD) { upd.duration_days = newD; upd.end_date = addBusinessDays(task.start_date, newD - 1); }
+      const rolled = totalP();
+      if (rolled !== pct0) upd.progress = rolled;
+      if (Object.keys(upd).length) {
+        pushUndoSnapshot(task, Object.keys(upd), 'Split the allocation');
+        try { await api.update(task.id, upd); }
+        catch (err) { showToast(err.message || 'The split is saved, but the line did not update.', { kind: 'error' }); }
         await loadTasks();
       } else render();
       done();
-      showToast((task.name || 'The line') + ': ' + rows.map(r => fmtW(r.w) + ' at ' + r.a + '%').join(', ') + ' = ' + totalH() + ' h' + (newD !== wasD ? ', now ' + fmtW(totalW()) + ' long' : '') + '.', { kind: 'success' });
+      showToast((task.name || 'The line') + ': ' + kept.map(r => fmtW(r.w) + ' at ' + r.a + '%').join(', ') + ' = ' + kept.reduce((n, r) => n + hrs(r.w, r.a), 0) + ' h' + (newD !== wasD ? ', now ' + fmtW(newD / 5) + ' long' : '') + '.', { kind: 'success' });
     }
+  });
+  // Tick the box and pick the line from the grid itself (Dan, 10/13: "let
+  // me select it from the grid that already has all the lines the way we
+  // want to see them"). The editor steps aside while you pick.
+  overlay.addEventListener('change', async (e) => {
+    const chk = e.target.closest('[data-linkchk]');
+    if (!chk) return;
+    const i = Number(chk.dataset.linkchk);
+    read();
+    if (!chk.checked) { rows[i].link = null; draw(); return; }
+    overlay.style.display = 'none';
+    const pick = await pickSectionLinkFromGrid(task, i + 1);
+    overlay.style.display = '';
+    if (!pick) { draw(); return; }
+    const want = resolveSectionLink(pick, 0);
+    const sp0 = spans();
+    const prevStart = sp0[i - 1] && sp0[i - 1].s;
+    if (!want || !prevStart || want <= prevStart || want > task.end_date) {
+      showToast('That line starts ' + (want ? fmtDate(want) : 'nowhere') + ' — section ' + (i + 1) + ' has to begin after section ' + i + ' starts and before the finish.', { kind: 'error' });
+      draw(); return;
+    }
+    rows[i].link = pick;
+    draw();
   });
   draw();
   document.body.appendChild(overlay);
   document.addEventListener('keydown', onKey);
 }
+
+// The pick itself: a pill over the chart says what you are choosing; click
+// a line in the grid. A line with sections asks which one, right there.
+// Esc or Cancel comes back with nothing.
+function pickSectionLinkFromGrid(forTask, secNo) {
+  return new Promise(resolve => {
+    document.getElementById('seclink-pop')?.remove();
+    const pop = document.createElement('div');
+    pop.id = 'seclink-pop';
+    pop.className = 'xpred-pop seclink-pop';
+    pop.innerHTML = `
+      <div class="xpred-pop-title">⇄ Section ${secNo} of <b>${escapeHtml(forTask.name || 'this line')}</b> starts with…</div>
+      <div class="xpred-pop-row"><span class="seclink-hint">Click the line in the grid it should start with. A line with sections asks which one.</span><button type="button" class="btn-ghost" id="seclink-cancel">Cancel</button></div>`;
+    (document.getElementById('schedule-split') || document.body).appendChild(pop);
+    document.body.classList.add('seclink-pick-mode');
+    const finish = (v) => {
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('keydown', onKey, true);
+      document.body.classList.remove('seclink-pick-mode');
+      pop.remove();
+      resolve(v);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(null); } };
+    const onClick = (e) => {
+      if (e.target.closest('#seclink-pop')) { if (e.target.closest('#seclink-cancel')) finish(null); return; }
+      if (e.target.closest('.context-menu')) return;            // the section menu's own clicks
+      const tr = e.target.closest('#tasks-tbody tr[data-id]');
+      if (!tr) return;                                           // headers and the rest keep working
+      e.preventDefault(); e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+      const t = (state.tasks || []).find(x => String(x.id) === tr.dataset.id);
+      if (!t) return;
+      if (t.id === forTask.id) { showToast('That is the line itself — pick the one it should start with.', { kind: 'info' }); return; }
+      if (!t.start_date || !t.end_date) { showToast('That line has no dates to start with.', { kind: 'info' }); return; }
+      const segs = taskAllocSegments(t, 1);
+      if (segs.length > 1) {
+        showContextMenu(e.clientX, e.clientY, [{ title: t.name || 'Which section?', sub: 'start with which section?' }]
+          .concat(segs.map((sg, i) => ({ label: 'Section ' + (i + 1) + ' · ' + fmtDate(sg.from) + ' at ' + sg.alloc + '%', onClick: () => finish({ task: t.id, sec: i + 1 }) }))));
+        return;
+      }
+      finish({ task: t.id, sec: 1 });
+    };
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKey, true);
+  });
+}
+
 
 function computeLoadSegments(tasks, minDate) {
   const allocByDay = new Map();
@@ -33447,14 +33948,20 @@ function pinGanttDateAxis() {
     for (const sel of ['.grid-header', '.date', '.lower-text', '.upper-text', '.sdc-weekday-letter-group']) {
       svg.querySelectorAll(sel).forEach(el => { el.removeAttribute('transform'); ax.appendChild(el); moved = true; });
     }
-    if (moved || !ax.getAttribute('width')) {
-      const w = +svg.getAttribute('width') || Math.ceil(svg.getBoundingClientRect().width);
+    // The axis is exactly as wide as the chart, every time: when the chart
+    // is trimmed after the last bar the dates stop there too.
+    const w = +svg.getAttribute('width') || Math.ceil(svg.getBoundingClientRect().width);
+    if (moved || String(w) !== ax.getAttribute('width')) {
       ax.setAttribute('width', String(w));
       ax.setAttribute('height', '80');
       // frappe sizes the white header band to the panel it first saw, not
-      // the chart; stretch it so the bars never show through on the right.
-      ax.querySelectorAll('.grid-header').forEach(r => r.setAttribute('width', String(w)));
+      // the chart; stretch it so the bars never show through on the right,
+      // and make it as tall as the grid's header so the weekday letters sit
+      // on white and row one starts under it.
+      const bandH = (document.querySelector('#tasks-table thead') || {}).offsetHeight || 60;
+      ax.querySelectorAll('.grid-header').forEach(r => { r.setAttribute('width', String(w)); r.setAttribute('height', String(Math.max(48, bandH))); });
     }
+    ov.style.overflow = 'hidden';
     // Follows the chart sideways too: the inner frappe container owns the
     // horizontal scroll, and it is rebuilt every render.
     const sc = getGanttScroller();
@@ -33462,8 +33969,15 @@ function pinGanttDateAxis() {
       sc._axisBound = true;
       sc.addEventListener('scroll', () => { try { pinGanttDateAxis(); } catch (_) {} }, { passive: true });
     }
+    // The layer is only ever as wide as the pane — the axis slides inside
+    // it. A chart-wide layer gave the OUTER pane a sideways scroll of its
+    // own, and when the wheel landed there the chart slid off to the left
+    // and the pane showed white past it, the axis still drawn (Dan, 10/13:
+    // "as I shuttle over it's moving, overlapping real tasks").
     const x = sc ? sc.scrollLeft : 0;
-    ov.style.transform = 'translate(' + (-x) + 'px, ' + (gantt.scrollTop || 0) + 'px)';
+    ov.style.width = '100%';
+    ov.style.transform = 'translate(0px, ' + (gantt.scrollTop || 0) + 'px)';
+    ax.style.transform = 'translateX(' + (-x) + 'px)';
   } catch (_) { /* cosmetic — never break scrolling */ }
 }
 // The axis pieces, wherever they are right now: still in the chart (a fresh
@@ -36797,6 +37311,19 @@ async function init() {
   }, true);
   (document.getElementById('schedule-grid') || tbodyEl)
     .addEventListener('contextmenu', handleRowContextMenu);
+  // The same card from the chart (Dan, 10/13): right-click a bar and the
+  // line's menu opens, the one its grid row gets. Hand the row to the same
+  // handler; only the pointer position is the chart's.
+  document.getElementById('schedule-gantt')?.addEventListener('contextmenu', (e) => {
+    const wrap = e.target && e.target.closest ? e.target.closest('.bar-wrapper[data-id]') : null;
+    const id = wrap && wrap.dataset.id;
+    if (!id || id.startsWith('_')) return;
+    const tr = document.querySelector('#tasks-tbody tr[data-id="' + id + '"]');
+    if (!tr) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handleRowContextMenu({ target: tr, clientX: e.clientX, clientY: e.clientY, preventDefault() {}, stopPropagation() {} });
+  });
   // The blank lines in an empty standard-events / controls list.
   (document.getElementById('schedule-grid') || tbodyEl)
     .addEventListener('click', (e) => {
