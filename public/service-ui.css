@@ -122,6 +122,20 @@
   text-transform: uppercase; letter-spacing: 0.04em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Sortable headers. The arrow is pinned to the right edge, not flowed after the
+   text: these headers are overflow-hidden with an ellipsis, and a flowed arrow
+   is the first thing cut off in a narrow column. Only the sorted column
+   reserves room for it. The <th> is sticky, so it is the arrow's positioning
+   parent. */
+.svc-table th.svc-sortable { cursor: pointer; user-select: none; }
+.svc-table th.svc-sortable:hover { color: var(--text); }
+.svc-table th.svc-sortable:focus-visible { outline: 2px solid var(--text-muted); outline-offset: -2px; }
+.svc-table th.svc-sortable[aria-sort="ascending"],
+.svc-table th.svc-sortable[aria-sort="descending"] { color: var(--text); padding-right: 20px; }
+.svc-sort-ind {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  font-size: 9px; line-height: 1;
+}
 .svc-table td {
   padding: 8px 9px; border-bottom: 1px solid var(--border);
   /* Middle, not top: every column now aligns on the same baseline as the pills

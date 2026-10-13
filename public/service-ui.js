@@ -52,6 +52,10 @@ const _svc = {
   // drawer opens, so nobody leaves a request sitting in edit mode.
   editCustomer: false,
   filters: { search: '', urgency: '', status: '', department: '', location: '', warranty: '', employee: '', machine_type: '' },
+  // Header sort, one per table so switching tabs doesn't carry a Request column
+  // over to the Work Orders. null = the server's order (open first, then by
+  // urgency, newest first).
+  sort: { requests: null, wos: null },   // each: { key, dir: 'asc' | 'desc' }
   loading: false,
 };
 
@@ -148,6 +152,106 @@ const STEP_TONES = { quote_sent: 'svc-step-quote', po_received: 'svc-step-po', s
 function stepCell(on, label, field) {
   const state = `${esc(label)}: ${on ? 'yes' : 'not yet'}`;
   return `<td class="svc-step-cell"><span class="svc-step ${STEP_TONES[field]} ${on ? 'on' : ''}" title="${state}" aria-label="${state}">${on ? '✓' : '·'}</span></td>`;
+}
+
+// ── Header sorting ───────────────────────────────────────────────────────────
+// Sorted in the browser: both endpoints return the whole list (capped at 2000),
+// so there is nothing for the server to add, and a header click stays instant.
+//
+// Each column names the value it sorts on. Blank values (no quote, nobody
+// assigned, no date) always sit at the bottom in either direction — a blank is
+// "nothing to compare", not the smallest or largest value.
+const _collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const URGENCY_RANK = { machine_down: 0, urgent_running: 1, schedule: 2, quote_mod: 3 };
+
+const REQUEST_SORT = {
+  request_no:       r => r.request_no,
+  quote_sent:       r => (r.quote_sent ? 1 : 0),
+  po_received:      r => (r.po_received ? 1 : 0),
+  service_complete: r => (r.service_complete ? 1 : 0),
+  company:          r => r.company_name,
+  details:          r => r.service_details,
+  job:              r => r.machine_serial || r.job_number,
+  quote_no:         r => r.quote_no,
+  urgency:          r => URGENCY_RANK[r.urgency],
+  assigned:         r => r.assigned_employees || r.resource_assigned,
+  status:           r => (r.service_complete ? 'Complete' : (r.current_status || 'new')),
+  wos:              r => (r.wo_count ? Number(r.wo_open) : null),
+  received:         r => r.created_at,
+};
+
+const WO_SORT = {
+  wo_no:    w => w.wo_no,
+  date:     w => w.task_date,
+  employee: w => w.employee_name,
+  customer: w => w.company_name,
+  task:     w => w.task_description,
+  site:     w => w.location_type,
+  hours:    w => (w.budgeted_hours != null ? Number(w.budgeted_hours) : null),
+  status:   w => w.status,
+  report:   w => (w.report_id ? (w.report_status === 'submitted' ? 2 : 1) : null),
+};
+
+function sortedRows(rows, sort, getters) {
+  const get = sort && getters[sort.key];
+  if (!get) return rows;
+  const sign = sort.dir === 'desc' ? -1 : 1;
+  const blank = (v) => v == null || v === '' || (typeof v === 'number' && Number.isNaN(v));
+  // Array.prototype.sort is stable, so equal values keep the server's order.
+  return rows.slice().sort((a, b) => {
+    const x = get(a), y = get(b);
+    const bx = blank(x), by = blank(y);
+    if (bx || by) return bx === by ? 0 : (bx ? 1 : -1);
+    const c = (typeof x === 'number' && typeof y === 'number') ? x - y : _collator.compare(String(x), String(y));
+    return c * sign;
+  });
+}
+
+// <th> for a sortable column. `label` is the visible text, `cls`/`title` pass
+// straight through so the existing header classes and tooltips are unchanged.
+function sortTh(sort, key, label, cls, title) {
+  const on = sort && sort.key === key;
+  const state = on ? (sort.dir === 'desc' ? 'descending' : 'ascending') : 'none';
+  const tip = (title ? title + ' — ' : '') + 'Click to sort';
+  return `<th class="svc-sortable ${cls || ''}" data-sort="${key}" tabindex="0"
+              aria-sort="${state}" title="${esc(tip)}">${label}${on ? `<span class="svc-sort-ind" aria-hidden="true">${sort.dir === 'desc' ? '▼' : '▲'}</span>` : ''}</th>`;
+}
+
+// First click sorts ascending, second descending, third goes back to the
+// server's order.
+function nextSort(cur, key) {
+  if (!cur || cur.key !== key) return { key, dir: 'asc' };
+  if (cur.dir === 'asc') return { key, dir: 'desc' };
+  return null;
+}
+
+function wireSort(table, which) {
+  const head = table.querySelector('thead');
+  if (!head) return;
+  // makeGridResizable puts a drag grip inside each <th>. A drag that starts on
+  // one and lets go over the header would otherwise register as a click on it.
+  let fromGrip = false;
+  head.addEventListener('mousedown', (e) => { fromGrip = !!e.target.closest('.pw-grip'); });
+  const apply = (th, keepFocus) => {
+    const key = th.dataset.sort;
+    _svc.sort[which] = nextSort(_svc.sort[which], key);
+    drawBody();                      // rebuilds the table, so the focused <th> is gone
+    if (keepFocus) {
+      const again = document.querySelector(`#svcBody th[data-sort="${key}"]`);
+      if (again) again.focus();
+    }
+  };
+  head.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', (e) => {
+      if (fromGrip || e.target.closest('.pw-grip')) { fromGrip = false; return; }
+      apply(th, false);
+    });
+    th.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      apply(th, true);
+    });
+  });
 }
 
 // ── Data loading ─────────────────────────────────────────────────────────────
@@ -346,8 +450,7 @@ function drawBody() {
 // Column widths follow the house rule: description-ish columns take the
 // remainder, dates are sized for an ISO date, glyph columns stay tiny.
 function drawRequestTable(body) {
-  const rows = _svc.requests;
-  if (!rows.length) {
+  if (!_svc.requests.length) {
     body.innerHTML = `<div class="svc-empty">
       ${_svc.view === 'completed'  ? 'No completed Service requests yet.'
       : _svc.view === 'unassigned' ? 'Nothing unassigned — every open request has a Work Order.'
@@ -355,11 +458,14 @@ function drawRequestTable(body) {
     </div>`;
     return;
   }
+  const sort = _svc.sort.requests;
+  const rows = sortedRows(_svc.requests, sort, REQUEST_SORT);
+  const th = (key, label, cls, title) => sortTh(sort, key, label, cls, title);
   body.innerHTML = `
     <div class="svc-table-scroll">
     <table class="svc-table svc-table-requests">
       <colgroup>
-        <col style="width:108px"><col style="width:56px"><col style="width:44px"><col style="width:76px">
+        <col style="width:108px"><col style="width:56px"><col style="width:44px"><col style="width:84px">
         <col style="width:200px"><col data-wrap="1" style="width:auto"><col style="width:104px"><col style="width:100px">
         <col style="width:110px">
         <col style="width:120px"><col style="width:108px"><col style="width:58px"><col style="width:88px">
@@ -367,16 +473,16 @@ function drawRequestTable(body) {
       </colgroup>
       <thead>
         <tr>
-          <th>Request #</th>
-          <th class="svc-step-cell" title="Quote sent">Quote</th>
-          <th class="svc-step-cell" title="PO received">PO</th>
-          <th class="svc-step-cell" title="Service complete">Complete</th>
-          <th>Company</th><th>Details</th><th>Job / Serial</th>
-          <th title="Active quote — the accepted one, or the most recent">Quote #</th>
-          <th class="svc-cell-center">Urgency</th>
-          <th>Assigned</th>
-          <th class="svc-cell-center">Status</th>
-          <th class="svc-num" title="Work orders (open / total)">WOs</th><th>Received</th>
+          ${th('request_no', 'Request #')}
+          ${th('quote_sent', 'Quote', 'svc-step-cell', 'Quote sent')}
+          ${th('po_received', 'PO', 'svc-step-cell', 'PO received')}
+          ${th('service_complete', 'Complete', 'svc-step-cell', 'Service complete')}
+          ${th('company', 'Company')}${th('details', 'Details')}${th('job', 'Job / Serial')}
+          ${th('quote_no', 'Quote #', '', 'Active quote — the accepted one, or the most recent')}
+          ${th('urgency', 'Urgency', 'svc-cell-center')}
+          ${th('assigned', 'Assigned')}
+          ${th('status', 'Status', 'svc-cell-center')}
+          ${th('wos', 'WOs', 'svc-num', 'Work orders (open / total) — sorts by open')}${th('received', 'Received')}
           <th class="svc-cell-center">Actions</th>
         </tr>
       </thead>
@@ -427,6 +533,7 @@ function drawRequestTable(body) {
   // Draggable columns, the same as every other grid in the app. Defined in
   // app.js so one implementation serves them all.
   try { makeGridResizable(body.querySelector('.svc-table-requests'), 'svc:requests'); } catch (_) {}
+  wireSort(body.querySelector('.svc-table-requests'), 'requests');
 }
 
 // Every write in routes/service.js is requireRole('editor') — creating, editing,
@@ -485,14 +592,16 @@ ${row.company_name || 'No company on file'}
 }
 
 function drawWorkOrderTable(body) {
-  const rows = _svc.workOrders;
-  if (!rows.length) {
+  if (!_svc.workOrders.length) {
     body.innerHTML = `<div class="svc-empty">${
       _svc.view === 'mine' ? 'You have no Service Work Orders assigned.' :
       _svc.view === 'scheduled' ? 'No upcoming Work Orders scheduled.' : 'No Work Orders yet.'
     }</div>`;
     return;
   }
+  const sort = _svc.sort.wos;
+  const rows = sortedRows(_svc.workOrders, sort, WO_SORT);
+  const th = (key, label, cls, title) => sortTh(sort, key, label, cls, title);
   body.innerHTML = `
     <div class="svc-table-scroll">
     <table class="svc-table svc-table-wos">
@@ -503,8 +612,8 @@ function drawWorkOrderTable(body) {
       </colgroup>
       <thead>
         <tr>
-          <th>Work Order</th><th class="svc-col-date">Date</th><th>Employee</th><th>Customer</th>
-          <th>Task</th><th>Site</th><th title="Budgeted hours">Hrs</th><th>Status</th><th>Report</th>
+          ${th('wo_no', 'Work Order')}${th('date', 'Date', 'svc-col-date')}${th('employee', 'Employee')}${th('customer', 'Customer')}
+          ${th('task', 'Task')}${th('site', 'Site')}${th('hours', 'Hrs', '', 'Budgeted hours')}${th('status', 'Status')}${th('report', 'Report')}
         </tr>
       </thead>
       <tbody>
@@ -536,6 +645,7 @@ function drawWorkOrderTable(body) {
   body.querySelectorAll('tbody tr').forEach(tr =>
     tr.addEventListener('click', () => openServiceRequest(Number(tr.dataset.request), Number(tr.dataset.wo))));
   try { makeGridResizable(body.querySelector('.svc-table-wos'), 'svc:workorders'); } catch (_) {}
+  wireSort(body.querySelector('.svc-table-wos'), 'wos');
 }
 
 // ── Detail drawer (§14) ──────────────────────────────────────────────────────
