@@ -4,6 +4,19 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.22',
+    date: '2026-10-13',
+    notes: [
+      'Service: click any column header to sort.',
+      '',
+      'SERVICE:',
+      '   ▸ Every column on the Service Log and Work Orders tables sorts, Actions aside. First click is A→Z (or oldest / smallest first), second click reverses it, third puts the list back in its usual order.',
+      '   ▸ Urgency sorts by how serious it is, machine down first. WOs sorts by how many are still open. Request numbers sort as numbers, so SR-9 comes before SR-10.',
+      '   ▸ Blank cells (no quote yet, nobody assigned, no date) always sit at the bottom, whichever way you sort.',
+      '   ▸ Dragging a column edge to resize it does not sort. The Service Log and the Work Orders tabs each remember their own sort while you switch between tabs.',
+    ],
+  },
+  {
     version: '13.21',
     date: '2026-10-12',
     notes: [
