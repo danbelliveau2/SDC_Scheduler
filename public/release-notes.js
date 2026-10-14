@@ -4,6 +4,18 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.27',
+    date: '2026-10-14',
+    notes: [
+      'Picking a predecessor from a person\'s page works with the numbers you see, Cancel takes you back, and Δ says what it is doing.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Predecessor from another schedule: the lines on the person\'s page are numbered top to bottom as shown, and that number is the one the pick takes — click a line or type it. A job and line as the Pred column writes them (1163 7, with FS/SS and a lag if you like) works too.',
+      '   ▸ The pick pill has a Cancel you can see. It links nothing and takes you straight back to the schedule you came from. Esc does the same.',
+      '   ▸ Δ quoted vs scheduled: the pill tells you when there is no job open to compare, when the job has no quote on file (scheduled hours still show, quoted reads "—"), and when the quote could not be loaded. A quote the page cannot read no longer blanks the grid.',
+    ],
+  },
+  {
     version: '13.26',
     date: '2026-10-14',
     notes: [

@@ -1207,8 +1207,25 @@ function updateLineNumbersAndPreds() {
     lineByTaskId[id] = line;
     taskIdByLine[line] = id;
   });
-  // Stamp each currently-visible row's line cell with its canonical line number.
+  // A person's or a department's page lists lines from many jobs in its own
+  // order, so the canonical walk numbered them 1, 3, 2, 4 (Dan, 10/14: "give
+  // me the line number, I don't care if it's ordered correctly… it needs to
+  // work"). There the rows are numbered top to bottom as shown, and the
+  // predecessor pick and the Pred cell read the same numbers.
   const taskRows = Array.from(tbody.querySelectorAll('tr[data-id]'));
+  if (state.myWork) {
+    lineByTaskId = {};
+    taskIdByLine = {};
+    let n = 0;
+    taskRows.forEach(tr => {
+      const id = Number(tr.dataset.id) || Number(tr.dataset.lineOf);
+      if (!Number.isFinite(id) || !id || lineByTaskId[id] != null) return;
+      if (!tr.querySelector('td[data-col="line"] .line-num')) return;
+      n += 1;
+      lineByTaskId[id] = n;
+      taskIdByLine[n] = id;
+    });
+  }
   taskRows.forEach(tr => {
     const id = Number(tr.dataset.id) || Number(tr.dataset.lineOf);
     const line = lineByTaskId[id];
@@ -3085,7 +3102,7 @@ function renderTable() {
   if (hoursProject) {
     const q = state.quoteCache ? state.quoteCache[hoursProject] : undefined;
     if (q === undefined) ensureProjectQuote(hoursProject);   // async — re-renders when it lands
-    else if (q && q.hours_breakdown) {
+    else if (q && q.hours_breakdown) try {
       quotedMap = deriveQuotedBuckets(q);
       // Machine subset active → QUOTED must match what's on screen: sum only
       // the SELECTED machines' release budgets (M1 = base fields, M2+ under
@@ -3117,7 +3134,7 @@ function renderTable() {
           quotedMap = deriveQuotedBuckets({ hours_breakdown: _budgetToHoursBreakdown(combined) });
         }
       }
-    }
+    } catch (_) { quotedMap = null; /* scheduled hours still show */ }
   }
   const deptHoursFor = (taskList) => {
     if (!hoursProject || !taskList || !taskList.length) return null;
@@ -22622,9 +22639,9 @@ function renderXpredPickBanner() {
       <div class="xpred-pop-row">
         <input type="text" id="xp-input" class="app-dialog-input" placeholder="Line number here, e.g. 23FS +1w" autocomplete="off" />
         <button type="button" class="btn-primary" id="xp-link">Link</button>
-        <button type="button" class="btn-ghost" id="xp-cancel">Cancel</button>
+        <button type="button" class="btn-ghost" id="xp-cancel" title="Link nothing and go back to the schedule">Cancel</button>
       </div>
-      <div class="xpred-pop-hint">Type a line number from this page with the type and lag as in the grid — 23, 23SS +2w, 23FF -1w. Clicking a line drops its number in.</div>`;
+      <div class="xpred-pop-hint">Click a line and its number drops in, or type the number from the # column — 23, 23SS +2w, 23FF -1w — or a job and line as the Pred column shows it, 1163 7. Cancel goes back to the schedule.</div>`;
     host.appendChild(pop);
     const inp = pop.querySelector('#xp-input');
     inp.addEventListener('input', () => { if (state.xpredPick) state.xpredPick.typed = inp.value; });
@@ -22641,6 +22658,17 @@ function renderXpredPickBanner() {
 // Save what was typed in the pick banner: this page's line numbers → task
 // ids (taskIdByLine is the page's own canonical numbering), type and lag
 // kept as typed. Several at once are fine, comma-separated.
+// The task on job "1163" at line 7 of that job's own schedule — the way the
+// Pred column writes a link to another schedule — or null.
+function taskIdByJobLine(job, line) {
+  const projects = Array.from(new Set((state.tasks || []).map(t => t.project).filter(Boolean)))
+    .filter(p => jobNumberOf(p) === String(job));
+  for (const p of projects) {
+    const hit = (state.tasks || []).find(t => t.project === p && lineInProject(t.id, p) === line);
+    if (hit) return hit.id;
+  }
+  return null;
+}
 async function commitCrossPred() {
   const xp = state.xpredPick;
   if (!xp) return;
@@ -22650,14 +22678,19 @@ async function commitCrossPred() {
   if (!task) { exitCrossPredPick(true); return; }
   const bad = [], add = [];
   typed.split(',').map(x => x.trim()).filter(Boolean).forEach(tok => {
-    const m = tok.match(/^(\d+)(.*)$/);
-    const id = m ? taskIdByLine[Number(m[1])] : null;
+    // "1163 7FS +1w" — a job and the line on that job, as the Pred column
+    // shows other-schedule links; otherwise a line number from this page.
+    const jl = tok.match(/^(\d{3,})[\s·\-]+(\d+)(.*)$/);
+    const m = jl ? null : tok.match(/^(\d+)(.*)$/);
+    let id = null, rest = '';
+    if (jl) { id = taskIdByJobLine(jl[1], Number(jl[2])); rest = jl[3]; }
+    else if (m) { id = taskIdByLine[Number(m[1])]; rest = m[2]; }
     if (!id || id === task.id) { bad.push(tok); return; }
-    const stored = (String(id) + (m[2] || '').trim().toUpperCase()).replace(/^(\d+)(FS|SS|FF|SF)?\s*([+-])\s*/, '$1$2 $3');
+    const stored = (String(id) + (rest || '').trim().toUpperCase()).replace(/^(\d+)(FS|SS|FF|SF)?\s*([+-])\s*/, '$1$2 $3');
     if (!parsePredecessor(stored)) { bad.push(tok); return; }
     add.push({ id, stored });
   });
-  if (bad.length) { showToast('Could not read: ' + bad.join(', ') + ' — use a line number from this page, e.g. 23FS +1w.', { kind: 'error' }); return; }
+  if (bad.length) { showToast('Could not read: ' + bad.join(', ') + ' — use a number from the # column (23, 23FS +1w) or a job and line (1163 7).', { kind: 'error' }); return; }
   const addIds = new Set(add.map(a => a.id));
   const keep = String(task.predecessors || '').split(',').map(x => x.trim()).filter(Boolean)
     .filter(x => { const p = parsePredecessor(x); return !(p && addIds.has(p.id)); });
@@ -24014,18 +24047,32 @@ async function ensureProjectQuote(project) {
   state._quotesFetching = state._quotesFetching || new Set();
   if (state._quotesFetching.has(project)) return;
   state._quotesFetching.add(project);
-  let quote = false;
+  let quote = false, problem = '';
   try {
     const r = await fetch(`/api/project/${encodeURIComponent(project)}/quote`);
     if (r.ok) {
       const j = await r.json();
       if (j && (j.hours_breakdown || j.quoted_overrides)) quote = j;
-    }
-  } catch (_) {}
+    } else problem = 'the server answered ' + r.status;
+  } catch (err) { problem = 'the request failed'; }
+  // A failed fetch is remembered as "failed", not "no quote": the grid shows
+  // scheduled hours meanwhile, and the next time the pill is switched on it
+  // asks again (a render must not retry on its own, or a dead server has
+  // the page fetching in a loop).
+  state._quoteFailed = state._quoteFailed || {};
+  if (problem) state._quoteFailed[project] = true; else delete state._quoteFailed[project];
   state.quoteCache[project] = quote;
   state._quotesFetching.delete(project);
   if (state.scheduleView?.showDeptHours && state.filters.project === project) {
     try { renderTable(); positionDeptHours(); } catch (_) {}
+    state._quoteSaid = state._quoteSaid || {};
+    if (problem && state._quoteSaid[project] !== 'fail') {
+      state._quoteSaid[project] = 'fail';
+      showToast('Could not load the quote for ' + jobNumberOf(project) + ' (' + problem + '). Δ shows scheduled hours only until it loads.', { kind: 'error' });
+    } else if (!problem && !quote && state._quoteSaid[project] !== 'none') {
+      state._quoteSaid[project] = 'none';
+      showToast('No quote on file for ' + jobNumberOf(project) + ' — Δ shows scheduled hours; quoted reads "—". Load the Project Release to fill it in.', { kind: 'info' });
+    }
   }
 }
 
@@ -36953,8 +37000,20 @@ async function init() {
         state.scheduleView.showDeptHours = !state.scheduleView.showDeptHours;
         saveScheduleView();
         syncViewPill();
-        if (state.scheduleView.showDeptHours) ensureProjectQuote(state.filters.project);
+        // It reads one job's schedule against that job's quote. Say so when
+        // there is no single job open, instead of lighting the pill and
+        // showing nothing (Dan, 10/14: "make sure that works every time").
+        if (state.scheduleView.showDeptHours && !state.filters.project) {
+          showToast('Δ compares one job\'s scheduled hours with its quote — open a job\'s schedule to see it.', { kind: 'info' });
+        }
+        if (state.scheduleView.showDeptHours) {
+          const _p = state.filters.project;
+          if (_p && state._quoteFailed && state._quoteFailed[_p]) { delete state.quoteCache[_p]; if (state._quoteSaid) delete state._quoteSaid[_p]; }
+          ensureProjectQuote(_p);
+        }
         renderTable();
+        positionDeptHours();
+        requestAnimationFrame(positionDeptHours);
       } else if (key === 'flatten+sort') {
         // Single icon that toggles BOTH flatten AND sortByStart together —
         // flatten without sort almost never makes sense (you flatten because

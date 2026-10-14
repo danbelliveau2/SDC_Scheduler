@@ -4546,6 +4546,10 @@ tr.group-header td {
   position: absolute;
   top: 0;
   bottom: 0;
+  /* Where it lands before positionDeptHours() measures the Task column —
+     over the row's right half, so it is never off-screen or on the label. */
+  left: 40%;
+  width: 60%;
   pointer-events: none;
   text-transform: none;
   letter-spacing: 0;
@@ -18144,6 +18148,10 @@ body.xpred-pick-mode .machine-clone-banner { background: var(--sdc-primary, #157
 .xpred-pop-row { display: flex; gap: 8px; align-items: center; }
 .xpred-pop-row .app-dialog-input { flex: 1 1 auto; margin: 0; }
 .xpred-pop-hint { margin-top: 6px; font-size: var(--fs-xs); color: #94a3b8; }
+/* The pill sits on white, so its Cancel is drawn the SDC way: white, blue
+   outline, blue text — not the ghost button meant for the dark bar. */
+.xpred-pop .btn-ghost { background: #fff; color: var(--sdc-primary, #1574c4); border: 1.5px solid var(--sdc-primary, #1574c4); font-weight: var(--fw-bold, 700); }
+.xpred-pop .btn-ghost:hover { background: #eef5fb; color: var(--sdc-primary, #1574c4); }
 
 /* A predecessor on another schedule: purple, with the link and the job. */
 #tasks-table td[data-col="pred"] .pred-x { color: #6d28d9; font-weight: var(--fw-bold); }
