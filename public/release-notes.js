@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.24',
+    date: '2026-10-14',
+    notes: [
+      'The summary card compares the FAT to the FAT we quoted, and the pop-ups are sized to the grid.',
+      '',
+      'SCHEDULE:',
+      '   ▸ The right-click card and the split editor are sized to the grid now — the same font as the rows, tighter spacing — instead of coming up bigger than the grid on a smaller screen. The card title bar runs its full width, so it drags from anywhere along it.',
+      '   ▸ Fixed: the FAT row on the summary card showed the quoted and scheduled dates but its chip was measured against the baseline, so a FAT three days ahead of the quote could read +2W. The chip now compares the two dates on the row, in half-weeks the way the Projects FAT grid does, and only falls back to the baseline when there is no quote. Hover says which.',
+    ],
+  },
+  {
     version: '13.23',
     date: '2026-10-13',
     notes: [

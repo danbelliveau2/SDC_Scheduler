@@ -6827,13 +6827,24 @@ function renderProjectStatsPopup() {
   } else {
     fatDateLabel = schedFatStr;
   }
+  // The chip compares the two dates on the row (Dan, 10/13: "quoted FAT
+  // 1/15, scheduled 1/12, then it says two weeks behind"): scheduled
+  // against QUOTED when there is a quote, in half-weeks the way the
+  // Projects FAT grid counts it. Only without a quote does it fall back
+  // to the baseline.
   let fatVarChip = '';
-  if (stats.fatVariance != null) {
+  if (quotedFatDate && fat && fat.start_date) {
+    const days = Math.round((new Date(fat.start_date + 'T00:00:00') - new Date(quotedFatDate + 'T00:00:00')) / 86400000);
+    const wks = days === 0 ? 0 : (Math.round((Math.abs(days) / 7) * 2) / 2 || 0.5) * (days > 0 ? 1 : -1);
+    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok" title="On the FAT we quoted">0W</span>';
+    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late" title="Scheduled FAT is ${wks}W after the FAT we quoted">+${wks}W</span>`;
+    else                  fatVarChip = `<span class="popup-fat-var stat-early" title="Scheduled FAT is ${-wks}W before the FAT we quoted">${wks}W</span>`;
+  } else if (stats.fatVariance != null) {
     // Half-week snap per Dan's no-arbitrary-week-fractions rule.
     const wks = Math.round((stats.fatVariance / 5) * 2) / 2;
-    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok">0W</span>';
-    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late">+${wks}W</span>`;
-    else                  fatVarChip = `<span class="popup-fat-var stat-early">${wks}W</span>`;
+    if (wks === 0)       fatVarChip = '<span class="popup-fat-var stat-ok" title="On the baseline FAT">0W</span>';
+    else if (wks > 0)    fatVarChip = `<span class="popup-fat-var stat-late" title="${wks}W after the baseline FAT">+${wks}W</span>`;
+    else                  fatVarChip = `<span class="popup-fat-var stat-early" title="${-wks}W before the baseline FAT">${wks}W</span>`;
   }
 
   // Multi-machine projects: tell the user what these numbers cover.

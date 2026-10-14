@@ -18422,3 +18422,22 @@ body.seclink-pick-mode #tasks-tbody tr[data-id]:hover td { background: #eaf3fc; 
 
 /* A predecessor on one section of a split line. */
 .pred-sec { color: #6d28d9; font-weight: var(--fw-extrabold, 800); font-size: var(--fs-xs); cursor: help; }
+
+/* ── Pop-ups sized to the grid (Dan, 10/14): the right-click card and the
+      split editor read at the grid's own font, not bigger. The card's
+      title bar runs the full width so it can be dragged from anywhere on
+      it and never squeezes a line onto two. ── */
+.context-menu button { font-size: var(--grid-data-fs, 11px); padding: 5px 10px; line-height: 1.25; }
+.context-menu button .cm-hint { font-size: calc(var(--grid-data-fs, 11px) - 1px); padding-left: 12px; }
+.context-menu button .cm-more { font-size: 13px; }
+.context-menu-header { font-size: calc(var(--grid-data-fs, 11px) - 2px); padding: 6px 10px 2px; }
+.context-menu-title { font-size: calc(var(--grid-data-fs, 11px) + 1px); padding: 8px 12px; max-width: none; align-self: stretch; width: auto; }
+.context-menu-title span { font-size: var(--grid-data-fs, 11px); }
+.context-menu { min-width: 240px; }
+.alloc-grid th { font-size: calc(var(--grid-data-fs, 11px) - 2px); padding: 6px 8px; }
+.alloc-grid td { font-size: var(--grid-data-fs, 11px); padding: 5px 8px; }
+.alloc-grid-in { padding: 4px 6px; }
+.alloc-grid-name small { font-size: calc(var(--grid-data-fs, 11px) - 2px); }
+.alloc-split-card .app-dialog-message, .alloc-grid-hint { font-size: var(--grid-data-fs, 11px); }
+.alloc-split-card .modal-head h2 { font-size: calc(var(--grid-data-fs, 11px) + 4px); }
+.modal-overlay .modal-card.app-dialog.alloc-split-card { width: min(94vw, 740px); }
