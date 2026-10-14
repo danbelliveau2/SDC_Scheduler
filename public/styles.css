@@ -18441,3 +18441,14 @@ body.seclink-pick-mode #tasks-tbody tr[data-id]:hover td { background: #eaf3fc; 
 .alloc-split-card .app-dialog-message, .alloc-grid-hint { font-size: var(--grid-data-fs, 11px); }
 .alloc-split-card .modal-head h2 { font-size: calc(var(--grid-data-fs, 11px) + 4px); }
 .modal-overlay .modal-card.app-dialog.alloc-split-card { width: min(94vw, 740px); }
+
+/* The pinned tabs (My work / Departments / Invoicing / Portal) never shrink:
+   the row was squeezing them to a few letters whenever the job tabs filled
+   it, well before the tight clamp kicked in (Dan, 10/14: "the tab should be
+   wide enough to see the whole writing"). Job names give way instead. */
+.project-tabs-row .project-tab.is-all,
+.project-tabs-row .project-tab.is-dept,
+.project-tabs-row .project-tab.is-portal { flex: 0 0 auto; max-width: none; }
+.project-tabs-row .project-tab.is-all .project-tab-label,
+.project-tabs-row .project-tab.is-dept .project-tab-label,
+.project-tabs-row .project-tab.is-portal .project-tab-label { overflow: visible; max-width: none; flex: 0 0 auto; }

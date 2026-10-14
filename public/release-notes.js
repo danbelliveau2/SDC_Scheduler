@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.25',
+    date: '2026-10-14',
+    notes: [
+      'Print / Save as PDF is back, under Documents.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Documents → Print / Save as PDF… brings back the print card that went with the toolbar rebuild: pick the lines (the key milestones always go), fit the rows to one page, add the Assigned To and % complete columns, and print. It prints through the customer view, landscape, the grid and the chart side by side, with Save as PDF as the destination in the print dialog.',
+      '   ▸ The My work, Departments and Invoicing tabs always show their whole name. Only long job names shorten when the row is full.',
+    ],
+  },
+  {
     version: '13.24',
     date: '2026-10-14',
     notes: [

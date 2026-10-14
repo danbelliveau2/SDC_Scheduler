@@ -35509,7 +35509,7 @@ function showCustomerExportModal() {
   modal.innerHTML = `
     <div class="modal-dialog" style="max-width:480px;max-height:82vh;display:flex;flex-direction:column;gap:0;">
       <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;">
-        <h3 style="margin:0;">Export for Customer</h3>
+        <h3 style="margin:0;">Print the schedule</h3>
         <button type="button" class="btn-icon" id="cv-exp-close" style="font-size:16px;">✕</button>
       </div>
       <div style="padding:8px 16px 0;font-size:12px;color:var(--color-text-muted);">
@@ -35547,7 +35547,7 @@ function showCustomerExportModal() {
         </label>
         <div style="display:flex;gap:8px;justify-content:flex-end;">
           <button type="button" class="btn-secondary" id="cv-exp-cancel">Cancel</button>
-          <button type="button" class="btn-primary" id="cv-exp-go">Generate Export</button>
+          <button type="button" class="btn-primary" id="cv-exp-go">⎙ Print</button>
         </div>
       </div>
     </div>
@@ -37669,6 +37669,7 @@ async function init() {
         else if (b.dataset.doc === 'comm') openCommPlanModal(p);
         else if (b.dataset.doc === 'job') document.getElementById('schedule-procurement')?.click();
         else if (b.dataset.doc === 'risk') openRiskPlanModal(p);
+        else if (b.dataset.doc === 'print') showCustomerExportModal();   // back by popular demand (Dan, 10/14)
       });
     });
   }
