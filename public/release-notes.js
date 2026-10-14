@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.28',
+    date: '2026-10-14',
+    notes: [
+      'Δ quoted vs scheduled shows up for everyone.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Fixed: pressing Δ showed nothing for anyone whose grid was on the flat list (the ≡ toggle, which each browser remembers). The quoted and scheduled hours sit on the department headers, and the flat list has none. Now Δ switches the flat list off and says so; switching the flat list on while Δ is showing says why the figures went.',
+    ],
+  },
+  {
     version: '13.27',
     date: '2026-10-14',
     notes: [

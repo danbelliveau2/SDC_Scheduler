@@ -37011,7 +37011,21 @@ async function init() {
           if (_p && state._quoteFailed && state._quoteFailed[_p]) { delete state.quoteCache[_p]; if (state._quoteSaid) delete state._quoteSaid[_p]; }
           ensureProjectQuote(_p);
         }
-        renderTable();
+        // The figures sit on the department headers, and the flat list (the
+        // "≡" toggle, a setting each browser keeps) has no headers at all. That
+        // is why it "worked on mine and not on theirs" (Dan, 10/14): the
+        // flat list comes off so the headers, and the numbers, are there.
+        if (state.scheduleView.showDeptHours && state.scheduleView.flatten) {
+          state.scheduleView.flatten = false;
+          state.scheduleView.sortByStart = false;
+          saveScheduleView();
+          applyScheduleView();
+          syncViewPill();
+          showToast('Δ shows on the department headers, so the flat list (≡) is off while it is on.', { kind: 'info' });
+          render();
+        } else {
+          renderTable();
+        }
         positionDeptHours();
         requestAnimationFrame(positionDeptHours);
       } else if (key === 'flatten+sort') {
@@ -37022,6 +37036,11 @@ async function init() {
         const turningOn = !(state.scheduleView.flatten && state.scheduleView.sortByStart);
         state.scheduleView.flatten     = turningOn;
         state.scheduleView.sortByStart = turningOn;
+        // The flat list has no department headers, which is where Δ draws.
+        if (turningOn && state.scheduleView.showDeptHours) {
+          state.scheduleView.showDeptHours = false;
+          showToast('The flat list has no department headers, so Δ quoted vs scheduled is off while it is on.', { kind: 'info' });
+        }
         saveScheduleView();
         applyScheduleView();
         syncViewPill();
