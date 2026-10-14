@@ -52,7 +52,11 @@ module.exports = function createRouter(deps) {
 
   // Most settings are admin-only (colors, thresholds), but a few keys are
   // normal PM workflow — editors may write those.
-  const EDITOR_KEYS = new Set(['project_leads']); // { "<project>": { pm, debug } }
+  // alloc_splits / pred_sections: a line's split allocation and section
+  // predecessors — written from the schedule by the PMs (editors). Without
+  // them here every PM's split came back 403 and vanished on reload (Dan,
+  // 10/14).
+  const EDITOR_KEYS = new Set(['project_leads', 'alloc_splits', 'pred_sections']); // project_leads: { "<project>": { pm, debug } }
   router.put('/api/settings/:key',
     (req, res, next) => requireRole(EDITOR_KEYS.has(req.params.key) ? 'editor' : 'admin')(req, res, next),
     async (req, res) => {

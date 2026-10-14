@@ -297,7 +297,13 @@ const api = {
     return fetch(`/api/tasks/${id}`, { method: 'DELETE' }).then(r => r.json());
   },
   getSettings: () => fetch('/api/settings').then(r => r.json()),
-  putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(r => r.json()),
+  putSetting: (key, value) => fetch(`/api/settings/${key}`, { method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value) }).then(async r => {
+    const j = await r.json().catch(() => ({}));
+    // A 403 used to come back as a quiet { error } and the caller carried on
+    // as if it had saved — a split that "didn't stay" (Dan, 10/14).
+    if (!r.ok) throw new Error(j.error || ('Could not save (' + r.status + ').'));
+    return j;
+  }),
   team: {
     list:   () => fetch('/api/team').then(async r => {
       if (!r.ok) { const body = await r.json().catch(() => ({})); throw new Error(body.error || `HTTP ${r.status}`); }
@@ -899,13 +905,13 @@ function _predSplitCross(task) {
 function predSectionMap() { return (state.settings && state.settings.pred_sections) || {}; }
 function predSectionOf(taskId, predId) { const m = predSectionMap()[String(taskId)]; return (m && m[String(predId)]) || null; }
 async function setPredSection(taskId, predId, info) {
-  const map = Object.assign({}, predSectionMap());
+  const map = await _freshSettingMap('pred_sections');
   const row = Object.assign({}, map[String(taskId)] || {});
   if (info) row[String(predId)] = info; else delete row[String(predId)];
   if (Object.keys(row).length) map[String(taskId)] = row; else delete map[String(taskId)];
   state.settings = state.settings || {};
   state.settings.pred_sections = map;
-  try { await api.putSetting('pred_sections', map); } catch (_) {}
+  try { await api.putSetting('pred_sections', map); } catch (err) { showToast(err.message || 'Could not save the section link.', { kind: 'error' }); }
 }
 // The token that follows section `sec` of `pred` — its start (SS + offset)
 // or its finish (FS − what is left of the line after it) — plus any lag typed.
@@ -30390,8 +30396,15 @@ function allocSplitText(task) {
   const sp = allocSplits(task);
   return sp ? sp.map(x => Math.round(Number(x.alloc) || 0)).join('·') + '%' : '';
 }
+// The latest copy of one settings map from the server, so a write merges
+// one change into what everyone else has saved rather than replacing it
+// with this browser's memory of it.
+async function _freshSettingMap(key) {
+  try { const all = await api.getSettings(); const v = all && all[key]; if (v && typeof v === 'object') return Object.assign({}, v); } catch (_) {}
+  return Object.assign({}, (state.settings && state.settings[key]) || {});
+}
 async function saveAllocSplit(task, segs) {
-  const map = Object.assign({}, (state.settings && state.settings.alloc_splits) || {});
+  const map = await _freshSettingMap('alloc_splits');
   if (segs && segs.length > 1) map[task.id] = segs; else delete map[task.id];
   state.settings = state.settings || {};
   state.settings.alloc_splits = map;

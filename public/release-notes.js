@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.26',
+    date: '2026-10-14',
+    notes: [
+      'A split allocation stays split.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Fixed: a PM could split a line\'s allocation, leave, come back, and find it gone. The save was being refused for anyone who is not an admin, and the page carried on as if it had worked. PMs can save splits and section predecessors now, and if a save ever fails the editor says so instead of pretending.',
+      '   ▸ Two people saving splits at the same time no longer overwrite each other: a save merges one line\'s change into what is already on the server.',
+    ],
+  },
+  {
     version: '13.25',
     date: '2026-10-14',
     notes: [
