@@ -2051,7 +2051,14 @@ function rollupOn() {
 function rollupRepeats(list) {
   _rollupGroups = {};
   if (!rollupOn()) return list;
-  const keyOf = (t) => [t.project || '', String(t.name || '').trim().toLowerCase(), t.assignee || '', t.is_milestone ? 'm' : 't'].join('|');
+  // A department's page rolls up by JOB (Dan, 10/17: "every project should
+  // get one line… the line item is the project"): one line per person per
+  // job, the tasks painted on the bar with their names, a clash inside the
+  // job in red. A person's own page still rolls up repeats of one task.
+  const byJob = !!myWorkDept();
+  const keyOf = (t) => byJob
+    ? ['job', t.project || '', t.assignee || ''].join('|')
+    : [t.project || '', String(t.name || '').trim().toLowerCase(), t.assignee || '', t.is_milestone ? 'm' : 't'].join('|');
   const byKey = new Map();
   for (const t of list) {
     if (!t.start_date || !t.end_date || inferredAnchorKey(t)) continue;
@@ -2062,15 +2069,16 @@ function rollupRepeats(list) {
   const groupOfFirst = new Map();   // first member id → group row
   const member = new Map();         // member id → key
   byKey.forEach((arr, k) => {
-    if (arr.length < 2) return;
+    if (arr.length < (byJob ? 1 : 2)) return;
     arr.sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)) || a.id - b.id);
     const first = arr[0];
     const open = _rollupOpen.has(k);
     const days = arr.reduce((n, t) => n + (Number(t.duration_days) || 0), 0);
     const pct = Math.round(arr.reduce((n, t) => n + (Number(t.progress) || 0), 0) / arr.length);
     const group = Object.assign({}, first, {
-      id: 'grp:' + k, _rollup: true, _key: k, _members: arr, _open: open,
-      name: (first.name || '') + ' × ' + arr.length,
+      id: 'grp:' + k, _rollup: true, _key: k, _members: arr, _open: open, _byJob: byJob,
+      is_milestone: byJob ? 0 : first.is_milestone,
+      name: byJob ? (first.project || '') + ' · ' + arr.length + (arr.length === 1 ? ' task' : ' tasks') : (first.name || '') + ' × ' + arr.length,
       start_date: arr[0].start_date,
       end_date: arr.reduce((e, t) => (t.end_date > e ? t.end_date : e), arr[0].end_date),
       duration_days: days, progress: pct,
@@ -2529,7 +2537,7 @@ function cellHtml(t, key) {
       // running daily total over 100% somewhere in its span — flag the cell so the user
       // sees in the Schedule view that this person can't actually accomplish all their
       // higher-priority work plus this one.
-      const over = state.overAllocatedTaskIds && state.overAllocatedTaskIds.has(t.id) && !document.body.classList.contains('customer-view');
+      const over = state.overAllocatedTaskIds && (state.overAllocatedTaskIds.has(t.id) || (t._rollup && t._members.some(m => state.overAllocatedTaskIds.has(m.id)))) && !document.body.classList.contains('customer-view');
       const ph = isPlaceholder(t.assignee);
       const classes = [cls];
       if (over) classes.push('over-allocated');
@@ -2821,7 +2829,7 @@ function rowHtml(t, depth = 0) {
     : t.phase_group === CONTROLS_GROUP ? ' ctrl-item-row'
     : t.phase_group === CUSTOMER_GROUP ? ' cust-item-row' : '';
   const rollCls = t._rollup ? (t._open ? ' rollup-row is-open' : ' rollup-row') : t._member ? ' rollup-member' : '';
-  const rollAttr = t._rollup ? ` data-rollup="${escapeHtml(t._key)}" data-line-of="${t._members[0].id}" title="${t._members.length} stints — click to ${t._open ? 'close' : 'open'} them"` : '';
+  const rollAttr = t._rollup ? ` data-rollup="${escapeHtml(t._key)}" data-line-of="${t._members[0].id}" title="${t._members.length} ${t._byJob ? 'tasks on this job' : 'stints'} — click to ${t._open ? 'close' : 'open'} them"` : '';
   return `<tr data-id="${t.id}" class="depth-${depth} ${t.is_milestone ? 'is-milestone' : ''}${milestoneDone}${taskDone}${actionCls}${overdueCls}${listCls}${rollCls}" data-color-key="${colorKey}" style="--row-phase-color:${stripe}"${rollAttr}>${cells}</tr>`;
 }
 
@@ -3305,7 +3313,7 @@ function renderTable() {
   // no phases, no list section (Dan, 10/10: 'there is no phases').
   const _personFlat = !_deptScope && !riskMode && !controlsMode && !eventsMode && !customerMode && !mFilter && !_miniFlat && isPersonalMode() && flattenEffective;
   if (_personFlat) {
-    const rows = _mainRows.filter(t => !inferredAnchorKey(t)).slice().sort((a, b) =>
+    const rows = _keepMembersUnderGroup(_mainRows.filter(t => !inferredAnchorKey(t)), (a, b) =>
       String(a.start_date || '￿').localeCompare(String(b.start_date || '￿'))
       || String(a.project || '').localeCompare(String(b.project || ''))
       || (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
@@ -3533,10 +3541,27 @@ function renderTable() {
       html += headerRowHtml(0, 'CONTROLS LIST & RISK PLAN ITEMS (' + _extra.length + ')', _p, collapsedGroups.has(_p), { 'section-key': 'who-side' });
       if (!collapsedGroups.has(_p)) for (const t of _extra) html += rowHtml(t, 1);
     }
+    // Notifications: every note across every job that names this person,
+    // due first (Dan, 10/17: "their notification center could be their My
+    // work portal"). Click one and it opens that job's notes.
+    try { html += _whoNotesSectionHtml(collapsedGroups); } catch (_) {}
     const _me = signedInMember();
     if (_me && !isPlaceholder(_me.name)) html += _whoAllocRowHtml(_me);
   }
   tbody.innerHTML = html;
+  tbody.querySelectorAll('tr.who-note-row[data-note-project]').forEach(tr => tr.addEventListener('click', (e) => {
+    if (e.target.closest('input')) return;   // the tick is its own thing
+    // The note opens in the card, in Mine, right here — no page change.
+    state._notesScope = 'mine';
+    openNotesCard();
+  }));
+  tbody.querySelectorAll('[data-mention-done]').forEach(ch => ch.addEventListener('change', () => {
+    const hit = _findNoteItem(ch.dataset.mentionDone);
+    if (!hit) return;
+    hit.it.done = !!ch.checked; if (hit.it.done) hit.it.actioned = true;
+    _noteSave(hit.p);
+    setTimeout(() => { try { renderTable(); renderGantt(); renderProjectNotes(); } catch (_) {} }, 150);
+  }));
   tbody.querySelectorAll('[data-assign-task]').forEach(ch => ch.addEventListener('click', (e) => {
     e.stopPropagation(); e.preventDefault();
     showAssignCard(ch.dataset.assignTask, e.clientX, e.clientY);
@@ -5032,19 +5057,30 @@ function drawPersonAllocStrips() {
         const x2 = (workDayOffset(dateOf(seg.endDay), g0.gantt_start) + 1) * pxPerDay;
         const w = x2 - x1;
         if (!(w > 0.5) || !Number.isFinite(x1)) return;
-        const overBy = Math.min(200, Math.max(0, seg.total - 100));
-        const light = 70 - (overBy / 200) * 32;
         const dA = _allocShort(dateOf(seg.startDay)), dB = _allocShort(dateOf(seg.endDay));
         const full = fmtDate(dateOf(seg.startDay)) + (seg.startDay === seg.endDay ? '' : ' – ' + fmtDate(dateOf(seg.endDay)));
         const rect = document.createElementNS(NS, 'rect');
         rect.setAttribute('x', String(x1)); rect.setAttribute('y', String(y));
         rect.setAttribute('width', String(w)); rect.setAttribute('height', String(H));
-        rect.setAttribute('rx', '2'); rect.setAttribute('fill', 'hsl(0 74% ' + light + '%)');
+        rect.setAttribute('rx', '2'); rect.setAttribute('fill', _allocColor(seg.total));
         const tip = document.createElementNS(NS, 'title');
         tip.textContent = 'OVER-ALLOCATED — ' + seg.total + '% · ' + full;
         rect.appendChild(tip);
         g.appendChild(rect);
-        const str = (seg.startDay === seg.endDay ? dA : dA + ' – ' + dB) + ' · ' + seg.total + '%';
+        // The dates belong to the span's start and end, so they go IN the
+        // band, across exactly those days, when they fit (Dan, 10/17); the
+        // percent stands alone right under the bars.
+        const dStr = seg.startDay === seg.endDay ? dA : dA + ' – ' + dB;
+        if (dStr.length * 5.2 + 6 <= w) {
+          const dt = document.createElementNS(NS, 'text');
+          dt.setAttribute('x', String(x1 + w / 2)); dt.setAttribute('y', String(y + H - 2.5));
+          dt.setAttribute('text-anchor', 'middle'); dt.setAttribute('fill', _allocInk(seg.total));
+          dt.style.fontFamily = 'sans-serif'; dt.style.fontSize = '9px'; dt.style.fontWeight = '700';
+          dt.style.pointerEvents = 'none';
+          dt.textContent = dStr;
+          g.appendChild(dt);
+        }
+        const str = seg.total + '%';
         const tw = str.length * CH;
         const cx = x1 + w / 2;
         const left = cx - tw / 2, right = cx + tw / 2;
@@ -5053,8 +5089,8 @@ function drawPersonAllocStrips() {
         laneRight[li] = right;
         const t = document.createElementNS(NS, 'text');
         t.setAttribute('x', String(cx)); t.setAttribute('y', String(lanes[li]));
-        t.setAttribute('text-anchor', 'middle'); t.setAttribute('fill', '#9f1239');
-        t.style.fontFamily = 'sans-serif'; t.style.fontSize = FS + 'px'; t.style.fontWeight = '700';
+        t.setAttribute('text-anchor', 'middle'); t.setAttribute('fill', _allocColor(Math.max(seg.total, 150)));
+        t.style.fontFamily = 'sans-serif'; t.style.fontSize = FS + 'px'; t.style.fontWeight = '800';
         t.setAttribute('paint-order', 'stroke'); t.setAttribute('stroke', 'rgba(255,255,255,0.92)');
         t.setAttribute('stroke-width', '3'); t.setAttribute('stroke-linejoin', 'round');
         t.textContent = str;
@@ -5066,7 +5102,7 @@ function drawPersonAllocStrips() {
         const tick = document.createElementNS(NS, 'line');
         tick.setAttribute('x1', String(cx)); tick.setAttribute('x2', String(cx));
         tick.setAttribute('y1', String(lanes[li] + 2)); tick.setAttribute('y2', String(y));
-        tick.setAttribute('stroke', '#9f1239'); tick.setAttribute('stroke-width', '1'); tick.setAttribute('stroke-dasharray', '2 2');
+        tick.setAttribute('stroke', _allocColor(Math.max(seg.total, 150))); tick.setAttribute('stroke-width', '1'); tick.setAttribute('stroke-dasharray', '2 2');
         g.appendChild(tick);
       });
     });
@@ -5154,10 +5190,28 @@ function drawRollupSegments() {
       const fill = getComputedStyle(bar).fill || '#1574c4';
       const stroke = getComputedStyle(bar).stroke;
       const spans = [];
+      if (g._byJob) { const lbl = wrap.querySelector('.bar-label'); if (lbl) lbl.style.display = 'none'; }
       g._members.forEach(m => {
         const a = workDayOffset(m.start_date, s0);
         const b = Math.max(a + 1, workDayOffset(dayAfter(m.end_date), s0));
         spans.push([a, b]);
+        if (g._byJob) {
+          // The task's name on its stint, when there is room for a few letters.
+          const sx = x + w * (a / total), sw = Math.max(3, w * ((b - a) / total));
+          const fit = Math.floor((sw - 6) / 5.6);
+          if (fit >= 2) {
+            const full = String(m.name || '');
+            const txt = full.length > fit ? full.slice(0, Math.max(1, fit - 1)) + '…' : full;
+            const t = document.createElementNS(SVG_NS, 'text');
+            t.setAttribute('x', String(sx + 3)); t.setAttribute('y', String(y + h / 2 + 3));
+            t.setAttribute('fill', '#061d39');
+            t.style.fontFamily = 'sans-serif'; t.style.fontSize = '10px'; t.style.fontWeight = '800';
+            t.setAttribute('paint-order', 'stroke'); t.setAttribute('stroke', 'rgba(255,255,255,0.95)'); t.setAttribute('stroke-width', '3'); t.setAttribute('stroke-linejoin', 'round');
+            t.setAttribute('class', 'rollup-seg-label'); t.setAttribute('pointer-events', 'none');
+            t.textContent = txt;
+            wrap.appendChild(t);
+          }
+        }
         const r = document.createElementNS(SVG_NS, 'rect');
         r.setAttribute('x', x + w * (a / total));
         r.setAttribute('y', y);
@@ -5169,13 +5223,23 @@ function drawRollupSegments() {
         r.setAttribute('stroke', stroke && stroke !== 'none' ? stroke : '#64748b');
         r.setAttribute('stroke-width', '1.2');
         r.setAttribute('class', 'rollup-seg');
-        r.setAttribute('pointer-events', 'none');
+        if (g._byJob) {
+          // Closed, the short tasks on a job line are cut off (Dan, 10/17):
+          // hover one and the tip names it, with its dates.
+          r.style.pointerEvents = 'all'; r.style.cursor = 'default';
+          r.addEventListener('mouseenter', (e) => { e.stopPropagation(); _barTipShow(_barTipHtml(m), e); });
+          r.addEventListener('mousemove', (e) => { e.stopPropagation(); _barTipPlace(e); });
+          r.addEventListener('mouseleave', _barTipHide);
+        } else {
+          r.setAttribute('pointer-events', 'none');
+        }
         wrap.appendChild(r);
       });
       // Where two stints overlap, the person is booked twice: paint that
       // stretch red on top, so the clash reads before the bars do.
       spans.sort((p, q) => p[0] - q[0]);
       const clashes = [];
+      if (g._byJob) spans.length = 0;   // a job line: overlap is normal; over-allocation paints itself
       for (let i = 0; i < spans.length; i++) {
         for (let j = i + 1; j < spans.length; j++) {
           const lo = Math.max(spans[i][0], spans[j][0]);
@@ -5278,6 +5342,10 @@ function renderGantt() {
     container.innerHTML = '';
     empty && empty.classList.remove('hidden');
     state.gantt = null;
+    // Nothing drawn means nothing left over from the page before: the
+    // over-allocation cards and the hover tip go too.
+    try { document.querySelectorAll('#schedule-gantt .alloc-card').forEach(e => e.remove()); } catch (_) {}
+    try { _barTipHide(); } catch (_) {}
     return;
   }
   empty && empty.classList.add('hidden');
@@ -5323,9 +5391,10 @@ function renderGantt() {
     if (t.phase_group === CONTROLS_GROUP) classes.push('is-ctrl-item');
     if (t.phase_group === CUSTOMER_GROUP) classes.push('is-cust-item');
     if (t._rollup) classes.push('is-rollup');
+    if (t._member) classes.push('is-rollup-member');
     // Over-allocation is our staffing problem, not the customer's: the
     // customer view shows behind-schedule, never over-allocated.
-    if (state.overAllocatedTaskIds.has(t.id) && !document.body.classList.contains('customer-view')) classes.push('over-allocated');
+    if ((state.overAllocatedTaskIds.has(t.id) || (t._rollup && t._members.some(m => state.overAllocatedTaskIds.has(m.id)))) && !document.body.classList.contains('customer-view')) classes.push('over-allocated');
     if (criticalIds.has(String(t.id))) classes.push('on-critical');
     return {
       id: String(t.id),
@@ -5966,7 +6035,8 @@ function drawOverAllocSpans() {
     const step = mode === 'Day' ? 1 : mode === 'Week' ? 7 : 30;
     const pxPerDay = cw / step;
     for (const task of (state._visibleTasks || state.tasks)) {
-      const spans = overAllocSpans(task.id);
+      // A rolled-up line carries its tasks' over days.
+      const spans = task._rollup ? task._members.flatMap(m => overAllocSpans(m.id)) : overAllocSpans(task.id);
       if (!spans.length) continue;
       const wrap = svg.querySelector(`.bar-wrapper[data-id="${task.id}"]`);
       const bar = wrap && wrap.querySelector('.bar');
@@ -5990,8 +6060,11 @@ function drawOverAllocSpans() {
         r.setAttribute('x', String(x1)); r.setAttribute('y', String(y));
         r.setAttribute('width', String(x2 - x1)); r.setAttribute('height', String(h));
         r.setAttribute('rx', '2');
-        r.setAttribute('fill', 'rgba(220,38,38,0.22)');
-        r.setAttribute('stroke', '#dc2626'); r.setAttribute('stroke-width', '2');
+        r.setAttribute('fill', _allocColor(sp.peak)); r.setAttribute('fill-opacity', '0.38');
+        r.setAttribute('stroke', _allocColor(Math.max(Number(sp.peak) || 0, 140))); r.setAttribute('stroke-width', '2');
+        // One of an opened job's tasks: the band is faint and dotted like the
+        // bar it sits on, so the task does not jump out of the job (Dan, 10/17).
+        if (task._member) { r.setAttribute('fill-opacity', '0.16'); r.setAttribute('stroke-dasharray', '2 2'); r.setAttribute('stroke-width', '1.2'); }
         r.style.pointerEvents = 'none';
         const tip = document.createElementNS(SVG_NS, 'title');
         tip.textContent = 'Over-allocated ' + fmtDate(sp.from) + (sp.from === sp.to ? '' : ' – ' + fmtDate(sp.to)) + ' · ' + sp.peak + '% booked';
@@ -8499,6 +8572,28 @@ function drawMyWorkJobLabels() {
 // disappears the moment the pointer leaves the bar, so it can never stick.
 // (frappe-gantt's own click popup is hidden by CSS — it only went away on a
 // click on the chart background, which nobody finds.)
+// The small tip over a bar — one line, follows the mouse, gone on leave.
+// Shared by the bar hover and the task stints on a job line.
+function _barTipEl() {
+  let tip = document.getElementById('mywork-bar-tip');
+  if (!tip) { tip = document.createElement('div'); tip.id = 'mywork-bar-tip'; tip.className = 'mywork-bar-tip'; document.body.appendChild(tip); }
+  return tip;
+}
+function _barTipPlace(e) {
+  const tip = _barTipEl(); const pad = 14;
+  let x = e.clientX + pad, y = e.clientY + pad;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  if (x + w > window.innerWidth - 8) x = e.clientX - w - pad;
+  if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+function _barTipShow(html, e) { const tip = _barTipEl(); tip.innerHTML = html; tip.style.display = 'block'; _barTipPlace(e); }
+function _barTipHide() { const tip = document.getElementById('mywork-bar-tip'); if (tip) tip.style.display = 'none'; }
+function _barTipHtml(rec) {
+  const job = rec.project ? jobNumberOf(rec.project) : '';
+  return '<span class="mywork-bar-tip-job">' + escapeHtml(job) + (job ? ' · ' : '') + escapeHtml(rec.name || '') + '</span>'
+    + '<span class="mywork-bar-tip-dates"><span>' + escapeHtml(fmtDate(rec.start_date)) + '</span> – <span>' + escapeHtml(fmtDate(rec.end_date)) + '</span></span>';
+}
 function wireMyWorkBarHover() {
   const svg = document.querySelector('#gantt-container .gantt');
   if (!svg || !state.myWork) return;
@@ -8525,12 +8620,14 @@ function wireMyWorkBarHover() {
     if (!wrap || wrap._myWorkHoverWired) continue;
     wrap._myWorkHoverWired = true;
     wrap.addEventListener('mouseenter', (e) => {
+      if (task._rollup) { hide(); return; }   // a job line: hover a stint for its name
       const rec = state.tasks.find(t => String(t.id) === String(task.id)) || task;
       const job = rec.project ? jobNumberOf(rec.project) : '';
       const start = fmtDate(rec.start_date), end = fmtDate(rec.end_date);
+      // One line (Dan, 10/17: the old card "covers everything around it").
       tip.innerHTML =
-        `<div class="mywork-bar-tip-job">${escapeHtml(job)}${job ? ' · ' : ''}${escapeHtml(rec.name || '')}</div>` +
-        `<div class="mywork-bar-tip-dates"><span>${escapeHtml(start)}</span> → <span>${escapeHtml(end)}</span></div>` +
+        `<span class="mywork-bar-tip-job">${escapeHtml(job)}${job ? ' · ' : ''}${escapeHtml(rec.name || '')}</span>` +
+        `<span class="mywork-bar-tip-dates"><span>${escapeHtml(start)}</span> – <span>${escapeHtml(end)}</span></span>` +
         `<div class="mywork-bar-tip-hint">${state.xpredPick ? 'click the line in the grid to make it the predecessor' : (myWorkDept() && (_assignTargets(task.id)[0] || {}).assignee && isPlaceholder(_assignTargets(task.id)[0].assignee)) ? 'click to give it to someone' : 'click to open the schedule'}</div>`;
       tip.style.display = 'block';
       place(e);
@@ -8597,8 +8694,9 @@ function drawMilestoneLabels() {
     lbl.setAttribute('dominant-baseline', 'middle');
     lbl.setAttribute('text-anchor', 'start');
     lbl.setAttribute('font-size', '11');
-    lbl.setAttribute('font-weight', '600');
-    lbl.setAttribute('fill', '#061d39');
+    lbl.setAttribute('font-weight', task._member ? '500' : '600');
+    lbl.setAttribute('fill', task._member ? '#64748b' : '#061d39');
+    if (task._member) lbl.setAttribute('opacity', '0.85');
     lbl.style.pointerEvents = 'none';
     // In personal mode, append the date to non-anchor milestone labels so
     // the user can see when each thing's due directly on the Gantt
@@ -14536,7 +14634,7 @@ function renderProjectTabs() {
           ? `<span class="banner-signin-who">${_deptLabel ? 'Viewing' : (isExecMember(memberForSignedInUser()) && !isExecMember(who) ? 'Viewing' : 'Signed in as')} <b>${escapeHtml(_deptLabel || who.name)}</b></span>
              ${canChooseWho() ? '<button type="button" class="toolbar-toggle-btn" id="btn-my-work-switch" title="Open someone else’s page.">Switch person</button>' : ''}
              <button type="button" class="toolbar-toggle-btn" id="btn-my-work-signout" title="Sign out — My work goes blank until someone signs in">× Sign out</button>
-             <button type="button" class="toolbar-toggle-btn${rollupOn() ? ' is-active' : ''}" id="btn-my-work-rollup" title="Roll repeats up: the same task on the same job, one after another, reads as one line — click it to open the stints.">⊟ Roll up repeats</button>`
+             <button type="button" class="toolbar-toggle-btn${rollupOn() ? ' is-active' : ''}" id="btn-my-work-rollup" title="${_deptLabel ? 'One line per job for each person, their tasks on it painted on the bar with their names — click the line to open the tasks.' : 'Roll repeats up: the same task on the same job, one after another, reads as one line — click it to open the stints.'}">⊟ ${_deptLabel ? 'One line per job' : 'Roll up repeats'}</button>`
           : `<button type="button" class="banner-signin-btn" id="btn-my-work-signin">Sign in to see your work</button>`;
       if (extra) extra.innerHTML = state.myWork ? signInHtml : projectsFilterHtml;
       document.getElementById('btn-my-work-signin')?.addEventListener('click', () => showMyWorkSignIn());
@@ -17525,10 +17623,12 @@ function render(opts = {}) {
   }
   try { renderDeptPanel(); } catch (_) {}
   try { refreshFinancialsButtonState(); } catch (_) {}
+  try { _applyNotesPopout(); } catch (_) {}
   try { renderProjectNotes(); } catch (_) {}
   try { renderScheduleProcurement(); } catch (_) {}
   try { renderScheduleGoal(); } catch (_) {}
   try { renderPanelCountdown(); } catch (_) {}
+  try { tidyScheduleFooter(); } catch (_) {}
   if (state.view === 'portal') { try { renderPortal(); } catch (_) {} }
   try { syncRiskModeButtons(); } catch (_) {}
   try { syncControlsButtons(); } catch (_) {}
@@ -18725,6 +18825,18 @@ async function moveOutOfControlsList(id) {
 // My work, whole department: a header per person (leads first, the
 // placeholder — unassigned work — last), their open lines under it in date
 // order. Collapses like any section.
+// Sort the lines, but a rolled-up line's open tasks ride directly under it,
+// in the order the roll-up gave them — never re-sorted among the other lines.
+function _keepMembersUnderGroup(rows, cmp) {
+  const tops = rows.filter(t => !t._member).sort(cmp);
+  const under = {};
+  rows.forEach(t => { if (t._member) (under[t._member] = under[t._member] || []).push(t); });
+  const out = [];
+  tops.forEach(t => { out.push(t); if (t._rollup && t._open && under[t._key]) out.push(...under[t._key]); });
+  // A task whose line is not in this list (should not happen) still shows.
+  rows.forEach(t => { if (t._member && !out.includes(t)) out.push(t); });
+  return out;
+}
 function _personSectionRowsHtml(filtered, collapsedGroups, key) {
   const cols = state.layout.columnOrder.length;
   const members = deptMembers(key);
@@ -18748,7 +18860,7 @@ function _personSectionRowsHtml(filtered, collapsedGroups, key) {
       html += headerRowHtml(0, (d ? d.label : m.discipline).toUpperCase(), dpath, collapsedGroups.has(dpath), { 'section-key': 'who-dept-' + m.discipline });
     }
     if (discs.length > 1 && collapsedGroups.has(groupPath('who-dept', null, m.discipline))) continue;
-    const rows = (byName.get(m.name) || []).sort(cmp);
+    const rows = _keepMembersUnderGroup(byName.get(m.name) || [], cmp);
     const ph = isPlaceholder(m.name);
     if (ph && !rows.length) continue;   // no unassigned work: no empty bucket
     const path = groupPath('who', null, 'p' + m.id);
@@ -18786,7 +18898,10 @@ const _allocExpanded = new Set();   // people whose chip list is fully open
 const ALLOC_CHIPS_SHOWN = 8;
 function _allocDate(d) { return new Date(_ALLOC_EPOCH.getTime() + d * 86400000).toISOString().slice(0, 10); }
 function _allocShort(iso) { return fmtDate(iso).replace(/\/\d\d$/, ''); }
-function _allocColor(total) { const over = Math.min(200, Math.max(0, total - 100)); return 'hsl(0 74% ' + (70 - (over / 200) * 32) + '%)'; }
+// How far over 100% a day is, as a red: 105% is a light pink, 150% a clear
+// red, 200% and up a dark red. Light with a little over, dark when doubled.
+function _allocColor(total) { const over = Math.min(100, Math.max(0, Number(total) - 100)); return 'hsl(0 76% ' + Math.round(74 - (over / 100) * 42) + '%)'; }
+function _allocInk(total) { return (Number(total) - 100) >= 45 ? '#fff' : '#7f1d1d'; }   // text that reads on that red
 function _whoAllocRowHtml(m) {
   const cols = state.layout.columnOrder.length;
   const { over, peak } = personAllocSegments(m.name);
@@ -21183,14 +21298,17 @@ function _wireWeeklyGoal(el, project) {
 // information" on the right. One JSON blob per project (state.projectNotes).
 function _notesGenId() { return 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
 let _notesSaveTimer = null;
+let _notesSaveTimers = {};
 function saveProjectNotes(project) {
   // Never autosave notes for a project whose blob wasn't loaded successfully —
   // otherwise a failed load (or a not-yet-loaded project) would persist an
   // empty/stale blob over the real server notes. This is the guard that keeps
   // "lost all my meeting notes" from happening.
   if (!state._notesLoaded || !state._notesLoaded[project]) return;
-  clearTimeout(_notesSaveTimer);
-  _notesSaveTimer = setTimeout(() => {
+  _notesSaveTimers = _notesSaveTimers || {};
+  clearTimeout(_notesSaveTimers[project]);
+  _notesSaveTimers[project] = setTimeout(() => {
+    delete _notesSaveTimers[project];
     api.notes.save(project, state.projectNotes[project] || { sessions: [] })
       .then(r => { if (r && !r.ok) showToast('Notes could not be saved — check your connection.', { kind: 'error' }); })
       .catch(() => showToast('Notes could not be saved — check your connection.', { kind: 'error' }));
@@ -21413,10 +21531,10 @@ function _notesMeetingHtml(s) {
   return `<div class="notes-session${s.collapsed ? ' is-collapsed' : ''}" data-session="${s.id}">
     <div class="notes-session-head">
       <button class="notes-session-caret" data-toggle-session="${s.id}" title="Collapse / expand">${s.collapsed ? '▸' : '▾'}</button>
-      <input class="notes-session-title" data-session-title="${s.id}" value="${escapeHtml(s.title || '')}" placeholder="Meeting title" />
+      <input class="notes-session-title" data-session-title="${s.id}" value="${escapeHtml(s.title || '')}" placeholder="Section title — a meeting, a topic, things to remember" />
       <input type="date" class="notes-session-date" data-session-date="${s.id}" value="${escapeHtml(s.date || '')}" />
       <span class="notes-session-count">${itemCount} note${itemCount === 1 ? '' : 's'}</span>
-      <button class="notes-session-del" data-del-session="${s.id}" title="Delete this meeting">🗑</button>
+      <button class="notes-session-del" data-del-session="${s.id}" title="Delete this section">🗑</button>
     </div>
     ${s.collapsed ? '' : `<div class="notes-session-body">${composer}<div class="notes-list">${items}</div></div>`}
   </div>`;
@@ -21425,6 +21543,98 @@ function _notesMeetingHtml(s) {
 // every project so their data — or a clean empty state — is visible without a
 // click. The user's manual collapse/expand is remembered per drawer (localStorage),
 // so once they close one it stays closed as they move between projects.
+// The notes card: open or closed (closed until you ask), where you left it
+// and how big you made it, per browser.
+function _notesCardOpen() { try { return localStorage.getItem('sdcNotesCardOpen') === '1'; } catch (_) { return false; } }
+function _setNotesCardOpen(open) { try { localStorage.setItem('sdcNotesCardOpen', open ? '1' : '0'); } catch (_) {} }
+function _saveNotesCardBox(el) {
+  try {
+    const r = el.getBoundingClientRect();
+    if (r.width < 50 || r.height < 50) return;
+    localStorage.setItem('sdcNotesCardBox', JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }));
+  } catch (_) {}
+}
+// Where the card sits: where you left it, or low on the right, always with
+// its title bar on the screen.
+function placeNotesCard(el) {
+  if (document.body.classList.contains('notes-popout')) return;   // its own window: it IS the window
+  let box = null; try { box = JSON.parse(localStorage.getItem('sdcNotesCardBox') || 'null'); } catch (_) {}
+  const w = Math.max(480, Math.min((box && box.width) || 1100, innerWidth - 24));
+  const h = Math.max(240, Math.min((box && box.height) || 620, innerHeight - 24));
+  let left = box ? box.left : innerWidth - w - 24, top = box ? box.top : innerHeight - h - 24;
+  left = Math.max(0, Math.min(innerWidth - 160, left)); top = Math.max(0, Math.min(innerHeight - 48, top));
+  el.style.width = w + 'px'; el.style.height = h + 'px'; el.style.left = left + 'px'; el.style.top = top + 'px';
+}
+// Drag by the title bar; the corner grip (CSS resize) sizes it. Both remembered.
+function _notesCardWire(el) {
+  if (el._cardWired) return; el._cardWired = true;
+  el.addEventListener('pointerdown', (e) => {
+    if (!e.target.closest('.notes-bar') || e.target.closest('button, input, select, textarea, a')) return;
+    if (document.body.classList.contains('notes-popout')) return;
+    e.preventDefault();
+    const r = el.getBoundingClientRect(); const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    const move = (ev) => {
+      const left = Math.max(-r.width + 160, Math.min(innerWidth - 160, ev.clientX - dx));
+      const top = Math.max(0, Math.min(innerHeight - 48, ev.clientY - dy));
+      el.style.left = left + 'px'; el.style.top = top + 'px';
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); el.classList.remove('is-dragging'); _saveNotesCardBox(el); };
+    el.classList.add('is-dragging');
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  });
+  try { new ResizeObserver(() => { if (!el.classList.contains('is-collapsed') && !document.body.classList.contains('notes-popout')) _saveNotesCardBox(el); }).observe(el); } catch (_) {}
+}
+// Documents › Notes. On a job: that job's meetings and key information. On
+// My work or a department's page: the notes that name you.
+function openNotesCard() {
+  const el = document.getElementById('schedule-notes');
+  if (!el) return;
+  const project = state.filters && state.filters.project;
+  if (!project && !isPersonalMode() && state.view === 'schedule' && !_notesMe()) { showToast('Sign in on My work to see the notes that name you; All shows every note.', { kind: 'info' }); }
+  _setNotesCardOpen(true);
+  _notesCardWire(el);
+  placeNotesCard(el);
+  renderProjectNotes();
+}
+function closeNotesCard() {
+  if (document.body.classList.contains('notes-popout')) { try { window.close(); } catch (_) {} }
+  _setNotesCardOpen(false);
+  renderProjectNotes();
+}
+// The notes in a window of their own — drag it to the other screen.
+function popOutNotes() {
+  const project = state.filters && state.filters.project;
+  const q = '?notesview=1' + (project ? '&project=' + encodeURIComponent(project) : '&me=1');
+  try { window.open(location.pathname + q, 'sdcNotes_' + (project || 'me'), 'width=1150,height=720,resizable=yes,scrollbars=yes'); } catch (_) {}
+}
+// The title bar's buttons: pop out (not in the popped-out window) and close.
+function _notesBarActions() {
+  const pop = document.body.classList.contains('notes-popout') ? '' : '<button type="button" class="notes-bar-btn" data-action="popout-notes" title="Open the notes in a window of their own — drag it to another screen">↗ Pop out</button>';
+  return '<span class="notes-bar-actions">' + pop + '<button type="button" class="notes-bar-btn notes-bar-close" data-action="close-notes" title="Close the notes. Documents › Notes brings them back.">✕</button></span>';
+}
+// Popped out (?notesview=1): the card is the whole window. Until the data is
+// here the job or the person cannot be set, so this runs from render().
+function _applyNotesPopout() {
+  const np = window._notesPopout;
+  if (!np || np.done) return;
+  if (!(state.tasks || []).length) return;
+  np.done = true;
+  _setNotesCardOpen(true);
+  setTimeout(() => {
+    try {
+      if (np.project) {
+        if (!state.openProjects.includes(np.project)) state.openProjects.push(np.project);
+        setMyWork(false);
+        state.filters.project = np.project;
+        setView('schedule');
+        render();
+      } else if (_actionsPageState && _actionsPageState.personId != null) {
+        routePersonalMode(_actionsPageState.personId);
+      }
+      openNotesCard();
+    } catch (_) {}
+  }, 0);
+}
 function _drawerCollapsed(key) {
   try { return localStorage.getItem('sdcDrawer_' + key) === '1'; } catch (_) { return false; }
 }
@@ -21464,8 +21674,9 @@ function _myNotes(member) {
         if (!text) return;
         const informed = _infList(it);
         const forMe = informed.some(n => names.has(String(n).trim().toLowerCase()));
-        if (!forMe && !minePm) return;
-        out.push({ project: p, text, informed, due: it.due || '', starred: !!it.starred, mdate: sess.date || '', direct: forMe });
+        const byMe = !!it.by && names.has(String(it.by).trim().toLowerCase());
+        if (!forMe && !byMe && !minePm) return;
+        out.push({ id: it.id, project: p, text, informed, due: it.due || '', starred: !!it.starred, done: !!it.done, by: it.by || '', mdate: it.created || sess.date || '', direct: forMe });
       });
     });
   });
@@ -21479,17 +21690,69 @@ function _myNotes(member) {
   return out;
 }
 
+// The notes digest needs every job's notes in memory. Fetch the ones that
+// are not, then draw the page again once they are.
+function _loadNotesDigest(missing) {
+  state._notesLoaded = state._notesLoaded || {};
+  if (state._notesDigestLoading) return;
+  state._notesDigestLoading = true;
+  Promise.all(missing.map(p => api.notes.get(p)
+    .then(d => { state.projectNotes[p] = (d && Array.isArray(d.sessions)) ? d : { sessions: [] }; state._notesLoaded[p] = true; })
+    .catch(() => { state.projectNotes[p] = { sessions: [] }; })))
+    .finally(() => {
+      state._notesDigestLoading = false;
+      if (isPersonalMode() && state.view === 'schedule') { try { renderTable(); renderGantt(); } catch (_) {} }
+      try { renderProjectNotes(); } catch (_) {}
+    });
+}
+// NOTIFICATIONS at the foot of a person's page: the notes that name them,
+// as a house grid — Due | Job | Note | From | Informed. Click a row to open
+// that job's notes.
+function _whoNotesSectionHtml(collapsedGroups) {
+  const member = signedInMember();
+  if (!member || isPlaceholder(member.name)) return '';
+  const cols = state.layout.columnOrder.length;
+  const _p = groupPath('who-notes');
+  const projects = _notesProjects();
+  const missing = projects.filter(p => !state.projectNotes[p]);
+  if (missing.length) {
+    _loadNotesDigest(missing);
+    return headerRowHtml(0, 'MENTIONS · loading…', _p, collapsedGroups.has(_p), { 'section-key': 'who-notes' });
+  }
+  const notes = _myNotes(member).filter(n => !n.done);
+  const today = _ymdLocal(new Date());
+  const overdue = notes.filter(n => n.due && n.due < today).length;
+  const label = 'MENTIONS (' + notes.length + (overdue ? ' · ' + overdue + ' past due' : '') + ')';
+  let html = headerRowHtml(0, label, _p, collapsedGroups.has(_p), { 'section-key': 'who-notes' });
+  if (collapsedGroups.has(_p)) return html;
+  const rows = notes.length
+    ? notes.map(n => {
+        const late = n.due && n.due < today;
+        const who = n.informed.map(x => '<span class="notes-chip ref">' + escapeHtml(x) + '</span>').join(' ');
+        const job = n.project === NOTES_GENERAL ? '—' : jobNumberOf(n.project);
+        return '<tr class="who-note-row' + (late ? ' is-late' : '') + '" data-note-project="' + escapeHtml(n.project) + '" data-note-id="' + escapeHtml(n.id || '') + '" title="Open the notes">'
+          + '<td class="wn-done"><input type="checkbox" class="ng-chk" data-mention-done="' + escapeHtml(n.id || '') + '" title="Done — it leaves your list" /></td>'
+          + '<td class="wn-due">' + (n.due ? escapeHtml(fmtDate(n.due)) : '—') + '</td>'
+          + '<td class="wn-job">' + escapeHtml(job) + '</td>'
+          + '<td class="wn-text" title="' + escapeHtml(n.text) + '">' + escapeHtml(n.text) + '</td>'
+          + '<td class="wn-from">' + escapeHtml(n.by || '') + '</td>'
+          + '<td class="wn-who">' + who + '</td></tr>';
+      }).join('')
+    : '<tr><td colspan="6" class="wn-empty">Nothing names you right now. Write a note with your name on it, or someone mentions you on one, and it lands here.</td></tr>';
+  html += '<tr class="who-notes-wrap"><td colspan="' + cols + '"><table class="who-notes-grid"><colgroup><col style="width:40px"><col style="width:96px"><col style="width:72px"><col><col style="width:120px"><col style="width:200px"></colgroup>'
+    + '<thead><tr><th>✓</th><th>Due</th><th>Job</th><th>Note</th><th>From</th><th>Mentions</th></tr></thead><tbody>' + rows + '</tbody></table></td></tr>';
+  return html;
+}
 // The Notes drawer in personal mode. Same bar, same collapse memory, same
 // slot under the schedule — the contents are yours across every job.
 function renderPersonalNotes(el) {
-  const member = signedInMember();
-  if (!member) { el.style.display = 'none'; return; }
   el.style.display = '';
-  const projects = uniqueValues('project')
-    .filter(p => !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p)));
+  el.classList.toggle('is-collapsed', !_notesCardOpen());
+  _notesCardWire(el);
+  const projects = _notesProjects();
   const missing = projects.filter(p => !state.projectNotes[p]);
   if (missing.length) {
-    el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes for you</span><span class="notes-count">loading…</span></div>`;
+    el.innerHTML = `<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span><span class="notes-count">loading…</span></div>`;
     state._notesLoaded = state._notesLoaded || {};
     missing.forEach(p => {
       api.notes.get(p)
@@ -21507,47 +21770,14 @@ function renderPersonalNotes(el) {
     });
     return;
   }
-  const notes = _myNotes(member);
-  const collapsed = _drawerCollapsed('notes');
-  el.classList.toggle('is-collapsed', collapsed);
-  const today = _ymdLocal(new Date());
-  const overdue = notes.filter(n => n.due && n.due < today).length;
-  const bar = `<div class="notes-bar" data-action="toggle-notes">
-    <span class="notes-bar-title">📝 Notes for you</span>
-    <span class="notes-count">${notes.length} note${notes.length === 1 ? '' : 's'}${overdue ? ` · ${overdue} past due` : ''}</span>
-    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
-  </div>`;
-  if (collapsed) { el.innerHTML = bar; _wirePersonalNotes(el); return; }
-  const body = notes.length
-    ? notes.map(n => {
-        const late = n.due && n.due < today;
-        const chips = n.informed
-          .map(p => `<span class="pn-who">${escapeHtml(p)}</span>`).join('');
-        return `<div class="pn-row${late ? ' is-late' : ''}" data-project="${escapeHtml(n.project)}" title="Open ${escapeHtml(n.project)}">
-          <span class="pn-due">${n.due ? escapeHtml(fmtDate(n.due)) : '—'}</span>
-          <span class="pn-project">${escapeHtml(n.project)}</span>
-          <span class="pn-text">${n.starred ? '<span class="pn-star">★</span> ' : ''}${escapeHtml(n.text)}</span>
-          <span class="pn-informed">${chips}</span>
-        </div>`;
-      }).join('')
-    : `<div class="pn-empty">No notes name you right now. When someone informs you on a meeting note, it lands here.</div>`;
-  el.innerHTML = bar + `<div class="pn-wrap">
-    <div class="pn-head"><span>Due</span><span>Project</span><span>Note</span><span>Informed</span></div>
-    ${body}
-  </div>`;
-  _wirePersonalNotes(el);
+  if (!_notesCardOpen()) { el.innerHTML = ''; return; }
+  _renderNotesCard(el, null);
 }
 
 function _wirePersonalNotes(el) {
   el.onclick = (e) => {
-    if (e.target.closest('[data-action="toggle-notes"]')) {
-      const willOpen = el.classList.contains('is-collapsed');
-      el.classList.toggle('is-collapsed');
-      _setDrawerCollapsed('notes', el.classList.contains('is-collapsed'));
-      renderProjectNotes();
-      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
-      return;
-    }
+    if (e.target.closest('[data-action="close-notes"]')) { closeNotesCard(); return; }
+    if (e.target.closest('[data-action="popout-notes"]')) { popOutNotes(); return; }
     // A note is a pointer to a conversation on a job — clicking it should
     // take you there, to the meeting it came from.
     const row = e.target.closest('.pn-row[data-project]');
@@ -21577,13 +21807,16 @@ function renderProjectNotes() {
   const el = document.getElementById('schedule-notes');
   if (!el) return;
   const project = state.filters && state.filters.project;
-  // My work has no project, but it does have notes — yours, from every job.
-  if (!project && state.view === 'schedule' && isPersonalMode()) { renderPersonalNotes(el); return; }
-  if (!project || state.view !== 'schedule') { el.style.display = 'none'; return; }
+  // No job open (My work, a department, All projects): the notes that name
+  // you, or all of them — the same card.
+  if (!project && (state.view === 'schedule' || window._notesPopout)) { renderPersonalNotes(el); return; }
+  if (!project || (state.view !== 'schedule' && !window._notesPopout)) { el.style.display = 'none'; return; }
   // Leaving personal mode: drop the digest's delegated click handler so the
   // per-project panel's own listener is the only one running.
   el.onclick = null;
   el.style.display = '';
+  el.classList.toggle('is-collapsed', !_notesCardOpen());
+  _notesCardWire(el);
   if (!state.projectNotes[project] || !(state._notesLoaded && state._notesLoaded[project])) {
     // Re-fetch unless this project's notes were VERIFIED-loaded (loaded flag).
     // The Actions key-info aggregator may have left a display-only empty
@@ -21611,93 +21844,345 @@ function renderProjectNotes() {
     });
     return;
   }
-  const data = state.projectNotes[project];
-  const collapsed = _drawerCollapsed('notes');
-  el.classList.toggle('is-collapsed', collapsed);
-  const starred = [];
-  data.sessions.forEach(s => (s.items || []).forEach(it => { if (it.starred && (it.text || '').trim()) starred.push({ s, it }); }));
-  const bar = `<div class="notes-bar" data-action="toggle-notes">
-    <span class="notes-bar-title">📝 Notes</span>
-    <span class="notes-count">${data.sessions.length} meeting${data.sessions.length === 1 ? '' : 's'} · ${starred.length} key</span>
-    <span class="notes-bar-caret">${collapsed ? '▸ open' : '▾ close'}</span>
-  </div>`;
-  // The goal used to render here, as a thin line above the Notes header. It
-  // now owns the middle of the footer strip instead - same content, somewhere
-  // it can actually be seen. See renderScheduleGoal().
-  const goalBar = '';
-  if (collapsed) {
-    el.innerHTML = goalBar + bar;
-    _wireNotes(el, project);
-    try { _wireWeeklyGoal(el, project); } catch (_) {}
-    layoutNotesPanel();
-    return;
-  }
-  const anyExpanded = data.sessions.some(s => !s.collapsed);
-  const collapseAllBtn = data.sessions.length
-    ? `<button class="notes-collapse-all" data-action="collapse-all" type="button" title="${anyExpanded ? 'Collapse every meeting' : 'Expand every meeting'}">${anyExpanded ? 'Collapse all' : 'Expand all'}</button>`
-    : '';
-  const sessionsHtml = data.sessions.length
-    ? data.sessions.map(_notesMeetingHtml).join('')
-    : `<div class="notes-empty">No meetings yet — add one to start jotting notes.</div>`;
-  // Key information for THIS project's schedule — a grid with headers, columns
-  // running sideways (Description | Meeting | Informed | Date), just like the
-  // meeting list. Cards = grouped by department; List = flat, sorted by date.
-  const keyInfChips = (it) => _infList(it).map(n => `<span class="notes-chip ref">👤 ${escapeHtml(n)}</span>`).join(' ');
-  // withDept: list view adds a Department column (cards don't need it — the
-  // card IS the department).
-  const keyRow = ({ s, it }, withDept) => {
-    const dv = it.due || s.date;
-    const dks = _noteDeptKeys(it);
-    const deptCell = withDept ? `<span class="nkr-dept">${escapeHtml(dks.map(k => k === 'general' ? 'General' : _notesDeptLabel(k)).join(', '))}</span>` : '';
-    return `<div class="notes-key-row${withDept ? ' has-dept' : ''}" data-item="${it.id}">
-      <button class="notes-star is-on" data-star="${it.id}" title="Unstar">★</button>
-      <span class="nkr-desc">${escapeHtml(it.text)}</span>
-      ${deptCell}
-      <span class="nkr-meeting">${escapeHtml(s.title || 'Meeting')}</span>
-      <span class="nkr-informed">${keyInfChips(it)}</span>
-      <span class="nkr-date">${dv ? escapeHtml(_notesFmtDate(dv)) : ''}</span>
-    </div>`;
-  };
-  const keyHead = (withDept) => `<div class="notes-key-row notes-key-head${withDept ? ' has-dept' : ''}"><span></span><span>Description</span>${withDept ? '<span>Dept</span>' : ''}<span>Meeting</span><span>Informed</span><span>Date</span></div>`;
-  let keyHtml;
-  if (starred.length) {
-    if (_notesKeyView === 'list') {
-      keyHtml = keyHead(true) + starred.slice()
-        .sort((a, b) => ((a.it.due || a.s.date || '9999-99-99').localeCompare(b.it.due || b.s.date || '9999-99-99')))
-        .map(rec => keyRow(rec, true)).join('');
-    } else {
-      // Each department is its OWN card. A note shows under every department it
-      // informs (so a cross-team note appears in each).
-      const byDept = {};
-      starred.forEach(rec => _noteDeptKeys(rec.it).forEach(k => { (byDept[k] = byDept[k] || []).push(rec); }));
-      const order = [...NOTES_DEPT_GROUPS.map(g => g.key), 'general'];
-      keyHtml = `<div class="notes-key-cards">` + order.filter(k => byDept[k] && byDept[k].length).map(k =>
-        `<div class="notes-key-card"><div class="notes-key-card-head">${escapeHtml(k === 'general' ? 'General' : _notesDeptLabel(k))}<span class="notes-key-card-count">${byDept[k].length}</span></div><div class="notes-key-card-body">${keyHead(false)}${byDept[k].map(rec => keyRow(rec, false)).join('')}</div></div>`
-      ).join('') + `</div>`;
+  if (!_notesCardOpen()) { el.innerHTML = ''; return; }   // closed: nothing drawn
+  _renderNotesCard(el, project);
+}
+
+// ── The notes grid (Dan, 10/17) ─────────────────────────────────────────────
+// One flat list of notes, the house grid: a note is a line with a Due date,
+// a Job (or none), the note, the people it mentions, who wrote it, when. It
+// is written from any page; a note with no job lives under '_general'.
+// Columns move (drag a heading) and size (drag the grip), and both are
+// remembered per browser, like the other grids.
+const NOTES_GENERAL = '_general';
+const NOTES_COLS = [
+  { k: 'done',  label: '✓',  w: 40 },
+  { k: 'due',   label: 'Due',     w: 118 },
+  { k: 'job',   label: 'Job',     w: 100 },
+  { k: 'text',  label: 'Note',    share: 1, min: 220 },
+  { k: 'who',   label: 'Mentions', w: 230 },
+  { k: 'by',    label: 'From',    w: 120 },
+  { k: 'added', label: 'Added',   w: 92 },
+  { k: 'del',   label: '',        w: 36 },
+];
+let _notesColWidths = {};
+try { _notesColWidths = JSON.parse(localStorage.getItem('sdcNotesColWidths') || '{}') || {}; } catch (_) { _notesColWidths = {}; }
+function _notesColOrder() {
+  let order = null;
+  try { order = JSON.parse(localStorage.getItem('sdcNotesColOrder') || 'null'); } catch (_) {}
+  if (!Array.isArray(order)) return NOTES_COLS;
+  const byKey = {}; NOTES_COLS.forEach(c => { byKey[c.k] = c; });
+  const out = order.map(k => byKey[k]).filter(Boolean);
+  NOTES_COLS.forEach(c => { if (!out.includes(c)) out.push(c); });
+  return out;
+}
+// The jobs whose notes count: live jobs, no templates, no Sales / Test, plus
+// the no-job bucket.
+function _notesProjects() {
+  const ps = uniqueValues('project').filter(p => p && !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p)));
+  ps.push(NOTES_GENERAL);
+  return ps;
+}
+function _notesMe() {
+  const m = signedInMember();
+  if (m && !isPlaceholder(m.name)) return m.name;
+  return (window.sdcAuth && window.sdcAuth.user && (window.sdcAuth.user.name || window.sdcAuth.user.email)) || '';
+}
+// What the card shows: this job's notes, the ones that name you (or that
+// you wrote), or everything.
+function _notesScopeFor(project) {
+  let sc = state._notesScope || '';
+  if (sc === 'job' && !project) sc = '';
+  if (sc === 'mine' && !_notesMe()) sc = 'all';
+  if (!sc) sc = project ? 'job' : (_notesMe() ? 'mine' : 'all');
+  return sc;
+}
+// Every note as a row { p, s, it }, in the scope, open first then by due.
+function _notesRows(scope, project) {
+  const me = _notesMe();
+  const names = _myNoteNames(signedInMember());
+  if (me) names.add(me.trim().toLowerCase());
+  const ps = scope === 'job' ? [project] : _notesProjects();
+  const out = [];
+  ps.forEach(p => {
+    const blob = state.projectNotes[p];
+    if (!blob) return;
+    (blob.sessions || []).forEach(s => (s.items || []).forEach(it => {
+      if (scope === 'mine') {
+        const mine = (it.by && names.has(String(it.by).trim().toLowerCase())) || _infList(it).some(n => names.has(String(n).trim().toLowerCase()));
+        if (!mine) return;
+      }
+      out.push({ p, s, it });
+    }));
+  });
+  const key = (r) => (r.it.due || '9999-99-99');
+  const blank = (r) => !String(r.it.text || '').trim() && !r.it.done;
+  out.sort((a, b) => (blank(a) !== blank(b) ? (blank(a) ? -1 : 1) : 0)
+    || (!!a.it.done !== !!b.it.done ? (a.it.done ? 1 : -1) : 0)
+    || key(a).localeCompare(key(b))
+    || String(b.it.created || b.s.date || '').localeCompare(String(a.it.created || a.s.date || '')));
+  return out;
+}
+function _findNoteItem(id) {
+  for (const p of Object.keys(state.projectNotes || {})) {
+    const blob = state.projectNotes[p];
+    for (const s of (blob && blob.sessions) || []) {
+      const it = (s.items || []).find(x => x.id === id);
+      if (it) return { p, s, it };
     }
-  } else {
-    keyHtml = `<div class="notes-empty">Star a note on the left to pin it here as key information.</div>`;
   }
-  const keyViewToggle = starred.length ? `<span class="notes-keyview">
-      <button class="notes-kv ${_notesKeyView === 'cards' ? 'is-on' : ''}" data-keyview="cards" type="button">Cards</button>
-      <button class="notes-kv ${_notesKeyView === 'list' ? 'is-on' : ''}" data-keyview="list" type="button">List</button>
-    </span>` : '';
-  el.innerHTML = DRAWER_HANDLE('notes-body') + goalBar + bar + `
-    <div class="notes-body">
-      <div class="notes-col notes-sessions">
-        <div class="notes-col-head"><span>Meetings</span><span class="notes-col-head-actions">${collapseAllBtn}<button class="notes-new-session" data-action="new-session" type="button">+ New meeting</button></span></div>
-        <div class="notes-col-scroll">${sessionsHtml}</div>
-      </div>
-      <div class="notes-col notes-key">
-        <div class="notes-col-head"><span>★ Key information</span>${keyViewToggle}</div>
-        <div class="notes-col-scroll">${keyHtml}</div>
-      </div>
-    </div>`;
-  _wireNotes(el, project);
-  try { _wireWeeklyGoal(el, project); } catch (_) {}
-  // Auto-size note textareas to their content.
-  el.querySelectorAll('.notes-item-text').forEach(ta => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; });
-  layoutNotesPanel();
+  return null;
+}
+// The section new notes land in on a job: the one called Notes, made if need be.
+function _notesHomeSession(p) {
+  const blob = state.projectNotes[p] || (state.projectNotes[p] = { sessions: [] });
+  blob.sessions = blob.sessions || [];
+  let s = blob.sessions.find(x => String(x.title || '').trim().toLowerCase() === 'notes');
+  if (!s) { s = { id: _notesGenId(), title: 'Notes', date: new Date().toISOString().slice(0, 10), collapsed: false, items: [] }; blob.sessions.unshift(s); }
+  s.items = s.items || [];
+  return s;
+}
+function _notesJobOptions(cur) {
+  const live = uniqueValues('project').filter(p => p && !isTemplateProject(p) && !['Sales', 'Test'].includes(projectWorkspace(p)))
+    .sort((a, b) => jobNumberOf(b).localeCompare(jobNumberOf(a), undefined, { numeric: true }));
+  const opts = ['<option value="' + NOTES_GENERAL + '"' + (cur === NOTES_GENERAL || !cur ? ' selected' : '') + '>—</option>']
+    .concat(live.map(p => '<option value="' + escapeHtml(p) + '"' + (p === cur ? ' selected' : '') + ' title="' + escapeHtml(p) + '">' + escapeHtml(jobNumberOf(p)) + '</option>'));
+  return opts.join('');
+}
+// The draft in the top line — kept while you pick people, lost on Enter.
+function _notesNewDraft(project, scope) {
+  const d = state._notesNew || (state._notesNew = { text: '', due: '', job: '', informed: [] });
+  if (!d.job) d.job = (scope === 'job' && project) ? project : NOTES_GENERAL;
+  return d;
+}
+function _notesNewRowHtml(COLS, project, scope) {
+  const d = _notesNewDraft(project, scope);
+  const cell = (c) => {
+    switch (c.k) {
+      case 'done':  return '<td class="ng-done"><span class="ng-plus" title="New note">+</span></td>';
+      case 'due':   return '<td class="ng-due"><input type="date" class="ng-in" data-new="due" value="' + escapeHtml(d.due) + '" title="Due (optional)" /></td>';
+      case 'job':   return '<td class="ng-job"><select class="ng-in" data-new="job">' + _notesJobOptions(d.job) + '</select></td>';
+      case 'text':  return '<td class="ng-text"><input type="text" class="ng-in ng-note ng-note-new" data-new="text" value="' + escapeHtml(d.text) + '" placeholder="Type a note and press Enter…" /></td>';
+      case 'who':   return '<td class="ng-who">' + _notesInformedPicker('ngnew', 'new', d.informed) + '</td>';
+      default:      return '<td></td>';
+    }
+  };
+  return '<tr class="ng-new">' + COLS.map(cell).join('') + '</tr>';
+}
+function _notesGridHtml(rows, scope, project) {
+  const COLS = _notesColOrder();
+  const anyPinned = COLS.some(c => _notesColWidths[c.k]);
+  const cols = COLS.map(c => _notesColWidths[c.k]
+    ? '<col class="ng-' + c.k + '" style="width:' + _notesColWidths[c.k] + 'px;min-width:' + _notesColWidths[c.k] + 'px" />'
+    : c.share ? '<col class="ng-' + c.k + '" style="width:auto;min-width:' + c.min + 'px" />'
+    : '<col class="ng-' + c.k + '" style="width:' + c.w + 'px" />').join('');
+  const head = COLS.map(c => {
+    const grip = c.k === 'del' ? '' : '<span class="col-resize-handle" data-ngrip="' + c.k + '" draggable="false"></span>';
+    return '<th class="ng-' + c.k + '" data-ncol="' + c.k + '" draggable="true"><span class="rg-plain">' + escapeHtml(c.label) + '</span>' + grip + '</th>';
+  }).join('');
+  const cell = (c, r) => {
+    const it = r.it, id = it.id;
+    switch (c.k) {
+      case 'done':  return '<td class="ng-done"><input type="checkbox" class="ng-chk" data-nf="done" data-nid="' + id + '"' + (it.done ? ' checked' : '') + ' title="Mark done" /></td>';
+      case 'due':   return '<td class="ng-due' + (it.due && !it.done && it.due < _ymdLocal(new Date()) ? ' is-late' : '') + '"><input type="date" class="ng-in" data-nf="due" data-nid="' + id + '" value="' + escapeHtml(it.due || '') + '" /></td>';
+      case 'job':   return '<td class="ng-job"><select class="ng-in" data-nf="job" data-nid="' + id + '">' + _notesJobOptions(r.p) + '</select></td>';
+      case 'text':  return '<td class="ng-text"><input type="text" class="ng-in ng-note" data-nf="text" data-nid="' + id + '" value="' + escapeHtml(it.text || '') + '" placeholder="Write the note…" /></td>';
+      case 'who':   return '<td class="ng-who">' + _notesInformedPicker('ng', id, _infList(it)) + '</td>';
+      case 'by':    return '<td class="ng-by" title="' + escapeHtml(it.by || '') + '">' + escapeHtml(it.by || '') + '</td>';
+      case 'added': return '<td class="ng-added">' + escapeHtml(_notesFmtDate(it.created || r.s.date || '')) + '</td>';
+      case 'del':   return '<td class="ng-del"><button type="button" class="ng-x" data-ndel="' + id + '" title="Delete this note">×</button></td>';
+    }
+    return '<td></td>';
+  };
+  const body = rows.length
+    ? rows.map(r => '<tr class="rg-row ng-row' + (r.it.done ? ' is-done' : '') + '" data-nid="' + r.it.id + '">' + COLS.map(c => cell(c, r)).join('') + '</tr>').join('')
+    : '<tr class="ng-empty-row"><td colspan="' + COLS.length + '">' + (scope === 'mine' ? 'Nothing names you yet. Type one above, or someone will mention you on one.' : 'No notes yet — type one above.') + '</td></tr>';
+  return '<div class="rg-wrap notes-rg-wrap"><table class="rg notes-rg' + (anyPinned ? ' is-pinned' : '') + '"><colgroup>' + cols + '</colgroup><thead><tr>' + head + '</tr></thead><tbody>' + _notesNewRowHtml(COLS, project, scope) + body + '</tbody></table></div>';
+}
+// The card's body: scope pills, Add a note, the grid.
+function _renderNotesCard(el, project) {
+  const scope = _notesScopeFor(project);
+  if (scope !== 'job') {
+    const missing = _notesProjects().filter(p => !state.projectNotes[p]);
+    if (missing.length) {
+      _loadNotesDigest(missing);
+      el.innerHTML = _notesBarHtml(project, null) + '<div class="notes-loading">Loading notes…</div>';
+      return;
+    }
+  }
+  const rows = _notesRows(scope, project);
+  const me = _notesMe();
+  const pill = (k, label, title) => '<button type="button" class="dept-scope-btn' + (scope === k ? ' is-active' : '') + '" data-nscope="' + k + '" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</button>';
+  const scopes = '<div class="dept-scope notes-scope">'
+    + (project ? pill('job', 'This job', 'The notes on ' + jobNumberOf(project)) : '')
+    + (me ? pill('mine', 'Mine', 'Notes that name you, and the ones you wrote') : '')
+    + pill('all', 'All', 'Every note on every job')
+    + '</div>';
+  const open = rows.filter(r => !r.it.done).length;
+  el.innerHTML = _notesBarHtml(project, rows.length ? open + ' open' : '')
+    + '<div class="notes-tools">' + scopes + '<span class="notes-tools-spacer"></span><span class="notes-tools-hint">Type in the top line and press Enter to add a note</span></div>'
+    + _notesGridHtml(rows, scope, project);
+  _wireNotesGrid(el, project, scope);
+}
+function _notesBarHtml(project, count) {
+  const scope = _notesScopeFor(project);
+  const job = (scope === 'job' && project) ? '<span class="notes-bar-job">' + escapeHtml(jobNumberOf(project)) + '</span>' : '';
+  return '<div class="notes-bar"><span class="notes-bar-title">📝 Notes</span>' + job
+    + (count ? '<span class="notes-count">' + escapeHtml(count) + '</span>' : '')
+    + _notesBarActions() + '</div>';
+}
+function _noteSave(p) { state._notesLoaded = state._notesLoaded || {}; if (!state._notesLoaded[p]) state._notesLoaded[p] = true; saveProjectNotes(p); }
+function _wireNotesGrid(el, project, scope) {
+  const redraw = () => renderProjectNotes();
+  el.onclick = (e) => {
+    const t = e.target;
+    if (t.closest('[data-action="close-notes"]')) { e.stopPropagation(); closeNotesCard(); return; }
+    if (t.closest('[data-action="popout-notes"]')) { e.stopPropagation(); popOutNotes(); return; }
+    const sp = t.closest('[data-nscope]');
+    if (sp) { state._notesScope = sp.dataset.nscope; redraw(); return; }
+    // Click the empty grid: you are in the top line, typing.
+    if (t.closest('.notes-rg-wrap') && !t.closest('tr.ng-row') && !t.closest('tr.ng-new') && !t.closest('thead')) {
+      const inp = el.querySelector('.ng-note-new'); if (inp) inp.focus();
+      return;
+    }
+    const rmNew = t.closest('[data-inf-remove][data-inf-scope="ngnew"]');
+    if (rmNew) { const d = _notesNewDraft(project, scope); d.informed = d.informed.filter(n => n !== rmNew.dataset.infName); redraw(); setTimeout(() => el.querySelector('.ng-note-new')?.focus(), 0); return; }
+    const del = t.closest('[data-ndel]');
+    if (del) {
+      const hit = _findNoteItem(del.dataset.ndel);
+      if (!hit) return;
+      showConfirmDialog({ title: 'Delete this note?', message: (hit.it.text || '(empty)').slice(0, 160), okLabel: 'Delete', danger: true }).then(ok => {
+        if (!ok) return;
+        hit.s.items = hit.s.items.filter(x => x.id !== hit.it.id);
+        _noteSave(hit.p); redraw();
+      });
+      return;
+    }
+    const rm = t.closest('[data-inf-remove][data-inf-scope="ng"]');
+    if (rm) {
+      const hit = _findNoteItem(rm.dataset.infRemove);
+      if (!hit) return;
+      hit.it.informed = _infList(hit.it).filter(n => n !== rm.dataset.infName);
+      _noteSave(hit.p); redraw();
+      return;
+    }
+  };
+  // The top line: keep the draft; Enter in the note adds it.
+  const commitNew = () => {
+    const d = _notesNewDraft(project, scope);
+    const text = String(d.text || '').trim();
+    if (!text) { el.querySelector('.ng-note-new')?.focus(); return; }
+    const p = d.job || NOTES_GENERAL;
+    if (!state.projectNotes[p]) {
+      if (p !== NOTES_GENERAL) { _loadNotesDigest([p]); showToast('Loading that job’s notes — press Enter again in a moment.', { kind: 'info' }); return; }
+      state.projectNotes[p] = { sessions: [] };
+    }
+    const sess = _notesHomeSession(p);
+    sess.items.unshift({ id: _notesGenId(), text, informed: (d.informed || []).slice(), due: d.due || '', starred: false, done: false, by: _notesMe() || '', created: new Date().toISOString().slice(0, 10) });
+    _noteSave(p);
+    state._notesNew = { text: '', due: '', job: d.job, informed: [] };
+    redraw();
+    setTimeout(() => el.querySelector('.ng-note-new')?.focus(), 0);
+  };
+  el.onchange = (e) => {
+    const t = e.target;
+    const nf = t.dataset.new;
+    if (nf) {
+      const d = _notesNewDraft(project, scope);
+      if (nf === 'text') d.text = t.value; else if (nf === 'due') d.due = t.value || ''; else if (nf === 'job') d.job = t.value || NOTES_GENERAL;
+      return;
+    }
+    const addNew = t.closest('[data-inf-add][data-inf-scope="ngnew"]');
+    if (addNew) {
+      const d = _notesNewDraft(project, scope);
+      d.text = (el.querySelector('.ng-note-new') || {}).value || d.text;
+      if (addNew.value && !d.informed.includes(addNew.value)) d.informed.push(addNew.value);
+      redraw(); setTimeout(() => el.querySelector('.ng-note-new')?.focus(), 0);
+      return;
+    }
+    const add = t.closest('[data-inf-add][data-inf-scope="ng"]');
+    if (add) {
+      const hit = _findNoteItem(add.dataset.infAdd);
+      if (!hit || !add.value) return;
+      const list = _infList(hit.it); if (!list.includes(add.value)) list.push(add.value);
+      hit.it.informed = list;
+      _noteSave(hit.p); redraw();
+      return;
+    }
+    const f = t.dataset.nf;
+    if (!f) return;
+    const hit = _findNoteItem(t.dataset.nid);
+    if (!hit) return;
+    if (f === 'done') { hit.it.done = !!t.checked; if (hit.it.done) hit.it.actioned = true; _noteSave(hit.p); redraw(); return; }
+    if (f === 'due') { hit.it.due = t.value || ''; _noteSave(hit.p); redraw(); return; }
+    if (f === 'text') { hit.it.text = t.value; _noteSave(hit.p); return; }
+    if (f === 'job') {
+      const np = t.value || NOTES_GENERAL;
+      if (np === hit.p) return;
+      if (!state.projectNotes[np] && np !== NOTES_GENERAL) {
+        // That job's notes are not here yet: bring them in, then try again.
+        _loadNotesDigest([np]); showToast('Loading that job’s notes — pick it again in a moment.', { kind: 'info' }); t.value = hit.p; return;
+      }
+      if (!state.projectNotes[np]) state.projectNotes[np] = { sessions: [] };
+      hit.s.items = hit.s.items.filter(x => x.id !== hit.it.id);
+      _notesHomeSession(np).items.unshift(hit.it);
+      _noteSave(hit.p); _noteSave(np); redraw();
+      return;
+    }
+  };
+  // Enter in the top line adds the note; Enter in a note below just moves on.
+  el.onkeydown = (e) => {
+    if (e.key !== 'Enter' || !e.target.classList) return;
+    if (e.target.classList.contains('ng-note-new')) { e.preventDefault(); _notesNewDraft(project, scope).text = e.target.value; commitNew(); return; }
+    if (e.target.classList.contains('ng-note')) { e.preventDefault(); e.target.blur(); }
+  };
+  el.oninput = (e) => { if (e.target.classList && e.target.classList.contains('ng-note-new')) _notesNewDraft(project, scope).text = e.target.value; };
+  // Drag a heading onto another to move the column. Remembered.
+  let dragKey = null;
+  el.querySelectorAll('.notes-rg th[data-ncol]').forEach(th => {
+    th.addEventListener('dragstart', (e) => { dragKey = th.dataset.ncol; try { e.dataTransfer.setData('text/plain', dragKey); e.dataTransfer.effectAllowed = 'move'; } catch (_) {} th.classList.add('is-dragging'); });
+    th.addEventListener('dragend', () => th.classList.remove('is-dragging'));
+    th.addEventListener('dragover', (e) => { e.preventDefault(); th.classList.add('is-drop'); });
+    th.addEventListener('dragleave', () => th.classList.remove('is-drop'));
+    th.addEventListener('drop', (e) => {
+      e.preventDefault(); th.classList.remove('is-drop');
+      const from = dragKey, to = th.dataset.ncol;
+      if (!from || !to || from === to) return;
+      const order = _notesColOrder().map(c => c.k);
+      const fi = order.indexOf(from); if (fi >= 0) order.splice(fi, 1);
+      const ti = order.indexOf(to); order.splice(ti < 0 ? order.length : ti, 0, from);
+      try { localStorage.setItem('sdcNotesColOrder', JSON.stringify(order)); } catch (_) {}
+      redraw();
+    });
+  });
+  // Drag the grip to size that column, and only that column. Remembered.
+  el.querySelectorAll('.notes-rg [data-ngrip]').forEach(g => {
+    g.addEventListener('mousedown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const key = g.dataset.ngrip, th = g.closest('th');
+      const startX = e.clientX, startW = th.offsetWidth;
+      const tbl = el.querySelector('.notes-rg');
+      el.querySelectorAll('.notes-rg thead th[data-ncol]').forEach(h => {
+        const k = h.dataset.ncol; if (k === 'del') return;
+        _notesColWidths[k] = _notesColWidths[k] || Math.round(h.offsetWidth);
+        const cel = el.querySelector('col.ng-' + k); if (cel) { cel.style.width = _notesColWidths[k] + 'px'; cel.style.minWidth = _notesColWidths[k] + 'px'; }
+      });
+      if (tbl) tbl.classList.add('is-pinned');
+      document.body.classList.add('resizing-col');
+      const move = (ev) => {
+        const w = Math.max(28, Math.round(startW + (ev.clientX - startX)));
+        _notesColWidths[key] = w;
+        const cel = el.querySelector('col.ng-' + key); if (cel) { cel.style.width = w + 'px'; cel.style.minWidth = w + 'px'; }
+      };
+      const up = () => {
+        window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up);
+        document.body.classList.remove('resizing-col');
+        try { localStorage.setItem('sdcNotesColWidths', JSON.stringify(_notesColWidths)); } catch (_) {}
+      };
+      window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+    });
+    g.addEventListener('dragstart', (e) => e.preventDefault());
+  });
 }
 
 // Notes lives BELOW the schedule, never over it. When expanded we lock the
@@ -21749,19 +22234,21 @@ function _notesSplitLockHeight() {
 // screen to actually work in it. This was stubbed out when the drawers became
 // overlays, which is what left notes jammed against the bottom edge with
 // nothing below it to scroll to.
+function tidyScheduleFooter() {
+  const f = document.getElementById('schedule-footer');
+  if (!f) return;
+  const has = Array.from(f.children).some(c => (c.textContent || '').trim() || c.querySelector('button, input, select, textarea, img'));
+  f.classList.toggle('is-empty', !has);
+}
 function layoutNotesPanel() {
   const view  = document.getElementById('view-schedule');
   const notes = document.getElementById('schedule-notes');
   const split = document.getElementById('schedule-split');
   if (!view || !notes || !split) return;
-  const open = !notes.classList.contains('is-collapsed');
-  if (!open) {
-    view.classList.remove('notes-open');
-    split.style.flex = '';
-    return;
-  }
-  view.classList.add('notes-open');
-  split.style.flex = '0 0 ' + _notesSplitLockHeight() + 'px';
+  // The notes are a card over the page now (Dan, 10/17), not a panel under
+  // the schedule — the schedule keeps its full height either way.
+  view.classList.remove('notes-open');
+  split.style.flex = '';
 }
 // Re-measure on window resize so the locked split keeps the right height.
 window.addEventListener('resize', () => {
@@ -22056,15 +22543,8 @@ function _wireNotes(el, project) {
       el.querySelector('.notes-comp-text')?.focus();
       return;
     }
-    if (t.closest('[data-action="toggle-notes"]')) {
-      const willOpen = el.classList.contains('is-collapsed');
-      el.classList.toggle('is-collapsed');
-      _setDrawerCollapsed('notes', el.classList.contains('is-collapsed'));
-      renderProjectNotes();
-      // On open, bring the notes panel into view (with room below it to scroll).
-      if (willOpen) requestAnimationFrame(() => { try { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {} });
-      return;
-    }
+    if (t.closest('[data-action="close-notes"]')) { e.stopPropagation(); closeNotesCard(); return; }
+    if (t.closest('[data-action="popout-notes"]')) { e.stopPropagation(); popOutNotes(); return; }
     if (t.closest('[data-action="collapse-all"]')) { const anyOpen = data.sessions.some(s => !s.collapsed); data.sessions.forEach(s => { s.collapsed = anyOpen; }); saveProjectNotes(project); renderProjectNotes(); return; }
     const kv = t.closest('[data-keyview]'); if (kv) { _notesKeyView = kv.dataset.keyview; renderProjectNotes(); return; }
     const tog = t.closest('[data-toggle-session]'); if (tog) { const s = findSession(tog.dataset.toggleSession); if (s) { s.collapsed = !s.collapsed; saveProjectNotes(project); renderProjectNotes(); } return; }
@@ -30936,9 +31416,13 @@ function renderDeptPanel() {
   const key = (state.view === 'schedule') ? myWorkDept() : '';
   if (!key || key === 'alten') { panel.hidden = true; document.body.classList.remove('dept-sched-hidden'); return; }
   panel.hidden = false;
-  let schedHidden = false;
-  try { schedHidden = localStorage.getItem('sdcDeptSchedHidden') === '1'; } catch (_) {}
+  let schedHidden = false, collapsed = false;
+  try { schedHidden = localStorage.getItem('sdcDeptSchedHidden') === '1'; collapsed = localStorage.getItem('sdcDeptPanelCollapsed') === '1'; } catch (_) {}
+  // The two cannot both be on: hiding the schedule gives the overview the
+  // page, folding the overview gives the schedule the page (Dan, 10/16).
+  if (schedHidden && collapsed) { collapsed = false; try { localStorage.setItem('sdcDeptPanelCollapsed', '0'); } catch (_) {} }
   document.body.classList.toggle('dept-sched-hidden', schedHidden);
+  panel.classList.toggle('is-collapsed', collapsed);
 
   const weeks = deptPanelWeeks();
   const W = _deptWindow(weeks);
@@ -30990,7 +31474,10 @@ function renderDeptPanel() {
       </select>
       <span class="dept-panel-dates">${escapeHtml(fmtDate(W.startISO))} – ${escapeHtml(fmtDate(W.endISO))}</span>
       <span class="dept-panel-spacer"></span>
-      <button type="button" class="toolbar-toggle-btn" id="dept-sched-toggle" title="${schedHidden ? 'Bring the schedule back above' : 'Hide the schedule and give the week the whole page'}">${schedHidden ? '▸ Show the schedule' : '▾ Hide the schedule'}</button>
+      <div class="dept-scope dept-show" title="What this page shows. Both on: the schedule above, the overview below. Switch one off and the other takes the page.">
+        <button type="button" class="dept-scope-btn${schedHidden ? '' : ' is-active'}" data-dept-show="schedule">Schedule</button>
+        <button type="button" class="dept-scope-btn${collapsed ? '' : ' is-active'}" data-dept-show="overview">Overview</button>
+      </div>
       <button type="button" class="toolbar-toggle-btn" id="dept-roster-btn" title="The SDC Team board: phones, emails, leads, the ALTEN tick.">Team roster →</button>
     </div>`;
 
@@ -31048,16 +31535,21 @@ function renderDeptPanel() {
       <div class="dept-card2-body">${pastHtml}${cal}</div>
     </section>`;
 
-  panel.innerHTML = bar + `<div class="dept-panel-body">${loadCard}${dueCard}</div>`;
+  panel.innerHTML = bar + (collapsed ? '' : `<div class="dept-panel-body">${loadCard}${dueCard}</div>`);
 
   // ── Wiring. ──
   panel.querySelectorAll('[data-dept-scope]').forEach(b => b.addEventListener('click', () => { if (b.dataset.deptScope !== key) routePersonalDept(b.dataset.deptScope); }));
   panel.querySelector('#dept-panel-weeks')?.addEventListener('change', (e) => { try { localStorage.setItem('sdcDeptWindowWeeks', e.target.value); } catch (_) {} renderDeptPanel(); });
-  panel.querySelector('#dept-sched-toggle')?.addEventListener('click', () => {
-    try { localStorage.setItem('sdcDeptSchedHidden', schedHidden ? '0' : '1'); } catch (_) {}
+  panel.querySelectorAll('[data-dept-show]').forEach(b => b.addEventListener('click', () => {
+    // One of the two always stays on: switching the last one off does nothing.
+    const which = b.dataset.deptShow;
+    let sh = schedHidden, co = collapsed;
+    if (which === 'schedule') { if (!sh && co) return; sh = !sh; if (sh) co = false; }
+    else { if (!co && sh) return; co = !co; if (co) sh = false; }
+    try { localStorage.setItem('sdcDeptSchedHidden', sh ? '1' : '0'); localStorage.setItem('sdcDeptPanelCollapsed', co ? '1' : '0'); } catch (_) {}
     renderDeptPanel();
-    if (schedHidden) { try { renderGantt(); } catch (_) {} }   // the chart comes back at the right width
-  });
+    try { renderGantt(); } catch (_) {}   // the chart takes the new height / comes back at the right width
+  }));
   panel.querySelector('#dept-roster-btn')?.addEventListener('click', () => setView('team'));
   panel.querySelectorAll('[data-person]').forEach(b => b.addEventListener('click', () => routePersonalMode(Number(b.dataset.person))));
   panel.querySelectorAll('[data-task]').forEach(b => b.addEventListener('click', () => { const t = (state.tasks || []).find(x => String(x.id) === b.dataset.task); if (t) { setMyWork(false); jumpToTask(t); } }));
@@ -37743,6 +38235,13 @@ async function init() {
       try { zoomToFit(); } catch (_) {}
     });
   }
+  // The footer strip (PM, the week's goal, the panel clock) is empty on a
+  // person's or a department's page — an empty bar across the screen (Dan,
+  // 10/17). It goes when nothing is in it, and comes back when something is.
+  try {
+    const _ft = document.getElementById('schedule-footer');
+    if (_ft) new MutationObserver(() => { try { tidyScheduleFooter(); } catch (_) {} }).observe(_ft, { childList: true, subtree: true, characterData: true });
+  } catch (_) {}
   const docsBtn = document.getElementById('btn-docs');
   const docsMenu = document.getElementById('docs-menu');
   if (docsBtn && docsMenu) {
@@ -37755,6 +38254,7 @@ async function init() {
       b.addEventListener('click', () => {
         const p = state.filters.project;
         docsMenu.classList.add('hidden');
+        if (b.dataset.doc === 'notes') { openNotesCard(); return; }   // a job's notes, or the ones that name you
         if (!p) { showToast('Pick a project tab first — documents are per-project.', { kind: 'error' }); return; }
         if (b.dataset.doc === 'release') { if (isSalesView()) openQuoteCompareModal(p); else openProjectReleaseModal(p); }
         else if (b.dataset.doc === 'comm') openCommPlanModal(p);
@@ -37834,6 +38334,16 @@ async function init() {
   // Popped-out resource calendar (?resview=1, from the ↗ Pop out button):
   // boot straight into Departments and auto-expand the calendar to fill the
   // tab — nothing else on the page.
+  // Notes in their own window (?notesview=1, from the card's ↗ Pop out):
+  // the card fills the window; the job or the person is set once the data
+  // is here (_applyNotesPopout, from render()).
+  try {
+    const _nq = new URLSearchParams(location.search);
+    if (_nq.get('notesview') === '1') {
+      document.body.classList.add('notes-popout');
+      window._notesPopout = { project: _nq.get('project') || '', me: _nq.get('me') === '1' };
+    }
+  } catch (_) {}
   try {
     if (new URLSearchParams(location.search).get('resview') === '1') {
       sessionStorage.setItem('sdcTeamAuth', '1');

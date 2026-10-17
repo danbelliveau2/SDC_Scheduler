@@ -6197,9 +6197,98 @@ tr[data-id].drop-after  > td:first-child { box-shadow: inset 0 -2px 0 var(--sdc-
 /* ── Bottom drawer stack — fixed overlay, doesn't push schedule content ──── */
 #schedule-drawer-stack { flex: 0 0 auto; display: flex; flex-direction: column; position: relative; z-index: 9; }
 
-/* ── Project Notes panel (below the schedule) ──────────────────────────────── */
-.schedule-notes { flex: 0 0 auto; display: flex; flex-direction: column; background: #fff; }
-.schedule-notes.is-collapsed { height: auto; }
+/* ── Project Notes: a card over the page (Dan, 10/17). Opened from Documents ›
+   Notes, dragged by its title bar, sized by the corner grip, popped out to its
+   own window. Closed = not on the page at all. ──────────────────────────────── */
+.schedule-notes {
+  position: fixed; left: 24px; top: 24px; width: 1100px; height: 620px; z-index: 950;
+  display: flex; flex-direction: column; background: #fff; box-sizing: border-box;
+  border: 2px solid var(--sdc-primary, #1574c4); border-radius: 12px; overflow: hidden;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.35);
+  resize: both; min-width: 480px; min-height: 240px; max-width: 100vw; max-height: 100vh;
+}
+.schedule-notes.is-collapsed { display: none; }
+.schedule-notes.is-dragging { user-select: none; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.45); }
+.schedule-notes > .drawer-resize-handle { display: none; }
+.schedule-notes .notes-bar { cursor: move; border-top: 0; }
+.schedule-notes .notes-bar-job { color: var(--sdc-accent, #ffde51); font-weight: var(--fw-extrabold, 800); }
+.notes-bar-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.notes-bar-btn { font: inherit; font-size: var(--fs-sm); font-weight: var(--fw-bold, 700); color: #fff; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.35); border-radius: 6px; padding: 2px 9px; cursor: pointer; line-height: 1.4; }
+.notes-bar-btn:hover { background: rgba(255,255,255,0.24); }
+.notes-bar-close { font-size: var(--fs-md); padding: 1px 8px; }
+.schedule-notes .notes-body { flex: 1 1 auto; min-height: 0; max-height: none !important; overflow: auto; }
+.schedule-notes .pn-wrap { flex: 1 1 auto; min-height: 0; max-height: none; }
+/* Inside the card the lists are the house grid (Dan, 10/17): a pale-blue
+   header row in SDC blue caps, bordered rows, the description column taking
+   the room, the narrow columns narrow. */
+.schedule-notes .notes-list-head, .schedule-notes .notes-key-head {
+  background: #eaf3fc; color: var(--sdc-primary, #1574c4); font-size: var(--fs-2xs); font-weight: var(--fw-bold, 700);
+  letter-spacing: .06em; text-transform: uppercase; padding: 6px 6px; border-bottom: 1px solid #cfe0f1; border-radius: 6px 6px 0 0;
+}
+.schedule-notes .notes-list { gap: 0; border: 1px solid #dce5ef; border-radius: 6px; overflow: hidden; }
+.schedule-notes .notes-item:not(.notes-item-editing) { padding: 5px 6px; border-radius: 0; border-bottom: 1px solid #eef2f6; }
+.schedule-notes .notes-item:last-child { border-bottom: 0; }
+.schedule-notes .notes-key-row { padding: 5px 6px; border-bottom: 1px solid #eef2f6; }
+.schedule-notes .notes-col-head { background: var(--sdc-dark, #061d39); color: #fff; border-bottom: 0; }
+.schedule-notes .notes-col-head .notes-new-session { background: var(--sdc-accent, #ffde51); color: #061d39; border: 0; border-radius: 6px; padding: 3px 10px; font-weight: var(--fw-extrabold, 800); cursor: pointer; }
+.schedule-notes .notes-col-head .notes-collapse-all { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.4); border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.schedule-notes .notes-session-head { background: #eaf3fc; }
+.schedule-notes .notes-session-title { color: var(--sdc-dark, #061d39); font-weight: var(--fw-extrabold, 800); }
+/* The notes grid in the card: the house grid (.rg), the note column taking
+   the room, inputs flat in the cells, done lines greyed and struck. */
+.notes-tools { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #f6f9fc; border-bottom: 1px solid #dce5ef; flex: 0 0 auto; }
+.notes-tools-spacer { flex: 1; }
+.notes-scope .dept-scope-btn { font-size: var(--fs-sm); padding: 4px 10px; }
+.notes-tools-hint { font-size: var(--fs-xs); color: var(--text-muted, #94a3b8); }
+/* The top line of the grid is where a note is typed. */
+.notes-rg tr.ng-new td { background: #fffbe6; border-bottom: 2px solid var(--sdc-accent, #ffde51); }
+.notes-rg tr.ng-new .ng-in { background: #fff; border-color: #f1e3a0; }
+.notes-rg tr.ng-new .ng-note-new::placeholder { color: #a16207; font-weight: var(--fw-semibold, 600); }
+.ng-plus { display: inline-block; width: 18px; height: 18px; line-height: 17px; border-radius: 50%; background: var(--sdc-accent, #ffde51); color: #061d39; font-weight: var(--fw-extrabold, 800); text-align: center; font-size: 13px; }
+.notes-rg-wrap { cursor: text; }
+.notes-rg tr.ng-row, .notes-rg thead { cursor: default; }
+.notes-loading { padding: 18px; color: var(--text-muted, #64748b); }
+.notes-rg-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; border: 0; border-radius: 0; }
+.notes-rg { min-width: 0; }
+.notes-rg.is-pinned { width: auto; }
+.notes-rg thead th { position: sticky; top: 0; z-index: 2; padding: 8px 10px; }
+.notes-rg thead th .rg-plain { color: rgba(255,255,255,0.85); }
+.notes-rg thead th .col-resize-handle { position: absolute; right: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; }
+.notes-rg thead th { position: sticky; }
+.notes-rg tbody td { padding: 4px 8px; white-space: nowrap; overflow: hidden; }
+.notes-rg td.ng-done, .notes-rg th.ng-done, .notes-rg td.ng-del { text-align: center; }
+.ng-chk { width: 16px; height: 16px; accent-color: var(--sdc-primary, #1574c4); cursor: pointer; vertical-align: middle; }
+.notes-rg .ng-in { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--fs-md); color: var(--sdc-dark, #061d39); background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 4px 6px; }
+.notes-rg .ng-in:hover { border-color: #dce5ef; background: #fff; }
+.notes-rg .ng-in:focus { outline: none; border-color: var(--sdc-primary, #1574c4); background: #fff; box-shadow: 0 0 0 2px rgba(21,116,196,.18); }
+.notes-rg select.ng-in { appearance: none; -webkit-appearance: none; font-weight: var(--fw-extrabold, 800); color: var(--sdc-primary, #1574c4); background-image: linear-gradient(45deg, transparent 50%, #94a3b8 50%), linear-gradient(135deg, #94a3b8 50%, transparent 50%); background-position: calc(100% - 12px) 55%, calc(100% - 8px) 55%; background-size: 4px 4px; background-repeat: no-repeat; padding-right: 20px; }
+.notes-rg td.is-late .ng-in { color: #b00020; font-weight: var(--fw-bold); }
+.notes-rg tr.is-done td { color: var(--text-muted, #94a3b8); background: #fafbfd; }
+.notes-rg tr.is-done .ng-note { text-decoration: line-through; color: var(--text-muted, #94a3b8); }
+.notes-rg td.ng-who { white-space: normal; }
+.notes-rg td.ng-by, .notes-rg td.ng-added { color: var(--text-muted, #64748b); font-size: var(--fs-sm); }
+.ng-x { border: 0; background: transparent; color: #94a3b8; font-size: var(--fs-lg); line-height: 1; cursor: pointer; padding: 0 4px; border-radius: 4px; }
+.ng-x:hover { color: #b00020; background: #fee2e2; }
+.ng-empty-row td { color: var(--text-muted, #64748b); padding: 18px 12px !important; white-space: normal !important; }
+.who-notes-grid td.wn-done { text-align: center; }
+/* MENTIONS on My work: the notes that name you, as the house grid. */
+tr.who-notes-wrap > td { padding: 6px 10px 10px !important; background: #f6f9fc; }
+.who-notes-grid { width: 100%; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; border: 1px solid #dce5ef; border-radius: 8px; overflow: hidden; background: #fff; }
+.who-notes-grid th { text-align: left; padding: 7px 10px; background: #eaf3fc; color: var(--sdc-primary, #1574c4); font-size: var(--fs-2xs); font-weight: var(--fw-bold); letter-spacing: .06em; text-transform: uppercase; border-bottom: 1px solid #cfe0f1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who-notes-grid td { padding: 6px 10px; border-bottom: 1px solid #eef2f6; font-size: var(--grid-data-fs, var(--fs-md)); color: var(--sdc-dark, #061d39); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.who-notes-grid tbody tr:last-child td { border-bottom: 0; }
+.who-notes-grid tr.who-note-row { cursor: pointer; }
+.who-notes-grid tr.who-note-row:hover td { background: #eef5fb; }
+.who-notes-grid tr.is-late td.wn-due { color: #b00020; font-weight: var(--fw-bold); }
+.who-notes-grid td.wn-job { color: var(--sdc-primary, #1574c4); font-weight: var(--fw-extrabold, 800); }
+.who-notes-grid td.wn-from { color: var(--text-muted, #64748b); }
+.who-notes-grid td.wn-who { white-space: normal; }
+.who-notes-grid td.wn-empty { color: var(--text-muted, #64748b); white-space: normal; }
+/* Its own window: the card is the window. */
+body.notes-popout { overflow: hidden; }
+body.notes-popout .schedule-notes { left: 0 !important; top: 0 !important; width: 100vw !important; height: 100vh !important; border: 0; border-radius: 0; box-shadow: none; resize: none; z-index: 9000; }
+/* The strip under the schedule, when nothing is in it. */
+.schedule-footer.is-empty { display: none; }
 /* When notes is open the whole schedule view scrolls; the schedule split is
    pinned (in JS, .notes-open) to its CONTENT height (capped at the viewport)
    so the notes panel flows right below the schedule with no empty gap. The
@@ -17904,13 +17993,35 @@ body.share-link-view .app-scale-ctl.share-floating { position: static; }
 
 
 /* ── Roll up repeats (My work) ─────────────────────────────────────────── */
+/* A rolled-up line (a job on a department's page, a repeated task on a
+   person's): a caret says it opens; open, it and its tasks share a tint and
+   the tasks hang off it with a tree mark, so they read as ITS tasks, not new
+   lines (Dan, 10/17). */
 tr.rollup-row { cursor: pointer; }
 tr.rollup-row td[data-col="name"] .name-cell-main { font-weight: var(--fw-extrabold); }
-tr.rollup-row.is-open td { background: #f1f5f9; }
-tr.rollup-member td[data-col="name"] { padding-left: 22px; }
-tr.rollup-member td { color: var(--text-muted); }
+tr.rollup-row td[data-col="name"] .name-cell-main::before { content: '▸'; display: inline-block; width: 14px; color: var(--sdc-primary, #1574c4); font-weight: var(--fw-extrabold, 800); }
+tr.rollup-row.is-open td[data-col="name"] .name-cell-main::before { content: '▾'; }
+tr.rollup-row:hover td { background: #eef5fb; }
+tr.rollup-row.is-open td { background: #e3eef9; }
+tr.rollup-row.is-open td[data-col="name"] .name-cell-main { color: var(--sdc-dark, #061d39); }
+/* The job line and its open tasks are one block: a blue bar down the left of
+   all of them, the tasks stepped in under the job with a tree mark. The step
+   is on the name itself, past the allocation pill, so it shows. */
+tr.rollup-row.is-open td:first-child { box-shadow: inset 4px 0 0 var(--sdc-primary, #1574c4); }
+tr.rollup-member td { background: #f4f8fc; color: var(--text-muted); }
+tr.rollup-member td:first-child { box-shadow: inset 4px 0 0 var(--sdc-primary, #1574c4); }
+tr.rollup-member td[data-col="name"] .name-cell-main { margin-left: 26px; color: var(--text, #1f2937); font-weight: var(--fw-regular, 400); }
+tr.rollup-member td[data-col="name"] .name-cell-main::before { content: '└ '; color: var(--sdc-primary, #1574c4); font-weight: var(--fw-extrabold, 800); }
+/* On the chart the job's own tasks are dotted outlines, faint fill — inside
+   the job's bar above them, not new lines (Dan, 10/17). */
+.gantt .bar-wrapper.is-rollup-member .bar { stroke-dasharray: 3 3 !important; stroke-width: 1.2 !important; fill-opacity: 0.25 !important; }
+.gantt .bar-wrapper.is-rollup-member .bar-progress { fill-opacity: 0.35; }
+.gantt .bar-wrapper.is-rollup-member .bar-label { font-weight: 500; opacity: 0.85; }
+.gantt .bar-wrapper.is-rollup-member .milestone-diamond { fill-opacity: 0.25 !important; stroke-dasharray: 2 2 !important; stroke-width: 1.2 !important; stroke-opacity: 0.8; }
+.gantt .bar-wrapper.is-rollup-member .milestone-check { opacity: 0.5; }
 .gantt .bar-wrapper.is-rollup .bar { fill-opacity: 0.04; stroke-dasharray: 3 3; stroke-opacity: 0.5; }
 .gantt .bar-wrapper.is-rollup .bar-progress { display: none; }
+.gantt .bar-wrapper.is-rollup .rollup-seg { fill-opacity: 0.65; }
 
 
 /* ── Toolbar redesign (Oct 2026): one line of labelled groups ─────────────
@@ -18310,16 +18421,16 @@ button.dashboard-row-person:hover { background: #eef5fb; }
    Hover-only (follows the mouse, gone on mouseleave), so it cannot stick. */
 .mywork-bar-tip {
   position: fixed; z-index: 10050; display: none; pointer-events: none;
-  min-width: 160px; max-width: 320px; padding: 8px 10px;
+  padding: 3px 8px; white-space: nowrap;
   background: var(--sdc-dark, #061d39); color: #fff;
-  border: 1px solid var(--sdc-primary, #1574c4); border-radius: 6px;
-  box-shadow: 0 6px 18px rgba(6, 29, 57, 0.35);
-  font-size: 12px; line-height: 1.35;
+  border: 1px solid var(--sdc-primary, #1574c4); border-radius: 5px;
+  box-shadow: 0 3px 10px rgba(6, 29, 57, 0.3);
+  font-size: 11px; line-height: 1.3;
 }
 .mywork-bar-tip-job { color: #fff; font-weight: 700; }
-.mywork-bar-tip-dates { margin-top: 3px; color: #fff; font-variant-numeric: tabular-nums; }
+.mywork-bar-tip-dates { margin-left: 8px; color: #fff; font-variant-numeric: tabular-nums; }
 .mywork-bar-tip-dates span { color: var(--sdc-accent, #ffde51); font-weight: 700; }
-.mywork-bar-tip-hint { margin-top: 4px; font-size: 10px; color: rgba(255,255,255,0.6); }
+.mywork-bar-tip-hint { display: none; }
 
 /* ── The Departments page: the department's schedule on top, the week
       underneath. Hide the schedule and the week takes the page. ── */
@@ -18327,6 +18438,12 @@ button.dashboard-row-person:hover { background: #eef5fb; }
 .dept-panel[hidden] { display: none; }
 body.dept-sched-hidden #view-schedule .schedule-split { display: none; }
 body.dept-sched-hidden .dept-panel { flex: 1 1 auto; max-height: none; }
+/* Folded: just the bar (department tabs and the two buttons); the schedule
+   above takes the rest of the page. */
+.dept-panel.is-collapsed { max-height: none; }
+.dept-panel.is-collapsed .dept-panel-bar { border-bottom: 0; }
+.dept-panel.is-collapsed .dept-window-select, .dept-panel.is-collapsed .dept-panel-dates { display: none; }
+.dept-show .dept-scope-btn { font-size: var(--fs-sm); padding: 4px 10px; }
 .dept-panel-bar { display: flex; align-items: center; gap: 12px; padding: 7px 16px; background: #fff; border-bottom: 1px solid #dce5ef; flex-wrap: wrap; }
 .dept-panel-spacer { flex: 1; }
 .dept-panel-dates { font-size: var(--fs-sm); color: var(--text-muted, #64748b); white-space: nowrap; }

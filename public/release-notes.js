@@ -4,6 +4,32 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.29',
+    date: '2026-10-17',
+    notes: [
+      'Notes are a card you move around, opened from Documents; the Departments page shows what you pick; no empty bar under the schedule.',
+      '',
+      'NOTES:',
+      '   ▸ Notes come off the bottom of the page. Documents › Notes opens them as a card over the schedule: drag it by its title bar, size it by the corner, park it to one side and keep working the schedule behind it. It comes back where you left it, and it is closed until you ask for it.',
+      '   ▸ The card is one grid of notes, the house grid: a tick, Due, Job, Note, Mentions, From, Added. Every cell edits in place. Drag a heading to move a column, drag its edge to size it — remembered per browser. No button to find: the top line of the grid is where you type — a date and a job if it has one, people if it mentions them — and Enter adds it. Click anywhere in the empty grid and you are in that line. A note needs no job. Three pills say what you are looking at: This job, Mine (notes that name you, and the ones you wrote), All.',
+      '   ▸ A note is the simple thing: write it, put someone\'s name on it, give it a date if it has one. It is not a task and not an action. Tick it when it is done.',
+      '   ▸ ↗ Pop out puts the notes in a window of their own — drag that to your other screen. On a job it is that job\'s meetings and key information; on My work or a department\'s page it is the notes that name you.',
+      '',
+      'MY WORK:',
+      '   ▸ MENTIONS at the foot of your page: every open note that names you, or that you wrote, due first — a tick, Due, Job, Note, From, Mentions. Tick one and it leaves your list; click one and the notes card opens on Mine. Someone puts your name on a note and it lands here.',
+      '   ▸ Fixed: a page with nothing on it kept showing other people\'s over-allocation cards from the page before.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ Fixed: opening a job\'s line scattered its tasks under other jobs (the person\'s lines were re-sorted by date after the roll-up). An opened job\'s tasks now sit directly under that job, and only that job opens.',
+      '   ▸ One line per job. The roll-up on a department\'s page now groups each person\'s work by job: the line is the job, every task they have on it is painted on the bar with its name, and two tasks on the same job that overlap show red. A caret on every job line says it opens; open it and its tasks step in under it with a tree mark and a blue bar down the left of the block, and on the chart they are dotted outlines under the job\'s bar, milestones included. Red on a job line means over-allocated on those days: 80% and 20% is a full day, not a clash. (A person\'s own page still rolls up repeats of one task.)',
+      '   ▸ Over-allocation red now says how far over: a light pink a little over 100%, a clear red at 150%, a dark red at double and beyond — on the band under a person\'s block, on the line\'s own bar, and in the cards. On the band the percent stands right under the bars and the dates sit in the band itself, across exactly those days.',
+      '   ▸ On a closed job line, hover any task painted on the bar — even a short one that is cut off — and the tip names it with its dates.',
+      '   ▸ The big hover card over a bar is gone. Hovering a bar gives one short line: job, task, dates. A job line has none; hover a task on its bar for the name.',
+      '   ▸ Two pills on the bar, Schedule and Overview. Both on, you see both. Switch one off and the other takes the whole page. One always stays on, and the page remembers which.',
+      '   ▸ The empty strip that sat under the schedule on a person\'s or a department\'s page is gone. It comes back on a job, where the PM, the week\'s goal and the panel clock live in it.',
+    ],
+  },
+  {
     version: '13.28',
     date: '2026-10-14',
     notes: [
