@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.30',
+    date: '2026-10-26',
+    notes: [
+      'Edit a task from the Departments page, click a name to fold their job lines, and a missing duration shows red.',
+      '',
+      'SCHEDULE:',
+      '   ▸ A predecessor on another schedule edits in the Pred cell like any other. The cell opens with it written as the cell shows it \u2014 1163 7SS +2w, the job and its line \u2014 so you can change the relationship, add a lag or lead, or take it out, and Enter saves it. It used to open blank.',
+      '   ▸ A task with no duration shows its duration pill in red (the —W one) until someone types a duration into it. A milestone is zero on purpose and stays as it was.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ Edit from here. On a job line with one task, the duration, start, finish, allocation, % and assignee cells edit that task — type 3w in the duration and Enter, and the job’s schedule has it. A line with several tasks opens so you edit the one you mean. A job line’s duration now adds up every task, including ones with no stored duration.',
+      '   ▸ Open as many of a person’s job lines as you like to get a feel for their work, then click their name: every open job line of theirs closes, and nobody else’s moves. With none of their lines open, clicking the name folds the person as before; the caret always does.',
+    ],
+  },
+  {
     version: '13.29',
     date: '2026-10-17',
     notes: [

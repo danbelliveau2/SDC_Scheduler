@@ -973,14 +973,37 @@ async function resyncSectionPreds(predId) {
 // numbers; a link to a section as the relationship and lag that were typed
 // (the stored lag is the derived one). Other-schedule links stay out.
 function predEditValue(task) {
-  return _predSplitCross(task).local.map(tok => {
+  const { local, cross } = _predSplitCross(task);
+  const loc = local.map(tok => {
     const p = parsePredecessor(tok);
     const info = p && predSectionOf(task.id, p.id);
     if (!info) return predDisplay(tok);
     const ln = lineByTaskId[Number(p.id)];
     const lag = Number(info.lag) || 0;
     return (ln != null ? ln : p.id) + (info.type || p.type || 'FS') + (lag ? ' ' + (lag > 0 ? '+' : '') + lag + 'd' : '');
-  }).join(', ');
+  });
+  // A link to another schedule edits as "JOB LINE" plus the relationship
+  // and lag, exactly as the cell shows it without the link mark.
+  const x = cross.map(tok => String(predDisplay(tok) || '').replace(/^🔗\s*/, '')).filter(Boolean);
+  return loc.concat(x).join(', ');
+}
+// Typed predecessors come in two shapes: a line number on this schedule
+// ("23FS +1w"), or a job and a line on that job ("1163 7SS +2w") for a
+// link to another schedule. Split them; the cross ones become stored
+// tokens here (task id + relationship + lag), the local ones go through
+// predParse as before. A cross token nobody can resolve is reported.
+function _splitTypedPreds(raw) {
+  const local = [], cross = [], bad = [];
+  String(raw || '').split(',').map(x => x.trim()).filter(Boolean).forEach(tok => {
+    const jl = tok.match(/^(\d{3,})[\s·\-]+(\d+)(.*)$/);
+    if (!jl) { local.push(tok); return; }
+    const id = taskIdByJobLine(jl[1], Number(jl[2]));
+    if (!id) { bad.push(tok); return; }
+    const stored = (String(id) + (jl[3] || '').trim().toUpperCase()).replace(/^(\d+)(FS|SS|FF|SF)?\s*([+-])\s*/, '$1$2 $3');
+    if (!parsePredecessor(stored)) { bad.push(tok); return; }
+    cross.push(stored);
+  });
+  return { local: local.join(', '), cross, bad };
 }
 // True when any predecessor of this task lives on another schedule.
 function hasCrossPred(task) {
@@ -2073,7 +2096,7 @@ function rollupRepeats(list) {
     arr.sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)) || a.id - b.id);
     const first = arr[0];
     const open = _rollupOpen.has(k);
-    const days = arr.reduce((n, t) => n + (Number(t.duration_days) || 0), 0);
+    const days = arr.reduce((n, t) => n + (Number(t.duration_days) || (t.start_date && t.end_date ? businessDaysBetween(t.start_date, t.end_date) : 0) || 0), 0);
     const pct = Math.round(arr.reduce((n, t) => n + (Number(t.progress) || 0), 0) / arr.length);
     const group = Object.assign({}, first, {
       id: 'grp:' + k, _rollup: true, _key: k, _members: arr, _open: open, _byJob: byJob,
@@ -2100,6 +2123,18 @@ function rollupRepeats(list) {
     if (g._open) out.push(Object.assign({}, t, { _member: k }));
   }
   return out;
+}
+// An edit on a rolled-up line (Dan, 10/20: "you should be able to change
+// duration from the department view"): with ONE task under it, the edit is
+// that task's. With several, the line opens so the right task can be edited.
+const ROLLUP_VALUE_COLS = ['duration', 'start', 'finish', 'allocation', 'progress', 'assignee', 'completed'];
+function _rollupEditTarget(tr, col) {
+  if (!tr || !tr.dataset.rollup) return null;
+  const g = _rollupGroups[tr.dataset.rollup];
+  if (!g || !g._members) return null;
+  if (g._members.length === 1) return g._members[0].id;
+  showToast('This line is ' + g._members.length + ' tasks — edit the one you mean below.', { kind: 'info' });
+  return null;
 }
 function toggleRollup(key) {
   if (_rollupOpen.has(key)) _rollupOpen.delete(key); else _rollupOpen.add(key);
@@ -2496,7 +2531,10 @@ function cellHtml(t, key) {
           const earlyText = earlyLine != null ? `🔗${earlyLine}` : '🔗?';
           linkBadge = `<span class="name-cell-dur-link" data-link-target-id="${t.duration_link_task_id}">${earlyText}</span> `;
         }
-        durEl = `<span class="name-cell-dur" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="Duration — click to edit (e.g. 5d, 2w, or = then click another row to link)">${linkBadge}${wksText}</span>`;
+        // No duration on a real task is a hole in the schedule, not a value:
+        // the pill paints red so it gets filled in (Dan, 10/20).
+        const durMissing = !(wks > 0) && !t._rollup;
+        durEl = `<span class="name-cell-dur${durMissing ? ' is-missing' : ''}" data-edit-pill data-edit-col="duration" data-task-id="${t.id}" title="${durMissing ? 'No duration yet — click and type one, e.g. 2w' : 'Duration — click to edit (e.g. 5d, 2w, or = then click another row to link)'}">${linkBadge}${wksText}</span>`;
       } else if (t.is_milestone && !isAnchor) {
         // Milestones show NOTHING in the duration slot (the old visible
         // "—W" ghost read as a bug) — but the slot is still there,
@@ -3578,8 +3616,21 @@ function renderTable() {
   });
 
   tbody.querySelectorAll('tr.group-header').forEach(tr => {
-    tr.addEventListener('click', () => {
+    tr.addEventListener('click', (e) => {
       const path = tr.dataset.path;
+      // A person's NAME on a department page, with job lines of theirs
+      // open: the click closes those lines — theirs only — and nothing
+      // else (Dan, 10/19: expand a bunch, get a feel, click the name and
+      // they fold). With none open it folds the person as before.
+      if (tr.classList.contains('who-row') && e.target.closest('.who-pill')) {
+        const who = tr.dataset.who;
+        const open = Object.values(_rollupGroups).filter(g => g._open && g.assignee === who);
+        if (open.length) {
+          open.forEach(g => _rollupOpen.delete(g._key));
+          renderTable(); renderGantt();
+          return;
+        }
+      }
       if (collapsedGroups.has(path)) collapsedGroups.delete(path);
       else collapsedGroups.add(path);
       // Re-render BOTH grid and Gantt — the Gantt filters by collapsed groups too,
@@ -3928,8 +3979,9 @@ function handleCellClick(e) {
   const pill = e.target.closest('[data-edit-pill]');
   if (pill) {
     e.stopPropagation();
-    const taskId = Number(pill.dataset.taskId);
+    let taskId = Number(pill.dataset.taskId);
     const col = pill.dataset.editCol;
+    if (!Number.isFinite(taskId)) { const rt = _rollupEditTarget(pill.closest('tr[data-id]'), col); if (rt == null) return; taskId = rt; }
     // A split line's share is edited stretch by stretch.
     if (col === 'allocation' || col === 'progress') { const _t = state.tasks.find(t => t.id === taskId); if (_t && allocSplits(_t)) { showAllocSplitDialog(_t); return; } }
     enterPillEdit(pill, taskId, col);
@@ -3956,9 +4008,13 @@ function handleCellClick(e) {
   if (!td) return;
   const tr = td.closest('tr[data-id]');
   if (!tr) return;
-  const id = Number(tr.dataset.id);
+  let id = Number(tr.dataset.id);
   const col = td.dataset.col;
   if (col === 'line') return; // auto-computed, not editable
+  if (!Number.isFinite(id)) {
+    if (!ROLLUP_VALUE_COLS.includes(col)) return;   // the job's name is the line's; it opens and closes
+    const rt = _rollupEditTarget(tr, col); if (rt == null) return; id = rt;
+  }
   // Sales-workspace tasks have allocation + assignee suppressed (v4.22).
   // Clicking those blank cells should be a no-op — the tooltip on the cell
   // explains why it's empty.
@@ -4582,7 +4638,11 @@ async function saveCellEdit(id, col, value, task) {
       break;
     }
     case 'pred': {
-      const rawPred = (value || '').trim();
+      // Links to other schedules are typed here too, as "JOB LINE…" (Dan,
+      // 10/26: "I should be able to edit it right here once it's linked").
+      const _typed = _splitTypedPreds((value || '').trim());
+      if (_typed.bad.length) { showToast('Could not read: ' + _typed.bad.join(', ') + ' — a link to another schedule is its job and line, e.g. 1163 7SS +1w.', { kind: 'error' }); return; }
+      const rawPred = _typed.local;
       // A mitigation row numbers its lines locally, so "2" there means that
       // schedule's second line, not the project's.
       const parsedPred = predParse(rawPred, riskLineMapFor(task));
@@ -4615,8 +4675,8 @@ async function saveCellEdit(id, col, value, task) {
       // Sections of lines no longer followed are forgotten.
       const _old = predSectionMap()[String(task.id)] || {};
       for (const pid of Object.keys(_old)) if (!_seen.has(pid)) await setPredSection(task.id, pid, null);
-      // Links to other schedules are not typed here; they stay as they were.
-      const _cross = _predSplitCross(task).cross;
+      // The cross-schedule links as typed (edited, given a lag, or removed).
+      const _cross = _typed.cross;
       data.predecessors = [..._toks, ..._cross].filter(Boolean).join(', ') || null;
       break;
     }
@@ -37878,6 +37938,10 @@ async function init() {
   tbodyEl.addEventListener('click', (e) => {
     const tr = e.target.closest('tr.rollup-row');
     if (!tr || e.target.closest('input, select, textarea, button, a')) return;
+    const g = _rollupGroups[tr.dataset.rollup];
+    const td = e.target.closest('td[data-col]');
+    const onValue = !!e.target.closest('[data-edit-pill]') || (td && ROLLUP_VALUE_COLS.includes(td.dataset.col));
+    if (g && g._members && g._members.length === 1 && onValue) return;   // one task: that click is an edit
     e.preventDefault();
     toggleRollup(tr.dataset.rollup);
   });

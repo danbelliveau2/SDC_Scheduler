@@ -4918,6 +4918,9 @@ body.hide-alloc-pre .name-cell-main {
 .name-cell-dur:hover {
   background: rgba(15, 23, 42, 0.08);
 }
+/* A task with no duration: the pill reads red until someone types one. */
+.name-cell-dur.is-missing { color: #b00020; background: #fee2e2; }
+.name-cell-dur.is-missing:hover { background: #fecaca; }
 /* v4.45: link indicator — tiny inline 🔗N text BEFORE the duration value.
    Transparent background, baseline-aligned so the bottom of "🔗23" sits
    exactly on the bottom of "8W". No padding so it doesn't add box
