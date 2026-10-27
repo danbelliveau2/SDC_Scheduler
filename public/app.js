@@ -2898,9 +2898,13 @@ function headerRowHtml(level, label, path, collapsed, dataAttrs = {}, hours = nu
           + `${over ? 'Over scheduled' : 'Under scheduled'} ${Math.abs(diff)}h</span>`;
       }
     }
+    // Rows under this header whose budget belongs to another discipline are
+    // not in these numbers; the flag says which, so they can be moved.
+    const skipped = (hours.skipped || []);
+    const skipHtml = skipped.length ? `<span class="dept-hours-skip" title="Not counted here — filed under this department but budgeted elsewhere (right-click the row to move it): ${escapeHtml(skipped.join('; '))}">⚑ ${skipped.length}</span>` : '';
     hoursHtml =
       `<span class="dept-hours" aria-hidden="true">` +
-        `<span class="dept-hours-sched" title="Scheduled hours (durations × allocation)">${hours.sched}h</span>` +
+        `<span class="dept-hours-sched" title="Scheduled hours (durations × allocation)${skipped.length ? ' — ' + skipped.length + ' row' + (skipped.length === 1 ? '' : 's') + ' not counted, hover the flag' : ''}">${skipHtml}${hours.sched}h</span>` +
         `<span class="dept-hours-quoted" title="Quoted hours (from the estimate)">${q}</span>` +
       `</span>` + varHtml;
   }
@@ -3182,22 +3186,48 @@ function renderTable() {
       }
     } catch (_) { quotedMap = null; /* scheduled hours still show */ }
   }
-  const deptHoursFor = (taskList) => {
+  // A section-10 sub-department compares its own budget columns and nothing
+  // else (Dan, 10/27: "controls engineering should be 420 + 520 + 70 + 110").
+  // A row filed under the wrong sub-department (a Robot line under Controls)
+  // is left out of that header on both sides and flagged, so another
+  // discipline's budget never rides in on it.
+  const HOME_BUCKETS = {
+    mech: ['mech_eng'],
+    controls: ['ce_design', 'ce_drawings', 'ce_software', 'ce_engineering'],
+    general: ['gen_hmi', 'gen_robot', 'gen_vision', 'gen_engineering'],
+    build: ['build'],
+    wire: ['wire_panel', 'wire_machine', 'elec_build', 'wire_other'],
+  };
+  const BUCKET_HOME_LABEL = (k) => /^ce_/.test(k) ? 'Controls Engineering' : /^gen_/.test(k) ? 'General Engineering' : k === 'mech_eng' ? 'Mechanical Engineering' : k === 'build' ? 'Mechanical Build' : /^wire_|^elec_/.test(k) ? 'Electrical Build' : '';
+  const deptHoursFor = (taskList, subKey) => {
     if (!hoursProject || !taskList || !taskList.length) return null;
-    let sched = 0; const bset = new Set();
+    let sched = 0; const bset = new Set(); const skipped = [];
+    const home = subKey && HOME_BUCKETS[subKey] ? new Set(HOME_BUCKETS[subKey]) : null;
     for (const t of taskList) {
       if (t.is_milestone || t.anchor_key || isBacklogTask(t)) continue;
+      const k = taskHoursBucket(t);
+      if (home && k && !home.has(k)) { skipped.push((t.name || 'a line') + ' → ' + (BUCKET_HOME_LABEL(k) || 'another department')); continue; }
       sched += (Number(t.duration_days) || 0) * 8 * ((Number(t.allocation) || 90) / 100);
-      const k = taskHoursBucket(t); if (k) bset.add(k);
+      if (k) bset.add(k);
     }
     let quoted = null;
-    if (quotedMap) { quoted = 0; for (const k of bset) quoted += quotedMap[k] || 0; }
+    if (quotedMap) {
+      // A combined bucket IS its parts. When a department has rows in the
+      // named buckets (CE Design, CE Software…) AND rows that only fall into
+      // the combined one (a "Controls Release" row), the combined bucket was
+      // added on top of the parts and the quoted total doubled — 2720h against
+      // a 1120h quote (Dan, 10/27). The parts cover it; the combined one is
+      // skipped whenever any part is present.
+      const COMBINED = { ce_engineering: ['ce_design', 'ce_drawings', 'ce_software'], gen_engineering: ['gen_hmi', 'gen_robot', 'gen_vision'], elec_build: ['wire_panel', 'wire_machine'], wire_other: ['wire_panel', 'wire_machine', 'elec_build'] };
+      for (const c of Object.keys(COMBINED)) if (bset.has(c) && COMBINED[c].some(p => bset.has(p))) bset.delete(c);
+      quoted = 0; for (const k of bset) quoted += quotedMap[k] || 0;
+    }
     if (sched <= 0 && !(quoted > 0)) return null;
     // Round to the nearest 5 — this is a sanity-check readout, not an invoice;
     // 259 → 260, 401 → 400. (Variance is then derived from these rounded
     // values so "Over/Under scheduled" also lands on a multiple of 5.)
     const r5 = (n) => Math.round(n / 5) * 5;
-    return { sched: r5(sched), quoted: quoted == null ? null : r5(quoted) };
+    return { sched: r5(sched), quoted: quoted == null ? null : r5(quoted), skipped };
   };
 
   let html = '';
@@ -3494,7 +3524,7 @@ function renderTable() {
           if (tasks.length === 0) continue;
           const sCollapsed = collapsedGroups.has(sPath);
           html += headerRowHtml(3, sub.label, sPath, sCollapsed,
-            { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key }, deptHoursFor(tasks));
+            { 'section-key': group.key, 'dept-key': dept.key, 'sub-key': sub.key }, deptHoursFor(tasks, sub.key));
           if (sCollapsed) continue;
           for (const t of tasks) html += renderTaskRow(t, 4);
           // Controls items sit under the section they belong to, not at the

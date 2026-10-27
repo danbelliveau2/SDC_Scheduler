@@ -4,6 +4,18 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.31',
+    date: '2026-10-27',
+    notes: [
+      'The quoted hours on a department header no longer double-count.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Fixed: a department whose rows sat in the named buckets (CE Design, CE Software) and also had a row with no bucket of its own (a Controls Release line) was adding the combined controls bucket on top of its parts, so the Δ header read 2720h quoted against a 1120h quote and called it under-scheduled by 1090h. The parts cover it now; the combined bucket only counts when nothing else from it does. Same for general engineering and electrical build.',
+      '   ▸ A section-10 sub-department compares its own budget columns only: Controls Engineering is design, drawings and software; General Engineering is HMI, robot, vision and database. A row filed under the wrong one (a Robot line sitting under Controls) is left out of that header on both sides and flagged with an orange ⚑ — hover it to see which rows, right-click them to move them.',
+      '   ▸ Remember the header compares against the machines you have selected: All machines adds every machine’s budget together; the Project Release page shows one machine per tab.',
+    ],
+  },
+  {
     version: '13.30',
     date: '2026-10-26',
     notes: [

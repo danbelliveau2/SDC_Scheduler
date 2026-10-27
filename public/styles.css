@@ -4563,6 +4563,7 @@ tr.group-header td {
   font-size: var(--fs-xs);
   pointer-events: auto;
 }
+.dept-hours-skip { color: #b45309; font-weight: var(--fw-extrabold, 800); margin-right: 6px; pointer-events: auto; cursor: help; }
 .dept-hours-sched {
   right: 60px;
   font-weight: var(--fw-regular, 400);
