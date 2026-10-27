@@ -488,6 +488,24 @@
   padding: 11px 16px; border-top: 1px solid var(--border-mid); background: var(--surface-alt);
   border-radius: 0 0 9px 9px;
 }
+/* Attachment viewer: the modal shell at near-full size, file centred on a
+   neutral backdrop, a PDF's iframe filling the whole body. */
+.svc-viewer { width: 1100px; height: 90vh; }
+.svc-viewer .svc-modal-head { gap: 12px; }
+.svc-viewer .svc-modal-head h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.svc-viewer-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.svc-viewer-body {
+  flex: 1; min-height: 0; overflow: auto;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface-alt); border-radius: 0 0 9px 9px;
+}
+.svc-viewer-body img,
+.svc-viewer-body video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.svc-viewer-body iframe { width: 100%; height: 100%; border: 0; }
+.svc-viewer-text {
+  align-self: stretch; width: 100%; margin: 0; padding: 15px 16px;
+  white-space: pre-wrap; font-family: var(--font-mono, monospace); font-size: var(--fs-sm);
+}
 .svc-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
 @media (max-width: 720px) { .svc-form-grid, .svc-log-grid { grid-template-columns: 1fr; } }
 

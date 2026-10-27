@@ -947,67 +947,122 @@ function drawAttachments(list) {
     </a>`).join('')}</div></div>`;
 }
 
-// Types a browser tab can show by itself. Anything else (xlsx, docx, zip, heic…)
-// is saved as a download under its original filename instead.
+// What the in-app viewer shows. Anything else (xlsx, docx, zip, heic…) goes
+// straight to Save As under its original filename.
 const VIEWABLE_MIME = /^(image\/(jpeg|png|gif|webp|bmp)|application\/pdf|text\/plain|video\/mp4)$/;
 
 // The login token travels only in the Authorization header that auth-ui.js's
 // fetch wrapper adds, so a plain link (a browser navigation) reaches the server
-// with no token and gets a 401. Each click fetches the file instead and hands
-// the browser a blob URL. A viewable file's tab, and the "Save As" dialog for
-// anything else, are both opened before the first await: each needs the click's
-// user activation, and a fetch can take long enough for that to lapse.
-// showSaveFilePicker is Chromium-only (Chrome, Edge, Electron); elsewhere the
-// file goes to the browser's normal download.
-// Inside the SDC Tools shell nothing opens in a tab: the shell's
-// setWindowOpenHandler hands every window.open to the system browser, which
-// would show an empty page there. Every file is saved instead.
+// with no token and gets a 401. Every attachment is fetched through that wrapper
+// instead. Nothing opens a new window: inside the SDC Tools shell,
+// setWindowOpenHandler hands every window.open to the system browser, which has
+// no Scheduler login.
+async function fetchAttachment(id) {
+  const res = await fetch(`/api/service/attachments/${id}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.blob();
+}
+
+// The Save As dialog opens before the fetch: it needs the click's user
+// activation, and a large file's fetch can outlast it. showSaveFilePicker is
+// Chromium-only (Chrome, Edge, Electron); elsewhere it is a normal download.
+// `blob` is passed when the viewer already holds the file.
+async function saveAttachment(id, name, blob) {
+  let handle = null;
+  if (typeof window.showSaveFilePicker === 'function') {
+    try { handle = await window.showSaveFilePicker({ suggestedName: name }); }
+    catch (err) {
+      if (err.name === 'AbortError') return; // cancelled the dialog
+      // Any other refusal (policy, sandbox): fall through to a plain download.
+    }
+  }
+  try {
+    blob = blob || await fetchAttachment(id);
+    if (handle) {
+      const out = await handle.createWritable();
+      await out.write(blob);
+      await out.close();
+      toast(`Saved ${name}.`, 'success');
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Long enough for the download to take hold of the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    toast(`Could not save ${name}: ${err.message}`, 'error');
+  }
+}
+
+// Photos, PDFs, text and video open over the page, sized to the window. A PDF
+// uses the browser's own PDF viewer (zoom, pages, print) inside an iframe.
+function openViewer(id, name, mime) {
+  const wrap = document.createElement('div');
+  wrap.className = 'svc-modal-scrim';
+  wrap.innerHTML = `
+    <div class="svc-modal svc-viewer" role="dialog" aria-modal="true" aria-label="${esc(name)}">
+      <div class="svc-modal-head">
+        <h3 title="${esc(name)}">${esc(name)}</h3>
+        <div class="svc-viewer-actions">
+          <button type="button" class="svc-btn svc-btn-ghost svc-btn-sm" data-save>Download</button>
+          <button type="button" class="svc-x" data-close title="Close">×</button>
+        </div>
+      </div>
+      <div class="svc-viewer-body"><span class="svc-sub">Loading…</span></div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const body = wrap.querySelector('.svc-viewer-body');
+  let blob = null, url = null;
+
+  // Capture phase, so Escape closes only the viewer and not the drawer behind
+  // it (the drawer's own Escape listener is on document).
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  const close = () => {
+    window.removeEventListener('keydown', onKey, true);
+    if (url) URL.revokeObjectURL(url);
+    wrap.remove();
+  };
+  window.addEventListener('keydown', onKey, true);
+  wrap.querySelector('[data-close]').addEventListener('click', close);
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  wrap.querySelector('[data-save]').addEventListener('click', () => saveAttachment(id, name, blob));
+
+  fetchAttachment(id).then(async (b) => {
+    if (!wrap.isConnected) return; // closed while loading
+    blob = b;
+    if (mime === 'text/plain') {
+      const pre = document.createElement('pre');
+      pre.className = 'svc-viewer-text';
+      pre.textContent = await b.text();
+      body.replaceChildren(pre);
+      return;
+    }
+    url = URL.createObjectURL(b);
+    let el;
+    if (mime === 'application/pdf') { el = document.createElement('iframe'); el.title = name; }
+    else if (mime === 'video/mp4')  { el = document.createElement('video');  el.controls = true; }
+    else                            { el = document.createElement('img');    el.alt = name; }
+    el.src = url;
+    body.replaceChildren(el);
+  }).catch((err) => {
+    body.innerHTML = `<span class="svc-sub">Could not load ${esc(name)}: ${esc(err.message)}</span>`;
+  });
+}
+
 function wireAttachments(drawer) {
-  const inShell = !!window.sdcShell;
-  drawer.querySelectorAll('[data-att]').forEach(link => link.addEventListener('click', async (e) => {
+  drawer.querySelectorAll('[data-att]').forEach(link => link.addEventListener('click', (e) => {
     e.preventDefault();
-    const name = link.dataset.name;
-    const viewable = !inShell && VIEWABLE_MIME.test(link.dataset.mime);
-    const tab = viewable ? window.open('', '_blank') : null;
-    let handle = null;
-    if (!viewable && typeof window.showSaveFilePicker === 'function') {
-      try { handle = await window.showSaveFilePicker({ suggestedName: name }); }
-      catch (err) {
-        if (err.name === 'AbortError') return; // cancelled the dialog
-        // Any other refusal (policy, sandbox): fall through to a plain download.
-      }
-    }
-    try {
-      const res = await fetch(`/api/service/attachments/${link.dataset.att}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `HTTP ${res.status}`);
-      }
-      const blob = await res.blob();
-      if (handle) {
-        const out = await handle.createWritable();
-        await out.write(blob);
-        await out.close();
-        toast(`Saved ${name}.`, 'success');
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      if (tab) {
-        tab.location.href = url;
-      } else {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
-      // Long enough for the tab or download to take hold of the blob.
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (err) {
-      if (tab) tab.close();
-      toast(`Could not open ${name}: ${err.message}`, 'error');
-    }
+    const { att, name, mime } = link.dataset;
+    if (VIEWABLE_MIME.test(mime)) openViewer(att, name, mime);
+    else saveAttachment(att, name);
   }));
 }
 
