@@ -929,6 +929,7 @@ function drawDrawer(focusWoId) {
   });
   wireLogFields(r.id);
   wireWorkOrderButtons(r);
+  wireAttachments(drawer);
 
   if (focusWoId) {
     const el = drawer.querySelector(`.svc-wo[data-wo="${focusWoId}"]`);
@@ -939,10 +940,75 @@ function drawDrawer(focusWoId) {
 function drawAttachments(list) {
   if (!list || !list.length) return '';
   return `<div class="svc-attachments"><span>Attachments</span><div>${list.map(a => `
-    <a class="svc-att" href="/api/service/attachments/${a.id}" target="_blank" rel="noopener"
+    <a class="svc-att" href="/api/service/attachments/${a.id}" data-att="${a.id}"
+       data-name="${esc(a.filename)}" data-mime="${esc(a.mime_type || '')}"
        title="${esc(a.filename)} — ${(a.size_bytes / 1024).toFixed(0)} KB, uploaded by ${esc(a.uploaded_by || 'customer')}">
       ${/^image\//.test(a.mime_type || '') ? '🖼' : '📄'} ${esc(a.filename)}
     </a>`).join('')}</div></div>`;
+}
+
+// Types a browser tab can show by itself. Anything else (xlsx, docx, zip, heic…)
+// is saved as a download under its original filename instead.
+const VIEWABLE_MIME = /^(image\/(jpeg|png|gif|webp|bmp)|application\/pdf|text\/plain|video\/mp4)$/;
+
+// The login token travels only in the Authorization header that auth-ui.js's
+// fetch wrapper adds, so a plain link (a browser navigation) reaches the server
+// with no token and gets a 401. Each click fetches the file instead and hands
+// the browser a blob URL. A viewable file's tab, and the "Save As" dialog for
+// anything else, are both opened before the first await: each needs the click's
+// user activation, and a fetch can take long enough for that to lapse.
+// showSaveFilePicker is Chromium-only (Chrome, Edge, Electron); elsewhere the
+// file goes to the browser's normal download.
+// Inside the SDC Tools shell nothing opens in a tab: the shell's
+// setWindowOpenHandler hands every window.open to the system browser, which
+// would show an empty page there. Every file is saved instead.
+function wireAttachments(drawer) {
+  const inShell = !!window.sdcShell;
+  drawer.querySelectorAll('[data-att]').forEach(link => link.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const name = link.dataset.name;
+    const viewable = !inShell && VIEWABLE_MIME.test(link.dataset.mime);
+    const tab = viewable ? window.open('', '_blank') : null;
+    let handle = null;
+    if (!viewable && typeof window.showSaveFilePicker === 'function') {
+      try { handle = await window.showSaveFilePicker({ suggestedName: name }); }
+      catch (err) {
+        if (err.name === 'AbortError') return; // cancelled the dialog
+        // Any other refusal (policy, sandbox): fall through to a plain download.
+      }
+    }
+    try {
+      const res = await fetch(`/api/service/attachments/${link.dataset.att}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      if (handle) {
+        const out = await handle.createWritable();
+        await out.write(blob);
+        await out.close();
+        toast(`Saved ${name}.`, 'success');
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      if (tab) {
+        tab.location.href = url;
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+      // Long enough for the tab or download to take hold of the blob.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (err) {
+      if (tab) tab.close();
+      toast(`Could not open ${name}: ${err.message}`, 'error');
+    }
+  }));
 }
 
 // A Work Order's date as one string: a single day, or an inclusive range for a
