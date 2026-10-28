@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.32',
+    date: '2026-10-28',
+    notes: [
+      'Paid in full can be narrowed to one job.',
+      '',
+      'INVOICING:',
+      '   ▸ A Job dropdown now sits beside From / To on the Paid in full card. Pick a job and only its paid invoices show, so you no longer scroll the whole list. It works together with the month range, and Clear resets both.',
+    ],
+  },
+  {
     version: '13.31',
     date: '2026-10-27',
     notes: [
