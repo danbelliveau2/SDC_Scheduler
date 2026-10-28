@@ -4,6 +4,16 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.33',
+    date: '2026-10-28',
+    notes: [
+      'The Paid in full job filter now shows the job you pick.',
+      '',
+      'INVOICING:',
+      '   ▸ Fixed: choosing a job (or a month range) on Paid in full emptied the card and reset the dropdown, and you had to reopen the Invoicing tab to get your data back. The filter now redraws with the current jobs, and Clear is there to remove it.',
+    ],
+  },
+  {
     version: '13.32',
     date: '2026-10-28',
     notes: [
