@@ -10208,7 +10208,11 @@ const _finLoading = new Set();
 // Financial-milestones calendar viewport memory (per From/To range) — drags
 // survive the streaming-load re-renders; a range change resets to default.
 let _fintlView = { key: null, left: null };
+// The projects of the latest render. The handlers below are bound once, so they
+// must read this, not the list that was current when they were bound.
+let _invSelected = [];
 function renderInvoiceBuckets(selectedProjects) {
+  _invSelected = selectedProjects;
   const root = document.getElementById('invoicing-buckets');
   if (!root) return;
   // Financials stream in per project. Until they have all landed a count of 0
@@ -10438,7 +10442,7 @@ function renderInvoiceBuckets(selectedProjects) {
     root.addEventListener('click', (e) => {
       if (e.target.closest('[data-inv-paid-clear]')) {
         _invPaidFrom = ''; _invPaidTo = ''; _invPaidJob = '';
-        renderInvoiceBuckets(selectedProjects);
+        renderInvoiceBuckets(_invSelected);
         return;
       }
       // Click a job number → jump into that schedule (open or not).
@@ -10489,12 +10493,12 @@ function renderInvoiceBuckets(selectedProjects) {
         saveAndRefresh(Number(el.dataset.invTerms), el.dataset.invProj, { terms_days: days }, el);
       } else if (el.hasAttribute('data-inv-paid-job')) {
         _invPaidJob = el.value || '';
-        renderInvoiceBuckets(selectedProjects);
+        renderInvoiceBuckets(_invSelected);
       } else if (el.hasAttribute('data-inv-paid-from') || el.hasAttribute('data-inv-paid-to')) {
         // View-only: nothing to save, just redraw the card.
         if (el.hasAttribute('data-inv-paid-from')) _invPaidFrom = el.value || '';
         else _invPaidTo = el.value || '';
-        renderInvoiceBuckets(selectedProjects);
+        renderInvoiceBuckets(_invSelected);
       }
     });
   }
