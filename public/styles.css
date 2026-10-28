@@ -16441,6 +16441,18 @@ tr.group-header.level-1[data-risk-first="1"] td {
   min-width: 0;
   max-width: 108px;
 }
+.inv-range select {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font: inherit;
+  font-size: var(--fs-2xs);
+  min-width: 0;
+  max-width: 150px;
+  background: var(--surface, #fff);
+  color: inherit;
+}
+.inv-range select:focus,
 .inv-range input[type="month"]:focus {
   outline: none;
   border-color: #15803d;

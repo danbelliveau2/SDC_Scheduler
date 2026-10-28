@@ -10195,6 +10195,8 @@ const _invCardOpen = {};
 // financials stream in.
 let _invPaidFrom = '';
 let _invPaidTo = '';
+// The Paid in full job filter — one project, or '' for all of them.
+let _invPaidJob = '';
 // Open/closed state of the No-trigger card's per-PM groups and the Key
 // Milestones per-PM strips — survives the re-renders that fire as each
 // project's financials load.
@@ -10363,7 +10365,10 @@ function renderInvoiceBuckets(selectedProjects) {
       }).join('');
     } else if (c.key === 'paid') {
       // A record, so it is read by date range rather than scrolled end to end.
+      const paidJobs = [...new Set(rows.map(r => r.project))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      if (_invPaidJob && !paidJobs.includes(_invPaidJob)) _invPaidJob = '';
       const shown = rows.filter(r => {
+        if (_invPaidJob && r.project !== _invPaidJob) return false;
         const m = String(r.f.paid_at || '').slice(0, 7);
         // A payment with no recorded month cannot be placed in a range, so a
         // range hides it rather than guessing. No range = everything.
@@ -10377,13 +10382,14 @@ function renderInvoiceBuckets(selectedProjects) {
       count = shown.length;
       // The same From / To month pair the Financial Milestones section uses.
       const picker = `<div class="inv-range">
+        <label>Job <select data-inv-paid-job><option value="">All jobs</option>${paidJobs.map(j => `<option value="${escapeHtml(j)}"${j === _invPaidJob ? ' selected' : ''}>${escapeHtml(j)}</option>`).join('')}</select></label>
         <label>From <input type="month" data-inv-paid-from value="${escapeHtml(_invPaidFrom)}" /></label>
         <label>To <input type="month" data-inv-paid-to value="${escapeHtml(_invPaidTo)}" /></label>
-        ${(_invPaidFrom || _invPaidTo) ? `<button type="button" class="btn-ghost btn-tight" data-inv-paid-clear>Clear</button>` : ''}
+        ${(_invPaidFrom || _invPaidTo || _invPaidJob) ? `<button type="button" class="btn-ghost btn-tight" data-inv-paid-clear>Clear</button>` : ''}
       </div>`;
       items = picker + (shown.length
         ? shown.map(r => itemHtml(r)).join('')
-        : ((_invPaidFrom || _invPaidTo) ? '<div class="inv-empty">Nothing paid in that range</div>' : ''));
+        : ((_invPaidFrom || _invPaidTo || _invPaidJob) ? '<div class="inv-empty">Nothing paid in that range</div>' : ''));
     } else {
       items = rows.map(r => itemHtml(r)).join('');
     }
@@ -10431,7 +10437,7 @@ function renderInvoiceBuckets(selectedProjects) {
     };
     root.addEventListener('click', (e) => {
       if (e.target.closest('[data-inv-paid-clear]')) {
-        _invPaidFrom = ''; _invPaidTo = '';
+        _invPaidFrom = ''; _invPaidTo = ''; _invPaidJob = '';
         renderInvoiceBuckets(selectedProjects);
         return;
       }
@@ -10481,6 +10487,9 @@ function renderInvoiceBuckets(selectedProjects) {
       } else if (el.dataset.invTerms) {
         const days = Math.max(1, Math.min(365, Number(el.value) || 30));
         saveAndRefresh(Number(el.dataset.invTerms), el.dataset.invProj, { terms_days: days }, el);
+      } else if (el.hasAttribute('data-inv-paid-job')) {
+        _invPaidJob = el.value || '';
+        renderInvoiceBuckets(selectedProjects);
       } else if (el.hasAttribute('data-inv-paid-from') || el.hasAttribute('data-inv-paid-to')) {
         // View-only: nothing to save, just redraw the card.
         if (el.hasAttribute('data-inv-paid-from')) _invPaidFrom = el.value || '';
