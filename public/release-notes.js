@@ -4,6 +4,21 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.34',
+    date: '2026-11-02',
+    notes: [
+      'Key Dates gets a Controls pill; the unassigned work on a department page groups by task or by machine.',
+      '',
+      'PROJECTS:',
+      '   ▸ Key Dates has a Controls pill (asked for by Mike Gast). It puts every controls milestone on the calendar — the Controls list\u2019s CE Kickoff, CE Design Review, CE Drawings Review, CE Software Kickoff, CE Software Review and CE Software Final Review, and the controls engineering releases such as Ele Release 1 — one row per job, each diamond labelled with the milestone\u2019s own name and date. Turn it on by itself to see only the controls dates; combine it with FAT or Ship to see them against the spine.',
+      '',
+      'DEPARTMENTS:',
+      '   ▸ The Unassigned block on a department page has three pills on its header: Date, Task and Machine. Date is the list as it was, soonest first. Task puts the same kind of work together — all the CE Design lines under one heading, all the Drawings under another — with the kind of work coming up first. Machine puts each job and machine together, 1163-M1 under one heading, 1142-M3 under the next, in job order.',
+      '   ▸ Each heading says how many lines it holds and how many weeks they add up to. Click a heading to fold it; its bars leave the chart with it. Your choice of Date, Task or Machine is remembered on this computer.',
+      '   ▸ A folded person\u2019s bars no longer linger on the chart.',
+    ],
+  },
+  {
     version: '13.33',
     date: '2026-10-28',
     notes: [

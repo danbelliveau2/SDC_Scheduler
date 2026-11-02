@@ -3645,6 +3645,14 @@ function renderTable() {
     });
   });
 
+  tbody.querySelectorAll('[data-who-group]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      try { localStorage.setItem('sdcUnassignedGroup', btn.dataset.whoGroup); } catch (_) {}
+      renderTable(); renderGantt();
+      requestAnimationFrame(() => { try { zoomToFit(); } catch (_) {} });
+    });
+  });
   tbody.querySelectorAll('tr.group-header').forEach(tr => {
     tr.addEventListener('click', (e) => {
       const path = tr.dataset.path;
@@ -7936,7 +7944,8 @@ function alignGanttToGrid() {
     if (targetTop === undefined && _chainTailToHead[Number(id)] != null) {
       targetTop = gridYs[_chainTailToHead[Number(id)]];
     }
-    if (targetTop === undefined) return;
+    if (targetTop === undefined) { if (myWorkDept()) wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
     const bar = wrap.querySelector('.bar');
     if (!bar) return;
     const currentY = +bar.getAttribute('y');
@@ -13584,7 +13593,21 @@ const KEYDATES_ANCHORS = [
   { key: 'fat',               short: 'FAT' },
   { key: 'ship_machine',      short: 'Ship' },
   { key: 'sat',               short: 'SAT' },
+  // Not one milestone but a family: every controls milestone on the job.
+  { key: 'controls',          short: 'Controls' },
 ];
+// A controls milestone: a milestone row on the Controls list (CE Kickoff,
+// CE Design Review, CE Software Review…) or under Engineering › Controls
+// (Ele Release 1). The spine anchors are their own pills, so not those.
+function isControlsMilestone(t) {
+  if (!t || !t.is_milestone || inferredAnchorKey(t)) return false;
+  return t.phase_group === CONTROLS_GROUP || t.sub_department === CONTROLS_SUB || (t.department === 'engineering' && t.sub_department === 'controls');
+}
+// The name as a label beside a diamond: no parenthetical, cut at 24.
+function _keyDatesShortName(name) {
+  const n = String(name || '').replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  return n.length > 24 ? n.slice(0, 23).trimEnd() + '…' : n;
+}
 function _keyDatesSelected() {
   try {
     const a = JSON.parse(localStorage.getItem('sdcKeyDatesAnchors') || 'null');
@@ -13770,7 +13793,8 @@ function renderProjectsKeyDates() {
           buildMin[mk] = { date: t.start_date, done: (Number(t.progress) || 0) > 0, name: t.name, who: t.assignee };
         }
       }
-      const k = inferredAnchorKey(t);
+      let k = inferredAnchorKey(t);
+      if (!k && sel.has('controls') && isControlsMilestone(t)) k = 'controls';
       if (!k || !sel.has(k)) continue;
       if (!inRange(date)) continue;
       (byMach[t.machine || ''] ||= []).push({ k, date, done: (Number(t.progress) || 0) >= 100, name: t.name });
@@ -13856,10 +13880,13 @@ function renderProjectsKeyDates() {
         // Label carries the DATE (MM/DD) — the month lines alone are too
         // coarse to read a date off the axis.
         const mmdd = ev.date.slice(5, 10).replace('-', '/');
-        const tipName = ev.k === 'build_start' ? ev.name : (shortOf[ev.k] || ev.name);
-        return `<div class="pdash-fintl-ms ${cls}" style="left:${pct}%;${laneTop}"
+        const tipName = (ev.k === 'build_start' || ev.k === 'controls') ? ev.name : (shortOf[ev.k] || ev.name);
+        // A controls milestone is labelled by its own name — the pill is a
+        // family, not one milestone.
+        const lbl = ev.k === 'controls' ? _keyDatesShortName(ev.name) : (shortOf[ev.k] || ev.k);
+        return `<div class="pdash-fintl-ms ${cls}${ev.k === 'controls' ? ' is-controls' : ''}" style="left:${pct}%;${laneTop}"
             title="${escapeHtml(tipName + ' · ' + fmtDate(ev.date) + ' · ' + status)}">
-          <span class="pdash-fintl-lbl">${escapeHtml((shortOf[ev.k] || ev.k) + ' · ' + mmdd)}</span>
+          <span class="pdash-fintl-lbl">${escapeHtml(lbl + ' · ' + mmdd)}</span>
           <span class="pdash-fintl-di"></span>
         </div>`;
       }).join('');
@@ -18940,6 +18967,30 @@ function _keepMembersUnderGroup(rows, cmp) {
   rows.forEach(t => { if (t._member && !out.includes(t)) out.push(t); });
   return out;
 }
+// How the Unassigned block reads: 'date' (one list, soonest first), 'task'
+// (CE Design together, CE Drawings together…), 'machine' (1163-M1 together).
+function unassignedGroupMode() {
+  try { const v = localStorage.getItem('sdcUnassignedGroup'); return v === 'task' || v === 'machine' ? v : 'date'; } catch (_) { return 'date'; }
+}
+// A task's grouping key and label. By task the name is normalised — case,
+// spaces, a trailing machine tag like "(M2)" — so one kind of work lands in
+// one group. By machine it is the job plus the machine, as the bars tag it.
+function _unassignedGroupOf(t, mode) {
+  if (mode === 'machine') {
+    const tag = myWorkJobTag(t) || t.project || '';
+    return { key: (t.project || '') + '|' + (t.machine || ''), label: tag, title: t.project || '' };
+  }
+  const label = String(t.name || '').trim().replace(/\s*[\(\-·]?\s*\bM\d+\)?\s*$/i, '').trim() || '(no name)';
+  return { key: label.toLowerCase().replace(/[-_\/]+/g, ' ').replace(/\s+/g, ' ').trim(), label, title: '' };
+}
+function _unassignedGroupPillsHtml(mode) {
+  const pill = (m, txt, tip) => `<button type="button" class="who-group-pill${mode === m ? ' is-active' : ''}" data-who-group="${m}" title="${tip}">${txt}</button>`;
+  return '<span class="who-group-pills" title="How this block reads">'
+    + pill('date', 'Date', 'One list, soonest first')
+    + pill('task', 'Task', 'The same kind of work together: all the design, all the drawings…')
+    + pill('machine', 'Machine', 'Each job and machine together')
+    + '</span>';
+}
 function _personSectionRowsHtml(filtered, collapsedGroups, key) {
   const cols = state.layout.columnOrder.length;
   const members = deptMembers(key);
@@ -18969,12 +19020,45 @@ function _personSectionRowsHtml(filtered, collapsedGroups, key) {
     const path = groupPath('who', null, 'p' + m.id);
     const collapsed = collapsedGroups.has(path);
     const label = (ph ? 'Unassigned · ' + m.name : m.name) + (m.is_lead ? ' ★' : '');
+    const gMode = ph ? unassignedGroupMode() : 'date';
+    // Grouped, the block is the plain tasks (a job roll-up would cut across
+    // the task groups), counted as lines.
+    const plain = gMode === 'date' ? rows : rows.flatMap(t => t._rollup ? t._members : (t._member ? [] : [t]));
+    const nLines = plain.length;
     html += `<tr class="group-header level-0 who-row${collapsed ? ' collapsed' : ''}${ph ? ' is-unassigned' : ''}" data-path="${escapeHtml(path)}" data-section-key="who-${m.id}" data-who="${escapeHtml(m.name)}">
-      <td colspan="${cols}"><span class="group-caret">${collapsed ? '▸' : '▾'}</span><span class="who-pill">👤 ${escapeHtml(label)}</span><span class="who-count">${rows.length} ${rows.length === 1 ? 'line' : 'lines'}</span></td>
+      <td colspan="${cols}"><span class="group-caret">${collapsed ? '▸' : '▾'}</span><span class="who-pill">👤 ${escapeHtml(label)}</span><span class="who-count">${nLines} ${nLines === 1 ? 'line' : 'lines'}</span>${ph && nLines ? _unassignedGroupPillsHtml(gMode) : ''}</td>
     </tr>`;
     if (collapsed) continue;
     if (!rows.length) html += `<tr class="who-empty-row"><td colspan="${cols}"><span class="risk-mode-hint">Nothing open.</span></td></tr>`;
-    for (const t of rows) html += rowHtml(t, 1);
+    if (gMode === 'date') {
+      for (const t of rows) html += rowHtml(t, 1);
+    } else {
+      // Sub-headers, soonest group first, lines inside by date. Each folds
+      // like any section; the fold is remembered for the visit.
+      const groups = new Map();
+      plain.forEach(t => {
+        const g = _unassignedGroupOf(t, gMode);
+        if (!groups.has(g.key)) groups.set(g.key, Object.assign({ rows: [] }, g));
+        groups.get(g.key).rows.push(t);
+      });
+      const list = [...groups.values()];
+      list.forEach(g => g.rows.sort(cmp));
+      // By task: the soonest kind of work first. By machine: job order, so a
+      // job's machines sit together.
+      if (gMode === 'machine') list.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
+      else list.sort((a, b) => cmp(a.rows[0], b.rows[0]) || a.label.localeCompare(b.label));
+      for (const g of list) {
+        const gpath = groupPath('who-sub', 'p' + m.id, gMode + ':' + g.key);
+        const gcol = collapsedGroups.has(gpath);
+        const wks = g.rows.reduce((n, t) => n + (Number(t.duration_days) || 0), 0) / 5;
+        const wksTxt = wks > 0 ? ' · ' + (Math.round(wks * 10) / 10) + 'W' : '';
+        html += `<tr class="group-header level-2 who-sub-row${gcol ? ' collapsed' : ''}" data-path="${escapeHtml(gpath)}" data-section-key="who-sub" title="${escapeHtml(g.title)}">
+          <td colspan="${cols}"><span class="group-caret">${gcol ? '▸' : '▾'}</span><span class="who-sub-label">${escapeHtml(g.label)}</span><span class="who-count">${g.rows.length} ${g.rows.length === 1 ? 'line' : 'lines'}${wksTxt}</span></td>
+        </tr>`;
+        if (gcol) continue;
+        for (const t of g.rows) html += rowHtml(t, 1);
+      }
+    }
     // The allocation banner closes each real person's block (Dan, 10/07:
     // "the allocation matters here"). A placeholder has no capacity.
     if (!ph) html += _whoAllocRowHtml(m);
