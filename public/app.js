@@ -9957,6 +9957,19 @@ function _pdashFinMonth(isoDate) {
   return `${monthShort} '${yearShort}`;
 }
 
+// ── Milestone dollars ── percent × the job's sales price, worked out on the
+// SERVER (routes/financials.js, PortalCalc.milestoneAmounts) and sent as
+// money_amount / money_kind on each milestone row. The sales price itself is
+// never sent to the browser, so it cannot be shown or read here.
+function finMoney(f) {
+  return f && f.money_kind ? { amount: f.money_amount, kind: f.money_kind } : { amount: null, kind: null };
+}
+// "$67,260" — "~" when the figure was spread across machines.
+function finMoneyText(m) {
+  if (!m || m.amount == null || m.kind === 'dup') return '';
+  return (m.kind === 'split' ? '~' : '') + '$' + Math.round(m.amount).toLocaleString('en-US');
+}
+
 // Convert a (calendar) day count to a half-week-snapped string like
 // "0.5W" / "1W" / "1.5W". Per Dan's spec: the dashboard never shows raw
 // days, and any week value is rounded to the nearest 0.5 — no 0.2 / 0.4
@@ -10216,7 +10229,8 @@ const _stripPmOpen = {};
 const _finLoading = new Set();
 // Financial-milestones calendar viewport memory (per From/To range) — drags
 // survive the streaming-load re-renders; a range change resets to default.
-let _fintlView = { key: null, left: null };
+let _finOpen = new Set();     // "project|YYYY-MM" month cells left open on the Financial Milestones grid
+let _fmView = { key: null, left: null };
 // The projects of the latest render. The handlers below are bound once, so they
 // must read this, not the list that was current when they were bound.
 let _invSelected = [];
@@ -10529,8 +10543,7 @@ function renderDeptProjectRollup() {
     return Array.isArray(rows) && rows.length > 0 && rows.every(r => r.paid);
   };
   const completedJobs = _sel.selected.filter(_fullyPaid);
-  const selected = _sel.selected.filter(p => !_fullyPaid(p));
-  // The picker has to offer what it can actually select. Fully-paid jobs
+  const selected = _sel.selected.filter(p => !_fullyPaid(p));  // The picker has to offer what it can actually select. Fully-paid jobs
   // were left ON the list but filtered OUT of the selection, which is what
   // produced a count like "39 of 48" with nine boxes that would not tick
   // however often you pressed Select all - they were being removed again
@@ -10734,129 +10747,129 @@ function renderDeptProjectRollup() {
       return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
         <div class="pdash-empty-block">No financial milestones${filterHint} for the selected projects.</div>`;
     }
-    // ── Timeline (v11.5, replaces the grid) — reads like the schedule Gantt:
-    //    month header, dashed blue Today line, one row per project, and each
-    //    payment event as a DIAMOND at its date with "% · abbrev" on it.
-    //    Status colors match the Key Milestones legend: green paid,
-    //    red past-due, light blue future.
-    // Narrower name column (Dan: the divider sat way off to the right of the
-    // names) — names ellipsize on one line, full name in the tooltip.
-    const NAME_W = 200;
-    const dayMs = 86400000;
-    let winStartMs = Math.min(...rows.map(r => Date.parse(r.due_date + 'T00:00:00')), todayMs);
-    let winEndMs   = Math.max(...rows.map(r => Date.parse(r.due_date + 'T00:00:00')), todayMs);
-    winStartMs -= 12 * dayMs;
-    winEndMs   += 12 * dayMs;
-    const span = Math.max(dayMs, winEndMs - winStartMs);
-    const hasRange = !!(finMonthFrom || finMonthTo);
-    const pctOf = (ms) => ((ms - winStartMs) / span) * 100;
-
-    // Month header labels (inside the header track) + faint grid lines that
-    // span the FULL container height, Gantt-style. Lines use the same
-    // name-column-offset calc as the Today line so they align with the track.
-    const NAME_OFF = NAME_W + 12; // name column + grid gap
-    const trackCalc = (frac) => `calc(${NAME_OFF}px + (100% - ${NAME_OFF}px) * ${frac.toFixed(4)})`;
-    let monthTicksHtml = '';
-    let monthLinesHtml = '';
+    // ── Month grid — one row per job, one column per month. Every milestone a
+    //    job bills in a month stacks into THAT month's cell: the cell shows the
+    //    dollars due and how many events, and a click opens the list. Dollars
+    //    are percent × sales price, worked out on the server (finMoney); a job
+    //    with no price on file shows "—" and a flag instead of a made-up number.
+    //    $ / % / Both and Expand-all are CSS-class switches, so toggling never
+    //    redraws the page.
+    const monthOf2 = (iso) => iso.slice(0, 7);
+    const evStatus = (r) => {
+      if (r.paid) return { cls: 'is-paid', txt: 'Paid' };
+      if (r.sent) return { cls: 'is-sent', txt: 'Sent — awaiting payment' };
+      if (r.due_date < todayISO) return { cls: 'is-overdue', txt: 'Invoice now' };
+      return { cls: 'is-upcoming', txt: 'Upcoming' };
+    };
+    // Dup rows are repeats of a job-level milestone (1106's PO on five
+    // chambers) that the sales-price math already counted once — leave them out.
+    const shown = rows.filter(r => finMoney(r).kind !== 'dup');
+    // First month: the earliest one still owing an invoice (so past-due items
+    // stay visible), unless a From month was chosen. Last: the latest dated.
+    const curMonth = todayISO.slice(0, 7);
+    const firstOpen = shown.filter(r => !r.paid).map(r => monthOf2(r.due_date)).sort()[0] || curMonth;
+    const monthFirst = finMonthFrom || (firstOpen < curMonth ? firstOpen : curMonth);
+    const monthLast = finMonthTo || shown.map(r => monthOf2(r.due_date)).sort().pop() || curMonth;
+    const months = [];
     {
-      const d = new Date(winStartMs); d.setDate(1); d.setHours(0, 0, 0, 0);
-      if (d.getTime() < winStartMs) d.setMonth(d.getMonth() + 1);
-      while (d.getTime() <= winEndMs) {
-        const frac = (d.getTime() - winStartMs) / span;
-        const lbl = d.toLocaleString('en-US', { month: 'short' }) + " '" + String(d.getFullYear()).slice(2);
-        monthTicksHtml += `<div class="pdash-fintl-month" style="left:${(frac * 100).toFixed(2)}%">${lbl}</div>`;
-        monthLinesHtml += `<div class="pdash-fintl-gridline" style="left:${trackCalc(frac)}"></div>`;
-        d.setMonth(d.getMonth() + 1);
+      let [y, m] = monthFirst.split('-').map(Number);
+      while (`${y}-${String(m).padStart(2, '0')}` <= monthLast && months.length < 60) {
+        months.push(`${y}-${String(m).padStart(2, '0')}`);
+        if (++m > 12) { m = 1; y++; }
       }
     }
+    const inView = new Set(months);
+    const cellRows = shown.filter(r => inView.has(monthOf2(r.due_date)));
+    if (!cellRows.length) {
+      return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
+        <div class="pdash-empty-block">No financial milestones in the selected month range for the selected projects.</div>`;
+    }
+    const usd = (n) => '$' + Math.round(n).toLocaleString('en-US');
+    const mach = (r) => r.machine ? ' · ' + String(r.machine).replace(/machine\s*/i, 'M').replace(/^chamber\s*/i, 'Ch ') : '';
+    const mode =(() => { try { const v = localStorage.getItem('sdcFinMoneyMode'); return v === 'pct' || v === 'both' ? v : 'amt'; } catch (_) { return 'amt'; } })();
 
-    const byProject = {};
-    for (const r of rows) (byProject[r.project] ||= []).push(r);
-    // Crowding fix: real lane assignment. A label needs ~85px; convert that
-    // to % of the track's guaranteed minimum width (the same ~120px/month
-    // scale minW uses) and place each item in the FIRST lane whose previous
-    // item is far enough left — up to 3 lanes, and the row grows to fit.
-    const _monthsSpanForLanes = Math.max(1, span / (30.4 * dayMs));
-    // Scale: with an explicit From/To range, fit it to the page (~120px/month
-    // floor). Default (no range): ONE MONTH fills ~72% of the page and you
-    // drag to the rest (Dan) — so compute px-per-month from the live width.
-    const _rollupW = (document.getElementById('dept-project-rollup')?.clientWidth) || 1200;
-    const pxMonth = hasRange ? 120 : Math.max(320, Math.round((_rollupW - NAME_W - 60) * 0.72));
-    const laneGapPct = Math.min(30, (100 / (_monthsSpanForLanes * pxMonth)) * 100);
-    const rowsHtml = Object.keys(byProject).map(p => {
-      const sorted = byProject[p].slice().sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
-      // Multi-machine project → tag every diamond with its machine (blank
-      // machine on such a project means the base machine, M1).
-      const multiMach = sorted.some(r => r.machine);
-      const machTag = (r) => !multiMach ? ''
-        : ' · ' + (r.machine ? String(r.machine).replace(/machine\s*/i, 'M') : 'M1');
-      // PASS 1 — assign every diamond a lane. As many lanes as it takes:
-      // an item takes the first lane whose previous label is far enough
-      // left, otherwise it OPENS a new lane. Nothing ever prints on top of
-      // another label (the old 3-lane cap dumped overflow back onto lane 0
-      // → the double-printed unreadable text Dan circled).
-      const laneLastPct = [];
-      let laneCount = 1;
-      const placed = sorted.map(r => {
-        const dueMs = Date.parse(r.due_date + 'T00:00:00');
-        const isPast = dueMs < todayMs;
-        // Lifecycle colors: green paid · solid blue sent · red past-due ·
-        // light blue future.
-        let cls = 'is-upcoming', status = 'Upcoming';
-        if (r.paid)        { cls = 'is-paid';    status = 'Paid'; }
-        else if (r.sent)   { cls = 'is-sent';    status = 'Sent — awaiting payment'; }
-        else if (isPast)   { cls = 'is-overdue'; status = 'Invoice now'; }
-        const pct = pctOf(dueMs);
-        let lane = laneLastPct.findIndex(x => pct - x >= laneGapPct);
-        if (lane === -1) { lane = laneLastPct.length; laneLastPct.push(-999); }
-        laneLastPct[lane] = pct;
-        laneCount = Math.max(laneCount, lane + 1);
-        return { r, pct, lane, cls, status };
-      });
-      // PASS 2 — build html; with 2+ lanes each diamond pins to its lane's
-      // fixed top offset (single-lane rows keep the default vertical center).
-      const diamonds = placed.map(({ r, pct, lane, cls, status }) => {
-        const pctVal = (r.percent != null && Number(r.percent) > 0) ? `${Number(r.percent)}%` : '';
-        const abbrev = _pdashFinAbbrev(r);
-        const lbl = (pctVal ? `${pctVal} ${abbrev}` : abbrev) + machTag(r);
-        const laneTop = laneCount > 1 ? `top:${4 + lane * 24}px;` : '';
-        return `<div class="pdash-fintl-ms ${cls}" style="left:${pct}%;${laneTop}"
-            title="${escapeHtml((r.name || abbrev) + (pctVal ? ' · ' + pctVal : '') + machTag(r) + ' · ' + fmtDate(r.due_date) + ' · ' + status)}">
-          <span class="pdash-fintl-lbl">${escapeHtml(lbl)}</span>
-          <span class="pdash-fintl-di"></span>
-          <span class="pdash-fintl-date">${escapeHtml(fmtDate(r.due_date))}</span>
-        </div>`;
+    const byProj = new Map();
+    cellRows.forEach(r => { if (!byProj.has(r.project)) byProj.set(r.project, []); byProj.get(r.project).push(r); });
+    const projOrder = [...byProj.keys()].sort((a, b) =>
+      byProj.get(a)[0].due_date.localeCompare(byProj.get(b)[0].due_date) || a.localeCompare(b));
+
+    const monthTotals = new Map(months.map(m => [m, { amt: 0, paid: 0, n: 0 }]));
+    const bodyRows = projOrder.map(p => {
+      const mine = byProj.get(p);
+      const allRows = shown.filter(r => r.project === p);
+      const hasPrice = !allRows.some(r => Number(r.percent) > 0 && finMoney(r).kind == null);
+      let jobTotal = 0, jobLeft = 0;
+      allRows.forEach(r => { const a = finMoney(r).amount || 0; jobTotal += a; if (!r.paid) jobLeft += a; });
+      const cells = months.map(m => {
+        const evs = mine.filter(r => monthOf2(r.due_date) === m)
+          .sort((a, b) => a.due_date.localeCompare(b.due_date) || (a.sort_order || 0) - (b.sort_order || 0));
+        if (!evs.length) return '<td class="fm-cell is-empty"></td>';
+        let sum = 0, paidSum = 0, anyOver = false, allPaid = true;
+        evs.forEach(r => {
+          const a = finMoney(r).amount || 0; sum += a;
+          if (r.paid) paidSum += a; else allPaid = false;
+          if (evStatus(r).cls === 'is-overdue') anyOver = true;
+        });
+        const t = monthTotals.get(m); t.amt += sum; t.paid += paidSum; t.n += evs.length;
+        const tone = anyOver ? 'is-overdue' : (allPaid ? 'is-paid' : '');
+        const list = evs.map(r => {
+          const st = evStatus(r), money = finMoneyText(finMoney(r));
+          const pct = Number(r.percent) > 0 ? `${Number(r.percent)}%` : '';
+          const nm = `${_pdashFinAbbrev(r)}${mach(r)}`;
+          return `<div class="fm-ev ${st.cls}" title="${escapeHtml((r.name || nm) + (pct ? ' · ' + pct : '') + (money ? ' · ' + money : '') + ' · ' + fmtDate(r.due_date) + ' · ' + st.txt)}">
+            <span class="fm-dot"></span>
+            <span class="fm-ev-name">${pct ? `<span class="fm-pct">${pct} </span>` : ''}${escapeHtml(nm)}</span>
+            <span class="fm-ev-date">${escapeHtml(fmtDate(r.due_date))}</span>
+            <span class="fm-ev-money fm-amt">${escapeHtml(money || '—')}</span>
+          </div>`;
+        }).join('');
+        const key = `${p}|${m}`;
+        return `<td class="fm-cell ${tone}${_finOpen.has(key) ? ' is-open' : ''}" data-key="${escapeHtml(key)}">
+          <div class="fm-sum" role="button" tabindex="0" title="Show the ${evs.length} milestone${evs.length === 1 ? '' : 's'}">
+            <span class="fm-caret">▸</span>
+            <span class="fm-sum-money fm-amt">${hasPrice ? usd(sum) : '—'}</span>
+            <span class="fm-sum-n">${evs.length} event${evs.length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="fm-list">${list}</div>
+        </td>`;
       }).join('');
-      const rowH = laneCount > 1 ? `style="min-height:${8 + laneCount * 24}px"` : '';
-      return `<div class="pdash-fintl-row${laneCount > 1 ? ' has-lanes' : ''}" ${rowH} data-project="${escapeHtml(p)}">
-        <div class="pdash-milestone-project pdash-fintl-projlink" title="${escapeHtml(p)} — open this project">${escapeHtml(p)}</div>
-        <div class="pdash-fintl-track" ${rowH}>${diamonds}</div>
-      </div>`;
+      const flag = hasPrice ? '' : ' <span class="fm-flag" title="No sales price on file for this job, so its dollar amounts cannot be worked out.">no $</span>';
+      return `<tr class="fm-row" data-project="${escapeHtml(p)}">
+        <th scope="row" class="fm-proj pdash-fintl-projlink" title="${escapeHtml(p)} — open this project">${escapeHtml(p)}${flag}</th>
+        ${cells}
+        <td class="fm-job fm-amt">${hasPrice ? usd(jobTotal) : '—'}</td>
+        <td class="fm-job fm-amt">${hasPrice ? usd(jobLeft) : '—'}</td>
+      </tr>`;
     }).join('');
 
-    // Dashed blue Today line spanning header + all rows, same look as the Gantt.
-    const todayFrac = (todayMs - winStartMs) / span;
-    const todayHtml = (todayFrac >= 0 && todayFrac <= 1)
-      ? `<div class="pdash-fintl-today" style="left:${trackCalc(todayFrac)};"><span>Today</span></div>`
-      : '';
-
-    const monthsSpan = Math.max(1, span / (30.4 * dayMs));
-    const minW = Math.round(NAME_OFF + monthsSpan * pxMonth);
-    // Where the current month's 1st sits (fraction of the window) — the
-    // default view scrolls here so "now" fills the page.
-    const _cm = new Date(); _cm.setDate(1); _cm.setHours(0, 0, 0, 0);
-    const curMonthFrac = Math.max(0, Math.min(1, (_cm.getTime() - winStartMs) / span));
-    return `<div class="pdash-fin-controls">${_pdashFinMonthControls(finMonthFrom, finMonthTo)}</div>
-      <div class="pdash-fintl-scroll" data-curmonth-frac="${curMonthFrac.toFixed(5)}" data-range-key="${escapeHtml(finMonthFrom + '|' + finMonthTo)}">
-      <div class="pdash-fintl" style="min-width:max(100%,${minW}px);--fintl-name-w:${NAME_W}px">
-        ${monthLinesHtml}
-        ${todayHtml}
-        <div class="pdash-fintl-row pdash-fintl-head">
-          <div class="pdash-milestone-project pdash-fintl-colhead">Project</div>
-          <div class="pdash-fintl-track">${monthTicksHtml}</div>
-        </div>
-        ${rowsHtml}
+    const head = months.map(m => {
+      const cls = m === curMonth ? ' is-now' : (m < curMonth ? ' is-past' : '');
+      return `<th class="fm-month${cls}" data-month="${m}">${escapeHtml(_pdashFinMonth(m + '-01'))}${m === curMonth ? ' <span class="fm-now">now</span>' : ''}</th>`;
+    }).join('');
+    const totalCells = months.map(m => {
+      const t = monthTotals.get(m);
+      return t.n
+        ? `<td class="fm-tot"><span class="fm-amt"><strong>${usd(t.amt)}</strong>${t.paid ? `<span class="fm-tot-paid">${usd(t.paid)} paid</span>` : ''}</span><span class="fm-tot-n">${t.n} event${t.n === 1 ? '' : 's'}</span></td>`
+        : '<td class="fm-tot is-empty"></td>';
+    }).join('');
+    const PROJ_W = 250, MONTH_W = 205, JOB_W = 136;
+    const colgroup = `<colgroup><col style="width:${PROJ_W}px">${months.map(() => `<col style="width:${MONTH_W}px">`).join('')}<col style="width:${JOB_W}px"><col style="width:${JOB_W}px"></colgroup>`;
+    const seg = (k, label, tip) => `<button type="button" class="fm-seg${mode === k ? ' is-on' : ''}" data-fm-mode="${k}" title="${tip}">${label}</button>`;
+    return `<div class="pdash-fin-controls">
+        ${_pdashFinMonthControls(finMonthFrom, finMonthTo)}
+        <span class="fm-ctl">
+          ${seg('amt', '$ Amount', 'Show what each milestone invoices')}${seg('pct', '% Share', 'Show each milestone billing percent')}${seg('both', 'Both', 'Show amount and percent')}
+        </span>
+        <button type="button" class="fm-seg" data-fm-expand="1" title="Open every month cell">Expand all</button>
+        <button type="button" class="fm-seg" data-fm-expand="0" title="Close every month cell">Collapse all</button>
       </div>
+      <div class="fm-scroll" data-range-key="${escapeHtml(finMonthFrom + '|' + finMonthTo)}">
+        <table class="fm-grid fm-mode-${mode}" style="min-width:${PROJ_W + months.length * MONTH_W + 2 * JOB_W}px">
+          ${colgroup}
+          <thead><tr><th class="fm-proj fm-corner">Project</th>${head}<th class="fm-jobhead">Job total</th><th class="fm-jobhead">Left to invoice</th></tr></thead>
+          <tbody>${bodyRows}</tbody>
+          <tfoot><tr><th class="fm-proj">All jobs — per month</th>${totalCells}<td class="fm-tot"></td><td class="fm-tot"></td></tr></tfoot>
+        </table>
       </div>`;
   })();
 
@@ -11035,68 +11048,57 @@ function renderDeptProjectRollup() {
     });
   });
 
-  // Click-and-drag panning on the financial-milestones calendar — same feel
-  // as the schedule Gantt (sideways pans the timeline, up/down scrolls the
-  // page). 4px threshold keeps plain clicks (project links, inputs) working.
-  const finScroll = root.querySelector('.pdash-fintl-scroll');
-  if (finScroll) {
-    // Land on the CURRENT month (default view), remember drags across the
-    // re-renders that fire while financials stream in, and reset the spot
-    // whenever the From/To range changes.
-    const rangeKey = finScroll.dataset.rangeKey || '';
-    if (_fintlView.key === rangeKey && _fintlView.left != null) {
-      finScroll.scrollLeft = _fintlView.left;
-    } else {
-      const frac = Number(finScroll.dataset.curmonthFrac) || 0;
-      const inner = finScroll.firstElementChild;
-      const W = inner ? (inner.scrollWidth || inner.offsetWidth) : 0;
-      // Track x of a fraction = NAME_OFF + (W - NAME_OFF) * frac (see
-      // trackCalc in the compose); scroll so that x sits at the track edge.
-      const NAME_OFF = 212; // NAME_W 200 + 12px grid gap
-      finScroll.scrollLeft = Math.max(0, (W - NAME_OFF) * frac - 2);
-      _fintlView = { key: rangeKey, left: finScroll.scrollLeft };
-    }
-    if (!finScroll.dataset.scrollBound) {
-      finScroll.dataset.scrollBound = '1';
-      let t = null;
-      finScroll.addEventListener('scroll', () => {
-        clearTimeout(t);
-        t = setTimeout(() => { _fintlView = { key: finScroll.dataset.rangeKey || '', left: finScroll.scrollLeft }; }, 200);
-      }, { passive: true });
-    }
-    finScroll.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      if (e.target.closest('input, select, button, .pdash-fintl-projlink')) return;
-      const startX = e.clientX, startY = e.clientY;
-      const startLeft = finScroll.scrollLeft;
-      const pageBox = document.getElementById('view-invoicing');
-      const startTop = pageBox ? pageBox.scrollTop : 0;
-      let panning = false;
-      const onMove = (ev) => {
-        const dx = ev.clientX - startX, dy = ev.clientY - startY;
-        if (!panning && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
-          panning = true;
-          finScroll.classList.add('panning');
-          try { window.getSelection()?.removeAllRanges(); } catch (_) {}
-        }
-        if (panning) {
-          ev.preventDefault();
-          finScroll.scrollLeft = startLeft - dx;
-          if (pageBox) pageBox.scrollTop = startTop - dy;
-        }
-      };
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        finScroll.classList.remove('panning');
-        if (panning) {
-          const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
-          finScroll.addEventListener('click', swallow, { capture: true, once: true });
-        }
-      };
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
+  // Financial Milestones month grid: open/close a month cell, $ / % / Both,
+  // Expand / Collapse all. All of it flips classes on the table already on
+  // screen — nothing redraws — and the open cells are remembered in _finOpen
+  // so they survive the redraws that fire while financials stream in.
+  const fmScroll = root.querySelector('.fm-scroll');
+  if (fmScroll) {
+    const fmCells = () => [...fmScroll.querySelectorAll('.fm-cell[data-key]')];
+    const toggleCell = (cell) => {
+      const open = cell.classList.toggle('is-open');
+      if (open) _finOpen.add(cell.dataset.key); else _finOpen.delete(cell.dataset.key);
+    };
+    fmScroll.querySelectorAll('.fm-sum').forEach(sum => {
+      sum.addEventListener('click', () => toggleCell(sum.closest('.fm-cell')));
+      sum.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCell(sum.closest('.fm-cell')); }
+      });
     });
+    const ctl = fmScroll.parentElement;
+    ctl.querySelectorAll('[data-fm-mode]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const m = btn.dataset.fmMode;
+        try { localStorage.setItem('sdcFinMoneyMode', m); } catch (_) {}
+        const grid = fmScroll.querySelector('.fm-grid');
+        grid.className = grid.className.replace(/\bfm-mode-\w+/, 'fm-mode-' + m);
+        ctl.querySelectorAll('[data-fm-mode]').forEach(b => b.classList.toggle('is-on', b === btn));
+      });
+    });
+    ctl.querySelectorAll('[data-fm-expand]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const open = btn.dataset.fmExpand === '1';
+        fmCells().forEach(c => {
+          c.classList.toggle('is-open', open);
+          if (open) _finOpen.add(c.dataset.key); else _finOpen.delete(c.dataset.key);
+        });
+      });
+    });
+    // Land on the current month; keep the spot across redraws until the
+    // From / To range changes.
+    const rangeKey = fmScroll.dataset.rangeKey || '';
+    if (_fmView.key === rangeKey && _fmView.left != null) {
+      fmScroll.scrollLeft = _fmView.left;
+    } else {
+      const now = fmScroll.querySelector('.fm-month.is-now');
+      if (now) fmScroll.scrollLeft = Math.max(0, now.offsetLeft - 250 - 8);
+      _fmView = { key: rangeKey, left: fmScroll.scrollLeft };
+    }
+    let fmT = null;
+    fmScroll.addEventListener('scroll', () => {
+      clearTimeout(fmT);
+      fmT = setTimeout(() => { _fmView = { key: rangeKey, left: fmScroll.scrollLeft }; }, 200);
+    }, { passive: true });
   }
 
   // Status buckets up top — same selected-projects scope as the strips.

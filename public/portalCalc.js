@@ -610,7 +610,68 @@ function portalRisk(riskPlanForProject, tasksForProject) {
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
+// ── Milestone dollars ───────────────────────────────────────────────────────
+// A milestone percent is a share of the job's SALES PRICE (Lisa, 2026-11-02).
+// Change quotes are not in the base: they are their own rows with a typed
+// amount, so adding them here would count them twice.
+//
+// On a multi-machine job two things are true at once:
+//   - Receipt of PO and Major Commercials bill ONCE on the whole job, however
+//     many machine rows carry them (1106 has the same 30% on five chambers).
+//   - Everything else (FAT, SAT...) is billed per machine, and the job's total
+//     for it is the stored percent spread across the machines.
+// Some jobs store the per-machine percent already divided (1101: 2.5% FAT,
+// 1.25% SAT on eight machines), others store the whole 10% on every machine
+// (1106). Dividing a share that is already divided would halve the money, so:
+// if the stored percents, job-level counted once, already total 100% or less,
+// they are shares of the PO and used as they stand; if they total more, they
+// are whole percents and each is divided by the machine count.
+//
+// Returns one entry per input row: { amount, kind }
+//   kind  'exact'  - a typed amount on the row
+//         'calc'   - percent x sales price
+//         'split'  - percent x sales price / machines (an estimate: ~)
+//         'dup'    - a repeat of a job-level milestone, already counted: 0
+//         null     - no figure available (no percent, or no sales price)
+const JOB_LEVEL_MILESTONE = /receipt\s+of\s+po|major\s+commercials/i;
+
+function milestoneAmounts(financials, salesPrice, machineCount) {
+  const price = Number(salesPrice);
+  const havePrice = Number.isFinite(price) && price > 0;
+  const rows = (financials || []).filter(f => !f.archived_at);
+  const pct = f => (f.percent != null && Number(f.percent) > 0) ? Number(f.percent) : 0;
+  const isJobLevel = f => JOB_LEVEL_MILESTONE.test(f.name || '') || f.sync_to_anchor === 'receipt_of_po';
+  const keyOf = f => (f.name || '').trim().toLowerCase() + '|' + pct(f);
+
+  const seen = new Set();
+  const dup = new Set();
+  let stored = 0;
+  rows.forEach(f => {
+    if (f.amount != null && Number(f.amount) > 0) return;
+    if (isJobLevel(f)) {
+      if (seen.has(keyOf(f))) { dup.add(f); return; }
+      seen.add(keyOf(f));
+    }
+    stored += pct(f);
+  });
+
+  const n = Math.max(1, Number(machineCount) || 1);
+  const divide = n > 1 && stored > 100.5;
+
+  const out = new Map();
+  rows.forEach(f => {
+    if (f.amount != null && Number(f.amount) > 0) return out.set(f, { amount: Number(f.amount), kind: 'exact' });
+    if (!havePrice || !pct(f)) return out.set(f, { amount: null, kind: null });
+    if (dup.has(f)) return out.set(f, { amount: 0, kind: 'dup' });
+    const base = price * pct(f) / 100;
+    if (divide && !isJobLevel(f)) return out.set(f, { amount: base / n, kind: 'split' });
+    out.set(f, { amount: base, kind: 'calc' });
+  });
+  return out;
+}
+
 return {
+  milestoneAmounts,
   normalizeTasks, inferredAnchorKey, isMilestoneLike, portalPercent, portalPlannedPercent,
   portalProgress, portalUnits, portalMilestones, portalDueRow, portalSlip, portalMoney,
   portalRisk, riskBand, portalTeam, portalTaskMix, portalDeptChart, portalWork,
