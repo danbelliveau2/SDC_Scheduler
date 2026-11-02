@@ -4,6 +4,26 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.35',
+    date: '2026-11-02',
+    notes: [
+      'Financial Milestones on the Invoicing tab is now a month grid with the actual dollars on every milestone.',
+      '',
+      'INVOICING:',
+      '   ▸ One row per job, one column per month. Everything a job bills in a month stacks into that month’s cell — the dollars due and how many events. Click a cell to open the list: percent, machine, date, amount and status for each milestone. Expand all / Collapse all open or close every cell.',
+      '   ▸ Each milestone now shows what it invoices, not just the percent. $ Amount, % Share and Both switch between them, and your choice is remembered.',
+      '   ▸ A pinned row at the bottom totals each month across all the jobs, with the part already paid shown on its own line. Each job also has a Job total and a Left to invoice column.',
+      '   ▸ The grid opens on the current month and starts at the earliest month that still has something to invoice, so anything overdue stays on screen. Use From to look further back.',
+      '   ▸ A job with no sales price on file shows a dash and a “no $” flag instead of a guessed number.',
+      '',
+      'HOW THE DOLLARS ARE WORKED OUT:',
+      '   ▸ A milestone’s percent is a share of the job’s sales price (change quotes are their own milestones, so they are not in the base). An amount typed on a milestone always wins.',
+      '   ▸ Receipt of PO and Major Commercials bill once on the whole job. On a job sold as several machines, FAT and SAT are spread across them — 1106’s SAT is $33,630 per chamber, not the whole 10%. A ~ in front of an amount means it was spread across machines.',
+      '   ▸ The number of machines is read from the job name (“QTY (8)”) when the schedule has fewer built out than were sold.',
+      '   ▸ Sales prices came from the Projects grid and are stored on each job. They are never sent to the browser — only the milestone dollars are.',
+    ],
+  },
+  {
     version: '13.34',
     date: '2026-11-02',
     notes: [

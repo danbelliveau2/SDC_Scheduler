@@ -18608,3 +18608,76 @@ body.seclink-pick-mode #tasks-tbody tr[data-id]:hover td { background: #eaf3fc; 
 .project-tabs-row .project-tab.is-all .project-tab-label,
 .project-tabs-row .project-tab.is-dept .project-tab-label,
 .project-tabs-row .project-tab.is-portal .project-tab-label { overflow: visible; max-width: none; flex: 0 0 auto; }
+
+/* ── Financial Milestones month grid (Invoicing) ───────────────────────────
+   One row per job, one column per month; a month cell holds every milestone
+   that job bills that month. Widths follow the grid rule: the project name
+   gets the room, months are wide enough for "$1,076,160 · 4 events", the two
+   job columns are just dollars. table-layout: fixed so they actually apply. */
+.fm-scroll { overflow: auto; max-height: 70vh; border: 1px solid var(--border, #e2e8f0); border-radius: 8px; background: var(--surface, #fff); }
+.fm-grid { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: 100%; font-size: var(--fs-md); }
+.fm-grid th, .fm-grid td { border-bottom: 1px solid var(--border, #e2e8f0); border-right: 1px solid var(--border, #e2e8f0); padding: 0; vertical-align: top; }
+.fm-grid thead th { position: sticky; top: 0; z-index: 3; background: #0d1f3c; color: #fff; text-align: left; padding: 8px 10px; font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fm-grid thead th.fm-month.is-past { background: #3a4a63; }
+.fm-grid thead th.fm-month.is-now { background: var(--sdc-primary, #1574c4); }
+.fm-now { margin-left: 4px; padding: 1px 5px; border-radius: 8px; background: #fff; color: var(--sdc-primary, #1574c4); font-size: 9px; text-transform: none; letter-spacing: 0; }
+.fm-grid .fm-proj { position: sticky; left: 0; z-index: 2; background: var(--surface, #fff); text-align: left; padding: 8px 10px; font-weight: var(--fw-semibold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fm-grid thead .fm-proj { z-index: 4; background: #0d1f3c; }
+.fm-grid .fm-proj.pdash-fintl-projlink { cursor: pointer; }
+.fm-grid .fm-proj.pdash-fintl-projlink:hover { color: var(--sdc-primary, #1574c4); text-decoration: underline; }
+.fm-flag { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: 8px; background: #fef3c7; color: #92400e; font-size: 9px; font-weight: 700; }
+.fm-jobhead { text-align: right !important; }
+.fm-job { text-align: right; padding: 8px 10px !important; font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+.fm-row:hover .fm-proj, .fm-row:hover .fm-cell, .fm-row:hover .fm-job { background-color: #f4f8fc; }
+
+/* A month cell: closed = one summary line; open = the milestone list under it. */
+.fm-cell { padding: 0 !important; }
+.fm-cell.is-empty { background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(148,163,184,.08) 6px 12px); }
+.fm-sum { display: flex; align-items: baseline; gap: 6px; padding: 8px 10px; cursor: pointer; user-select: none; }
+.fm-sum:focus-visible { outline: 2px solid var(--sdc-primary, #1574c4); outline-offset: -2px; }
+.fm-caret { font-size: 9px; color: var(--text-muted, #64748b); transition: transform .12s; }
+.fm-cell.is-open .fm-caret { transform: rotate(90deg); }
+.fm-sum-money { font-weight: 700; font-variant-numeric: tabular-nums; color: #1d4ed8; }
+.fm-sum-n { margin-left: auto; font-size: var(--fs-xs); color: var(--text-muted, #64748b); white-space: nowrap; }
+.fm-cell.is-paid .fm-sum-money { color: #15803d; }
+.fm-cell.is-overdue { box-shadow: inset 3px 0 0 #dc2626; }
+.fm-cell.is-overdue .fm-sum-money { color: #dc2626; }
+.fm-list { display: none; padding: 0 10px 8px 22px; }
+.fm-cell.is-open .fm-list { display: block; }
+.fm-ev { display: grid; grid-template-columns: 8px 1fr auto; column-gap: 6px; align-items: baseline; padding: 3px 0; border-top: 1px dashed var(--border, #e2e8f0); font-size: var(--fs-xs); }
+.fm-ev-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fm-ev-date { grid-column: 2; color: var(--text-muted, #64748b); }
+.fm-ev-money { grid-column: 3; grid-row: 1 / span 2; font-weight: 700; font-variant-numeric: tabular-nums; align-self: center; }
+.fm-dot { width: 8px; height: 8px; border-radius: 50%; border: 2px solid #1574c4; background: #dbeafe; align-self: center; grid-row: 1 / span 2; }
+.fm-ev.is-paid .fm-dot { background: #74c415; border-color: #74c415; }
+.fm-ev.is-paid .fm-ev-name { color: #15803d; }
+.fm-ev.is-sent .fm-dot { background: #1574c4; }
+.fm-ev.is-overdue .fm-dot { background: #fee2e2; border-color: #dc2626; }
+.fm-ev.is-overdue .fm-ev-name { color: #dc2626; }
+
+/* $ / % / Both switch — the grid carries the mode class. */
+.fm-mode-amt .fm-pct { display: none; }
+.fm-mode-pct .fm-amt { display: none; }
+.fm-mode-pct .fm-sum-money { display: none; }
+.fm-mode-pct .fm-sum-n { margin-left: 0; font-size: var(--fs-md); color: inherit; font-weight: 700; }
+
+/* Per-month totals pinned to the bottom of the scroll box. */
+.fm-grid tfoot th, .fm-grid tfoot td { position: sticky; bottom: 0; z-index: 2; background: #eef4fa; border-top: 2px solid #0d1f3c; padding: 8px 10px; }
+.fm-grid tfoot th.fm-proj { z-index: 4; }
+.fm-tot { font-variant-numeric: tabular-nums; }
+.fm-tot .fm-amt { display: flex; flex-direction: column; }
+.fm-tot-paid { font-size: var(--fs-xs); color: #15803d; font-weight: 600; }
+.fm-tot-n { display: block; font-size: var(--fs-xs); color: var(--text-muted, #64748b); }
+.fm-mode-pct .fm-tot .fm-amt { display: none; }
+
+/* Mode + expand buttons share the look of the Variance button. */
+.fm-ctl { display: inline-flex; margin-left: 6px; }
+.fm-seg { padding: 4px 10px; border: 1px solid #c8d5e3; background: #fff; font: inherit; font-size: var(--fs-xs); font-weight: var(--fw-semibold); color: #4b5e70; cursor: pointer; white-space: nowrap; }
+.fm-ctl .fm-seg { border-radius: 0; margin-left: -1px; }
+.fm-ctl .fm-seg:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.fm-ctl .fm-seg:last-child { border-radius: 0 6px 6px 0; }
+.fm-seg[data-fm-expand] { border-radius: 6px; }
+.fm-seg:hover { background: #eef4fa; border-color: #94a3b8; }
+.fm-seg.is-on { background: var(--sdc-primary, #1574c4); border-color: var(--sdc-primary, #1574c4); color: #fff; }
+.fm-grid tbody th.fm-proj, .fm-grid tfoot th.fm-proj { text-transform: none; letter-spacing: 0; font-size: var(--fs-md); }
+.fm-grid .fm-ev-name { white-space: normal; overflow: visible; }

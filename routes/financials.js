@@ -1,6 +1,7 @@
 'use strict';
 const { customerScope } = require('../lib/customerScope');
 const { Router } = require('express');
+const PortalCalc = require('../public/portalCalc');
 
 // 'machine' — per-machine payment terms on multi-machine projects (M1/M2/…);
 // NULL/'' means M1 / single-machine (legacy rows keep working untouched).
@@ -71,9 +72,46 @@ module.exports = function createRouter(deps) {
       const [rows] = project
         ? await pool.query(`SELECT * FROM project_financials WHERE project = ?${archFilter} ORDER BY sort_order, id`, [project])
         : await pool.query(`SELECT * FROM project_financials WHERE 1 = 1${archFilter} ORDER BY project, sort_order, id`);
+      // Staff get each milestone's dollars; the sales price behind them never
+      // leaves the server. Customers see no money here (their portal shows
+      // percent only), so they are left out.
+      if (!req.shareCustomer && !req.shareProject) {
+        try { await attachMilestoneMoney(rows); } catch (_) { /* amounts just stay blank */ }
+      }
       res.json(rows);
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
+
+  // How many machines the job was SOLD as, from its name: "…QTY (8)", "QTY 6",
+  // "(Qty: 3)". The schedule can hold fewer than that (1106 is sold as 8 and has
+  // 5 chambers built out), and the billing split is by the number sold. A
+  // range like "QTY (4 - 2)" is ambiguous and is ignored; so is anything over
+  // 20, which is a parts quantity ("Heat Shield Inserts (Qty 100)"), not machines.
+  function qtyFromName(name) {
+    const m = String(name || '').match(/\bqty[:\s]*\(?\s*(\d+)\s*(?:\)|\b)(?!\s*-\s*\d)/i);
+    const n = m ? parseInt(m[1], 10) : 0;
+    return n >= 2 && n <= 20 ? n : 0;
+  }
+
+  // Percent × sales price, per PortalCalc.milestoneAmounts. Adds money_amount
+  // and money_kind ('exact' | 'calc' | 'split' | 'dup' | null) to each row.
+  async function attachMilestoneMoney(rows) {
+    const names = [...new Set(rows.map(r => r.project))];
+    if (!names.length) return;
+    const [prices] = await pool.query('SELECT name, contract_value FROM projects WHERE name IN (?)', [names]);
+    const [mach] = await pool.query(
+      `SELECT project, COUNT(DISTINCT machine) AS n FROM tasks
+        WHERE machine IS NOT NULL AND machine <> '' AND project IN (?) GROUP BY project`, [names]);
+    const priceOf = new Map(prices.map(p => [p.name, p.contract_value]));
+    const taskMachines = new Map(mach.map(m => [m.project, Number(m.n)]));
+    const byProject = new Map();
+    rows.forEach(r => (byProject.get(r.project) || byProject.set(r.project, []).get(r.project)).push(r));
+    byProject.forEach((group, project) => {
+      const rowMachines = new Set(group.map(r => r.machine).filter(Boolean)).size;
+      const m = PortalCalc.milestoneAmounts(group, priceOf.get(project), Math.max(rowMachines, taskMachines.get(project) || 0, qtyFromName(project)));
+      group.forEach(r => { const x = m.get(r); r.money_amount = x ? x.amount : null; r.money_kind = x ? x.kind : null; });
+    });
+  }
 
   // Reconcile one project on demand — same routine the read path runs, for
   // callers that change machine tags and want the sync to happen now.

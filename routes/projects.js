@@ -382,6 +382,10 @@ function _promoteDefaultAlloc(bucket) {
 module.exports = function createRouter(deps) {
   const { pool, io, requireRole, cascadeSchedule, logHistory, plannerClient } = deps;
   const router = Router();
+  // The sales price (contract_value) is written through PUT but never sent
+  // back to a browser: milestone dollars are computed from it server-side
+  // (routes/financials.js), so the raw figure is not on the wire.
+  const hidePrice = (r) => { if (!r) return r; const { contract_value, ...rest } = r; return rest; };
 
   // ── SSE clients for projects_changed notifications ────────────────────────
   const _sseClients = new Set();
@@ -461,7 +465,7 @@ module.exports = function createRouter(deps) {
       } else {
         [rows] = await pool.query('SELECT * FROM projects ORDER BY name ASC');
       }
-      res.json(rows);
+      res.json(rows.map(hidePrice));
     } catch (e) { res.status(503).json({ error: e.message }); }
   });
 
@@ -526,7 +530,7 @@ module.exports = function createRouter(deps) {
         } catch (e) { console.warn('[planner] quoted-hours import failed:', e.message); }
       }
 
-      res.status(201).json(row);
+      res.status(201).json(hidePrice(row));
       notifyClients('projects_changed');
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -626,7 +630,7 @@ module.exports = function createRouter(deps) {
       const setClause = Object.keys(updates).map(k => `${k} = ?`).join(', ');
       await pool.query(`UPDATE projects SET ${setClause} WHERE id = ?`, [...Object.values(updates), id]);
       const [[row]] = await pool.query('SELECT * FROM projects WHERE id = ?', [id]);
-      res.json(row);
+      res.json(hidePrice(row));
       notifyClients('projects_changed');
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -679,7 +683,7 @@ module.exports = function createRouter(deps) {
       if (!name) return res.status(400).json({ error: 'name required' });
       await pool.query('INSERT IGNORE INTO projects (name) VALUES (?)', [name]);
       const [[row]] = await pool.query('SELECT * FROM projects WHERE name = ?', [name]);
-      res.json(row);
+      res.json(hidePrice(row));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
