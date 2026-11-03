@@ -10231,6 +10231,7 @@ const _finLoading = new Set();
 // survive the streaming-load re-renders; a range change resets to default.
 let _finOpen = new Set();     // "project|YYYY-MM" month cells left open on the Financial Milestones grid
 let _fmView = { key: null, left: null };
+let _fmSearch = '';           // job search on the Financial Milestones grid (survives redraws)
 // The projects of the latest render. The handlers below are bound once, so they
 // must read this, not the list that was current when they were bound.
 let _invSelected = [];
@@ -10796,7 +10797,9 @@ function renderDeptProjectRollup() {
     const monthTotals = new Map(months.map(m => [m, { amt: 0, paid: 0, n: 0 }]));
     const bodyRows = projOrder.map(p => {
       const mine = byProj.get(p);
-      const allRows = shown.filter(r => r.project === p);
+      // Job total / Left to invoice cover the WHOLE job, not just the months
+      // in view, so a From / To range never shrinks them.
+      const allRows = financials.filter(r => r.project === p && finMoney(r).kind !== 'dup');
       const hasPrice = !allRows.some(r => Number(r.percent) > 0 && finMoney(r).kind == null);
       let jobTotal = 0, jobLeft = 0;
       allRows.forEach(r => { const a = finMoney(r).amount || 0; jobTotal += a; if (!r.paid) jobLeft += a; });
@@ -10862,6 +10865,11 @@ function renderDeptProjectRollup() {
         </span>
         <button type="button" class="fm-seg" data-fm-expand="1" title="Open every month cell">Expand all</button>
         <button type="button" class="fm-seg" data-fm-expand="0" title="Close every month cell">Collapse all</button>
+        <span class="fm-search">
+          <input type="text" class="fm-search-input" data-fm-search placeholder="Search job #" value="${escapeHtml(_fmSearch)}" autocomplete="off" spellcheck="false" aria-label="Search for a job by number or name"/>
+          <button type="button" class="fm-search-x" data-fm-search-clear title="Clear the search" aria-label="Clear the search"${_fmSearch ? '' : ' hidden'}>✕</button>
+          <span class="fm-search-n" data-fm-search-n></span>
+        </span>
       </div>
       <div class="fm-scroll" data-range-key="${escapeHtml(finMonthFrom + '|' + finMonthTo)}">
         <table class="fm-grid fm-mode-${mode}" style="min-width:${PROJ_W + months.length * MONTH_W + 2 * JOB_W}px">
@@ -11008,25 +11016,30 @@ function renderDeptProjectRollup() {
     try { localStorage.setItem('sdcDeptShowVariance', showVariance ? '0' : '1'); } catch (_) {}
     renderDeptProjectRollup();
   });
-  _fRoot.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      try { localStorage.setItem('sdcDashboardFinMonthFrom', inp.value || ''); } catch (_) {}
-      renderDeptProjectRollup();
+  // The From / To / Clear controls exist in the filter bar AND above the
+  // grid (on Invoicing the bar is its own element, outside `root`), so wire
+  // both — a Set so a page where they are the same element binds once.
+  [...new Set([_fRoot, root])].forEach(host => {
+    host.querySelectorAll('[data-action="set-fin-month-from"]').forEach(inp => {
+      inp.addEventListener('change', () => {
+        try { localStorage.setItem('sdcDashboardFinMonthFrom', inp.value || ''); } catch (_) {}
+        renderDeptProjectRollup();
+      });
     });
-  });
-  _fRoot.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
-    inp.addEventListener('change', () => {
-      try { localStorage.setItem('sdcDashboardFinMonthTo', inp.value || ''); } catch (_) {}
-      renderDeptProjectRollup();
+    host.querySelectorAll('[data-action="set-fin-month-to"]').forEach(inp => {
+      inp.addEventListener('change', () => {
+        try { localStorage.setItem('sdcDashboardFinMonthTo', inp.value || ''); } catch (_) {}
+        renderDeptProjectRollup();
+      });
     });
-  });
-  _fRoot.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      try {
-        localStorage.setItem('sdcDashboardFinMonthFrom', 'any');
-        localStorage.setItem('sdcDashboardFinMonthTo', 'any');
-      } catch (_) {}
-      renderDeptProjectRollup();
+    host.querySelectorAll('[data-action="clear-fin-months"]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        try {
+          localStorage.setItem('sdcDashboardFinMonthFrom', 'any');
+          localStorage.setItem('sdcDashboardFinMonthTo', 'any');
+        } catch (_) {}
+        renderDeptProjectRollup();
+      });
     });
   });
   // Click a milestone tile or a financial row → jump to that project on
@@ -11099,6 +11112,99 @@ function renderDeptProjectRollup() {
       clearTimeout(fmT);
       fmT = setTimeout(() => { _fmView = { key: rangeKey, left: fmScroll.scrollLeft }; }, 200);
     }, { passive: true });
+
+    // Click-and-drag panning, as on the schedule Gantt: drag sideways to move
+    // through the months, up/down to move through the jobs. A 4px threshold
+    // keeps plain clicks (open a cell, open a project) working, and the click
+    // that ends a drag is swallowed so it never opens a cell by accident.
+    fmScroll.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest('input, select, button, .pdash-fintl-projlink')) return;
+      // The scrollbar is not a drag surface.
+      if (e.target === fmScroll && (e.offsetX >= fmScroll.clientWidth || e.offsetY >= fmScroll.clientHeight)) return;
+      const startX = e.clientX, startY = e.clientY;
+      const startLeft = fmScroll.scrollLeft, startTop = fmScroll.scrollTop;
+      const pageBox = document.getElementById('view-invoicing');
+      const pageTop = pageBox ? pageBox.scrollTop : 0;
+      const innerScrolls = fmScroll.scrollHeight > fmScroll.clientHeight;
+      let panning = false;
+      const onMove = (ev) => {
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        if (!panning && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+          panning = true;
+          fmScroll.classList.add('panning');
+          try { window.getSelection()?.removeAllRanges(); } catch (_) {}
+        }
+        if (!panning) return;
+        ev.preventDefault();
+        fmScroll.scrollLeft = startLeft - dx;
+        if (innerScrolls) fmScroll.scrollTop = startTop - dy;
+        else if (pageBox) pageBox.scrollTop = pageTop - dy;
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        fmScroll.classList.remove('panning');
+        if (panning) {
+          const swallow = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+          fmScroll.addEventListener('click', swallow, { capture: true, once: true });
+        }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    // Job search: highlights the matching project row(s) and scrolls the first
+    // one into view; nothing is hidden, so clearing the box leaves the grid
+    // exactly as it was. A number matches the start of a job number / project
+    // name ("1106"); text matches anywhere in the name. Enter steps to the
+    // next match, Esc or ✕ clears.
+    const sBox = ctl.querySelector('[data-fm-search]');
+    const sClear = ctl.querySelector('[data-fm-search-clear]');
+    const sNote = ctl.querySelector('[data-fm-search-n]');
+    const fmRows = () => [...fmScroll.querySelectorAll('tbody .fm-row')];
+    const fmMatches = () => {
+      const q = _fmSearch.trim().toLowerCase();
+      if (!q) return [];
+      const numeric = /^\d+$/.test(q);
+      return fmRows().filter(r => {
+        const p = r.dataset.project || '';
+        const name = p.toLowerCase();
+        const job = String((state.projectsIndex && state.projectsIndex[p] && state.projectsIndex[p].job_number) || '').toLowerCase();
+        return numeric ? (name.startsWith(q) || job.startsWith(q)) : name.includes(q);
+      });
+    };
+    const fmJump = (row) => {
+      if (!row) return;
+      fmScroll.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      const head = fmScroll.querySelector('thead');
+      const delta = row.getBoundingClientRect().top - fmScroll.getBoundingClientRect().top - (head ? head.offsetHeight : 0) - 4;
+      fmScroll.scrollTop += delta;
+    };
+    let fmHit = 0;
+    const fmApplySearch = (jump) => {
+      const hits = fmMatches();
+      fmRows().forEach(r => r.classList.toggle('is-hit', hits.includes(r)));
+      sClear.hidden = !_fmSearch;
+      sNote.textContent = !_fmSearch.trim() ? ''
+        : (!hits.length ? 'No match in this view' : (hits.length === 1 ? '1 match' : `${hits.length} matches · Enter for next`));
+      sNote.classList.toggle('is-none', !!_fmSearch.trim() && !hits.length);
+      if (jump && hits.length) fmJump(hits[fmHit % hits.length]);
+    };
+    sBox.addEventListener('input', () => { _fmSearch = sBox.value; fmHit = 0; fmApplySearch(true); });
+    sBox.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const n = fmMatches().length;
+        if (n) { fmHit = (fmHit + 1) % n; fmApplySearch(true); }
+      } else if (e.key === 'Escape') {
+        sClear.click();
+      }
+    });
+    sClear.addEventListener('click', () => {
+      _fmSearch = ''; sBox.value = ''; fmHit = 0; fmApplySearch(false); sBox.focus();
+    });
+    fmApplySearch(!!_fmSearch);
   }
 
   // Status buckets up top — same selected-projects scope as the strips.
