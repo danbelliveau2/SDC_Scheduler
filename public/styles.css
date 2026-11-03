@@ -18681,3 +18681,23 @@ body.seclink-pick-mode #tasks-tbody tr[data-id]:hover td { background: #eaf3fc; 
 .fm-seg.is-on { background: var(--sdc-primary, #1574c4); border-color: var(--sdc-primary, #1574c4); color: #fff; }
 .fm-grid tbody th.fm-proj, .fm-grid tfoot th.fm-proj { text-transform: none; letter-spacing: 0; font-size: var(--fs-md); }
 .fm-grid .fm-ev-name { white-space: normal; overflow: visible; }
+
+/* Drag the grid sideways like the Gantt; the scrollbar and buttons keep their own cursors. */
+.fm-scroll { cursor: grab; }
+.fm-scroll.panning { cursor: grabbing; user-select: none; }
+.fm-scroll .fm-sum, .fm-scroll .fm-proj.pdash-fintl-projlink { cursor: pointer; }
+.fm-scroll.panning .fm-sum, .fm-scroll.panning .fm-proj.pdash-fintl-projlink { cursor: grabbing; }
+
+/* Job search beside Collapse all. */
+.fm-search { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; }
+.fm-search-input { width: 150px; padding: 4px 8px; font: inherit; font-size: var(--fs-md); border: 1px solid var(--border, #e2e8f0); border-radius: 6px; background: #fff; color: var(--text, #1f2937); }
+.fm-search-input:focus { outline: none; border-color: var(--sdc-primary, #1574c4); box-shadow: 0 0 0 2px rgba(21, 116, 196, .15); }
+.fm-search-x { padding: 2px 7px; border: 1px solid #c8d5e3; border-radius: 6px; background: #fff; font: inherit; font-size: var(--fs-xs); color: #4b5e70; cursor: pointer; }
+.fm-search-x[hidden] { display: none; }
+.fm-search-x:hover { background: #eef4fa; border-color: #94a3b8; }
+.fm-search-n { font-size: var(--fs-xs); color: var(--text-muted, #64748b); white-space: nowrap; }
+.fm-search-n.is-none { color: #dc2626; font-weight: 600; }
+
+/* The searched job: name lit up, row lightly tinted. */
+.fm-grid .fm-row.is-hit .fm-proj { background: #fff3bf; color: #7a4b00; box-shadow: inset 4px 0 0 #f59e0b; }
+.fm-grid .fm-row.is-hit .fm-cell, .fm-grid .fm-row.is-hit .fm-job { background-color: #fffbea; }

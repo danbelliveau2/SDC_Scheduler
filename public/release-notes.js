@@ -4,6 +4,19 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.36',
+    date: '2026-11-03',
+    notes: [
+      'The Financial Milestones grid can be dragged, searched by job, and its From / To filter works.',
+      '',
+      'INVOICING:',
+      '   ▸ Click and drag anywhere on the grid to move through it — sideways for the months, up and down for the jobs — the way the schedule Gantt works. The scroll bar still works too, and a drag never opens a month cell by accident.',
+      '   ▸ New Search job # box beside Collapse all. Type a job number (or part of a name) and the grid scrolls to that job and lights up its name; nothing is hidden, so clearing it (the ✕ or Esc) leaves the grid as it was. If more than one job matches, Enter steps to the next.',
+      '   ▸ Fixed: the From and To boxes above the grid did nothing — only the pair in the filter bar at the top of the page worked. Both now change the months shown, and Clear resets both.',
+      '   ▸ Job total and Left to invoice always cover the whole job; choosing a month range no longer shrinks them.',
+    ],
+  },
+  {
     version: '13.35',
     date: '2026-11-02',
     notes: [
