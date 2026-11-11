@@ -56,7 +56,9 @@ module.exports = function createRouter(deps) {
   // predecessors — written from the schedule by the PMs (editors). Without
   // them here every PM's split came back 403 and vanished on reload (Dan,
   // 10/14).
-  const EDITOR_KEYS = new Set(['project_leads', 'alloc_splits', 'pred_sections']); // project_leads: { "<project>": { pm, debug } }
+  // release_contents: what is in a release — same story, every PM's list
+  // came back 403 and was blank the next day (Mike Gast, 11/11).
+  const EDITOR_KEYS = new Set(['project_leads', 'alloc_splits', 'pred_sections', 'release_contents']); // project_leads: { "<project>": { pm, debug } }
   router.put('/api/settings/:key',
     (req, res, next) => requireRole(EDITOR_KEYS.has(req.params.key) ? 'editor' : 'admin')(req, res, next),
     async (req, res) => {

@@ -4,6 +4,20 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.37',
+    date: '2026-11-11',
+    notes: [
+      'Lines that follow a predecessor follow it again — including one on another schedule.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Accepting a release (or setting a Sales schedule\u2019s PO date) moves the whole schedule to the new Receipt of PO. It used to pin every line it moved as a hand-set date, so from then on nothing on that job followed its predecessor any more — a change on the other schedule left the linked line where it was. Now only lines with no predecessor keep the pin; every linked line stays the schedule\u2019s to place.',
+      '   ▸ The lines that shift had pinned on 1163 Haemonetics are unpinned and placed from their predecessors again. Other jobs frozen the same way (1127 Hail Impact, 1130 Compact Light Soaks and a few more) have not been re-placed yet — that moves dates, so it waits for a go-ahead.',
+      '   ▸ A link to another schedule typed back into the Pred cell with its 🔗 mark is read correctly instead of being saved as dead text. A lag typed as .5W reads as half a week.',
+      '   ▸ Right-click any line → ☰ What’s in this line. Write down the stations or assemblies going out and the ☰ icon with the count sits beside the name, on any line — not only ones the app recognised as a release (Mech Reelase 4 lost its icon to a spelling).',
+      '   ▸ The ☰ list on a release now saves for every PM. Only an admin’s list was being kept — anyone else’s showed on the row for the rest of the day and was blank after a reload. Lists written before today were never stored and need writing again. If a save is ever refused, the box now stays open with what you typed and says so.',
+    ],
+  },
+  {
     version: '13.36',
     date: '2026-11-03',
     notes: [

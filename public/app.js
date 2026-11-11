@@ -992,9 +992,12 @@ function predEditValue(task) {
 // link to another schedule. Split them; the cross ones become stored
 // tokens here (task id + relationship + lag), the local ones go through
 // predParse as before. A cross token nobody can resolve is reported.
+function _cleanPredToken(tok) {
+  return String(tok || '').replace(/^🔗\s*/, '').replace(/([+-])\s*\./, '$10.').trim();
+}
 function _splitTypedPreds(raw) {
   const local = [], cross = [], bad = [];
-  String(raw || '').split(',').map(x => x.trim()).filter(Boolean).forEach(tok => {
+  String(raw || '').split(',').map(x => _cleanPredToken(x)).filter(Boolean).forEach(tok => {
     const jl = tok.match(/^(\d{3,})[\s·\-]+(\d+)(.*)$/);
     if (!jl) { local.push(tok); return; }
     const id = taskIdByJobLine(jl[1], Number(jl[2]));
@@ -2768,22 +2771,27 @@ async function setReleaseItems(taskId, items) {
   const all = { ..._releaseAll() };
   const clean = (items || []).map(x => String(x).trim()).filter(Boolean);
   if (clean.length) all[String(taskId)] = clean; else delete all[String(taskId)];
+  // The list goes on the row only once the server has it. It used to be put
+  // on the row first, so a save the server refused still showed its icon
+  // until the next reload (Mike Gast, 11/11).
+  try { await api.putSetting(RELEASE_KEY, all); } catch (e) {
+    showAlertDialog({ title: 'The list was not saved', message: (e.message || 'The server did not accept it.') + ' Nothing was changed. Your list is still in the box, so copy it before you close.' });
+    return false;
+  }
   state.settings = state.settings || {};
   state.settings[RELEASE_KEY] = all;
-  try { await api.putSetting(RELEASE_KEY, all); } catch (e) {
-    showToast(e.message || 'Could not save the release list.', { kind: 'error' });
-    return;
-  }
   render();
+  return true;
 }
 
 // The icon that sits on a release row, carrying its count.
 function releaseIconHtml(t) {
-  if (!isReleaseRow(t)) return '';
+  if (!t) return '';
   const n = releaseItems(t.id).length;
+  if (!n && !isReleaseRow(t)) return '';
   const title = n
-    ? n + (n === 1 ? ' item ' : ' items ') + 'in this release. Click to see or edit the list.'
-    : 'Nothing listed for this release yet. Click to write down what is in it.';
+    ? n + (n === 1 ? ' item ' : ' items ') + 'in this line. Click to see or edit the list.'
+    : 'Nothing listed yet. Click to write down what is in it.';
   return `<button type="button" class="release-chip${n ? ' has-items' : ''}" data-release="${t.id}" title="${escapeHtml(title)}" tabindex="-1">☰${n ? `<span class="release-chip-n">${n}</span>` : ''}</button>`;
 }
 
@@ -2801,7 +2809,7 @@ function showReleaseDialog(taskId) {
     <div class="modal-card app-dialog">
       <div class="modal-head"><h2>${escapeHtml(t.name || 'Release')}</h2></div>
       <div class="modal-body">
-        <div class="app-dialog-message">What is going out in this release — one station or assembly per line.</div>
+        <div class="app-dialog-message">What is in this line — one station or assembly per row.</div>
         <textarea class="release-text" id="release-text" rows="9" spellcheck="false" placeholder="Station 10 — infeed conveyor&#10;Station 20 — rotary slitter&#10;Guarding, north side">${escapeHtml(items.join('\n'))}</textarea>
       </div>
       <div class="modal-foot">
@@ -2814,8 +2822,7 @@ function showReleaseDialog(taskId) {
   const close = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
   const save = async () => {
     const lines = ta.value.split(/\r?\n/);
-    close();
-    await setReleaseItems(t.id, lines);
+    if (await setReleaseItems(t.id, lines)) close();
   };
   overlay.querySelector('[data-action="cancel"]').onclick = close;
   overlay.querySelector('[data-action="ok"]').onclick = save;
@@ -16690,10 +16697,8 @@ function showSalesCreateDialog(templateName) {
       const delta = cur ? _daysBetweenISO(cur, targetISO) : 0;
       if (delta) {
         for (const t of state.tasks.filter(x => x.project === name)) {
-          const patch = {};
-          if (t.start_date) patch.start_date = _addDaysISO(String(t.start_date).slice(0, 10), delta);
-          if (t.end_date)   patch.end_date   = _addDaysISO(String(t.end_date).slice(0, 10), delta);
-          if (Object.keys(patch).length) { try { await api.update(t.id, patch); } catch (_) {} }
+          const patch = _shiftPatch(t, delta);
+          if (patch) { try { await api.update(t.id, patch); } catch (_) {} }
         }
         await loadTasks();
       }
@@ -23452,7 +23457,7 @@ async function commitCrossPred() {
   const task = state.tasks.find(x => x.id === xp.taskId);
   if (!task) { exitCrossPredPick(true); return; }
   const bad = [], add = [];
-  typed.split(',').map(x => x.trim()).filter(Boolean).forEach(tok => {
+  typed.split(',').map(x => _cleanPredToken(x)).filter(Boolean).forEach(tok => {
     // "1163 7FS +1w" — a job and the line on that job, as the Pred column
     // shows other-schedule links; otherwise a line number from this page.
     const jl = tok.match(/^(\d{3,})[\s·\-]+(\d+)(.*)$/);
@@ -23591,6 +23596,10 @@ function handleRowContextMenu(e) {
       try { await api.update(id, { anchor_key: null }); } catch (err) { showToast(err.message || 'Save failed', { kind: 'error' }); }
       await loadTasks();
     }});
+  }
+  if (task) {
+    const _rn = releaseItems(id).length;
+    items.push({ label: _rn ? `☰ What's in this line (${_rn})` : `☰ What's in this line`, hint: _rn ? 'see or edit the list' : 'list the stations or assemblies going out', onClick: () => showReleaseDialog(id) });
   }
   items.push({ label: '💬 Comments…', onClick: () => { if (typeof openCommentPanel === 'function') openCommentPanel({ id, name: (task && task.name) || `Task #${id}`, project: (state.filters && state.filters.project) || (task && task.project) || '' }); } });
   items.push({ label: '🗑 Delete this line', danger: true, onClick: () => deleteTaskById(id) });
@@ -24964,6 +24973,17 @@ function _isoToNice(iso) {
   const d = new Date(iso + 'T00:00:00Z');
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
+// One line's share of a whole-schedule shift. A line that follows a
+// predecessor stays the graph's (dates_locked 0 — the server would otherwise
+// pin a date written on its own); a line with none keeps its new date pinned.
+function _shiftPatch(t, delta) {
+  const patch = {};
+  if (t.start_date) patch.start_date = _addDaysISO(String(t.start_date).slice(0, 10), delta);
+  if (t.end_date)   patch.end_date   = _addDaysISO(String(t.end_date).slice(0, 10), delta);
+  if (!Object.keys(patch).length) return null;
+  if (String(t.predecessors || '').trim()) patch.dates_locked = 0;
+  return patch;
+}
 function _addDaysISO(iso, n) {
   const d = new Date(iso + 'T00:00:00Z');
   d.setUTCDate(d.getUTCDate() + n);
@@ -25255,10 +25275,8 @@ async function applyProjectRelease(project, rel) {
   if (delta !== 0) {
     const tasks = state.tasks.filter(t => t.project === project);
     for (const t of tasks) {
-      const patch = {};
-      if (t.start_date) patch.start_date = _addDaysISO(String(t.start_date).slice(0, 10), delta);
-      if (t.end_date)   patch.end_date   = _addDaysISO(String(t.end_date).slice(0, 10), delta);
-      if (Object.keys(patch).length) { try { await api.update(t.id, patch); } catch (_) {} }
+      const patch = _shiftPatch(t, delta);
+      if (patch) { try { await api.update(t.id, patch); } catch (_) {} }
     }
   }
 
