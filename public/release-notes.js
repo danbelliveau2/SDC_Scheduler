@@ -4,6 +4,17 @@
 // array in the click popup. Edit this file directly when bumping the rev.
 window.RELEASE_NOTES = [
   {
+    version: '13.38',
+    date: '2026-11-12',
+    notes: [
+      'Anything a PM writes on a schedule now saves.',
+      '',
+      'SCHEDULE:',
+      '   ▸ Several things on a schedule were only being kept when an admin saved them. A PM could fill them in, see them for the rest of the day, and find them gone after a reload. All of these now save for every PM: the risk plan, mini schedules and shared mini schedules, the Controls / Customer / Standard Events lists (where a line came from, so it can go back), the customer a job belongs to, the communication plan standard and team phone numbers, and grid views shared with the team.',
+      '   ▸ Still admin only: Setup (theme, colors, phases, milestone libraries), users, and portal access.',
+    ],
+  },
+  {
     version: '13.37',
     date: '2026-11-11',
     notes: [

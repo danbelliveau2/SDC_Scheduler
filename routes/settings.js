@@ -58,7 +58,22 @@ module.exports = function createRouter(deps) {
   // 10/14).
   // release_contents: what is in a release — same story, every PM's list
   // came back 403 and was blank the next day (Mike Gast, 11/11).
-  const EDITOR_KEYS = new Set(['project_leads', 'alloc_splits', 'pred_sections', 'release_contents']); // project_leads: { "<project>": { pm, debug } }
+  // Rule (Dan, 11/12): "Any PM should be able to save anything to schedule."
+  // Every key the schedule itself writes is an editor key. What stays
+  // admin-only is the Setup panel (theme, colors, phases, libraries) and the
+  // access keys (portal_links, alten_members, notification_settings,
+  // smartsheet_sheet_ids). A NEW key written from the schedule goes in here,
+  // or every PM's save comes back 403.
+  const EDITOR_KEYS = new Set([
+    'project_leads',        // { "<project>": { pm, debug } }
+    'alloc_splits', 'pred_sections', 'release_contents',
+    'risk_plans',           // a job's risk register
+    'controls_origin', 'customer_origin', 'std_events_origin', // ☰ Put in a list — where a line came from
+    'mini_schedules', 'mini_shared',
+    'project_customer',     // which customer a job belongs to
+    'comm_plan_standard', 'team_phones', // communication plan
+    'shared_column_views',  // grid views shared with the team
+  ]);
   router.put('/api/settings/:key',
     (req, res, next) => requireRole(EDITOR_KEYS.has(req.params.key) ? 'editor' : 'admin')(req, res, next),
     async (req, res) => {
